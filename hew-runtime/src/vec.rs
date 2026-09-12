@@ -9,11 +9,11 @@
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
-// The `data` field is `*mut u8` (matching C `void*`) but always allocated via
-// `realloc` which guarantees max alignment.  Casts to typed pointers are safe.
+// Descriptor-backed buffers preserve the element's alignment. Legacy typed
+// buffers use libc's fundamental alignment for their supported scalar types.
 #![expect(
     clippy::cast_ptr_alignment,
-    reason = "data buffer allocated via libc::realloc which guarantees max alignment"
+    reason = "buffer allocation preserves the element type's alignment"
 )]
 // ABI boundary uses i64 (Hew's `int`) for sizes/indices; internal code needs usize.
 #![expect(
@@ -27,13 +27,16 @@
 
 // Re-export types from hew-cabi so `crate::vec::HewVec` etc. continue to work.
 pub use hew_cabi::vec::{
-    ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewVec, HewVecElemLayout, HewVecEqThunk,
+    ElemKind, HewTypeLayout, HewTypeOwnershipKind, HewValueLayout, HewVec, HewVecEqThunk,
 };
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
+use crate::release_walker::{self, ReleaseItem};
 use crate::trap_code::{fmt_decimal_usize, runtime_bounds_trap};
-use core::ffi::{c_char, c_void};
+use core::ffi::c_void;
 use core::ptr;
+use hew_cabi::string::HewString;
+use std::alloc::{alloc, dealloc, realloc, Layout};
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -58,7 +61,7 @@ unsafe fn write_stderr(msg: &[u8]) {
 ///
 /// # Safety
 ///
-/// `v` must point to a valid, non-null `HewVec` allocated with `libc::malloc`.
+/// `v` must point to a valid, non-null `HewVec` from the sized-block allocator.
 unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
@@ -72,7 +75,7 @@ unsafe fn ensure_cap(v: *mut HewVec, needed: usize) {
 ///
 /// # Safety
 ///
-/// `v` must point to a valid, non-null `HewVec` allocated with `libc::malloc`.
+/// `v` must point to a valid, non-null `HewVec` from the sized-block allocator.
 /// Callers must have already validated any layout descriptor semantics.
 unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
     // SAFETY: caller guarantees `v` is valid.
@@ -98,13 +101,33 @@ unsafe fn ensure_cap_raw(v: *mut HewVec, needed: usize) {
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         };
-        let new_data = libc::realloc(vec.data.cast(), alloc_size);
+        // Keep a non-null, aligned backing address even for logical zero-sized
+        // values. Allocation and release use capacity, never the live length.
+        let new_data = if vec.layout.is_null() {
+            crate::mem::buf_realloc(vec.data.cast(), alloc_size.max(1)).cast::<u8>()
+        } else {
+            let layout = buffer_layout(alloc_size, (*vec.layout).align);
+            if vec.data.is_null() {
+                alloc(layout)
+            } else {
+                let old_layout = buffer_layout(vec.cap * vec.elem_size, (*vec.layout).align);
+                realloc(vec.data, old_layout, layout.size())
+            }
+        };
         if new_data.is_null() {
             libc::abort();
         }
         vec.data = new_data.cast();
         vec.cap = new_cap;
     }
+}
+
+/// Allocation geometry for a descriptor-backed buffer, including logical ZSTs.
+fn buffer_layout(size: usize, align: usize) -> Layout {
+    Layout::from_size_align(size.max(1), align).unwrap_or_else(|_| {
+        // SAFETY: an unrepresentable allocation cannot admit a live buffer.
+        unsafe { libc::abort() }
+    })
 }
 
 /// Trap with an out-of-bounds message.
@@ -238,6 +261,10 @@ unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
+        if !descriptor.size.is_multiple_of(descriptor.align) {
+            write_stderr(b"PANIC: HewTypeLayout size must preserve element alignment\n");
+            libc::abort();
+        }
     }
 }
 
@@ -245,29 +272,23 @@ unsafe fn validate_type_layout(layout: *const HewTypeLayout) {
 ///
 /// # Safety
 ///
-/// `layout` must point to a valid `HewVecElemLayout`.
-unsafe fn validate_elem_layout(layout: *const HewVecElemLayout) {
+/// `layout` must point to a valid `HewValueLayout`.
+unsafe fn validate_elem_layout(layout: *const HewValueLayout) {
     // SAFETY: caller guarantees `layout` is valid.
     unsafe {
         let descriptor = &*layout;
-        if descriptor.size == 0 {
-            let msg = b"PANIC: HewVecElemLayout size must be non-zero\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
-            libc::abort();
-        }
         if descriptor.align == 0 || !descriptor.align.is_power_of_two() {
-            let msg = b"PANIC: HewVecElemLayout align must be a non-zero power of two\n\0";
+            let msg = b"PANIC: HewValueLayout align must be a non-zero power of two\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
-        if descriptor.ownership_kind == HewTypeOwnershipKind::Bytes {
-            let msg = b"PANIC: HewVecElemLayout ownership_kind=Bytes is not valid for Vec\n\0";
-            write_stderr(&msg[..msg.len() - 1]);
+        if !descriptor.size.is_multiple_of(descriptor.align) {
+            write_stderr(b"PANIC: HewValueLayout size must preserve element alignment\n");
             libc::abort();
         }
         if descriptor.ownership_kind != HewTypeOwnershipKind::Plain && descriptor.drop_fn.is_none()
         {
-            let msg = b"PANIC: HewVecElemLayout non-Plain ownership requires drop_fn\n\0";
+            let msg = b"PANIC: HewValueLayout non-Plain ownership requires drop_fn\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
@@ -313,9 +334,9 @@ unsafe fn validate_bitcopy_layout_operation(v: *const HewVec, layout: *const Hew
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewVec {
-    // SAFETY: allocating a zeroed struct with libc::malloc is safe.
+    // SAFETY: allocating a zeroed struct via the sized-block allocator is safe.
     unsafe {
-        let v: *mut HewVec = libc::malloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: libc
+        let v: *mut HewVec = crate::mem::buf_try_alloc(core::mem::size_of::<HewVec>()).cast(); // ALLOCATOR-PAIRING: GlobalAlloc
         if v.is_null() {
             libc::abort();
         }
@@ -407,7 +428,7 @@ pub unsafe extern "C" fn hew_vec_new_u16() -> *mut HewVec {
     unsafe { hew_vec_new_with_elem_size(2) }
 }
 
-/// Create a new `HewVec` for string (`*const c_char`) elements.
+/// Create a new `HewVec` for managed string handle elements.
 ///
 /// # Safety
 ///
@@ -416,10 +437,10 @@ pub unsafe extern "C" fn hew_vec_new_u16() -> *mut HewVec {
 pub unsafe extern "C" fn hew_vec_new_str() -> *mut HewVec {
     #[expect(
         clippy::cast_possible_wrap,
-        reason = "size_of::<*const c_char>() is 4 or 8, fits in i64"
+        reason = "a managed string handle is 4 or 8 bytes and fits in i64"
     )]
     // SAFETY: forwarding to `hew_vec_new_with_elem_size` with pointer-sized elements.
-    let v = unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<*const c_char>() as i64) };
+    let v = unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<*const HewString>() as i64) };
     // SAFETY: v is non-null (hew_vec_new_with_elem_size aborts on OOM).
     unsafe { (*v).elem_kind = ElemKind::String };
     v
@@ -470,7 +491,7 @@ pub unsafe extern "C" fn hew_vec_new_f32() -> *mut HewVec {
     unsafe { hew_vec_new_with_elem_size(4) }
 }
 
-/// Create a new `HewVec` for pointer-sized elements (e.g. `LocalPid<A>`, handles).
+/// Create a new `HewVec` for pointer-sized elements (e.g. actor handles).
 ///
 /// # Safety
 ///
@@ -520,7 +541,7 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
 /// Create a new `HewVec` backed by a runtime type layout descriptor.
 ///
 /// The thunk-less compatibility descriptor is widened into the Vec's
-/// authoritative [`HewVecElemLayout`] storage. Only Plain and String ownership
+/// authoritative [`HewValueLayout`] storage. Only Plain and String ownership
 /// are admissible through this entry point; layout-managed elements must use
 /// [`hew_vec_new_with_elem_layout`] and provide a drop thunk.
 ///
@@ -536,7 +557,7 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
         validate_type_layout(layout);
         let descriptor = &*layout;
         if descriptor.ownership_kind == HewTypeOwnershipKind::LayoutManaged {
-            let msg = b"PANIC: HewTypeLayout LayoutManaged requires HewVecElemLayout thunks\n\0";
+            let msg = b"PANIC: HewTypeLayout LayoutManaged requires HewValueLayout thunks\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         }
@@ -550,14 +571,15 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
             HewTypeOwnershipKind::String | HewTypeOwnershipKind::Plain => ElemKind::Plain,
             HewTypeOwnershipKind::LayoutManaged => unreachable!(),
             HewTypeOwnershipKind::Bytes => {
-                // The Bytes kind belongs to the channel/stream element
-                // witness; Vec descriptors never carry it. Fail closed.
+                // Bytes need clone/drop thunks and must use the complete
+                // HewValueLayout entry rather than this thunk-less ABI.
                 let msg = b"PANIC: HewTypeLayout ownership_kind=Bytes is not valid for Vec\n\0";
                 write_stderr(&msg[..msg.len() - 1]);
                 libc::abort();
             }
         };
-        (*v).layout_storage = HewVecElemLayout {
+        (*v).layout_storage = HewValueLayout {
+            visit_close: None,
             size: descriptor.size,
             align: descriptor.align,
             ownership_kind: descriptor.ownership_kind,
@@ -576,30 +598,15 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
 // ---------------------------------------------------------------------------
 //
 // Vec string *elements* are migrated off the legacy headerless `libc::strdup`
-// onto the refcounted, header-aware `String` discipline that P2a activated.
-// Two distinct operations, deliberately kept separate:
-//
-//   * **Ingress** (`push`/`set`): the caller may hand a string of ANY
-//     provenance — a header-aware `String`, a static literal, or a plain
-//     headerless `malloc`/`strdup` buffer from an internal runtime producer
-//     (`read_dir`, DNS, `process`, `split`/`lines`). `copy_string_element_in`
-//     stores an independent **header-aware copy** (`rc == 1`). This preserves
-//     the long-standing copy-in contract (the old `strdup`) byte-for-byte —
-//     producers keep owning and freeing their own buffer — while upgrading the
-//     stored element to be header-bearing.
-//
-//   * **Internal propagation** (`clone`/`clone_managed`/`slice`/`append`/`get`):
-//     the source element is ALREADY a stored, header-aware vec element, so it
-//     is **retained** (`hew_string_clone`, a refcount bump that aliases one
-//     buffer) rather than deep-copied — the element-level copy-on-write this
-//     migration delivers.
+// onto the managed immutable `String` discipline. Ingress and internal
+// propagation both retain one explicit owner of the supplied managed handle.
+// Foreign C strings must be copied through the named carrier adapter before
+// reaching this container.
 //
 // Dropping an element (`free`/`truncate`/`set` old/`pop` transfer) is a VWT
 // `destroy` (release: `hew_string_drop`, which decrements the header refcount
-// and frees at zero, after the static-literal skip). The legacy
-// `strdup`/`libc::free` element paths are retired — no parallel mechanism
-// (CLAUDE §6); the single source of truth is the `String` consumer/producer
-// pair in `crate::string` plus the `hew-cabi` header-aware allocator.
+// and frees at zero). The single source of truth is the managed carrier in
+// `hew-cabi::string`.
 //
 // Because stored elements are now header-bearing, a Vec string element is safe
 // to reach `hew_string_drop` — which is exactly why the P1.5b container-domain
@@ -607,71 +614,51 @@ pub unsafe extern "C" fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -
 // `hew-mir/tests/cstring_container_domain_canary.rs`). HashMap/HashSet elements
 // remain headerless until `W5.011-P2b-maps`.
 
-/// Copy an incoming C string of ANY provenance into a fresh, header-aware
-/// `String` element owned solely by the vec (`rc == 1`). This is the vec's
-/// element **ingress** path for `push`/`set` (VWT `copy` from outside the
-/// container): it replaces the legacy headerless `libc::strdup` copy-in with a
-/// header-aware copy-in, so the stored element can later be shared (retain) and
-/// released (`hew_string_drop`) on the refcounted `String` discipline WITHOUT
-/// requiring the caller to hand in a header-aware buffer. A null input maps to a
-/// null element (matching the prior null-passthrough); allocation failure for a
-/// non-null input propagates as null, exactly as `strdup` did.
+/// Retain one managed string owner for vec ingress (`push`/`set`).
 ///
 /// # Safety
 ///
-/// `val` must be null or a valid NUL-terminated C string readable to its
-/// terminator.
+/// `val` must be null or a live managed string handle.
 #[inline]
-unsafe fn copy_string_element_in(val: *const c_char) -> *mut c_char {
-    if val.is_null() {
-        return ptr::null_mut();
-    }
-    // SAFETY: `val` is a valid NUL-terminated C string per this fn's contract.
-    let len = unsafe { libc::strlen(val) };
-    // SAFETY: `val` is readable for `len` bytes; `malloc_cstring` copies them
-    // into a header-aware allocation and NUL-terminates.
-    unsafe { crate::cabi::malloc_cstring(val.cast::<u8>(), len) } // CSTRING-ALLOC: container-elem-P2b (vec string element ingress — header-aware copy-in replaces strdup)
+unsafe fn copy_string_element_in(val: *const HewString) -> *mut HewString {
+    // SAFETY: callers provide a live managed handle; retain realizes value copy.
+    unsafe { crate::string::hew_string_clone(val) }
 }
 
-/// Retain one owner of an **already-stored, header-aware** string element for
+/// Retain one owner of an already-stored managed string element for
 /// internal propagation (VWT `copy`: `clone`/`slice`/`append`/`get`). Delegates
 /// to the universal `String` retain (`hew_string_clone`): a refcount bump that
-/// returns the **same** data pointer (or the unchanged pointer for a static
-/// literal). NOT used for ingress — see [`copy_string_element_in`].
+/// returns the same opaque handle.
 ///
 /// # Safety
 ///
-/// `s` must be null, a pointer into the binary's read-only data, or a live
-/// header-aware string produced by the `hew-cabi` allocator.
+/// `s` must be null or a live managed string handle.
 #[inline]
-unsafe fn retain_string_element(s: *const c_char) -> *mut c_char {
+unsafe fn retain_string_element(s: *const HewString) -> *mut HewString {
     // SAFETY: `s` satisfies `hew_string_clone`'s precondition per this fn's
-    // contract; it performs the static-literal skip before any header access.
-    unsafe { crate::string::hew_string_clone(s) } // CSTRING-RETAIN: container-elem-P2b (vec string element — header-aware retain replaces strdup)
+    // contract.
+    unsafe { crate::string::hew_string_clone(s) }
 }
 
 /// Release one owner of a string element removed from or dropped with a string
 /// `HewVec` (VWT `destroy`). Delegates to the universal `String` consumer
-/// (`hew_string_drop`): decrements the header refcount and frees at zero, after
-/// the static-literal skip. Replaces the legacy headerless `libc::free`.
+/// (`hew_string_drop`): decrements the refcount and frees at zero.
 ///
 /// # Safety
 ///
-/// `s` must be null, a pointer into the binary's read-only data, or a live
-/// header-aware string produced by the `hew-cabi` allocator (i.e. an element
-/// previously stored via [`retain_string_element`]).
+/// `s` must be null or one owned managed string handle.
 #[inline]
-unsafe fn release_string_element(s: *mut c_char) {
+unsafe fn release_string_element(s: *mut HewString) {
     // SAFETY: `s` satisfies `hew_string_drop`'s precondition per this fn's
-    // contract; it performs the static-literal skip before any header access.
-    unsafe { crate::string::hew_string_drop(s) }; // CSTRING-FREE: container-elem-P2b (vec string element — header-aware release replaces libc::free)
+    // contract.
+    unsafe { crate::string::hew_string_drop(s) };
 }
 
 unsafe extern "C" fn vec_string_clone_inplace(src: *const c_void, dst: *mut c_void) -> i32 {
     // SAFETY: descriptor callers provide valid pointer-sized string slots.
     unsafe {
-        let value = *src.cast::<*const c_char>();
-        *dst.cast::<*mut c_char>() = retain_string_element(value);
+        let value = *src.cast::<*const HewString>();
+        *dst.cast::<*mut HewString>() = retain_string_element(value);
     }
     0
 }
@@ -679,27 +666,27 @@ unsafe extern "C" fn vec_string_clone_inplace(src: *const c_void, dst: *mut c_vo
 unsafe extern "C" fn vec_string_drop_inplace(slot: *mut c_void) {
     // SAFETY: descriptor callers provide a valid pointer-sized string slot.
     unsafe {
-        let value = *slot.cast::<*mut c_char>();
+        let value = *slot.cast::<*mut HewString>();
         release_string_element(value);
-        *slot.cast::<*mut c_char>() = ptr::null_mut();
+        *slot.cast::<*mut HewString>() = ptr::null_mut();
     }
 }
 
 /// Retain `count` string elements from `src` into `dst` (one VWT `copy` per
-/// element). `src`/`dst` point at the first `*mut c_char` slot of each region;
+/// element). `src`/`dst` point at the first managed-handle slot of each region;
 /// the regions must not overlap. This is the single shared element-retain path
 /// for `clone`/`clone_managed`/`slice`/`append` (CLAUDE §6: one mechanism, no
 /// per-site `strdup` loops).
 ///
 /// # Safety
 ///
-/// `src` must be valid for `count` readable `*const c_char` slots whose values
+/// `src` must be valid for `count` readable managed-handle slots whose values
 /// satisfy [`retain_string_element`]'s contract; `dst` must be valid for
 /// `count` writable slots and must not overlap `src`.
 #[inline]
 unsafe fn retain_string_elements_into(
-    src: *const *const c_char,
-    dst: *mut *mut c_char,
+    src: *const *const HewString,
+    dst: *mut *mut HewString,
     count: usize,
 ) {
     // SAFETY: per this fn's contract `src`/`dst` are valid for `count` slots and
@@ -748,19 +735,15 @@ vec_push_primitive!(hew_vec_push_i16, i16);
 vec_push_primitive!(hew_vec_push_u16, u16);
 vec_push_primitive!(hew_vec_push_i64, i64);
 
-/// Push a string onto the vec. The element is **copied in** (VWT `copy` from
-/// outside the container): an independent, header-aware copy of `val` is stored
-/// (`rc == 1`), preserving the legacy `strdup` copy-in contract — the caller
-/// keeps ownership of its own buffer and must still free it. The vec releases
-/// its element on removal/drop via `hew_string_drop`.
+/// Push a string onto the vec. The vec retains one independent owner and the
+/// caller keeps its owner. The vec releases its owner on removal/drop.
 ///
 /// # Safety
 ///
-/// `v` must be a valid string `HewVec` pointer. `val` must be null or a valid
-/// NUL-terminated C string (of any provenance — header-aware, static, or a
-/// plain headerless producer buffer).
+/// `v` must be a valid string `HewVec` pointer. `val` must be null or a live
+/// managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
+pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const HewString) {
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
         let len = (*v).len;
@@ -768,10 +751,9 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const c_char) {
             libc::abort();
         };
         ensure_cap(v, new_len);
-        // Store an independent header-aware copy (VWT copy-in ingress).
-        // `copy_string_element_in` handles null and any input provenance.
+        // Retain one owner for the vec (VWT copy ingress).
         let owned = copy_string_element_in(val);
-        let slot = (*v).data.cast::<*mut c_char>().add(len);
+        let slot = (*v).data.cast::<*mut HewString>().add(len);
         slot.write(owned);
         (*v).len = new_len;
     }
@@ -839,23 +821,22 @@ vec_get_primitive!(hew_vec_get_i64, i64);
 
 /// Get a string pointer at `index`. Aborts if out of bounds.
 ///
-/// **Note:** Returns a **retained** owner (VWT `copy`): a header-aware refcount
-/// bump that aliases the stored buffer (or a static-literal passthrough), not a
-/// deep `strdup`. The caller owns one reference and must release it with
+/// **Note:** Returns a **retained** owner (VWT `copy`) that aliases the stored
+/// immutable allocation. The caller owns one reference and must release it with
 /// `hew_string_drop`.
 ///
 /// # Safety
 ///
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char {
+pub unsafe extern "C-unwind" fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const HewString {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
             abort_oob("Vec.get()", index, (*v).len);
         }
-        let raw = (*v).data.cast::<*const c_char>().add(index).read();
+        let raw = (*v).data.cast::<*const HewString>().add(index).read();
         // Retain one owner for the caller (VWT copy); handles null/static.
         retain_string_element(raw)
     }
@@ -1145,8 +1126,8 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_str(
         // Retain one owner per element into the slice (VWT copy); handles
         // null/static. Shared element-retain path (CLAUDE §6).
         retain_string_elements_into(
-            (*v).data.cast::<*const c_char>().add(start_u),
-            (*out).data.cast::<*mut c_char>(),
+            (*v).data.cast::<*const HewString>().add(start_u),
+            (*out).data.cast::<*mut HewString>(),
             count,
         );
         (*out).len = count;
@@ -1205,7 +1186,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_layout(
 
 /// Allocate a new `HewVec` populated from `v[start..end)` for owned
 /// descriptor-backed elements. Each selected element is deep-cloned through the
-/// stamped `HewVecElemLayout.clone_fn`, so the returned vec owns independent
+/// stamped `HewValueLayout.clone_fn`, so the returned vec owns independent
 /// element heaps and frees through `hew_vec_free_owned`.
 ///
 /// # Safety
@@ -1238,10 +1219,12 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_owned(
             let src = (*v).data.add((start_u + i) * elem_size);
             let dst = (*out).data.add(i * elem_size);
             core::ptr::copy_nonoverlapping(src, dst, elem_size);
-            let status = clone_fn(
-                src.cast::<core::ffi::c_void>(),
-                dst.cast::<core::ffi::c_void>(),
-            );
+            let status = clone_fn.map_or(0, |clone_fn| {
+                clone_fn(
+                    src.cast::<core::ffi::c_void>(),
+                    dst.cast::<core::ffi::c_void>(),
+                )
+            });
             if status != 0 {
                 (*out).len = i;
                 hew_vec_free_owned(out);
@@ -1336,23 +1319,23 @@ pub unsafe extern "C-unwind" fn hew_vec_set_i64(v: *mut HewVec, index: i64, val:
     }
 }
 
-/// Set a string at `index`. Stores an independent header-aware copy of the new
+/// Set a string at `index`. Retains an independent owner of the new
 /// value (VWT `copy` ingress) and releases the old element (VWT `destroy`).
 /// Aborts if out of bounds.
 ///
 /// # Safety
 ///
-/// `v` must be a valid string `HewVec` pointer. `val` must be null or a valid
-/// NUL-terminated C string (of any provenance).
+/// `v` must be a valid string `HewVec` pointer. `val` must be null or a live
+/// managed string handle.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char) {
+pub unsafe extern "C-unwind" fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const HewString) {
     // SAFETY: caller guarantees `v` and `val` are valid.
     unsafe {
         let index = index as usize;
         if index >= (*v).len {
             abort_oob("Vec.set()", index, (*v).len);
         }
-        let slot = (*v).data.cast::<*mut c_char>().add(index);
+        let slot = (*v).data.cast::<*mut HewString>().add(index);
         let old = slot.read();
         // Copy in the new owner BEFORE releasing the old, so a `set` of an
         // element to itself (aliased pointer) reads the old contents before any
@@ -1441,14 +1424,14 @@ vec_pop_primitive!(hew_vec_pop_i64, i64);
 ///
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char {
+pub unsafe extern "C-unwind" fn hew_vec_pop_str(v: *mut HewVec) -> *const HewString {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         if (*v).len == 0 {
             abort_pop_empty();
         }
         (*v).len -= 1;
-        (*v).data.cast::<*const c_char>().add((*v).len).read()
+        (*v).data.cast::<*const HewString>().add((*v).len).read()
     }
 }
 
@@ -1521,55 +1504,177 @@ pub unsafe extern "C" fn hew_vec_is_empty(v: *mut HewVec) -> bool {
     unsafe { (*v).len == 0 }
 }
 
-/// Drop live elements in `[start, end)` through the Vec's single descriptor
+/// Whether this Vec's elements own anything the release protocol must drop.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` pointer.
+unsafe fn element_needs_drop(v: *mut HewVec) -> bool {
+    // SAFETY: caller guarantees `v` is valid.
+    unsafe {
+        let vec = &*v;
+        let descriptor_drop = !vec.layout.is_null() && (*vec.layout).drop_fn.is_some();
+        descriptor_drop || vec.elem_kind == ElemKind::String
+    }
+}
+
+/// Drop the live elements at `indices` through the Vec's single descriptor
 /// protocol.
 ///
 /// # Safety
 ///
-/// `v` must be valid and `start <= end <= (*v).len`.
-unsafe fn drop_element_range(v: *mut HewVec, start: usize, end: usize) {
-    // SAFETY: caller guarantees `v` and the range are valid.
+/// `v` must be valid and every index must be below `(*v).len`.
+unsafe fn drop_elements(v: *mut HewVec, indices: impl Iterator<Item = usize>) {
+    // SAFETY: caller guarantees `v` and the indices are valid.
     unsafe {
         let vec = &*v;
         if !vec.layout.is_null() {
             let layout = &*vec.layout;
             if let Some(drop_fn) = layout.drop_fn {
-                for i in start..end {
-                    let slot = vec.data.add(i * layout.size);
-                    drop_fn(slot.cast::<c_void>());
+                for index in indices {
+                    drop_fn(vec.data.add(index * layout.size).cast::<c_void>());
                 }
                 return;
             }
         }
         if vec.elem_kind == ElemKind::String {
-            for i in start..end {
-                let slot = vec.data.cast::<*mut c_char>().add(i);
+            for index in indices {
+                let slot = vec.data.cast::<*mut HewString>().add(index);
                 release_string_element(slot.read());
             }
         }
     }
 }
 
-/// Descriptor-driven Vec release shared by every exported free symbol.
+/// Walker step: queue this Vec's elements, then its own storage beneath them.
 ///
 /// # Safety
 ///
-/// `v` must be null or a valid Vec allocation.
-unsafe fn free_vec_descriptor(v: *mut HewVec) {
-    // SAFETY: caller guarantees `v` was allocated by a Vec constructor.
+/// `v` must be a Vec allocation the walk in progress exclusively owns.
+pub(crate) unsafe fn expand_vector(v: *mut HewVec, reverse: bool) {
+    // SAFETY: caller guarantees the allocation contract.
+    unsafe {
+        // The elements sit above the storage step, so the buffer outlives every
+        // element slot the cursor still addresses.
+        release_walker::queue(ReleaseItem::VectorStorage { vec: v });
+        if (*v).data.is_null() || (*v).len == 0 {
+            return;
+        }
+        release_walker::queue(ReleaseItem::VectorElements {
+            vec: v,
+            next: 0,
+            end: (*v).len,
+            reverse,
+        });
+    }
+}
+
+/// Walker step: release the next chunk of `[next, end)` and keep the rest.
+///
+/// # Safety
+///
+/// `v` must be a Vec the walk owns, with `next < end <= (*v).len`.
+pub(crate) unsafe fn release_element_chunk(v: *mut HewVec, next: usize, end: usize, reverse: bool) {
+    // SAFETY: caller guarantees the element range is live.
+    unsafe {
+        let count = (end - next).min(release_walker::STEP_ELEMENTS);
+        // The remaining range stays beneath whatever this chunk queues, so an
+        // element's whole subtree is released before the rest of the range.
+        if reverse {
+            let stop = end - count;
+            if stop > next {
+                release_walker::queue(ReleaseItem::VectorElements {
+                    vec: v,
+                    next,
+                    end: stop,
+                    reverse,
+                });
+            }
+            drop_elements(v, (stop..end).rev());
+        } else {
+            let stop = next + count;
+            if stop < end {
+                release_walker::queue(ReleaseItem::VectorElements {
+                    vec: v,
+                    next: stop,
+                    end,
+                    reverse,
+                });
+            }
+            drop_elements(v, next..stop);
+        }
+    }
+}
+
+/// Walker step: release the Vec's element buffer and its header.
+///
+/// # Safety
+///
+/// `v` must be a Vec allocation whose live elements are already released.
+pub(crate) unsafe fn free_vector_storage(v: *mut HewVec) {
+    // SAFETY: caller guarantees the allocation contract.
+    unsafe {
+        if !(*v).data.is_null() {
+            if (*v).layout.is_null() {
+                crate::mem::buf_free((*v).data.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
+            } else {
+                let layout = buffer_layout((*v).cap * (*v).elem_size, (*(*v).layout).align);
+                dealloc((*v).data, layout); // ALLOCATOR-PAIRING: std::alloc
+            }
+        }
+        crate::mem::buf_free(v.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
+    }
+}
+
+/// Release a whole Vec through the walker.
+///
+/// `deferred` joins a walk already in progress instead of draining here, which
+/// is admitted only where the whole released subtree is ordinary data.
+///
+/// # Safety
+///
+/// `v` must be null or a Vec allocation this call exclusively owns.
+unsafe fn release_vector(v: *mut HewVec, reverse: bool, deferred: bool) {
+    // SAFETY: caller guarantees the allocation contract.
     unsafe {
         if v.is_null() {
             return;
         }
-        if !(*v).data.is_null() {
-            drop_element_range(v, 0, (*v).len);
-            libc::free((*v).data.cast()); // ALLOCATOR-PAIRING: libc
+        if (*v).len == 0 || !element_needs_drop(v) {
+            // Nothing below owns anything: skip the worklist entirely.
+            free_vector_storage(v);
+            return;
         }
-        libc::free(v.cast()); // ALLOCATOR-PAIRING: libc
+        let item = ReleaseItem::Vector { vec: v, reverse };
+        if deferred {
+            release_walker::release_deferred(item);
+        } else {
+            release_walker::release_now(item);
+        }
     }
 }
 
-/// Clear the vec (set len to 0), recursively dropping every live element.
+/// Release the live elements in `[start, end)` before returning.
+///
+/// # Safety
+///
+/// `v` must be valid with `start <= end <= (*v).len`.
+unsafe fn release_element_range(v: *mut HewVec, start: usize, end: usize) {
+    // SAFETY: caller guarantees `v` and the range are valid.
+    unsafe {
+        if start >= end || (*v).data.is_null() || !element_needs_drop(v) {
+            return;
+        }
+        release_walker::release_now(ReleaseItem::VectorElements {
+            vec: v,
+            next: start,
+            end,
+            reverse: false,
+        });
+    }
+}
+
+/// Clear the vec (set len to 0), releasing every live element.
 ///
 /// # Safety
 ///
@@ -1578,12 +1683,12 @@ unsafe fn free_vec_descriptor(v: *mut HewVec) {
 pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        drop_element_range(v, 0, (*v).len);
+        release_element_range(v, 0, (*v).len);
         (*v).len = 0;
     }
 }
 
-/// Free the Vec through its descriptor-driven recursive release protocol.
+/// Free the Vec through the release walker.
 ///
 /// # Safety
 ///
@@ -1592,7 +1697,37 @@ pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
-    unsafe { free_vec_descriptor(v) }
+    unsafe { release_vector(v, false, false) }
+}
+
+/// Release a fixed array's initialized elements from last to first, then its buffer.
+///
+/// # Safety
+/// `value` must be null or an independently owned descriptor-backed array allocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_free(value: *mut HewVec) {
+    // SAFETY: the array shares the vector allocation and element descriptor protocol.
+    unsafe { release_vector(value, true, false) }
+}
+
+/// Release a fixed array through the walker, joining a walk already in progress.
+///
+/// # Safety
+/// `value` must be null or an independently owned descriptor-backed array allocation.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_free_walk(value: *mut HewVec) {
+    // SAFETY: the array shares the vector allocation and element descriptor protocol.
+    unsafe { release_vector(value, true, true) }
+}
+
+/// Clone a fixed array, unwinding any partially copied prefix in reverse order.
+///
+/// # Safety
+/// `value` must be null or a readable array allocation with a cloneable element descriptor.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_clone(value: *const HewVec) -> *mut HewVec {
+    // SAFETY: the array shares the vector allocation and element descriptor protocol.
+    unsafe { clone_vec_descriptor(value, true) }
 }
 
 /// Drop one boxed closure pair in place.
@@ -1703,7 +1838,7 @@ pub unsafe extern "C" fn hew_vec_sort_f64(v: *mut HewVec) {
 /// # Safety
 ///
 /// `v` must be null or a valid Vec allocation.
-unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
+unsafe fn clone_vec_descriptor(v: *const HewVec, reverse_cleanup: bool) -> *mut HewVec {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         if v.is_null() {
@@ -1729,12 +1864,12 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
         if src.len == 0 {
             return new_v;
         }
-        ensure_cap_raw(new_v, src.len);
+        allocate_exact_capacity(new_v, src.len);
         if src.layout.is_null() {
             if src.elem_kind == ElemKind::String {
                 retain_string_elements_into(
-                    src.data.cast::<*const c_char>(),
-                    (*new_v).data.cast::<*mut c_char>(),
+                    src.data.cast::<*const HewString>(),
+                    (*new_v).data.cast::<*mut HewString>(),
                     src.len,
                 );
             } else {
@@ -1754,7 +1889,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
                 let status = clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>());
                 if status != 0 {
                     (*new_v).len = i;
-                    free_vec_descriptor(new_v);
+                    release_vector(new_v, reverse_cleanup, false);
                     let msg = b"PANIC: Vec descriptor clone failed\n\0";
                     write_stderr(&msg[..msg.len() - 1]);
                     libc::abort();
@@ -1778,7 +1913,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec) -> *mut HewVec {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
     // SAFETY: forwarded allocation contract.
-    unsafe { clone_vec_descriptor(v) }
+    unsafe { clone_vec_descriptor(v, false) }
 }
 
 /// Clone a layout-backed `BitCopy` (Plain ownership) vec by bulk-copying all
@@ -1804,7 +1939,7 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
     // SAFETY: guards reject null pointers; helper validates BitCopy layout semantics.
     unsafe {
         validate_bitcopy_layout_operation(v, layout);
-        clone_vec_descriptor(v)
+        clone_vec_descriptor(v, false)
     }
 }
 
@@ -1812,8 +1947,12 @@ pub unsafe extern "C" fn hew_vec_clone_layout(
 // Append (bulk)
 // ---------------------------------------------------------------------------
 
-/// Append all elements from `src` to `dst`.
-/// Both vecs must have the same `elem_size`.
+/// Append an independent copy of every element of `src` to `dst`. `src` keeps
+/// its own elements and stays usable afterwards.
+///
+/// Both vectors must agree on element size, kind and descriptor. A
+/// descriptor-backed element is copied through the descriptor's clone thunk,
+/// exactly as [`hew_vec_clone`] copies one.
 ///
 /// # Safety
 ///
@@ -1823,31 +1962,55 @@ pub unsafe extern "C" fn hew_vec_append(dst: *mut HewVec, src: *const HewVec) {
     cabi_guard!(dst.is_null() || src.is_null());
     // SAFETY: caller guarantees both pointers are valid HewVecs with matching elem_size.
     unsafe {
-        abort_if_layout_aware(dst);
-        abort_if_layout_aware(src);
         let src_len = (*src).len;
         if src_len == 0 {
             return;
         }
-        if (*dst).elem_size != (*src).elem_size || (*dst).elem_kind != (*src).elem_kind {
+        if (*dst).elem_size != (*src).elem_size
+            || (*dst).elem_kind != (*src).elem_kind
+            || (*dst).layout.is_null() != (*src).layout.is_null()
+        {
             libc::abort();
         }
         let Some(new_len) = (*dst).len.checked_add(src_len) else {
             libc::abort();
         };
-        ensure_cap(dst, new_len);
+        ensure_cap_raw(dst, new_len);
         let elem_size = (*dst).elem_size;
         let dst_ptr = (*dst).data.add((*dst).len * elem_size);
-        if (*dst).elem_kind == ElemKind::String {
-            retain_string_elements_into(
-                (*src).data.cast::<*const c_char>(),
-                dst_ptr.cast::<*mut c_char>(),
-                src_len,
-            );
-        } else {
-            core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
+        if (*dst).layout.is_null() {
+            if (*dst).elem_kind == ElemKind::String {
+                retain_string_elements_into(
+                    (*src).data.cast::<*const HewString>(),
+                    dst_ptr.cast::<*mut HewString>(),
+                    src_len,
+                );
+            } else {
+                core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
+            }
+            (*dst).len += src_len;
+            return;
         }
-        (*dst).len += src_len;
+        let layout = &*(*dst).layout;
+        if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.clone_fn.is_none() {
+            abort_owned_thunk_missing("clone");
+        }
+        let Some(clone_fn) = layout.clone_fn else {
+            core::ptr::copy_nonoverlapping((*src).data, dst_ptr, src_len * elem_size);
+            (*dst).len += src_len;
+            return;
+        };
+        for i in 0..src_len {
+            let src_slot = (*src).data.add(i * layout.size);
+            let dst_slot = dst_ptr.add(i * layout.size);
+            core::ptr::copy_nonoverlapping(src_slot, dst_slot, layout.size);
+            if clone_fn(src_slot.cast::<c_void>(), dst_slot.cast::<c_void>()) != 0 {
+                let msg = b"PANIC: Vec descriptor clone failed\n\0";
+                write_stderr(&msg[..msg.len() - 1]);
+                libc::abort();
+            }
+            (*dst).len += 1;
+        }
     }
 }
 
@@ -2063,7 +2226,10 @@ vec_remove_at_primitive!(hew_vec_remove_at_f64, f64);
 ///
 /// `v` must be a valid string `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(v: *mut HewVec, index: i64) -> *const c_char {
+pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(
+    v: *mut HewVec,
+    index: i64,
+) -> *const HewString {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         abort_if_layout_aware(v);
@@ -2072,7 +2238,7 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(v: *mut HewVec, index: i64
         if idx >= len {
             abort_oob("Vec.remove()", idx, len);
         }
-        let data = (*v).data.cast::<*const c_char>();
+        let data = (*v).data.cast::<*const HewString>();
         let removed = data.add(idx).read();
         core::ptr::copy(data.add(idx + 1), data.add(idx), len - idx - 1);
         (*v).len -= 1;
@@ -2124,8 +2290,8 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_ptr(v: *mut HewVec, index: i64
 ///
 /// # Safety
 ///
-/// `v` must be an owned-element `HewVec`. `out` must point to at least
-/// `descriptor.size` writable bytes.
+/// `v` must be a valid `HewVec`. `out` must point to at least `elem_size`
+/// writable bytes.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
     v: *mut HewVec,
@@ -2133,10 +2299,11 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_owned(
     out: *mut core::ffi::c_void,
 ) -> i32 {
     cabi_guard!(v.is_null() || out.is_null(), 0);
-    // SAFETY: guards reject null pointers; descriptor presence is validated.
+    // SAFETY: guards reject null pointers.
     unsafe {
-        let layout = owned_descriptor(v);
-        let elem_size = layout.size;
+        // Moving bytes out acquires nothing, so every element class removes the
+        // same way and `elem_size` answers for all of them.
+        let elem_size = (*v).elem_size;
         let len = (*v).len;
         let idx = index as usize;
         if idx >= len {
@@ -2181,22 +2348,22 @@ pub unsafe extern "C-unwind" fn hew_vec_set_ptr(v: *mut HewVec, index: i64, val:
     }
 }
 
-/// Check if the string vec contains `val` (using `strcmp`). Returns 1/0.
+/// Check if the string vec contains `val` by complete UTF-8 contents. Returns 1/0.
 ///
 /// # Safety
 ///
 /// `v` must be a valid string `HewVec` pointer (or null).
-/// `val` must be a valid NUL-terminated C string (or null).
+/// `val` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_contains_str(v: *const HewVec, val: *const c_char) -> i32 {
-    cabi_guard!(v.is_null() || val.is_null(), 0);
+pub unsafe extern "C" fn hew_vec_contains_str(v: *const HewVec, val: *const HewString) -> i32 {
+    cabi_guard!(v.is_null(), 0);
     // SAFETY: caller guarantees `v` is a valid string HewVec and `val` is valid.
     unsafe {
         let len = (*v).len;
-        let data = (*v).data.cast::<*const c_char>();
+        let data = (*v).data.cast::<*const HewString>();
         for i in 0..len {
             let elem = data.add(i).read();
-            if !elem.is_null() && libc::strcmp(elem, val) == 0 {
+            if crate::string::hew_string_equals(elem, val) != 0 {
                 return 1;
             }
         }
@@ -2257,7 +2424,7 @@ pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
         if new_len >= old_len {
             return;
         }
-        drop_element_range(v, new_len, old_len);
+        release_element_range(v, new_len, old_len);
         (*v).len = new_len;
     }
 }
@@ -2506,7 +2673,7 @@ pub unsafe extern "C" fn hew_vec_pop_layout(
 // These ops back `Vec<T>` where `T` owns heap (strings, owned-payload or
 // recursive enums, records with owned fields). They are the descriptor-driven
 // twin of the HashMap owned-value path. The per-element ownership contract is
-// pinned on `HewVecElemLayout` (`hew-cabi/src/vec.rs`):
+// pinned on `HewValueLayout` (`hew-cabi/src/value.rs`):
 //
 //   * push  — memcpy `src` bytes into the new slot, then `clone_fn(src, slot)`
 //             to deep-copy owned heap. The Vec now owns the element.
@@ -2555,7 +2722,7 @@ unsafe fn abort_owned_thunk_missing(which: &str) -> ! {
 /// # Safety
 ///
 /// `v` must point to a valid, non-null `HewVec`.
-unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
+unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewValueLayout {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         let layout = (*v).layout;
@@ -2566,27 +2733,28 @@ unsafe fn owned_descriptor<'a>(v: *const HewVec) -> &'a HewVecElemLayout {
     }
 }
 
-/// Resolve and validate the clone thunk for an owned descriptor, aborting
-/// fail-closed when it is absent.
-unsafe fn owned_clone_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemCloneThunk {
+/// Resolve the descriptor's semantic copy action. Plain values need no thunk;
+/// a non-plain value must never silently fall back to a byte copy.
+unsafe fn owned_clone_fn(layout: &HewValueLayout) -> Option<hew_cabi::value::HewValueCloneThunk> {
     match layout.clone_fn {
-        Some(f) => f,
+        Some(f) => Some(f),
+        None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
         // SAFETY: abort path.
         None => unsafe { abort_owned_thunk_missing("clone") },
     }
 }
 
-/// Resolve and validate the drop thunk for an owned descriptor, aborting
-/// fail-closed when it is absent.
-unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemDropThunk {
+/// Resolve the descriptor's cleanup action; only plain values need no thunk.
+unsafe fn owned_drop_fn(layout: &HewValueLayout) -> Option<hew_cabi::value::HewValueDropThunk> {
     match layout.drop_fn {
-        Some(f) => f,
+        Some(f) => Some(f),
+        None if layout.ownership_kind == HewTypeOwnershipKind::Plain => None,
         // SAFETY: abort path.
         None => unsafe { abort_owned_thunk_missing("drop") },
     }
 }
 
-/// Create a new owned-element `HewVec` backed by a `HewVecElemLayout`.
+/// Create a new owned-element `HewVec` backed by a `HewValueLayout`.
 ///
 /// Copies the descriptor into the vec's inline `layout_storage` so `layout`
 /// never dangles. Non-Plain descriptors require a drop thunk; clone operations
@@ -2598,7 +2766,7 @@ unsafe fn owned_drop_fn(layout: &HewVecElemLayout) -> hew_cabi::vec::HewVecElemD
 /// The returned pointer must eventually be freed with [`hew_vec_free_owned`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
 ) -> *mut HewVec {
     cabi_guard!(layout.is_null(), ptr::null_mut());
     // SAFETY: null was rejected above.
@@ -2606,7 +2774,7 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
         validate_elem_layout(layout);
         let descriptor = &*layout;
         let elem_size = i64::try_from(descriptor.size).unwrap_or_else(|_| {
-            let msg = b"PANIC: HewVecElemLayout size exceeds Hew ABI range\n\0";
+            let msg = b"PANIC: HewValueLayout size exceeds Hew ABI range\n\0";
             write_stderr(&msg[..msg.len() - 1]);
             libc::abort();
         });
@@ -2620,10 +2788,58 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_layout(
     }
 }
 
-/// Push an owned element: deep-copy it into a new slot via the descriptor
-/// `clone_fn`. The Vec takes ownership; the caller's source remains its own
-/// (the move-in is a deep copy, then the source binding is `Consumed` at the
-/// MIR level for owned-aggregate args).
+/// Allocate descriptor-backed storage with an exact, initially empty capacity.
+/// Fixed array construction initializes the slots in order; `len` counts only
+/// completed elements, so the ordinary element cleanup protocol applies.
+///
+/// # Safety
+///
+/// `layout` must be a valid descriptor for this call. `capacity` must be
+/// nonnegative and its allocation must fit the target address space. The
+/// returned owner must use its container's release protocol: [`hew_array_free`]
+/// for a fixed array or [`hew_vec_free_owned`] for a vector.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_new_with_elem_layout_capacity(
+    layout: *const HewValueLayout,
+    capacity: i64,
+) -> *mut HewVec {
+    // SAFETY: the constructor validates and copies the supplied descriptor.
+    unsafe {
+        let capacity = usize::try_from(capacity).unwrap_or_else(|_| libc::abort());
+        let value = hew_vec_new_with_elem_layout(layout);
+        if value.is_null() {
+            return value;
+        }
+        allocate_exact_capacity(value, capacity);
+        value
+    }
+}
+
+/// Allocate a fresh buffer without geometric capacity rounding.
+unsafe fn allocate_exact_capacity(value: *mut HewVec, capacity: usize) {
+    // SAFETY: callers supply a new vector with no backing allocation.
+    unsafe {
+        if capacity == 0 {
+            return;
+        }
+        let bytes = capacity
+            .checked_mul((*value).elem_size)
+            .unwrap_or_else(|| libc::abort());
+        let data = if (*value).layout.is_null() {
+            crate::mem::buf_try_alloc(bytes.max(1)).cast::<u8>()
+        } else {
+            alloc(buffer_layout(bytes, (*(*value).layout).align))
+        };
+        if data.is_null() {
+            libc::abort();
+        }
+        (*value).data = data;
+        (*value).cap = capacity;
+    }
+}
+
+/// Copy an element into a new slot through its descriptor. The source remains
+/// independently owned by the caller. Plain values need only a byte copy.
 ///
 /// # Safety
 ///
@@ -2647,7 +2863,9 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
         // Memcpy first so BitCopy fields / enum tag bytes are correct, then run
         // the clone thunk to deep-copy the owned heap (clone-fn contract).
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), dst, elem_size);
-        let status = clone_fn(data, dst.cast::<core::ffi::c_void>());
+        let status = clone_fn.map_or(0, |clone_fn| {
+            clone_fn(data, dst.cast::<core::ffi::c_void>())
+        });
         if status != 0 {
             // The clone thunk rolled back its own partial work; the slot is not
             // live. Fail closed rather than admit a half-cloned element.
@@ -2662,16 +2880,10 @@ pub unsafe extern "C" fn hew_vec_push_owned(v: *mut HewVec, data: *const core::f
 /// Push an owned element by MOVE: byte-copy it into a new slot and transfer
 /// ownership of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
 ///
-/// Unlike [`hew_vec_push_owned`] (COPY-IN: deep-clone, source retains its own
-/// heap), this is the move-in variant for a FRESH, single-use element source —
-/// the array-literal desugar (`[Boxed { .. }, ..]`) constructs each element
-/// solely to hand it to the Vec, so deep-cloning would allocate a second copy
-/// and leak the original (the transient `record_init` temp has no binding and
-/// no scope-exit drop). Moving the bytes transfers the element's owned heap
-/// into the slot; the caller's source is dead after the call and must NOT be
-/// dropped (the MIR routes the array-literal owned push here exactly because
-/// the element operand is a throwaway temp). `hew_vec_free_owned` releases the
-/// element from the Vec slot, so the heap is freed exactly once.
+/// The caller transfers its source ownership and must not subsequently destroy
+/// that source. The vector releases the element when it is removed or the
+/// vector is destroyed. Use [`hew_vec_push_owned`] when the caller retains the
+/// source value.
 ///
 /// # Safety
 ///
@@ -2763,9 +2975,9 @@ pub unsafe extern "C" fn hew_vec_get_clone(
         let idx = index as usize;
         match (*v).elem_kind {
             ElemKind::String => {
-                let raw = (*v).data.cast::<*const c_char>().add(idx).read();
+                let raw = (*v).data.cast::<*const HewString>().add(idx).read();
                 let retained = retain_string_element(raw);
-                out.cast::<*mut c_char>().write(retained);
+                out.cast::<*mut HewString>().write(retained);
             }
             ElemKind::Plain => {
                 if (*v).layout.is_null()
@@ -2782,7 +2994,8 @@ pub unsafe extern "C" fn hew_vec_get_clone(
                     let clone_fn = owned_clone_fn(layout);
                     let src = (*v).data.add(idx * elem_size);
                     core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
-                    let status = clone_fn(src.cast::<core::ffi::c_void>(), out);
+                    let status = clone_fn
+                        .map_or(0, |clone_fn| clone_fn(src.cast::<core::ffi::c_void>(), out));
                     if status != 0 {
                         // The clone thunk rolled back its partial work; the
                         // payload is not live. Fail closed rather than hand a
@@ -2794,6 +3007,43 @@ pub unsafe extern "C" fn hew_vec_get_clone(
                 }
             }
         }
+        true
+    }
+}
+
+/// Copy the bytes of one element into `out` without cloning it and without
+/// changing the Vec's length.
+///
+/// This is the borrowed element read (D432): the Vec keeps ownership of the
+/// slot and `out` is a readable alias of it, valid only while the Vec is not
+/// mutated or reallocated. The compiler proves that window with a loan on the
+/// receiver, and checks the index before calling.
+///
+/// Every element class copies the same way, because a borrow acquires nothing:
+/// a string element aliases the same `HewString` with no retain, an owned
+/// element aliases the same heap with no clone thunk, and a scalar's bits are
+/// their own value. `elem_size` is the descriptor size for a Vec that has one
+/// and the requested size otherwise, so one path covers all three.
+///
+/// # Safety
+///
+/// `v` must be a valid `HewVec` and `out` must point to at least
+/// `elem_size` writable bytes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_borrow_owned(
+    v: *const HewVec,
+    index: i64,
+    out: *mut core::ffi::c_void,
+) -> bool {
+    cabi_guard!(v.is_null() || out.is_null(), false);
+    // SAFETY: null pointers were rejected above.
+    unsafe {
+        if index < 0 || index as usize >= (*v).len {
+            return false;
+        }
+        let elem_size = (*v).elem_size;
+        let src = (*v).data.add(index as usize * elem_size);
+        core::ptr::copy_nonoverlapping(src, out.cast::<u8>(), elem_size);
         true
     }
 }
@@ -2855,9 +3105,13 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned(
         }
         let slot = (*v).data.add(index * elem_size);
         // Drop the replaced element exactly once, then deep-copy the new one in.
-        drop_fn(slot.cast::<core::ffi::c_void>());
+        if let Some(drop_fn) = drop_fn {
+            drop_fn(slot.cast::<core::ffi::c_void>());
+        }
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
-        let status = clone_fn(data, slot.cast::<core::ffi::c_void>());
+        let status = clone_fn.map_or(0, |clone_fn| {
+            clone_fn(data, slot.cast::<core::ffi::c_void>())
+        });
         if status != 0 {
             let msg = b"PANIC: Vec owned element clone failed\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -2870,18 +3124,9 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned(
 /// `drop_fn`), then byte-copy the new one into the slot and transfer ownership
 /// of its heap to the Vec WITHOUT running the descriptor `clone_fn`.
 ///
-/// This is the move-in sibling of [`hew_vec_set_owned`] (COPY-IN: deep-clone,
-/// source retains its own heap) for a FRESH, single-use element source — an
-/// unbound materialised rvalue (`v.set(i, Record { .. })`, `v.set(i, make())`)
-/// constructed solely to hand to the Vec. A COPY-IN deep clone would allocate a
-/// second copy and leak the source temp's owned heap (the transient
-/// `record_init` temp has no binding and no scope-exit drop). Moving the bytes
-/// transfers the element's owned heap into the slot; the caller's source is dead
-/// after the call and must NOT be dropped (the MIR routes the materialised-owner
-/// set here exactly because the element operand is a throwaway temp). The
-/// overwrite-drop of the REPLACED element is preserved identically to
-/// [`hew_vec_set_owned`], so the previous element is freed exactly once and the
-/// new element's heap is freed exactly once by `hew_vec_free_owned`.
+/// On success, the caller has transferred its source ownership and must not
+/// destroy that source. The replaced element is released exactly once. Use
+/// [`hew_vec_set_owned`] when the caller retains the replacement value.
 ///
 /// # Safety
 ///
@@ -2909,7 +3154,9 @@ pub unsafe extern "C-unwind" fn hew_vec_set_owned_move(
         // then MOVE the new element in: byte-copy transfers BitCopy fields, enum
         // tag bytes, AND owned-heap pointers into the slot. No `clone_fn` — the
         // source's heap is now owned by the Vec; the source temp is dead.
-        drop_fn(slot.cast::<core::ffi::c_void>());
+        if let Some(drop_fn) = drop_fn {
+            drop_fn(slot.cast::<core::ffi::c_void>());
+        }
         core::ptr::copy_nonoverlapping(data.cast::<u8>(), slot, elem_size);
     }
 }
@@ -2942,7 +3189,7 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
     }
 }
 
-/// Free a Vec through the same descriptor-driven recursive protocol as
+/// Free an owned-element Vec through the same release walker as
 /// [`hew_vec_free`].
 ///
 /// # Safety
@@ -2952,7 +3199,23 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
-    unsafe { free_vec_descriptor(v) }
+    unsafe { release_vector(v, false, false) }
+}
+
+/// Free an owned-element Vec through the walker, joining a walk already in
+/// progress.
+///
+/// Codegen emits this where physical MIR proved the whole released subtree is
+/// ordinary data.
+///
+/// # Safety
+///
+/// `v` must have been returned by [`hew_vec_new_with_elem_layout`] /
+/// [`hew_vec_clone_owned`] (or be null). After this call `v` is invalid.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_free_owned_walk(v: *mut HewVec) {
+    // SAFETY: forwarded allocation contract.
+    unsafe { release_vector(v, false, true) }
 }
 
 /// Clone a Vec through the same descriptor-driven recursive protocol as
@@ -2965,7 +3228,7 @@ pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
     // SAFETY: forwarded allocation contract.
-    unsafe { clone_vec_descriptor(v) }
+    unsafe { clone_vec_descriptor(v, false) }
 }
 
 /// Move a Vec's entire contents into a freshly allocated Vec with the same
@@ -3194,6 +3457,52 @@ pub unsafe extern "C" fn hew_vec_contains_owned(
     }
 }
 
+/// Test membership using the selected element equality without taking either
+/// input's ownership. Equality may fail; its exact status and fault propagate
+/// without reading its output or publishing a membership result.
+///
+/// # Safety
+///
+/// `v` must be a live descriptor-backed vector and `val` must point to a value
+/// of its element type. `eq_fn` must compare borrowed elements using the checked
+/// equality ABI. Neither input may be mutated during the call. Result and fault
+/// outputs must be non-null, aligned, writable and disjoint from all inputs.
+/// Status zero initializes `present_out` and clears `fault_out`; nonzero status
+/// leaves `present_out` untouched and transfers the callback's fault owner.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_contains_checked(
+    v: *const HewVec,
+    val: *const c_void,
+    eq_fn: hew_cabi::map::HewMapKeyEqThunk,
+    present_out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    // SAFETY: the caller provides a live vector and readable element storage.
+    unsafe {
+        let layout = owned_descriptor(v);
+        let len = (*v).len;
+        if (*v).elem_size != layout.size || len > (*v).cap || (len > 0 && (*v).data.is_null()) {
+            abort_layout_aware_operation();
+        }
+        for index in 0..len {
+            let element = (*v).data.add(index * layout.size).cast::<c_void>();
+            let mut equal = false;
+            let status = eq_fn(element, val, &raw mut equal, fault_out);
+            if status != 0 {
+                return status;
+            }
+            if equal {
+                *present_out = true;
+                *fault_out = ptr::null_mut();
+                return 0;
+            }
+        }
+        *present_out = false;
+        *fault_out = ptr::null_mut();
+        0
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Reverse
 // ---------------------------------------------------------------------------
@@ -3247,6 +3556,68 @@ pub(crate) unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
 ///
 /// None — all memory is managed by the runtime allocator.
 // Used only by vec.rs round-trip tests; file_io.rs migrated to BytesTriple ABI.
+/// Visit initialized elements in ordinary destruction order.
+/// # Safety
+/// The vector and its elements remain exclusively borrowed until cleanup ends.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_visit_close(v: *mut HewVec, context: *mut c_void) {
+    // SAFETY: the caller retains this initialized vector and exact descriptor.
+    unsafe {
+        let vec = &*v;
+        if let Some(layout) = vec.layout.as_ref() {
+            if let Some(visit) = layout.visit_close {
+                for index in 0..vec.len {
+                    visit(vec.data.add(index * layout.size).cast(), context);
+                }
+            }
+        }
+    }
+}
+
+/// Visit a fixed array's initialized elements from last to first before release.
+///
+/// # Safety
+/// The array remains exclusively borrowed until collected cleanup completes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_array_visit_close(value: *mut HewVec, context: *mut c_void) {
+    // SAFETY: the caller retains the array and its exact element descriptor.
+    unsafe {
+        let array = &*value;
+        if let Some(layout) = array.layout.as_ref() {
+            if let Some(visit) = layout.visit_close {
+                for index in (0..array.len).rev() {
+                    visit(array.data.add(index * layout.size).cast(), context);
+                }
+            }
+        }
+    }
+}
+
+/// Visit one initialized element before replacement. Invalid indices collect
+/// nothing; the subsequent mutation reports its ordinary bounds fault.
+/// # Safety
+/// The vector remains exclusively borrowed until collected cleanup completes.
+#[no_mangle]
+pub unsafe extern "C" fn hew_vec_visit_element_close(
+    v: *mut HewVec,
+    index: i64,
+    context: *mut c_void,
+) {
+    // SAFETY: the caller retains the vector and its exact element descriptor.
+    unsafe {
+        let vec = &*v;
+        if let Ok(index) = usize::try_from(index) {
+            if index < vec.len {
+                if let Some(layout) = vec.layout.as_ref() {
+                    if let Some(visit) = layout.visit_close {
+                        visit(vec.data.add(index * layout.size).cast(), context);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
     // SAFETY: hew_vec_new allocates a valid HewVec.
@@ -3261,15 +3632,15 @@ pub(crate) unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hew_cabi::cabi::str_to_malloc;
+    use hew_cabi::string::{string_as_str, string_from_str};
 
     /// Build a header-aware `String` (the contract for a value a caller hands to
     /// a string `HewVec`). The returned pointer is a fresh owner (`rc==1`);
     /// `hew_vec_push_str` stores an independent header-aware copy, so the caller
     /// must still release this buffer via [`super::release_string_element`]
     /// (mirroring how a Hew caller drops its own `String` after pushing it).
-    fn hew_string(s: &str) -> *mut c_char {
-        str_to_malloc(s)
+    fn hew_string(s: &str) -> *mut HewString {
+        string_from_str(s)
     }
 
     #[test]
@@ -3462,12 +3833,12 @@ mod tests {
 
             let r1 = hew_vec_get_str(v, 0);
             assert!(!r1.is_null());
-            assert_eq!(std::ffi::CStr::from_ptr(r1).to_string_lossy(), "hello");
+            assert_eq!(string_as_str(r1), "hello");
             release_string_element(r1.cast_mut());
 
             let r2 = hew_vec_get_str(v, 1);
             assert!(!r2.is_null());
-            assert_eq!(std::ffi::CStr::from_ptr(r2).to_string_lossy(), "world");
+            assert_eq!(string_as_str(r2), "world");
             release_string_element(r2.cast_mut());
             hew_vec_free(v);
         }
@@ -3528,7 +3899,7 @@ mod tests {
             release_string_element(s2);
             let popped = hew_vec_pop_str(v);
             assert!(!popped.is_null());
-            assert_eq!(std::ffi::CStr::from_ptr(popped).to_string_lossy(), "world");
+            assert_eq!(string_as_str(popped), "world");
             assert_eq!(hew_vec_len(v), 1);
             // `pop` transfers the vec's owner to the caller — release it.
             release_string_element(popped.cast_mut());
@@ -3642,13 +4013,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_set_i32_oob_traps_main_context() {
         let output = run_vec_death_helper("vec::tests::_helper_vec_set_i32_oob");
-        assert!(
-            !output.status.success(),
-            "out-of-bounds Vec.set() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "out-of-bounds Vec.set() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -3656,7 +4028,7 @@ mod tests {
             "out-of-bounds Vec.set() must report index and len; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "out-of-bounds Vec.set() must route through the trap code; got: {stderr}"
         );
     }
@@ -3681,13 +4053,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_pop_i32_empty_traps_main_context() {
         let output = run_vec_death_helper("vec::tests::_helper_vec_pop_i32_empty");
-        assert!(
-            !output.status.success(),
-            "empty Vec.pop() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "empty Vec.pop() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -3695,7 +4068,7 @@ mod tests {
             "empty Vec.pop() must report the operation; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "empty Vec.pop() must route through the trap code; got: {stderr}"
         );
     }
@@ -3719,13 +4092,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_remove_i32_oob_traps_main_context() {
         let output = run_vec_death_helper("vec::tests::_helper_vec_remove_i32_oob");
-        assert!(
-            !output.status.success(),
-            "out-of-bounds Vec.remove() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "out-of-bounds Vec.remove() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -3733,7 +4107,7 @@ mod tests {
             "out-of-bounds Vec.remove() must report index and len; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "out-of-bounds Vec.remove() must route through the trap code; got: {stderr}"
         );
     }
@@ -3758,7 +4132,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_vec_get_generic_oob() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4286,7 +4660,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn vec_remove_at_layout_oob_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4328,7 +4702,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn vec_remove_at_layout_layout_managed_aborts() {
         // Non-Plain (LayoutManaged) layout must fail closed — the BitCopy
@@ -4348,7 +4722,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+            stderr.contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
             "LayoutManaged remove must report the fail-closed diagnostic; got: {stderr}"
         );
     }
@@ -4398,7 +4772,7 @@ mod tests {
             hew_vec_free(sub);
 
             let r0 = hew_vec_get_str(v, 0);
-            assert_eq!(std::ffi::CStr::from_ptr(r0).to_string_lossy(), "alpha");
+            assert_eq!(string_as_str(r0), "alpha");
             release_string_element(r0.cast_mut());
             hew_vec_free(v);
         }
@@ -4431,10 +4805,10 @@ mod tests {
     ///
     /// # Safety
     /// `v` must be a valid string `HewVec` with `index < len`.
-    unsafe fn vec_str_slot(v: *const HewVec, index: usize) -> *const c_char {
+    unsafe fn vec_str_slot(v: *const HewVec, index: usize) -> *const HewString {
         // SAFETY: caller guarantees a valid string vec and in-bounds index;
         // string slots hold one `*const c_char` each.
-        unsafe { *(*v).data.cast::<*const c_char>().add(index) }
+        unsafe { *(*v).data.cast::<*const HewString>().add(index) }
     }
 
     /// Read the live refcount of a header-aware string element. The 16-byte
@@ -4444,15 +4818,16 @@ mod tests {
     /// # Safety
     /// `data` must be a live header-aware element produced by the `hew-cabi`
     /// allocator (every string vec element is, post-copy-in).
-    unsafe fn element_refcount(data: *const c_char) -> u32 {
+    unsafe fn element_refcount(data: *const HewString) -> u32 {
         use core::sync::atomic::{AtomicU32, Ordering};
-        use hew_cabi::cabi::CSTRING_HEADER_SIZE;
-        // SAFETY: header-aware element; rc lives at base+8 (base = data - 16).
-        unsafe {
-            let base = data.cast::<u8>().sub(CSTRING_HEADER_SIZE);
-            let rc = base.add(8).cast::<AtomicU32>();
-            (*rc).load(Ordering::Relaxed)
-        }
+        // SAFETY: the handle is the header base and rc follows byte_len.
+        let rc = unsafe {
+            data.cast::<u8>()
+                .add(core::mem::size_of::<usize>())
+                .cast::<AtomicU32>()
+        };
+        // SAFETY: `rc` addresses the live header's atomic reference count.
+        unsafe { (*rc).load(Ordering::Relaxed) }
     }
 
     /// Push then clone: the element is copied into the vec (header-aware) and the
@@ -4498,7 +4873,7 @@ mod tests {
             let r = hew_vec_get_str(cloned, 0);
             assert_eq!(r, e, "get_str returns the same aliased buffer");
             assert_eq!(element_refcount(e), 2, "get_str retains: rc 1→2");
-            assert_eq!(std::ffi::CStr::from_ptr(r).to_string_lossy(), "shared");
+            assert_eq!(string_as_str(r), "shared");
             release_string_element(r.cast_mut());
             assert_eq!(
                 element_refcount(e),
@@ -4555,13 +4930,10 @@ mod tests {
             // The original vec is untouched; both vecs read their own value.
             let r = hew_vec_get_str(v, 0);
             assert_eq!(r, orig_elem, "v still holds the original buffer");
-            assert_eq!(std::ffi::CStr::from_ptr(r).to_string_lossy(), "original");
+            assert_eq!(string_as_str(r), "original");
             release_string_element(r.cast_mut());
             let rc = hew_vec_get_str(cloned, 0);
-            assert_eq!(
-                std::ffi::CStr::from_ptr(rc).to_string_lossy(),
-                "replacement"
-            );
+            assert_eq!(string_as_str(rc), "replacement");
             release_string_element(rc.cast_mut());
 
             hew_vec_free(v);
@@ -4596,7 +4968,7 @@ mod tests {
                 1,
                 "pop transfers the owner without a retain or release: rc stays 1",
             );
-            assert_eq!(std::ffi::CStr::from_ptr(popped).to_string_lossy(), "b");
+            assert_eq!(string_as_str(popped), "b");
             assert_eq!(hew_vec_len(v), 1);
             // Releasing the popped owner frees it; the vec no longer references it.
             release_string_element(popped.cast_mut());
@@ -4648,7 +5020,7 @@ mod tests {
             );
 
             let r = hew_vec_get_str(v, 0);
-            assert_eq!(std::ffi::CStr::from_ptr(r).to_string_lossy(), "keep");
+            assert_eq!(string_as_str(r), "keep");
             release_string_element(r.cast_mut());
             hew_vec_free(v);
             // The clone still owns keep, drop1, drop2; freeing it drops each to
@@ -4758,7 +5130,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn vec_clone_layout_layout_managed_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -4773,7 +5145,7 @@ mod tests {
         );
         let stderr = String::from_utf8_lossy(&status.stderr);
         assert!(
-            stderr.contains("HewTypeLayout LayoutManaged requires HewVecElemLayout thunks"),
+            stderr.contains("HewTypeLayout LayoutManaged requires HewValueLayout thunks"),
             "LayoutManaged clone must report the fail-closed diagnostic; got: {stderr}"
         );
     }
@@ -4840,14 +5212,14 @@ mod tests {
             assert_eq!((*cloned).elem_kind, ElemKind::String);
 
             let c0 = hew_vec_get_str(cloned, 0);
-            assert_eq!(std::ffi::CStr::from_ptr(c0).to_string_lossy(), "alpha");
+            assert_eq!(string_as_str(c0), "alpha");
             release_string_element(c0.cast_mut());
 
             // Freeing the clone (per-slot retained owners) must not invalidate
             // the source strings — refcounting keeps each buffer alive.
             hew_vec_free_owned(cloned);
             let s0 = hew_vec_get_str(v, 0);
-            assert_eq!(std::ffi::CStr::from_ptr(s0).to_string_lossy(), "alpha");
+            assert_eq!(string_as_str(s0), "alpha");
             release_string_element(s0.cast_mut());
             hew_vec_free_owned(v);
         }
@@ -4910,6 +5282,97 @@ mod vec_owned_tests {
     use super::*;
     use core::sync::atomic::{AtomicI64, Ordering};
     use std::sync::{Mutex, MutexGuard};
+
+    #[test]
+    fn zero_sized_elements_preserve_length_without_reading_or_writing_payload() {
+        let layout = HewValueLayout {
+            visit_close: None,
+            size: 0,
+            align: 1,
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        };
+        let input = ();
+        let mut output = 0xa5_u8;
+        // SAFETY: unit has no payload bytes; input/output are non-null aligned
+        // slots. Each created vector is released exactly once.
+        unsafe {
+            let original = hew_vec_new_with_elem_layout(&raw const layout);
+            for _ in 0..10 {
+                hew_vec_push_owned(original, (&raw const input).cast());
+            }
+            assert_eq!(hew_vec_len(original), 10);
+            assert_eq!((*original).elem_size, 0);
+            let copy = hew_vec_clone_owned(original);
+            let slice = hew_vec_slice_range_owned(original, 2, 5);
+            hew_vec_set_owned(copy, 0, (&raw const input).cast());
+            assert!(hew_vec_get_clone(copy, 9, (&raw mut output).cast()));
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut output).cast()), 1);
+            assert_eq!(hew_vec_len(copy), 9);
+            assert_eq!(hew_vec_len(original), 10);
+            assert_eq!(hew_vec_len(slice), 3);
+            assert_eq!(
+                output, 0xa5,
+                "zero-sized results do not initialize any byte"
+            );
+            hew_vec_clear(copy);
+            assert_eq!(hew_vec_len(copy), 0);
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut output).cast()), 0);
+            hew_vec_free_owned(copy);
+            hew_vec_free_owned(slice);
+            hew_vec_free_owned(original);
+        }
+    }
+
+    #[test]
+    fn plain_descriptor_uses_the_same_value_operations_without_thunks() {
+        let layout = HewValueLayout {
+            visit_close: None,
+            size: size_of::<(i64, i64)>(),
+            align: align_of::<(i64, i64)>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        };
+        // SAFETY: the descriptor matches every input/output; source values are
+        // separate from both vector buffers, and each vector is released once.
+        unsafe {
+            let original = hew_vec_new_with_elem_layout(&raw const layout);
+            let first = (11_i64, 12_i64);
+            let second = (21_i64, 22_i64);
+            hew_vec_push_owned(original, (&raw const first).cast());
+            hew_vec_push_owned_move(original, (&raw const second).cast());
+            let copy = hew_vec_clone_owned(original);
+
+            let replacement = (31_i64, 32_i64);
+            hew_vec_set_owned(copy, 0, (&raw const replacement).cast());
+            hew_vec_set_owned_move(copy, 1, (&raw const replacement).cast());
+            let mut value = (0_i64, 0_i64);
+            assert!(hew_vec_get_clone(original, 0, (&raw mut value).cast()));
+            assert_eq!(value, first);
+            assert!(hew_vec_get_clone(original, 1, (&raw mut value).cast()));
+            assert_eq!(value, second);
+            let slice = hew_vec_slice_range_owned(original, 1, 2);
+            hew_vec_free_owned(original);
+            assert_eq!(hew_vec_len(slice), 1);
+            assert!(hew_vec_get_clone(slice, 0, (&raw mut value).cast()));
+            assert_eq!(value, second);
+            hew_vec_free_owned(slice);
+
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut value).cast()), 1);
+            assert_eq!(value, replacement);
+            assert_eq!(hew_vec_len(copy), 1);
+            assert!(hew_vec_get_clone(copy, 0, (&raw mut value).cast()));
+            assert_eq!(value, replacement);
+            hew_vec_clear(copy);
+            value = (-1, -2);
+            assert_eq!(hew_vec_pop_owned(copy, (&raw mut value).cast()), 0);
+            assert!(!hew_vec_get_clone(copy, 0, (&raw mut value).cast()));
+            assert_eq!(value, (-1, -2), "empty results leave output untouched");
+            hew_vec_free_owned(copy);
+        }
+    }
 
     // The thunk counters are process-global, so the counter-using tests must run
     // serially. This mutex serialises them; each test holds the guard for its
@@ -5016,8 +5479,9 @@ mod vec_owned_tests {
         unsafe { drop_thunk(slot) };
     }
 
-    fn owned_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn owned_layout() -> HewValueLayout {
+        HewValueLayout {
+            visit_close: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5071,7 +5535,8 @@ mod vec_owned_tests {
         // transfers `source`'s heap pointer into the Vec slot, so source is not
         // freed separately afterwards.
         unsafe {
-            let layout = HewVecElemLayout {
+            let layout = HewValueLayout {
+                visit_close: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5112,7 +5577,8 @@ mod vec_owned_tests {
         // SAFETY: every pointer and descriptor below names a live value of the
         // declared layout. The output owns the payload after `take` returns.
         unsafe {
-            let layout = HewVecElemLayout {
+            let layout = HewValueLayout {
+                visit_close: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5161,7 +5627,8 @@ mod vec_owned_tests {
         // SAFETY: descriptor and element pointers are valid; ownership of the
         // pushed elements transfers to the taken vec wholesale.
         unsafe {
-            let layout = HewVecElemLayout {
+            let layout = HewValueLayout {
+                visit_close: None,
                 size: core::mem::size_of::<OwnedElem>(),
                 align: core::mem::align_of::<OwnedElem>(),
                 ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5477,7 +5944,7 @@ mod vec_owned_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn clone_rejects_missing_clone_thunk_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())
@@ -5508,7 +5975,8 @@ mod vec_owned_tests {
         {
             return;
         }
-        let layout = HewVecElemLayout {
+        let layout = HewValueLayout {
+            visit_close: None,
             size: core::mem::size_of::<OwnedElem>(),
             align: core::mem::align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -5528,7 +5996,7 @@ mod vec_owned_tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn owned_op_rejects_missing_descriptor_aborts() {
         let status = std::process::Command::new(std::env::current_exe().unwrap())

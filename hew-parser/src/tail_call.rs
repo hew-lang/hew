@@ -3,7 +3,9 @@
 //! Walks the AST and marks `Expr::Call` nodes as tail calls when they appear
 //! directly in tail position or as the direct value of a `return`.
 
-use crate::ast::{Block, Expr, Item, Program, Stmt, StringPart};
+use crate::ast::{
+    condition_exprs, condition_exprs_mut, Block, Expr, Item, Program, Stmt, StringPart,
+};
 
 /// Marks tail calls in a parsed program.
 ///
@@ -92,14 +94,15 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
                 })
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_contains_defer(&expr.0)
+            condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
                 || block_contains_defer(body)
-                || else_body.as_ref().is_some_and(block_contains_defer)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_expr| expr_contains_defer(&else_expr.0))
         }
         Stmt::Match { scrutinee, arms } => {
             expr_contains_defer(&scrutinee.0)
@@ -117,8 +120,11 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
         Stmt::While {
             condition, body, ..
         } => expr_contains_defer(&condition.0) || block_contains_defer(body),
-        Stmt::WhileLet { expr, body, .. } => {
-            expr_contains_defer(&expr.0) || block_contains_defer(body)
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
+                || block_contains_defer(body)
         }
         Stmt::Break { value, .. } => value
             .as_ref()
@@ -138,18 +144,22 @@ fn stmt_contains_defer(stmt: &Stmt) -> bool {
 )]
 fn expr_contains_defer(expr: &Expr) -> bool {
     match expr {
-        Expr::Binary { left, right, .. } => {
-            expr_contains_defer(&left.0) || expr_contains_defer(&right.0)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => expr_contains_defer(&left.0) || expr_contains_defer(&right.0),
         Expr::Unary { operand, .. }
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand) => expr_contains_defer(&operand.0),
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -175,9 +185,12 @@ fn expr_contains_defer(expr: &Expr) -> bool {
         Expr::MachineEmit { fields, .. } => {
             fields.iter().any(|(_, expr)| expr_contains_defer(&expr.0))
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             items.iter().any(|(expr, _)| expr_contains_defer(expr))
         }
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| expr_contains_defer(&element.expr().0)),
         Expr::ArrayRepeat { value, count } => {
             expr_contains_defer(&value.0) || expr_contains_defer(&count.0)
         }
@@ -198,14 +211,15 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                     .is_some_and(|else_expr| expr_contains_defer(&else_expr.0))
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_contains_defer(&expr.0)
+            condition_exprs(conditions).any(|expr| expr_contains_defer(&expr.0))
                 || block_contains_defer(body)
-                || else_body.as_ref().is_some_and(block_contains_defer)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_expr| expr_contains_defer(&else_expr.0))
         }
         Expr::Match { scrutinee, arms } => {
             expr_contains_defer(&scrutinee.0)
@@ -254,9 +268,6 @@ fn expr_contains_defer(expr: &Expr) -> bool {
                 || timeout.as_ref().is_some_and(|timeout| {
                     expr_contains_defer(&timeout.duration.0) || expr_contains_defer(&timeout.body.0)
                 })
-        }
-        Expr::Timeout { expr, duration } => {
-            expr_contains_defer(&expr.0) || expr_contains_defer(&duration.0)
         }
         Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
             expr_contains_defer(&expr.0)
@@ -307,15 +318,16 @@ fn mark_stmt(stmt: &mut Stmt) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            mark_expr(&mut expr.0, false);
+            for expr in condition_exprs_mut(conditions) {
+                mark_expr(&mut expr.0, false);
+            }
             mark_block(body, false);
-            if let Some(block) = else_body {
-                mark_block(block, false);
+            if let Some(else_expr) = else_body {
+                mark_expr(&mut else_expr.0, false);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -338,8 +350,12 @@ fn mark_stmt(stmt: &mut Stmt) {
             mark_expr(&mut condition.0, false);
             mark_block(body, false);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            mark_expr(&mut expr.0, false);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs_mut(conditions) {
+                mark_expr(&mut expr.0, false);
+            }
             mark_block(body, false);
         }
         Stmt::Continue { .. } | Stmt::Return(None) => {}
@@ -355,6 +371,15 @@ fn mark_stmt(stmt: &mut Stmt) {
 )]
 fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
     match expr {
+        Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
+            mark_expr(&mut left.0, false);
+            mark_expr(&mut right.0, is_tail_position);
+        }
         Expr::Binary { left, right, .. } => {
             mark_expr(&mut left.0, false);
             mark_expr(&mut right.0, false);
@@ -365,13 +390,13 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
         | Expr::PostfixTry(operand)
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand) => {
             mark_expr(&mut operand.0, false);
         }
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -399,9 +424,14 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             mark_expr(&mut duration.0, false);
             mark_block(body, false);
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             for (expr, _) in items {
                 mark_expr(expr, false);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                mark_expr(&mut element.expr_mut().0, false);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -432,15 +462,16 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            mark_expr(&mut expr.0, false);
+            for expr in condition_exprs_mut(conditions) {
+                mark_expr(&mut expr.0, false);
+            }
             mark_block(body, is_tail_position);
-            if let Some(block) = else_body {
-                mark_block(block, is_tail_position);
+            if let Some(else_expr) = else_body {
+                mark_expr(&mut else_expr.0, is_tail_position);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -512,10 +543,6 @@ fn mark_expr(expr: &mut Expr, is_tail_position: bool) {
                 mark_expr(&mut timeout.duration.0, false);
                 mark_expr(&mut timeout.body.0, is_tail_position);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            mark_expr(&mut expr.0, false);
-            mark_expr(&mut duration.0, false);
         }
         Expr::Yield(Some(expr)) | Expr::Return(Some(expr)) | Expr::Cast { expr, .. } => {
             mark_expr(&mut expr.0, false);

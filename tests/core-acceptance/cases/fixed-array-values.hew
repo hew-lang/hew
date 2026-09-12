@@ -1,0 +1,66 @@
+type Batch {
+    labels: [string; 2],
+    matrix: [[i64; 2]; 2],
+}
+
+fn edited(values: [i64; 3]) -> [i64; 3] {
+    var result = values;
+    result[1] = 90;
+    result
+}
+
+fn make_batch() -> Batch {
+    Batch {
+        labels: ["first".to_upper(), "Aé\0B"],
+        matrix: [[1, 2], [3, 4]],
+    }
+}
+
+fn seed() -> string {
+    println("seed");
+    "seed".to_upper()
+}
+
+fn index() -> i64 {
+    println("index");
+    0
+}
+
+fn main() -> i64 {
+    let original: [i64; 3] = [1, 2, 3];
+    let changed = edited(original);
+    if original[1] != 2 || changed[1] != 90 || changed.len() != 3 { return 1; }
+    var batch = make_batch();
+    let saved = batch.clone();
+    batch.labels[0] = "last".to_upper();
+    batch.matrix[0] = [7, 8];
+    if saved.labels[0] != "FIRST" || batch.labels[0] != "LAST" { return 2; }
+    if saved.matrix[0][1] != 2 || batch.matrix[0][1] != 8 { return 3; }
+    let repeated: [string; 3] = [saved.labels[index()]; 3];
+    if repeated[2] != "FIRST" { return 4; }
+    let empty: [string; 0] = [seed(); 0];
+    let filled: [string; 3] = [seed(); 3];
+    if empty.len() != 0 || filled[2] != "SEED" { return 5; }
+    let no_values: [i64; 0] = [];
+    var nested: [[string; 2]; 3] = [["nested".to_upper(); 2]; 3];
+    let nested_copy = nested;
+    nested[1] = ["changed", "changed"];
+    if no_values.len() != 0 || nested_copy[1][0] != "NESTED" { return 6; }
+    var sum = 0;
+    for value in changed { sum += value; }
+    if sum != 94 { return 7; }
+    var batches: Vec<[string; 2]> = Vec.new();
+    batches.push(saved.labels);
+    var extracted = batches[0];
+    extracted[0] = "independent";
+    if extracted[0] != "independent" || batches[0][0] != "FIRST" || saved.labels[0] != "FIRST" { return 8; }
+    let success: Result<[string; 2], string> = Ok(saved.labels);
+    var results: Vec<Result<[string; 2], string>> = Vec.new();
+    results.push(success);
+    match results[0] {
+        .Ok(labels) => { if labels[0] != "FIRST" { return 9; } },
+        .Err(_) => { return 10; },
+    }
+    println("fixed values");
+    0
+}

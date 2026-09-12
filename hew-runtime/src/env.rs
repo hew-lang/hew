@@ -2,14 +2,14 @@
 //!
 //! Provides access to environment variables, command-line arguments, and basic
 //! process/system information for compiled Hew programs. All returned strings
-//! are allocated with `libc::malloc` so callers can free them with `libc::free`.
+//! are managed UTF-8 values released with `hew_string_drop`.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::malloc_cstring;
 use crate::lifetime::PoisonSafeRw;
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::ffi::{c_char, CStr};
 #[cfg(any(target_os = "freebsd", test))]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,14 +27,8 @@ pub(crate) static ENV_LOCK: std::sync::LazyLock<PoisonSafeRw<()>> =
     // `()` is intentional; this lock only synchronizes environ access.
     std::sync::LazyLock::new(|| PoisonSafeRw::new(()));
 
-/// Convert a Rust `String` to a malloc-allocated C string. Returns null on failure.
-fn string_to_malloc(s: &str) -> *mut c_char {
-    // SAFETY: s.as_ptr() is valid for s.len() bytes.
-    unsafe { malloc_cstring(s.as_ptr(), s.len()) }
-}
-
 fn is_valid_env_key(key: &str) -> bool {
-    !key.is_empty() && !key.contains('=')
+    !key.is_empty() && !key.contains(['=', '\0'])
 }
 
 // ---------------------------------------------------------------------------
@@ -43,24 +37,25 @@ fn is_valid_env_key(key: &str) -> bool {
 
 /// Get the value of an environment variable.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string, or null if the
-/// variable is not set. The caller must free the result with `libc::free`.
+/// Returns an owned managed string, or null if the
+/// variable is not set. The caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
-/// `key` must be a valid NUL-terminated C string.
+/// `key` must be a live managed string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn hew_env_get(key: *const HewString) -> *mut HewString {
     if key.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: caller guarantees `key` is a valid NUL-terminated C string.
-    let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
+    // SAFETY: caller guarantees `key` is a live managed string.
+    let key_str = unsafe { string_as_str(key) };
+    if !is_valid_env_key(key_str) {
         return std::ptr::null_mut();
-    };
+    }
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
     ENV_LOCK.read_access(|()| match std::env::var(key_str) {
-        Ok(val) => string_to_malloc(&val),
+        Ok(val) => string_from_str(&val),
         Err(_) => std::ptr::null_mut(),
     })
 }
@@ -71,21 +66,17 @@ pub unsafe extern "C" fn hew_env_get(key: *const c_char) -> *mut c_char {
 ///
 /// # Safety
 ///
-/// Both `key` and `val` must be valid NUL-terminated C strings.
+/// Both `key` and `val` must be live managed strings.
 #[no_mangle]
-pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) -> i32 {
-    if key.is_null() || val.is_null() {
+pub unsafe extern "C" fn hew_env_set(key: *const HewString, val: *const HewString) -> i32 {
+    if key.is_null() {
         return -1;
     }
-    // SAFETY: caller guarantees both pointers are valid NUL-terminated C strings.
-    let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
-        return -1;
-    };
-    // SAFETY: caller guarantees val is a valid NUL-terminated C string.
-    let Ok(val_str) = (unsafe { CStr::from_ptr(val) }).to_str() else {
-        return -1;
-    };
-    if !is_valid_env_key(key_str) {
+    // SAFETY: caller guarantees both pointers are live managed strings.
+    let key_str = unsafe { string_as_str(key) };
+    // SAFETY: caller guarantees val is a live managed string.
+    let val_str = unsafe { string_as_str(val) };
+    if !is_valid_env_key(key_str) || val_str.contains('\0') {
         return -1;
     }
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array;
@@ -100,16 +91,14 @@ pub unsafe extern "C" fn hew_env_set(key: *const c_char, val: *const c_char) -> 
 ///
 /// # Safety
 ///
-/// `key` must be a valid NUL-terminated C string.
+/// `key` must be a live managed string.
 #[no_mangle]
-pub unsafe extern "C" fn hew_env_remove(key: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_env_remove(key: *const HewString) -> i32 {
     if key.is_null() {
         return -1;
     }
-    // SAFETY: caller guarantees `key` is a valid NUL-terminated C string.
-    let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
-        return -1;
-    };
+    // SAFETY: caller guarantees `key` is a live managed string.
+    let key_str = unsafe { string_as_str(key) };
     if !is_valid_env_key(key_str) {
         return -1;
     }
@@ -123,16 +112,17 @@ pub unsafe extern "C" fn hew_env_remove(key: *const c_char) -> i32 {
 ///
 /// # Safety
 ///
-/// `key` must be a valid NUL-terminated C string (or null, which returns 0).
+/// `key` must be a live managed string (or null, which returns 0).
 #[no_mangle]
-pub unsafe extern "C" fn hew_env_has(key: *const c_char) -> i32 {
+pub unsafe extern "C" fn hew_env_has(key: *const HewString) -> i32 {
     if key.is_null() {
         return 0;
     }
-    // SAFETY: caller guarantees `key` is a valid NUL-terminated C string.
-    let Ok(key_str) = (unsafe { CStr::from_ptr(key) }).to_str() else {
+    // SAFETY: caller guarantees `key` is a live managed string.
+    let key_str = unsafe { string_as_str(key) };
+    if !is_valid_env_key(key_str) {
         return 0;
-    };
+    }
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
     ENV_LOCK.read_access(|()| i32::from(std::env::var(key_str).is_ok()))
 }
@@ -387,14 +377,14 @@ pub unsafe extern "C" fn hew_args_count() -> i32 {
 
 /// Get the command-line argument at `index`.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string, or null if the
-/// index is out of bounds. The caller must free the result with `libc::free`.
+/// Returns an owned managed string, or null if the
+/// index is out of bounds. The caller must free the result with `hew_string_drop`.
 ///
 /// # Safety
 ///
 /// No preconditions beyond a valid `i32`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_args_get(index: i32) -> *mut c_char {
+pub unsafe extern "C" fn hew_args_get(index: i32) -> *mut HewString {
     if index < 0 {
         return std::ptr::null_mut();
     }
@@ -404,40 +394,40 @@ pub unsafe extern "C" fn hew_args_get(index: i32) -> *mut c_char {
     if idx >= args.len() {
         return std::ptr::null_mut();
     }
-    string_to_malloc(&args[idx])
+    string_from_str(&args[idx])
 }
 
 // ---------------------------------------------------------------------------
 // Process / system info
 // ---------------------------------------------------------------------------
 
-/// Return the current working directory as a malloc-allocated C string.
+/// Return the current working directory as an owned managed string.
 /// Returns null on failure.
 ///
 /// # Safety
 ///
-/// No preconditions. The returned pointer must be freed with `libc::free`.
+/// No preconditions. The returned pointer must be freed with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_cwd() -> *mut c_char {
+pub unsafe extern "C" fn hew_cwd() -> *mut HewString {
     let Ok(cwd) = std::env::current_dir() else {
         return std::ptr::null_mut();
     };
     let Some(s) = cwd.to_str() else {
         return std::ptr::null_mut();
     };
-    string_to_malloc(s)
+    string_from_str(s)
 }
 
-/// Return the system temporary directory as a malloc-allocated C string.
+/// Return the system temporary directory as an owned managed string.
 ///
 /// Uses `std::env::temp_dir()` which respects `TMPDIR`/`TMP`/`TEMP` env vars.
 /// Trailing path separators are stripped for cross-platform consistency.
 ///
 /// # Safety
 ///
-/// No preconditions. The returned pointer must be freed with `libc::free`.
+/// No preconditions. The returned pointer must be freed with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
+pub unsafe extern "C" fn hew_temp_dir() -> *mut HewString {
     // SAFETY: ENV_LOCK synchronises access to the process-global environ
     // array — std::env::temp_dir() reads TMPDIR/TMP/TEMP under the hood.
     ENV_LOCK.read_access(|()| {
@@ -446,35 +436,35 @@ pub unsafe extern "C" fn hew_temp_dir() -> *mut c_char {
         while tmp.ends_with('/') || tmp.ends_with('\\') {
             tmp.pop();
         }
-        string_to_malloc(&tmp)
+        string_from_str(&tmp)
     })
 }
 
-/// Return the home directory as a malloc-allocated C string.
+/// Return the home directory as an owned managed string.
 /// Returns null if unavailable.
 ///
 /// # Safety
 ///
-/// No preconditions. The returned pointer must be freed with `libc::free`.
+/// No preconditions. The returned pointer must be freed with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_home_dir() -> *mut c_char {
+pub unsafe extern "C" fn hew_home_dir() -> *mut HewString {
     // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
     ENV_LOCK.read_access(|()| {
         match std::env::var("HOME").or_else(|_| std::env::var("USERPROFILE")) {
-            Ok(home) => string_to_malloc(&home),
+            Ok(home) => string_from_str(&home),
             Err(_) => std::ptr::null_mut(),
         }
     })
 }
 
-/// Return the system hostname as a malloc-allocated C string.
+/// Return the system hostname as an owned managed string.
 /// Returns null on failure.
 ///
 /// # Safety
 ///
-/// No preconditions. The returned pointer must be freed with `libc::free`.
+/// No preconditions. The returned pointer must be freed with `hew_string_drop`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hostname() -> *mut c_char {
+pub unsafe extern "C" fn hew_hostname() -> *mut HewString {
     #[cfg(unix)]
     {
         let mut buf = [0u8; 256];
@@ -490,14 +480,14 @@ pub unsafe extern "C" fn hew_hostname() -> *mut c_char {
         let Ok(s) = cstr.to_str() else {
             return std::ptr::null_mut();
         };
-        string_to_malloc(s)
+        string_from_str(s)
     }
     #[cfg(windows)]
     {
         // Use COMPUTERNAME environment variable (always set on Windows).
         // SAFETY: ENV_LOCK synchronizes access to the process-global environ array.
         ENV_LOCK.read_access(|()| match std::env::var("COMPUTERNAME") {
-            Ok(name) => string_to_malloc(&name),
+            Ok(name) => string_from_str(&name),
             Err(_) => std::ptr::null_mut(),
         })
     }
@@ -520,7 +510,27 @@ pub unsafe extern "C" fn hew_pid() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
+
+    #[test]
+    fn managed_env_values_preserve_empty_and_reject_nul() {
+        let key = ManagedString::new(format!("HEW_MANAGED_ENV_{}", std::process::id()));
+        let value = ManagedString::new("é\0discarded");
+        let bad_key = ManagedString::new("HEW_MANAGED\0ENV");
+        // SAFETY: all arguments are live managed values; null is canonical empty.
+        unsafe {
+            assert_eq!(hew_env_set(key.as_ptr(), std::ptr::null()), 0);
+            assert_eq!(hew_env_has(key.as_ptr()), 1);
+            assert_eq!(read_and_free(hew_env_get(key.as_ptr())), "");
+            assert_eq!(hew_env_set(key.as_ptr(), value.as_ptr()), -1);
+            assert_eq!(hew_env_set(bad_key.as_ptr(), value.as_ptr()), -1);
+            assert_eq!(hew_env_remove(bad_key.as_ptr()), -1);
+            assert_eq!(hew_env_has(bad_key.as_ptr()), 0);
+            assert!(hew_env_get(bad_key.as_ptr()).is_null());
+            assert_eq!(hew_env_remove(key.as_ptr()), 0);
+        }
+    }
     use std::io;
     use std::sync::{Arc, Mutex, PoisonError};
 
@@ -634,27 +644,26 @@ mod tests {
         )
     }
 
-    /// Helper to read a malloc'd C string and free it.
+    /// Helper to read a managed string and free it.
     ///
     /// # Safety
     ///
-    /// `ptr` must be a non-null, NUL-terminated, malloc-allocated C string.
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string per caller.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated header-aware by malloc_cstring (env string).
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
+    /// `ptr` must be a live managed string, including canonical null/empty.
+    unsafe fn read_and_free(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is a live managed result, including canonical empty.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr was allocated by string_from_str (env string).
+        unsafe { string_release(ptr) };
         s
     }
 
     #[test]
     fn test_env_set_get_has_roundtrip() {
         let unique_key = format!("HEW_TEST_ENV_VAR_{}", std::process::id());
-        let key = CString::new(unique_key).unwrap();
-        let val = CString::new("hello_hew").unwrap();
+        let key = ManagedString::new(unique_key);
+        let val = ManagedString::new("hello_hew");
 
-        // SAFETY: both pointers are valid NUL-terminated C strings.
+        // SAFETY: both pointers are live managed strings.
         unsafe {
             // Should not exist yet.
             assert_eq!(hew_env_has(key.as_ptr()), 0);
@@ -676,11 +685,11 @@ mod tests {
 
     #[test]
     fn test_env_set_and_remove_reject_invalid_keys() {
-        let empty = CString::new("").unwrap();
-        let equals = CString::new("HEW=INVALID").unwrap();
-        let value = CString::new("value").unwrap();
+        let empty = ManagedString::new("");
+        let equals = ManagedString::new("HEW=INVALID");
+        let value = ManagedString::new("value");
 
-        // SAFETY: all strings are valid NUL-terminated C strings.
+        // SAFETY: all strings are live managed strings.
         unsafe {
             assert_eq!(hew_env_set(empty.as_ptr(), value.as_ptr()), -1);
             assert_eq!(hew_env_set(equals.as_ptr(), value.as_ptr()), -1);
@@ -694,8 +703,8 @@ mod tests {
         // SAFETY: null is explicitly handled.
         assert!(unsafe { hew_env_get(std::ptr::null()) }.is_null());
 
-        let missing = CString::new("HEW_DEFINITELY_NOT_SET_XYZ_123").unwrap();
-        // SAFETY: missing.as_ptr() is a valid NUL-terminated C string.
+        let missing = ManagedString::new("HEW_DEFINITELY_NOT_SET_XYZ_123");
+        // SAFETY: missing.as_ptr() is a live managed string.
         assert!(unsafe { hew_env_get(missing.as_ptr()) }.is_null());
     }
 
@@ -816,9 +825,9 @@ mod tests {
 
     #[test]
     fn test_temp_dir_returns_nonempty() {
-        // SAFETY: hew_temp_dir returns a malloc'd C string; no preconditions.
+        // SAFETY: hew_temp_dir returns a managed string; no preconditions.
         let ptr = unsafe { hew_temp_dir() };
-        // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
+        // SAFETY: ptr is a live managed string.
         let text = unsafe { read_and_free(ptr) };
         assert!(!text.is_empty());
         // Should not end with a separator.
@@ -836,7 +845,7 @@ mod tests {
 
         // Unique test key to avoid conflicts with other tests.
         let test_key_base = format!("HEW_STRESS_TEST_{}", std::process::id());
-        let key_cstring = Arc::new(CString::new(test_key_base).unwrap());
+        let key_string = Arc::new(ManagedString::new(test_key_base));
 
         // Barrier to synchronize all threads starting at the same time.
         let barrier = Arc::new(Barrier::new(NUM_WRITER_THREADS + NUM_READER_THREADS));
@@ -845,20 +854,20 @@ mod tests {
 
         // Spawn writer threads.
         for i in 0..NUM_WRITER_THREADS {
-            let key = Arc::clone(&key_cstring);
+            let key = Arc::clone(&key_string);
             let barrier = Arc::clone(&barrier);
             let handle = thread::spawn(move || {
                 barrier.wait();
                 for j in 0..ITERATIONS_PER_THREAD {
                     let value = format!("writer{i}_{j}");
-                    let value_cstring = CString::new(value).unwrap();
-                    // SAFETY: Both pointers are valid NUL-terminated C strings.
+                    let value_string = ManagedString::new(value);
+                    // SAFETY: Both pointers are live managed strings.
                     unsafe {
-                        hew_env_set(key.as_ptr(), value_cstring.as_ptr());
+                        hew_env_set(key.as_ptr(), value_string.as_ptr());
                     }
                     // Occasionally remove the variable to test write/write contention.
                     if j % 10 == 0 {
-                        // SAFETY: key is a valid NUL-terminated C string.
+                        // SAFETY: key is a live managed string.
                         unsafe {
                             hew_env_remove(key.as_ptr());
                         }
@@ -870,20 +879,20 @@ mod tests {
 
         // Spawn reader threads.
         for _i in 0..NUM_READER_THREADS {
-            let key = Arc::clone(&key_cstring);
+            let key = Arc::clone(&key_string);
             let barrier = Arc::clone(&barrier);
             let handle = thread::spawn(move || {
                 barrier.wait();
                 for _j in 0..ITERATIONS_PER_THREAD {
-                    // SAFETY: key is a valid NUL-terminated C string.
+                    // SAFETY: key is a live managed string.
                     let has_var = unsafe { hew_env_has(key.as_ptr()) };
                     if has_var == 1 {
-                        // SAFETY: key is a valid NUL-terminated C string.
+                        // SAFETY: key is a live managed string.
                         let ptr = unsafe { hew_env_get(key.as_ptr()) };
                         if !ptr.is_null() {
-                            // SAFETY: ptr is a valid malloc'd NUL-terminated C string.
+                            // SAFETY: ptr is a live managed string.
                             unsafe {
-                                crate::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
+                                string_release(ptr);
                             }
                         }
                     }
@@ -898,9 +907,9 @@ mod tests {
         }
 
         // Clean up: remove the test variable if it exists.
-        // SAFETY: key is a valid NUL-terminated C string.
+        // SAFETY: key is a live managed string.
         unsafe {
-            hew_env_remove(key_cstring.as_ptr());
+            hew_env_remove(key_string.as_ptr());
         }
 
         // If we reach here without panicking, the stress test passed.
@@ -916,7 +925,7 @@ mod tests {
         const THREADS: usize = 4;
         const ITERS: usize = 200;
 
-        let key = CString::new("TMPDIR").unwrap();
+        let key = ManagedString::new("TMPDIR");
 
         // Toggle TMPDIR only between real, always-present directories.
         //
@@ -935,19 +944,19 @@ mod tests {
         let real_tmp = std::env::temp_dir();
         let alt_tmp = real_tmp.join("hew_env_test_stable");
         std::fs::create_dir_all(&alt_tmp).expect("alt temp root must be creatable");
-        let val_a = CString::new(real_tmp.to_string_lossy().into_owned()).unwrap();
-        let val_b = CString::new(alt_tmp.to_string_lossy().into_owned()).unwrap();
+        let val_a = ManagedString::new(real_tmp.to_string_lossy());
+        let val_b = ManagedString::new(alt_tmp.to_string_lossy());
 
         // Snapshot original TMPDIR so we can restore it.
-        // SAFETY: key is a valid NUL-terminated C string.
+        // SAFETY: key is a live managed string.
         let orig_ptr = unsafe { hew_env_get(key.as_ptr()) };
-        let orig_value: Option<CString> = if orig_ptr.is_null() {
+        let orig_value: Option<ManagedString> = if orig_ptr.is_null() {
             None
         } else {
-            // SAFETY: orig_ptr is a valid malloc'd NUL-terminated C string.
-            let s = unsafe { CStr::from_ptr(orig_ptr) }.to_owned();
-            // SAFETY: orig_ptr was allocated header-aware by malloc_cstring.
-            unsafe { crate::cabi::free_cstring(orig_ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
+            // SAFETY: orig_ptr is a live managed string.
+            let s = ManagedString::new(unsafe { string_as_str(orig_ptr) });
+            // SAFETY: orig_ptr was allocated by string_from_str.
+            unsafe { string_release(orig_ptr) };
             Some(s)
         };
 
@@ -964,7 +973,7 @@ mod tests {
                 b.wait();
                 for j in 0..ITERS {
                     let val = if j % 2 == 0 { &val_a } else { &val_b };
-                    // SAFETY: both pointers are valid NUL-terminated C strings.
+                    // SAFETY: both pointers are live managed strings.
                     unsafe { hew_env_set(key.as_ptr(), val.as_ptr()) };
                 }
             }));
@@ -979,8 +988,8 @@ mod tests {
                     // SAFETY: no preconditions for hew_temp_dir.
                     let ptr = unsafe { hew_temp_dir() };
                     assert!(!ptr.is_null());
-                    // SAFETY: ptr was allocated header-aware by malloc_cstring.
-                    unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test consumer of malloc_cstring env string)
+                    // SAFETY: ptr was allocated by string_from_str.
+                    unsafe { string_release(ptr) };
                 }
             }));
         }
@@ -991,11 +1000,11 @@ mod tests {
 
         // Restore original TMPDIR.
         match orig_value {
-            // SAFETY: both key and val are valid NUL-terminated C strings.
+            // SAFETY: both key and val are live managed strings.
             Some(val) => unsafe {
                 hew_env_set(key.as_ptr(), val.as_ptr());
             },
-            // SAFETY: key is a valid NUL-terminated C string.
+            // SAFETY: key is a live managed string.
             None => unsafe {
                 hew_env_remove(key.as_ptr());
             },

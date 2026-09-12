@@ -1,0 +1,19 @@
+[[case]]
+id = "loan-ends-at-last-use"
+intent = "D490: a `let`-bound `get` over a clone-free element is refused at the read, not admitted as a loan whose lifetime the body must then respect."
+source = "cases/loan-ends-at-last-use.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 26
+column = 18
+message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 27
+column = 21
+message = "E_ELEMENT_NO_COPY: `Vec<Token>` cannot be read with `get`"

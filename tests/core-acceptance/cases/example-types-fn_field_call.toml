@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-fn_field_call"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/fn_field_call.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "double 5: 10\ntriple 5: 15\nformat 42: value=42\n"
+exit = 0

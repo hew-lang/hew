@@ -1,0 +1,13 @@
+[[case]]
+id = "type_alias_recursive"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/type_alias_recursive.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 1
+column = 1
+message = "type alias `Loop` is recursive"

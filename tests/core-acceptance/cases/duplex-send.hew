@@ -1,0 +1,39 @@
+// A lambda actor is an actor: `.send(msg)` is the same completion call as
+// `handle(msg)`, and `.close()` is the same terminal release `close(handle)`
+// performs, so both spellings deliver through one path and yield one envelope.
+fn main() {
+    let doubler = actor |x: i64| {
+        println(x * 2);
+    };
+    match doubler.send(21) {
+        .Ok(_) => println("sent"),
+        .Err(_) => panic("rejected"),
+    }
+    match doubler(4) {
+        .Ok(_) => println("called"),
+        .Err(_) => panic("rejected"),
+    }
+    doubler.close();
+
+    // An owned message crosses the boundary: the handler receives the string
+    // the caller built and the caller keeps nothing to release.
+    let greeter = actor |name: string| {
+        println(f"hello {name}");
+    };
+    match greeter.send(f"world-{1}") {
+        .Ok(_) => {},
+        .Err(_) => panic("rejected"),
+    }
+    greeter.close();
+
+    // A reply-shaped lambda answers its caller.
+    let square = actor |x: i64| -> i64 {
+        x * x
+    };
+    match square.send(6) {
+        .Ok(value) => println(f"square {value}"),
+        .Err(_) => panic("rejected"),
+    }
+    close(square);
+    println("done");
+}

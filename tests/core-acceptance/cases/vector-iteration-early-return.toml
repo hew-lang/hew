@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-early-return"
+intent = "Returning an owned item from a loop cleans cursor and local owners while preserving the result."
+source = "cases/vector-iteration-early-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RETURN\nalive\n"
+exit = 0
+stderr = ""

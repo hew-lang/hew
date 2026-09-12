@@ -8,11 +8,11 @@
 // Move-checker lattice state at the tail: Live → Return → MustConsume.
 #[linear]
 type Txn {
-    id: i64;
+    id: i64,
 }
 
 impl Txn {
-    fn commit(consuming self) -> i64 {
+    fn commit(consume self) -> i64 {
         0
     }
 }

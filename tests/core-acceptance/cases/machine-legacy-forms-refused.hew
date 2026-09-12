@@ -1,0 +1,47 @@
+// Negative control for the one structure. `self` is an actor or method
+// receiver and is not bound in a machine body, and a body that is only the
+// target the head already named says nothing the head did not - including
+// under an event-head binding, whose `let` prelude is not an authored body.
+machine Counter {
+    events { Tick }
+
+    state Idle,
+    state Live { hits: i64 },
+
+    on Tick: Idle => Live { hits: 0 }
+    on Tick: Live => Live reenter { hits: self.hits + 1 }
+}
+
+machine Gate {
+    events { Flip }
+
+    state Shut,
+    state Ajar { angle: i64 },
+
+    on Flip: Shut => Ajar { Ajar { angle: 90 } }
+    on Flip: Ajar => Shut,
+}
+
+machine Latch {
+    events { Pull }
+
+    state Off,
+    state On,
+
+    on Pull: Off => On { .On }
+    on Pull: On => Off,
+}
+
+machine Log {
+    events { Append { item: i64 } }
+
+    state Empty,
+    state Filled { items: Vec<i64> },
+
+    on Append(item): Empty => Filled { Filled { items: [item] } }
+    on Append: Filled => Filled reenter { ..state }
+}
+
+fn main() {
+    println("unreachable");
+}

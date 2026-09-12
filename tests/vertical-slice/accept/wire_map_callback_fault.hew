@@ -1,0 +1,28 @@
+// A codec parse error is an Err; a selected key callback fault still unwinds.
+#[wire]
+type Key {
+    label: string @1,
+    divisor: i64 @2,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        let label = self.label.to_upper();
+        label.to_bytes().len() / self.divisor
+    }
+}
+
+#[wire]
+type Registry {
+    entries: HashMap<Key, Vec<string>> @1,
+}
+
+fn main() -> i64 {
+    let caller = "caller remains owned".to_upper();
+    match Registry.from_json("{\"entries\":[[{\"label\":\"first\",\"divisor\":1},[\"kept\"]],[{\"label\":\"fault\",\"divisor\":0},[\"released\"]]]}") {
+        .Ok(_) => println("unexpected value"),
+        .Err(_) => println("unexpected parse error"),
+    }
+    println(caller);
+    0
+}

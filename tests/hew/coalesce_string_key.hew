@@ -4,11 +4,11 @@
 import std.testing;
 
 actor StringCoalescer {
-    var processed: i64 = 0;
-    var latest_one: i64 = -1;
-    var latest_two: i64 = -1;
+    var processed: i64 = 0,
+    var latest_one: i64 = -1,
+    var latest_two: i64 = -1,
 
-    mailbox 2 overflow coalesce(symbol) fallback drop_new;
+    mailbox 2 overflow coalesce(symbol) fallback drop_new,
 
     receive fn update(symbol: string, value: i64, pause: duration) {
         sleep(pause);
@@ -44,15 +44,15 @@ fn coalesce_string_key_latest_wins_and_distinct_keys_survive() {
     let _ = worker.update("one", 3, 0ns);
     let _ = worker.update("one", 4, 0ns);
     sleep(400ms);
-    match await worker.count() {
+    match worker.count() {
         .Ok(value) => testing.assert_eq(value, 3),
         .Err(_) => testing.assert_true(false),
     }
-    match await worker.one() {
+    match worker.one() {
         .Ok(value) => testing.assert_eq(value, 4),
         .Err(_) => testing.assert_true(false),
     }
-    match await worker.two() {
+    match worker.two() {
         .Ok(value) => testing.assert_eq(value, 20),
         .Err(_) => testing.assert_true(false),
     }

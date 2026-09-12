@@ -1,9 +1,9 @@
 // Arena<T>: len tracks the exact live count across a sequence of inserts and
 // removes.
-import std.arena.{ Arena, Key };
+import std.arena.{Arena, Key};
 
 fn main() {
-    let store: Arena<i64> = arena.new();
+    var store: Arena<i64> = arena.new();
     let a = store.insert(1);
     let b = store.insert(2);
     let c = store.insert(3);

@@ -4,18 +4,18 @@
 // place be named on the left-hand side.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
         self.fd
     }
 }
 
 actor Vault {
-    var sock: Socket;
+    var sock: Socket,
     receive fn swap() -> i64 {
         let fd = sock.detach();
         sock = Socket { fd: fd + 1 };
@@ -25,11 +25,11 @@ actor Vault {
 
 fn main() {
     let vault = spawn Vault(sock: Socket { fd: 3 });
-    match await vault.swap() {
+    match vault.swap() {
         .Ok(v) => println(f"first={v}"),
         .Err(_) => println("swap failed"),
     }
-    match await vault.swap() {
+    match vault.swap() {
         .Ok(v) => println(f"second={v}"),
         .Err(_) => println("swap failed"),
     }

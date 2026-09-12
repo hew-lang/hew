@@ -1,10 +1,10 @@
 enum Choice {
-    Present(i64);
-    Named { value: i64 };
+    Present(i64),
+    Named { value: i64 },
 }
 
 fn main() {
-    let values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new();
     let present: Choice = Choice.Present(42);
     let present_value = match present {
         Choice.Present(value) => value,

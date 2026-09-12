@@ -135,6 +135,12 @@ unsafe fn set_capacity(data_ptr: *mut u8, cap: u32) {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+fn buffer_allocation_size(capacity: usize) -> Option<usize> {
+    HEADER_SIZE
+        .checked_add(capacity)
+        .filter(|size| isize::try_from(*size).is_ok())
+}
+
 /// Allocate a new buffer with the given capacity. Returns a pointer to `data[0]`.
 /// The refcount is initialised to 1.
 ///
@@ -146,9 +152,9 @@ unsafe fn set_capacity(data_ptr: *mut u8, cap: u32) {
     reason = "header is 8-byte aligned from malloc, u32 needs 4"
 )]
 unsafe fn alloc_buf(cap: u32) -> *mut u8 {
-    let alloc_size = HEADER_SIZE + cap as usize;
+    let alloc_size = buffer_allocation_size(cap as usize).unwrap_or_else(|| std::process::abort());
     // SAFETY: alloc_size > 0 (cap > 0 plus header).
-    let base = unsafe { libc::malloc(alloc_size) }.cast::<u8>();
+    let base = crate::mem::buf_try_alloc(alloc_size).cast::<u8>();
     if base.is_null() {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
@@ -227,9 +233,10 @@ fn grow_capacity(current_cap: u32, min_needed: u32) -> u32 {
 unsafe fn realloc_buf(ptr: *mut u8, _used: u32, new_cap: u32) -> *mut u8 {
     // SAFETY: ptr - HEADER_SIZE is the base of the allocation.
     let base = unsafe { ptr.sub(HEADER_SIZE) };
-    let alloc_size = HEADER_SIZE + new_cap as usize;
-    // SAFETY: base was allocated by alloc_buf (via libc::malloc). alloc_size > 0.
-    let new_base = unsafe { libc::realloc(base.cast(), alloc_size) }.cast::<u8>();
+    let alloc_size =
+        buffer_allocation_size(new_cap as usize).unwrap_or_else(|| std::process::abort());
+    // SAFETY: base was allocated by alloc_buf (via the sized-block allocator). alloc_size > 0.
+    let new_base = unsafe { crate::mem::buf_realloc(base.cast(), alloc_size) }.cast::<u8>();
     if new_base.is_null() {
         // SAFETY: abort is always safe.
         unsafe { libc::abort() };
@@ -326,8 +333,8 @@ pub unsafe extern "C" fn hew_bytes_drop(data_ptr: *mut u8) {
         std::sync::atomic::fence(Ordering::Acquire);
         // SAFETY: Refcount reached zero; we have exclusive access.
         let base = unsafe { data_ptr.sub(HEADER_SIZE) };
-        // SAFETY: base was allocated by libc::malloc in alloc_buf.
-        unsafe { libc::free(base.cast()) };
+        // SAFETY: base was allocated by alloc_buf's sized-block allocation.
+        unsafe { crate::mem::buf_free(base.cast()) };
     }
 }
 
@@ -372,7 +379,10 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
 
     if end >= cap {
         // Need to grow.
-        let needed = end + 1;
+        let needed = triple
+            .len
+            .checked_add(1)
+            .unwrap_or_else(|| std::process::abort());
         let new_cap = grow_capacity(cap, needed);
         // If offset > 0, compact first by moving data to start.
         if triple.offset > 0 {
@@ -396,28 +406,91 @@ pub unsafe extern "C" fn hew_bytes_push(triple: &mut BytesTriple, byte: u8) {
     }
 }
 
-/// Trap with a bytes empty-buffer panic message.
+/// Transfer bytes into an output owner after appending a byte.
 ///
-/// Backs `bytes.pop()` on an empty buffer: the spec signature is `() -> i64`
-/// with no `Option`, so the empty case fails closed (boundary-fail-closed)
-/// rather than returning a fabricated sentinel.
+/// This compiler-private entry point implements the semantic receiver
+/// transformation without returning a C aggregate or mutating a borrowed
+/// value. Shared buffers retain the existing copy-on-write behaviour.
+/// Allocation exhaustion follows the ordinary push operation's abort policy.
 ///
 /// # Safety
 ///
-/// Always aborts — safe to call from any context.
+/// `old` must point to a uniquely writable, initialized owning `BytesTriple`.
+/// `out` must point to distinct, aligned, uniquely writable uninitialized
+/// storage. Both pointers must remain valid throughout the call. The old
+/// header is cleared and its owner is transferred to `out` on return.
 #[no_mangle]
-pub unsafe extern "C-unwind" fn hew_bytes_abort_empty_pop() -> ! {
-    // SAFETY: this is the terminal empty-pop path.
-    unsafe { bytes_bounds_trap("PANIC: bytes.pop() on an empty buffer\n") }
+pub unsafe extern "C" fn hew_bytes_push_owned(
+    old: *mut BytesTriple,
+    byte: u8,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: old is initialized and uniquely writable by the caller's contract.
+    let mut value = unsafe {
+        old.replace(BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        })
+    };
+    // SAFETY: value now owns the reference taken from old.
+    unsafe { hew_bytes_push(&mut value, byte) };
+    // SAFETY: out is distinct, uninitialized storage for the transferred owner.
+    unsafe { out.write(value) };
+}
+
+/// Transfer bytes into an output owner after appending a borrowed buffer.
+///
+/// Shared source storage stays alive while copy-on-write or growth replaces
+/// the receiver's allocation. Allocation exhaustion follows append's abort policy.
+///
+/// # Safety
+///
+/// `old` must point to a uniquely writable, initialized owning `BytesTriple`.
+/// `source` must point to an initialized valid header and may alias `old`.
+/// `out` must point to distinct, aligned, uniquely writable uninitialized
+/// storage. All header pointers must remain valid throughout the call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_append_owned(
+    old: *mut BytesTriple,
+    source: *const BytesTriple,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: source is initialized; copy its header before clearing old,
+    // because source may be the receiver itself.
+    let source = unsafe { source.read() };
+    // SAFETY: old is initialized and uniquely writable by the caller's contract.
+    let mut value = unsafe {
+        old.replace(BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        })
+    };
+    let shared_source = !source.ptr.is_null() && source.ptr == value.ptr;
+    if shared_source {
+        // SAFETY: the receiver still owns the live shared allocation. Pin it
+        // so append cannot invalidate the source through growth or compaction.
+        unsafe { hew_bytes_clone_ref(source.ptr) };
+    }
+    // SAFETY: value owns the receiver and the borrowed source remains valid.
+    unsafe { hew_bytes_append(&mut value, source.ptr, source.offset, source.len) };
+    if shared_source {
+        // SAFETY: release precisely the temporary reference retained above.
+        unsafe { hew_bytes_drop(source.ptr) };
+    }
+    // SAFETY: out is distinct uninitialized storage for the transferred owner.
+    unsafe { out.write(value) };
 }
 
 /// Remove and return the last byte, using copy-on-write if shared.
 ///
-/// Aborts via [`hew_bytes_abort_empty_pop`] when the buffer is empty (spec
-/// `pop() -> i64`: no `Option`, so the empty case fails closed like `b[i]`
-/// OOB). On a shared buffer (refcount > 1) the active region is forked before
-/// the in-place length decrement so co-owners observe the original buffer
-/// unchanged. The receiver keeps its single reference afterward.
+/// Returns `-1` when the buffer is empty. `bytes.pop()` is `Option<u8>` at the
+/// source level, and `-1` is outside the byte range, so codegen wraps the
+/// sentinel as `None` and every real byte — including `0` and `255` — as
+/// `Some`. On a shared buffer (refcount > 1) the active region is forked
+/// before the in-place length decrement so co-owners observe the original
+/// buffer unchanged. The receiver keeps its single reference afterward.
 ///
 /// # Safety
 ///
@@ -426,8 +499,7 @@ pub unsafe extern "C-unwind" fn hew_bytes_abort_empty_pop() -> ! {
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_bytes_pop(triple: &mut BytesTriple) -> i64 {
     if triple.len == 0 || triple.ptr.is_null() {
-        // SAFETY: abort is always safe; it does not return.
-        unsafe { hew_bytes_abort_empty_pop() };
+        return -1;
     }
 
     // Ensure unique ownership (CoW) before mutating the length: a shared buffer
@@ -740,6 +812,20 @@ pub unsafe extern "C" fn hew_bytes_from_static(data: *const u8, len: u32) -> Byt
     }
 }
 
+/// Initialize a compiler literal's output with one owned byte value.
+/// Allocation failure aborts; this private entry point does not unwind.
+///
+/// # Safety
+///
+/// `data` must contain `len` readable bytes, or be null when `len` is zero.
+/// `out` must be aligned, uniquely writable storage for an uninitialized
+/// `BytesTriple`. Release the resulting owner's pointer with [`hew_bytes_drop`].
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_literal_new(data: *const u8, len: u32, out: *mut BytesTriple) {
+    // SAFETY: the compiler supplies a valid input range and unique output storage.
+    unsafe { out.write(hew_bytes_from_static(data, len)) };
+}
+
 /// Compare two byte regions for equality.
 ///
 /// # Safety
@@ -769,7 +855,7 @@ pub unsafe extern "C" fn hew_bytes_eq(
     a_slice == b_slice
 }
 
-/// Convert a `Bytes` value to a NUL-terminated UTF-8 C string (lossy).
+/// Convert a `Bytes` value to a managed UTF-8 string (lossy).
 ///
 /// This is the canonical `Bytes -> String` runtime conversion. It takes a
 /// POINTER to the caller's `BytesTriple` (the address of the `bytes` value's
@@ -778,9 +864,8 @@ pub unsafe extern "C" fn hew_bytes_eq(
 /// small-struct classification vs Rust's repr(C) two-register pair), so codegen
 /// passes the triple's address (the uniform by-pointer bytes-param convention).
 ///
-/// Invalid UTF-8 sequences are replaced with U+FFFD. The returned pointer is
-/// allocated via `libc::malloc`; the caller (typically the Hew string GC)
-/// must `libc::free` it.
+/// Invalid UTF-8 sequences are replaced with U+FFFD. The caller owns the
+/// returned managed string handle and releases it with `hew_string_drop`.
 ///
 /// # Safety
 ///
@@ -788,7 +873,9 @@ pub unsafe extern "C" fn hew_bytes_eq(
 /// `ptr + offset` must be valid for `len` bytes. A null `ptr` (or a null
 /// `triple` pointer) is treated as the empty byte region.
 #[no_mangle]
-pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut std::ffi::c_char {
+pub unsafe extern "C" fn hew_bytes_decode_utf8_lossy(
+    triple: *const BytesTriple,
+) -> *mut hew_cabi::string::HewString {
     let triple = if triple.is_null() {
         BytesTriple {
             ptr: std::ptr::null_mut(),
@@ -801,13 +888,7 @@ pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut
         unsafe { *triple }
     };
     if triple.len == 0 || triple.ptr.is_null() {
-        // Return an empty NUL-terminated, header-aware string.
-        let out = crate::cabi::alloc_cstring_from_str(""); // CSTRING-ALLOC: str-open (hew_bytes_to_string empty path — header-aware String result; reaches hew_string_drop)
-        if out.is_null() {
-            // SAFETY: abort is always safe.
-            unsafe { libc::abort() };
-        }
-        return out;
+        return std::ptr::null_mut();
     }
 
     // SAFETY: ptr + offset is valid for len bytes per caller contract.
@@ -815,13 +896,73 @@ pub unsafe extern "C" fn hew_bytes_to_string(triple: *const BytesTriple) -> *mut
         std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
     };
     let s = String::from_utf8_lossy(data);
-    // Header-aware (S1): the result reaches hew_string_drop / free_cstring.
-    let out = crate::cabi::alloc_cstring_from_str(&s); // CSTRING-ALLOC: str-open (hew_bytes_to_string — header-aware String result; reaches hew_string_drop)
-    if out.is_null() {
-        // SAFETY: abort is always safe.
-        unsafe { libc::abort() };
+    hew_cabi::string::string_from_str(&s)
+}
+
+/// Validate a byte region as UTF-8 and initialize either a managed string or
+/// the exact [`std::str::Utf8Error`] position facts.
+///
+/// Returns `0` after initializing `value_out`. Returns `1` after setting
+/// `value_out` to the canonical empty pointer and initializing the two error
+/// outputs. `error_len_out == 0` represents an incomplete trailing sequence;
+/// otherwise it is the invalid sequence length. Invalid data is a value-level
+/// result, never a native fault.
+///
+/// # Safety
+///
+/// `triple` must be null (empty) or point to a valid [`BytesTriple`]. Every
+/// output pointer must be aligned, uniquely writable, and distinct.
+#[no_mangle]
+pub unsafe extern "C" fn hew_bytes_decode_utf8(
+    triple: *const BytesTriple,
+    value_out: *mut *mut hew_cabi::string::HewString,
+    valid_up_to_out: *mut usize,
+    error_len_out: *mut usize,
+) -> u8 {
+    if value_out.is_null() || valid_up_to_out.is_null() || error_len_out.is_null() {
+        std::process::abort();
     }
-    out
+    let triple = if triple.is_null() {
+        BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        }
+    } else {
+        // SAFETY: the caller supplies a readable initialized triple.
+        unsafe { *triple }
+    };
+    let bytes = if triple.len == 0 {
+        &[][..]
+    } else {
+        if triple.ptr.is_null() {
+            std::process::abort();
+        }
+        // SAFETY: the triple contract covers the active byte range.
+        unsafe {
+            std::slice::from_raw_parts(triple.ptr.add(triple.offset as usize), triple.len as usize)
+        }
+    };
+    match hew_cabi::string::string_from_utf8(bytes) {
+        Ok(value) => {
+            // SAFETY: all outputs are uniquely writable by contract.
+            unsafe {
+                value_out.write(value);
+                valid_up_to_out.write(0);
+                error_len_out.write(0);
+            }
+            0
+        }
+        Err(error) => {
+            // SAFETY: all outputs are uniquely writable by contract.
+            unsafe {
+                value_out.write(std::ptr::null_mut());
+                valid_up_to_out.write(error.valid_up_to());
+                error_len_out.write(error.error_len().unwrap_or(0));
+            }
+            1
+        }
+    }
 }
 
 /// Create a `BytesTriple` from a NUL-terminated C string.
@@ -1114,6 +1255,33 @@ pub unsafe extern "C-unwind" fn hew_bytes_slice(
     }
 }
 
+/// Write `src[start..end)` into `out` as an independently droppable
+/// `BytesTriple`.
+///
+/// This is the entry the compiler emits for `b[a..b]`, `b[a..]`, `b[..b]` and
+/// `b[..]`. It exists alongside [`hew_bytes_slice`] because generated code
+/// passes and receives byte triples through pointers rather than by value.
+/// Bounds are proved by the caller's own guard before this is reached; the
+/// checks in [`hew_bytes_slice`] remain as defence in depth.
+///
+/// # Safety
+///
+/// `src` and `out` must be valid, suitably aligned `BytesTriple` pointers, and
+/// `src` must describe a live bytes allocation.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_bytes_slice_owned(
+    src: *const BytesTriple,
+    start: i64,
+    end: i64,
+    out: *mut BytesTriple,
+) {
+    // SAFETY: the caller guarantees both pointers address valid triples.
+    unsafe {
+        let source = &*src;
+        *out = hew_bytes_slice(source.ptr, source.offset, source.len, start, end);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1203,6 +1371,129 @@ mod tests {
 
         // SAFETY: triple.ptr is valid.
         unsafe { hew_bytes_drop(triple.ptr) };
+    }
+
+    #[test]
+    fn push_owned_transfers_empty_input_into_initialized_output() {
+        let mut old = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: old owns empty bytes; out is distinct uninitialized storage.
+        unsafe { hew_bytes_push_owned(&raw mut old, b'A', out.as_mut_ptr()) };
+        // SAFETY: the operation initializes out on return.
+        let updated = unsafe { out.assume_init() };
+        assert!(old.ptr.is_null());
+        assert_eq!((old.offset, old.len), (0, 0));
+        assert_eq!(updated.len, 1);
+        // SAFETY: updated owns one initialized byte, then is released once.
+        unsafe {
+            assert_eq!(*updated.ptr.add(updated.offset as usize), b'A');
+            hew_bytes_drop(updated.ptr);
+        }
+    }
+
+    #[test]
+    fn append_owned_self_alias_survives_growth_and_clears_moved_header() {
+        let input = b"0123456789abcdef";
+        // SAFETY: input contains input.len() readable bytes.
+        let mut old = unsafe { hew_bytes_from_static(input.as_ptr(), input.len() as u32) };
+        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        let old_ptr = &raw mut old;
+        // SAFETY: the source may alias the initialized receiver; out is distinct.
+        unsafe { hew_bytes_append_owned(old_ptr, old_ptr, out.as_mut_ptr()) };
+        // SAFETY: append initializes the output owner on return.
+        let updated = unsafe { out.assume_init() };
+        assert!(old.ptr.is_null());
+        assert_eq!((old.offset, old.len), (0, 0));
+        assert_eq!(updated.len, 32);
+        // SAFETY: updated owns its initialized region, then is released once.
+        unsafe {
+            assert_eq!(
+                std::slice::from_raw_parts(updated.ptr.add(updated.offset as usize), 32),
+                b"0123456789abcdef0123456789abcdef"
+            );
+            hew_bytes_drop(updated.ptr);
+        }
+    }
+
+    #[test]
+    fn push_owned_preserves_shared_slice_and_clears_moved_header() {
+        // SAFETY: the source literal has two readable bytes.
+        let original = unsafe { hew_bytes_from_static(b"xA".as_ptr(), 2) };
+        let mut old = BytesTriple {
+            ptr: original.ptr,
+            offset: 1,
+            len: 1,
+        };
+        // SAFETY: retain the shared allocation for the slice's owning header.
+        unsafe { hew_bytes_clone_ref(original.ptr) };
+        let mut out = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: old owns its retained reference; out is distinct and uninitialized.
+        unsafe { hew_bytes_push_owned(&raw mut old, b'B', out.as_mut_ptr()) };
+        // SAFETY: the operation initializes out on return.
+        let updated = unsafe { out.assume_init() };
+        assert!(old.ptr.is_null());
+        assert_eq!((old.offset, old.len), (0, 0));
+        assert_eq!(original.len, 2);
+        assert_eq!(updated.len, 2);
+        // SAFETY: both values own their active regions and are released once.
+        unsafe {
+            assert_eq!(std::slice::from_raw_parts(original.ptr, 2), b"xA");
+            assert_eq!(
+                std::slice::from_raw_parts(updated.ptr.add(updated.offset as usize), 2),
+                b"AB"
+            );
+            hew_bytes_drop(original.ptr);
+            hew_bytes_drop(updated.ptr);
+        }
+    }
+
+    #[test]
+    fn literal_new_copies_exact_bytes_into_independent_owner() {
+        let mut source = *b"a\0bc";
+        let mut output = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: source has three readable bytes; output is aligned writable storage.
+        unsafe { hew_bytes_literal_new(source.as_ptr(), 3, output.as_mut_ptr()) };
+        // SAFETY: literal_new initialized output.
+        let value = unsafe { output.assume_init() };
+        source[0] = b'z';
+        assert_eq!(value.len, 3);
+        assert_eq!(value.offset, 0);
+        assert!(!value.ptr.is_null());
+        // SAFETY: value owns three initialized bytes.
+        unsafe {
+            assert_eq!(std::slice::from_raw_parts(value.ptr, 3), b"a\0b");
+            hew_bytes_drop(value.ptr);
+        }
+        assert_eq!(source, *b"z\0bc");
+    }
+
+    #[test]
+    fn literal_new_empty_input_initializes_empty_bytes() {
+        let mut output = std::mem::MaybeUninit::<BytesTriple>::uninit();
+        // SAFETY: zero length permits null input; output is aligned writable storage.
+        unsafe { hew_bytes_literal_new(std::ptr::null(), 0, output.as_mut_ptr()) };
+        // SAFETY: literal_new initialized output.
+        let value = unsafe { output.assume_init() };
+        assert!(value.ptr.is_null());
+        assert_eq!(value.offset, 0);
+        assert_eq!(value.len, 0);
+        // SAFETY: dropping empty bytes is permitted.
+        unsafe { hew_bytes_drop(value.ptr) };
+    }
+
+    #[test]
+    fn byte_allocation_size_refuses_header_and_pointer_range_overflow() {
+        let largest_capacity = isize::MAX as usize - HEADER_SIZE;
+        assert_eq!(
+            buffer_allocation_size(largest_capacity),
+            Some(isize::MAX as usize)
+        );
+        assert_eq!(buffer_allocation_size(largest_capacity + 1), None);
+        assert_eq!(buffer_allocation_size(usize::MAX), None);
     }
 
     #[test]
@@ -1352,10 +1643,8 @@ mod tests {
                 offset: 0,
                 len: 0,
             };
-            let s = hew_bytes_to_string(std::ptr::addr_of!(empty_triple));
-            assert!(!s.is_null());
-            assert_eq!(*s, 0);
-            crate::cabi::free_cstring(s); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
+            let s = hew_bytes_decode_utf8_lossy(std::ptr::addr_of!(empty_triple));
+            assert!(s.is_null());
 
             assert!(hew_bytes_eq(std::ptr::null(), 0, 0, std::ptr::null(), 0, 0,));
         }
@@ -1456,15 +1745,15 @@ mod tests {
         let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
 
         // SAFETY: triple.ptr + offset is valid for triple.len bytes.
-        let cstr = unsafe { hew_bytes_to_string(std::ptr::addr_of!(triple)) };
-        assert!(!cstr.is_null());
+        let string = unsafe { hew_bytes_decode_utf8_lossy(std::ptr::addr_of!(triple)) };
+        assert!(!string.is_null());
 
-        // SAFETY: cstr is a valid NUL-terminated C string.
-        let s = unsafe { std::ffi::CStr::from_ptr(cstr) };
-        assert_eq!(s.to_str().unwrap(), "hello world");
+        // SAFETY: `string` remains a live managed string handle.
+        let decoded = unsafe { hew_cabi::string::string_as_str(string) };
+        assert_eq!(decoded, "hello world");
 
-        // SAFETY: cstr is a valid NUL-terminated string.
-        let round_trip = unsafe { hew_bytes_from_str(cstr.cast::<u8>()) };
+        // SAFETY: `string` is a live managed string handle.
+        let round_trip = unsafe { crate::string::hew_string_to_bytes(string) };
         assert_eq!(round_trip.len, 11);
 
         // SAFETY: round_trip.ptr + offset is valid for round_trip.len bytes.
@@ -1478,9 +1767,88 @@ mod tests {
 
         // SAFETY: All pointers are valid.
         unsafe {
-            crate::cabi::free_cstring(cstr); // CSTRING-FREE: str-open (test frees hew_bytes_to_string output)
+            hew_cabi::string::string_release(string);
             hew_bytes_drop(triple.ptr);
             hew_bytes_drop(round_trip.ptr);
+        }
+    }
+
+    #[test]
+    fn decode_utf8_preserves_multibyte_and_embedded_nul() {
+        let data = b"A\0\xc3\xa9\xf0\x9f\xa6\x80";
+        // SAFETY: test bytes remain readable and the result is released below.
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        let mut value = std::ptr::null_mut();
+        let mut valid_up_to = usize::MAX;
+        let mut error_len = usize::MAX;
+
+        // SAFETY: triple is valid and outputs are distinct writable slots.
+        let status = unsafe {
+            hew_bytes_decode_utf8(
+                std::ptr::addr_of!(triple),
+                std::ptr::addr_of_mut!(value),
+                std::ptr::addr_of_mut!(valid_up_to),
+                std::ptr::addr_of_mut!(error_len),
+            )
+        };
+        assert_eq!(status, 0);
+        assert_eq!(valid_up_to, 0);
+        assert_eq!(error_len, 0);
+        // SAFETY: successful decode initialized one live managed string.
+        assert_eq!(unsafe { hew_cabi::string::string_as_bytes(value) }, data);
+
+        // SAFETY: release both independent owners.
+        unsafe {
+            hew_cabi::string::string_release(value);
+            hew_bytes_drop(triple.ptr);
+        }
+    }
+
+    #[test]
+    fn decode_utf8_reports_invalid_and_incomplete_sequences() {
+        for (data, expected_valid, expected_len) in
+            [(&b"a\xff"[..], 1, 1), (&b"a\xf0\x9f"[..], 1, 0)]
+        {
+            // SAFETY: test bytes remain readable and the result is released below.
+            let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+            let mut value = std::ptr::without_provenance_mut(1);
+            let mut valid_up_to = usize::MAX;
+            let mut error_len = usize::MAX;
+
+            // SAFETY: triple is valid and outputs are distinct writable slots.
+            let status = unsafe {
+                hew_bytes_decode_utf8(
+                    std::ptr::addr_of!(triple),
+                    std::ptr::addr_of_mut!(value),
+                    std::ptr::addr_of_mut!(valid_up_to),
+                    std::ptr::addr_of_mut!(error_len),
+                )
+            };
+            assert_eq!(status, 1);
+            assert!(value.is_null());
+            assert_eq!(valid_up_to, expected_valid);
+            assert_eq!(error_len, expected_len);
+
+            // SAFETY: the invalid path creates no string owner; release bytes only.
+            unsafe { hew_bytes_drop(triple.ptr) };
+        }
+    }
+
+    #[test]
+    fn decode_utf8_lossy_is_explicit() {
+        let data = b"a\xffb";
+        // SAFETY: test bytes remain readable and both results are released below.
+        let triple = unsafe { hew_bytes_from_static(data.as_ptr(), data.len() as u32) };
+        // SAFETY: `triple` owns a readable active byte range.
+        let value = unsafe { hew_bytes_decode_utf8_lossy(std::ptr::addr_of!(triple)) };
+        // SAFETY: lossy decode initialized one live managed string.
+        let decoded = unsafe { hew_cabi::string::string_as_str(value) };
+        assert_eq!(decoded, "a\u{fffd}b");
+
+        // SAFETY: release both independent owners.
+        unsafe {
+            hew_cabi::string::string_release(value);
+            hew_bytes_drop(triple.ptr);
         }
     }
 
@@ -1696,14 +2064,30 @@ mod tests {
         run_aborting_subprocess("bytes_slice_offset_overflow_aborts");
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[cfg_attr(
-        miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+    #[allow(
+        clippy::undocumented_unsafe_blocks,
+        reason = "test code: inline FFI invocations"
     )]
-    fn bytes_pop_empty_aborts() {
-        run_aborting_subprocess("bytes_pop_empty_aborts");
+    fn bytes_pop_empty_reports_absence() {
+        // `bytes.pop()` is `Option<u8>`: an empty buffer answers with the
+        // out-of-byte-range `-1` sentinel, distinct from every real byte.
+        let mut empty = BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+        unsafe {
+            assert_eq!(hew_bytes_pop(&mut empty), -1);
+            assert_eq!(empty.len, 0);
+            // Zero and 255 stay distinguishable from absence.
+            hew_bytes_push(&mut empty, 0);
+            hew_bytes_push(&mut empty, 255);
+            assert_eq!(hew_bytes_pop(&mut empty), 255);
+            assert_eq!(hew_bytes_pop(&mut empty), 0);
+            assert_eq!(hew_bytes_pop(&mut empty), -1);
+            hew_bytes_drop(empty.ptr);
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2086,16 +2470,6 @@ mod tests {
                 let ptr = hew_bytes_new(16);
                 refcount(ptr).store(BYTES_RC_MAX + 1, Ordering::Relaxed);
                 hew_bytes_clone_ref(ptr); // must abort, never returns
-            },
-            "bytes_pop_empty_aborts" => unsafe {
-                // pop() on a fresh empty triple fails closed (no Option in the
-                // spec signature) — same termination class as index OOB.
-                let mut empty = BytesTriple {
-                    ptr: std::ptr::null_mut(),
-                    offset: 0,
-                    len: 0,
-                };
-                let _ = hew_bytes_pop(&mut empty);
             },
             "bytes_set_oob_aborts" => unsafe {
                 // set() past the end fails closed via the index-OOB trap.

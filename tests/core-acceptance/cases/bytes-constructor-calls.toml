@@ -1,0 +1,10 @@
+[[case]]
+id = "bytes-constructor-calls"
+intent = "Fresh bytes initialize their complete value before nested calls, growth and return."
+source = "cases/bytes-constructor-calls.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "bytes constructor and encoding calls ok\n"
+exit = 0

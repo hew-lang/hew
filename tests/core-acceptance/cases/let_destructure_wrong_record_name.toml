@@ -1,0 +1,13 @@
+[[case]]
+id = "let_destructure_wrong_record_name"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/let_destructure_wrong_record_name.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 11
+column = 9
+message = "Other"

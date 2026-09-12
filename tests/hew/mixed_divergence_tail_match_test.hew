@@ -22,15 +22,15 @@ import std.string;
 import std.testing;
 
 enum Action {
-    Move;
-    Left;
-    Right;
-    Wait;
+    Move,
+    Left,
+    Right,
+    Wait,
 }
 
 type Pt {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 // ── string return: one `return`-diverging arm, three value arms ───────────

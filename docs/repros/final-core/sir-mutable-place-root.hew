@@ -1,0 +1,9 @@
+// E_SIR_UNSUPPORTED: mutable place root `b<n>` is not mutable. A `Vec` pipeline
+// whose filter closure captures an outer binding lowers to a place the semantic
+// lowerer treats as immutable.
+fn main() {
+    let numbers: Vec<i64> = [1, 2, 3, 4, 5];
+    let threshold = 2;
+    let result = numbers.filter(|x: i64| x > threshold).reduce(|a: i64, b: i64| a + b, 0);
+    println(result);
+}

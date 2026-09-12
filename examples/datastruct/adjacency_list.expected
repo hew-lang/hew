@@ -1,0 +1,11 @@
+PASS: total directed edges = 16
+PASS: degree(0) = 2
+PASS: degree(1) = 3
+PASS: edge (0,1) exists
+PASS: edge (0,3) absent
+PASS: edge (3,5) bidirectional
+PASS: degree(5) = 2
+PASS: offsets length = 7
+---
+Passed: 8/8
+ALL PASS

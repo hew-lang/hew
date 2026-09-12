@@ -1,0 +1,39 @@
+// `await tasks` over a `Vec<Task<T>>` joins every child and yields the results
+// in the vector's own order, not completion order. The children fan out over
+// three actors, and the slowest is forked first so completion order and source
+// order differ.
+actor Worker {
+    var served: i64 = 0,
+
+    receive fn compute(n: i64) -> i64 {
+        served = served + 1;
+        sleep(n * 1ms);
+        n * n
+    }
+
+    receive fn served_count() -> i64 { served }
+}
+
+fn main() {
+    let workers = [spawn Worker(), spawn Worker(), spawn Worker()];
+    var tasks = [fork workers[0].compute(6)];
+    for i in 1..6 {
+        tasks.push(fork workers[i % 3].compute(6 - i));
+    }
+    let squares = await tasks;
+    for square in squares {
+        match square {
+            .Ok(value) => println(value),
+            .Err(_) => panic("a forked call failed"),
+        }
+    }
+    var served = 0;
+    for worker in workers {
+        match worker.served_count() {
+            .Ok(count) => { served = served + count; },
+            .Err(_) => panic("served count query failed"),
+        }
+        close(worker);
+    }
+    println(served);
+}

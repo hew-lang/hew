@@ -1,0 +1,19 @@
+fn narrow() -> i32 { -2 }
+fn main() {
+    let wide: i64 = 3;
+    println(narrow() < wide);
+    println(wide != narrow());
+    println(narrow() + wide);
+    println(wide - narrow());
+    let small: u16 = 65535;
+    let large: u64 = 65536;
+    println(small < large);
+    println(small + large);
+    let single: f32 = 1.5;
+    let double: f64 = 2.5;
+    println(single < double);
+    println(single + double);
+    for i in 0 .. wide {
+        println(narrow() != i);
+    }
+}

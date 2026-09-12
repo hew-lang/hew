@@ -10,7 +10,9 @@
 //! actor-owned stream half. The distributed Node API is a separate roadmap
 //! surface; this example uses the stable local TCP API.
 
-import std.channel.channel;
+import std.encoding.utf8;
+
+import std.channel;
 
 import std.io;
 
@@ -21,17 +23,20 @@ import std.os;
 import std.stream;
 
 actor ChatReader {
-    let input: stream.Stream<bytes>;
-    let done: channel.Sender<string>;
+    let input: stream.Stream<bytes>,
+    let done: channel.Sender<string>,
     /// The terminal path publishes completion and returns. `main` remains in
     /// its stdin loop until `/quit`, then closes the sink, waits for this
     /// status, and exits; runtime teardown closes both handles exactly once.
     receive fn pump() {
         var reading = true;
         while reading {
-            match await input.recv() {
+            match input.recv() {
                 .Some(chunk) => {
-                    let msg = chunk.to_string();
+                    let msg = utf8.decode(chunk) handle error {
+                        done.send(f"[client] invalid UTF-8: {error}");
+                        return;
+                    };
                     if msg.contains("__HEW_TCP_DISCONNECT__") {
                         done.send("[client] server acknowledged disconnect");
                         reading = false;
@@ -54,20 +59,25 @@ actor ChatReader {
 fn main() {
     var port: string = "9000";
     var name: string = "guest";
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc > 1 {
-        port = os.args().get(1);
+        if let .Some(value) = arguments.get(1) {
+            port = value;
+        }
     }
     if argc > 2 {
-        name = os.args().get(2);
+        if let .Some(value) = arguments.get(2) {
+            name = value;
+        }
     }
     let addr = f"127.0.0.1:{port}";
     let connect_timeout_sec: i64 = 5;
     let connect_timeout_usec: i64 = 0;
     let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
         .Ok(conn) => conn,
-        .Err(err) => {
-            panic(f"[client] connect to {addr} failed: {err}");
+        .Err(_) => {
+            panic(f"[client] connect to {addr} failed");
         },
     };
     match conn.set_read_timeout(-1) {
@@ -83,10 +93,13 @@ fn main() {
     let (input, output) = conn.into_stream_sink();
     let (done_tx, done_rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {
         .Ok(pair) => pair,
-        .Err(err) => panic(f"channel.new failed: {err}"),
+        .Err(_) => panic("channel.new failed"),
     };
     let reader = spawn ChatReader(input: input, done: done_tx);
-    reader.pump();
+    // A handler call is an ask, and `pump` runs until the stream ends, so
+    // asking it would hold main out of its stdin loop for the whole session.
+    // The forked task joins at main's scope exit, after `done_rx.recv()`.
+    fork reader.pump();
     loop {
         let line = io.read_line();
         if line.contains("/quit") {

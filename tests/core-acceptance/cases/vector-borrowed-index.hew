@@ -1,0 +1,32 @@
+// `v[i]` over a Vec whose element type has no clone is a borrow-derived read:
+// the slot keeps its owner, the read binds a loan of it, and the vector is
+// still whole afterwards.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+fn main() -> i64 {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "t", id: 1 });
+    tokens.push(Token { label: "t", id: 2 });
+
+    println(tokens[0].id);
+    tokens[1].show();
+    // Reading the same slot twice does not move or copy it.
+    println(tokens[0].label);
+    tokens[0].show();
+    println(f"len={tokens.len()}");
+    0
+}

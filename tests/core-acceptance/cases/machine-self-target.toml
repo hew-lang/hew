@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-self-target"
+intent = "A transition whose source and target are the same state produces that state by naming `state`, and the staged payload survives the identity fallback."
+source = "cases/machine-self-target.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "idle\nfailing 2\nfailing 2\n"
+exit = 0

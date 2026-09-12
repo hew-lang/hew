@@ -1,0 +1,159 @@
+// Every HashMap iteration form goes through one cursor contract: `for (k, v)
+// in m`, `m.into_iter()`, and the `keys()` / `values()` / `entries()`
+// projections all read the same map state and yield independently owned
+// key/value pairs. The map stays live and unchanged behind the cursor, so a
+// later read sees exactly what was inserted.
+//
+// Iteration order is unspecified (the runtime walks slots), so every oracle
+// here is order-independent: sums, counts and lengths, never a printed
+// sequence.
+
+// Owned string keys and values: each yielded pair is a fresh owner that the
+// loop body drops, and the map keeps its own copies.
+fn owned_pairs() {
+    var m: HashMap<string, string> = HashMap.new();
+    m.insert("alpha", "one");
+    m.insert("beta", "two");
+    m.insert("gamma", "three");
+    var chars = 0;
+    var pairs = 0;
+    for (k, v) in m {
+        chars = chars + k.len() + v.len();
+        pairs = pairs + 1;
+    }
+    // The map is untouched by iteration.
+    println(f"pairs={pairs} chars={chars} len={m.len()}");
+}
+
+// Scalar keys and values reach the same cursor. A `HashMapIter<i64, i64>` is a
+// record of two snapshot vectors, not a bit-copyable collection of its type
+// arguments.
+fn scalar_pairs() {
+    var m: HashMap<i64, i64> = HashMap.new();
+    for i in 0..64 {
+        m.insert(i, i * 2);
+    }
+    var keys = 0;
+    var values = 0;
+    for (k, v) in m {
+        keys = keys + k;
+        values = values + v;
+    }
+    println(f"keys={keys} values={values}");
+}
+
+// The projections are the same read: they agree with the for-in walk and with
+// each other, and each hands back an independently owned element.
+fn projections() {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("a", 10);
+    m.insert("b", 20);
+    m.insert("c", 30);
+    var key_chars = 0;
+    for k in m.keys() {
+        key_chars = key_chars + k.len();
+    }
+    var value_sum = 0;
+    for v in m.values() {
+        value_sum = value_sum + v;
+    }
+    var entry_sum = 0;
+    var entry_chars = 0;
+    for e in m.entries() {
+        entry_chars = entry_chars + e.0.len();
+        entry_sum = entry_sum + e.1;
+    }
+    println(f"keys={key_chars} values={value_sum} entries={entry_chars}/{entry_sum}");
+}
+
+// The pipeline form drives the same cursor by hand: `into_iter()` hands back a
+// `HashMapIter<K, V>` whose `next` yields owned pairs until it is exhausted,
+// and the cursor stays live after exhaustion.
+fn pipeline_cursor() {
+    var m: HashMap<string, i64> = HashMap.new();
+    m.insert("a", 1);
+    m.insert("b", 2);
+    m.insert("c", 4);
+    var it = m.into_iter();
+    var total = 0;
+    var seen = 0;
+    loop {
+        match it.next() {
+            .Some(pair) => {
+                total = total + pair.1 + pair.0.len();
+                seen = seen + 1;
+            },
+            .None => { break; },
+        }
+    }
+    println(f"cursor total={total} seen={seen} len={m.len()}");
+}
+
+// Iterating after a removal sees the map as it stands: the removed entry's
+// owned key and value are released once by the removal, not again by the walk.
+fn after_removal() {
+    var m: HashMap<string, string> = HashMap.new();
+    m.insert("keep", "kept-value");
+    m.insert("drop", "dropped-value");
+    m.insert("also", "another-value");
+    let removed = match m.remove("drop") {
+        .Some(v) => v.len(),
+        .None => 0,
+    };
+    var seen = 0;
+    var chars = 0;
+    for (k, v) in m {
+        seen = seen + 1;
+        chars = chars + k.len() + v.len();
+    }
+    println(f"removed={removed} seen={seen} chars={chars} len={m.len()}");
+}
+
+// A `HashSet` walk is the control: it reaches the same owned-element discipline
+// through its own snapshot, and the set stays live after the loop.
+fn set_control() {
+    var s: HashSet<string> = HashSet.new();
+    s.insert("one");
+    s.insert("two");
+    s.insert("three");
+    var chars = 0;
+    var seen = 0;
+    for x in s {
+        chars = chars + x.len();
+        seen = seen + 1;
+    }
+    println(f"set seen={seen} chars={chars} len={s.len()}");
+}
+
+// A map of owned collections: iterating hands out fresh vectors whose elements
+// are released with them, while the map keeps its own.
+fn nested_values() {
+    var m: HashMap<string, Vec<string>> = HashMap.new();
+    var first: Vec<string> = Vec.new();
+    first.push("a");
+    first.push("bb");
+    var second: Vec<string> = Vec.new();
+    second.push("ccc");
+    m.insert("first", first);
+    m.insert("second", second);
+    var elements = 0;
+    var chars = 0;
+    for (k, v) in m {
+        elements = elements + v.len();
+        for item in v {
+            chars = chars + item.len();
+        }
+        chars = chars + k.len();
+    }
+    println(f"nested elements={elements} chars={chars} len={m.len()}");
+}
+
+fn main() {
+    owned_pairs();
+    scalar_pairs();
+    projections();
+    pipeline_cursor();
+    after_removal();
+    set_control();
+    nested_values();
+}

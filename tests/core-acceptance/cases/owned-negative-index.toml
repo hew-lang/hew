@@ -1,0 +1,11 @@
+[[case]]
+id = "owned-negative-index"
+intent = "A negative bytes index reports a logical fault and releases live string and bytes owners without continuing."
+source = "cases/owned-negative-index.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

@@ -35,14 +35,12 @@ mod let_wildcard_discard;
 mod loop_break_continue_lower;
 #[path = "lowering_core/m3_surface_pid_lower.rs"]
 mod m3_surface_pid_lower;
-#[path = "lowering_core/machine_hir.rs"]
-mod machine_hir;
-#[path = "lowering_core/machine_walker_coverage.rs"]
-mod machine_walker_coverage;
 #[path = "lowering_core/nested_match_payload_lower.rs"]
 mod nested_match_payload_lower;
 #[path = "lowering_core/numeric_cast_lowering.rs"]
 mod numeric_cast_lowering;
+#[path = "lowering_core/optional_control_flow.rs"]
+mod optional_control_flow;
 #[path = "lowering_core/pattern_plan_lowering.rs"]
 mod pattern_plan_lowering;
 #[path = "lowering_core/raw_pointer_no_lowering.rs"]
@@ -73,3 +71,9 @@ mod vec_index_lowering;
 mod vec_slice_lowering;
 #[path = "lowering_core/vertical.rs"]
 mod vertical;
+
+#[path = "lowering_core/scope_recovery.rs"]
+mod scope_recovery;
+
+#[path = "lowering_core/checked_await.rs"]
+mod checked_await;

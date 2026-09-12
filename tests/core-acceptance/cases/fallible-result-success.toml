@@ -1,0 +1,10 @@
+[[case]]
+id = "fallible-result-success"
+intent = "A Result declared as the success type remains an inner value, including Err, and is never implicitly forwarded as the outer failure."
+source = "cases/fallible-result-success.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "success:INNER\nfailure:OUTER\n"
+exit = 0

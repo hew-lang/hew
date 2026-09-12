@@ -1,25 +1,21 @@
-//! Measured ownership of the OS / I/O `-> string` runtime exports.
-//!
-//! A `fresh` FFI row is not enough to mint a caller-side `hew_string_drop`:
-//! these probes establish the separate retention fact for every symbol below.
-//! R1 keeps two results live and requires distinct allocations; R2 reads the
-//! header's owner count through `cstring_ensure_unique`; R3 releases both and
-//! then reads again from the still-live producer/input state.  Together they
-//! establish that the one owner at handoff is the caller's and no producer
-//! retains a pointer into that allocation.
+//! Managed OS and I/O results remain valid independently of sibling results.
+//! Each producer survives releasing its prior results. Empty values use the
+//! canonical null handle; non-empty fresh results own distinct allocations.
 
 #![cfg(unix)]
 
-use std::ffi::{c_char, CStr, CString};
+#[path = "../src/test_string.rs"]
+mod test_string;
 use std::io::Write as _;
 use std::process::{Command, Stdio};
+use test_string::ManagedString;
 
-use hew_cabi::cabi::{cstring_ensure_unique, free_cstring, str_to_malloc};
+use hew_cabi::string::{string_as_bytes, string_from_str, string_release, HewString};
 use hew_runtime::env::{
     hew_args_get, hew_cwd, hew_env_get, hew_env_remove, hew_env_set, hew_home_dir, hew_hostname,
     hew_temp_dir,
 };
-use hew_runtime::file_io::hew_file_read;
+use hew_runtime::file_io::{hew_file_read, hew_stdin_read_line};
 use hew_runtime::path::{
     hew_glob, hew_glob_count, hew_glob_error, hew_glob_free, hew_glob_get, hew_glob_is_valid,
     hew_path_absolute,
@@ -34,76 +30,45 @@ use hew_runtime::stream::{
 
 const STDIN_CHILD: &str = "HEW_OS_IO_RETENTION_STDIN_CHILD";
 
-/// Establish R1/R2/R3 for one result producer whose source state remains live
+/// Check independent result ownership for one result producer whose source state remains live
 /// across calls.  `call` deliberately runs three times: freeing a returned
 /// string must never corrupt the source used for the third result.
-fn assert_result_is_transferred(symbol: &str, mut call: impl FnMut() -> *mut c_char) {
+fn assert_managed_result_is_transferred(symbol: &str, mut call: impl FnMut() -> *mut HewString) {
     let first = call();
     let second = call();
-    assert!(
-        !first.is_null() && !second.is_null(),
-        "{symbol}: expected non-null results"
-    );
-
-    // R1: a producer-held borrow could return one live address twice; these
-    // two callers must instead own independent allocations simultaneously.
-    assert_ne!(
-        first, second,
-        "{symbol}: two live results share an address rather than transferring fresh allocations"
-    );
-
-    // R2: `cstring_ensure_unique` is a non-destructive owner-count read when
-    // rc == 1.  A copy would mean the producer retained another owner.
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: each pointer is a live header-aware Hew string returned by
-        // the symbol under test.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "{symbol}: {label} was not uniquely owned at handoff"
-        );
+    if !first.is_null() {
+        assert_ne!(first, second, "{symbol}: distinct owners");
     }
-
-    // SAFETY: `first` is a live NUL-terminated result.
-    let text = unsafe { CStr::from_ptr(first) }.to_bytes().to_vec();
-
-    // R3: these are the balancing releases named by every audited row.
-    // SAFETY: R2 established that both pointers are live sole owners.
+    // SAFETY: both calls return live managed owners.
+    let expected = unsafe { string_as_bytes(first) }.to_vec();
+    // SAFETY: `first` and `second` are the two independent owners returned above.
     unsafe {
-        free_cstring(first);
-        free_cstring(second);
+        string_release(first);
+        assert_eq!(string_as_bytes(second), expected);
+        string_release(second);
     }
-
     let third = call();
-    assert!(
-        !third.is_null(),
-        "{symbol}: producer/input state did not survive releasing earlier results"
-    );
-    // SAFETY: `third` is a live NUL-terminated result.
-    let after = unsafe { CStr::from_ptr(third) }.to_bytes();
-    assert_eq!(
-        after,
-        text.as_slice(),
-        "{symbol}: caller release changed the producer/input state"
-    );
-    // SAFETY: R2's same producer invariant applies to this fresh result.
-    unsafe { free_cstring(third) };
+    // SAFETY: the third result remains live for the assertion and release.
+    unsafe {
+        assert_eq!(string_as_bytes(third), expected);
+        string_release(third);
+    }
 }
 
 #[test]
 fn args_get_result_is_transferred() {
-    assert_result_is_transferred("hew_args_get", || {
+    assert_managed_result_is_transferred("hew_args_get", || {
         // SAFETY: index zero is always a valid i32 input; null is handled by
         // the assertion in the shared retention probe.
         unsafe { hew_args_get(0) }
     });
 }
 
-struct EnvKey(CString);
+struct EnvKey(ManagedString);
 
 impl Drop for EnvKey {
     fn drop(&mut self) {
-        // SAFETY: the CString remains valid for this call; removal is the
+        // SAFETY: the managed string remains valid for this call; removal is the
         // matching cleanup for the test-only, process-unique name.
         unsafe { hew_env_remove(self.0.as_ptr()) };
     }
@@ -111,22 +76,23 @@ impl Drop for EnvKey {
 
 #[test]
 fn env_get_result_is_transferred() {
-    let key = EnvKey(
-        CString::new(format!("HEW_RETENTION_{}_{}", std::process::id(), line!()))
-            .expect("generated environment key contains no NUL"),
-    );
-    let value = CString::new("hew-os-io-retention").expect("literal contains no NUL");
-    // SAFETY: both CStrings are valid for the duration of the call.
+    let key = EnvKey(ManagedString::new(format!(
+        "HEW_RETENTION_{}_{}",
+        std::process::id(),
+        line!()
+    )));
+    let value = ManagedString::new("hew-os-io-retention");
+    // SAFETY: both managed values are valid for the duration of the call.
     assert_eq!(unsafe { hew_env_set(key.0.as_ptr(), value.as_ptr()) }, 0);
-    assert_result_is_transferred("hew_env_get", || {
-        // SAFETY: the test-owned CString remains valid for every probe call.
+    assert_managed_result_is_transferred("hew_env_get", || {
+        // SAFETY: the test-owned managed string remains valid for every probe call.
         unsafe { hew_env_get(key.0.as_ptr()) }
     });
 }
 
 #[test]
 fn cwd_result_is_transferred() {
-    assert_result_is_transferred("hew_cwd", || {
+    assert_managed_result_is_transferred("hew_cwd", || {
         // SAFETY: this no-argument export has no caller preconditions.
         unsafe { hew_cwd() }
     });
@@ -134,7 +100,7 @@ fn cwd_result_is_transferred() {
 
 #[test]
 fn home_dir_result_is_transferred() {
-    assert_result_is_transferred("hew_home_dir", || {
+    assert_managed_result_is_transferred("hew_home_dir", || {
         // SAFETY: this no-argument export has no caller preconditions.
         unsafe { hew_home_dir() }
     });
@@ -142,7 +108,7 @@ fn home_dir_result_is_transferred() {
 
 #[test]
 fn hostname_result_is_transferred() {
-    assert_result_is_transferred("hew_hostname", || {
+    assert_managed_result_is_transferred("hew_hostname", || {
         // SAFETY: this no-argument export has no caller preconditions.
         unsafe { hew_hostname() }
     });
@@ -150,7 +116,7 @@ fn hostname_result_is_transferred() {
 
 #[test]
 fn temp_dir_result_is_transferred() {
-    assert_result_is_transferred("hew_temp_dir", || {
+    assert_managed_result_is_transferred("hew_temp_dir", || {
         // SAFETY: this no-argument export has no caller preconditions.
         unsafe { hew_temp_dir() }
     });
@@ -160,34 +126,36 @@ fn temp_dir_result_is_transferred() {
 fn file_read_result_is_transferred() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let path = dir.path().join("retention.txt");
-    std::fs::write(&path, "file retention witness").expect("write fixture");
-    let path = CString::new(path.to_string_lossy().as_bytes()).expect("temporary path has no NUL");
-    assert_result_is_transferred("hew_file_read", || {
-        // SAFETY: the temporary path CString remains valid for every call.
-        unsafe { hew_file_read(path.as_ptr()) }
+    std::fs::write(&path, "file\0retention é中🙂").expect("write fixture");
+    let path = string_from_str(path.to_str().unwrap());
+    assert_managed_result_is_transferred("hew_file_read", || {
+        // SAFETY: the managed path remains live throughout these reads.
+        unsafe { hew_file_read(path) }
     });
+    // SAFETY: the fixture owns this path reference.
+    unsafe { string_release(path) };
 }
 
 #[test]
 fn path_absolute_result_is_transferred() {
-    let path = CString::new(".").expect("literal contains no NUL");
-    assert_result_is_transferred("hew_path_absolute", || {
-        // SAFETY: the literal path CString remains valid for every call.
+    let path = ManagedString::new(".");
+    assert_managed_result_is_transferred("hew_path_absolute", || {
+        // SAFETY: the literal path managed string remains valid for every call.
         unsafe { hew_path_absolute(path.as_ptr()) }
     });
 }
 
 #[test]
 fn glob_error_result_is_transferred() {
-    let pattern = CString::new("hew-retention-no-match-*-unlikely").expect("literal has no NUL");
-    // SAFETY: the pattern is a valid C string and the returned handle remains
+    let pattern = ManagedString::new("hew-retention-no-match-*-unlikely");
+    // SAFETY: the pattern is a valid managed string and the returned handle remains
     // live for all three borrowed-result reads.
     let result = unsafe { hew_glob(pattern.as_ptr()) };
     assert!(!result.is_null(), "glob must return a result handle");
     // SAFETY: `result` is a live result handle from `hew_glob` above.
     let valid = unsafe { hew_glob_is_valid(result) };
     assert!(valid);
-    assert_result_is_transferred("hew_glob_error", || {
+    assert_managed_result_is_transferred("hew_glob_error", || {
         // SAFETY: the caller keeps `result` live for every borrowed lookup.
         unsafe { hew_glob_error(result) }
     });
@@ -200,8 +168,7 @@ fn glob_get_result_is_transferred() {
     let dir = tempfile::tempdir().expect("temporary directory");
     let entry = dir.path().join("retention.txt");
     std::fs::write(&entry, "glob fixture").expect("write fixture");
-    let pattern = CString::new(format!("{}/*.txt", dir.path().display()))
-        .expect("temporary pattern has no NUL");
+    let pattern = ManagedString::new(format!("{}/*.txt", dir.path().display()));
     // SAFETY: the pattern is valid and the result remains live through the
     // getter's three reads.
     let result = unsafe { hew_glob(pattern.as_ptr()) };
@@ -211,7 +178,7 @@ fn glob_get_result_is_transferred() {
     // SAFETY: the validated result handle remains live for this count read.
     let count = unsafe { hew_glob_count(result) };
     assert_eq!(count, 1, "fixture must match once");
-    assert_result_is_transferred("hew_glob_get", || {
+    assert_managed_result_is_transferred("hew_glob_get", || {
         // SAFETY: the caller keeps `result` live for every indexed lookup.
         unsafe { hew_glob_get(result, 0) }
     });
@@ -220,33 +187,44 @@ fn glob_get_result_is_transferred() {
 }
 
 #[test]
-fn process_result_stdout_and_stderr_are_transferred() {
-    // Build the same retained source state `hew_process_run*` creates, without
-    // shelling out: the getters' contract is cloning these two result fields.
-    let stdout = str_to_malloc("stdout retention witness");
-    let stderr = str_to_malloc("stderr retention witness");
-    assert!(!stdout.is_null() && !stderr.is_null());
-    let result = Box::into_raw(Box::new(HewProcessResult {
-        exit_code: 0,
-        stdout,
-        stderr,
-    }));
-    assert_result_is_transferred("hew_process_result_stdout", || {
-        // SAFETY: `result` remains live until the explicit final free below.
-        unsafe { hew_process_result_stdout(result) }
-    });
-    assert_result_is_transferred("hew_process_result_stderr", || {
-        // SAFETY: `result` remains live until the explicit final free below.
-        unsafe { hew_process_result_stderr(result) }
-    });
-    // SAFETY: `result` owns the source fields and has not been released.
-    unsafe { hew_process_result_free(result) };
+fn process_result_stdout_and_stderr_are_retained() {
+    for release_result_first in [false, true] {
+        let result = Box::into_raw(Box::new(HewProcessResult {
+            exit_code: 0,
+            stdout: string_from_str("stdout\0é中🙂"),
+            stderr: string_from_str("stderr\0é中🙂"),
+        }));
+        // SAFETY: result is live, and every accessor transfers a retained owner.
+        unsafe {
+            let out1 = hew_process_result_stdout(result);
+            let out2 = hew_process_result_stdout(result);
+            let err = hew_process_result_stderr(result);
+            assert_eq!(out1, (*result).stdout);
+            assert_eq!(out2, out1);
+            assert_eq!(err, (*result).stderr);
+            if release_result_first {
+                hew_process_result_free(result);
+            }
+            assert_eq!(string_as_bytes(out1), "stdout\0é中🙂".as_bytes());
+            string_release(out1);
+            assert_eq!(string_as_bytes(out2), "stdout\0é中🙂".as_bytes());
+            assert_eq!(string_as_bytes(err), "stderr\0é中🙂".as_bytes());
+            string_release(out2);
+            string_release(err);
+            if !release_result_first {
+                let again = hew_process_result_stdout(result);
+                assert_eq!(string_as_bytes(again), "stdout\0é中🙂".as_bytes());
+                string_release(again);
+                hew_process_result_free(result);
+            }
+        }
+    }
 }
 
 #[test]
 fn stream_collect_string_result_is_transferred() {
     let payload = b"stream retention witness";
-    assert_result_is_transferred("hew_stream_collect_string", || {
+    assert_managed_result_is_transferred("hew_stream_collect_string", || {
         // `hew_stream_collect_string` consumes the stream, so each R1/R3
         // observation builds an independent but equivalent live input stream.
         // SAFETY: `payload` remains readable for its stated length, and the
@@ -256,7 +234,7 @@ fn stream_collect_string_result_is_transferred() {
             hew_stream_collect_string(stream)
         }
     });
-    assert_result_is_transferred("hew_file_read_stream_collect_string", || {
+    assert_managed_result_is_transferred("hew_file_read_stream_collect_string", || {
         // The nominal adapter has the same consuming representation. Each
         // observation still needs an independently owned input stream.
         // SAFETY: `payload` remains readable for its stated length, and the
@@ -297,13 +275,30 @@ fn io_read_line_result_is_transferred() {
     if std::env::var_os(STDIN_CHILD).is_some() {
         // Three equal, independently queued lines keep the stdin source alive
         // for R3 while each `read_line` consumes exactly one record.
-        assert_result_is_transferred("hew_io_read_line", || hew_io_read_line());
+        assert_managed_result_is_transferred("hew_io_read_line", || hew_io_read_line());
     } else {
         run_stdin_child("io_read_line_result_is_transferred", b"line\nline\nline\n");
     }
 }
 
-unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut c_char {
+#[test]
+fn stdin_read_line_preserves_embedded_nul_and_unicode() {
+    if std::env::var_os(STDIN_CHILD).is_some() {
+        let result = hew_stdin_read_line();
+        // SAFETY: the read transfers one managed owner, released below.
+        unsafe {
+            assert_eq!(string_as_bytes(result), "line\0é中🙂".as_bytes());
+            string_release(result);
+        }
+    } else {
+        run_stdin_child(
+            "stdin_read_line_preserves_embedded_nul_and_unicode",
+            "line\0é中🙂\n".as_bytes(),
+        );
+    }
+}
+
+unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut HewString {
     let mut pipe_fds = [0; 2];
     // SAFETY: `pipe_fds` has space for the read/write descriptors.
     // SAFETY: `pipe_fds` has space for the read/write descriptors.
@@ -351,7 +346,7 @@ unsafe fn read_all_from_replaced_stdin(input: &[u8]) -> *mut c_char {
 #[test]
 fn io_read_all_result_is_transferred() {
     if std::env::var_os(STDIN_CHILD).is_some() {
-        assert_result_is_transferred("hew_io_read_all", || {
+        assert_managed_result_is_transferred("hew_io_read_all", || {
             // SAFETY: this test-only helper restores stdin before returning.
             unsafe { read_all_from_replaced_stdin(b"read-all retention witness") }
         });

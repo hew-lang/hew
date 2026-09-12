@@ -1,10 +1,10 @@
 // Discarded link()/monitor() calls lower to CallRuntimeAbi with dest=None.
 //
-// The local declarations provide the current two-handle checker shape while
+// The local declarations take the actor's own name as its handle type while
 // MIR's runtime-symbol bridge still routes the recognised names to
 // hew_actor_link / hew_actor_mon
-fn link(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
-fn monitor(_a: LocalPid<Probe>, _b: LocalPid<Probe>) {}
+fn link(_a: Probe, _b: Probe) {}
+fn monitor(_a: Probe, _b: Probe) {}
 
 actor Probe {
     receive fn ping() {}

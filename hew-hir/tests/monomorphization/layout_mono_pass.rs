@@ -136,8 +136,8 @@ fn two_record_instantiations_register_distinct_layouts() {
 fn generic_enum_in_generic_body_registers_concrete_layout() {
     let source = r"
         enum Holder<T> {
-            Present(T);
-            Absent;
+            Present(T),
+            Absent,
         }
 
         fn wrap<T>(x: T) -> Holder<T> {

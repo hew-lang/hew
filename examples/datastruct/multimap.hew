@@ -1,5 +1,9 @@
 // Hash Multimap - One key maps to multiple values
-// Uses hash map for key->head_index, linked list nodes in parallel Vecs
+// Open-addressed table of [key, head] pairs at slot*2, slot*2+1.
+// Value lists live in a node pool of [value, next] pairs at i*2, i*2+1.
+//
+// A parameter is the callee's own copy, so every helper that writes the table
+// or the pool returns the level it wrote and the caller reassigns.
 fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
@@ -9,33 +13,64 @@ fn hash(key: i64, capacity: i64) -> i64 {
     }
 }
 
-// Hash table: maps key -> index into node arrays (head of linked list)
-fn make_ht_keys(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+fn make_ht(capacity: i64) -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
-    for i in 0 .. capacity {
-        v.push(EMPTY);
-    }
-    v
-}
-
-fn make_ht_vals(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
     let NONE = 0 - 1;
     for i in 0 .. capacity {
+        v.push(EMPTY);
         v.push(NONE);
     }
     v
 }
 
+fn ht_key(ht: Vec<i64>, slot: i64) -> i64 {
+    ht[slot * 2]
+}
+
+fn ht_head(ht: Vec<i64>, slot: i64) -> i64 {
+    ht[slot * 2 + 1]
+}
+
+fn set_ht_key(var ht: Vec<i64>, slot: i64, key: i64) -> Vec<i64> {
+    ht.set(slot * 2, key);
+    ht
+}
+
+fn set_ht_head(var ht: Vec<i64>, slot: i64, head: i64) -> Vec<i64> {
+    ht.set(slot * 2 + 1, head);
+    ht
+}
+
+fn node_val(nodes: Vec<i64>, i: i64) -> i64 {
+    nodes[i * 2]
+}
+
+fn node_next(nodes: Vec<i64>, i: i64) -> i64 {
+    nodes[i * 2 + 1]
+}
+
+fn set_node_next(var nodes: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
+    nodes.set(i * 2 + 1, nx);
+    nodes
+}
+
+fn alloc_node(var nodes: Vec<i64>, value: i64) -> (Vec<i64>, i64) {
+    let idx = nodes.len() / 2;
+    let NONE = 0 - 1;
+    nodes.push(value);
+    nodes.push(NONE);
+    (nodes, idx)
+}
+
 // Find hash table slot for a key
-fn ht_find(ht_keys: Vec<i64>, key: i64) -> i64 {
-    let capacity = ht_keys.len();
+fn ht_find(ht: Vec<i64>, key: i64) -> i64 {
+    let capacity = ht.len() / 2;
     let EMPTY = 0 - 1;
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
-        let k = ht_keys[idx];
+        let k = ht_key(ht, idx);
         if k == key {
             return idx;
         }
@@ -48,107 +83,106 @@ fn ht_find(ht_keys: Vec<i64>, key: i64) -> i64 {
     0 - 1
 }
 
-// Insert a value for a key into the multimap
-// node_vals, node_next are the linked list storage
-fn mm_insert(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, value: i64) {
+// Insert a value for a key, returning the table and the node pool
+fn mm_insert(var ht: Vec<i64>, var nodes: Vec<i64>, key: i64, value: i64) -> (Vec<i64>, Vec<i64>) {
     let EMPTY = 0 - 1;
-    let NONE = 0 - 1;
-    let slot = ht_find(ht_keys, key);
+    let slot = ht_find(ht, key);
     if slot < 0 {
-        return;
+        return (ht, nodes);
     }
-    // Allocate a new node
-    let new_node = node_vals.len();
-    node_vals.push(value);
-    node_next.push(NONE);
-    let k = ht_keys[slot];
-    if k == EMPTY {
+    let (grown, new_node) = alloc_node(nodes, value);
+    nodes = grown;
+    if ht_key(ht, slot) == EMPTY {
         // New key
-        ht_keys.set(slot, key);
-        ht_heads.set(slot, new_node);
+        ht = set_ht_key(ht, slot, key);
+        ht = set_ht_head(ht, slot, new_node);
     } else {
         // Existing key: prepend to list
-        let old_head = ht_heads[slot];
-        node_next.set(new_node, old_head);
-        ht_heads.set(slot, new_node);
+        let old_head = ht_head(ht, slot);
+        nodes = set_node_next(nodes, new_node, old_head);
+        ht = set_ht_head(ht, slot, new_node);
     }
+    (ht, nodes)
 }
 
-// Get all values for a key into result Vec, return count
-fn mm_get_all(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, result: Vec<i64>) -> i64 {
-    let EMPTY = 0 - 1;
+// Insert every value in the list under one key
+fn mm_insert_many(var ht: Vec<i64>, var nodes: Vec<i64>, key: i64, values: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    for value in values {
+        let (table, pool) = mm_insert(ht, nodes, key, value);
+        ht = table;
+        nodes = pool;
+    }
+    (ht, nodes)
+}
+
+// Collect every value stored under a key
+fn mm_get_all(ht: Vec<i64>, nodes: Vec<i64>, key: i64) -> Vec<i64> {
     let NONE = 0 - 1;
-    let slot = ht_find(ht_keys, key);
+    var result: Vec<i64> = Vec.new();
+    let slot = ht_find(ht, key);
     if slot < 0 {
-        return 0;
+        return result;
     }
-    let k = ht_keys[slot];
-    if k != key {
-        return 0;
+    if ht_key(ht, slot) != key {
+        return result;
     }
-    var cur = ht_heads[slot];
-    var count = 0;
+    var cur = ht_head(ht, slot);
     while cur != NONE {
-        result.push(node_vals[cur]);
-        cur = node_next[cur];
-        count = count + 1;
+        result.push(node_val(nodes, cur));
+        cur = node_next(nodes, cur);
     }
-    count
+    result
 }
 
-// Remove one occurrence of value for key, return true if found
-fn mm_remove_one(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_vals: Vec<i64>, node_next: Vec<i64>, key: i64, value: i64) -> bool {
-    let EMPTY = 0 - 1;
+// Remove one occurrence of value for key; the bool reports whether it was found
+fn mm_remove_one(var ht: Vec<i64>, var nodes: Vec<i64>, key: i64, value: i64) -> (Vec<i64>, Vec<i64>, bool) {
     let NONE = 0 - 1;
-    let slot = ht_find(ht_keys, key);
+    let slot = ht_find(ht, key);
     if slot < 0 {
-        return false;
+        return (ht, nodes, false);
     }
-    let k = ht_keys[slot];
-    if k != key {
-        return false;
+    if ht_key(ht, slot) != key {
+        return (ht, nodes, false);
     }
     // Check head node
-    let head = ht_heads[slot];
+    let head = ht_head(ht, slot);
     if head == NONE {
-        return false;
+        return (ht, nodes, false);
     }
-    if node_vals[head] == value {
+    if node_val(nodes, head) == value {
         // Remove head
-        ht_heads.set(slot, node_next[head]);
-        return true;
+        ht = set_ht_head(ht, slot, node_next(nodes, head));
+        return (ht, nodes, true);
     }
     // Search through list
     var prev = head;
-    var cur = node_next[head];
+    var cur = node_next(nodes, head);
     while cur != NONE {
-        if node_vals[cur] == value {
-            node_next.set(prev, node_next[cur]);
-            return true;
+        if node_val(nodes, cur) == value {
+            nodes = set_node_next(nodes, prev, node_next(nodes, cur));
+            return (ht, nodes, true);
         }
         prev = cur;
-        cur = node_next[cur];
+        cur = node_next(nodes, cur);
     }
-    false
+    (ht, nodes, false)
 }
 
 // Count values for a key
-fn mm_count(ht_keys: Vec<i64>, ht_heads: Vec<i64>, node_next: Vec<i64>, key: i64) -> i64 {
-    let EMPTY = 0 - 1;
+fn mm_count(ht: Vec<i64>, nodes: Vec<i64>, key: i64) -> i64 {
     let NONE = 0 - 1;
-    let slot = ht_find(ht_keys, key);
+    let slot = ht_find(ht, key);
     if slot < 0 {
         return 0;
     }
-    let k = ht_keys[slot];
-    if k != key {
+    if ht_key(ht, slot) != key {
         return 0;
     }
-    var cur = ht_heads[slot];
+    var cur = ht_head(ht, slot);
     var count = 0;
     while cur != NONE {
         count = count + 1;
-        cur = node_next[cur];
+        cur = node_next(nodes, cur);
     }
     count
 }
@@ -167,15 +201,14 @@ fn main() {
     var passed = 0;
     var failed = 0;
     let cap = 32;
-    let ht_keys = make_ht_keys(cap);
-    let ht_heads = make_ht_vals(cap);
-    let node_vals: Vec<i64> = Vec.new();
-    let node_next: Vec<i64> = Vec.new();
+    var ht = make_ht(cap);
+    var nodes: Vec<i64> = Vec.new();
     // Test 1: Insert multiple values for same key
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 10);
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 20);
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 1, 30);
-    let c1 = mm_count(ht_keys, ht_heads, node_next, 1);
+    let ones: Vec<i64> = [10, 20, 30];
+    let (ht_a, nodes_a) = mm_insert_many(ht, nodes, 1, ones);
+    ht = ht_a;
+    nodes = nodes_a;
+    let c1 = mm_count(ht, nodes, 1);
     if c1 == 3 {
         println("PASS: insert multiple values");
         passed = passed + 1;
@@ -184,9 +217,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Get all values for a key
-    let r1: Vec<i64> = Vec.new();
-    let gc1 = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r1);
-    if gc1 == 3 {
+    let r1 = mm_get_all(ht, nodes, 1);
+    if r1.len() == 3 {
         if vec_contains(r1, 10) {
             if vec_contains(r1, 20) {
                 if vec_contains(r1, 30) {
@@ -209,11 +241,13 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: Different keys have separate value lists
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 2, 100);
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 2, 200);
-    let c2 = mm_count(ht_keys, ht_heads, node_next, 2);
+    let twos: Vec<i64> = [100, 200];
+    let (ht_b, nodes_b) = mm_insert_many(ht, nodes, 2, twos);
+    ht = ht_b;
+    nodes = nodes_b;
+    let c2 = mm_count(ht, nodes, 2);
     if c2 == 2 {
-        let c1b = mm_count(ht_keys, ht_heads, node_next, 1);
+        let c1b = mm_count(ht, nodes, 1);
         if c1b == 3 {
             println("PASS: separate key lists");
             passed = passed + 1;
@@ -226,9 +260,11 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Remove one value
-    let removed = mm_remove_one(ht_keys, ht_heads, node_vals, node_next, 1, 20);
+    let (ht_c, nodes_c, removed) = mm_remove_one(ht, nodes, 1, 20);
+    ht = ht_c;
+    nodes = nodes_c;
     if removed {
-        let c1c = mm_count(ht_keys, ht_heads, node_next, 1);
+        let c1c = mm_count(ht, nodes, 1);
         if c1c == 2 {
             println("PASS: remove one value");
             passed = passed + 1;
@@ -242,8 +278,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Removed value no longer in list
-    let r2: Vec<i64> = Vec.new();
-    let _ = mm_get_all(ht_keys, ht_heads, node_vals, node_next, 1, r2);
+    let r2 = mm_get_all(ht, nodes, 1);
     if vec_contains(r2, 20) {
         println("FAIL: removed value still present");
         failed = failed + 1;
@@ -262,7 +297,9 @@ fn main() {
         }
     }
     // Test 6: Remove non-existent value returns false
-    let rem2 = mm_remove_one(ht_keys, ht_heads, node_vals, node_next, 1, 999);
+    let (ht_d, nodes_d, rem2) = mm_remove_one(ht, nodes, 1, 999);
+    ht = ht_d;
+    nodes = nodes_d;
     if rem2 {
         println("FAIL: remove non-existent");
         failed = failed + 1;
@@ -271,7 +308,7 @@ fn main() {
         passed = passed + 1;
     }
     // Test 7: Count for non-existent key
-    let cn = mm_count(ht_keys, ht_heads, node_next, 999);
+    let cn = mm_count(ht, nodes, 999);
     if cn == 0 {
         println("PASS: count non-existent key");
         passed = passed + 1;
@@ -280,10 +317,11 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Duplicate values allowed
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 3, 50);
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 3, 50);
-    mm_insert(ht_keys, ht_heads, node_vals, node_next, 3, 50);
-    let c3 = mm_count(ht_keys, ht_heads, node_next, 3);
+    let dups: Vec<i64> = [50, 50, 50];
+    let (ht_e, nodes_e) = mm_insert_many(ht, nodes, 3, dups);
+    ht = ht_e;
+    nodes = nodes_e;
+    let c3 = mm_count(ht, nodes, 3);
     if c3 == 3 {
         println("PASS: duplicate values allowed");
         passed = passed + 1;

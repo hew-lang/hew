@@ -1,5 +1,5 @@
 //! Status: runnable
-//! Description: Actor call-and-await example with no used return value.
+//! Description: Actor completion-call example with no used return value.
 
 actor Messenger {
     receive fn print_message(msg: i64) -> i64 {
@@ -11,6 +11,6 @@ actor Messenger {
 
 fn main() {
     let messenger = spawn Messenger;
-    let _ = await messenger.print_message(100);
+    let _ = messenger.print_message(100);
     println(999);
 }

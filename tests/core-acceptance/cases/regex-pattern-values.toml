@@ -1,0 +1,11 @@
+[[case]]
+id = "regex-pattern-values"
+intent = "A compiled pattern handle crosses the C ABI with string arguments and owned string results: match, find, one capture group and a replacement, closed explicitly, with a second pattern released by scope exit."
+source = "cases/regex-pattern-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nabc123\nabc\nok\ntrue\n"
+stderr = ""
+exit = 0

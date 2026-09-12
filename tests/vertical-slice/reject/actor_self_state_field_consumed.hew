@@ -4,18 +4,18 @@
 // rooted in the state binding whichever way the access is spelled.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
         self.fd
     }
 }
 
 actor Vault {
-    let sock: Socket;
+    let sock: Socket,
     receive fn steal() -> i64 {
         return self.sock.detach();
     }
@@ -23,7 +23,7 @@ actor Vault {
 
 fn main() -> i64 {
     let vault = spawn Vault(sock: Socket { fd: 3 });
-    return match await vault.steal() {
+    return match vault.steal() {
         .Ok(v) => v,
         .Err(_) => -1,
     };

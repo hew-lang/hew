@@ -1,0 +1,35 @@
+import std.math;
+
+fn near(actual: f64, expected: f64) {
+    assert(math.abs(actual - expected) < 0.000001);
+}
+
+fn main() {
+    near(math.tan(0.0), 0.0);
+    near(math.asin(1.0), 1.570796);
+    near(math.acos(1.0), 0.0);
+    near(math.atan(1.0), 0.785398);
+    near(math.atan2(1.0, 1.0), 0.785398);
+    near(math.sinh(0.0), 0.0);
+    near(math.cosh(0.0), 1.0);
+    near(math.tanh(0.0), 0.0);
+    near(math.exp2(3.0), 8.0);
+    near(math.log2(8.0), 3.0);
+    near(math.log10(1000.0), 3.0);
+    near(math.log1p(0.0), 0.0);
+    near(math.expm1(0.0), 0.0);
+    near(math.cbrt(27.0), 3.0);
+    near(math.hypot(3.0, 4.0), 5.0);
+    near(math.fma(2.0, 3.0, 4.0), 10.0);
+    near(math.trunc(-1.9), -1.0);
+    near(math.trunc(1.9), 1.0);
+    near(math.copysign(3.0, -1.0), -3.0);
+    near(math.copysign(-3.0, 1.0), 3.0);
+    near(math.powi(2.0, 10), 1024.0);
+    near(math.powi(2.0, 0), 1.0);
+    // minnum/maxnum ignore a NaN operand rather than propagating it.
+    let nan = 0.0 / 0.0;
+    assert(math.min(nan, 1.0) == 1.0);
+    assert(math.max(nan, 1.0) == 1.0);
+    println("math functions match libm to six decimal places");
+}

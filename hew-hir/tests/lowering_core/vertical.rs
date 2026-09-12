@@ -1,12 +1,7 @@
+use crate::support;
 use hew_hir::{
     dump_hir, verify_hir, HirDiagnosticKind, HirExprKind, HirSelectArmKind, HirStmtKind,
 };
-use hew_parser::ast::{
-    Block, Expr, FnDecl, IntRadix, Item, Literal, Pattern, Program, SelectArm, Stmt, TimeoutClause,
-    Visibility,
-};
-
-use crate::support;
 
 fn lower(source: &str) -> hew_hir::LowerOutput {
     support::checker_pipeline::lower_through_checker(source)
@@ -27,166 +22,38 @@ fn simple_function_lowers_with_stable_sites() {
 }
 
 #[test]
-fn timeout_await_operation_preserves_ordered_subsumption_spine() {
-    let output = lower(
-        r#"
-        actor Echo {
-            receive fn get() -> string { "pong" }
-        }
-        fn main() {
-            let echo = spawn Echo;
-            let _reply = await echo.get() | after 1ms;
-        }
-        "#,
-    );
+fn duration_scaling_and_ratio_preserve_checked_operand_types() {
+    let output = lower("fn ratio(value: i64) -> i64 { (value * 1ms) / 1ms }");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let verify = verify_hir(&output.module);
-    assert!(verify.is_empty(), "{verify:?}");
-    let facts = &output.module.produced_value_facts;
-    let (&timeout_site, timeout_fact) = facts
+    assert!(verify_hir(&output.module).is_empty());
+    let function = output
+        .module
+        .items
         .iter()
-        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::Timeout)
-        .expect("timeout boundary fact");
-    let hew_hir::HirProducedValueRelation::Subsumes(await_site) = timeout_fact.relation else {
-        panic!("timeout must subsume its await occurrence: {timeout_fact:?}");
-    };
-    let await_fact = &facts[&await_site];
-    let hew_hir::HirProducedValueRelation::Subsumes(operation_site) = await_fact.relation else {
-        panic!("await must subsume its operation occurrence: {await_fact:?}");
-    };
-    let parents = hew_hir::verify::collect_site_parents(&output.module);
-    assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
-    assert_eq!(parents.get(&operation_site), Some(&Some(await_site)));
-
-    let mut flattened = output.module.clone();
-    flattened
-        .produced_value_facts
-        .get_mut(&timeout_site)
-        .expect("timeout fact")
-        .relation = hew_hir::HirProducedValueRelation::Subsumes(operation_site);
-    assert!(verify_hir(&flattened).iter().any(|diagnostic| {
-        matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                if name == "produced value subsumption" && reason.contains("not a direct structural child")
-        )
-    }));
-
-    let mut wrong_identity = output.module.clone();
-    wrong_identity
-        .produced_value_facts
-        .get_mut(&timeout_site)
-        .expect("timeout fact")
-        .relation = hew_hir::HirProducedValueRelation::Identity(operation_site);
-    assert!(verify_hir(&wrong_identity).iter().any(|diagnostic| {
-        matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
-                if name == "produced value identity"
-        )
-    }));
-
-    // Every occurrence on the subsumption spine carries the same result type,
-    // so a receiver tamper aimed at the spine is invisible to the type
-    // congruence guard. Aim it at the `echo` binding reference instead: it is
-    // inside the timeout occurrence's structural subtree but actor-handle
-    // typed, so the receiver-identity check must reject the storage mismatch.
-    let (&scrutinee_site, _) = facts
-        .iter()
-        .find(|(site, fact)| {
-            fact.producer == hew_hir::HirProducedValueProducer::BindingRef && {
-                let mut current = **site;
-                loop {
-                    match parents.get(&current).copied().flatten() {
-                        Some(parent) if parent == timeout_site => break true,
-                        Some(parent) => current = parent,
-                        None => break false,
-                    }
-                }
-            }
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "ratio" => Some(function),
+            _ => None,
         })
-        .expect("actor-handle binding reference inside the timeout subtree");
-    let mut wrong_receiver = output.module.clone();
-    let fact = wrong_receiver
-        .produced_value_facts
-        .get_mut(&timeout_site)
-        .expect("timeout fact");
-    fact.ownership = hew_types::ProducedValueOwnership::ReceiverIdentity;
-    fact.receiver = Some(scrutinee_site);
-    fact.receiver_boundary = Some(hew_types::ProducedArgumentBoundary::Transfer);
-    assert!(verify_hir(&wrong_receiver).iter().any(|diagnostic| {
-        matches!(
-            &diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                if name == "produced value receiver identity" && reason.contains("has type")
-        )
-    }));
-}
-
-#[test]
-fn channel_recv_deadline_preserves_await_and_method_occurrences() {
-    let output = support::checker_pipeline::lower_through_checker_with_modules(
-        r"
-        import std.channel.channel;
-
-        actor Worker {
-            receive fn run() {
-                let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
-                let _got: Result<Option<i64>, TimeoutError> =
-                    await rx.recv() | after 1ms;
-                let _ = tx;
-            }
-        }
-        ",
-    );
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { .. }
-        )),
-        "deadline lowering must preserve every checker occurrence: {:?}",
-        output.diagnostics
-    );
-    let verify = verify_hir(&output.module);
-    assert!(
-        !verify.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::CheckerBoundaryViolation { .. }
-        )),
-        "{verify:?}"
-    );
-
-    let facts = &output.module.produced_value_facts;
-    let (&timeout_site, timeout_fact) = facts
-        .iter()
-        .find(|(_, fact)| fact.producer == hew_hir::HirProducedValueProducer::Timeout)
-        .expect("timeout boundary fact");
-    let hew_hir::HirProducedValueRelation::Subsumes(await_site) = timeout_fact.relation else {
-        panic!("timeout must subsume the channel await occurrence: {timeout_fact:?}");
+        .expect("ratio function");
+    let ratio = function.body.tail.as_deref().expect("ratio result");
+    assert_eq!(ratio.ty, hew_types::ResolvedTy::I64);
+    let HirExprKind::Binary { left, right, .. } = &ratio.kind else {
+        panic!("expected duration ratio, got {:?}", ratio.kind);
     };
-    let await_fact = &facts[&await_site];
-    assert_eq!(
-        await_fact.producer,
-        hew_hir::HirProducedValueProducer::ChannelRecvAwait
-    );
-    let hew_hir::HirProducedValueRelation::Subsumes(method_site) = await_fact.relation else {
-        panic!("channel await must subsume the recv method occurrence: {await_fact:?}");
+    assert_eq!(left.ty, hew_types::ResolvedTy::Duration);
+    assert_eq!(right.ty, hew_types::ResolvedTy::Duration);
+    let HirExprKind::Binary { left, right, .. } = &left.kind else {
+        panic!("expected duration scaling");
     };
-    assert_eq!(
-        facts[&method_site].producer,
-        hew_hir::HirProducedValueProducer::ChannelRecvAwait
-    );
-
-    let parents = hew_hir::verify::collect_site_parents(&output.module);
-    assert_eq!(parents.get(&await_site), Some(&Some(timeout_site)));
-    assert_eq!(parents.get(&method_site), Some(&Some(await_site)));
+    assert_eq!(left.ty, hew_types::ResolvedTy::I64);
+    assert_eq!(right.ty, hew_types::ResolvedTy::Duration);
 }
 
 #[test]
 fn channel_result_sites_are_affine_in_hir() {
     let output = support::checker_pipeline::lower_through_checker_with_modules(
         r#"
-        import std.channel.channel;
+        import std.channel;
 
         fn make_channel_result()
             -> Result<(channel.Sender<i64>, channel.Receiver<i64>), string> {
@@ -343,14 +210,19 @@ fn array_literal_lowers_to_vec_desugar() {
     assert_eq!(init.ty.user_facing().to_string(), "Vec<i64>");
     assert_eq!(block.statements.len(), 4);
     assert!(matches!(
-        block.statements[0].kind,
+        &block.statements[0].kind,
         HirStmtKind::Let(
-            _,
+            binding,
             Some(hew_hir::HirExpr {
-                kind: HirExprKind::Call { .. },
+                kind: HirExprKind::Call {
+                    target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(
+                        hew_types::VecValueOp::New,
+                    )),
+                    ..
+                },
                 ..
             })
-        )
+        ) if binding.mutable
     ));
     let push_count = block
         .statements
@@ -359,13 +231,13 @@ fn array_literal_lowers_to_vec_desugar() {
             matches!(
                 &stmt.kind,
                 HirStmtKind::Expr(hew_hir::HirExpr {
-                    kind: HirExprKind::ResolvedImplCall {
-                        method_name,
-                        target_symbol,
+                    kind: HirExprKind::Call {
+                        target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push)),
+                        args,
                         ..
                     },
                     ..
-                }) if method_name == "push" && target_symbol == "hew_vec_push_i64"
+                }) if args.len() == 2 && args[1].ty == hew_types::ResolvedTy::I64
             )
         })
         .count();
@@ -405,14 +277,19 @@ fn map_literal_lowers_to_hashmap_new_insert_desugar() {
     assert_eq!(init.ty.user_facing().to_string(), "HashMap<string, i64>");
     assert_eq!(block.statements.len(), 3);
     assert!(matches!(
-        block.statements[0].kind,
+        &block.statements[0].kind,
         HirStmtKind::Let(
-            _,
+            binding,
             Some(hew_hir::HirExpr {
-                kind: HirExprKind::Call { .. },
+                kind: HirExprKind::Call {
+                    target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Map(
+                        hew_types::runtime_call::MapValueOp::New,
+                    )),
+                    ..
+                },
                 ..
             })
-        )
+        ) if binding.mutable
     ));
     let insert_count = block
         .statements
@@ -421,13 +298,15 @@ fn map_literal_lowers_to_hashmap_new_insert_desugar() {
             matches!(
                 &stmt.kind,
                 HirStmtKind::Expr(hew_hir::HirExpr {
-                    kind: HirExprKind::ResolvedImplCall {
-                        method_name,
-                        target_symbol,
+                    kind: HirExprKind::Call {
+                        target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Map(
+                            hew_types::runtime_call::MapValueOp::Insert,
+                        )),
+                        args,
                         ..
                     },
                     ..
-                }) if method_name == "insert" && target_symbol == "hew_hashmap_insert_layout"
+                }) if args.len() == 3
             )
         })
         .count();
@@ -521,13 +400,13 @@ fn array_repeat_copy_lowers_to_vec_push_loop() {
         body.statements.iter().any(|stmt| matches!(
             &stmt.kind,
             HirStmtKind::Expr(hew_hir::HirExpr {
-                kind: HirExprKind::ResolvedImplCall {
-                    method_name,
-                    target_symbol,
+                kind: HirExprKind::Call {
+                    target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push)),
+                    args,
                     ..
                 },
                 ..
-            }) if method_name == "push" && target_symbol == "hew_vec_push_i64"
+            }) if args.len() == 2 && args[1].ty == hew_types::ResolvedTy::I64
         )),
         "for-range body should push i64 values into the result Vec"
     );
@@ -648,9 +527,9 @@ fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(f) => Some(f),
-            hew_hir::HirItem::TypeDecl(_)
-            | hew_hir::HirItem::Machine(_)
+            hew_hir::HirItem::Function(f) if f.name == "main" => Some(f),
+            hew_hir::HirItem::Function(_)
+            | hew_hir::HirItem::TypeDecl(_)
             | hew_hir::HirItem::Record(_)
             | hew_hir::HirItem::Actor(_)
             | hew_hir::HirItem::Supervisor(_)
@@ -670,815 +549,279 @@ fn find_first_select(output: &hew_hir::LowerOutput) -> &hew_hir::HirSelect {
 }
 
 #[test]
-fn select_stream_next_recognised_as_sealed_form() {
-    // `next(stream)` — sealed form 1.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from next(s) => 1, \
-             }; \
-         }",
+fn select_task_and_timer_preserve_typed_binding_and_result() {
+    let output = lower_checked_task(
+        r"
+        fn main() {
+            let first = fork { 41 };
+            let second = fork { 42 };
+            let result: i64 = select {
+                a from first => a + 1,
+                b from second => b,
+                after 5ms => 0,
+            };
+        }
+    ",
     );
     let select = find_first_select(&output);
-    assert_eq!(select.arms.len(), 1);
+    assert_eq!(select.arms.len(), 3);
+    for arm in &select.arms[..2] {
+        assert!(
+            matches!(&arm.kind, HirSelectArmKind::TaskAwait { task } if task.ty == hew_types::ResolvedTy::Task(Box::new(hew_types::ResolvedTy::I64)))
+        );
+        assert_eq!(arm.body.ty, hew_types::ResolvedTy::I64);
+    }
     assert!(matches!(
-        &select.arms[0].kind,
-        HirSelectArmKind::StreamNext { .. }
+        &select.arms[2].kind,
+        HirSelectArmKind::AfterTimer { .. }
     ));
-    // Path-pair: the sealed form must NOT emit SelectArmNotSealedForm.
-    assert!(
-        !output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmNotSealedForm { .. })),
-        "sealed next(...) must not emit SelectArmNotSealedForm: {:?}",
-        output.diagnostics
-    );
+    assert!(select.arms[2].binding_name.is_none());
 }
 
 #[test]
-fn select_actor_ask_recognised_as_sealed_form() {
-    // `actor.method(args)` — sealed form 2 (actor ask).
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 reply from worker.process(1) => 2, \
-             }; \
-         }",
+fn select_actor_await_uses_checked_dispatch() {
+    let output = lower_checked_task(
+        r"
+        actor Worker { receive fn process(value: i64) -> i64 { value + 1 } }
+        fn main() {
+            let worker = spawn Worker;
+            let result: i64 = select {
+                reply from worker.process(41) => match reply { .Ok(value) => value, .Err(_) => -1 },
+                after 5ms => 0,
+            };
+        }
+    ",
     );
     let select = find_first_select(&output);
-    assert_eq!(select.arms.len(), 1);
-    match &select.arms[0].kind {
-        HirSelectArmKind::ActorAsk { method, args, .. } => {
-            assert_eq!(method, "process");
-            assert_eq!(args.len(), 1);
-        }
-        other => panic!("expected ActorAsk arm, got {other:?}"),
+    assert!(
+        matches!(&select.arms[0].kind, HirSelectArmKind::ActorAsk { call } if matches!(&call.kind, HirExprKind::ActorAsk { method_id, args, .. } if method_id.ends_with("process") && args.len() == 1))
+    );
+}
+
+/// A select arm source is a task, an actor call or a channel receive. A value
+/// that is none of those is refused, and so is `await` written on a source that
+/// would otherwise be valid.
+#[test]
+fn select_sources_outside_the_sealed_set_are_rejected() {
+    for source in [
+        "fn main() { let result = select { value from 42 => 1, }; }",
+        "fn main() { let task = fork { 42 }; let result = select { value from await task => 1, }; }",
+    ] {
+        let (_, checked) = support::checker_pipeline::typecheck_source(source);
+        assert!(
+            checked
+                .errors
+                .iter()
+                .any(|error| { error.kind == hew_types::error::TypeErrorKind::InvalidOperation }),
+            "{source}: {:?}",
+            checked.errors
+        );
     }
 }
 
+/// Counterfactual for the refusals above: a bare forked task IS a source.
 #[test]
-fn select_await_task_recognised_as_sealed_form() {
-    // `await task` — sealed form 3.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 done from await user_task => 1, \
-             }; \
-         }",
+fn select_binds_a_bare_task_source() {
+    let (_, checked) = support::checker_pipeline::typecheck_source(
+        "fn main() { let task = fork { 42 }; let result = select { value from task => value, }; }",
     );
-    let select = find_first_select(&output);
-    assert!(matches!(
-        &select.arms[0].kind,
-        HirSelectArmKind::TaskAwait { .. }
-    ));
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
 }
 
 #[test]
-fn select_after_timer_recognised_as_sealed_form() {
-    // `after duration => body` — sealed form 4.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 after 100ms => 1, \
-             }; \
-         }",
-    );
+fn select_timer_only_lowers_without_diagnostics() {
+    let output = lower_checked_task("fn main() { let result: i64 = select { after 1ms => 42, }; }");
     let select = find_first_select(&output);
     assert_eq!(select.arms.len(), 1);
     assert!(matches!(
         &select.arms[0].kind,
         HirSelectArmKind::AfterTimer { .. }
     ));
-    // The after arm has no binding.
-    assert!(select.arms[0].binding_name.is_none());
-}
-
-#[test]
-fn select_heterogeneous_four_arms_all_recognised() {
-    // All four sealed forms in one select. The canonical D2 example.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from next(s) => 1, \
-                 reply from worker.process(2) => 1, \
-                 done from await user_task => 1, \
-                 after 50ms => 1, \
-             }; \
-         }",
-    );
-    let select = find_first_select(&output);
-    assert_eq!(select.arms.len(), 4);
-    assert!(matches!(
-        select.arms[0].kind,
-        HirSelectArmKind::StreamNext { .. }
-    ));
-    assert!(matches!(
-        select.arms[1].kind,
-        HirSelectArmKind::ActorAsk { .. }
-    ));
-    assert!(matches!(
-        select.arms[2].kind,
-        HirSelectArmKind::TaskAwait { .. }
-    ));
-    assert!(matches!(
-        select.arms[3].kind,
-        HirSelectArmKind::AfterTimer { .. }
-    ));
-}
-
-#[test]
-fn select_non_sealed_source_rejected() {
-    // A bare identifier as the arm source is not a sealed form.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from src => 1, \
-             }; \
-         }",
-    );
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmNotSealedForm { .. })),
-        "bare identifier source must emit SelectArmNotSealedForm: {:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn select_literal_source_rejected() {
-    // Path-pair sibling for SelectArmNotSealedForm — a literal source.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from 42 => 1, \
-             }; \
-         }",
-    );
-    assert!(
-        output.diagnostics.iter().any(|d| matches!(
-            &d.kind,
-            HirDiagnosticKind::SelectArmNotSealedForm { source_shape } if source_shape == "literal"
-        )),
-        "literal source must emit SelectArmNotSealedForm{{\"literal\"}}: {:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn select_empty_rejected() {
-    let output = lower("fn main() { let r = select { }; }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectNoArms)),
-        "empty select must emit SelectNoArms: {:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn select_non_empty_does_not_trigger_no_arms() {
-    // Path-pair sibling: a populated select must NOT emit SelectNoArms.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 after 1ms => 1, \
-             }; \
-         }",
-    );
-    assert!(
-        !output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectNoArms)),
-        "populated select must not emit SelectNoArms: {:?}",
-        output.diagnostics
-    );
 }
 
 #[test]
 fn select_arm_body_type_mismatch_rejected() {
-    // First arm body is `1` (i64); second arm body is `true` (bool).
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 a from await t1 => 1, \
-                 b from await t2 => true, \
-             }; \
-         }",
+    let source = "fn main() { let first = fork { 1 }; let second = fork { 2 }; let result = select { a from first => 1, b from second => true, }; }";
+    let (_, checked) = support::checker_pipeline::typecheck_source(source);
+    assert!(
+        checked
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. })),
+        "{:?}",
+        checked.errors
     );
+    let output = lower(source);
     assert!(
         output
             .diagnostics
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmTypeMismatch { .. })),
-        "arm body type mismatch must emit SelectArmTypeMismatch: {:?}",
+        "{:?}",
         output.diagnostics
     );
 }
 
+// ── Explicit tasks and ordinary await expressions ─────────────────────────
+
+fn lower_checked_task(source: &str) -> hew_hir::LowerOutput {
+    let (parsed, checked) = crate::support::checker_pipeline::typecheck_source(source);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let output =
+        hew_hir::lower_program_host_target(&parsed.program, &checked, &hew_hir::ResolutionCtx);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let diagnostics = verify_hir(&output.module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    output
+}
+
 #[test]
-fn select_arm_body_types_agree_does_not_trigger_mismatch() {
-    // Path-pair sibling: uniformly-typed arm bodies must NOT emit
-    // SelectArmTypeMismatch.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 a from await t1 => 1, \
-                 b from await t2 => 2, \
-                 after 5ms => 3, \
-             }; \
-         }",
+fn task_scope_ordinary_calls_remain_synchronous() {
+    let output = lower_checked_task(
+        "fn worker() -> i64 { 42 } fn main() { let outside: i64 = worker(); scope { let inside: i64 = worker(); worker(); } }",
     );
+    let dump = dump_hir(&output.module);
+    assert!(dump.contains("scope scope="), "{dump}");
     assert!(
-        !output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectArmTypeMismatch { .. })),
-        "uniformly-typed arms must not emit SelectArmTypeMismatch: {:?}",
-        output.diagnostics
+        !dump.contains("spawned-call") && !dump.contains("<task<"),
+        "{dump}"
     );
 }
 
 #[test]
-fn select_stream_next_arity_rejected() {
-    // `next()` with zero args — sealed form requires exactly one.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from next() => 1, \
-             }; \
-         }",
+fn task_binding_and_await_preserve_child_result_types() {
+    let output = lower_checked_task(
+        "fn compute() -> i64 { 7 } fn main() { let task = fork compute(); let result: i64 = await task; }",
     );
-    assert!(
-        output.diagnostics.iter().any(|d| matches!(
-            d.kind,
-            HirDiagnosticKind::SelectStreamNextArity { arg_count: 0 }
-        )),
-        "next() with zero args must emit SelectStreamNextArity: {:?}",
-        output.diagnostics
-    );
-}
-
-#[test]
-fn select_stream_next_two_args_rejected() {
-    // `next(a, b)` — sealed form requires exactly one.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from next(a, b) => 1, \
-             }; \
-         }",
-    );
-    assert!(
-        output.diagnostics.iter().any(|d| matches!(
-            d.kind,
-            HirDiagnosticKind::SelectStreamNextArity { arg_count: 2 }
-        )),
-        "next(a, b) must emit SelectStreamNextArity{{2}}: {:?}",
-        output.diagnostics
-    );
-}
-
-// ── Task<T> inference tests (TI-1 .. TI-5) ──────────────────────────────────
-
-/// TI-1: a call expression used as a statement inside a `fork{}` body lowers
-/// to `SpawnedCall` with type `Task<T>`. Calls in the same function but
-/// outside the fork body remain synchronous.
-#[test]
-fn task_handle_ti1_statement_call_inside_fork_becomes_spawned_call() {
-    let output = lower(
-        "fn worker() -> i64 { return 42; } \
-         fn main() { scope { worker(); } }",
-    );
-    // No diagnostic errors expected from HIR lowering (the fork expression
-    // itself lowers cleanly; MIR-level NotYetImplemented fires downstream).
-    let hir_diags: Vec<_> = output
-        .diagnostics
+    let main = output
+        .module
+        .items
         .iter()
-        .filter(|d| {
-            !matches!(
-                d.kind,
-                HirDiagnosticKind::NotYetImplemented { .. }
-                    | HirDiagnosticKind::UnresolvedInferenceVar
-            )
+        .find_map(|item| match item {
+            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            _ => None,
         })
-        .collect();
+        .unwrap();
+    let HirStmtKind::Let(task, Some(child)) = &main.body.statements[0].kind else {
+        panic!("expected task binding")
+    };
     assert!(
-        hir_diags.is_empty(),
-        "fork body with bare call should lower cleanly: {hir_diags:?}"
+        matches!(&task.ty, hew_types::ResolvedTy::Task(inner) if **inner == hew_types::ResolvedTy::I64)
     );
+    assert_eq!(child.ty, task.ty);
+    let HirStmtKind::Let(result, Some(value)) = &main.body.statements[1].kind else {
+        panic!("expected result binding")
+    };
+    let HirExprKind::AwaitTask { operand, output_ty } = &value.kind else {
+        panic!("expected task await")
+    };
+    assert_eq!(operand.ty, task.ty);
+    assert_eq!(*output_ty, hew_types::ResolvedTy::I64);
+    assert_eq!(value.ty, result.ty);
+}
 
-    // The dump should mention `scope` (renamed from `fork` in the rip+rename PR)
-    // and `spawned-call`.
+#[test]
+fn await_non_task_operand_is_rejected_inside_and_outside_scope() {
+    for source in [
+        "fn f() { let x = 5; await x; }",
+        "fn f() { scope { let x = 5; await x; } }",
+    ] {
+        let output = lower(source);
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitNonTask { .. })),
+            "{:?}",
+            output.diagnostics
+        );
+    }
+}
+
+#[test]
+fn task_fork_block_produces_ordinary_value() {
+    lower_checked_task("fn main() { let task = fork { 42 }; let result: i64 = await task; }");
+}
+
+#[test]
+fn task_fork_scalar_requires_a_block() {
+    let (_, checked) =
+        support::checker_pipeline::typecheck_source("fn main() { let task = fork 42; }");
+    assert!(
+        checked.errors.iter().any(|error| error
+            .message
+            .contains("fork expects a call or a batch of calls")),
+        "{:?}",
+        checked.errors
+    );
+}
+
+#[test]
+fn scope_deadline_carries_budget_and_child_body() {
+    let output =
+        lower_checked_task("fn main() { scope within 5s { let task = fork {}; await task; } }");
     let dump = dump_hir(&output.module);
-    assert!(
-        dump.contains("scope scope="),
-        "HIR dump should contain scope node: {dump}"
-    );
-    assert!(
-        dump.contains("spawned-call"),
-        "HIR dump should contain spawned-call for TI-1: {dump}"
-    );
-    // The spawned call's type is Task<i64> — dump shows the user_facing form.
-    assert!(
-        dump.contains("<task<i64>>"),
-        "spawned-call should have Task<i64> type in dump: {dump}"
-    );
-}
-
-/// TI-2: `fork name = call(...)` inside a fork body binds `name` to type
-/// `Task<T>` where `T` is the call's return type.
-#[test]
-fn task_handle_ti2_named_fork_child_binds_task_type() {
-    let output = lower(
-        "fn compute() -> i64 { return 7; } \
-         fn main() { scope { fork t = compute(); } }",
-    );
-    // No HIR-level non-infrastructure diagnostics expected.
-    let real_diags: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| !matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
-    assert!(
-        real_diags.is_empty(),
-        "fork name = call() should lower without HIR errors: {real_diags:?}"
-    );
-
-    let dump = dump_hir(&output.module);
-    // The binding `t` should appear with Task<i64> type.
-    assert!(
-        dump.contains("let") && dump.contains("t:") && dump.contains("<task<i64>>"),
-        "named fork binding should have Task<i64> type: {dump}"
-    );
-}
-
-/// TI-3 (accept side): a call outside a `fork{}` body stays synchronous —
-/// its result type is the raw return type, not `Task<T>`.
-#[test]
-fn task_handle_ti3_call_outside_fork_is_synchronous() {
-    let output = lower(
-        "fn add(a: i64, b: i64) -> i64 { return a + b; } \
-         fn main() -> i64 { return add(1, 2); }",
-    );
-    assert!(
-        output.diagnostics.is_empty(),
-        "synchronous call outside fork should lower cleanly: {:?}",
-        output.diagnostics
-    );
-    let dump = dump_hir(&output.module);
-    // There must be no spawned-call node — the call is synchronous.
-    assert!(
-        !dump.contains("spawned-call"),
-        "synchronous call must not produce a spawned-call node: {dump}"
-    );
-    // The call result should be i64, not Task<i64>.
-    assert!(
-        !dump.contains("<task<"),
-        "synchronous call result type must not be Task<T>: {dump}"
-    );
-}
-
-/// TI-4 (accept): `await name` inside a `fork{}` body where `name` has type
-/// `Task<T>` lowers to `AwaitTask` producing type `T`.
-#[test]
-fn task_handle_ti4_await_task_binding_inside_fork_lowers_to_await_task() {
-    let output = lower(
-        "fn compute() -> i64 { return 99; } \
-         fn main() { scope { fork t = compute(); await t; } }",
-    );
-    // No non-infrastructure HIR diagnostics.
-    let real_diags: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| !matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
-    assert!(
-        real_diags.is_empty(),
-        "await on Task<T> inside fork should lower without HIR errors: {real_diags:?}"
-    );
-
-    let dump = dump_hir(&output.module);
-    assert!(
-        dump.contains("await-task"),
-        "HIR dump must contain await-task node: {dump}"
-    );
-    // The await-task node produces the inner type (i64), not Task<i64>.
-    assert!(
-        dump.contains("await-task t"),
-        "await-task should reference binding name 't': {dump}"
-    );
-}
-
-/// TI-4 (reject): `await name` outside a `fork{}` body emits
-/// `AwaitOutOfPosition`.
-#[test]
-fn task_handle_ti4_await_outside_fork_rejects_with_await_out_of_position() {
-    let output = lower("fn f() { let x = 1; await x; }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "await outside fork body must emit AwaitOutOfPosition: {:?}",
-        output.diagnostics
-    );
-}
-
-/// TI-4 (reject): `await expr` where `expr` does not have type `Task<T>`
-/// emits `AwaitNonTask`.
-#[test]
-fn task_handle_ti4_await_non_task_rejects_with_await_non_task() {
-    // Inside a fork body so position is legal, but the operand is i64.
-    let output = lower("fn f() { scope { let x = 5; await x; } }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitNonTask { .. })),
-        "await on non-Task binding must emit AwaitNonTask: {:?}",
-        output.diagnostics
-    );
-}
-
-/// TI-2 (reject): `fork name = non_call_expr` emits `ForkChildNotACall`.
-#[test]
-fn task_handle_ti2_fork_child_non_call_rhs_rejects() {
-    let output = lower("fn f() { scope { fork t = 42; } }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::ForkChildNotACall)),
-        "fork name = non-call must emit ForkChildNotACall: {:?}",
-        output.diagnostics
-    );
+    assert!(dump.contains("scope-deadline"), "{dump}");
+    assert!(dump.contains("fork-block"), "{dump}");
+    assert!(dump.contains("<task<()>>"), "{dump}");
 }
 
 #[test]
-fn scope_deadline_derives_cancellation_token() {
-    let output = lower(
-        "fn long_op() { } \
-         fn main() { scope { fork { long_op(); } after(5s) { } } }",
-    );
-    let real_diags: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| !matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-        .collect();
-    assert!(
-        real_diags.is_empty(),
-        "fork-block plus scope deadline should lower without HIR errors: {real_diags:?}"
-    );
-
-    let dump = dump_hir(&output.module);
-    assert!(
-        dump.contains("fork-block"),
-        "HIR dump must carry the fork block cancellation child: {dump}"
-    );
-    assert!(
-        dump.contains("scope-deadline"),
-        "HIR dump must carry the scope deadline cancellation edge: {dump}"
-    );
-    assert!(
-        dump.contains("<task<()>>"),
-        "fork-block should be represented as an anonymous Task<Unit>: {dump}"
-    );
-}
-
-/// TI-5 (structural): the `lower_type` path rejects `Task` as a user-written
-/// type annotation via `TaskNotNameable` (wired through the `Named` arm for
-/// the name "Task"). This test exercises the type-annotation wall.
-#[test]
-fn task_handle_ti5_task_annotation_in_let_rejects_task_not_nameable() {
-    // The parser accepts `let t: Task<i64> = 0;` as a named type annotation;
-    // HIR lowering must reject it with TaskNotNameable.
+fn task_annotation_remains_not_nameable() {
     let output = lower("fn f() { let t: Task<i64> = 0; }");
     assert!(
         output
             .diagnostics
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::TaskNotNameable)),
-        "let t: Task<T> = ... must emit TaskNotNameable: {:?}",
+        "{:?}",
         output.diagnostics
     );
 }
 
-/// `let x = await t` over a value-returning `Task<T>` is a bindable let-value:
-/// the child's `T` is read back on the resume edge through the value-task
-/// result channel. It must NOT emit `AwaitOutOfPosition` — binding it is its
-/// purpose. (A unit `await t` in let position, with no bindable value, still
-/// trips the position gate; covered by the await-position tests below.)
 #[test]
-fn task_handle_value_await_in_let_value_position_accepted() {
+fn await_in_return_position_produces_result() {
+    lower_checked_task("fn compute() -> i64 { 1 } fn f() -> i64 { scope { let task = fork compute(); return await task; } }");
+}
+
+#[test]
+fn await_in_function_argument_produces_result() {
+    lower_checked_task("fn compute() -> i64 { 1 } fn sink(value: i64) {} fn f() { scope { let task = fork compute(); sink(await task); } }");
+}
+
+#[test]
+fn await_in_binary_operand_produces_result() {
+    lower_checked_task("fn compute() -> i64 { 1 } fn f() { scope { let task = fork compute(); let result: i64 = (await task) + 1; } }");
+}
+
+#[test]
+fn inferred_task_return_from_scope_is_rejected() {
     let output = lower(
-        "fn compute() -> i64 { return 1; } \
-         fn f() { scope { fork t = compute(); let x = await t; let _ = x; } }",
-    );
-    assert!(
-        !output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "let x = await t (value task) must be accepted as a bindable let-value: {:?}",
-        output.diagnostics
-    );
-}
-
-// ── TI-4 position-completeness tests (await in non-statement sub-expression positions) ──
-
-/// TI-4 (reject): `return await t` inside a fork body emits `AwaitOutOfPosition`.
-/// Await is only legal as a statement-expression, not as a return value.
-#[test]
-fn await_in_return_position_rejects() {
-    let output = lower(
-        "fn compute() -> i64 { return 1; } \
-         fn f() { scope { fork t = compute(); return await t; } }",
-    );
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "`return await t` must emit AwaitOutOfPosition: {:?}",
-        output.diagnostics
-    );
-}
-
-/// TI-4 (reject): `sink(await t)` inside a fork body emits `AwaitOutOfPosition`.
-/// Await cannot appear as a function argument.
-#[test]
-fn await_in_function_arg_rejects() {
-    let output = lower(
-        "fn compute() -> i64 { return 1; } \
-         fn sink(x: i64) { } \
-         fn f() { scope { fork t = compute(); sink(await t); } }",
-    );
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "`sink(await t)` must emit AwaitOutOfPosition: {:?}",
-        output.diagnostics
-    );
-}
-
-/// TI-4 (reject): `(await t) + 1` inside a fork body emits `AwaitOutOfPosition`.
-/// Await cannot appear as a binary operand.
-#[test]
-fn await_in_binary_operand_rejects() {
-    let output = lower(
-        "fn compute() -> i64 { return 1; } \
-         fn f() { scope { fork t = compute(); let x = (await t) + 1; } }",
-    );
-    // This may fire AwaitOutOfPosition (binary operand) or the existing
-    // let-value intercept — either satisfies the position-rejection rule.
-    let has_position_error = output.diagnostics.iter().any(|d| {
-        matches!(
-            d.kind,
-            HirDiagnosticKind::AwaitOutOfPosition | HirDiagnosticKind::AwaitNonTask { .. }
-        )
-    });
-    assert!(
-        has_position_error,
-        "`(await t) + 1` must emit AwaitOutOfPosition: {:?}",
-        output.diagnostics
-    );
-}
-
-// ── TI-5 escape-via-return tests ────────────────────────────────────────────
-
-// ── Block-wrapped non-ask await guard / lowering consistency ────────────────
-
-/// Regression (PR #1841): `let b = await { conn.read() };` must emit
-/// `AwaitOutOfPosition` and not slip through the let-value guard.
-///
-/// Before the fix the `is_bindable_await` guard computed one unwrapped
-/// `inner_key` (trailing-call span) and reused it for ALL side-table checks
-/// including `conn_await_reads`.  The checker records `conn_await_reads` under
-/// the method-call span, so the guard found the entry and returned `true` —
-/// allowing the let-value through.  The corresponding lowering arm at
-/// `Expr::Await` then looked up `conn_await_reads` by the BLOCK span (`inner.1`),
-/// found nothing, and fell through to the generic await path, producing an
-/// inconsistent or silently wrong HIR node.
-///
-/// After the fix only the `actor_method_dispatch` lookup uses the unwrapped
-/// effective span; the non-ask tables (`conn_await_reads`, `listener_await_accepts`,
-/// stream/channel recv) use the original `inner.1` span.  A block-wrapped
-/// `conn.read()` in a let-value position therefore fails the guard and the HIR
-/// lowering emits `AwaitOutOfPosition`, consistent with `main`-branch behaviour.
-#[test]
-fn block_wrapped_conn_read_await_in_let_value_rejects_with_await_out_of_position() {
-    // `fn handler(conn: Connection)` — Connection is a recognised built-in
-    // handle type; no import required.  The block-wrapped `await { conn.read() }`
-    // is the minimal non-ask bindable-await shape that the pre-fix guard would
-    // incorrectly accept (the checker records conn_await_reads under the method-
-    // call span, matching the unwrapped key but not the block span the lowering
-    // arm uses).
-    let output = lower("fn handler(conn: Connection) { let b = await { conn.read() }; }");
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-        "block-wrapped `await {{ conn.read() }}` in let-value must emit \
-         AwaitOutOfPosition (guard/lowering span consistency); got: {:?}",
-        output.diagnostics
-    );
-}
-
-/// TI-5 (reject): returning an inferred `Task<T>` binding from inside a fork
-/// body must emit `TaskCannotEscape`. The type checker rejects user-written
-/// `Task<T>` annotations via `TaskNotNameable`; this closes the inferred-escape path.
-#[test]
-fn inferred_task_return_rejects() {
-    let output = lower(
-        "fn compute() -> i64 { return 1; } \
-         fn f() { scope { fork t = compute(); return t; } }",
+        "fn compute() -> i64 { 1 } fn f() { scope { let task = fork compute(); return task; } }",
     );
     assert!(
         output
             .diagnostics
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::TaskCannotEscape)),
-        "`return t` where t: Task<T> must emit TaskCannotEscape: {:?}",
+        "{:?}",
         output.diagnostics
     );
 }
 
-/// TI-5 (accept): returning a non-Task value from inside a fork body is fine.
+/// The outer block and inner call have distinct spans. Await lowering must
+/// consume the checked dispatch for the call and preserve its reply type.
 #[test]
-fn non_task_return_inside_fork_accepts() {
-    let output = lower(
-        "fn compute() -> i64 { return 1; } \
-         fn f() { scope { fork t = compute(); await t; } }",
-    );
-    let task_escape_errors: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| matches!(d.kind, HirDiagnosticKind::TaskCannotEscape))
-        .collect();
-    assert!(
-        task_escape_errors.is_empty(),
-        "await-then-no-return should not emit TaskCannotEscape: {task_escape_errors:?}"
-    );
-}
-
-/// Verifier stability: a valid `scope { call(); }` program passes `verify_hir`
-/// without dangling-ref or duplicate-id diagnostics.
-#[test]
-fn task_handle_fork_block_passes_verifier() {
-    let output = lower(
-        "fn work() -> i64 { return 1; } \
-         fn main() { scope { work(); } }",
-    );
-    let verify = verify_hir(&output.module);
-    // Verifier should not emit any DanglingRef, DuplicateBindingId, or
-    // DuplicateNodeId diagnostics — only structural HIR integrity issues.
-    let structural_failures: Vec<_> = verify
-        .iter()
-        .filter(|d| {
-            matches!(
-                d.kind,
-                HirDiagnosticKind::DanglingRef { .. }
-                    | HirDiagnosticKind::DuplicateBindingId { .. }
-                    | HirDiagnosticKind::DuplicateNodeId { .. }
-                    | HirDiagnosticKind::DuplicateSiteId { .. }
-            )
-        })
-        .collect();
-    assert!(
-        structural_failures.is_empty(),
-        "fork block must produce structurally valid HIR: {structural_failures:?}"
-    );
-}
-
-/// Build a minimal `Program` that contains a single `fn main()` whose body
-/// is `let r = <select_expr>;`. Used to drive the HIR lowerer directly with
-/// AST shapes the parser cannot produce (e.g. two `after` arms).
-fn program_with_select(select_expr: Expr) -> Program {
-    let lit_one = (
-        Expr::Literal(Literal::Integer {
-            value: 1,
-            radix: IntRadix::Decimal,
-        }),
-        0..1,
-    );
-    let let_stmt = (
-        Stmt::Let {
-            pattern: (Pattern::Identifier("r".to_string()), 0..1),
-            ty: None,
-            value: Some((select_expr, 0..1)),
-            else_block: None,
-        },
-        0..1,
-    );
-    let main_fn = FnDecl {
-        attributes: vec![],
-        is_async: false,
-        is_generator: false,
-        visibility: Visibility::Private,
-        name: "main".to_string(),
-        type_params: None,
-        params: vec![],
-        return_type: None,
-        where_clause: None,
-        body: Block {
-            stmts: vec![let_stmt],
-            trailing_expr: Some(Box::new(lit_one)),
-        },
-        doc_comment: None,
-        decl_span: 0..0,
-        fn_span: 0..0,
-        intrinsic: None,
-        consumes_self: false,
-    };
-    Program {
-        items: vec![(Item::Function(main_fn), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    }
-}
-#[test]
-fn select_two_after_arms_rejected() {
-    // Positive path: an `Expr::Timeout`-sourced arm in `arms` combined
-    // with the dedicated `timeout` field gives two `after` arms — rejected
-    // with exactly one `SelectMultipleAfterArms` diagnostic.
-    let dur = Box::new((
-        Expr::Literal(Literal::Integer {
-            value: 100,
-            radix: IntRadix::Decimal,
-        }),
-        0..3,
-    ));
-    let body = Box::new((
-        Expr::Literal(Literal::Integer {
-            value: 1,
-            radix: IntRadix::Decimal,
-        }),
-        0..1,
-    ));
-    // Arm in `arms` vec with an `Expr::Timeout` source (second `after`).
-    let timeout_arm = SelectArm {
-        binding: (Pattern::Wildcard, 0..1),
-        source: (
-            Expr::Timeout {
-                expr: Box::new((Expr::Literal(Literal::Bool(false)), 0..1)),
-                duration: dur.clone(),
-            },
-            0..3,
-        ),
-        body: (
-            Expr::Literal(Literal::Integer {
-                value: 1,
-                radix: IntRadix::Decimal,
-            }),
-            0..1,
-        ),
-    };
-    let select_expr = Expr::Select {
-        arms: vec![timeout_arm],
-        timeout: Some(Box::new(TimeoutClause {
-            duration: dur,
-            body,
-        })),
-    };
-    let program = program_with_select(select_expr);
-    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
-    assert!(
-        output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectMultipleAfterArms)),
-        "two after arms must emit SelectMultipleAfterArms: {:?}",
-        output.diagnostics
-    );
-}
-#[test]
-fn select_one_after_arm_does_not_trigger_multiple_after() {
-    // Negative path: one `after` arm (via `timeout`) plus one non-after arm
-    // must NOT emit `SelectMultipleAfterArms`.
-    let output = lower(
-        "fn main() { \
-             let r = select { \
-                 msg from next(s) => 1, \
-                 after 5ms => 1, \
-             }; \
-         }",
-    );
-    assert!(
-        !output
-            .diagnostics
-            .iter()
-            .any(|d| matches!(d.kind, HirDiagnosticKind::SelectMultipleAfterArms)),
-        "single after arm must not emit SelectMultipleAfterArms: {:?}",
-        output.diagnostics
+fn block_wrapped_actor_await_preserves_checked_reply() {
+    lower_checked_task(
+        r"
+        actor Worker { receive fn process(value: i64) -> i64 { value + 1 } }
+        fn main() {
+            let worker = spawn Worker;
+            let reply = worker.process(41);
+            let value: i64 = match reply { .Ok(value) => value, .Err(_) => 0, };
+        }
+    ",
     );
 }
 
@@ -1496,130 +839,100 @@ fn select_one_after_arm_does_not_trigger_multiple_after() {
 // the outer self-id leaks into the inner classifier and a Strong capture of
 // the outer name gets misclassified as Weak.
 
-/// Walk the lowered module, return every `HirExprKind::SpawnLambdaActor`
-/// reached. Used by the lambda-capture scoping tests below.
-fn collect_spawn_lambdas(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirExpr> {
-    let mut out: Vec<&hew_hir::HirExpr> = Vec::new();
-    for item in &output.module.items {
-        if let hew_hir::HirItem::Function(f) = item {
-            for stmt in &f.body.statements {
-                if let HirStmtKind::Let(_, Some(expr)) = &stmt.kind {
-                    walk_expr_collect_lambdas(expr, &mut out);
-                }
-            }
-        }
-    }
-    out
+/// The actor declarations HIR synthesized from `actor |..|` expressions.
+///
+/// A lambda actor lowers to an ordinary actor declaration plus the spawn that
+/// starts it, so the lowered shape is inspected through the declaration rather
+/// than through a lambda-shaped expression node.
+fn synthesized_lambda_actors(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirActorDecl> {
+    output
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::Actor(actor) if actor.lambda_handle_ty.is_some() => Some(actor),
+            _ => None,
+        })
+        .collect()
 }
 
-fn walk_expr_collect_lambdas<'a>(expr: &'a hew_hir::HirExpr, out: &mut Vec<&'a hew_hir::HirExpr>) {
-    if matches!(expr.kind, HirExprKind::SpawnLambdaActor { .. }) {
-        out.push(expr);
-    }
-    match &expr.kind {
-        HirExprKind::SpawnLambdaActor { body, .. } => {
-            walk_expr_collect_lambdas(body, out);
-        }
-        HirExprKind::Block(block)
-        | HirExprKind::Scope { body: block }
-        | HirExprKind::GenBlock { body: block, .. } => {
-            for s in &block.statements {
-                if let HirStmtKind::Let(_, Some(e)) = &s.kind {
-                    walk_expr_collect_lambdas(e, out);
-                }
-                if let HirStmtKind::Expr(e) = &s.kind {
-                    walk_expr_collect_lambdas(e, out);
-                }
-            }
-            if let Some(tail) = &block.tail {
-                walk_expr_collect_lambdas(tail, out);
-            }
-        }
-        HirExprKind::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            walk_expr_collect_lambdas(condition, out);
-            walk_expr_collect_lambdas(then_expr, out);
-            if let Some(e) = else_expr {
-                walk_expr_collect_lambdas(e, out);
-            }
-        }
-        HirExprKind::Binary { left, right, .. } => {
-            walk_expr_collect_lambdas(left, out);
-            walk_expr_collect_lambdas(right, out);
-        }
-        HirExprKind::Unary { operand, .. } => walk_expr_collect_lambdas(operand, out),
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
-            walk_expr_collect_lambdas(callee, out);
-            for a in args {
-                walk_expr_collect_lambdas(a, out);
-            }
-        }
-        HirExprKind::Yield {
-            value: Some(value), ..
-        } => walk_expr_collect_lambdas(value, out),
-        _ => {}
-    }
+fn self_capture_refusals(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirDiagnostic> {
+    output
+        .diagnostics
+        .iter()
+        .filter(|d| {
+            matches!(
+                &d.kind,
+                HirDiagnosticKind::RecursiveLambdaActorHandle { .. }
+            )
+        })
+        .collect()
 }
 
 #[test]
-fn nested_actor_lambda_does_not_inherit_outer_self_id() {
-    // Body:
-    //   let outer = actor |x: i64| -> i64 {
-    //       actor |y: i64| -> i64 { outer; 0 };
-    //       x + 1
-    //   };
-    //
-    // The expression-position (non-let) inner lambda's body references
-    // `outer`. `outer` is a free variable captured from the enclosing
-    // scope — it MUST be Strong. Before the lexical-scoping fix, the
-    // outer's `current_actor_self` leaked into the inner lambda's
-    // classifier (the inner lambda never sets its own self-id because
-    // there is no `lower_stmt` let-pre-bind for an anonymous lambda)
-    // and `outer` got misclassified as Weak.
+fn a_lambda_captures_another_lambda_s_handle_as_ordinary_state() {
+    // A lambda that names a DIFFERENT lambda's handle is capturing an
+    // ordinary binding, and that handle becomes its state. Only a lambda
+    // naming its OWN handle is refused, so the two must not be conflated:
+    // the capture classifier is scoped to the lambda it is collecting for.
     let source = r"
 fn make() {
-    let outer = actor |x: i64| -> i64 {
-        actor |y: i64| -> i64 {
-            outer;
-            0
-        };
-        x + 1
+    let first = actor |x: i64| -> i64 { x + 1 };
+    let second = actor |y: i64| -> i64 {
+        first;
+        y + 2
     };
 }
 ";
     let output = lower(source);
-    let lambdas = collect_spawn_lambdas(&output);
-    // The inner lambda is the one whose parameter is named `y`. Picking by
-    // param name avoids tangling with the outer lambda's `inner`-capture.
-    let inner = lambdas
-        .iter()
-        .find(|expr| match &expr.kind {
-            HirExprKind::SpawnLambdaActor { params, .. } => params.iter().any(|p| p.name == "y"),
-            _ => false,
+    assert!(
+        self_capture_refusals(&output).is_empty(),
+        "`first` is a free variable of `second`, not `second`'s own handle; \
+         diagnostics = {:?}",
+        output.diagnostics
+    );
+    let second = synthesized_lambda_actors(&output)
+        .into_iter()
+        .find(|actor| {
+            actor.receive_handlers[0]
+                .params
+                .iter()
+                .any(|p| p.name == "y")
         })
-        .expect("inner actor-lambda (param `y`) must exist");
-    let HirExprKind::SpawnLambdaActor { captures, .. } = &inner.kind else {
-        unreachable!();
-    };
-    let outer_cap = captures
-        .iter()
-        .find(|c| c.name == "outer")
-        .unwrap_or_else(|| {
-            panic!("`outer` must appear in inner lambda's captures; got {captures:?}")
-        });
-    assert_eq!(
-        outer_cap.kind,
-        hew_hir::HirCaptureKind::Strong,
-        "`outer` is a free variable captured by the inner lambda; it must \
-         be Strong, not the inner's own self-binding. captures = {captures:?}",
+        .expect("the second lambda actor (param `y`) must be declared");
+    assert!(
+        second
+            .state_fields
+            .iter()
+            .any(|field| field.name == "first"),
+        "the captured `first` handle is the second actor's state; fields = {:?}",
+        second.state_fields
     );
 }
 
 #[test]
-fn actor_lambda_body_and_spawn_handle_have_distinct_ownership_facts() {
+fn a_lambda_that_names_itself_is_refused() {
+    // A lambda actor's captures are its state, so a lambda that captures its
+    // own handle would own the handle that addresses it. A recursive actor is
+    // written as a named declaration and spawned instead.
+    let source = r"
+fn make() {
+    let inner = actor |y: i64| -> i64 {
+        inner;
+        y + 1
+    };
+}
+";
+    let output = lower(source);
+    assert!(
+        !self_capture_refusals(&output).is_empty(),
+        "a self-naming lambda actor must be refused; diagnostics = {:?}",
+        output.diagnostics
+    );
+}
+
+#[test]
+fn a_lambda_actor_declares_its_body_as_one_handler() {
     let output = lower(
         r"
         fn make() {
@@ -1630,91 +943,41 @@ fn actor_lambda_body_and_spawn_handle_have_distinct_ownership_facts() {
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     assert!(verify_hir(&output.module).is_empty());
 
-    let lambda = collect_spawn_lambdas(&output)
-        .into_iter()
-        .next()
-        .expect("spawned actor lambda");
-    let HirExprKind::SpawnLambdaActor { body, .. } = &lambda.kind else {
-        unreachable!();
+    let actors = synthesized_lambda_actors(&output);
+    let [actor] = actors.as_slice() else {
+        panic!("one lambda actor must be declared");
     };
+    let [handler] = actor.receive_handlers.as_slice() else {
+        panic!("a lambda actor declares exactly one handler");
+    };
+    assert_eq!(handler.return_ty, hew_types::ResolvedTy::I64);
     assert_eq!(
-        output.module.produced_value_facts[&lambda.site].ownership,
-        hew_types::ProducedValueOwnership::Owned {
-            acquisition: hew_types::ProducedValueAcquisition::Fresh,
-        },
-        "the enclosing expression creates the actor handle"
+        handler
+            .params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["value"],
     );
-    assert_eq!(
-        output.module.produced_value_facts[&body.site].ownership,
-        hew_types::ProducedValueOwnership::NoOwner,
-        "the i64 body result must not inherit the handle's fresh owner"
-    );
-}
-
-#[test]
-fn nested_actor_lambda_classifies_own_self_as_weak() {
-    // Sibling positive case: the inner lambda's OWN self-reference
-    // (its own let-name) must still classify as Weak — the lexical
-    // scoping fix must not regress the §5.9 ratification 2 path.
-    let source = r"
-fn make() {
-    let outer = actor |x: i64| -> i64 {
-        let inner = actor |y: i64| -> i64 {
-            inner;
-            y + 1
-        };
-        inner;
-        x + 1
-    };
-}
-";
-    let output = lower(source);
-    let lambdas = collect_spawn_lambdas(&output);
-    // The inner lambda is the one whose parameter is named `y`.
-    let inner = lambdas
-        .iter()
-        .find(|expr| match &expr.kind {
-            HirExprKind::SpawnLambdaActor { params, .. } => params.iter().any(|p| p.name == "y"),
-            _ => false,
-        })
-        .expect("inner actor-lambda (param `y`) must exist");
-    let HirExprKind::SpawnLambdaActor { captures, .. } = &inner.kind else {
-        unreachable!();
-    };
-    let inner_cap = captures
-        .iter()
-        .find(|c| c.name == "inner")
-        .unwrap_or_else(|| {
-            panic!("`inner` must appear in inner lambda's captures; got {captures:?}")
-        });
-    assert_eq!(
-        inner_cap.kind,
-        hew_hir::HirCaptureKind::Weak,
-        "the inner lambda's reference to its own let-name `inner` must \
-         classify as Weak (§5.9 ratification 2). captures = {captures:?}",
+    assert!(
+        actor.state_fields.is_empty(),
+        "this lambda captures nothing, so its actor holds no state",
     );
 }
 
 // ── typed-let forward-bind for actor lambdas ────────────────────────────────
 //
-// The forward-bind path in `lower_stmt` pre-allocates the let-binding so
-// the actor body can reference its own name recursively. Initially this
-// only fired when the let had no type annotation; a typed-let bypassed
-// pre-binding and the body's self-reference resolved as Unresolved.
-//
-// The fix extends the pre-bind to typed actor-lets. The annotation is
-// respected for the binding type (not overridden by the synthetic
-// Duplex shape).
+// The forward-bind path in `lower_stmt` pre-allocates the let-binding so the
+// lambda body can name it. That resolution still happens; what the body may
+// then do with the name changed when lambda actors began lowering to real
+// actor declarations, because a capture is state and a lambda cannot hold the
+// handle that addresses it.
 
 #[test]
-fn typed_actor_let_forward_bind_resolves_self_reference() {
-    // `let fib: Duplex<i64, i64> = actor |n: i64| -> i64 { fib; n + 1 };`
-    // The annotation matches the synthesised Duplex<i64, i64>. The body's
-    // bare-identifier `fib` must resolve to the let's binding — not emit
-    // UnresolvedSymbol.
+fn a_typed_actor_let_resolves_its_own_name_then_refuses_the_capture() {
     let source = r"
 fn make() {
-    let fib: Duplex<i64, i64> = actor |n: i64| -> i64 {
+    let fib: actor(i64) -> i64 = actor |n: i64| -> i64 {
         fib;
         n + 1
     };
@@ -1731,28 +994,17 @@ fn make() {
         .collect();
     assert!(
         unresolved_fib.is_empty(),
-        "typed actor-let must pre-bind the let-name so the body's `fib` \
-         resolves; diagnostics = {:?}",
+        "the typed actor-let must pre-bind its name so the body's `fib` \
+         resolves rather than reporting an unresolved symbol; diagnostics = {:?}",
         output.diagnostics
     );
-    // And the lambda's captures must contain a Weak self-capture for `fib`.
-    let lambdas = collect_spawn_lambdas(&output);
-    let lambda = lambdas
-        .iter()
-        .find(|expr| matches!(expr.kind, HirExprKind::SpawnLambdaActor { .. }))
-        .expect("typed actor-let must lower to a SpawnLambdaActor");
-    let HirExprKind::SpawnLambdaActor { captures, .. } = &lambda.kind else {
-        unreachable!();
-    };
-    let fib_cap = captures
-        .iter()
-        .find(|c| c.name == "fib")
-        .expect("body's `fib` must appear as a capture");
-    assert_eq!(
-        fib_cap.kind,
-        hew_hir::HirCaptureKind::Weak,
-        "typed actor-let recursive self-reference must classify as Weak; \
-         captures = {captures:?}",
+    // Resolving it is not accepting it: the capture is refused with the
+    // reason, not silently lowered into the actor's own state.
+    assert!(
+        !self_capture_refusals(&output).is_empty(),
+        "naming the lambda's own handle in its body must be refused; \
+         diagnostics = {:?}",
+        output.diagnostics
     );
 }
 

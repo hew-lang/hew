@@ -15,8 +15,8 @@
 import std.testing;
 
 type Pair<A, B> {
-    a: A;
-    b: B;
+    a: A,
+    b: B,
 }
 
 // Generic record clone over scalar leaves; mutate the original and assert

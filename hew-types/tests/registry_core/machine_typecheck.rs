@@ -6,7 +6,7 @@ use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
 use common::{isolated_checker, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
-use hew_types::{MachineMethodKind, Ty, TypeCheckOutput};
+use hew_types::{Ty, TypeCheckOutput};
 
 fn check_items(items: Vec<Spanned<Item>>) -> TypeCheckOutput {
     let program = Program {
@@ -80,24 +80,64 @@ fn unit_event(name: &str) -> MachineEvent {
 }
 
 fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
-    // Body is a bare `state` identifier — the implicit self-binding that is
-    // always in scope in a transition body and always has the machine type.
-    // Previously this used `true` (a bool literal), which passed through
-    // synthesize (result discarded).  Now that transition bodies are
-    // check_against'd against the machine type, the body must actually have
-    // the machine type.
+    // A fixed target requires that target variant on every normal path
+    // (MACHINE-SPEC, "Rule selection and coverage"), so the body is the
+    // dotted target constructor rather than the source value.
     MachineTransition {
         event_name: event.to_string(),
         source_state: source.to_string(),
         target_state: target.to_string(),
         target_is_contextual: false,
+        target_composite: None,
         event_bindings: vec![],
         composite_prelude_len: 0,
         guard: None,
-        body: (Expr::Identifier("state".to_string()), 0..0),
+        body: (
+            Expr::ContextVariant(ContextVariantExpr {
+                name: target.to_string(),
+                record: None,
+            }),
+            0..0,
+        ),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
     }
+}
+
+/// A transition into a payload state: the body constructs the target with
+/// every named field initialized, as a fixed target requires.
+fn payload_transition(
+    event: &str,
+    source: &str,
+    target: &str,
+    fields: &[&str],
+) -> MachineTransition {
+    let mut rule = transition(event, source, target);
+    rule.body = (
+        Expr::ContextVariant(ContextVariantExpr {
+            name: target.to_string(),
+            record: Some(Box::new(ContextVariantRecord {
+                fields: fields
+                    .iter()
+                    .map(|field| {
+                        (
+                            (*field).to_string(),
+                            (
+                                Expr::Literal(Literal::Integer {
+                                    value: 0,
+                                    radix: IntRadix::Decimal,
+                                }),
+                                0..0,
+                            ),
+                        )
+                    })
+                    .collect(),
+                base: None,
+            })),
+        }),
+        0..0,
+    );
+    rule
 }
 
 fn wildcard_transition(event: &str) -> MachineTransition {
@@ -106,6 +146,7 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         source_state: "_".to_string(),
         target_state: "_".to_string(),
         target_is_contextual: false,
+        target_composite: None,
         event_bindings: vec![],
         composite_prelude_len: 0,
         guard: None,
@@ -179,8 +220,8 @@ fn missing_transition_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("does not handle event `Dim`")),
-        "expected Dim error, got: {messages:?}"
+            .any(|m| m.contains("needs an unconditional fallback for `Off` / `Dim`")),
+        "expected Dim coverage error, got: {messages:?}"
     );
 }
 
@@ -196,7 +237,7 @@ fn machine_registers_type_def() {
         ],
         vec![unit_event("Connect")],
         vec![
-            transition("Connect", "Closed", "Established"),
+            payload_transition("Connect", "Closed", "Established", &["seq"]),
             wildcard_transition("Connect"), // wildcard fills Established->Connect
         ],
     );
@@ -261,7 +302,7 @@ fn state_fields_registered() {
         ],
         vec![unit_event("Start"), unit_event("Stop")],
         vec![
-            transition("Start", "Idle", "Counting"),
+            payload_transition("Start", "Idle", "Counting", &["value"]),
             transition("Stop", "Counting", "Idle"),
             wildcard_transition("Start"),
             wildcard_transition("Stop"),
@@ -302,8 +343,8 @@ fn duplicate_transition_error() {
     assert!(
         output.errors.iter().any(|e| e
             .message
-            .contains("duplicate transition for event `Toggle` in state `Off`")),
-        "expected duplicate transition error, got: {:?}",
+            .contains("unreachable rule after the unconditional fallback for `Off` / `Toggle`")),
+        "expected an unreachable-duplicate error, got: {:?}",
         output.errors
     );
 }
@@ -326,7 +367,7 @@ fn unknown_state_name_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("transition references unknown state `Onn`")),
+            .any(|m| m.contains("references an undeclared state or input event")),
         "expected unknown state error, got: {messages:?}"
     );
 }
@@ -349,7 +390,7 @@ fn unknown_event_name_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("transition references unknown event `Toggl`")),
+            .any(|m| m.contains("references an undeclared state or input event")),
         "expected unknown event error, got: {messages:?}"
     );
 }
@@ -372,18 +413,20 @@ fn duplicate_wildcard_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("duplicate wildcard transition for event `Toggle`")),
-        "expected duplicate wildcard error, got: {messages:?}"
+            .any(|m| m.contains("unreachable rule after the unconditional fallback")),
+        "expected an unreachable-duplicate error, got: {messages:?}"
     );
 }
 
-// ── Test: machine with fewer than 2 states ──────────────────────────
+// ── Test: machine with no states ────────────────────────────────────
 
+/// MACHINE-SPEC, "Declaration and use": a declaration requires at least one
+/// state and one input event. A single-state machine is well formed.
 #[test]
-fn too_few_states_error() {
+fn no_states_error() {
     let md = make_machine(
         "Broken",
-        vec![unit_state("Only")],
+        vec![],
         vec![unit_event("Ping")],
         vec![wildcard_transition("Ping")],
     );
@@ -392,8 +435,24 @@ fn too_few_states_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("must declare at least 2 states")),
-        "expected min-states error, got: {messages:?}"
+            .any(|m| m.contains("must declare a state and an input event")),
+        "expected missing-state error, got: {messages:?}"
+    );
+}
+
+#[test]
+fn single_state_machine_is_well_formed() {
+    let md = make_machine(
+        "Only",
+        vec![unit_state("Idle")],
+        vec![unit_event("Ping")],
+        vec![transition("Ping", "Idle", "Idle")],
+    );
+    let output = check_items(vec![(Item::Machine(md), 0..0)]);
+    assert!(
+        output.errors.is_empty(),
+        "single-state machine should type-check, got: {:?}",
+        output.errors
     );
 }
 
@@ -412,8 +471,8 @@ fn zero_events_error() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("must declare at least 1 event")),
-        "expected min-events error, got: {messages:?}"
+            .any(|m| m.contains("must declare a state and an input event")),
+        "expected missing-event error, got: {messages:?}"
     );
 }
 
@@ -702,18 +761,18 @@ fn machine_step_dispatch() {
         r"
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => .On;
-            on Toggle: On => .Off;
+            state Off,
+            state On,
+            on Toggle: Off => .On,
+            on Toggle: On => .Off,
         }
 
         fn main() {
             var light: Light = Light.Off;
-            light.step(LightEvent.Toggle);
+            let _report = light.step(LightEvent.Toggle);
             let name: string = light.state_name();
             let _ = name;
         }
@@ -725,41 +784,6 @@ fn machine_step_dispatch() {
         "machine step/state_name dispatch should type-check, got: {:?}",
         output.errors
     );
-    assert!(
-        output.machine_method_dispatch.values().any(|kind| {
-            matches!(
-                kind,
-                MachineMethodKind::Step { machine_name } if machine_name == "Light"
-            )
-        }),
-        "expected a checker-owned Light::step dispatch entry, got: {:?}",
-        output.machine_method_dispatch
-    );
-    assert!(
-        output.machine_method_dispatch.values().any(|kind| {
-            matches!(
-                kind,
-                MachineMethodKind::StateName { machine_name } if machine_name == "Light"
-            )
-        }),
-        "expected a checker-owned Light::state_name dispatch entry, got: {:?}",
-        output.machine_method_dispatch
-    );
-
-    let step_sig = &output.type_defs["Light"].methods["step"];
-    assert_eq!(
-        step_sig.params,
-        vec![Ty::Named {
-            builtin: None,
-            name: "LightEvent".to_string(),
-            args: vec![],
-        }],
-        "step must dispatch through the nominal companion event type"
-    );
-    assert_eq!(
-        output.type_defs["Light"].methods["state_name"].return_type,
-        Ty::String
-    );
 }
 
 #[test]
@@ -768,13 +792,13 @@ fn machine_step_suppresses_unused_mut_warning() {
         r"
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => .On;
-            on Toggle: On => .Off;
+            state Off,
+            state On,
+            on Toggle: Off => .On,
+            on Toggle: On => .Off,
         }
 
         fn main() {
@@ -805,13 +829,13 @@ fn machine_step_on_let_receiver_is_rejected() {
         r"
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => .On;
-            on Toggle: On => .Off;
+            state Off,
+            state On,
+            on Toggle: Off => .On,
+            on Toggle: On => .Off,
         }
 
         fn main() {
@@ -837,16 +861,16 @@ fn machine_state_pattern_match_uses_variant_infrastructure() {
         r"
         machine TcpState {
             events {
-                Connect;
-                Disconnect;
+                Connect,
+                Disconnect,
             }
 
-            state Closed;
-            state Established { seq: i64; }
+            state Closed,
+            state Established { seq: i64, },
             on Connect: Closed => .Established { seq: 1 }
             on Connect: Established => .Established { seq: state.seq }
-            on Disconnect: Closed => .Closed;
-            on Disconnect: Established => .Closed;
+            on Disconnect: Closed => .Closed,
+            on Disconnect: Established => .Closed,
         }
 
         fn seq_or_zero(state: TcpState) -> i64 {
@@ -883,16 +907,16 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
         r"
         machine Lifecycle<T> {
             events {
-                Load { value: T; }
-                Reset;
+                Load { value: T, }
+                ,Reset,
             }
 
-            state Empty;
-            state Loaded { value: T; }
+            state Empty,
+            state Loaded { value: T, },
             on Load: Empty => .Loaded { value: event.value }
             on Load: Loaded => .Loaded { value: event.value }
-            on Reset: Empty => .Empty;
-            on Reset: Loaded => .Empty;
+            on Reset: Empty => .Empty,
+            on Reset: Loaded => .Empty,
         }
 
         fn main() {
@@ -986,19 +1010,21 @@ fn user_defined_type_does_not_inherit_machine_methods() {
     );
 }
 
+/// MACHINE-SPEC, "Declaration and use": state constructors and patterns follow
+/// ordinary enum rules, and so does the generated input enum.
 #[test]
-fn machine_event_match_outside_transition_rejected() {
+fn machine_event_matches_outside_a_transition() {
     let output = typecheck_isolated(
         r"
         machine Light {
             events {
-                Toggle;
+                Toggle,
             }
 
-            state Off;
-            state On;
-            on Toggle: Off => .On;
-            on Toggle: On => .Off;
+            state Off,
+            state On,
+            on Toggle: Off => .On,
+            on Toggle: On => .Off,
         }
 
         fn main() {
@@ -1011,13 +1037,8 @@ fn machine_event_match_outside_transition_rejected() {
     );
 
     assert!(
-        output.errors.iter().any(|error| {
-            error.kind == TypeErrorKind::InvalidOperation
-                && error
-                    .message
-                    .contains("outside a transition body is not supported")
-        }),
-        "event enum matching outside transition bodies is out of scope for this slice; got: {:?}",
+        output.errors.is_empty(),
+        "matching a machine's input enum outside a transition must type-check, got: {:?}",
         output.errors
     );
 }
@@ -1151,7 +1172,7 @@ fn imported_machine_payload_state_struct_literal_resolves() {
         ],
         vec![unit_event("Start"), unit_event("Stop")],
         vec![
-            transition("Start", "Idle", "Counting"),
+            payload_transition("Start", "Idle", "Counting", &["value"]),
             transition("Stop", "Counting", "Idle"),
             wildcard_transition("Start"),
             wildcard_transition("Stop"),
@@ -1243,8 +1264,8 @@ fn imported_machine_exhaustiveness_runs() {
     assert!(
         messages
             .iter()
-            .any(|m| m.contains("does not handle event `Dim`")),
-        "expected missing-Dim exhaustiveness error for imported machine, got: {messages:?}"
+            .any(|m| m.contains("needs an unconditional fallback for `Off` / `Dim`")),
+        "expected the missing-Dim coverage error for the imported machine, got: {messages:?}"
     );
 }
 
@@ -1409,16 +1430,16 @@ trait Resource {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1445,7 +1466,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -1453,16 +1474,16 @@ impl Resource for File {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1490,20 +1511,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1540,16 +1561,16 @@ fn machine_generic_unknown_trait_in_bound_errors() {
     let source = r"
 machine Lifecycle<T: NonExistentTrait> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1580,21 +1601,21 @@ fn machine_state_entry_exit_well_typed_no_errors() {
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push,
+                Pull,
             }
 
             state Closed {
                 entry { let _x: i64 = 1; }
                 exit  { let _y: i64 = 2; }
-            }
-            state Open;
+            },
+            state Open,
 
 
-            on Push: Closed => .Open;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Closed => .Open,
+            on Push: Open   => .Open,
+            on Pull: Open   => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1612,8 +1633,8 @@ fn machine_state_entry_type_error_reported() {
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push,
+                Pull,
             }
 
             state Closed {
@@ -1621,14 +1642,14 @@ fn machine_state_entry_type_error_reported() {
                     // assigning a bool to an i64 — must be a type error
                     let _x: i64 = true;
                 }
-            }
-            state Open;
+            },
+            state Open,
 
 
-            on Push: Closed => .Open;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Closed => .Open,
+            on Push: Open   => .Open,
+            on Pull: Open   => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1645,8 +1666,8 @@ fn machine_state_exit_type_error_reported() {
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push,
+                Pull,
             }
 
             state Open {
@@ -1654,14 +1675,14 @@ fn machine_state_exit_type_error_reported() {
                     // assigning a bool to an i64 — must be a type error
                     let _x: i64 = true;
                 }
-            }
-            state Closed;
+            },
+            state Closed,
 
 
-            on Push: Closed => .Open;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Closed => .Open,
+            on Push: Open   => .Open,
+            on Pull: Open   => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1671,68 +1692,251 @@ fn machine_state_exit_type_error_reported() {
     );
 }
 
-/// Referencing `event` inside a state entry block is a name-resolution error.
-/// `event` is only in scope inside transition bodies — never in lifecycle hooks.
+/// MACHINE-SPEC, "Hooks and wildcard targets": a hook runs inside the rule
+/// selected for one input, so the selected input's payload is in scope.
 #[test]
-fn machine_state_entry_event_binding_not_in_scope() {
+fn machine_state_entry_reads_the_selected_input_payload() {
     let output = typecheck_isolated(
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push { force: i64 },
+                Pull,
+            }
+            emits {
+                Note { count: i64 },
             }
 
+            state Open,
             state Closed {
                 entry {
-                    // `event` is a transition-scope binding; must be undefined here
-                    let _e = event;
+                    emit Note { count: event.force };
                 }
-            }
-            state Open;
+            },
 
 
-            on Push: Closed => .Open;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Open => .Closed,
+            on Pull: Closed => .Open,
+            default { state }
         }
         ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedVariable && e.message.contains("event")),
-        "referencing `event` inside a state entry block must be UndefinedVariable, got: {:?}",
+        output.errors.is_empty(),
+        "an entry hook must read the selected input's payload, got: {:?}",
         output.errors
     );
 }
 
-/// Same rejection: `event` inside a state exit block.
+/// The same scope is fail-closed: a field the selected input does not declare
+/// is refused rather than resolved against some other input.
 #[test]
-fn machine_state_exit_event_binding_not_in_scope() {
+fn generic_machine_instantiated_with_a_handle_is_refused_at_the_use_site() {
+    // The purity proof is deferred to instantiation (D427), so the refusal
+    // lands where the impure argument is chosen and names both the argument
+    // and the machine.
+    let output = typecheck_isolated(
+        r"
+        actor Worker {
+            let id: i64,
+
+            receive fn ping() -> i64 {
+                return self.id;
+            }
+        }
+        machine Slot<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: T },
+            on Put: Empty => Full { value: event.value }
+            on Clear: Full => Empty,
+            default { state }
+        }
+        fn main() {
+            var slot: Slot<Worker> = .Empty;
+        }
+        ",
+    );
+    let refusal = output
+        .errors
+        .iter()
+        .find(|error| error.message.contains("cannot be instantiated"))
+        .unwrap_or_else(|| panic!("expected an instantiation refusal: {:#?}", output.errors));
+    assert!(
+        refusal.message.contains("Slot") && refusal.message.contains("Worker"),
+        "the refusal must name the machine and the argument: {}",
+        refusal.message
+    );
+}
+
+#[test]
+fn generic_machine_instantiated_with_a_value_type_is_admitted() {
+    // Negative control for the refusal above: the same machine at a pure
+    // argument carries no diagnostic.
+    let output = typecheck_isolated(
+        r"
+        machine Slot<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: T },
+            on Put: Empty => Full { value: event.value }
+            on Clear: Full => Empty,
+            default { state }
+        }
+        fn main() {
+            var slot: Slot<i64> = .Empty;
+            let _ = slot.step(.Put { value: 3 });
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a generic machine at a value type must type-check: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn generic_machine_no_argument_could_purify_is_refused_at_the_declaration() {
+    // A state payload that carries external identity for every argument can
+    // never be purified by an instantiation, so it fails where it is written
+    // rather than waiting for a use site that may not exist.
+    let output = typecheck_isolated(
+        r"
+        actor Worker {
+            let id: i64,
+
+            receive fn ping() -> i64 {
+                return self.id;
+            }
+        }
+        type Pair<T> {
+            left: T,
+            right: Worker,
+        }
+        machine Holder<T> {
+            events { Put { value: T }, Clear }
+            state Empty,
+            state Full { value: Pair<T> },
+            on Put: Empty => Empty,
+            on Clear: Full => Empty,
+            default { state }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("not demonstrably pure")),
+        "an unconditionally impure generic machine must be refused at its \
+         declaration: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_transition_supervisor_spawn_refused_as_impure() {
+    // Spawning a supervisor from a transition body is refused by machine
+    // normalization, which runs before HIR. This replaces the HIR pre-pass
+    // walker's `Item::Machine` arm: a machine that normalizes has no machine
+    // item left to walk, and one that does not never reaches HIR.
+    let output = typecheck_isolated(
+        r"
+        supervisor Root {
+            strategy: one_for_one,
+            child worker: Worker(),
+        }
+        actor Worker {
+            receive fn work() {}
+        }
+        machine M {
+            events {
+                Tick,
+            }
+
+            state Active,
+            on Tick: Active => Active reenter {
+                let s = spawn Root(value: 1);
+                .Active
+            }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("pure machine evaluator")),
+        "a supervisor spawn in a transition body must be refused as impure: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_state_entry_supervisor_spawn_refused_as_impure() {
+    // The same refusal from a state `entry` hook, the other user-expression
+    // position the retired HIR walker covered.
+    let output = typecheck_isolated(
+        r"
+        supervisor Root {
+            strategy: one_for_one,
+            child worker: Worker(),
+        }
+        actor Worker {
+            receive fn work() {}
+        }
+        machine M {
+            events {
+                Tick,
+            }
+
+            state Idle {
+                entry {
+                    let s = spawn Root(value: 1);
+                }
+            },
+            on Tick: Idle => Idle reenter,
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("pure machine evaluator")),
+        "a supervisor spawn in a state entry hook must be refused as impure: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn machine_state_entry_unknown_input_field_errors() {
     let output = typecheck_isolated(
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push { force: i64 },
+                Pull,
+            }
+            emits {
+                Note { count: i64 },
             }
 
-            state Open {
-                exit {
-                    // `event` is a transition-scope binding; must be undefined here
-                    let _e = event;
+            state Open,
+            state Closed {
+                entry {
+                    emit Note { count: event.weight };
                 }
-            }
-            state Closed;
+            },
 
 
-            on Push: Closed => .Open;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Open => .Closed,
+            on Pull: Closed => .Open,
+            default { state }
         }
         ",
     );
@@ -1740,8 +1944,8 @@ fn machine_state_exit_event_binding_not_in_scope() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedVariable && e.message.contains("event")),
-        "referencing `event` inside a state exit block must be UndefinedVariable, got: {:?}",
+            .any(|error| error.message.contains("has no field `weight`")),
+        "an unknown input field in an entry hook must be refused, got: {:?}",
         output.errors
     );
 }
@@ -1753,8 +1957,8 @@ fn machine_state_entry_state_binding_in_scope() {
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push,
+                Pull,
             }
 
             state Closed {
@@ -1762,14 +1966,14 @@ fn machine_state_entry_state_binding_in_scope() {
                     // `state` is the machine value; discarding it must be fine
                     let _s = state;
                 }
-            }
-            state Open;
+            },
+            state Open,
 
 
-            on Push: Closed => .Open;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Closed => .Open,
+            on Push: Open   => .Open,
+            on Pull: Open   => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1788,24 +1992,24 @@ fn machine_state_entry_payload_field_resolves() {
         r"
         machine TcpState {
             events {
-                Connect;
-                Disconnect;
+                Connect,
+                Disconnect,
             }
 
-            state Closed;
+            state Closed,
             state Established {
                 entry {
                     // `state.seq` must resolve - payload field on the current state
                     let _n: i64 = state.seq;
                 }
-                seq: i64;
-            }
+                seq: i64,
+            },
 
 
             on Connect:    Closed      => .Established { seq: 0 }
             on Connect:    Established => .Established { seq: state.seq }
-            on Disconnect: Closed      => .Closed;
-            on Disconnect: Established => .Closed;
+            on Disconnect: Closed      => .Closed,
+            on Disconnect: Established => .Closed,
         }
         ",
     );
@@ -1824,24 +2028,24 @@ fn machine_state_exit_payload_field_resolves() {
         r"
         machine TcpState {
             events {
-                Connect;
-                Disconnect;
+                Connect,
+                Disconnect,
             }
 
-            state Closed;
+            state Closed,
             state Established {
                 exit {
                     // `state.seq` must resolve - payload field on the current state
                     let _n: i64 = state.seq;
                 }
-                seq: i64;
-            }
+                seq: i64,
+            },
 
 
             on Connect:    Closed      => .Established { seq: 0 }
             on Connect:    Established => .Established { seq: state.seq }
-            on Disconnect: Closed      => .Closed;
-            on Disconnect: Established => .Closed;
+            on Disconnect: Closed      => .Closed,
+            on Disconnect: Established => .Closed,
         }
         ",
     );
@@ -1859,23 +2063,23 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
         r"
         machine TcpState {
             events {
-                Connect;
-                Disconnect;
+                Connect,
+                Disconnect,
             }
 
-            state Closed;
+            state Closed,
             state Established {
                 entry {
                     let _n: i64 = state.no_such_field;
                 }
-                seq: i64;
-            }
+                seq: i64,
+            },
 
 
             on Connect:    Closed      => .Established { seq: 0 }
             on Connect:    Established => .Established { seq: state.seq }
-            on Disconnect: Closed      => .Closed;
-            on Disconnect: Established => .Closed;
+            on Disconnect: Closed      => .Closed,
+            on Disconnect: Established => .Closed,
         }
         ",
     );
@@ -1883,8 +2087,8 @@ fn machine_state_entry_nonexistent_payload_field_errors() {
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UndefinedField),
-        "accessing a nonexistent payload field in entry must be UndefinedField, got: {:?}",
+            .any(|e| e.message.contains("has no field `no_such_field`")),
+        "accessing a nonexistent payload field in entry must be refused, got: {:?}",
         output.errors
     );
 }
@@ -1897,19 +2101,19 @@ fn machine_transition_guard_type_error_reported() {
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push,
+                Pull,
             }
 
-            state Closed;
-            state Open;
+            state Closed,
+            state Open,
 
 
             // guard expects bool, but 42 is i64 — type error
-            on Push: Closed => .Open when 42;
-            on Push: Open   => .Open;
-            on Pull: Open   => .Closed;
-            on Pull: Closed => .Closed;
+            on Push: Closed => .Open when 42,
+            on Push: Open   => .Open,
+            on Pull: Open   => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1919,26 +2123,29 @@ fn machine_transition_guard_type_error_reported() {
     );
 }
 
-/// A machine that has both entry/exit blocks and exhaustiveness gaps must
-/// produce both kinds of diagnostics.
+/// A type error inside a state entry block is reported like any other body
+/// diagnostic. Normalization refuses a malformed machine before checking, so a
+/// coverage gap and a hook type error are no longer reported together.
 #[test]
-fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
+fn machine_entry_block_type_error_reported() {
     let output = typecheck_isolated(
         r"
         machine Door {
             events {
-                Push;
-                Pull;
+                Push,
+                Pull,
             }
 
             state Closed {
                 entry { let _x: i64 = true; }   // type error
-            }
-            state Open;
+            },
+            state Open,
 
 
-            on Push: Closed => .Open;
-            // Missing: Open -> Push and both Pull transitions
+            on Push: Closed => .Open,
+            on Push: Open => .Open,
+            on Pull: Open => .Closed,
+            on Pull: Closed => .Closed,
         }
         ",
     );
@@ -1950,15 +2157,7 @@ fn machine_entry_exit_errors_and_exhaustiveness_both_reported() {
                 ref actual
             } if expected == "i64" && actual == "bool"
         )),
-        "entry-block lifecycle type error must be reported alongside exhaustiveness, got: {:?}",
-        output.errors
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::MachineExhaustivenessError),
-        "exhaustiveness gap must still be reported alongside entry-block error, got: {:?}",
+        "a type error inside a state entry block must be reported, got: {:?}",
         output.errors
     );
 }
@@ -1976,7 +2175,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -1984,16 +2183,16 @@ impl Resource for File {
 
 machine Holder<T> where T: Resource {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2022,20 +2221,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T> where T: Resource {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2070,32 +2269,31 @@ trait Resource {
     fn close(self);
 }
 
-machine Bogus<T> where U: Resource {
+machine Bogus where U: Resource {
     events {
-        Start { handle: T; }
-        Stop;
+        Start,
+        Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active,
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active,
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
 ";
     let output = typecheck_isolated(source);
-    let undef: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| e.kind == TypeErrorKind::UndefinedType)
-        .collect();
     assert!(
-        undef.iter().any(|e| e.message.contains('U')
-            && e.message.contains("not a declared type parameter")),
-        "where-clause on undeclared param must fail closed with descriptive UndefinedType, got: {:?}",
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::MachineExhaustivenessError
+                && error
+                    .message
+                    .contains("must name a declared type parameter")
+        }),
+        "a where-clause predicate on an undeclared name must fail closed, got: {:?}",
         output.errors
     );
 }
@@ -2111,7 +2309,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -2119,16 +2317,16 @@ impl Resource for File {
 
 machine Twin<T: Resource> where T: Resource {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2168,7 +2366,7 @@ trait Resource {
     fn close(self);
 }
 
-type File { path: i64; }
+type File { path: i64, }
 
 impl Resource for File {
     fn close(self) {}
@@ -2176,16 +2374,16 @@ impl Resource for File {
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2213,20 +2411,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2265,20 +2463,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2311,7 +2509,7 @@ fn main() {
 #[test]
 fn non_machine_annotation_does_not_trigger_machine_bound_check() {
     let source = r"
-type Box<T> { value: T; }
+type Box<T> { value: T, }
 
 fn use_box(b: Box<i64>) -> Box<i64> {
     b
@@ -2344,20 +2542,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2406,20 +2604,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2451,20 +2649,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2495,20 +2693,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2543,20 +2741,20 @@ trait Resource {
     fn close(self);
 }
 
-type Plain { x: i64; }
+type Plain { x: i64, }
 
 machine Holder<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
 
-    on Start: Idle => .Active { Active { handle: event.handle } }
-    on Stop: Active => .Idle { .Idle }
+    on Start: Idle => .Active { handle: event.handle }
+    on Stop: Active => .Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -2577,71 +2775,373 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
     );
 }
 
-// ── W3.039 Stage 2: const-generic machine registration ──────────────────
+// ── Const parameters and depth-1 composite states ───────────────────────
 
+/// HEW-SPEC-2026 §3.11.2: a const parameter's declared default is its value,
+/// named in guards like an ordinary immutable binding.
 #[test]
-fn machine_const_param_decl_passes_typecheck() {
-    let src = r"machine FixedBuffer<const N: usize = 16> {
+fn machine_const_param_is_named_in_a_guard() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize = 3> {
+            events {
+                Fail,
+            }
+
+            state Trying { attempts: usize },
+            state Exhausted,
+
+            on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+            on Fail: Trying => Exhausted,
+            on Fail: Exhausted => Exhausted reenter,
+        }
+
+        fn main() {
+            var retry: Retry = .Trying { attempts: 0 };
+            let _ = retry.step(.Fail);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a const parameter named in a guard should check cleanly, got: {:?}",
+        output.errors
+    );
+}
+
+/// A const parameter is a fixed machine-wide value, so a body binding of the
+/// same name is refused rather than silently shading it.
+#[test]
+fn machine_const_param_shadowing_is_refused() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize = 3> {
+            events {
+                Fail,
+            }
+
+            state Trying { attempts: usize },
+
+            on Fail: Trying => Trying reenter {
+                let MAX = 9;
+                Trying { attempts: state.attempts + MAX }
+            }
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("`MAX` is a const parameter")),
+        "expected the const-parameter shadowing refusal, got: {:?}",
+        output.errors
+    );
+}
+
+/// Negative control for the refusal above: a body binding whose name is not a
+/// const parameter is ordinary and checks cleanly.
+#[test]
+fn machine_body_binding_beside_a_const_param_is_admitted() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize = 3> {
+            events {
+                Fail,
+            }
+
+            state Trying { attempts: usize },
+
+            on Fail: Trying => Trying reenter {
+                let step = MAX - 2;
+                Trying { attempts: state.attempts + step }
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a body binding that is not a const parameter should check cleanly, got: {:?}",
+        output.errors
+    );
+}
+
+/// No type annotation spells a const argument, so a parameter without a
+/// default has no value and is refused at the declaration.
+#[test]
+fn machine_const_param_without_a_default_is_refused() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize> {
+            events {
+                Fail,
+            }
+
+            state Trying,
+
+            on Fail: Trying => Trying reenter,
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("needs a default value")),
+        "expected the missing-default refusal, got: {:?}",
+        output.errors
+    );
+}
+
+/// A transition targeting a composite by name enters its `initial` substate.
+/// Without that resolution the target names no declared state and the machine
+/// is refused.
+#[test]
+fn machine_composite_target_enters_the_initial_substate() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Open,
+                Authed,
+            }
+
+            state Closed,
+
+            state Live {
+                initial state Authing,
+                state Active,
+            },
+
+            on Open: Closed => Live,
+            on Authed: Authing => Active,
+
+            default { state }
+        }
+
+        fn main() {
+            var session: Session = .Closed;
+            let _ = session.step(.Open);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "targeting a composite by name should enter its initial substate, got: {:?}",
+        output.errors
+    );
+}
+
+/// A composite's parent rule applies from every substate. Without the D1
+/// expansion, `Active` and `Draining` have no rule for `Close` and the
+/// coverage check refuses the machine.
+#[test]
+fn machine_composite_parent_rule_covers_every_substate() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+
+            state Live {
+                initial state Authing,
+                state Active,
+                state Draining,
+
+                on Close: _ => Closed,
+            },
+
+            on Close: Closed => Closed reenter,
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a composite parent rule should cover every substate, got: {:?}",
+        output.errors
+    );
+}
+
+/// A substate's own rule beats the composite's for the same event, including
+/// when it is written after the composite block. Expanding the parent rule
+/// onto that substate too would leave two unconditional rules for one
+/// state/event pair and the machine would be refused as unreachable.
+#[test]
+fn machine_substate_rule_after_the_block_beats_the_parent_rule() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing,
+                state Draining,
+
+                on Close: _ => Closed,
+            },
+
+            on Close: Draining => Kicked,
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a substate rule written after the composite block should beat the \
+         parent rule, got: {:?}",
+        output.errors
+    );
+}
+
+/// A guarded substate rule does not establish coverage, so the composite's
+/// parent rule stays behind it as the unconditional fallback.
+#[test]
+fn machine_guarded_substate_rule_keeps_the_parent_rule_as_its_fallback() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing { hostile: bool },
+                state Draining { hostile: bool },
+
+                on Close: _ => Closed,
+            },
+
+            on Close: Draining => Kicked when state.hostile,
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a guarded substate rule should fall back to the parent rule, got: {:?}",
+        output.errors
+    );
+}
+
+/// Negative control for the fallback above: with no parent rule to fall back
+/// to, the same guarded substate rule leaves the pair uncovered.
+#[test]
+fn machine_guarded_substate_rule_alone_is_not_coverage() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing { hostile: bool },
+                state Draining { hostile: bool },
+            },
+
+            on Close: Draining => Kicked when state.hostile,
+            on Close: Authing => Closed,
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("needs an unconditional fallback")),
+        "a guarded substate rule with no parent rule must leave the pair \
+         uncovered, got: {:?}",
+        output.errors
+    );
+}
+
+/// A rule written inside the composite block with a concrete member source is
+/// that member's own rule, not a parent rule to expand onto every member.
+#[test]
+fn machine_concrete_source_rule_inside_the_block_belongs_to_that_substate() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing,
+                state Draining,
+
+                on Close: Draining => Kicked,
+                on Close: _ => Closed,
+            },
+
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+
+        fn main() {
+            var session: Session = .Closed;
+            let _ = session.step(.Close);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a concrete-source rule inside the block should belong to that \
+         substate alone, got: {:?}",
+        output.errors
+    );
+}
+
+/// A composite state nests one level. The parser refuses a substate that
+/// declares substates of its own, so the machine never reaches the checker.
+#[test]
+fn machine_composite_depth_two_is_refused() {
+    let parsed = hew_parser::parse(
+        r"machine Deep {
     events {
-        Write;
-        Drain;
+        Go,
     }
 
-    state Empty;
-    state Full;
-    on Write: Empty => .Full { .Full }
-    on Drain: Full => .Empty { .Empty }
-    default { self }
-}
-";
-    let parsed = hew_parser::parse(src);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let out = check_items(parsed.program.items);
-    let errs: Vec<_> = out
-        .errors
-        .iter()
-        .filter(|e| e.severity == hew_types::error::Severity::Error)
-        .collect();
-    assert!(
-        errs.is_empty(),
-        "expected no type errors on a const-param machine; got: {errs:?}"
-    );
-}
+    state Outer {
+        initial state Inner {
+            initial state TooDeep,
+        }
+    },
 
-#[test]
-fn machine_mixed_type_and_const_params_pass_typecheck() {
-    let src = r"machine M<T, const N: usize> {
-    events {
-        Put { payload: T; }
-        Take;
+    on Go: _ => _ {
+        state
     }
-
-    state Empty;
-    state Full { val: T; }
-    on Put: Empty => .Full { Full { val: event.payload } }
-    on Take: Full => .Empty { .Empty }
-    default { self }
 }
-";
-    let parsed = hew_parser::parse(src);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
+",
     );
-    let out = check_items(parsed.program.items);
-    let errs: Vec<_> = out
-        .errors
-        .iter()
-        .filter(|e| e.severity == hew_types::error::Severity::Error)
-        .collect();
     assert!(
-        errs.is_empty(),
-        "expected no type errors on a mixed-param machine; got: {errs:?}"
+        parsed
+            .errors
+            .iter()
+            .any(|error| format!("{error:?}").contains("a composite state nests one level")),
+        "expected the depth-two refusal, got: {:?}",
+        parsed.errors
     );
 }
 
@@ -2659,13 +3159,13 @@ fn machine_bare_transition_target_resolves_to_declared_state() {
         r"
         machine Light {
             events {
-                Go;
+                Go,
             }
 
-            state Idle;
-            state Running;
+            state Idle,
+            state Running,
 
-            on Go: Idle => Running;
+            on Go: Idle => Running,
 
             default { state }
         }
@@ -2698,13 +3198,13 @@ fn machine_bare_transition_target_unknown_state_is_rejected() {
         r"
         machine Light {
             events {
-                Go;
+                Go,
             }
 
-            state Idle;
-            state Running;
+            state Idle,
+            state Running,
 
-            on Go: Idle => Bogus;
+            on Go: Idle => Bogus,
 
             default { state }
         }

@@ -15,19 +15,19 @@
 import std.testing;
 
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 enum Shape {
-    Named(string);
-    Tagged(string);
-    Empty;
+    Named(string),
+    Tagged(string),
+    Empty,
 }
 
 enum Counter {
-    Value(i64);
-    Zero;
+    Value(i64),
+    Zero,
 }
 
 #[test]

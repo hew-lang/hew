@@ -1,0 +1,34 @@
+import std.channel;
+
+actor Worker {
+    receive fn delayed(value: string, consume entered: channel.Sender<i64>, consume gate: channel.Receiver<i64>) -> string {
+        entered.send(1);
+        entered.close();
+        let _ = gate.recv();
+        gate.close();
+        value.to_upper()
+    }
+}
+
+fn fail_after_start(consume entered: channel.Receiver<i64>) -> duration {
+    let _ = entered.recv().expect("handler started");
+    entered.close();
+    panic("later select source failed");
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let (entered, waiting): (channel.Sender<i64>, channel.Receiver<i64>) =
+        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (release, gate): (channel.Sender<i64>, channel.Receiver<i64>) =
+        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    defer println("caller cleanup");
+    // The call starts before evaluating the later source. Its owned request
+    // and reply sink must remain visible to the ordinary fault cleanup path.
+    select {
+        reply from worker.delayed("owned request and late reply", entered, gate) => println(reply.expect("unexpected reply")),
+        after fail_after_start(waiting) => println("unexpected timer"),
+    }
+    release.close();
+    close(worker);
+}

@@ -10,6 +10,7 @@ mod cross_module_same_name {
 
     fn make_record(name: &str, fields: &[(&str, &str)]) -> TypeDecl {
         TypeDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Pub,
             kind: TypeDeclKind::Struct,
             name: name.to_string(),
@@ -43,8 +44,8 @@ mod cross_module_same_name {
 
     fn make_constructor_body(record_name: &str, field_name: &str) -> FnDecl {
         FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Pub,
             name: "ok".to_string(),
@@ -973,7 +974,7 @@ mod assoc_types_slice1 {
             }
 
             type Holder<T> {
-                value: T;
+                value: T,
             }
 
             impl<T: Display> Show for Holder<T> {
@@ -1036,7 +1037,7 @@ mod assoc_types_slice1 {
             }
 
             type Counter {
-                value: i64;
+                value: i64,
             }
 
             impl Iterator for Counter {
@@ -1166,7 +1167,7 @@ mod assoc_types_slice1 {
             }
 
             type Container<T> {
-                value: T;
+                value: T,
             }
 
             impl<T: Display> Show for Container<T> {
@@ -1246,7 +1247,7 @@ mod assoc_types_slice2 {
             }
 
             type Counter {
-                value: i64;
+                value: i64,
             }
 
             impl Iterator for Counter {
@@ -1436,7 +1437,7 @@ mod assoc_types_slice2 {
     fn unknown_trait_bound_shape_rejected_for_impl_inline_type_param_bound() {
         let output = check_source(
             r"
-            type Foo<T> { value: T; }
+            type Foo<T> { value: T, }
             impl<T: Eq<U>, U> Foo<T> { }
             fn main() {}
             ",
@@ -1458,7 +1459,7 @@ mod assoc_types_slice2 {
     fn unknown_trait_bound_shape_rejected_for_impl_where_clause_bound() {
         let output = check_source(
             r"
-            type Foo<T> { value: T; }
+            type Foo<T> { value: T, }
             impl<T, U> Foo<T> where T: Eq<U> { }
             fn main() {}
             ",
@@ -1480,7 +1481,11 @@ mod assoc_types_slice2 {
     fn unknown_trait_bound_shape_rejected_for_machine_type_param_bound() {
         let output = check_source(
             r"
-            machine M<T: Eq<U>, U> { }
+            machine M<T: Eq<U>, U> {
+                events { Tick, }
+                state Idle,
+                on Tick: Idle => .Idle,
+            }
             fn main() {}
             ",
         );
@@ -1498,7 +1503,7 @@ mod assoc_types_slice2 {
     // ── extern "rt" validation ─────────────────────────────────────────────────
     //
     // `extern "rt"` declares JIT-visible runtime functions. Every symbol must
-    // appear in the `stable` section of scripts/jit-symbol-classification.toml.
+    // appear in the `stable` section of scripts/runtime-export-classification.toml.
     // Unclassified symbols produce `ExternRtSymbolUnclassified`; classified
     // symbols are accepted. `extern "C"` is unchanged by this validation.
 
@@ -1562,11 +1567,11 @@ mod assoc_types_slice2 {
         );
     }
 
-    /// A `codegen-stable` symbol must be rejected in `extern "rt"` — it is
+    /// A `non-declarable` symbol must be rejected in `extern "rt"` — it is
     /// compiler-emitted, not user-callable. The checker only accepts `stable`.
     #[test]
     fn extern_rt_codegen_stable_symbol_rejected() {
-        // hew_actor_cooperate is in the codegen-stable tier, not stable.
+        // hew_actor_cooperate is in the non-declarable tier, not stable.
         let extern_item = make_extern_rt_block(&["hew_actor_cooperate"]);
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&Program {
@@ -1579,7 +1584,7 @@ mod assoc_types_slice2 {
                 TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                 if symbol_name == "hew_actor_cooperate"
             )),
-            "codegen-stable symbol hew_actor_cooperate must be rejected in \
+            "non-declarable symbol hew_actor_cooperate must be rejected in \
              extern \"rt\"; got: {:?}",
             output.errors
         );
@@ -1589,7 +1594,7 @@ mod assoc_types_slice2 {
     /// `hew_dyn_box_free`) is compiler-emission only. Exposing it as
     /// user-callable would let user code call the free path with a wrong
     /// `(size, align)` pair or with a foreign pointer, producing double-free
-    /// / wrong-layout UB. Both symbols must live in `codegen-stable` and the
+    /// / wrong-layout UB. Both symbols must live in `non-declarable` and the
     /// checker must reject any `extern "rt"` declaration that names them.
     #[test]
     fn extern_rt_dyn_box_symbols_rejected() {
@@ -1606,7 +1611,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == sym
                 )),
-                "codegen-stable symbol {sym} must be rejected in extern \"rt\"; \
+                "non-declarable symbol {sym} must be rejected in extern \"rt\"; \
                  got: {:?}",
                 output.errors
             );
@@ -1619,7 +1624,7 @@ mod assoc_types_slice2 {
     /// calls and manages the slot's manual refcount + cancellation protocol.
     /// Exposing them as user-callable `extern "rt"` surface would let user code
     /// allocate/free/cancel slots out of protocol and corrupt the refcount
-    /// (double-free / use-after-free). All six must live in `codegen-stable` and
+    /// (double-free / use-after-free). All six must live in `non-declarable` and
     /// the checker must reject any `extern "rt"` declaration that names them.
     #[test]
     fn extern_rt_read_slot_lifecycle_symbols_rejected() {
@@ -1643,7 +1648,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == sym
                 )),
-                "codegen-stable read-slot symbol {sym} must be rejected in \
+                "non-declarable read-slot symbol {sym} must be rejected in \
                  extern \"rt\"; got: {:?}",
                 output.errors
             );
@@ -1654,7 +1659,7 @@ mod assoc_types_slice2 {
     /// and `hew_supervisor_nested_get_raw`) are compiler-emitted only — the
     /// codegen translates MIR `hew_supervisor_child_get` / `_nested_get` calls
     /// into these `_raw` variants to avoid the Windows x64 MSVC sret ABI
-    /// mismatch.  Both must live in `codegen-stable` so that user `extern "rt"`
+    /// mismatch.  Both must live in `non-declarable` so that user `extern "rt"`
     /// declarations are rejected by the checker.
     #[test]
     fn extern_rt_supervisor_raw_shims_rejected() {
@@ -1674,7 +1679,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == sym
                 )),
-                "codegen-stable shim {sym} must be rejected in extern \"rt\"; \
+                "non-declarable shim {sym} must be rejected in extern \"rt\"; \
                  got: {:?}",
                 output.errors
             );
@@ -1864,7 +1869,7 @@ mod assoc_types_slice2 {
                     TypeErrorKind::ExternRtSymbolUnclassified { symbol_name, .. }
                     if symbol_name == setter
                 )),
-                "internal stream-error setter {setter} must be rejected in extern \"rt\"; \
+                "non-declarable stream-error setter {setter} must be rejected in extern \"rt\"; \
                  got: {:?}",
                 output.errors
             );
@@ -1937,7 +1942,7 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"
             actor Counter {
-                count: i32;
+                count: i32,
                 receive fn tick() {
                     let _g = gen { count = count + 1; };
                 }
@@ -2033,7 +2038,7 @@ mod assoc_types_slice2 {
         let output = check_source(
             r"
             actor Counter {
-                count: i32;
+                count: i32,
                 receive fn tick() {
                     let _g = gen { };
                 }
@@ -2067,29 +2072,27 @@ mod assoc_types_slice2 {
             r"
             machine Door {
                 events {
-                    Toggle;
+                    Toggle,
                 }
 
-                state Closed;
-                state Open;
+                state Closed,
+                state Open,
 
 
                 on Toggle: Closed => Open {
-                    gen { yield Open; }
+                    let _g = gen { yield 1; };
+                    Open
                 }
-                on Toggle: Open => Closed {
-                    Closed
-                }
+                on Toggle: Open => Closed,
             }
             fn main() {}
             ",
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::GenBlockInMachineTransition),
-            "gen{{}} inside machine transition must emit GenBlockInMachineTransition; got: {:?}",
+            output.errors.iter().any(|e| e
+                .message
+                .contains("not admitted in the pure machine evaluator")),
+            "gen{{}} inside a machine transition must be refused; got: {:?}",
             output.errors
         );
     }
@@ -2100,30 +2103,126 @@ mod assoc_types_slice2 {
             r"
             machine Door {
                 events {
-                    Toggle;
+                    Toggle,
                 }
 
-                state Closed;
-                state Open;
+                state Closed,
+                state Open,
 
 
                 on Toggle: Closed => Open {
                     await pending;
                     Open
                 }
-                on Toggle: Open => Closed {
-                    Closed
-                }
+                on Toggle: Open => Closed,
             }
             fn main() {}
             ",
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::AwaitInMachineTransition),
-            "await inside machine transition must emit AwaitInMachineTransition; got: {:?}",
+            output.errors.iter().any(|e| e
+                .message
+                .contains("not admitted in the pure machine evaluator")),
+            "await inside a machine transition must be refused; got: {:?}",
+            output.errors
+        );
+    }
+
+    // ── Local Vec/HashMap construction in machine transitions ──────────────
+
+    /// A transition may build and grow a local `Vec` state value purely, the
+    /// same as it already may for `bytes`: `Vec.new()` plus `push` touch only
+    /// the fresh local value, with no external effect.
+    #[test]
+    fn machine_transition_builds_local_vec_purely() {
+        let output = check_source(
+            r"
+            machine Log {
+                events {
+                    Append { item: i64, },
+                }
+                state Empty,
+                state Filled { items: Vec<i64>, },
+                on Append(item): Empty => Filled {
+                    var v: Vec<i64> = Vec.new();
+                    v.push(item);
+                    Filled { items: v }
+                }
+                on Append(item): Filled => Filled reenter {
+                    var v = state.items;
+                    v.push(item);
+                    Filled { items: v }
+                }
+                default { state }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "building and growing a local Vec purely in a machine transition must admit; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// The same admission for a local `HashMap`: `HashMap.new()` plus
+    /// `insert` touch only the fresh local value.
+    #[test]
+    fn machine_transition_builds_local_hashmap_purely() {
+        let output = check_source(
+            r"
+            machine Counts {
+                events {
+                    Bump { key: string, },
+                }
+                state Empty,
+                state Filled { counts: HashMap<string, i64>, },
+                on Bump(key): Empty => Filled {
+                    var m: HashMap<string, i64> = HashMap.new();
+                    m.insert(key, 1);
+                    Filled { counts: m }
+                }
+                default { state }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.is_empty(),
+            "building a local HashMap purely in a machine transition must admit; got: {:?}",
+            output.errors
+        );
+    }
+
+    /// Negative control: a transition performing I/O is still refused. Local
+    /// collection construction is admitted because it has no external
+    /// effect; `println` does, and must not be swept in with it.
+    #[test]
+    fn machine_transition_calling_println_is_still_rejected() {
+        let output = check_source(
+            r"
+            machine Log {
+                events {
+                    Append { item: i64, },
+                }
+                state Empty,
+                state Filled { items: Vec<i64>, },
+                on Append(item): Empty => Filled {
+                    println(item);
+                    var v: Vec<i64> = Vec.new();
+                    v.push(item);
+                    Filled { items: v }
+                }
+                default { state }
+            }
+            fn main() {}
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| e
+                .message
+                .contains("machine evaluator is not demonstrably pure")),
+            "I/O inside a machine transition must still be refused; got: {:?}",
             output.errors
         );
     }
@@ -2273,8 +2372,8 @@ mod assoc_types_slice2 {
         assert!(
             err.suggestions
                 .iter()
-                .any(|s| s.contains("jit-symbol-classification.toml")),
-            "suggestion must mention jit-symbol-classification.toml; got: {:?}",
+                .any(|s| s.contains("runtime-export-classification.toml")),
+            "suggestion must mention runtime-export-classification.toml; got: {:?}",
             err.suggestions
         );
     }

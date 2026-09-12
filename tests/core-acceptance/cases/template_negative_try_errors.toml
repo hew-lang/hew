@@ -1,0 +1,13 @@
+[[case]]
+id = "template_negative_try_errors"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/template_negative_try_errors.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "unclosed-error\nend-error\nbefore  after\n"
+exit = 0

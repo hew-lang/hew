@@ -1,29 +1,25 @@
-//! Non-blocking `await conn.read()` (NEW-1): the positive ARC.
-//!
-//! A `Reader` actor connects to a server and `await`s a read. The await SUSPENDS
-//! the handler's continuation (freeing the scheduler worker that was running it);
-//! when the reactor reports the socket readable it reads the bytes, deposits
-//! them, and RESUMES the handler with the value bound. Running with
-//! `HEW_WORKERS=1` is the worker-freeing proof: a single worker suspends the
-//! reader, serves the accept/write on the main thread, and the reactor resumes
-//! the reader — a blocking `read` would strand the lone worker.
-//!
-//! The `Connection` is a handler LOCAL (from `net.connect`), not actor state: an
-//! opaque handle in actor state is rejected by the supervisor-restart clone gate.
+//! TCP read from an actor using the ordinary `conn.read()` call.
+//! Migration needed: main waits for the reader before accepting its connection.
+//! Start the reader concurrently before accepting and serving the connection.
+
+import std.encoding.utf8;
 
 import std.net;
 
 actor Reader {
-    let port: string;
+    let port: string,
     receive fn go(unused: i64) {
 
-        // Give main a moment to start listening, then connect + await a read.
+        // Give main a moment to start listening, then connect and read.
         sleep(200ms);
         let conn = match net.connect(f"127.0.0.1:{port}") {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
-        let body = await conn.read_string();
+        let body = utf8.decode(conn.read()) handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
         println(f"reader-received: {body}");
         let _ = conn.close();
     }
@@ -32,10 +28,10 @@ actor Reader {
 fn main() {
     let listener = match net.listen("127.0.0.1:18077") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let reader = spawn Reader(port: "18077");
-    reader.go(0);
+    let _ = reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("hello-from-server");
     sleep(500ms);

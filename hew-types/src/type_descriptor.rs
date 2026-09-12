@@ -87,20 +87,27 @@ impl ResolvedTy {
                 let arg_strs: Vec<String> = args.iter().map(Self::canonical_string).collect();
                 format!("{}<{}>", name, arg_strs.join(","))
             }
-            ResolvedTy::Function { params, ret } => {
-                let param_strs: Vec<String> = params.iter().map(Self::canonical_string).collect();
-                format!("fn({})->{}", param_strs.join(","), ret.canonical_string())
+            ResolvedTy::Function {
+                capabilities,
+                params,
+                ret,
+            } => {
+                format!(
+                    "fn{capabilities}({})->{}",
+                    canonical_type_list(params),
+                    ret.canonical_string()
+                )
             }
             ResolvedTy::Closure {
                 params,
                 ret,
                 captures,
+                capabilities,
             } => {
-                let param_strs: Vec<String> = params.iter().map(Self::canonical_string).collect();
                 let cap_strs: Vec<String> = captures.iter().map(Self::canonical_string).collect();
                 format!(
-                    "closure({})->{}{{{}}}",
-                    param_strs.join(","),
+                    "closure{capabilities}({})->{}{{{}}}",
+                    canonical_type_list(params),
                     ret.canonical_string(),
                     cap_strs.join(",")
                 )
@@ -215,4 +222,12 @@ impl ResolvedTy {
         }
         Self::from_ty(ty)
     }
+}
+
+fn canonical_type_list(types: &[ResolvedTy]) -> String {
+    types
+        .iter()
+        .map(ResolvedTy::canonical_string)
+        .collect::<Vec<_>>()
+        .join(",")
 }

@@ -12,7 +12,7 @@ actor Crasher {
 }
 
 actor Watcher {
-    receive fn link_to(peer: LocalPid<Crasher>) -> i64 {
+    receive fn link_to(peer: Crasher) -> i64 {
         link(peer);
         1
     }
@@ -27,10 +27,10 @@ actor Watcher {
 fn main() -> i64 {
     let crasher = spawn Crasher;
     let watcher = spawn Watcher;
-    let linked = await watcher.link_to(crasher);
+    let linked = watcher.link_to(crasher);
     match linked {
         .Ok(_) => {
-            crasher.crash();
+            let _ = crasher.crash();
             sleep(100ms);
             0
         },

@@ -17,14 +17,14 @@ actor Client {
 }
 
 actor ChatRoom {
-    let first: Client;
-    let second: Client;
-    let third: Client;
+    let first: Client,
+    let second: Client,
+    let third: Client,
 
     receive fn broadcast(message: string) {
-        first.deliver(message);
-        second.deliver(message);
-        third.deliver(message);
+        let _ = first.deliver(message);
+        let _ = second.deliver(message);
+        let _ = third.deliver(message);
         println("ROOM_SURVIVED");
     }
 
@@ -38,14 +38,14 @@ fn main() {
     let second = spawn Client;
     let third = spawn Client;
 
-    match await crashed.crash() {
+    match crashed.crash() {
         .Ok(_) => println("CRASH_UNEXPECTEDLY_REPLIED"),
         .Err(_) => println("CLIENT_CRASHED"),
     }
 
     let room = spawn ChatRoom(first: crashed, second: second, third: third);
-    room.broadcast("after-crash");
-    match await room.fence() {
+    let _ = room.broadcast("after-crash");
+    match room.fence() {
         .Ok(_) => println("ROOM_FENCE_REPLIED"),
         .Err(_) => println("ROOM_DIED"),
     }
@@ -60,14 +60,14 @@ actor Client {
 }
 
 actor ChatRoom {
-    let first: Client;
-    let second: Client;
-    let third: Client;
+    let first: Client,
+    let second: Client,
+    let third: Client,
 
     receive fn broadcast(message: string) {
-        first.deliver(message);
-        second.deliver(message);
-        third.deliver(message);
+        let _ = first.deliver(message);
+        let _ = second.deliver(message);
+        let _ = third.deliver(message);
         println("ROOM_SURVIVED");
     }
 
@@ -81,8 +81,8 @@ fn main() {
     let second = spawn Client;
     let third = spawn Client;
     let room = spawn ChatRoom(first: first, second: second, third: third);
-    room.broadcast("clean");
-    match await room.fence() {
+    let _ = room.broadcast("clean");
+    match room.fence() {
         .Ok(_) => println("ROOM_FENCE_REPLIED"),
         .Err(_) => println("ROOM_DIED"),
     }
@@ -97,20 +97,20 @@ fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI6
 }
 
 fn main() {
-    let source = pipeline.run(pipeline.from(1));
-    match await source.push(item(9, "crash-owned", true)) {
+    var source = pipeline.run(pipeline.from(1));
+    match source.push(item(9, "crash-owned", true)) {
         .Ok(admitted) => if admitted {
             panic("crashing item was admitted")
         },
         .Err(_) => panic("crashing push did not settle"),
     }
-    match await source.count() {
+    match source.count() {
         .Ok(value) => if value != 0 {
             panic("crashing item reached the sink")
         },
         .Err(_) => panic("pipeline count did not settle"),
     }
-    match await source.push(item(10, "after-crash", false)) {
+    match source.push(item(10, "after-crash", false)) {
         .Ok(admitted) => if admitted {
             panic("post-crash item was admitted")
         },
@@ -128,7 +128,7 @@ fn main() {
 /// epilogue instead, and never consulted the flag.
 const SUPERVISOR_PLUS_UNSUPERVISED_CRASHER: &str = r#"
 actor Worker {
-    let id: i64;
+    let id: i64,
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -142,21 +142,21 @@ actor Loner {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w1: Worker(id: 1);
+    child w1: Worker(id: 1),
 }
 
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     let w1 = sup.w1;
-    w1.work();
+    let _ = w1.work();
     sleep(20ms);
 
     let loner = spawn Loner;
-    match await loner.boom() {
+    match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
         .Err(_) => println("LONER_CRASHED"),
     }
@@ -169,7 +169,7 @@ fn main() {
 /// a crashed actor out of the exit status.
 const SUPERVISOR_RESTARTS_ITS_CHILD: &str = r#"
 actor Flaky {
-    let id: i64;
+    let id: i64,
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -181,22 +181,22 @@ actor Flaky {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child f1: Flaky(id: 1);
+    child f1: Flaky(id: 1),
 }
 
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     var f1 = sup.f1;
-    f1.work();
+    let _ = f1.work();
     sleep(20ms);
-    f1.boom();
+    let _ = f1.boom();
     sleep(500ms);
     f1 = sup.f1;
-    f1.work();
+    let _ = f1.work();
     sleep(50ms);
     println("MAIN_DONE");
 }
@@ -213,20 +213,20 @@ actor Fragile {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child f1: Fragile;
+    child f1: Fragile,
 }
 
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     var f1 = sup.f1;
-    f1.boom();
+    let _ = f1.boom();
     sleep(400ms);
     f1 = sup.f1;
-    f1.boom();
+    let _ = f1.boom();
     sleep(600ms);
     println("MAIN_DONE");
 }
@@ -258,19 +258,19 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w: Worker;
+    child w: Worker,
 }
 
 fn main() {
     let sup = spawn App;
     let probe = spawn Probe;
     let w = sup.w;
-    w.boom();
+    let _ = w.boom();
     sleep(300ms);
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
     }
@@ -291,7 +291,7 @@ actor Straggler {
 
 fn main() {
     let s = spawn Straggler;
-    s.late();
+    let _ = s.late();
     println("MAIN_RETURNED_BEFORE_CRASH");
 }
 "#;
@@ -308,10 +308,10 @@ actor Slow {
 }
 
 actor Waiter {
-    let slow: Slow;
+    let slow: Slow,
 
     receive fn drive() -> i64 {
-        match await slow.fetch() {
+        match slow.fetch() {
             .Ok(v) => panic(f"crash after resuming from suspend with {v}"),
             .Err(_) => panic("crash after a failed suspend"),
         }
@@ -328,11 +328,11 @@ fn main() {
     let slow = spawn Slow;
     let waiter = spawn Waiter(slow: slow);
     let probe = spawn Probe;
-    match await waiter.drive() {
+    match waiter.drive() {
         .Ok(_) => println("WAITER_REPLIED"),
         .Err(_) => println("WAITER_CRASHED"),
     }
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
     }
@@ -358,10 +358,10 @@ actor Probe {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child t1: OneShot restart: temporary;
+    child t1: OneShot restart: temporary,
 }
 
 fn main() {
@@ -369,9 +369,9 @@ fn main() {
     let probe = spawn Probe;
     sleep(30ms);
     let t1 = sup.t1;
-    t1.boom();
+    let _ = t1.boom();
     sleep(300ms);
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
     }
@@ -403,19 +403,19 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w: Worker;
+    child w: Worker,
 }
 
 fn main() {
     let sup = spawn App;
     let probe = spawn Probe;
     let w = sup.w;
-    w.boom();
+    let _ = w.boom();
     sleep(300ms);
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(v) => println(f"PROBE:{v}"),
         .Err(_) => println("PROBE_DEAD"),
     }
@@ -435,17 +435,17 @@ actor Flaky {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child f1: Flaky;
+    child f1: Flaky,
 }
 
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     let f1 = sup.f1;
-    f1.boom();
+    let _ = f1.boom();
     println("MAIN_RETURNS_IMMEDIATELY");
 }
 "#;
@@ -461,7 +461,7 @@ actor Loner {
 
 fn main() -> i64 {
     let loner = spawn Loner;
-    match await loner.boom() {
+    match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
         .Err(_) => println("LONER_CRASHED"),
     }
@@ -481,7 +481,7 @@ actor Loner {
 
 fn main() {
     let loner = spawn Loner;
-    match await loner.boom() {
+    match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
         .Err(_) => println("LONER_CRASHED"),
     }
@@ -500,7 +500,7 @@ actor Loner {
 
 fn main() {
     let loner = spawn Loner;
-    match await loner.boom() {
+    match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
         .Err(_) => println("LONER_CRASHED"),
     }
@@ -524,17 +524,17 @@ actor Flaky {
 }
 
 supervisor Inner {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child f1: Flaky;
+    child f1: Flaky,
 }
 
 supervisor Outer {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child inner: Inner;
+    child inner: Inner,
 }
 
 fn main() {
@@ -542,19 +542,19 @@ fn main() {
     sleep(80ms);
     var inner = outer.inner;
     var f1 = inner.f1;
-    f1.work();
+    let _ = f1.work();
     sleep(40ms);
 
-    f1.boom();
+    let _ = f1.boom();
     sleep(400ms);
     inner = outer.inner;
     f1 = inner.f1;
-    f1.boom();
+    let _ = f1.boom();
     sleep(800ms);
 
     inner = outer.inner;
     f1 = inner.f1;
-    f1.work();
+    let _ = f1.work();
     sleep(100ms);
     println("MAIN_DONE");
 }
@@ -565,7 +565,7 @@ fn main() {
 /// ruling settles exactly the record it is about.
 const TWO_SUPERVISORS_ONE_HANDLED_ONE_NOT: &str = r#"
 actor Flaky {
-    let id: i64;
+    let id: i64,
 
     receive fn work() {
         println(f"WORKED:{id}");
@@ -577,17 +577,17 @@ actor Flaky {
 }
 
 supervisor Recovering {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child r1: Flaky(id: 1);
+    child r1: Flaky(id: 1),
 }
 
 supervisor GivingUp {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child g1: Flaky(id: 2);
+    child g1: Flaky(id: 2),
 }
 
 fn main() {
@@ -596,17 +596,17 @@ fn main() {
     sleep(50ms);
 
     var r1 = good.r1;
-    r1.boom();
+    let _ = r1.boom();
     sleep(400ms);
     r1 = good.r1;
-    r1.work();
+    let _ = r1.work();
     sleep(40ms);
 
     var g1 = bad.g1;
-    g1.boom();
+    let _ = g1.boom();
     sleep(400ms);
     g1 = bad.g1;
-    g1.boom();
+    let _ = g1.boom();
     sleep(600ms);
     println("MAIN_DONE");
 }
@@ -632,11 +632,11 @@ actor Loner {
 fn main() {
     let slow = spawn Slow;
     let loner = spawn Loner;
-    match await slow.fetch() {
+    match slow.fetch() {
         .Ok(v) => println(f"FETCHED:{v}"),
         .Err(_) => println("FETCH_FAILED"),
     }
-    match await loner.boom() {
+    match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
         .Err(_) => println("LONER_CRASHED"),
     }
@@ -670,7 +670,7 @@ fn main() {
     println(f"TOTAL:{total}");
 
     let loner = spawn Loner;
-    match await loner.boom() {
+    match loner.boom() {
         .Ok(_) => println("LONER_REPLIED"),
         .Err(_) => println("LONER_CRASHED"),
     }

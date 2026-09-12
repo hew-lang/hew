@@ -1,6 +1,6 @@
-fn merge(v: Vec<i64>, left: i64, mid: i64, right: i64) {
-    let left_arr: Vec<i64> = Vec.new();
-    let right_arr: Vec<i64> = Vec.new();
+fn merge(var v: Vec<i64>, left: i64, mid: i64, right: i64) -> Vec<i64> {
+    var left_arr: Vec<i64> = Vec.new();
+    var right_arr: Vec<i64> = Vec.new();
     var i = left;
     while i <= mid {
         left_arr.push(v[i]);
@@ -36,27 +36,29 @@ fn merge(v: Vec<i64>, left: i64, mid: i64, right: i64) {
         ri = ri + 1;
         k = k + 1;
     }
+    v
 }
 
-fn merge_sort_range(v: Vec<i64>, left: i64, right: i64) {
+fn merge_sort_range(var v: Vec<i64>, left: i64, right: i64) -> Vec<i64> {
     if left < right {
         let mid = left + (right - left) / 2;
-        merge_sort_range(v, left, mid);
-        merge_sort_range(v, mid + 1, right);
-        merge(v, left, mid, right);
+        v = merge_sort_range(v, left, mid);
+        v = merge_sort_range(v, mid + 1, right);
+        v = merge(v, left, mid, right);
     }
+    v
 }
 
-fn merge_sort(v: Vec<i64>) -> Vec<i64> {
+fn merge_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n > 1 {
-        merge_sort_range(v, 0, n - 1);
+        v = merge_sort_range(v, 0, n - 1);
     }
     v
 }
 
 fn make_test_array() -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     var i = 100;
     while i > 0 {
         v.push(i);

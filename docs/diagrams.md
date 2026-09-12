@@ -2,10 +2,7 @@
 
 Visual documentation of the Hew compilation pipeline, runtime architecture, and
 protocol formats using Mermaid diagrams. Every diagram reflects the current
-compiler pipeline. The `LADDER` program (final IR ladder, legacy lowerer
-deleted, `v0.7.0`) tracks this pipeline's evolution; its `P5-CUTOVER` phase
-deletes the `--sir-lower` flag shown below — see the orchestration registry's
-`MONIKERS.md`.
+compiler pipeline.
 
 > **Rendering:** These diagrams use [Mermaid](https://mermaid.js.org/) syntax. GitHub renders them natively in Markdown. For local viewing, use a Mermaid-compatible Markdown previewer or the [Mermaid Live Editor](https://mermaid.live/).
 
@@ -15,28 +12,30 @@ deletes the `--sir-lower` flag shown below — see the orchestration registry's
 
 Hew compiles through an explicit IR ladder. Each layer has a distinct owner, a
 verifier or diagnostic class, and a deterministic text dump. Ownership is proven
-in Checked MIR (a fail-closed gate); the Rust/Inkwell backend lowers proven MIR
-facts directly into LLVM IR and re-derives no semantics. See
+in SIR (a fail-closed gate); physical MIR verifies its own contract against
+those facts, and the Rust/Inkwell backend lowers proven MIR facts directly into
+LLVM IR and re-derives no semantics. See
 [`docs/internal/ir-ladder.md`](internal/ir-ladder.md) for the per-layer
 contracts.
 
 ```mermaid
 flowchart TD
-    SRC["source.hew"] --> AST["AST<br/>(hew-parser)<br/><i>syntactic only; no resolution</i>"]
-    AST --> HIR["Resolved HIR<br/>(hew-hir)<br/><i>names, scopes, imports, capabilities</i>"]
-    HIR --> RMIR["Raw MIR<br/>(hew-mir, CFG)<br/><i>SSA/places; value-model ops; not yet proven</i>"]
-    HIR -. "--sir-lower (strict lane, migrated surface only)" .-> SIR["SIR<br/>(hew-sir, semantic SSA)<br/><i>typed blocks + block args; no layout or ABI facts</i>"]
-    SIR -.-> RMIR
-    RMIR --> CMIR["Checked MIR<br/>(hew-mir)<br/><b>ownership proven; fail-closed gate</b>"]
-    CMIR --> EMIR["Elaborated MIR<br/>(hew-mir)<br/><i>explicit Drop edges; cleanup CFG</i>"]
-    EMIR --> LLVM["LLVM IR<br/>(hew-codegen-rs / Inkwell)<br/><i>direct emission from proven MIR facts</i>"]
+    SRC["source.hew"] --> LEX["lexer<br/>(hew-lexer)"]
+    LEX --> AST["AST<br/>(hew-parser)<br/><i>syntactic only; no resolution</i>"]
+    AST --> CHK["checker<br/>(hew-types)<br/><i>types, traits, effects</i>"]
+    CHK --> HIR["Typed HIR<br/>(hew-hir)<br/><i>names, scopes, imports, capabilities</i>"]
+    HIR --> SIR["Ownership SIR<br/>(hew-sir, semantic SSA)<br/><b>ownership proven; fail-closed gate</b>"]
+    SIR --> MIR["Checked physical MIR<br/>(hew-mir)<br/><i>CFG, places, explicit Drop edges; layout and ABI facts</i>"]
+    MIR --> LLVM["LLVM IR<br/>(hew-codegen-rs / Inkwell)<br/><i>direct emission from proven MIR facts</i>"]
     LLVM --> OBJ["Native / WASM object<br/>(LLVM TargetMachine / wasm-ld)<br/><i>target-specific; no Hew decisions remain</i>"]
     OBJ --> LINK["link"]
+    LINK --> EXE["runtime + executable<br/>(hew-runtime, hew-lib)"]
 ```
 
 **Inspection commands:**
 
-- `hew tool compile --dump-mir raw|checked|elab <file.hew>` — inspect the MIR ladder without LLVM emission
+- `hew tool compile --dump-sir <file.hew>` — inspect the ownership IR
+- `hew tool compile --dump-mir physical <file.hew>` — inspect physical MIR without LLVM emission
 - `hew tool compile --emit-dir <dir> <file.hew>` — write LLVM/object/WASM artefacts for the Rust codegen path
 - `hew machine diagram [--format mermaid|graphviz|json] <file.hew>` — render machine declarations
 - `hew machine list <file.hew>` — list machines, states, and events
@@ -75,8 +74,8 @@ stateDiagram-v2
 | Level             | Budget                                       | Mechanism                                                                                      |
 | ----------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | Message budget    | `HEW_MSG_BUDGET = 256` messages/activation   | Coarse scheduler preemption — yield after 256 messages                                         |
-| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges                 |
-| Cooperative yield | Per-continuation                             | `llvm.coro.suspend` (`hew_cont_resume`) on `await` of a `fork`-spawned task in a `scope` block |
+| Reduction budget  | `HEW_DEFAULT_REDUCTIONS = 4000` per dispatch | Compiler-inserted `cooperate` safepoints at function entry and loop back-edges (targeted v0.7.0; not in this build) |
+| Cooperative yield | Per-continuation                             | `llvm.coro.suspend` (`hew_cont_resume`) at every suspending call, including `await` of a `fork`-started task |
 
 **Actor dispatch signature** (§9.1.1):
 

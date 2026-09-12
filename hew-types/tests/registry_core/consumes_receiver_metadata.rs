@@ -1,16 +1,14 @@
 //! Consume-receiver metadata plumbing for issue #1295.
 //!
 //! These tests exercise the `consumes_receiver` seam introduced by the
-//! RAII / Closable rollout: a per-method-signature flag that, when set,
+//! Consume-receiver metadata: a per-method-signature flag that, when set,
 //! causes the type checker to mark the receiver expression moved after
 //! the call and to record a per-call-site flag in
 //! [`TypeCheckOutput::method_call_consumes_receiver`] so codegen can
 //! null the receiver's drop slot.
 //!
-//! PR 1 ships the wiring with the recognised consume set empty (no Hew
-//! surface syntax sets the flag yet). Tests inject names directly via
-//! [`Checker::register_consume_receiver_method`] to exercise the path
-//! end-to-end before PR 2 introduces `Closable::close`.
+//! Tests inject names directly via [`Checker::register_consume_receiver_method`]
+//! to exercise the path end to end.
 
 use crate::common;
 
@@ -28,7 +26,7 @@ const TRAIT_AND_IMPL: &str = r#"
         fn drain(val: Self);
     }
 
-    type Bucket { tag: string; }
+    type Bucket { tag: string, }
 
     impl Sink for Bucket {
         fn drain(val: Bucket) {}
@@ -98,13 +96,12 @@ fn consume_receiver_records_per_call_site_flag() {
 
 /// Construction-side: `MethodSig` carries `consumes_receiver` as a
 /// public field with `false` as the conventional default. Registering an
-/// impl preserves the flag through `lookup_impl`. PR 1 ships this field
-/// passively; PR 2 wires it from a `Closable` trait declaration.
+/// impl preserves the flag through `lookup_impl`.
 #[test]
 fn method_sig_round_trips_consumes_receiver_flag() {
     let mut reg = TraitRegistry::new();
     reg.register_trait(TraitDef {
-        name: "Closable".to_string(),
+        name: "Sink".to_string(),
         type_params: vec![],
         super_traits: vec![],
         methods: vec![MethodSig {
@@ -119,7 +116,7 @@ fn method_sig_round_trips_consumes_receiver_flag() {
     });
     reg.register_impl(
         "Server".to_string(),
-        "Closable".to_string(),
+        "Sink".to_string(),
         vec![MethodSig {
             name: "close".to_string(),
             params: vec![],
@@ -130,12 +127,10 @@ fn method_sig_round_trips_consumes_receiver_flag() {
         }],
     );
 
-    let trait_def = reg.lookup_trait("Closable").expect("trait registered");
+    let trait_def = reg.lookup_trait("Sink").expect("trait registered");
     assert!(trait_def.methods[0].consumes_receiver);
 
-    let impl_methods = reg
-        .lookup_impl("Server", "Closable")
-        .expect("impl registered");
+    let impl_methods = reg.lookup_impl("Server", "Sink").expect("impl registered");
     assert!(impl_methods[0].consumes_receiver);
 }
 
@@ -148,7 +143,7 @@ fn flag_span_matches_consuming_call_site() {
             fn drain(val: Self);
         }
 
-        type Bucket { tag: string; }
+        type Bucket { tag: string, }
 
         impl Sink for Bucket {
             fn drain(val: Bucket) {}

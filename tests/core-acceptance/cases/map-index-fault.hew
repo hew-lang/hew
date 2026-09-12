@@ -1,0 +1,8 @@
+fn main() -> i64 {
+    var source: HashMap<string, Vec<string>> = HashMap.new();
+    source.insert("present", ["owned".to_upper()]);
+    let sibling = ["outer".to_upper()];
+    println(source["missing"][0]);
+    println(sibling[0]);
+    0
+}

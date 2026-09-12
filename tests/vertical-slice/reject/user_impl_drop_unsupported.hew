@@ -1,5 +1,5 @@
 type Token {
-    id: i64;
+    id: i64,
 }
 
 impl Drop for Token {

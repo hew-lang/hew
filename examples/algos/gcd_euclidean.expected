@@ -1,0 +1,8 @@
+PASS: gcd(12,8)=4
+PASS: gcd(17,13)=1
+PASS: gcd(100,75)=25
+PASS: gcd(48,18)=6
+PASS: gcd(0,5)=5
+---
+Passed: 5 / 5
+ALL PASS

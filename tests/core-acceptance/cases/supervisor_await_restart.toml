@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor_await_restart"
+intent = "The fixture runs to completion and exits 7."
+source = "../vertical-slice/accept/supervisor_await_restart.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): test crash — supervisor should restart this child\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\n"
+exit = 7

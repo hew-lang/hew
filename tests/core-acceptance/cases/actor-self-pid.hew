@@ -1,0 +1,36 @@
+// Inside an actor body `self` is that actor's own handle. The worker registers
+// `self` with the registry, which is holding a DECOY worker's handle until that
+// registration replaces it; the later callback prints the registering worker's
+// name, so the round trip proves the handle addresses the actor that sent it
+// rather than whichever handle the registry already had.
+actor Worker {
+    var name: string,
+
+    receive fn register(reg: Registry) {
+        let _ = reg.take(self);
+    }
+
+    receive fn done() {
+        println("callback reached " + name);
+    }
+}
+
+actor Registry {
+    var target: Worker,
+
+    receive fn take(w: Worker) {
+        target = w;
+    }
+
+    receive fn call_back() {
+        let _ = target.done();
+    }
+}
+
+fn main() {
+    let decoy = spawn Worker(name: "decoy");
+    let registry = spawn Registry(target: decoy);
+    let real = spawn Worker(name: "real");
+    let _ = real.register(registry);
+    let _ = registry.call_back();
+}

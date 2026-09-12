@@ -1,0 +1,27 @@
+// The losing operand has no safepoint to observe cancellation at, so it runs
+// to completion after the race already has a winner. Its owned result is
+// never returned to the caller; the race releases it exactly once.
+#[resource] type Handle { label: string }
+impl Handle {
+    fn close(consume self) {
+        println("closed " + self.label);
+    }
+}
+fn fast() -> Handle {
+    sleep(1ms);
+    println("fast done");
+    Handle { label: "fast" }
+}
+fn slow_uncancellable() -> Handle {
+    var total: i64 = 0;
+    for i in 0..150000000 {
+        total = total + (i % 7);
+    }
+    println("slow done " + to_string(total));
+    Handle { label: "slow" }
+}
+fn main() {
+    let winner = race { fast(), slow_uncancellable() };
+    println("picked " + winner.label);
+    winner.close();
+}

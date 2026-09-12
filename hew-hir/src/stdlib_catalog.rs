@@ -4,7 +4,7 @@
 //! exported runtime symbols; compiler/codegen magic uses distinct linkage
 //! variants so the catalog never pretends a HIR shim name is a C ABI symbol.
 
-use hew_types::{MathGenericOp, ProducedValueAcquisition, ProducedValueOwnership, ResolvedTy};
+use hew_types::{MathGenericOp, ResolvedTy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinClass {
@@ -12,17 +12,7 @@ pub enum BuiltinClass {
     ClassB,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PrintKind {
-    I32,
-    I64,
-    U8,
-    U32,
-    U64,
-    F64,
-    Bool,
-    Str,
-}
+pub use hew_types::runtime_call::PrintKind;
 
 #[must_use]
 pub fn generic_math_intrinsic_callee(
@@ -95,12 +85,12 @@ pub enum BuiltinLinkage {
     CalleeNameDispatchOnly,
     /// `Node::register<T>(name, pid)` — register an actor by bare PID.
     ///
-    /// Per registry R81 (2026-05-23), `LocalPid<T>` lowers to a `u64` at
+    /// Per registry R81 (2026-05-23), an actor handle lowers to a `u64` at
     /// the C-ABI boundary, not a `*mut HewActor`. Codegen must therefore
     /// synthesise a two-step call sequence:
     /// 1. `hew_actor_pid(actor_ptr: ptr) -> u64` — extract the numeric PID
-    ///    from the `LocalPid<T>` alloca (which is a `ptr` in LLVM).
-    /// 2. `hew_node_api_register_by_pid(name: ptr, pid: u64) -> i32` — the
+    ///    from the actor-handle alloca (which is a `ptr` in LLVM).
+    /// 2. `hew_node_api_register_by_pid_string(name: ptr, pid: u64) -> i32` — the
     ///    actual C-ABI registration call.
     ///
     /// `RuntimeFfiShim` cannot be used here because the LLVM call sequence
@@ -111,7 +101,7 @@ pub enum BuiltinLinkage {
         pid_accessor: &'static str,
     },
     /// Catalog row that *declares* a `#[no_mangle] pub static` runtime symbol
-    /// (a `HewMapKeyLayout` or `HewMapValueLayout` instance) rather than a
+    /// (a `HewMapKeyLayout` or `HewValueLayout` instance) rather than a
     /// function. Used by W4.001 Stage C0b layout-descriptor entries.
     ///
     /// **Not a callable**: codegen does not predeclare an LLVM function for
@@ -130,33 +120,15 @@ pub enum BuiltinLinkage {
     },
 }
 
-/// Map a compiler-synthetic identity-display callee to the runtime formatter
-/// whose ownership contract governs its result.
-///
-/// These presentation names reach MIR as [`BuiltinLinkage::CalleeNameDispatchOnly`]
-/// and are intercepted before LLVM symbol resolution, so they are not linked
-/// runtime symbols and must never receive fabricated FFI rows of their own.
-/// Codegen and MIR ownership instead share this explicit projection to the real
-/// runtime allocator. Unknown synthetic callees stay unmapped and therefore
-/// fail closed at both consumers.
-#[must_use]
-pub fn compiler_synthetic_runtime_ownership_symbol(callee: &str) -> Option<&'static str> {
-    match callee {
-        "hew_node_id_display" => Some("hew_node_id_format"),
-        "hew_location_display" | "hew_remote_pid_display" => Some("hew_location_format"),
-        _ => None,
-    }
-}
-
 /// Which descriptor flavour a `LayoutDescriptorSymbol` row names.
 ///
-/// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewMapValueLayout`) so
+/// Mirrors the two cabi structs (`HewMapKeyLayout`, `HewValueLayout`) so
 /// the coverage test can enumerate K-vs-V scope separately.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayoutDescriptorRole {
     /// `HewMapKeyLayout` static (`hew_layout_key_<type>`).
     Key,
-    /// `HewMapValueLayout` static (`hew_layout_val_<type>`).
+    /// `HewValueLayout` static (`hew_layout_val_<type>`).
     Value,
 }
 
@@ -300,6 +272,10 @@ pub enum BuiltinTy {
     Duration,
     /// `instant` — i64 nanosecond monotonic timestamp; ABI-identical to `i64`.
     Instant,
+    /// Source-owned node configuration record consumed by `Node::start`.
+    NodeConfig,
+    /// Result<(), `NodeError`> returned by public node lifecycle operations.
+    NodeResult,
 }
 
 impl BuiltinTy {
@@ -348,6 +324,19 @@ impl BuiltinTy {
                 pointee: Box::new(ResolvedTy::U8),
             },
             BuiltinTy::Duration => ResolvedTy::Duration,
+            BuiltinTy::NodeConfig => ResolvedTy::named_user("std.builtins.NodeConfig", vec![]),
+            BuiltinTy::NodeResult => ResolvedTy::named_builtin(
+                "Result",
+                hew_types::BuiltinType::Result,
+                vec![
+                    ResolvedTy::Unit,
+                    ResolvedTy::named_builtin(
+                        "NodeError",
+                        hew_types::BuiltinType::NodeError,
+                        vec![],
+                    ),
+                ],
+            ),
         }
     }
 }
@@ -367,7 +356,6 @@ const PRINT_RUNTIME: &str = "hew_print_value";
 const I32: &[BuiltinTy] = &[BuiltinTy::I32];
 const I64: &[BuiltinTy] = &[BuiltinTy::I64];
 const U8: &[BuiltinTy] = &[BuiltinTy::U8];
-const U16: &[BuiltinTy] = &[BuiltinTy::U16];
 const U32: &[BuiltinTy] = &[BuiltinTy::U32];
 const U64: &[BuiltinTy] = &[BuiltinTy::U64];
 const F64: &[BuiltinTy] = &[BuiltinTy::F64];
@@ -378,15 +366,6 @@ const BYTES_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::U8];
 const BYTES_I64: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64];
 const BYTES_I64_U8: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::I64, BuiltinTy::U8];
 const BYTES_BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes, BuiltinTy::Bytes];
-const U8_U8: &[BuiltinTy] = &[BuiltinTy::U8, BuiltinTy::U8];
-const I8_I8: &[BuiltinTy] = &[BuiltinTy::I8, BuiltinTy::I8];
-const I16_I16: &[BuiltinTy] = &[BuiltinTy::I16, BuiltinTy::I16];
-const I32_I32: &[BuiltinTy] = &[BuiltinTy::I32, BuiltinTy::I32];
-const ISIZE_ISIZE: &[BuiltinTy] = &[BuiltinTy::Isize, BuiltinTy::Isize];
-const U16_U16: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::U16];
-const U32_U32: &[BuiltinTy] = &[BuiltinTy::U32, BuiltinTy::U32];
-const U64_U64: &[BuiltinTy] = &[BuiltinTy::U64, BuiltinTy::U64];
-const USIZE_USIZE: &[BuiltinTy] = &[BuiltinTy::Usize, BuiltinTy::Usize];
 const DURATION: &[BuiltinTy] = &[BuiltinTy::Duration];
 const INSTANT: &[BuiltinTy] = &[BuiltinTy::Instant];
 const BYTES: &[BuiltinTy] = &[BuiltinTy::Bytes];
@@ -416,9 +395,10 @@ const VEC_ANY_I64_STRING: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::I64, Bu
 const VEC_ANY_VEC_ANY: &[BuiltinTy] = &[BuiltinTy::VecAny, BuiltinTy::VecAny];
 const I64_I64: &[BuiltinTy] = &[BuiltinTy::I64, BuiltinTy::I64];
 const F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64];
-const BOOL_BOOL: &[BuiltinTy] = &[BuiltinTy::Bool, BuiltinTy::Bool];
+const F64_F64_F64: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::F64, BuiltinTy::F64];
+const F64_I32: &[BuiltinTy] = &[BuiltinTy::F64, BuiltinTy::I32];
 const STRING_STRING: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::String];
-const U16_STRING: &[BuiltinTy] = &[BuiltinTy::U16, BuiltinTy::String];
+const NODE_CONFIG: &[BuiltinTy] = &[BuiltinTy::NodeConfig];
 const STRING_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64];
 const STRING_I64_I64: &[BuiltinTy] = &[BuiltinTy::String, BuiltinTy::I64, BuiltinTy::I64];
 const STRING_STRING_STRING: &[BuiltinTy] =
@@ -485,18 +465,6 @@ macro_rules! tostring_entry {
             $params,
             BuiltinTy::String,
             BuiltinLinkage::ToStringShim { symbol: $symbol },
-        )
-    };
-}
-
-macro_rules! assert_entry {
-    ($name:literal, $of:literal, $params:expr, $symbol:literal) => {
-        overload(
-            $name,
-            $of,
-            $params,
-            BuiltinTy::Unit,
-            BuiltinLinkage::RuntimeFfiShim { symbol: $symbol },
         )
     };
 }
@@ -578,14 +546,10 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_assert",
         },
     ),
-    // Class A: core math builtins lowered directly by codegen.
-    direct(
-        "sqrt",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
+    // Class A: the closed i64/f64 overloads `math.abs`, `math.min` and
+    // `math.max` dispatch to from the checker's `GenericMathIntrinsic`
+    // rewrite. These are HIR callee symbols, not source spellings: the math
+    // functions are only reachable as `math.*` (A409).
     direct(
         "abs",
         BuiltinClass::ClassA,
@@ -628,62 +592,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::F64,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    direct(
-        "pow",
-        BuiltinClass::ClassA,
-        F64_F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "floor",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "ceil",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "round",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "exp",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "log",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "sin",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "cos",
-        BuiltinClass::ClassA,
-        F64,
-        BuiltinTy::F64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
     // Class A: monomorphic print/println overloads.
     print_entry!("println_i32", "println", I32, I32, true),
     print_entry!("println_i64", "println", I64, I64, true),
@@ -705,7 +613,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
     tostring_entry!("to_string_i32", I32, "hew_int_to_string"),
     tostring_entry!("to_string_i64", I64, "hew_i64_to_string"),
     tostring_entry!("to_string_u8", U8, "hew_u8_to_string"),
-    tostring_entry!("to_string_u16", U16, "hew_uint_to_string"),
     tostring_entry!("to_string_u32", U32, "hew_uint_to_string"),
     tostring_entry!("to_string_u64", U64, "hew_u64_to_string"),
     tostring_entry!("to_string_f64", F64, "hew_float_to_string"),
@@ -731,73 +638,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_concat",
         },
     ),
-    // Class A: monomorphic assertion and len overloads.
-    assert_entry!("assert_eq_i8", "assert_eq", I8_I8, "hew_assert_eq_i8"),
-    assert_entry!("assert_eq_i16", "assert_eq", I16_I16, "hew_assert_eq_i16"),
-    assert_entry!("assert_eq_i32", "assert_eq", I32_I32, "hew_assert_eq_i32"),
-    assert_entry!("assert_eq_i64", "assert_eq", I64_I64, "hew_assert_eq_i64"),
-    assert_entry!(
-        "assert_eq_isize",
-        "assert_eq",
-        ISIZE_ISIZE,
-        "hew_assert_eq_isize"
-    ),
-    assert_entry!("assert_eq_u8", "assert_eq", U8_U8, "hew_assert_eq_u8"),
-    assert_entry!("assert_eq_u16", "assert_eq", U16_U16, "hew_assert_eq_u16"),
-    assert_entry!("assert_eq_u32", "assert_eq", U32_U32, "hew_assert_eq_u32"),
-    assert_entry!("assert_eq_u64", "assert_eq", U64_U64, "hew_assert_eq_u64"),
-    assert_entry!(
-        "assert_eq_usize",
-        "assert_eq",
-        USIZE_USIZE,
-        "hew_assert_eq_usize"
-    ),
-    assert_entry!(
-        "assert_eq_str",
-        "assert_eq",
-        STRING_STRING,
-        "hew_assert_eq_str"
-    ),
-    assert_entry!("assert_eq_f64", "assert_eq", F64_F64, "hew_assert_eq_f64"),
-    assert_entry!(
-        "assert_eq_bool",
-        "assert_eq",
-        BOOL_BOOL,
-        "hew_assert_eq_bool"
-    ),
-    assert_entry!("assert_ne_i8", "assert_ne", I8_I8, "hew_assert_ne_i8"),
-    assert_entry!("assert_ne_i16", "assert_ne", I16_I16, "hew_assert_ne_i16"),
-    assert_entry!("assert_ne_i32", "assert_ne", I32_I32, "hew_assert_ne_i32"),
-    assert_entry!("assert_ne_i64", "assert_ne", I64_I64, "hew_assert_ne_i64"),
-    assert_entry!(
-        "assert_ne_isize",
-        "assert_ne",
-        ISIZE_ISIZE,
-        "hew_assert_ne_isize"
-    ),
-    assert_entry!("assert_ne_u8", "assert_ne", U8_U8, "hew_assert_ne_u8"),
-    assert_entry!("assert_ne_u16", "assert_ne", U16_U16, "hew_assert_ne_u16"),
-    assert_entry!("assert_ne_u32", "assert_ne", U32_U32, "hew_assert_ne_u32"),
-    assert_entry!("assert_ne_u64", "assert_ne", U64_U64, "hew_assert_ne_u64"),
-    assert_entry!(
-        "assert_ne_usize",
-        "assert_ne",
-        USIZE_USIZE,
-        "hew_assert_ne_usize"
-    ),
-    assert_entry!(
-        "assert_ne_str",
-        "assert_ne",
-        STRING_STRING,
-        "hew_assert_ne_str"
-    ),
-    assert_entry!("assert_ne_f64", "assert_ne", F64_F64, "hew_assert_ne_f64"),
-    assert_entry!(
-        "assert_ne_bool",
-        "assert_ne",
-        BOOL_BOOL,
-        "hew_assert_ne_bool"
-    ),
+    // Class A: monomorphic len overloads.
     overload(
         "len_str",
         "len",
@@ -807,18 +648,28 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_string_length",
         },
     ),
+    direct(
+        "hew_string_byte_length",
+        BuiltinClass::ClassB,
+        STRING,
+        BuiltinTy::I64,
+        BuiltinLinkage::RuntimeFfiShim {
+            symbol: "hew_string_byte_length",
+        },
+    ),
     overload(
         "len_vec",
         "len",
         VEC_ANY,
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_vec_len",
+            symbol: "vec.value.len",
         },
     ),
     // Receiver-method rewrite targets for the `impl duration` methods declared
     // in `std/builtins.hew`. The checker's `Ty::Duration` dispatch arm records a
-    // `RewriteToFunction { c_symbol: "hew_duration_*", descriptor: None }`; HIR
+    // `RewriteToFunction` carrying the typed `RuntimeCallFamily::Duration*`
+    // descriptor (the canonical stdlib extern signature table admits it); HIR
     // resolves that callee through the seeded `fn_registry`, so each runtime
     // symbol needs a catalog row here to be resolvable. `duration` is i64-backed:
     // the receiver is modelled as the single `I64` param so codegen's
@@ -1155,9 +1006,13 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `bytes.pop() -> u8` — removes and returns the last byte (CoW-aware).
-    // `CalleeNameDispatchOnly`: checker authority drives the `u8` result; the
-    // MIR producer arm emits the dedicated `hew_bytes_pop` runtime call.
+    // `bytes.pop() -> Option<u8>` — removes and returns the last byte
+    // (CoW-aware), answering `None` on an empty buffer.
+    // `CalleeNameDispatchOnly`: checker authority drives the `Option<u8>`
+    // result; the MIR producer arm emits the dedicated `hew_bytes_pop`
+    // runtime call and codegen wraps its `-1` sentinel as `None`. (`U8` below
+    // is the element class, not the wrapped return — there is no
+    // `BuiltinTy::Option`.)
     direct(
         "hew_bytes_pop",
         BuiltinClass::ClassA,
@@ -1332,7 +1187,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_push_str",
         },
     ),
-    // Pointer-shaped element family (`Vec<LocalPid<T>>`): the local actor-handle
+    // Pointer-shaped element family (a `Vec` of actor handles): the actor-handle
     // builtin lowers to a single pointer-sized word (`*mut HewActor`) and the
     // checker classifies it via
     // `BuiltinType::lowers_as_pointer_vec_element` → `"ptr"`. The runtime ABI
@@ -1725,7 +1580,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // W3.041 sub-lane A: 7 layout HashMap rows for Copy named-record keys with
     // any admitted value type (scalar or layout).  All use
     // `CalleeNameDispatchOnly` because the runtime ABI takes hidden
-    // `HewMapKeyLayout*` / `HewMapValueLayout*` operands synthesised by codegen
+    // `HewMapKeyLayout*` / `HewValueLayout*` operands synthesised by codegen
     // from the checker-authoritative `HashMapLoweringFact`.  The `params` here
     // are placeholder shape metadata only — typecheck routes through
     // `check_hashmap_method` which performs full K/V validation; HIR/MIR/codegen
@@ -1852,7 +1707,7 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // ── Layout descriptor symbols (W4.001 Stage C0b) ─────────────────────────
     //
     // `#[no_mangle] pub static` instances of `HewMapKeyLayout` /
-    // `HewMapValueLayout` exported by `hew-runtime/src/layout_intrinsics.rs`
+    // `HewValueLayout` exported by `hew-runtime/src/layout_intrinsics.rs`
     // and re-declared by `hew-cabi/src/map.rs`. Catalog rows here are
     // checker-visible declarations only — Stage C is the first production
     // reader (plan §4 Stage C0b boundary).
@@ -2131,20 +1986,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_vec_contains_str",
         },
     ),
-    // W4.039: bytes -> string canonicalisation. Single `hew_bytes_to_string`
-    // runtime export consumes the BytesTriple value directly; the catalog
-    // declares the LLVM extern with a single `bytes` parameter, which codegen
-    // materialises as `{ptr, i32, i32}` (ABI-equivalent to a
-    // `#[repr(C)] BytesTriple` passed by value).
-    direct(
-        "hew_bytes_to_string",
-        BuiltinClass::ClassA,
-        BYTES,
-        BuiltinTy::String,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_bytes_to_string",
-        },
-    ),
     direct(
         "hew_vec_append",
         BuiltinClass::ClassA,
@@ -2386,6 +2227,186 @@ pub const CATALOG: &[BuiltinEntry] = &[
             intrinsic: "math.round",
         },
     ),
+    direct(
+        "math.tan",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.tan",
+        },
+    ),
+    direct(
+        "math.asin",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.asin",
+        },
+    ),
+    direct(
+        "math.acos",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.acos",
+        },
+    ),
+    direct(
+        "math.atan",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.atan",
+        },
+    ),
+    direct(
+        "math.atan2",
+        BuiltinClass::ClassB,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.atan2",
+        },
+    ),
+    direct(
+        "math.sinh",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.sinh",
+        },
+    ),
+    direct(
+        "math.cosh",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.cosh",
+        },
+    ),
+    direct(
+        "math.tanh",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.tanh",
+        },
+    ),
+    direct(
+        "math.exp2",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.exp2",
+        },
+    ),
+    direct(
+        "math.log2",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.log2",
+        },
+    ),
+    direct(
+        "math.log10",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.log10",
+        },
+    ),
+    direct(
+        "math.log1p",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.log1p",
+        },
+    ),
+    direct(
+        "math.expm1",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.expm1",
+        },
+    ),
+    direct(
+        "math.cbrt",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.cbrt",
+        },
+    ),
+    direct(
+        "math.hypot",
+        BuiltinClass::ClassB,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.hypot",
+        },
+    ),
+    direct(
+        "math.fma",
+        BuiltinClass::ClassB,
+        F64_F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.fma",
+        },
+    ),
+    direct(
+        "math.trunc",
+        BuiltinClass::ClassB,
+        F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.trunc",
+        },
+    ),
+    direct(
+        "math.copysign",
+        BuiltinClass::ClassB,
+        F64_F64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.copysign",
+        },
+    ),
+    direct(
+        "math.powi",
+        BuiltinClass::ClassB,
+        F64_I32,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.powi",
+        },
+    ),
+    direct(
+        "math.from_bits",
+        BuiltinClass::ClassB,
+        U64,
+        BuiltinTy::F64,
+        BuiltinLinkage::CompilerIntrinsic {
+            intrinsic: "math.from_bits",
+        },
+    ),
     // Class B: random module runtime shims.
     direct(
         "random.seed",
@@ -2450,38 +2471,33 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // On x86-64 and arm64 the callee's return value sits in rax/x0 and is
     // harmlessly discarded by the caller — this is the standard C idiom for
     // ignoring a return value.  The runtime still surfaces a peer-auth setup
-    // failure even though the `-1` is discarded: `Node::load_keys` /
-    // `Node::allow_peer` set `hew_last_error`, print a `hew:` stderr diagnostic,
-    // and record a sticky failure so a later `Node::start` refuses to bind a
-    // listener (fail-closed) rather than silently presenting an ephemeral
-    // identity. See `node_peer_auth_setup_failed` in `hew_node.rs`.
-    direct(
-        "Node::set_transport",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_set_transport",
-        },
-    ),
+    // `Node::start(config: NodeConfig) -> Result<(), NodeError>` — apply one
+    // complete node configuration and bind the listener. The record is passed
+    // by pointer (`*const HewNodeConfig`) and the shim's `c_int` becomes the
+    // typed node result.
     direct(
         "Node::start",
         BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
+        NODE_CONFIG,
+        BuiltinTy::NodeResult,
         BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_start",
+            symbol: "hew_node_api_start_config",
         },
     ),
+    // `Node::connect(addr: String) -> Result<(), NodeError>` — dial a peer at
+    // `slot@host:port`, where the slot is the peer's position in this node's
+    // own `NodeConfig.peers`.
     direct(
         "Node::connect",
         BuiltinClass::ClassB,
         STRING,
-        BuiltinTy::Unit,
+        BuiltinTy::NodeResult,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "hew_node_api_connect",
         },
     ),
+    // `Node::shutdown()` — stop the public node. No args in, `c_int` discarded
+    // as Unit.
     direct(
         "Node::shutdown",
         BuiltinClass::ClassB,
@@ -2491,37 +2507,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
             symbol: "hew_node_api_shutdown",
         },
     ),
-    // `Node::load_keys(path: String)` — load/persist this node's stable mesh
-    // TLS identity from a keyfile. Same FFI shim shape as set_transport: one
-    // String in, c_int discarded as Unit. Native quic-mesh only.
-    direct(
-        "Node::load_keys",
-        BuiltinClass::ClassB,
-        STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_load_keys",
-        },
-    ),
-    // `Node::allow_peer(node_id: U16, credential_hex: String)` — bind a peer's
-    // authenticated credential to the NodeId it is permitted to claim (issue
-    // #2652). The credential is interpreted by the node's pinned transport: TCP
-    // ⇒ 32-byte Noise pubkey (`PeerCredential::NoiseKey`); quic-mesh ⇒ cert SPKI
-    // (`PeerCredential::Spki`). U16 + String in, c_int discarded as Unit.
-    direct(
-        "Node::allow_peer",
-        BuiltinClass::ClassB,
-        U16_STRING,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_node_api_allow_peer",
-        },
-    ),
-    // `Node::identity_key() -> String` — this node's stable public credential
-    // for the pinned transport as lowercase hex (Noise pubkey on TCP, cert SPKI
-    // on quic-mesh, issue #2652). Operators hand it to peers for `allow_peer`.
-    // No args in; returns an owned hew string (`""` when no stable identity has
-    // been loaded), freed by generated code via `hew_string_drop`.
     direct(
         "Node::identity_key",
         BuiltinClass::ClassB,
@@ -2538,27 +2523,29 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::U64,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `Node::register<T>(name: String, pid: LocalPid<T>) -> i32`
+    // `Node::register<T>(name: String, actor: T) -> i32`
     //
-    // Per R81, `LocalPid<T>` lowers to a bare `u64` PID at the C-ABI
-    // boundary.  The catalog param list `[String, U64]` is a placeholder
-    // for HIR/MIR name-resolution purposes — codegen handles this linkage
-    // variant specially and does not use the generic `declare_catalog_ffi`
-    // path (which would construct the wrong LLVM function type).
+    // T is an actor type; an actor is the type of its own handle, so passing
+    // `actor` here passes that handle. Per R81, an actor handle lowers to a
+    // bare `u64` PID at the C-ABI boundary. The catalog param list
+    // `[String, U64]` is a placeholder for HIR/MIR name-resolution purposes —
+    // codegen handles this linkage variant specially and does not use the
+    // generic `declare_catalog_ffi` path (which would construct the wrong
+    // LLVM function type).
     direct(
         "Node::register",
         BuiltinClass::ClassB,
         &[BuiltinTy::String, BuiltinTy::U64],
         BuiltinTy::I32,
         BuiltinLinkage::NodeRegisterByPid {
-            register_symbol: "hew_node_api_register_by_pid",
+            register_symbol: "hew_node_api_register_by_pid_string",
             pid_accessor: "hew_actor_pid",
         },
     ),
     // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`
     //
     // Codegen allocates the aggregate Ok payload in the destination Result and
-    // passes it to `hew_node_api_lookup_location(name, out) -> i32`. A zero
+    // passes it to `hew_node_api_lookup_location_string(name, out) -> i32`. A zero
     // status selects Ok; any non-zero status selects LookupError::NotFound.
     // The scalar catalog types are dispatch placeholders only and never define
     // the C ABI for this CalleeNameDispatchOnly entry.
@@ -2678,8 +2665,8 @@ pub const CATALOG: &[BuiltinEntry] = &[
     // (see hew-types::check::methods); HIR's direct-call lowering produces a
     // `Terminator::Call("hew_tcp_attach_local", [conn, handler])`. Codegen
     // intercepts that call by name (`emit_tcp_attach_local_call`): it resolves
-    // the concrete actor type from the `handler` arg's recorded
-    // `LocalPid<Actor>` type, looks up the actor's `on_data` / `on_close`
+    // the concrete actor type from the `handler` arg's recorded actor-handle
+    // type, looks up the actor's `on_data` / `on_close`
     // handler `msg_id`s in its `ActorLayout`, and emits the real runtime ABI
     // `hew_tcp_attach_local(conn, actor_ptr, on_data_id, on_close_id)`.
     //
@@ -2708,6 +2695,40 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinClass::ClassB,
         &[BuiltinTy::Pointer, BuiltinTy::Pointer],
         BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // Typed channel extraction uses the checked source signature. These are
+    // dispatch identities; their pointer ABI is owned by the runtime contract.
+    direct(
+        "channel.pair_sender",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "channel.pair_receiver",
+        BuiltinClass::ClassB,
+        &[BuiltinTy::Pointer],
+        BuiltinTy::Pointer,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    // Compiler-owned UTF-8 source declarations carry their real signatures.
+    // These rows are exact dispatch identities only: validating decode's
+    // nominal Result type is checked by RuntimeSemanticContract, so the Unit
+    // return below is deliberately not a second representation of it.
+    direct(
+        "utf8.decode",
+        BuiltinClass::ClassB,
+        BYTES,
+        BuiltinTy::Unit,
+        BuiltinLinkage::CalleeNameDispatchOnly,
+    ),
+    direct(
+        "utf8.decode_lossy",
+        BuiltinClass::ClassB,
+        BYTES,
+        BuiltinTy::String,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // ── W5.005 (F1b): memory-intrinsic floor (`mem.*`) ────────────────────
@@ -2797,63 +2818,13 @@ pub fn missing_import_hint(module: &str) -> String {
 
 #[must_use]
 pub fn is_overloaded_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "println" | "print" | "to_string" | "assert_eq" | "assert_ne" | "len"
-    )
+    matches!(name, "println" | "print" | "to_string" | "len")
 }
 
 #[must_use]
 pub fn resolve_overload(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static BuiltinEntry> {
     let lowered_name = overload_lowered_name(name, arg_tys)?;
     CATALOG.iter().find(|entry| entry.name == lowered_name)
-}
-
-/// Return an ownership contract only for catalog linkages whose result
-/// allocation semantics are intrinsic to the typed linkage variant.
-#[must_use]
-pub fn result_ownership(endpoint: &str) -> Option<ProducedValueOwnership> {
-    let entry = CATALOG.iter().find(|entry| entry.name == endpoint)?;
-    match entry.linkage {
-        BuiltinLinkage::ToStringShim { .. } => Some(ProducedValueOwnership::owned(
-            ProducedValueAcquisition::Fresh,
-        )),
-        BuiltinLinkage::StringCloneShim { .. } => Some(ProducedValueOwnership::owned(
-            ProducedValueAcquisition::Clone,
-        )),
-        BuiltinLinkage::RuntimeFfiShim { symbol } => {
-            let contract =
-                hew_types::ffi_contracts::extern_ownership_contract(symbol).contract()?;
-            runtime_ffi_result_ownership(contract)
-        }
-        _ => None,
-    }
-}
-
-fn runtime_ffi_result_ownership(
-    contract: &hew_types::ffi_contracts::ExternOwnershipContract,
-) -> Option<ProducedValueOwnership> {
-    use hew_types::ffi_contracts::{
-        ExternResultOwnership, ExternResultRetention, ReleaseDischargeDepth,
-    };
-
-    match contract.result {
-        ExternResultOwnership::Fresh | ExternResultOwnership::Retained
-            if !contract.release_symbol.is_empty()
-                && contract.discharge_depth != ReleaseDischargeDepth::None
-                && contract.result_retention == ExternResultRetention::Transferred =>
-        {
-            Some(ProducedValueOwnership::owned(match contract.result {
-                ExternResultOwnership::Fresh => ProducedValueAcquisition::Fresh,
-                ExternResultOwnership::Retained => ProducedValueAcquisition::Retained,
-                ExternResultOwnership::Borrowed | ExternResultOwnership::None => unreachable!(),
-            }))
-        }
-        ExternResultOwnership::Borrowed => Some(ProducedValueOwnership::Borrowed),
-        ExternResultOwnership::Fresh
-        | ExternResultOwnership::Retained
-        | ExternResultOwnership::None => None,
-    }
 }
 
 fn overload_lowered_name(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static str> {
@@ -2863,12 +2834,6 @@ fn overload_lowered_name(name: &str, arg_tys: &[ResolvedTy]) -> Option<&'static 
         }
         "print" if arg_tys.len() == 1 => print_suffix(&arg_tys[0]).and_then(print_name_for_suffix),
         "to_string" if arg_tys.len() == 1 => to_string_name_for_ty(&arg_tys[0]),
-        "assert_eq" if arg_tys.len() == 2 && arg_tys[0] == arg_tys[1] => {
-            assert_eq_name_for_ty(&arg_tys[0])
-        }
-        "assert_ne" if arg_tys.len() == 2 && arg_tys[0] == arg_tys[1] => {
-            assert_ne_name_for_ty(&arg_tys[0])
-        }
         "len" if arg_tys.len() == 1 => len_name_for_ty(&arg_tys[0]),
         _ => None,
     }
@@ -2921,51 +2886,12 @@ fn to_string_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
         ResolvedTy::I32 => Some("to_string_i32"),
         ResolvedTy::I64 => Some("to_string_i64"),
         ResolvedTy::U8 => Some("to_string_u8"),
-        ResolvedTy::U16 => Some("to_string_u16"),
         ResolvedTy::U32 => Some("to_string_u32"),
         ResolvedTy::U64 => Some("to_string_u64"),
         ResolvedTy::F64 => Some("to_string_f64"),
         ResolvedTy::Bool => Some("to_string_bool"),
         ResolvedTy::Char => Some("to_string_char"),
         ResolvedTy::String => Some("to_string_str"),
-        _ => None,
-    }
-}
-
-fn assert_eq_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
-    match ty {
-        ResolvedTy::I8 => Some("assert_eq_i8"),
-        ResolvedTy::I16 => Some("assert_eq_i16"),
-        ResolvedTy::I32 => Some("assert_eq_i32"),
-        ResolvedTy::I64 => Some("assert_eq_i64"),
-        ResolvedTy::Isize => Some("assert_eq_isize"),
-        ResolvedTy::U8 => Some("assert_eq_u8"),
-        ResolvedTy::U16 => Some("assert_eq_u16"),
-        ResolvedTy::U32 => Some("assert_eq_u32"),
-        ResolvedTy::U64 => Some("assert_eq_u64"),
-        ResolvedTy::Usize => Some("assert_eq_usize"),
-        ResolvedTy::String => Some("assert_eq_str"),
-        ResolvedTy::F64 => Some("assert_eq_f64"),
-        ResolvedTy::Bool => Some("assert_eq_bool"),
-        _ => None,
-    }
-}
-
-fn assert_ne_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
-    match ty {
-        ResolvedTy::I8 => Some("assert_ne_i8"),
-        ResolvedTy::I16 => Some("assert_ne_i16"),
-        ResolvedTy::I32 => Some("assert_ne_i32"),
-        ResolvedTy::I64 => Some("assert_ne_i64"),
-        ResolvedTy::Isize => Some("assert_ne_isize"),
-        ResolvedTy::U8 => Some("assert_ne_u8"),
-        ResolvedTy::U16 => Some("assert_ne_u16"),
-        ResolvedTy::U32 => Some("assert_ne_u32"),
-        ResolvedTy::U64 => Some("assert_ne_u64"),
-        ResolvedTy::Usize => Some("assert_ne_usize"),
-        ResolvedTy::String => Some("assert_ne_str"),
-        ResolvedTy::F64 => Some("assert_ne_f64"),
-        ResolvedTy::Bool => Some("assert_ne_bool"),
         _ => None,
     }
 }
@@ -2979,96 +2905,220 @@ fn len_name_for_ty(ty: &ResolvedTy) -> Option<&'static str> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{
-        compiler_synthetic_runtime_ownership_symbol, result_ownership, runtime_ffi_result_ownership,
+mod utf8_floor_tests {
+    use crate::{lower_program_host_target, HirDiagnosticKind, HirItem, ResolutionCtx};
+    use hew_parser::{
+        ast::Program,
+        module::{Module, ModuleGraph, ModuleId},
     };
-    use hew_types::{ProducedValueAcquisition, ProducedValueOwnership};
+    use hew_types::{module_registry::ModuleRegistry, Checker};
 
-    #[test]
-    fn string_result_linkages_publish_exact_ownership() {
-        assert_eq!(
-            result_ownership("to_string_i64"),
-            Some(ProducedValueOwnership::owned(
-                ProducedValueAcquisition::Fresh
-            ))
-        );
-        assert_eq!(
-            result_ownership("to_string_str"),
-            Some(ProducedValueOwnership::owned(
-                ProducedValueAcquisition::Clone
-            ))
-        );
-        for endpoint in ["split_str", "lines_str", "replace_str"] {
-            assert_eq!(
-                result_ownership(endpoint),
-                Some(ProducedValueOwnership::owned(
-                    ProducedValueAcquisition::Fresh
-                )),
-                "{endpoint} must publish its audited FFI result"
-            );
+    fn floor_program(source: &str, canonical: bool) -> Program {
+        let floor = hew_parser::parse(source);
+        let root = hew_parser::parse("fn main() {}");
+        assert!(floor.errors.is_empty(), "{:?}", floor.errors);
+        let floor_id = ModuleId::new(vec![
+            "std".to_string(),
+            "encoding".to_string(),
+            "utf8".to_string(),
+        ]);
+        let root_id = ModuleId::root();
+        let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("std/encoding/utf8/utf8.hew");
+        let mut graph = ModuleGraph::new(root_id.clone());
+        graph
+            .add_module(Module {
+                id: floor_id.clone(),
+                items: floor.program.items,
+                imports: vec![],
+                source_paths: if canonical { vec![source_path] } else { vec![] },
+                doc: None,
+            })
+            .unwrap();
+        graph
+            .add_module(Module {
+                id: root_id.clone(),
+                items: root.program.items.clone(),
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .unwrap();
+        graph.topo_order = vec![floor_id, root_id];
+        Program {
+            module_graph: Some(graph),
+            ..root.program
         }
-        assert_eq!(result_ownership("println_i64"), None);
-        assert_eq!(result_ownership("missing"), None);
     }
 
     #[test]
-    fn fresh_ffi_result_without_transferred_retention_cannot_mint() {
-        use hew_types::ffi_contracts::{
-            ExternOwnershipContract, ExternResultOwnership, ExternResultRetention,
-            ReleaseDischargeDepth,
-        };
-
-        let contract = ExternOwnershipContract {
-            params: &[],
-            resource_param_types: &[],
-            resource_result_type: None,
-            result: ExternResultOwnership::Fresh,
-            release_symbol: "hew_string_drop",
-            discharge_depth: ReleaseDischargeDepth::Shallow,
-            result_retention: ExternResultRetention::Unspecified,
-        };
-        assert_eq!(runtime_ffi_result_ownership(&contract), None);
+    fn utf8_floor_suppresses_only_admitted_runtime_bodies() {
+        let program = floor_program(
+            r#"
+            pub type Utf8Error {}
+            #[intrinsic("utf8.decode")]
+            pub fn decode(data: bytes) -> string fails Utf8Error;
+            #[intrinsic("utf8.decode_lossy")]
+            pub fn decode_lossy(data: bytes) -> string;
+            pub fn ordinary(data: bytes) -> string { "ordinary" }
+            "#,
+            true,
+        );
+        let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        let functions: Vec<_> = lowered
+            .module
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                HirItem::Function(f) => Some(f.name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            functions.contains(&"std$encoding$utf8$ordinary"),
+            "{functions:?}"
+        );
+        assert!(
+            !functions.contains(&"std$encoding$utf8$decode"),
+            "{functions:?}"
+        );
+        assert!(
+            !functions.contains(&"std$encoding$utf8$decode_lossy"),
+            "{functions:?}"
+        );
     }
 
     #[test]
-    fn reachable_vec_ffi_results_keep_their_owners() {
-        assert_eq!(
-            result_ownership("hew_vec_clone"),
-            Some(ProducedValueOwnership::owned(
-                ProducedValueAcquisition::Fresh
-            ))
+    fn utf8_named_user_function_retains_its_body() {
+        let program = floor_program(
+            r#"pub fn decode_lossy(data: bytes) -> string { "user" }"#,
+            false,
         );
-        assert_eq!(
-            result_ownership("hew_vec_get_str"),
-            Some(ProducedValueOwnership::owned(
-                ProducedValueAcquisition::Retained
-            ))
-        );
+        let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        assert!(checked.intrinsic_declarations.is_empty());
+        let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        assert!(lowered.module.items.iter().any(|item| matches!(item,
+            HirItem::Function(f) if f.name == "std$encoding$utf8$decode_lossy"
+                && f.intrinsic_id.is_none() && f.body.tail.is_some()
+        )));
     }
 
     #[test]
-    fn identity_display_synthetics_map_only_to_real_runtime_formatters() {
-        assert_eq!(
-            compiler_synthetic_runtime_ownership_symbol("hew_node_id_display"),
-            Some("hew_node_id_format")
+    fn utf8_floor_inconsistent_signature_is_a_boundary_diagnostic() {
+        let program = floor_program("pub fn decode_lossy(data: bytes) -> i64 { 7 }", true);
+        let mut checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        // Model a broken checker producer: a well-typed ordinary body cannot
+        // disappear silently when an inconsistent intrinsic fact is attached.
+        checked.intrinsic_declarations.insert(
+            "std.encoding.utf8.decode_lossy".to_string(),
+            "utf8.decode_lossy".to_string(),
         );
-        for callee in ["hew_location_display", "hew_remote_pid_display"] {
-            assert_eq!(
-                compiler_synthetic_runtime_ownership_symbol(callee),
-                Some("hew_location_format"),
-                "{callee} must share the location formatter ownership contract"
+        let lowered = lower_program_host_target(&program, &checked, &ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                    if name == "std.encoding.utf8.decode_lossy"
+            )),
+            "{:?}",
+            lowered.diagnostics
+        );
+        assert!(lowered.into_result().is_err());
+    }
+
+    #[test]
+    fn utf8_real_imports_lower_without_floor_stubs() {
+        for (imports, decode, lossy) in [
+            (
+                "import std.encoding.utf8;",
+                "utf8.decode",
+                "utf8.decode_lossy",
+            ),
+            (
+                "import std.encoding.utf8 as text;",
+                "text.decode",
+                "text.decode_lossy",
+            ),
+            (
+                "import std.encoding.utf8.{decode as read, decode_lossy as repair};",
+                "read",
+                "repair",
+            ),
+        ] {
+            let parsed = hew_parser::parse(&format!(
+                "{imports}\nfn sample(data: bytes) {{ let valid = {decode}(data); let repaired = {lossy}(data); }}"
+            ));
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .to_path_buf();
+            let checked =
+                Checker::new(ModuleRegistry::new(vec![repo])).check_program(&parsed.program);
+            assert!(checked.errors.is_empty(), "{imports}: {:?}", checked.errors);
+            let lowered = lower_program_host_target(&parsed.program, &checked, &ResolutionCtx);
+            assert!(
+                lowered.diagnostics.is_empty(),
+                "{imports}: {:?}",
+                lowered.diagnostics
             );
+            let sample = lowered
+                .module
+                .items
+                .iter()
+                .find_map(|item| match item {
+                    HirItem::Function(f) if f.name == "sample" => Some(f),
+                    _ => None,
+                })
+                .expect("sample function");
+            let calls: Vec<_> = sample
+                .body
+                .statements
+                .iter()
+                .filter_map(|statement| {
+                    let crate::HirStmtKind::Let(_, Some(value)) = &statement.kind else {
+                        return None;
+                    };
+                    let crate::HirExprKind::Call {
+                        target: hew_types::CallTarget::Runtime(family),
+                        callee,
+                        ..
+                    } = &value.kind
+                    else {
+                        return None;
+                    };
+                    assert!(matches!(callee.kind, crate::HirExprKind::BindingRef {
+                    resolved: crate::ResolvedRef::Builtin(actual), ..
+                } if actual == *family));
+                    Some((*family, &value.ty))
+                })
+                .collect();
+            assert_eq!(calls.len(), 2, "{imports}: {calls:?}");
+            assert_eq!(
+                calls[0].0,
+                hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8
+            );
+            assert!(
+                hew_types::runtime_call::RuntimeVariantResultKind::Utf8Decode.matches(calls[0].1)
+            );
+            assert_eq!(
+                calls[1],
+                (
+                    hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8Lossy,
+                    &hew_types::ResolvedTy::String
+                )
+            );
+            assert!(!lowered.module.items.iter().any(|item| matches!(item,
+                HirItem::Function(f) if f.name == "std$encoding$utf8$decode"
+                    || f.name == "std$encoding$utf8$decode_lossy"
+            )));
         }
-        assert_eq!(
-            compiler_synthetic_runtime_ownership_symbol("hew_node_id_format"),
-            None,
-            "the runtime symbol is not itself a compiler synthetic"
-        );
-        assert_eq!(
-            compiler_synthetic_runtime_ownership_symbol("user_display"),
-            None,
-            "unknown display callees must remain fail-closed"
-        );
     }
 }

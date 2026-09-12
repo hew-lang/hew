@@ -341,7 +341,7 @@ pub unsafe extern "C" fn hew_noise_key_load(
 /// Generate a new Noise keypair.
 ///
 /// Returns a pointer to a 64-byte heap allocation (`32-byte public || 32-byte
-/// private`) via `libc::malloc`. The first [`KEY_LEN`] bytes are the public key
+/// private`) from the sized-block allocator. The first [`KEY_LEN`] bytes are the public key
 /// and the next [`KEY_LEN`] bytes are the private key.
 ///
 /// # Safety
@@ -362,7 +362,7 @@ pub unsafe extern "C" fn hew_noise_keypair_generate() -> *mut u8 {
 
     // Allocate space for both public and private keys.
     // SAFETY: malloc with a valid size.
-    let buf = unsafe { libc::malloc(KEYPAIR_FILE_LEN) }.cast::<u8>(); // ALLOCATOR-PAIRING: libc
+    let buf = crate::mem::buf_try_alloc(KEYPAIR_FILE_LEN).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
     if buf.is_null() {
         keypair.private.zeroize();
         return ptr::null_mut();
@@ -642,8 +642,8 @@ mod tests {
         );
         assert_ne!(public, private, "public and private keys must differ");
 
-        // SAFETY: buf was allocated by libc::malloc.
-        unsafe { libc::free(buf.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+        // SAFETY: buf was allocated by the sized-block allocator.
+        unsafe { crate::mem::buf_free(buf.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     #[test]
@@ -698,8 +698,8 @@ mod tests {
             "responder must see the public key returned by hew_noise_keypair_generate"
         );
 
-        // SAFETY: buf was allocated by libc::malloc.
-        unsafe { libc::free(buf.cast::<c_void>()) }; // ALLOCATOR-PAIRING: libc
+        // SAFETY: buf was allocated by the sized-block allocator.
+        unsafe { crate::mem::buf_free(buf.cast::<c_void>()) }; // ALLOCATOR-PAIRING: GlobalAlloc
     }
 
     #[test]
@@ -723,10 +723,10 @@ mod tests {
         let priv2 = unsafe { std::slice::from_raw_parts(buf2.add(KEY_LEN), KEY_LEN) };
         assert_ne!(priv1, priv2, "two generated private keys should differ");
 
-        // SAFETY: buffers were allocated by libc::malloc.
+        // SAFETY: buffers were allocated by the sized-block allocator.
         unsafe {
-            libc::free(buf1.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
-            libc::free(buf2.cast::<c_void>()); // ALLOCATOR-PAIRING: libc
+            crate::mem::buf_free(buf1.cast::<c_void>()); // ALLOCATOR-PAIRING: GlobalAlloc
+            crate::mem::buf_free(buf2.cast::<c_void>()); // ALLOCATOR-PAIRING: GlobalAlloc
         }
     }
 }

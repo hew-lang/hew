@@ -1,0 +1,13 @@
+[[case]]
+id = "q004_trait_impl_sig_wrong_return"
+intent = "Reject fixture: q004_trait_impl_sig_wrong_return."
+source = "../vertical-slice/reject/q004_trait_impl_sig_wrong_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "TraitImplSignatureMismatch"
+line = 24
+column = 8
+message = "impl method `Holder.unwrap` returns `i64` but trait `Container` requires `Option<i64>`"

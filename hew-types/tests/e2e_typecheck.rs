@@ -457,7 +457,7 @@ fn hashmap_remove_typechecks_as_option() {
     assert_inline_typechecks_cleanly(
         r#"
 fn main() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     let removed: Option<i64> = m.remove("a");
     let missing: Option<i64> = m.remove("a");
@@ -501,7 +501,7 @@ fn method_call_receiver_kinds_record_named_type_instance_dispatch() {
     let output = typecheck_inline(
         r"
 type Widget {
-    value: i64;
+    value: i64,
 }
 
 impl Widget {
@@ -543,7 +543,7 @@ trait Greeter {
 }
 
 type Bot {
-    name: string;
+    name: string,
 }
 
 impl Greeter for Bot {
@@ -632,11 +632,10 @@ fn consume(s: Stream<string>) {
 }
 
 #[test]
-fn method_call_stream_take_fails_closed_with_honest_diagnostic() {
-    // `take` shares the lazy-adapter capability boundary with `map`/`filter`:
-    // it previously recorded a `DeferToLowering` rewrite that dead-ended in HIR
-    // lowering with an internal-shaped `NotYetImplemented` note. Per issue #2530
-    // it now fails closed at the checker with one honest diagnostic.
+fn method_call_stream_take_reaches_its_runtime_row() {
+    // `take` is a lowered adaptor: it consumes its source stream and returns a
+    // fresh one through `hew_stream_take`, so it type-checks clean and records
+    // a runtime rewrite instead of the adapter capability boundary.
     let output = typecheck_inline(
         r"
 fn consume(s: Stream<bytes>) {
@@ -644,39 +643,28 @@ fn consume(s: Stream<bytes>) {
 }
 ",
     );
-    let adapter_errors: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. }))
-        .collect();
-    assert_eq!(
-        adapter_errors.len(),
-        1,
-        "expected exactly one StreamAdapterNotSupported diagnostic, got: {:#?}",
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|e| matches!(&e.kind, TypeErrorKind::StreamAdapterNotSupported { .. })),
+        "`take` must not report the adapter capability boundary, got: {:#?}",
         output.errors
     );
     assert!(
-        matches!(
-            &adapter_errors[0].kind,
-            TypeErrorKind::StreamAdapterNotSupported { method, element_ty }
-                if method == "take" && element_ty == "bytes"
-        ),
-        "expected `take`/`bytes` in the diagnostic, got: {:?}",
-        adapter_errors[0].kind
-    );
-    assert!(
-        !output
-            .method_call_rewrites
-            .values()
-            .any(|rewrite| matches!(rewrite, hew_types::MethodCallRewrite::DeferToLowering)),
-        "fail-closed adapters must record no DeferToLowering rewrite, got: {:?}",
+        output.method_call_rewrites.values().any(|rewrite| matches!(
+            rewrite,
+            hew_types::MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                if c_symbol == "hew_stream_take"
+        )),
+        "`take` must record its runtime rewrite, got: {:?}",
         output.method_call_rewrites
     );
 }
 
 #[test]
 fn method_call_stream_map_fails_closed_with_honest_diagnostic() {
-    // The lazy stream adapters (`take`/`map`/`filter`) have no MIR lowering.
+    // The callback adapters (`map`/`filter`) have no MIR lowering.
     // They previously type-checked clean and recorded `StreamInstance` receiver
     // metadata before dead-ending in HIR lowering with internal-shaped
     // `E_NOT_YET_IMPLEMENTED` noise. Per issue #2530 they now fail closed at the
@@ -771,7 +759,8 @@ fn method_call_dispatches_resource_wrapper_through_impl() {
 import std.net.http;
 
 fn respond(req: http.Request) -> i64 {
-    req.respond_text(200, "ok")
+    req.respond_text(200, "ok").expect("respond_text succeeds");
+    0
 }
 "#,
     );
@@ -823,7 +812,7 @@ fn assign_target_kinds_record_assignment_target_authority() {
     let output = typecheck_inline(
         r"
 type Boxed {
-    value: i64;
+    value: i64,
 }
 
 fn mutate() {
@@ -838,7 +827,7 @@ fn mutate() {
 }
 
 actor Counter {
-    var total: i64;
+    var total: i64,
 
     receive fn set(v: i64) {
         total = v;
@@ -952,7 +941,7 @@ fn assign_target_shapes_accompanies_kinds_for_every_accepted_target() {
     let output = typecheck_inline(
         r"
 type Boxed {
-    value: i64;
+    value: i64,
 }
 
 fn mutate() {
@@ -967,7 +956,7 @@ fn mutate() {
 }
 
 actor Counter {
-    var total: i64;
+    var total: i64,
 
     receive fn set(v: i64) {
         total = v;
@@ -1150,11 +1139,11 @@ fn stream_decode_fails_closed_before_codegen() {
 
         #[wire]
         type Message {
-            id: i64 @1;
+            id: i64 @1,
         }
 
         fn main() {
-            let (_sink, input) = stream.bytes_pipe(4);
+            let (_sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _decoded: stream.Stream<Message> = input.decode();
         }
         ",
@@ -1177,11 +1166,11 @@ fn sink_encode_fails_closed_before_codegen() {
 
         #[wire]
         type Message {
-            id: i64 @1;
+            id: i64 @1,
         }
 
         fn main() {
-            let (sink, _input) = stream.bytes_pipe(4);
+            let (sink, _input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _encoded: stream.Sink<Message> = sink.encode();
         }
         ",
@@ -1220,22 +1209,21 @@ fn channel_dot_receiver_annotation_typechecks() {
 }
 
 // ===========================================================================
-// for-await fail-closed tests
-// These cover the typechecker's new is_await validation in Stmt::For.
+// Stream and channel `for` loop fail-closed tests
 // ===========================================================================
 
-/// `for await item in rx` over `Receiver<string>` must typecheck cleanly.
+/// `for item in rx` over `Receiver<string>` must typecheck cleanly.
 #[test]
-fn for_await_receiver_string_ok() {
+fn for_receiver_string_ok() {
     let output = typecheck_inline(
         r#"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send("hello");
             tx.close();
-            for await msg in rx {
+            for msg in rx {
                 println(msg);
             }
         }
@@ -1243,23 +1231,23 @@ fn for_await_receiver_string_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<string> should typecheck cleanly, got: {:#?}",
+        "for over Receiver<string> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await val in rx` over `Receiver<i64>` must typecheck cleanly.
+/// `for val in rx` over `Receiver<i64>` must typecheck cleanly.
 #[test]
-fn for_await_receiver_int_ok() {
+fn for_receiver_int_ok() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(42);
             tx.close();
-            for await val in rx {
+            for val in rx {
                 println(val);
             }
         }
@@ -1267,23 +1255,23 @@ fn for_await_receiver_int_ok() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over Receiver<i64> should typecheck cleanly, got: {:#?}",
+        "for over Receiver<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await _ in rx` over a bare `Receiver` annotation must fail closed
+/// `for _ in rx` over a bare `Receiver` annotation must fail closed
 /// before serializer-time unresolved-type handling.
 #[test]
-fn for_await_receiver_missing_element_type_errors() {
+fn for_receiver_missing_element_type_errors() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
-            let (tx, rx): (channel.Sender, channel.Receiver) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
-            for await _ in rx {
+            for _ in rx {
                 println(0);
             }
         }
@@ -1299,21 +1287,21 @@ fn for_await_receiver_missing_element_type_errors() {
     );
 }
 
-/// `for await item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
+/// `for item in rx` over `Receiver<Foo>` (a `BitCopy` record) rides the
 /// element-layout witness and must typecheck cleanly.
 #[test]
-fn for_await_receiver_record_element_admitted() {
+fn for_receiver_record_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         type Foo { x: i64 }
 
         fn make_foo() -> Foo { Foo { x: 1 } }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = channel.new(4);
-            for await item in rx {
+            let (tx, rx): (channel.Sender<Foo>, channel.Receiver<Foo>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            for item in rx {
                 println(item.x);
             }
         }
@@ -1326,18 +1314,18 @@ fn for_await_receiver_record_element_admitted() {
     );
 }
 
-/// `for await item in rx` over a container element (`Receiver<Vec<i64>>`)
+/// `for item in rx` over a container element (`Receiver<Vec<i64>>`)
 /// must fail closed — the witness cannot clone or drop a container element.
 #[test]
-fn for_await_receiver_container_element_errors() {
+fn for_receiver_container_element_errors() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let (tx, rx): (channel.Sender<Vec<i64>>, channel.Receiver<Vec<i64>>) =
-                channel.new(4);
-            for await item in rx {
+                match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+            for item in rx {
                 println(item.len());
             }
         }
@@ -1348,15 +1336,15 @@ fn for_await_receiver_container_element_errors() {
             |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("not supported")
         ),
-        "expected InvalidOperation for Receiver<Vec<i64>> in for await, got: {:#?}",
+        "expected InvalidOperation for Receiver<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in input` over `Stream<Row>` (a `BitCopy` record) rides the
+/// `for item in input` over `Stream<Row>` (a `BitCopy` record) rides the
 /// element-layout witness and must typecheck cleanly.
 #[test]
-fn for_await_stream_record_element_admitted() {
+fn for_stream_record_element_admitted() {
     let output = typecheck_inline(
         r#"
         import std.stream;
@@ -1369,7 +1357,7 @@ fn for_await_stream_record_element_admitted() {
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await row in input {
+            for row in input {
                 println("seen");
             }
         }
@@ -1382,10 +1370,10 @@ fn for_await_stream_record_element_admitted() {
     );
 }
 
-/// `for await item in input` over a container element (`Stream<Vec<i64>>`)
+/// `for item in input` over a container element (`Stream<Vec<i64>>`)
 /// must fail closed at the stream element validation boundary.
 #[test]
-fn for_await_stream_container_element_errors() {
+fn for_stream_container_element_errors() {
     let output = typecheck_inline(
         r#"
         import std.stream;
@@ -1396,7 +1384,7 @@ fn for_await_stream_container_element_errors() {
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await rows in input {
+            for rows in input {
                 println("seen");
             }
         }
@@ -1407,15 +1395,15 @@ fn for_await_stream_container_element_errors() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
 
-/// Unsupported first-class `Stream<T>` element types in `for await` must fail
+/// Unsupported first-class `Stream<T>` element types in `for` must fail
 /// closed without cascading into loop-body field/type errors.
 #[test]
-fn for_await_stream_unsupported_type_does_not_cascade() {
+fn for_stream_unsupported_type_does_not_cascade() {
     let output = typecheck_inline(
         r#"
         extern "C" {
@@ -1424,7 +1412,7 @@ fn for_await_stream_unsupported_type_does_not_cascade() {
 
         fn main() {
             let input = unsafe { fake_stream() };
-            for await rows in input {
+            for rows in input {
                 println(rows.missing);
             }
         }
@@ -1441,22 +1429,22 @@ fn for_await_stream_unsupported_type_does_not_cascade() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("`Stream<Vec<i64>>` is not supported")
         }),
-        "expected InvalidOperation for Stream<Vec<i64>> in for await, got: {:#?}",
+        "expected InvalidOperation for Stream<Vec<i64>> in for, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in input` over a bare `Stream` annotation must fail closed
+/// `for item in input` over a bare `Stream` annotation must fail closed
 /// instead of bypassing stream element validation and lowering as text.
 #[test]
-fn for_await_stream_missing_element_type_errors() {
+fn for_stream_missing_element_type_errors() {
     let output = typecheck_inline(
         r#"
         extern "C" { fn make_stream() -> Stream; }
 
         fn main() {
             let s = unsafe { make_stream() };
-            for await x in s {
+            for x in s {
                 println("bypassed!");
             }
         }
@@ -1467,15 +1455,15 @@ fn for_await_stream_missing_element_type_errors() {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
                 && e.message.contains("requires a resolved element type")
         }),
-        "expected InvalidOperation for bare Stream in for await, got: {:#?}",
+        "expected InvalidOperation for bare Stream in for, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in actor.receive_gen()` must keep the actor mailbox path and
+/// `for item in actor.receive_gen()` must keep the actor mailbox path and
 /// not reuse first-class `Stream<T>` element restrictions.
 #[test]
-fn for_await_receive_generator_int_stream_typechecks() {
+fn for_receive_generator_int_stream_typechecks() {
     let output = typecheck_inline(
         r"
         actor Counter {
@@ -1486,7 +1474,7 @@ fn for_await_receive_generator_int_stream_typechecks() {
 
         fn main() {
             let c = spawn Counter();
-            for await val in c.count_up() {
+            for val in c.count_up() {
                 println(val);
             }
         }
@@ -1494,7 +1482,7 @@ fn for_await_receive_generator_int_stream_typechecks() {
     );
     assert!(
         output.errors.is_empty(),
-        "for await over receive gen Stream<i64> should typecheck cleanly, got: {:#?}",
+        "for over receive gen Stream<i64> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -1560,10 +1548,11 @@ fn gen_fn_return_type_spelling_yield_type_accepted() {
     );
 }
 
-/// Actor method calls in `for await` must target `receive gen fn`, even if the
-/// method's return type is `Stream<T>`.
+/// Only a `receive gen fn` produces a stream a `for` loop can drain. A plain
+/// `receive fn` is an ask whose call value is `Result<Stream<string>, ActorError>`
+/// (U383), so the loop is refused rather than silently draining the reply.
 #[test]
-fn for_await_actor_method_stream_requires_receive_gen() {
+fn for_over_a_plain_receive_fn_is_refused() {
     let output = typecheck_inline(
         r#"
         extern "C" { fn fake_stream() -> Stream<string>; }
@@ -1576,7 +1565,7 @@ fn for_await_actor_method_stream_requires_receive_gen() {
 
         fn main() {
             let r = spawn Reader();
-            for await line in r.lines() {
+            for line in r.lines() {
                 println(line);
             }
         }
@@ -1585,62 +1574,18 @@ fn for_await_actor_method_stream_requires_receive_gen() {
     assert!(
         output.errors.iter().any(|e| {
             e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("requires a `receive gen fn`")
+                && (e.message.contains("requires a `receive gen fn`")
+                    || e.message.contains("type is not iterable"))
         }),
-        "expected InvalidOperation for actor method Stream<T> without receive gen, got: {:#?}",
+        "expected the loop over a plain `receive fn` to be refused, got: {:#?}",
         output.errors
     );
 }
 
-/// `for await item in vec` must error — Vec is a sync iterable.
+/// A `Receiver<string>` parameter drained by `for` carries an admissible
+/// element type, so the queue-element guard must stay silent.
 #[test]
-fn for_await_over_vec_errors() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            let v: Vec<i64> = Vec.new();
-            for await item in v {
-                println(item);
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`for await`")
-        ),
-        "expected InvalidOperation for `for await` over Vec, got: {:#?}",
-        output.errors
-    );
-}
-
-/// `for await i in 0..10` must error — Range is a sync iterable.
-#[test]
-fn for_await_over_range_errors() {
-    let output = typecheck_inline(
-        r"
-        fn main() {
-            for await i in 0..10 {
-                println(i);
-            }
-        }
-        ",
-    );
-    assert!(
-        output.errors.iter().any(
-            |e| e.kind == hew_types::error::TypeErrorKind::InvalidOperation
-                && e.message.contains("`for await`")
-        ),
-        "expected InvalidOperation for `for await` over Range, got: {:#?}",
-        output.errors
-    );
-}
-
-/// Plain `for item in rx` (no await) over `Receiver<Foo>` should NOT trigger
-/// the for-await guard (a different validation may apply elsewhere).
-#[test]
-fn for_no_await_over_receiver_no_for_await_error() {
+fn for_over_a_receiver_parameter_is_admitted() {
     let output = typecheck_inline(
         r"
         import std.channel;
@@ -1652,13 +1597,12 @@ fn for_no_await_over_receiver_no_for_await_error() {
         }
         ",
     );
-    // The for-await guard must NOT fire on a plain `for` loop.
     assert!(
         output
             .errors
             .iter()
-            .all(|e| !e.message.contains("not supported in `for await`")),
-        "for-await guard must not fire on plain `for`, got errors: {:#?}",
+            .all(|e| !e.message.contains("is not supported in a `for` loop")),
+        "the queue-element guard must not fire on an admissible element type, got errors: {:#?}",
         output.errors
     );
 }
@@ -1762,14 +1706,14 @@ fn weak_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn consume(value: Weak<i64>) {}
         }
         fn main() {
             let rc = Rc.new(1);
             let weak = rc.downgrade();
             let sink = spawn BoundarySink(_unused: 0);
-            sink.consume(weak);
+            let _ = sink.consume(weak);
         }
         ",
     );
@@ -1891,13 +1835,13 @@ fn rc_rejected_at_actor_send_boundary() {
     let output = typecheck_inline(
         r"
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn consume(val: Rc<i64>) {}
         }
         fn main() {
             let rc: Rc<i64> = Rc.new(1);
             let a = spawn BoundarySink(_unused: 0);
-            a.consume(rc);
+            let _ = a.consume(rc);
         }
         ",
     );
@@ -1918,15 +1862,15 @@ fn ordinary_actor_send_keeps_sender_binding_readable() {
         }
 
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn take(value: Boxed) {}
         }
 
         fn main() {
             let sink = spawn BoundarySink(_unused: 0);
-            let value = Boxed { payload: [1, 2] };
-            sink.take(value);
-            sink.take(value);
+            var value = Boxed { payload: [1, 2] };
+            let _ = sink.take(value);
+            let _ = sink.take(value);
             value.payload.push(3);
             println(value.payload[2]);
         }
@@ -1946,11 +1890,11 @@ fn actor_spawn_still_moves_affine_handle_arguments() {
         import std.stream;
 
         actor Writer {
-            let sink: stream.Sink<string>;
+            let sink: stream.Sink<string>,
         }
 
         fn main() {
-            let (sink, _input) = stream.pipe(4);
+            let (sink, _input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _writer = spawn Writer(sink: sink);
             sink.send("after-move");
         }
@@ -1976,7 +1920,7 @@ fn nested_rc_and_weak_send_rejections_do_not_cascade() {
         }
 
         actor BoundarySink {
-            let _unused: i64;
+            let _unused: i64,
             receive fn take_box(value: RcBox) {}
             receive fn take_tuple(value: (i64, Weak<i64>)) {}
         }
@@ -1987,8 +1931,8 @@ fn nested_rc_and_weak_send_rejections_do_not_cascade() {
             let weak = rc.downgrade();
             let boxed = RcBox { value: rc.clone() };
             let pair = (2, weak);
-            sink.take_box(boxed);
-            sink.take_tuple(pair);
+            let _ = sink.take_box(boxed);
+            let _ = sink.take_tuple(pair);
             println(boxed.value.strong_count());
             println(pair.0);
         }
@@ -2016,7 +1960,7 @@ fn lambda_actor_capture_must_be_send() {
                 println(rc.strong_count());
                 println(x);
             };
-            worker.send(1);
+            _ = worker.send(1);
         }
         ",
     );
@@ -2041,7 +1985,7 @@ fn lambda_actor_call_rejects_non_send_payload() {
                 println(msg);
             };
             let rc: Rc<i64> = Rc.new(1);
-            worker(rc.strong_count());
+            _ = worker(rc.strong_count());
         }
         ",
     );
@@ -2096,7 +2040,7 @@ fn actor_ref_send_method_requires_send_payload() {
     let output = typecheck_inline(
         r"
         actor Sink {
-            let _unused: i64;
+            let _unused: i64,
         }
 
         fn main() {
@@ -2127,7 +2071,7 @@ fn actor_receive_fn_option_reply_accepted() {
     let output = typecheck_inline(
         r"
         actor Queue {
-            let items: Vec<i64>;
+            let items: Vec<i64>,
             receive fn dequeue() -> Option<i64> {
                 None
             }
@@ -2135,7 +2079,7 @@ fn actor_receive_fn_option_reply_accepted() {
 
         fn main() {
             let q = spawn Queue(items: Vec.new());
-            let _item = await q.dequeue();
+            let _item = q.dequeue();
         }
         ",
     );
@@ -2201,7 +2145,7 @@ fn actor_lambda_new_syntax_typechecks() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker(1);
+            _ = worker(1);
         }
         ",
     );
@@ -2221,7 +2165,7 @@ fn ask_shaped_actor_return_matches_typechecks() {
             let doubler = actor |n: i64| -> i64 {
                 n * 2
             };
-            doubler(5);
+            _ = doubler(5);
         }
         ",
     );
@@ -2302,10 +2246,10 @@ fn lambda_actor_recursive_self_call_typechecks() {
         fn main() {
             let fib = actor |n: i64| {
                 if n > 1 {
-                    fib(n - 1);
+                    _ = fib(n - 1);
                 }
             };
-            fib(10);
+            _ = fib(10);
         }
         ",
     );
@@ -2333,7 +2277,7 @@ fn lambda_actor_dot_send_now_accepted_via_duplex_method() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker.send(1);
+            _ = worker.send(1);
         }
         ",
     );
@@ -2353,7 +2297,7 @@ fn tell_shaped_actor_typechecks() {
             let log = actor |s: string| {
                 println(s);
             };
-            log("x");
+            _ = log("x");
         }
         "#,
     );
@@ -2402,7 +2346,7 @@ fn rc_copy_struct_construction_ok() {
         r"
         type Point {
             x: i64
-            y: i64
+            ,y: i64
         }
 
         fn main() {
@@ -2581,7 +2525,7 @@ fn http_respond_three_arg_typechecks() {
             match http.listen(":8080") {
                 .Ok(server) => {
                     let req = server.accept();
-                    req.respond(200, "text/plain", "Hello, Hew!");
+                    req.respond(200, "text/plain", "Hello, Hew!").expect("respond succeeds");
                     req.close();
                     server.close();
                 },
@@ -2633,7 +2577,7 @@ fn wasm_http_server_surface_rejected_before_codegen() {
 
         fn inspect(server: http.Server, req: http.Request) -> string {
             let _next = server.accept();
-            req.respond_text(200, "ok");
+            req.respond_text(200, "ok").expect("respond_text succeeds");
             server.close();
             req.path()
         }
@@ -2688,7 +2632,7 @@ fn wasm_scope_with_fork_child_rejected_before_codegen() {
         fn compute() -> i64 { 7 }
         fn main() {
             scope {
-                fork a = compute();
+                let a = fork compute();
                 await a;
             }
         }
@@ -2918,10 +2862,10 @@ fn builtin_string_to_int_typechecks_as_int() {
         import std.string;
 
         fn parse() -> i64 {
-            let value: Option<i64> = string.to_int("9223372036854775807");
+            let value: Result<i64, string> = string.to_int("9223372036854775807");
             match value {
-                .Some(n) => n,
-                .None => 0,
+                .Ok(n) => n,
+                .Err(_) => 0,
             }
         }
         "#,
@@ -2983,7 +2927,7 @@ fn smtp_one_shot_helpers_typecheck() {
                 "to@example.com",
                 "Subject",
                 "Body",
-            );
+            ).expect("send succeeds");
             smtp.send_html(
                 "smtp.example.com",
                 587,
@@ -2993,7 +2937,7 @@ fn smtp_one_shot_helpers_typecheck() {
                 "to@example.com",
                 "Subject",
                 "<h1>Hello</h1>",
-            );
+            ).expect("send_html succeeds");
         }
         "#,
     );
@@ -3092,7 +3036,7 @@ fn smtp_module_helpers_rejected_on_wasm() {
                 "to@example.com",
                 "Subject",
                 "Body",
-            );
+            ).expect("send succeeds");
         }
         "#,
     );
@@ -3420,6 +3364,27 @@ fn range_literal_assigned_to_range_i32() {
     assert!(
         output.errors.is_empty(),
         "Range<i32> assignment should type-check cleanly: {:#?}",
+        output.errors
+    );
+}
+
+/// Negative control for the field-access arm above: `Range<T>` exposes only
+/// `start` and `end`, so any other field name still refuses.
+#[test]
+fn range_literal_field_access_rejects_unknown_field() {
+    let output = typecheck_inline(
+        r"fn test() {
+    let r: Range<i32> = 0..10;
+    let _: i32 = r.middle;
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::UndefinedField),
+        "unknown field on Range<i32> should be refused: {:#?}",
         output.errors
     );
 }
@@ -4001,7 +3966,7 @@ fn rc_field_assignment_escape_errors() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-//  Unsupported Vec array elements
+//  Fixed arrays in collection values
 // ═══════════════════════════════════════════════════════════════════════════════
 
 fn assert_invalid_operation_contains(source: &str, needle: &str, context: &str) {
@@ -4022,80 +3987,30 @@ fn assert_invalid_operation_contains(source: &str, needle: &str, context: &str) 
 }
 
 #[test]
-fn vec_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<[i64; 2]> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<[i64; 2]>` is not supported",
-        "annotated Vec<[i64; 2]>",
-    );
-}
-
-// NOTE: the former `vec_from_array_elements_rejected` and
-// `vec_tuple_with_array_elements_rejected` tests were removed: they constructed
-// the array-element case via array LITERALS (`[1, 2]`), which now type as
-// `Vec<i64>` (array literals desugar to Vec), so the `Vec<[i64; 2]> is not
-// supported` rejection no longer applies to that syntax. The fixed-size-array
-// (`[T; N]`) Vec-element rejection is still covered by the annotation-based
-// tests below (`vec_nested_vec_array_annotation_rejected`,
-// `vec_generic_wrapper_array_annotation_rejected`).
-
-#[test]
-fn vec_nested_vec_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<Vec<[i64; 2]>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<[i64; 2]>` is not supported",
-        "annotated Vec<Vec<[i64; 2]>>",
-    );
+fn fixed_arrays_compose_with_collection_element_types() {
+    for element in [
+        "[i64; 2]",
+        "Vec<[i64; 2]>",
+        "Box<[i64; 2]>",
+        "Option<[i64; 2]>",
+        "Result<[i64; 2], string>",
+    ] {
+        assert_inline_typechecks_cleanly(&format!(
+            "type Box<T> {{ value: T }} fn main() {{ let values: Vec<{element}> = Vec.new(); println(values.len()); }}"
+        ), element);
+    }
 }
 
 #[test]
-fn vec_generic_wrapper_array_annotation_rejected() {
+fn fixed_array_repeat_refuses_implicit_affine_duplication() {
     assert_invalid_operation_contains(
         r"
-        type Box<T> {
-            value: T,
-        }
-
-        fn main() {
-            let v: Vec<Box<[i64; 2]>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<Box<[i64; 2]>>` is not supported",
-        "annotated Vec<Box<[i64; 2]>>",
-    );
-}
-
-#[test]
-fn vec_option_wrapper_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<Option<[i64; 2]>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<Option<[i64; 2]>>` is not supported",
-        "annotated Vec<Option<[i64; 2]>>",
-    );
-}
-
-#[test]
-fn vec_result_wrapper_array_annotation_rejected() {
-    assert_invalid_operation_contains(
-        r"
-        fn main() {
-            let v: Vec<Result<[i64; 2], string>> = Vec.new();
-            println(v.len());
-        }",
-        "`Vec<Result<[i64; 2], string>>` is not supported",
-        "annotated Vec<Result<[i64; 2], string>>",
+        #[resource] type Token { id: i64 }
+        impl Token { fn close(consume self) {} }
+        fn main() { let values: [Token; 2] = [Token { id: 1 }; 2]; }
+    ",
+        "requires a Clone element",
+        "fixed array repeat cannot duplicate a resource",
     );
 }
 
@@ -4162,7 +4077,8 @@ fn rc_vec_pop_supported() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
-            h.v.pop()
+            var local = h.v;
+            local.pop()
         }",
         "Vec.pop() on Vec<Rc<i64>>",
     );
@@ -4186,7 +4102,8 @@ fn rc_vec_remove_supported() {
         r"
         type Holder { v: Vec<Rc<i64>> }
         fn extract(h: Holder) -> Rc<i64> {
-            h.v.remove(0)
+            var items = h.v;
+            items.remove(0)
         }",
         "Vec.remove(_) on Vec<Rc<i64>>",
     );
@@ -4283,7 +4200,8 @@ fn rc_hashmap_remove_value_supported() {
             items: HashMap<string, Rc<i64>>
         }
         fn remove_key(h: Holder) -> Option<Rc<i64>> {
-            h.items.remove("key")
+            var items = h.items;
+            items.remove("key")
         }"#,
         "HashMap.remove() on HashMap<string, Rc<i64>>",
     );
@@ -4304,8 +4222,8 @@ fn rc_hashmap_keys_supported_when_value_type_is_rc() {
 }
 
 #[test]
-fn rc_hashmap_values_rejected_without_projection_lowering() {
-    assert_invalid_operation_contains(
+fn rc_hashmap_values_share_collection_value_admission() {
+    assert_inline_typechecks_cleanly(
         r"
         type Holder {
             items: HashMap<string, Rc<i64>>
@@ -4313,8 +4231,7 @@ fn rc_hashmap_values_rejected_without_projection_lowering() {
         fn leak(h: Holder) -> Vec<Rc<i64>> {
             h.items.values()
         }",
-        "is not lowered",
-        "HashMap.values() on HashMap<string, Rc<i64>> should fail closed at projection lowering",
+        "HashMap.values() preserves independently owned Rc values",
     );
 }
 
@@ -4339,16 +4256,15 @@ fn rc_hashset_insert_rejected_without_hash_eq() {
 }
 
 #[test]
-fn rc_nested_in_vec_element_rejected_without_clone_drop_thunk() {
-    assert_invalid_operation_contains(
+fn rc_nested_in_vec_element_typechecks() {
+    assert_inline_typechecks_cleanly(
         r"
         fn main() {
             var v = Vec.new();
             let r = Rc.new(42);
             v.push(Some(r));
         }",
-        "no clone/drop thunk path",
-        "Vec.push(Option<Rc<i64>>) should fail closed without owned-element lowering",
+        "Vec.push(Option<Rc<i64>>) has an exact element type",
     );
 }
 
@@ -4577,7 +4493,7 @@ fn hashmap_string_i64_annotation_typechecks_before_codegen() {
     assert_inline_typechecks_cleanly(
         r#"
         fn main() {
-            let m: HashMap<string, i64> = HashMap.new();
+            var m: HashMap<string, i64> = HashMap.new();
             m.insert("answer", 42);
             println(m.len());
         }"#,
@@ -4603,7 +4519,7 @@ fn vec_clone_method_typechecks_and_returns_vec() {
         r"
         fn main() {
             let v: Vec<i64> = Vec.new();
-            let c = v.clone();
+            var c = v.clone();
             c.push(42);
             println(c.len());
         }",
@@ -4617,7 +4533,7 @@ fn hashmap_clone_method_typechecks_and_returns_hashmap() {
         r#"
         fn main() {
             let m: HashMap<string, i64> = HashMap.new();
-            let c = m.clone();
+            var c = m.clone();
             c.insert("key", 7);
             println(c.contains_key("key"));
         }"#,
@@ -4631,7 +4547,7 @@ fn hashset_clone_method_typechecks_and_returns_hashset() {
         r#"
         fn main() {
             let s: HashSet<string> = HashSet.new();
-            let c = s.clone();
+            var c = s.clone();
             c.insert("value");
             println(c.contains("value"));
         }"#,
@@ -4700,8 +4616,8 @@ fn rc_in_named_enum_variant_vec_push_supported() {
     assert_inline_typechecks_cleanly(
         r"
         enum MaybeHolder {
-            Some(Rc<i64>);
-            None;
+            Some(Rc<i64>),
+            None,
         }
         fn main() {
             var v = Vec.new();
@@ -5402,8 +5318,8 @@ fn type_def_with_error_field_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Broken {
-            value: Task<i64>;
-            ok: i64;
+            value: Task<i64>,
+            ok: i64,
         }
         ",
     );
@@ -5425,16 +5341,14 @@ fn type_def_with_error_field_is_pruned_from_output() {
 #[test]
 fn enum_with_error_variant_payload_is_pruned_from_output() {
     // `[i64]` is now a valid Vec<i64> alias so it no longer produces Ty::Error.
-    // `Vec<[i64; 2]>` fires only a diagnostic — the field type remains the
-    // concrete Named type, so pruning does not trigger.
     // Use `Task<i64>` instead: it is compiler-internal and resolve_type_expr
     // returns Ty::Error directly via the TaskNotNameable path, which is exactly
     // what triggers variant pruning.
     let output = typecheck_inline(
         r"
         enum Broken {
-            Bad(Task<i64>);
-            Good(i64);
+            Bad(Task<i64>),
+            Good(i64),
         }
         ",
     );
@@ -5462,7 +5376,7 @@ fn type_def_method_with_error_param_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Widget {
-            value: i64;
+            value: i64,
         }
 
         impl Widget {
@@ -5509,7 +5423,7 @@ fn type_def_method_with_error_return_is_pruned_from_output() {
     let output = typecheck_inline(
         r"
         type Widget {
-            value: i64;
+            value: i64,
         }
 
         impl Widget {
@@ -5632,10 +5546,10 @@ fn call_type_args_failed_generic_call_pruned_at_boundary() {
 fn deferred_channel_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn take_one() -> Option<i64> {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<i64> = rx.recv();
             tx.close();
             v
@@ -5674,10 +5588,10 @@ fn deferred_channel_recv_int_constrained_after_call() {
 fn deferred_channel_recv_string_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn take_one() -> Option<string> {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<string> = rx.recv();
             tx.close();
             v
@@ -5706,10 +5620,10 @@ fn deferred_channel_recv_string_constrained_after_call() {
 fn deferred_channel_try_recv_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn try_take() -> Option<i64> {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let v: Option<i64> = rx.try_recv();
             tx.close();
             v
@@ -5739,10 +5653,10 @@ fn deferred_channel_try_recv_int_constrained_after_call() {
 fn deferred_channel_send_int_constrained_after_call() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn relay() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             if let .Some(v) = rx.recv() {
                 tx.send(v);
             }
@@ -5773,10 +5687,10 @@ fn deferred_channel_send_int_constrained_after_call() {
 fn deferred_channel_unresolved_inner_fails_closed() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn untyped() {
-            let (tx, rx) = channel.new(4);
+            let (tx, rx) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
             let _ = rx.recv();
             tx.close();
         }
@@ -5802,56 +5716,7 @@ fn deferred_channel_unresolved_inner_fails_closed() {
     );
 }
 
-#[test]
-fn let_propagate_sugar_valid_in_result_fn() {
-    // `let r? = expr;` desugars to `let r = expr?;`.  When the RHS is
-    // Result<T,E> and the enclosing function also returns Result<_,E>,
-    // the type-checker must accept it without errors.  The bound name `r`
-    // must have type T (the Ok-payload), not Result<T,E>.
-    let output = typecheck_inline(
-        r"
-        fn make_result(x: i64) -> Result<i64, string> {
-            Ok(x * 2)
-        }
-        fn use_sugar(x: i64) -> Result<i64, string> {
-            let r? = make_result(x);
-            Ok(r + 1)
-        }
-        fn main() { use_sugar(5); }
-        ",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "Expected no errors for valid `let r? = Result<_,_>` in Result-returning fn, got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn let_propagate_sugar_typed_annotation_accepted() {
-    // `let r?: T = expr;` — the type annotation applies to the unwrapped
-    // Ok-payload (T), not to the Result.  The checker must accept this and
-    // bind `r` as type T.
-    let output = typecheck_inline(
-        r"
-        fn make_result(x: i64) -> Result<i64, string> {
-            Ok(x)
-        }
-        fn use_typed_sugar(x: i64) -> Result<i64, string> {
-            let r?: i64 = make_result(x);
-            Ok(r)
-        }
-        fn main() { use_typed_sugar(3); }
-        ",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "Expected no errors for `let r?: i64 = Result<i64,_>`, got: {:?}",
-        output.errors
-    );
-}
-
-/// NEW-7: `await stream.recv()` over a `Stream<bytes>` typechecks cleanly — the
+/// NEW-7: `stream.recv()` over a `Stream<bytes>` typechecks cleanly — the
 /// canonical suspending consumer surface.
 #[test]
 fn await_stream_recv_bytes_typechecks() {
@@ -5869,22 +5734,22 @@ fn await_stream_recv_bytes_typechecks() {
          \x20       let pair = unsafe { hew_stream_channel(4) };\n\
          \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
          \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       let item = await input.recv();\n\
+         \x20       let item = input.recv();\n\
          \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
-         fn main() { let r = spawn Runner(); r.go(0); }\n",
+         fn main() { let r = spawn Runner(); let _ = r.go(0); }\n",
     );
     assert!(
         output.errors.is_empty(),
-        "await stream.recv() over Stream<bytes> should typecheck cleanly, got: {:#?}",
+        "stream.recv() over Stream<bytes> should typecheck cleanly, got: {:#?}",
         output.errors
     );
 }
 
 /// NEW-7 widened: an `i64` element rides the element-layout witness — the
 /// suspend lowering is no longer bound to string/bytes, so
-/// `await stream.recv()` over `Stream<i64>` typechecks cleanly.
+/// `stream.recv()` over `Stream<i64>` typechecks cleanly.
 #[test]
 fn await_stream_recv_int_element_admitted() {
     let output = typecheck_inline(
@@ -5901,15 +5766,15 @@ fn await_stream_recv_int_element_admitted() {
          \x20       let pair = unsafe { hew_stream_channel(4) };\n\
          \x20       let input = unsafe { hew_stream_pair_stream_i64(pair) };\n\
          \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       let item = await input.recv();\n\
+         \x20       let item = input.recv();\n\
          \x20       match item { .Some(v) => {}, .None => {}, }\n\
          \x20   }\n\
          }\n\
-         fn main() { let r = spawn Runner(); r.go(0); }\n",
+         fn main() { let r = spawn Runner(); let _ = r.go(0); }\n",
     );
     assert!(
         output.errors.is_empty(),
-        "await stream.recv() over Stream<i64> must be admitted by the \
+        "stream.recv() over Stream<i64> must be admitted by the \
          element-layout witness, got: {:#?}",
         output.errors
     );
@@ -6032,20 +5897,20 @@ fn native_allows_crypto_encrypt_and_sign_module_calls() {
 fn monomorphic_machine_channel_element_admitted() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         machine Light {
             events {
-                Flip;
+                Flip,
             }
-            state Off;
-            state On;
-            on Flip: Off => .On { .On }
-            on Flip: On => .Off { .Off }
+            state Off,
+            state On,
+            on Flip: Off => .On,
+            on Flip: On => .Off,
         }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = channel.new(2);
+            let (tx, rx): (channel.Sender<Light>, channel.Receiver<Light>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(Light.Off);
             tx.close();
             let _ = rx.recv();
@@ -6072,10 +5937,10 @@ fn generic_machine_instantiation_channel_element_refused() {
     let output = typecheck_inline(
         r"
         import std.concurrency.lifecycle;
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
-            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = channel.new(2);
+            let (tx, rx): (channel.Sender<lifecycle.Lifecycle<i64>>, channel.Receiver<lifecycle.Lifecycle<i64>>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.close();
             let _ = rx.recv();
             rx.close();
@@ -6099,20 +5964,20 @@ fn generic_machine_instantiation_channel_element_refused() {
 fn container_bearing_machine_channel_element_refused() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         machine Buffered {
             events {
-                Load { items: Vec<i64>; }
+                Load { items: Vec<i64>, }
             }
-            state Empty;
-            state Loaded { items: Vec<i64>; }
-            on Load: Empty => .Loaded { Buffered.Loaded { items: event.items } }
+            state Empty,
+            state Loaded { items: Vec<i64>, },
+            on Load: Empty => Loaded { items: event.items }
             on Load: _ => _ { state }
         }
 
         fn main() {
-            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = channel.new(2);
+            let (tx, rx): (channel.Sender<Buffered>, channel.Receiver<Buffered>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
             tx.send(Buffered.Empty);
             tx.close();
             let _ = rx.recv();
@@ -6140,7 +6005,7 @@ fn container_bearing_machine_channel_element_refused() {
 fn remote_receive_fn_dispatch_with_channel_handle_refused() {
     let output = typecheck_inline(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         actor Observer {
             receive fn watch(rx: channel.Receiver<string>) {

@@ -1,0 +1,13 @@
+[[case]]
+id = "opaque_handle_non_empty_body"
+intent = "Reject fixture: opaque_handle_non_empty_body — `#[opaque]` requires an empty-body struct (an opaque handle has no fields)."
+source = "../vertical-slice/reject/opaque_handle_non_empty_body.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 10
+column = 11
+message = "expected `,` between structural members"

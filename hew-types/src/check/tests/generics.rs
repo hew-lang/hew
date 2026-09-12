@@ -114,9 +114,12 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
 
     assert_eq!(
         output.expr_types.get(&SpanKey::from(&lambda_span)),
-        Some(&Ty::Function {
+        Some(&Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(SpanKey::from(&lambda_span)),
+            capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
+            captures: vec![],
         })
     );
 }
@@ -335,7 +338,7 @@ fn multi_param_turbofish_records_all_call_type_args() {
 #[test]
 fn return_type_polymorphic_call_records_call_type_args() {
     let source = r"
-        type Stack<T> { items: Vec<T>; }
+        type Stack<T> { items: Vec<T>, }
         impl<T> Stack<T> {
             fn new() -> Stack<T> { Stack { items: Vec.new() } }
         }
@@ -444,7 +447,7 @@ fn call_type_arg_recorder_defers_inference_var_then_reresolves() {
 #[test]
 fn generic_impl_method_underconstrained_type_param_reports_inference_failed() {
     let source = r"
-        enum Maybe<T> { Some(T); None; }
+        enum Maybe<T> { Some(T), None, }
         type Holder {}
 
         impl Holder {
@@ -665,7 +668,7 @@ fn test_trait_object_type_args_substitution() {
         }
 
         type Counter {
-            count: i64;
+            count: i64,
         }
 
         impl MyIter<i64> for Counter {
@@ -996,10 +999,10 @@ actor Greeter {
 fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
     let source = concat!(
         "actor Alpha {\n",
-        "    let beta: LocalPid<Beta>;\n",
+        "    let beta: Beta,\n",
         "}\n",
         "actor Beta {\n",
-        "    let alpha: LocalPid<Alpha>;\n",
+        "    let alpha: Alpha,\n",
         "}\n",
         "fn main() {}\n",
     );
@@ -1051,7 +1054,7 @@ fn actor_ref_cycle_warning_uses_first_actor_decl_span() {
 fn recursive_value_type_self_enum_is_rejected() {
     let output = check_source(
         r"
-        enum Tree { Leaf; Node(i64, Tree, Tree); }
+        enum Tree { Leaf, Node(i64, Tree, Tree), }
         fn main() {}
         ",
     );
@@ -1080,8 +1083,8 @@ fn recursive_value_type_self_enum_is_rejected() {
 fn recursive_value_type_mutual_enums_are_rejected() {
     let output = check_source(
         r"
-        enum A { A1(B); }
-        enum B { B1(A); }
+        enum A { A1(B), }
+        enum B { B1(A), }
         fn main() {}
         ",
     );
@@ -1106,8 +1109,8 @@ fn recursive_value_type_mutual_enums_are_rejected() {
 fn recursive_value_type_allows_non_recursive_nested_enum() {
     let output = check_source(
         r"
-        enum Inner { A; B(i64); }
-        enum Outer { D(Inner); }
+        enum Inner { A, B(i64), }
+        enum Outer { D(Inner), }
         fn main() {}
         ",
     );
@@ -1124,7 +1127,7 @@ fn recursive_value_type_rejects_record_enum_cycle() {
     let output = check_source(
         r"
         type Boxed { tree: Tree }
-        enum Tree { Leaf; Node(Boxed); }
+        enum Tree { Leaf, Node(Boxed), }
         fn main() {}
         ",
     );
@@ -1144,7 +1147,7 @@ fn recursive_value_type_rejects_generic_record_wrapper_cycle() {
     let output = check_source(
         r"
         type Wrapper<T> { value: T }
-        enum Tree { Leaf; Node(Wrapper<Tree>); }
+        enum Tree { Leaf, Node(Wrapper<Tree>), }
         fn main() {}
         ",
     );
@@ -1213,7 +1216,7 @@ fn recursive_value_type_allows_pointer_self_reference() {
 }
 
 #[test]
-fn typecheck_await_local_pid_returns_unit() {
+fn typecheck_closed_actor_handle_waits_for_termination() {
     let output = check_source(
         r#"
         actor Greeter {
@@ -1223,15 +1226,46 @@ fn typecheck_await_local_pid_returns_unit() {
         }
         fn main() {
             let g = spawn Greeter;
-            g.greet("hi");
-            close(g);
-            await g;
+            let _ = g.greet("hi");
+            fork close(g);
+            closed(g);
         }
         "#,
     );
     assert!(
         output.errors.is_empty(),
         "expected no errors, got: {:?}",
+        output.errors
+    );
+}
+
+/// `await` joins a task; an actor handle is not one, and the diagnostic names
+/// `closed(actor)` as the wait that replaces the old `await actor` spelling.
+#[test]
+fn await_on_an_actor_handle_names_closed() {
+    let output = check_source(
+        r"
+        actor Greeter {
+            receive fn greet(name: string) {
+                println(name);
+            }
+        }
+        fn main() {
+            let g = spawn Greeter;
+            await g;
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("`await` joins a task")
+                && error
+                    .suggestions
+                    .iter()
+                    .any(|hint| hint.contains("closed(actor)"))),
+        "expected the actor-handle await diagnostic, got: {:?}",
         output.errors
     );
 }
@@ -1271,97 +1305,48 @@ fn named_actor_receive_dispatch_reports_bad_arg_once() {
     );
 }
 
+/// `close(actor)` is a plain call that waits for terminal cleanup: it has type
+/// `()`, and `await` on it is refused as it is on any other call (U383).
 #[test]
-fn typecheck_await_close_local_pid() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.register_builtins();
-
-    checker.env.define(
-        "g".to_string(),
-        Ty::local_pid(Ty::Named {
-            builtin: None,
-            name: "Greeter".to_string(),
-            args: vec![],
-        }),
-        false,
+fn close_actor_handle_is_a_unit_call_and_await_on_it_is_refused() {
+    let output = check_source(
+        r"
+        actor Greeter {
+            receive fn greet(name: string) {
+                println(name);
+            }
+        }
+        fn main() {
+            let g = spawn Greeter;
+            close(g);
+        }
+        ",
     );
-
-    let span = 0..0;
-    let expr = Expr::Await(Box::new((
-        Expr::Call {
-            function: Box::new((Expr::Identifier("close".to_string()), span.clone())),
-            type_args: None,
-            args: vec![CallArg::Positional((
-                Expr::Identifier("g".to_string()),
-                span.clone(),
-            ))],
-            is_tail_call: false,
-        },
-        span.clone(),
-    )));
-
-    let ty = checker.synthesize(&expr, &span);
-    assert_eq!(ty, Ty::Unit);
     assert!(
-        checker.errors.is_empty(),
+        output.errors.is_empty(),
         "expected no errors, got: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn typecheck_await_close_local_pid_worker() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.register_builtins();
-
-    checker.env.define(
-        "worker".to_string(),
-        Ty::local_pid(Ty::Named {
-            builtin: None,
-            name: "Worker".to_string(),
-            args: vec![],
-        }),
-        false,
+        output.errors
     );
 
-    let span = 0..0;
-    let expr = Expr::Await(Box::new((
-        Expr::Call {
-            function: Box::new((Expr::Identifier("close".to_string()), span.clone())),
-            type_args: None,
-            args: vec![CallArg::Positional((
-                Expr::Identifier("worker".to_string()),
-                span.clone(),
-            ))],
-            is_tail_call: false,
-        },
-        span.clone(),
-    )));
-
-    let ty = checker.synthesize(&expr, &span);
-    assert_eq!(ty, Ty::Unit);
+    let awaited = check_source(
+        r"
+        actor Greeter {
+            receive fn greet(name: string) {
+                println(name);
+            }
+        }
+        fn main() {
+            let g = spawn Greeter;
+            await close(g);
+        }
+        ",
+    );
     assert!(
-        checker.errors.is_empty(),
-        "expected no errors, got: {:?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn typecheck_join_rejects_non_actor_sources() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let span = 0..0;
-    let expr = Expr::Join(vec![
-        make_int_literal(1, span.clone()),
-        make_int_literal(2, span.clone()),
-    ]);
-    let _ = checker.synthesize(&expr, &span);
-    assert!(
-        checker.errors.iter().any(|error| error
+        awaited.errors.iter().any(|error| error
             .message
-            .contains("join expression element must be actor.method(args)")),
-        "expected join source error, got: {:?}",
-        checker.errors
+            .contains("`await` on a plain call adds nothing")),
+        "expected the plain-call await diagnostic, got: {:?}",
+        awaited.errors
     );
 }
 
@@ -1738,7 +1723,11 @@ fn literal_coercion_integer_fits_u32() {
 #[test]
 fn literal_coercion_integer_fits_u64() {
     // i64 max fits in u64
-    assert!(integer_fits_type(i64::MAX, &Ty::U64, PTR_WIDTH_64));
+    assert!(integer_fits_type(
+        i128::from(i64::MAX),
+        &Ty::U64,
+        PTR_WIDTH_64
+    ));
     // 0 fits
     assert!(integer_fits_type(0, &Ty::U64, PTR_WIDTH_64));
     // Negative doesn't fit
@@ -1833,35 +1822,47 @@ fn common_integer_type_fixed_width_unchanged_by_isize_arms() {
 #[test]
 fn integer_fits_type_isize_usize_boundary() {
     // 64-bit isize: any i64 fits; usize: non-negative fits (u64 range).
-    assert!(integer_fits_type(i64::MAX, &Ty::Isize, PTR_WIDTH_64));
-    assert!(integer_fits_type(i64::MIN, &Ty::Isize, PTR_WIDTH_64));
+    assert!(integer_fits_type(
+        i128::from(i64::MAX),
+        &Ty::Isize,
+        PTR_WIDTH_64
+    ));
+    assert!(integer_fits_type(
+        i128::from(i64::MIN),
+        &Ty::Isize,
+        PTR_WIDTH_64
+    ));
     assert!(integer_fits_type(0, &Ty::Usize, PTR_WIDTH_64));
-    assert!(integer_fits_type(i64::MAX, &Ty::Usize, PTR_WIDTH_64));
+    assert!(integer_fits_type(
+        i128::from(i64::MAX),
+        &Ty::Usize,
+        PTR_WIDTH_64
+    ));
     assert!(!integer_fits_type(-1, &Ty::Usize, PTR_WIDTH_64));
 
     // 32-bit isize: bounds shrink to i32; usize to u32.
     assert!(integer_fits_type(
-        i64::from(i32::MAX),
+        i128::from(i32::MAX),
         &Ty::Isize,
         PTR_WIDTH_32
     ));
     assert!(integer_fits_type(
-        i64::from(i32::MIN),
+        i128::from(i32::MIN),
         &Ty::Isize,
         PTR_WIDTH_32
     ));
     assert!(!integer_fits_type(
-        i64::from(i32::MAX) + 1,
+        i128::from(i32::MAX) + 1,
         &Ty::Isize,
         PTR_WIDTH_32
     ));
     assert!(integer_fits_type(
-        i64::from(u32::MAX),
+        i128::from(u32::MAX),
         &Ty::Usize,
         PTR_WIDTH_32
     ));
     assert!(!integer_fits_type(
-        i64::from(u32::MAX) + 1,
+        i128::from(u32::MAX) + 1,
         &Ty::Usize,
         PTR_WIDTH_32
     ));
@@ -1894,9 +1895,9 @@ fn integer_type_range_isize_usize_follows_width() {
 fn array_literal_synthesizes_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let elems = vec![
-        make_int_literal(1, 1..2),
-        make_int_literal(2, 4..5),
-        make_int_literal(3, 7..8),
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+        ArrayElement::Value(make_int_literal(3, 7..8)),
     ];
     let arr = (Expr::Array(elems), 0..9);
     let ty = checker.synthesize(&arr.0, &arr.1);
@@ -1919,9 +1920,9 @@ fn array_literal_synthesizes_vec() {
 fn literal_coercion_array_to_i32_vec() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let elems = vec![
-        make_int_literal(1, 1..2),
-        make_int_literal(2, 4..5),
-        make_int_literal(3, 7..8),
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+        ArrayElement::Value(make_int_literal(3, 7..8)),
     ];
     let arr = (Expr::Array(elems), 0..9);
     let expected = Ty::Named {
@@ -3270,8 +3271,8 @@ fn record_init_type_args_enum_struct_variant_fully_bound() {
     // The record_init_type_args entry resolves both T=i64 and E=string.
     let source = r"
         enum Either<T, E> {
-            Left { value: T };
-            Right { err: E };
+            Left { value: T },
+            Right { err: E },
         }
         fn main() {
             let _x: Either<i64, string> = Either.Left { value: 1 };
@@ -3292,8 +3293,8 @@ fn record_init_type_args_enum_struct_variant_partial_inference_pruned() {
     // `validate_record_init_type_args_output_contract`.
     let source = r"
         enum Either<T, E> {
-            Left { value: T };
-            Right { err: E };
+            Left { value: T },
+            Right { err: E },
         }
         fn main() { let _x = Either.Left { value: 42 }; }
     ";
@@ -3444,7 +3445,7 @@ fn generic_decl_bound_rejects_imported_type_annotation_site() {
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&root.program);
@@ -3478,8 +3479,8 @@ fn generic_decl_bound_rejects_enum_tuple_variant_constructor_site() {
         r"
         type NoDisplay { n: i64 }
         enum Maybe<T: Display> {
-            Some(T);
-            None;
+            Some(T),
+            None,
         }
         fn main() {
             let _maybe = Maybe.Some(NoDisplay { n: 1 });
@@ -3494,8 +3495,8 @@ fn generic_decl_bound_rejects_enum_struct_variant_constructor_site() {
         r"
         type NoDisplay { n: i64 }
         enum Maybe<T: Display> {
-            Some { value: T };
-            None;
+            Some { value: T },
+            None,
         }
         fn main() {
             let _maybe = Maybe.Some { value: NoDisplay { n: 1 } };
@@ -3826,7 +3827,7 @@ fn nonwire_from_json_returns_result_self_string() {
     // Result<Self, string>, not Self.  The SHIM that returned Self directly
     // was removed; this test pins the correct surface type.
     let source = r#"
-type Point { x: i32; y: i32; }
+type Point { x: i32, y: i32, }
 fn main() {
 let s = "{\"x\":1,\"y\":2}";
 let r: Result<Point, string> = Point.from_json(s);
@@ -3852,7 +3853,7 @@ fn nonwire_from_json_bare_self_is_type_error() {
     // Assigning the result of from_json directly to `Self` (not Result<Self, …>)
     // must produce a type mismatch — confirms the SHIM is gone.
     let source = r#"
-type Point { x: i32; y: i32; }
+type Point { x: i32, y: i32, }
 fn main() {
 let s = "{\"x\":1,\"y\":2}";
 let p: Point = Point.from_json(s);
@@ -3881,7 +3882,7 @@ let p: Point = Point.from_json(s);
 fn nonwire_from_yaml_and_from_toml_return_result() {
     // Both from_yaml and from_toml should also return Result<Self, string>.
     let source = r#"
-type Cfg { n: i32; }
+type Cfg { n: i32, }
 fn main() {
 let _a: Result<Cfg, string> = Cfg.from_yaml("n: 1");
 let _b: Result<Cfg, string> = Cfg.from_toml("n = 1");
@@ -3968,10 +3969,10 @@ fn main() -> i64 { 0 }
 fn bounded_generic_clone_instantiated_with_resource_is_refused() {
     let source = r"
 #[resource]
-type Token { id: i64; }
+type Token { id: i64, }
 
 impl Token {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 fn clone_option<T: Clone>(value: Option<T>) -> Option<T> {
@@ -4029,9 +4030,11 @@ fn main() -> i64 {
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
-        "the checker must name the ineligible member and its type at the instantiation; got: {:?}",
+        "the checker must name the concrete type without Eq at the instantiation; got: {:?}",
         output.errors
     );
 }
@@ -4058,7 +4061,9 @@ fn main() -> i64 {
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
         "the requirement must propagate through a generic caller; got: {:?}",
         output.errors
@@ -4077,7 +4082,7 @@ fn main() -> i64 {
 #[test]
 fn bare_rc_clone_stays_admitted() {
     let source = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4093,10 +4098,15 @@ fn main() -> i64 {
     );
 }
 
+/// Every value-aggregate position holding an `Rc` clones through the ingress
+/// retain, so the composite drop gives back exactly what ingress took.
 #[test]
-fn tuple_clone_with_rc_member_is_refused() {
-    let source = r#"
-type Node { value: i64; }
+fn value_aggregate_clone_with_rc_member_is_admitted() {
+    let shapes = [
+        (
+            "tuple",
+            r#"
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4104,22 +4114,12 @@ fn main() -> i64 {
     let _copied = clone pair;
     0
 }
-"#;
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `0` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "a tuple carrying an `Rc` has no balanced clone/drop plan; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn option_clone_with_rc_payload_is_refused() {
-    let source = r"
-type Node { value: i64; }
+"#,
+        ),
+        (
+            "option",
+            r"
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4127,22 +4127,12 @@ fn main() -> i64 {
     let _copied = clone held;
     0
 }
-";
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `Some` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "`Option<Rc<T>>` shares the tuple refusal; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn result_clone_with_rc_payload_is_refused() {
-    let source = r"
-type Node { value: i64; }
+",
+        ),
+        (
+            "result",
+            r"
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4150,23 +4140,13 @@ fn main() -> i64 {
     let _copied = clone held;
     0
 }
-";
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `Ok` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "`Result<Rc<T>, E>` shares the tuple refusal; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn record_clone_with_rc_field_is_refused() {
-    let source = r#"
-type Node { value: i64; }
-type Holder { r: Rc<Node>; tag: string; }
+",
+        ),
+        (
+            "record",
+            r#"
+type Node { value: i64, }
+type Holder { r: Rc<Node>, tag: string, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -4174,26 +4154,27 @@ fn main() -> i64 {
     let _copied = clone holder;
     0
 }
-"#;
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("member `r` of type `Rc<Node>`")
-                && e.message.contains("no aggregate-ingress retain")
-        }),
-        "the record path carries the same unbalanced drop plan; got: {:?}",
-        output.errors
-    );
+"#,
+        ),
+    ];
+    for (shape, source) in shapes {
+        let output = check_source(source);
+        assert!(
+            output.errors.is_empty(),
+            "a {shape} carrying an `Rc` clones through the ingress retain; got: {:?}",
+            output.errors
+        );
+    }
 }
 
 #[test]
 fn vec_clone_with_rc_elements_stays_admitted() {
     let source = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let holders: Vec<Rc<Node>> = Vec.new();
+    var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(shared);
     let copied = clone holders;
 
@@ -4212,11 +4193,11 @@ fn main() -> i64 {
 #[test]
 fn tuple_clone_with_vec_of_rc_member_stays_admitted() {
     let source = r#"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let holders: Vec<Rc<Node>> = Vec.new();
+    var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(shared);
     let pair: (Vec<Rc<Node>>, string) = (holders, "tag");
     let copied = clone pair;
@@ -4249,7 +4230,7 @@ fn dup<T: Clone>(value: Option<Vec<T>>) -> Option<Vec<T>> {
 }
 
 fn main() -> i64 {
-    let items: Vec<i64> = Vec.new();
+    var items: Vec<i64> = Vec.new();
     items.push(1);
     let held: Option<Vec<i64>> = Some(items);
     let copied = dup(held);
@@ -4294,7 +4275,7 @@ fn generic_method_instantiation_with_ineligible_type_is_refused_by_checker() {
     // into the signature and drops it from `sig.type_params`, so the receiver's
     // type arguments are the only record of what `T` became.
     let source = r"
-type Holder<T> { left: Option<T>; right: Option<T>; }
+type Holder<T> { left: Option<T>, right: Option<T>, }
 
 impl<T> Holder<T> {
     fn same(self) -> bool {
@@ -4316,7 +4297,8 @@ fn main() -> i64 {
     assert!(
         output.errors.iter().any(|e| {
             e.message.contains("`Holder::same`")
-                && e.message.contains("member `Some`")
+                && e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
                 && e.message.contains("HashMap<string, i64>")
         }),
         "a method instantiation must be refused by the checker, not by codegen; got: {:?}",
@@ -4335,7 +4317,7 @@ fn main() -> i64 {
 #[test]
 fn generic_method_instantiation_with_eligible_type_is_admitted() {
     let source = r"
-type Holder<T> { left: Option<T>; right: Option<T>; }
+type Holder<T> { left: Option<T>, right: Option<T>, }
 
 impl<T> Holder<T> {
     fn same(self) -> bool {
@@ -4390,11 +4372,13 @@ fn generic_forwarder_chain(hops: usize) -> String {
 }
 
 #[test]
-fn generic_instantiation_chain_within_the_hop_budget_still_names_the_member() {
+fn generic_instantiation_chain_within_the_hop_budget_still_checks_eq() {
     let output = check_source(&generic_forwarder_chain(40));
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
         "a chain inside the budget must be discharged normally; got: {:?}",
         output.errors
@@ -4431,11 +4415,13 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     // Without the module in the visited-set key the second one is swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let type_param = Ty::normalize_named("T".to_string(), vec![]);
-    checker.generic_structural_eq_requirements.insert(
-        "same".to_string(),
-        vec![crate::check::types::GenericStructuralEqRequirement {
+    checker.eq_requirements.insert(
+        Some("same".to_string()),
+        vec![crate::check::types::EqRequirement {
             ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
             owner_type_params: vec!["T".to_string()],
+            span: 0..1,
+            source_module: None,
         }],
     );
     let span = Span::from(10..20);
@@ -4456,7 +4442,7 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
         );
     }
 
-    checker.finalize_generic_structural_eq();
+    checker.finalize_eq_requirements();
 
     let modules: Vec<Option<String>> = checker
         .errors
@@ -4474,39 +4460,6 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     );
 }
 
-#[test]
-fn rc_member_clone_refusal_suggests_no_workaround_that_double_frees() {
-    // Cloning the handle separately and rebuilding the aggregate re-enters the
-    // same missing-ingress-retain path and aborts at `Rc double-free`. The help
-    // text must not send the programmer there.
-    let source = r#"
-type Node { value: i64; }
-
-fn main() -> i64 {
-    let shared: Rc<Node> = Rc.new(Node { value: 7 });
-    let pair: (Rc<Node>, string) = (shared, "tag");
-    let _copied = clone pair;
-    0
-}
-"#;
-    let output = check_source(source);
-    let refusal = output
-        .errors
-        .iter()
-        .find(|e| e.message.contains("no aggregate-ingress retain"))
-        .expect("the Rc member refusal must fire");
-    let help = refusal.suggestions.join(" ");
-    assert!(
-        help.contains("a fix is pending"),
-        "the help must state the limitation; got: {help}"
-    );
-    assert!(
-        !help.contains("rebuild"),
-        "the help must not suggest rebuilding the aggregate from a separately cloned handle — \
-         that pattern aborts with `Rc double-free`; got: {help}"
-    );
-}
-
 // -------------------------------------------------------------------------
 // Application-authority coverage: actor receive calls, associated-type
 // positions, and type-parameter shadowing
@@ -4514,7 +4467,7 @@ fn main() -> i64 {
 
 const GENERIC_RECEIVE_ACTOR: &str = r"
 actor Store {
-    var seen: i64;
+    var seen: i64,
 
     init() {
         seen = 0;
@@ -4535,7 +4488,7 @@ fn generic_receive_call_instantiates_its_type_parameters() {
     let source = format!(
         "{GENERIC_RECEIVE_ACTOR}
 fn main() -> i64 {{
-    let store: LocalPid<Store> = spawn Store();
+    let store: Store = spawn Store();
     let left: Option<i64> = Some(1);
     let right: Option<i64> = Some(1);
     let out = await store.keep(left, right);
@@ -4563,7 +4516,7 @@ fn generic_receive_call_with_ineligible_instantiation_is_refused_by_checker() {
     let source = format!(
         "{GENERIC_RECEIVE_ACTOR}
 fn main() -> i64 {{
-    let store: LocalPid<Store> = spawn Store();
+    let store: Store = spawn Store();
     let a: HashMap<string, i64> = HashMap.new();
     let b: HashMap<string, i64> = HashMap.new();
     let left: Option<HashMap<string, i64>> = Some(a);
@@ -4580,7 +4533,8 @@ fn main() -> i64 {{
     assert!(
         output.errors.iter().any(|e| {
             e.message.contains("`Store::keep`")
-                && e.message.contains("member `Some`")
+                && e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
                 && e.message.contains("HashMap<string, i64>")
         }),
         "an actor receive call is an application like any other and must discharge its \
@@ -4596,7 +4550,7 @@ trait Carrier {
 }
 
 type IntBox {
-    value: i64;
+    value: i64,
 }
 
 impl Carrier for IntBox {
@@ -4607,7 +4561,7 @@ impl Carrier for IntBox {
 }
 
 type MapBox {
-    value: i64;
+    value: i64,
 }
 
 impl Carrier for MapBox {
@@ -4656,7 +4610,7 @@ fn main() -> i64 {{
         !output
             .errors
             .iter()
-            .any(|e| e.message.contains("structural equality")),
+            .any(|e| e.message.contains("selected Eq")),
         "`IntBox::Item = i64` projects to an eligible leaf; got: {:?}",
         output.errors
     );
@@ -4679,7 +4633,9 @@ fn main() -> i64 {{
     let output = check_source(&source);
     assert!(
         output.errors.iter().any(|e| {
-            e.message.contains("member `Some`") && e.message.contains("HashMap<string, i64>")
+            e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("has no selected Eq implementation")
+                && e.message.contains("HashMap<string, i64>")
         }),
         "`MapBox::Item = HashMap<string, i64>` has no structural equality path; got: {:?}",
         output.errors
@@ -4693,7 +4649,7 @@ fn method_type_parameter_shadowing_an_impl_parameter_is_refused() {
     // from the signature, so the method's own parameter cannot survive.
     let source = r"
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> {
@@ -4723,7 +4679,7 @@ fn renamed_method_type_parameter_is_admitted_and_stays_independent() {
     // `i64`.
     let source = r#"
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> {
@@ -4791,7 +4747,7 @@ trait Choice<T> {
 }
 
 type Holder {
-    value: i64;
+    value: i64,
 }
 
 impl Choice<i64> for Holder {
@@ -4843,7 +4799,7 @@ fn inline_type_body_method_type_parameter_shadowing_the_type_is_refused() {
     // just as an `impl` block method shadows the impl's.
     let source = r"
 type Holder<T> {
-    value: T;
+    value: T,
 
     fn same<T>(holder: Holder<T>, marker: T) -> bool {
         let _ = holder;
@@ -4869,7 +4825,7 @@ fn main() -> i64 { 0 }
 fn inline_type_body_method_with_a_distinct_type_parameter_is_admitted() {
     let source = r"
 type Holder<T> {
-    value: T;
+    value: T,
 
     fn same<U>(holder: Holder<T>, marker: U) -> bool {
         let _ = holder;
@@ -4964,7 +4920,7 @@ trait Choice<T> {
 }
 
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Choice<T> for Holder<T> {
@@ -4993,5 +4949,259 @@ fn main() -> i64 { 0 }
             && reports[0].message.contains("trait `Choice`"),
         "the single diagnostic must name both owners; got: {}",
         reports[0].message
+    );
+}
+
+#[test]
+fn selected_eq_generic_comparisons_admit_bytes_and_nested_bytes() {
+    let output = check_source(
+        r"
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn forward<U>(left: Option<U>, right: Option<U>) -> bool { same(left, right) }
+        fn bytes(left: bytes, right: bytes) -> bool { same(left, right) }
+        fn nested(left: Option<(i32, bytes)>, right: Option<(i32, bytes)>) -> bool { forward(left, right) }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_accepts_nested_selected_user_impl() {
+    let output = check_source(
+        r"
+        type Key { id: i64, values: HashMap<string, i64> }
+        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id == other.id } }
+        fn same<T: Eq>(left: T, right: T) -> bool { left == right }
+        fn compare(left: Vec<Key>, right: Vec<Key>) -> bool { same(left, right) }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_rejects_a_concrete_no_eq_type() {
+    let source = r"
+        type NoEq { callback: fn() -> i64 }
+        fn require<T: Eq>(value: T) {}
+        fn use_value(value: NoEq) { require(value); }
+    ";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("NoEq")
+                && error.message.contains("Eq")),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn selected_eq_unbounded_generic_instantiation_rejects_no_eq_type_at_call() {
+    let source = r"
+        type NoEq { callback: fn() -> i64 }
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn compare(left: NoEq, right: NoEq) -> bool { same(left, right) }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0].message.contains("NoEq"));
+    assert!(output.errors[0].message.contains("selected Eq"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "same(left, right)"
+    );
+}
+
+#[test]
+fn selected_eq_bound_allows_forward_declared_byte_record() {
+    let output = check_source(
+        r"
+        type Box<T: Eq> { value: T }
+        type Outer { value: Box<Later> }
+        type Later { data: bytes }
+        fn same(left: Outer, right: Outer) -> bool { left == right }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_inferred_generic_vector_is_checked_at_instantiation() {
+    let source = r"
+        fn same<T>(value: T) -> bool {
+            var left = Vec.new();
+            var right = Vec.new();
+            let result = left == right;
+            left.push(value);
+            right.push(value);
+            result
+        }
+        fn compare(value: HashMap<string, i64>) -> bool { same(value) }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0]
+        .message
+        .contains("Vec<HashMap<string, i64>>"));
+    assert_eq!(source[output.errors[0].span.clone()].trim(), "same(value)");
+}
+
+#[test]
+fn selected_eq_concrete_demand_does_not_walk_unrelated_generic_calls() {
+    let mut source = generic_forwarder_chain(70).replace("a == b", "true");
+    source.push_str("fn concrete(left: string, right: string) -> bool { left == right }");
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_composes_through_an_abstract_caller() {
+    let output = check_source(
+        r"
+        fn require<T: Eq>(value: T) {}
+        fn forward<U: Eq>(value: Option<U>) { require(value); }
+        fn use_value(value: Option<bytes>) { forward(value); }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_generic_bound_does_not_grant_eq_to_a_containing_map() {
+    let source = r"
+        fn require<T: Eq>(value: T) {}
+        fn forward<U: Eq>(value: HashMap<string, U>) { require(value); }
+        fn use_value(value: HashMap<string, i64>) { forward(value); }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0].message.contains("HashMap<string, i64>"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "forward(value)"
+    );
+}
+
+#[test]
+fn selected_eq_bound_waits_for_forward_user_impl_registration() {
+    let output = check_source(
+        r"
+        type Key { values: HashMap<string, i64> }
+        type Box<T: Eq> { value: T }
+        fn use_value(value: Box<Key>) {}
+        impl Eq for Key {
+            fn eq(self, other: Key) -> bool { self.values.len() == other.values.len() }
+        }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn impl_target_type_arguments_read_the_impl_bounds() {
+    let output = check_source(
+        r"
+        enum Slot<T: Clone> { Empty, Full { item: T }, }
+        impl<T: Clone> Slot<T> {
+            fn tag(self) -> i64 { 0 }
+        }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn impl_target_type_arguments_still_need_the_declared_bound() {
+    let output = check_source(
+        r"
+        enum Slot<T: Display> { Empty, Full { item: T }, }
+        impl<T: Clone> Slot<T> {
+            fn tag(self) -> i64 { 0 }
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("`Display`")),
+        "{:?}",
+        output.errors
+    );
+}
+
+/// `Display` is satisfied by an impl, never derived structurally from a type's
+/// parts. Granting it to `Vec<i64>` sent `println([1, 2])` into HIR with no
+/// `fmt` symbol to call, which surfaced as an internal compiler error.
+#[test]
+fn display_is_satisfied_only_where_an_impl_exists() {
+    for renderable in [
+        "println(42)",
+        "println(\"hi\")",
+        "println(true)",
+        "assert_eq(1, 1)",
+    ] {
+        let output = check_source(&format!("fn main() {{ {renderable}; }}"));
+        assert!(
+            output.errors.is_empty(),
+            "{renderable} has a shipped Display impl: {:?}",
+            output.errors
+        );
+    }
+
+    for unrenderable in ["println([1, 2])", "assert_eq([1, 2], [1, 2])"] {
+        let output = check_source(&format!("fn main() {{ {unrenderable}; }}"));
+        let hit = output
+            .errors
+            .iter()
+            .find(|e| e.message.contains("does not implement trait `Display`"))
+            .unwrap_or_else(|| panic!("{unrenderable}: {:?}", output.errors));
+        assert!(
+            hit.message.contains("Vec<i64>"),
+            "the diagnostic must name the type: {}",
+            hit.message
+        );
+        assert!(
+            hit.suggestions
+                .iter()
+                .any(|s| s.contains("impl Display for Vec<i64>")),
+            "the diagnostic must suggest the impl: {:?}",
+            hit.suggestions
+        );
+    }
+}
+
+/// A user impl is what makes a type renderable, so declaring one admits the
+/// same call the bare record is refused for.
+#[test]
+fn a_user_display_impl_satisfies_the_bound() {
+    const POINT: &str = "type Point { x: i64, y: i64 }";
+    let refused = check_source(&format!(
+        "{POINT} fn main() {{ println(Point {{ x: 1, y: 2 }}); }}"
+    ));
+    assert!(
+        refused
+            .errors
+            .iter()
+            .any(|e| e.message.contains("does not implement trait `Display`")),
+        "a record with no impl must be refused: {:?}",
+        refused.errors
+    );
+
+    let accepted = check_source(&format!(
+        "{POINT} impl Display for Point {{ fn fmt(p: Point) -> string {{ f\"({{p.x}}, {{p.y}})\" }} }} \
+         fn main() {{ println(Point {{ x: 1, y: 2 }}); }}"
+    ));
+    assert!(
+        accepted.errors.is_empty(),
+        "a user impl satisfies the bound: {:?}",
+        accepted.errors
     );
 }

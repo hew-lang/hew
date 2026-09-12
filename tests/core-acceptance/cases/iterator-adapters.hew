@@ -1,0 +1,69 @@
+// The `std.iter` adapter surface end to end: every combinator drives
+// `Iterator.next` through a where-clause bound, so each terminal resolves the
+// concrete `next` of the adapter it was handed. Both the free-function and the
+// fluent `VecIter` spellings are exercised, over scalars and over records.
+import std.iter;
+
+type Line {
+    label: string,
+    qty: i64,
+}
+
+fn counts() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    for i in 1..7 {
+        v.push(i);
+    }
+    v
+}
+
+fn lines() -> Vec<Line> {
+    var v: Vec<Line> = Vec.new();
+    v.push(Line { label: "bolt", qty: 4 });
+    v.push(Line { label: "nut", qty: 9 });
+    v.push(Line { label: "washer", qty: 2 });
+    v
+}
+
+fn main() {
+    // map + collect: the mapped vector is owned here and released at scope end.
+    let doubled = iter.collect(iter.map(counts().into_iter(), |x: i64| x * 2));
+    println(doubled.len());
+    println(doubled[0]);
+    println(doubled[5]);
+
+    // filter + count
+    println(iter.count(iter.filter(counts().into_iter(), |x: i64| x % 2 == 0)));
+
+    // take + fold
+    println(iter.fold(iter.take(counts().into_iter(), 3), 0, |acc: i64, x: i64| acc + x));
+
+    // enumerate + fold over the (index, item) pairs
+    println(iter.fold(
+        iter.enumerate(counts().into_iter()),
+        0,
+        |acc: i64, pair: (i64, i64)| acc + pair.0 * pair.1,
+    ));
+
+    // any / find
+    println(iter.any(counts().into_iter(), |x: i64| x == 5));
+    println(iter.any(counts().into_iter(), |x: i64| x > 99));
+    match iter.find(counts().into_iter(), |x: i64| x > 4) {
+        .Some(found) => println(found),
+        .None => println(-1),
+    }
+
+    // The fluent VecIter spelling selects the same implementations.
+    println(counts().into_iter().fold(0, |acc: i64, x: i64| acc + x));
+    println(iter.count(counts().into_iter().skip(4)));
+    println(counts().into_iter().all(|x: i64| x > 0));
+
+    // Records through into_iter: the projection owns its strings.
+    let quantities = iter.collect(iter.map(lines().into_iter(), |l: Line| l.qty));
+    println(iter.fold(quantities.into_iter(), 0, |acc: i64, x: i64| acc + x));
+
+    let busy = iter.collect(iter.filter(lines().into_iter(), |l: Line| l.qty > 3));
+    println(busy.len());
+    println(busy[0].label);
+    println(busy[1].label);
+}

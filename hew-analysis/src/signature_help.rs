@@ -244,10 +244,7 @@ mod tests {
     fn make_tc_with_fn_sigs(fn_sigs: HashMap<String, FnSig>) -> TypeCheckOutput {
         TypeCheckOutput {
             expr_types: HashMap::new(),
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -279,21 +276,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -415,8 +406,8 @@ mod tests {
     #[test]
     fn sig_help_labels_impl_block_method_with_return_type() {
         let source = "\
-type Caps { count: i64; }
-type Matcher { id: i64; }
+type Caps { count: i64, }
+type Matcher { id: i64, }
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
 }

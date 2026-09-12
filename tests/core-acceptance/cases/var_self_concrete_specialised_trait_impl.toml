@@ -1,0 +1,13 @@
+[[case]]
+id = "var_self_concrete_specialised_trait_impl"
+intent = "The fixture prints exactly its recorded output and exits 0."
+source = "../vertical-slice/accept/var_self_concrete_specialised_trait_impl.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "99\n"
+exit = 0

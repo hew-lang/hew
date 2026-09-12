@@ -1,0 +1,35 @@
+type Key<T> {
+    value: T,
+    group: i64,
+}
+
+impl<T> Hash for Key<T> {
+    fn hash(self) -> i64 {
+        self.group % 10
+    }
+}
+
+impl<T> Eq for Key<T> {
+    fn eq(self, other: Key<T>) -> bool {
+        self.group % 10 == other.group % 10
+    }
+}
+
+type Outer {
+    key: Key<string>,
+}
+
+fn main() -> i64 {
+    var values: HashMap<Outer, string> = HashMap.new();
+    let original = Key { value: "first".to_upper(), group: 7 };
+    values.insert(Outer { key: original }, "initial".to_upper());
+    values.insert(Outer { key: Key { value: "other".to_upper(), group: 17 } }, "replacement".to_upper());
+    println(values.len());
+    println(values[Outer { key: Key { value: "lookup".to_upper(), group: 27 } }]);
+    println(original.value);
+    var keys: HashSet<Key<string>> = HashSet.new();
+    println(keys.insert(original));
+    println(keys.insert(Key { value: "duplicate".to_upper(), group: 37 }));
+    println(keys.len());
+    0
+}

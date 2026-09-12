@@ -5,19 +5,15 @@ fn parse_simple_machine() {
     let source = r"
 machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
-    on Toggle: Off => On {
-        On
-    }
+    on Toggle: Off => On,
 
-    on Toggle: On => Off {
-        Off
-    }
+    on Toggle: On => Off,
 }
 
 fn main() {
@@ -54,14 +50,14 @@ fn parse_machine_transition_with_contextual_target_state() {
     let source = r"
 machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
-    on Toggle: Off => .On;
-    on Toggle: On => Off;
+    on Toggle: Off => .On,
+    on Toggle: On => Off,
 }
 ";
     let result = hew_parser::parse(source);
@@ -97,7 +93,7 @@ fn parse_machine_implicit_body_spans_the_target_token() {
     // The synthesized implicit body must be spanned on the target state, not
     // on the token after the `;` — diagnostics on it (the bare-variant fix-it)
     // are only appliable if they point at the target text.
-    let source = "machine Light {\n    events { Toggle; }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n}\n";
+    let source = "machine Light {\n    events { Toggle, }\n    state Off,\n    state On,\n    on Toggle: Off => On,\n}\n";
     let result = hew_parser::parse(source);
     assert!(result.errors.is_empty(), "{:?}", result.errors);
     let hew_parser::ast::Item::Machine(machine) = &result.program.items[0].0 else {
@@ -185,24 +181,18 @@ fn parse_machine_with_fields() {
     let source = r"
 machine Counter {
     events {
-        Increment;
-        Reset;
+        Increment,
+        Reset,
     }
 
-    state Idle;
-    state Running { count: Int; }
+    state Idle,
+    state Running { count: Int, },
 
-    on Increment: Idle => Running {
-        Running { count: 1 }
-    }
+    on Increment: Idle => Running { count: 1 }
 
-    on Increment: Running => Running {
-        Running { count: self.count + 1 }
-    }
+    on Increment: Running => Running { count: state.count + 1 }
 
-    on Reset: _ => Idle {
-        Idle
-    }
+    on Reset: _ => Idle,
 }
 ";
     let result = hew_parser::parse(source);
@@ -232,20 +222,16 @@ fn parse_machine_with_event_payload() {
     let source = r"
 machine Tcp {
     events {
-        Connect { port: Int; }
-        Disconnect;
+        Connect { port: Int, }
+        ,Disconnect,
     }
 
-    state Closed;
-    state Open { port: Int; }
+    state Closed,
+    state Open { port: Int, },
 
-    on Connect: Closed => Open {
-        Open { port: port }
-    }
+    on Connect: Closed => Open { port: port }
 
-    on Disconnect: _ => Closed {
-        Closed
-    }
+    on Disconnect: _ => Closed,
 }
 ";
     let result = hew_parser::parse(source);
@@ -272,15 +258,13 @@ fn parse_machine_event_head_binding() {
     let source = r"
 machine Tcp {
     events {
-        Connect { port: Int; }
+        Connect { port: Int, }
     }
 
-    state Closed;
-    state Open { port: Int; }
+    state Closed,
+    state Open { port: Int, },
 
-    on Connect(port): Closed => Open {
-        Open { port: port }
-    }
+    on Connect(port): Closed => Open { port: port }
 }
 ";
     let result = hew_parser::parse(source);
@@ -327,13 +311,13 @@ fn machine_event_head_binding_round_trips_through_formatter() {
     // form again (not the desugar).
     let source = r"machine Tcp {
     events {
-        Connect { port: Int; }
+        Connect { port: Int, }
     }
 
-    state Closed;
-    state Open { port: Int; }
+    state Closed,
+    state Open { port: Int, },
 
-    on Connect(port): Closed => Open { Open { port: port } }
+    on Connect(port): Closed => Open { port: port }
 }
 ";
     let parsed = hew_parser::parse(source);
@@ -371,11 +355,11 @@ fn parse_machine_wildcard_both() {
     let source = r"
 machine Noop {
     events {
-        Ping;
+        Ping,
     }
 
-    state A;
-    state B;
+    state A,
+    state B,
 
     on Ping: _ => _ {
         self
@@ -402,18 +386,18 @@ fn parse_state_with_entry_exit_blocks() {
     let source = r"
 machine Traffic {
     events {
-        Tick;
+        Tick,
     }
 
     state Red {
         entry { log(entering_red); }
         exit { log(leaving_red); }
-    }
+    },
 
-    state Green;
+    state Green,
 
-    on Tick: Red => Green;
-    on Tick: Green => Red;
+    on Tick: Red => Green,
+    on Tick: Green => Red,
 }
 ";
     let result = hew_parser::parse(source);
@@ -442,22 +426,20 @@ fn parse_emit_in_transition_body() {
     let source = r"
 machine Counter {
     events {
-        Start;
-        Tick;
-        Overflow;
+        Start,
+        Tick,
+        Overflow,
     }
 
-    state Idle;
-    state Running { count: Int; }
+    state Idle,
+    state Running { count: Int, },
 
     on Start: Idle => Running {
         emit Overflow { code: 0 };
         Running { count: 0 }
     }
 
-    on Tick: Running => Running {
-        Running { count: self.count + 1 }
-    }
+    on Tick: Running => Running { count: state.count + 1 }
 }
 ";
     let result = hew_parser::parse(source);
@@ -481,24 +463,24 @@ fn parse_machine_emits_manifest() {
     let source = r"
 machine Signal {
     events {
-        Start;
-        Ready;
+        Start,
+        Ready,
     }
 
     emits {
-        Ready;
+        Ready,
     }
 
-    state Idle;
-    state Active;
+    state Idle,
+    state Active,
 
     on Start: Idle => Active {
         emit Ready {};
         Active
     }
-    on Ready: Idle => Idle reenter { Idle }
-    on Ready: Active => Active reenter { Active }
-    on Start: Active => Active reenter { Active }
+    on Ready: Idle => Idle reenter,
+    on Ready: Active => Active reenter,
+    on Start: Active => Active reenter,
 }
 ";
     let result = hew_parser::parse(source);
@@ -509,7 +491,9 @@ machine Signal {
     );
 
     if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.emits, vec!["Ready".to_string()]);
+        assert_eq!(m.emits.len(), 1);
+        assert_eq!(m.emits[0].name, "Ready");
+        assert!(m.emits[0].fields.is_empty());
     } else {
         panic!("expected Machine item");
     }
@@ -520,14 +504,12 @@ fn parse_machine_transition_with_reenter_keyword() {
     let source = r"
 machine Counter {
     events {
-        Inc;
+        Inc,
     }
 
-    state Active { n: Int; }
+    state Active { n: Int, },
 
-    on Inc: Active => Active reenter {
-        Active { n: self.n + 1 }
-    }
+    on Inc: Active => Active reenter { n: state.n + 1 }
 }
 ";
     let result = hew_parser::parse(source);
@@ -579,25 +561,25 @@ fn composite_parent_rule_expands_to_concrete_source_transitions() {
     // The load-bearing constraint: a parent-level `on E: _ => T` inside a
     // composite expands to ONE transition per member with a CONCRETE source
     // state, never a literal `_` source (which the checker rejects for
-    // `self.field` reads). The composite name is dropped from the flat lists.
+    // `state.field` reads). The composite name is dropped from the flat lists.
     let source = r"
 machine Conn {
     events {
-        Disconnect;
-        Connect;
+        Disconnect,
+        Connect,
     }
 
-    state Disconnected;
+    state Disconnected,
 
     state Connected {
-        initial state Authenticating;
-        state Active;
-        state Draining;
+        initial state Authenticating,
+        state Active,
+        state Draining,
 
-        on Disconnect: _ => Disconnected;
-    }
+        on Disconnect: _ => Disconnected,
+    },
 
-    on Connect: Disconnected => Authenticating { Authenticating }
+    on Connect: Disconnected => Authenticating,
     on Connect: _ => _ { state }
     on Disconnect: _ => _ { state }
 }
@@ -658,20 +640,20 @@ fn composite_block_round_trips_through_formatter() {
     // block from the grouping side-table.
     let source = r"machine Conn {
     events {
-        Disconnect;
-        Connect;
+        Disconnect,
+        Connect,
     }
 
-    state Disconnected;
+    state Disconnected,
 
     state Connected {
-        initial state Authenticating;
-        state Active;
+        initial state Authenticating,
+        state Active,
 
-        on Disconnect: _ => Disconnected;
-    }
+        on Disconnect: _ => Disconnected,
+    },
 
-    on Connect: Disconnected => Authenticating { Authenticating }
+    on Connect: Disconnected => Authenticating,
     on Connect: _ => _ { state }
     on Disconnect: _ => _ { state }
 }
@@ -706,10 +688,52 @@ fn composite_block_round_trips_through_formatter() {
     );
 }
 
+/// A rule targeting a composite by name keeps that spelling through the
+/// formatter. Rewriting it to the initial substate would silently stop the
+/// source following a later change of which substate is `initial`.
+#[test]
+fn composite_name_target_survives_formatting() {
+    let source = r"machine Conn {
+    events {
+        Disconnect,
+        Connect,
+    }
+
+    state Disconnected,
+
+    state Connected {
+        initial state Authenticating,
+        state Active,
+        on Disconnect: _ => Disconnected,
+    },
+
+    on Connect: Disconnected => Connected,
+    on Connect: _ => _ {
+        state
+    }
+    on Disconnect: _ => _ {
+        state
+    }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    assert!(
+        formatted.contains("on Connect: Disconnected => Connected,"),
+        "formatter must keep the composite-name target; got:\n{formatted}"
+    );
+    assert_eq!(source, formatted, "composite-name target is not idempotent");
+}
+
 #[test]
 fn reject_depth_two_composite_nesting() {
-    // Depth-1 composites are accepted; a `state` inside a substate body
-    // (depth > 1) is rejected with a v0.6 diagnostic.
+    // Depth-1 composites are accepted; a `state` inside a substate body nests
+    // deeper than one level and is rejected.
     let source = r"
 machine Deep {
     events {
@@ -730,8 +754,8 @@ machine Deep {
         result
             .errors
             .iter()
-            .any(|e| format!("{e:?}").contains("depth > 1")),
-        "expected depth>1 v0.6 diagnostic, errors: {:?}",
+            .any(|e| format!("{e:?}").contains("a composite state nests one level")),
+        "expected the depth-two refusal, errors: {:?}",
         result.errors
     );
 }
@@ -785,44 +809,40 @@ fn machine_generic_decl() {
     let source = r"
 machine Light {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Off;
-    state On;
+    state Off,
+    state On,
 
-    on Toggle: Off => On { On }
-    on Toggle: On => Off { Off }
+    on Toggle: Off => On,
+    on Toggle: On => Off,
 }
 
 machine Lifecycle<T> {
     events {
-        Start;
+        Start,
     }
 
-    state Created;
-    state Running;
+    state Created,
+    state Running,
 
-    on Start: Created => Running {
-        Running
-    }
+    on Start: Created => Running,
 }
 
 machine Triple<T, U, V> {
     events {
-        Insert;
+        Insert,
     }
 
-    state Empty;
-    state Filled;
+    state Empty,
+    state Filled,
 
-    on Insert: Empty => Filled {
-        Filled
-    }
+    on Insert: Empty => Filled,
 }
 
 machine Collision<T> {
-    state T;
+    state T,
 }
 ";
     let result = hew_parser::parse(source);
@@ -905,15 +925,15 @@ trait Display {
 
 machine Bounded<T: Resource, U: Resource + Display> {
     events {
-        Start { handle: T; meta: U; }
-        Stop;
+        Start { handle: T, meta: U, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; meta: U; }
+    state Idle,
+    state Active { handle: T, meta: U, },
 
-    on Start: Idle => Active { Active { handle: event.handle, meta: event.meta } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle, meta: event.meta }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -956,15 +976,15 @@ fn machine_trait_bounds_round_trip_through_formatter() {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1004,15 +1024,15 @@ trait Resource {
 
 machine Container<T> where T: Resource {
     events {
-        Start { item: T; }
-        Stop;
+        Start { item: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { item: T; }
+    state Idle,
+    state Active { item: T, },
 
-    on Start: Idle => Active { Active { item: event.item } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { item: event.item }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1065,15 +1085,15 @@ trait Display {
 
 machine Combined<T: Resource> where T: Display {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1128,15 +1148,15 @@ trait Send {
 
 machine Multi<T, U> where T: Resource, U: Display + Send {
     events {
-        Start { left: T; right: U; }
-        Stop;
+        Start { left: T, right: U, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { left: T; right: U; }
+    state Idle,
+    state Active { left: T, right: U, },
 
-    on Start: Idle => Active { Active { left: event.left, right: event.right } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { left: event.left, right: event.right }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1183,15 +1203,15 @@ trait Display {
 
 machine Combined<T: Resource> where T: Display {
     events {
-        Start { handle: T; }
-        Stop;
+        Start { handle: T, }
+        ,Stop,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    state Idle,
+    state Active { handle: T, },
 
-    on Start: Idle => Active { Active { handle: event.handle } }
-    on Stop: Active => Idle { Idle }
+    on Start: Idle => Active { handle: event.handle }
+    on Stop: Active => Idle,
     on Start: _ => _ { state }
     on Stop: _ => _ { state }
 }
@@ -1243,12 +1263,12 @@ fn first_machine_named<'a>(
 fn machine_const_param_minimal_parses() {
     let src = r"machine M<const N: usize> {
     events {
-        E;
+        E,
     }
 
-    state S;
+    state S,
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1268,12 +1288,12 @@ fn machine_const_param_minimal_parses() {
 fn machine_const_param_with_default_parses() {
     let src = r"machine M<const N: usize = 16> {
     events {
-        E;
+        E,
     }
 
-    state S;
+    state S,
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1287,12 +1307,12 @@ fn machine_const_param_with_default_parses() {
 fn machine_mixed_type_and_const_params_parses() {
     let src = r"machine M<T, const N: usize> {
     events {
-        E;
+        E,
     }
 
-    state S { val: T; }
+    state S { val: T, },
 
-    on E: S => S { S { val: event.val } }
+    on E: S => S { val: event.val }
 }
 ";
     let r = hew_parser::parse(src);
@@ -1313,7 +1333,7 @@ fn machine_const_param_rejects_non_usize_width() {
 
     state S;
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1337,7 +1357,7 @@ fn machine_const_param_rejects_const_before_type_param() {
 
     state S;
 
-    on E: S => S { S }
+    on E: S => S,
 }
 ";
     let r = hew_parser::parse(src);
@@ -1351,12 +1371,12 @@ fn machine_const_param_rejects_const_before_type_param() {
 fn machine_const_param_round_trips_through_formatter() {
     let src = r"machine M<T, const N: usize = 16> {
     events {
-        E;
+        E,
     }
 
-    state S { val: T; }
+    state S { val: T, },
 
-    on E: S => S { S { val: event.val } }
+    on E: S => S { val: event.val }
 }
 ";
     let r = hew_parser::parse(src);
@@ -1376,5 +1396,49 @@ fn machine_const_param_round_trips_through_formatter() {
     assert!(
         hew_parser::ast_eq::program_eq_ignoring_spans(&r.program, &r2.program),
         "round-trip AST mismatch:\n{formatted}"
+    );
+}
+
+#[test]
+fn typed_machine_outputs_round_trip_separately_from_inputs() {
+    let source = r#"machine M {
+        events { Input { number: i64 } }
+        emits { Output { text: string, items: Vec<string> }, Finished }
+        state Idle, state Done,
+        on Input: Idle => Done {
+            emit Output { text: "retained", items: ["value"] };
+            .Done
+        }
+        default { state }
+    }"#;
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let hew_parser::ast::Item::Machine(machine) = &parsed.program.items[0].0 else {
+        panic!("expected machine");
+    };
+    assert_eq!(machine.events[0].name, "Input");
+    assert_eq!(machine.emits[0].name, "Output");
+    assert_eq!(machine.emits[0].fields.len(), 2);
+    assert!(machine.emits[1].fields.is_empty());
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "{formatted}"
+    );
+}
+#[test]
+fn machine_default_does_not_silently_discard_computation() {
+    let parsed = hew_parser::parse(
+        "machine Gate { events { Open, } state Closed, default { println(\"lost\"); state } }",
+    );
+    assert!(
+        parsed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("machine default must be")),
+        "{:?}",
+        parsed.errors
     );
 }

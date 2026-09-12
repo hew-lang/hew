@@ -2,13 +2,13 @@
 //! @description Structural == and != on records, enums with payloads, and nested records
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 enum Shape {
-    Circle(i64);
-    Square(i64);
+    Circle(i64),
+    Square(i64),
 }
 
 fn main() {

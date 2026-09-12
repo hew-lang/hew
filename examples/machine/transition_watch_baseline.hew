@@ -2,7 +2,7 @@
 //
 // A machine is a value type: the owner steps it in place and publishes
 // each observed transition into a std/channel `Sender`. The observer
-// waits with the sealed `from ... recv()` select arm composed with
+// waits with a channel receive select arm composed with
 // `after`, so a stalled owner can never wedge the watcher.
 //
 // This baseline keeps owner and observer in one actor; the cross-actor
@@ -10,7 +10,7 @@
 // the same shape.
 import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
-import std.channel.channel;
+import std.channel;
 
 actor Combined {
     receive fn run() {
@@ -41,6 +41,6 @@ actor Combined {
 
 fn main() {
     let c = spawn Combined;
-    c.run();
+    let _ = c.run();
     sleep(200ms);
 }

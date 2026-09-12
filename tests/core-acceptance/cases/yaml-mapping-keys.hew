@@ -1,0 +1,78 @@
+import std.encoding.yaml;
+
+fn reject_key(text: string, expected: yaml.Kind) {
+    let mapping = yaml.parse(text).expect("valid YAML mapping");
+    let saved = mapping;
+    match mapping.mapping_keys() {
+        .Err(AccessError.UnsupportedMappingKey(actual)) => {
+            if actual != expected {
+                panic("unsupported key kind was not preserved");
+            }
+        },
+        _ => panic("unsupported key must return a typed error"),
+    }
+    if mapping != saved {
+        panic("key rejection changed the source mapping");
+    }
+}
+
+fn reject_receiver(text: string, expected: yaml.Kind) {
+    let value = yaml.parse(text).expect("valid YAML");
+    match value.mapping_keys() {
+        .Err(AccessError.WrongKind(Kind.Mapping, actual)) => {
+            if actual != expected {
+                panic("receiver kind was not preserved");
+            }
+        },
+        _ => panic("nonmapping must return a typed error"),
+    }
+}
+
+fn retained_keys() -> Vec<string> {
+    var mapping = yaml.object();
+    mapping.set("déjà\0vu", yaml.null()).expect("set Unicode key");
+    mapping.set("", yaml.from_int(2)).expect("set empty key");
+    mapping.mapping_keys().expect("string mapping keys")
+}
+
+fn main() {
+    let empty = yaml.parse("{}").expect("empty mapping").mapping_keys().expect("empty keys");
+    if empty.len() != 0 {
+        panic("empty mapping must have no keys");
+    }
+    var mapping = yaml.parse("{a: null, b: {c: 1}}").expect("mapping");
+    let keys = mapping.mapping_keys().expect("string mapping keys");
+    if keys.len() != 2 || keys[0] != "a" || keys[1] != "b" {
+        panic("keys must retain exact mapping order");
+    }
+    if mapping.get_field(keys[0]).expect("lookup").expect("explicit null").type_of() != Kind.Null {
+        panic("null field was lost");
+    }
+    let nested = mapping.get_field(keys[1]).expect("lookup").expect("nested mapping");
+    let nested_keys = nested.mapping_keys().expect("nested keys");
+    if nested_keys.len() != 1 || nested_keys[0] != "c" {
+        panic("nested mapping keys were lost");
+    }
+    if nested.get_field("c").expect("lookup").expect("integer field").get_int().expect("integer") != 1 {
+        panic("nested field was changed");
+    }
+    mapping.set("later", yaml.from_bool(true)).expect("insert after enumeration");
+    if keys.len() != 2 || mapping.mapping_keys().expect("updated keys").len() != 3 {
+        panic("keys and mapping must remain independent");
+    }
+    let retained = retained_keys();
+    if retained.len() != 2 || retained[0] != "déjà\0vu" || retained[1] != "" {
+        panic("owned keys must survive the mapping and preserve exact strings");
+    }
+    reject_receiver("null", Kind.Null);
+    reject_receiver("[]", Kind.Sequence);
+    reject_receiver("!Custom {}", Kind.Tagged);
+    reject_key("good: 0\n1: ignored\n", Kind.Integer);
+    reject_key("good: 0\n1.5: ignored\n", Kind.Float);
+    reject_key("good: 0\ntrue: ignored\n", Kind.Bool);
+    reject_key("good: 0\nnull: ignored\n", Kind.Null);
+    reject_key("good: 0\n? [a, b]\n: ignored\n", Kind.Sequence);
+    reject_key("good: 0\n? {a: 1}\n: ignored\n", Kind.Mapping);
+    reject_key("good: 0\n? !Custom key\n: ignored\n", Kind.Tagged);
+    println("ok");
+}

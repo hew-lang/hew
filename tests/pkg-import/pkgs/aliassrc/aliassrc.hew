@@ -17,22 +17,22 @@
 
 /// Aliased record reached through `aliassrc::{ Payload as Tag }`.
 pub type Payload {
-    code: i64;
+    code: i64,
 }
 
 /// A DISTINCT record sharing no layout with `Payload`. Used by the
 /// no-conflation oracle: aliasing `Payload as Other` must bind the SOURCE
 /// `Payload`, never this same-named `Other` export.
 pub type Other {
-    tag: i64;
-    note: i64;
+    tag: i64,
+    note: i64,
 }
 
 /// Enum with a mix of unit and tuple variants.
 /// Used to test that an import alias like `Color as Hue` resolves
 /// the alias in both type-annotation position and variant-path position.
 pub enum Color {
-    Red;
-    Green;
-    Blue(i64);
+    Red,
+    Green,
+    Blue(i64),
 }

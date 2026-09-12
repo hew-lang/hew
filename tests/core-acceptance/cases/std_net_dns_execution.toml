@@ -1,0 +1,13 @@
+[[case]]
+id = "std_net_dns_execution"
+intent = "`std.net` resolves localhost and reports the lookup succeeded."
+source = "../vertical-slice/accept/std_net_dns_execution.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "dns:ok\n"
+exit = 0

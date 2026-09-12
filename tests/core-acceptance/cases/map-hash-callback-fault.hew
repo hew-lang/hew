@@ -1,0 +1,20 @@
+type Key {
+    label: string,
+    divisor: i64,
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        let local = self.label.to_upper();
+        let bytes = local.to_bytes();
+        bytes.len() / self.divisor
+    }
+}
+
+fn main() -> i64 {
+    let caller = "caller".to_upper();
+    var values: HashMap<Key, Vec<string>> = HashMap.new();
+    values.insert(Key { label: "key".to_upper(), divisor: 0 }, ["payload".to_upper()]);
+    println(caller);
+    0
+}

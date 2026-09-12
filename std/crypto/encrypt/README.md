@@ -1,6 +1,6 @@
-# `std::crypto::encrypt`
+# `std.crypto.encrypt`
 
-Native AES-256-GCM backend for Hew's `std::crypto::encrypt` module.
+Native AES-256-GCM backend for Hew's `std.crypto.encrypt` module.
 
 - `seal(key, plaintext)` prepends a fresh random nonce to the ciphertext.
 - `try_open(key, ciphertext)` returns `Result<string, CryptoError>` and reports

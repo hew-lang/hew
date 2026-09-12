@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor_count_clause_on_static_child"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/supervisor_count_clause_on_static_child.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 16
+column = 44
+message = "`count:` is a pool clause"

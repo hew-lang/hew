@@ -1,0 +1,29 @@
+// A `mailbox(..)` view submits without waiting: the loop finishes before the
+// consumer has drained its bounded queue. `.Wait` parks the producer while the
+// mailbox is full, so every item is accepted and processed exactly once.
+actor Sink {
+    mailbox 4,
+    var count: i64 = 0,
+
+    receive fn take(n: i64) { count = count + n; }
+
+    receive fn total() -> i64 { count }
+}
+
+fn main() {
+    let sink = spawn Sink();
+    let inbox = mailbox(sink, on_full: .Wait);
+    for _ in 0..1000 {
+        match inbox.take(1) {
+            .Ok(_) => {},
+            .Err(_) => panic("waiting submission was refused"),
+        }
+    }
+    println("submitted");
+    match sink.total() {
+        .Ok(n) => println(n),
+        .Err(_) => panic("total query failed"),
+    }
+    close(sink);
+    println("closed");
+}

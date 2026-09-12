@@ -1,10 +1,12 @@
 import std.text.template;
 
 fn main() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "name", "Grace");
-    template.ctx_set_int(ctx, "count", 3);
-
-    let t = template.parse("{{.name}} has {{.count}} jobs");
+    var ctx = template.new_ctx();
+    ctx.set_str("name", "Grace");
+    ctx.set_int("count", 3);
+    let t = match template.parse("{{.name}} has {{.count}} jobs") {
+        .Ok(template) => template,
+        .Err(_) => panic("valid template failed to parse"),
+    };
     println(template.render_template(t, ctx));
 }

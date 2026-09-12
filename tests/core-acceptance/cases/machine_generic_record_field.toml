@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_generic_record_field"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/machine_generic_record_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "0\n"
+exit = 0

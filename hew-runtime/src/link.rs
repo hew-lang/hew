@@ -87,10 +87,24 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
 
     let id_a = actor_a.id;
     let id_b = actor_b.id;
+    let (a_terminal_reason, b_terminal_reason) = register_link(actor_a, actor_b);
+
+    if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
+        send_exit_signal(id_b, id_a, reason);
+    } else if let (None, Some(reason)) = (a_terminal_reason, b_terminal_reason) {
+        send_exit_signal(id_a, id_b, reason);
+    }
+}
+
+/// The single registration authority orders both shard locks and samples
+/// terminal state under those locks before publishing either direction.
+fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option<i32>) {
+    let id_a = actor_a.id;
+    let id_b = actor_b.id;
     let shard_index_a = get_shard_index(id_a);
     let shard_index_b = get_shard_index(id_b);
 
-    let (a_terminal_reason, b_terminal_reason) = match shard_index_a.cmp(&shard_index_b) {
+    match shard_index_a.cmp(&shard_index_b) {
         std::cmp::Ordering::Equal => LINK_TABLE[shard_index_a].access(|shard| {
             let a_terminal_reason = terminal_exit_reason(shard, id_a, actor_a);
             let b_terminal_reason = terminal_exit_reason(shard, id_b, actor_b);
@@ -128,13 +142,48 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
                 (a_terminal_reason, b_terminal_reason)
             })
         }),
-    };
-
-    if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
-        send_exit_signal(id_b, id_a, reason);
-    } else if let (None, Some(reason)) = (a_terminal_reason, b_terminal_reason) {
-        send_exit_signal(id_a, id_b, reason);
     }
+}
+
+/// Subscribe the current actor using the source `LinkError` status vocabulary:
+/// zero is success; one is Dead; two is Partition; three is `NoContext`.
+#[no_mangle]
+pub extern "C" fn hew_native_actor_link(target: HewLocalPidId) -> i32 {
+    let current = crate::actor::hew_actor_self();
+    if current.is_null() {
+        return 3;
+    }
+    let Some(target_id) = resolve_current_actor(target) else {
+        return 1;
+    };
+    let Some(target) = pin_actor_by_id(target_id) else {
+        return 1;
+    };
+    // SAFETY: the current activation owns its actor allocation.
+    let current = unsafe { &*current };
+    if current.id == target_id {
+        return 0;
+    }
+    match register_link(current, target.actor()) {
+        (None, None) => 0,
+        _ => 1,
+    }
+}
+
+/// Remove the current actor's local subscription; repeated removal is harmless.
+#[no_mangle]
+pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
+    let current = crate::actor::hew_actor_self();
+    if current.is_null() {
+        return;
+    }
+    let Some(target) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    else {
+        return;
+    };
+    // SAFETY: the current activation owns its actor allocation.
+    let current = unsafe { (*current).id };
+    unlink_by_ids(current, target);
 }
 
 /// Remove a bidirectional link between two actors.
@@ -156,9 +205,30 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
     let id_a = actor_a.id;
     let id_b = actor_b.id;
 
-    // Remove bidirectional links: A -/-> B and B -/-> A
-    remove_link(id_a, id_b);
-    remove_link(id_b, id_a);
+    unlink_by_ids(id_a, id_b);
+}
+
+/// Remove both directions under the same shard ordering as registration.
+/// A concurrent link cannot publish between the two removals.
+fn unlink_by_ids(a: u64, b: u64) {
+    let (first, second) = if get_shard_index(a) <= get_shard_index(b) {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let first_shard = get_shard_index(first);
+    let second_shard = get_shard_index(second);
+    LINK_TABLE[first_shard].access(|left| {
+        if first_shard == second_shard {
+            remove_link_locked(left, first, second);
+            remove_link_locked(left, second, first);
+        } else {
+            LINK_TABLE[second_shard].access(|right| {
+                remove_link_locked(left, first, second);
+                remove_link_locked(right, second, first);
+            });
+        }
+    });
 }
 
 /// Create a bidirectional link between two stable local actor identities.
@@ -303,17 +373,13 @@ fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
     }
 }
 
-/// Remove a unidirectional link: `from_id` -/-> `to_actor`.
-fn remove_link(from_id: u64, to_actor_id: u64) {
-    let shard_index = get_shard_index(from_id);
-    LINK_TABLE[shard_index].access(|shard| {
-        if let Some(linked_actors) = shard.links.get_mut(&from_id) {
-            linked_actors.retain(|entry| entry.linked_actor_id != to_actor_id);
-            if linked_actors.is_empty() {
-                shard.links.remove(&from_id);
-            }
+fn remove_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64) {
+    if let Some(linked_actors) = shard.links.get_mut(&from_id) {
+        linked_actors.retain(|entry| entry.linked_actor_id != to_actor_id);
+        if linked_actors.is_empty() {
+            shard.links.remove(&from_id);
         }
-    });
+    }
 }
 
 /// Propagate exit signal to all linked actors when an actor crashes.
@@ -487,15 +553,15 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, _actor_addr: *mut HewAct
 /// raw `reason` is retained for the existing integer-tag consumers.
 #[repr(C)]
 #[derive(Debug)]
-struct ExitMessage {
+pub struct ExitMessage {
     /// ID of the actor that crashed and caused this exit signal. Maps to
     /// `CrashNotification.actor_id`.
-    crashed_actor_id: u64,
+    pub crashed_actor_id: u64,
     /// Reason code (`error_code` from `hew_actor_trap`).
-    reason: i32,
+    pub reason: i32,
     /// The M-6 `CrashKind` tag projected from `reason` (Crashed=0,
     /// HeapExceeded=1, PartitionDetected=2). Maps to `CrashNotification.kind`.
-    crash_kind: i32,
+    pub crash_kind: i32,
 }
 
 // ── Test-only crash ledger + probe FFI (cross-node link cascade observability) ────
@@ -598,6 +664,7 @@ mod tests {
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
             state: std::ptr::null_mut(),
@@ -641,6 +708,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }
     }
 

@@ -1,0 +1,21 @@
+type Holder { items: Vec<i64>, tag: string, count: i64 }
+
+fn describe(label: string, holder: Holder) {
+    println(f"{label}:{holder.tag}:{holder.items.len()}:{holder.count}");
+}
+
+fn main() {
+    var seed: Vec<i64> = Vec.new();
+    seed.push(1);
+    let base = Holder { items: seed, tag: "base", count: 1 };
+    var next: Vec<i64> = Vec.new();
+    next.push(2);
+    next.push(3);
+    let retagged = Holder { tag: "retagged", ..base };
+    let refilled = Holder { items: next, count: 2, ..base };
+    let aliased = Holder { items: base.items, ..base };
+    describe("retagged", retagged);
+    describe("refilled", refilled);
+    describe("aliased", aliased);
+    describe("base", base);
+}

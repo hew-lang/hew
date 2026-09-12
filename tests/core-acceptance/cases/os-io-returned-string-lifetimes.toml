@@ -1,0 +1,13 @@
+[[case]]
+id = "os-io-returned-string-lifetimes"
+intent = "OS, I/O, file, path, DNS, compression-error and process strings survive subsequent wrapper calls and release at scope exit."
+source = "cases/os-io-returned-string-lifetimes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_RETENTION_VALUE = "environment-owner"
+
+[case.expected]
+stdout = "returned strings survive subsequent calls\n"
+exit = 0

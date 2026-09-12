@@ -1,0 +1,10 @@
+[[case]]
+id = "directory-module-one-identity"
+intent = "A two-file directory module imported as `probe.lib` by the root and by a second module: the entry file's private helper and its peer's public function both stay callable, and the peer surface is reachable through the directory spelling."
+source = "cases/directory-module-one-identity/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "lib+peer\nlib+peer/mid\n+peer\n"
+exit = 0

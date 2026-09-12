@@ -136,7 +136,7 @@ pub enum HirDiagnosticKind {
         actual: usize,
     },
     /// `#[resource]` type body has no method named `close` declared with
-    /// `consuming self`. The implicit-drop contract for `@resource` types
+    /// `consume self`. The implicit-drop contract for `@resource` types
     /// requires this method; missing it is a fail-closed compile error.
     ResourceMissingClose {
         name: String,
@@ -157,7 +157,7 @@ pub enum HirDiagnosticKind {
     ///
     /// A receiver (`self`, or a `Self`-typed receiver) is never flagged: it is
     /// not a concrete resource nominal, and its disposition rides the method
-    /// dispatch surface (`consuming self`), not borrow-pass.
+    /// dispatch surface (`consume self`), not borrow-pass.
     ResourceBoundaryParamMustConsume {
         /// Enclosing extern fn / trait method name.
         func: String,
@@ -168,7 +168,7 @@ pub enum HirDiagnosticKind {
         /// Boundary kind: `"extern fn"` or `"trait method signature"`.
         boundary: String,
     },
-    /// `#[linear]` type body declares zero `consuming self` methods. A
+    /// `#[linear]` type body declares zero `consume self` methods. A
     /// linear type with no consuming methods cannot be exhausted on an
     /// exit path, which would make `MirCheck::MustConsume` unable to fire
     /// — caught here as a structural error.
@@ -185,7 +185,7 @@ pub enum HirDiagnosticKind {
     /// `#[resource]` type declares its `close` method inline inside the
     /// type body (`TypeBodyItem::Method`). In v0.5 the supported surface
     /// for user-resource `close` lowering is an **inherent impl block**
-    /// (`impl T { fn close(self) { ... } }`). The inline form is a silent
+    /// (`impl T { fn close(consume self) { ... } }`). The inline form is a silent
     /// trap today — the method body is not lowered to HIR/MIR, the drop
     /// elaborator still emits `drop_fn: Some("T::close")`, and codegen
     /// would resolve to a missing symbol at link time. Fail-closing here
@@ -196,10 +196,10 @@ pub enum HirDiagnosticKind {
         /// Type name carrying the inline `close` method.
         name: String,
     },
-    /// `#[linear]` type declares its `consuming self` method inline in the
-    /// type body (`type T { fn m(consuming self) { … } }`). The supported
+    /// `#[linear]` type declares its `consume self` method inline in the
+    /// type body (`type T { fn m(consume self) { … } }`). The supported
     /// surface that lowers to a callable consume target is a sibling inherent
-    /// impl block (`impl T { fn m(consuming self) { … } }`). The inline form
+    /// impl block (`impl T { fn m(consume self) { … } }`). The inline form
     /// is not lowered to HIR/MIR, so a call to it raises
     /// `IndirectCallUnsupported` at the call site — making the `#[linear]`
     /// type unusable. Fail-close here at the declaration with a directive to
@@ -295,58 +295,11 @@ pub enum HirDiagnosticKind {
     /// is permitted at most once; multiple deadlines would have no
     /// meaningful join semantics.
     SelectMultipleAfterArms,
-    /// A `select` expression contains zero arms (neither sealed arms
-    /// nor an `after` timer). An empty select cannot fire and is
-    /// rejected at the surface.
-    SelectNoArms,
     /// A `select` arm names a `next(...)` call with an arity other
     /// than one. The sealed stream form is `next(<stream-expr>)` —
     /// exactly one argument.
     SelectStreamNextArity {
         arg_count: usize,
-    },
-    /// A `join { ... }` branch's source expression is not an actor
-    /// method call (`<actor-expr>.<method>(<args>)`). Per HEW-SPEC-2026
-    /// §4.11.2 every join branch must be an actor receive-handler call
-    /// with a return type; arbitrary expressions are rejected.
-    JoinBranchNotActorAsk {
-        /// Short description of the offending source shape, e.g.
-        /// `"literal"`, `"binary expression"`, `"identifier"`.
-        source_shape: String,
-    },
-    /// A `join { }` expression contains zero branches. An empty join
-    /// produces no values and is rejected at the surface.
-    JoinNoBranches,
-
-    // ── Machine static checks ────────────────────────────────────────────
-    /// One or more `(state, event)` pairs have no matching transition and
-    /// the machine does not declare a `default` arm.
-    MachineExhaustivenessViolation {
-        machine_name: String,
-        missing: Vec<(String, String)>,
-    },
-    /// A self-transition (`source == target`) has a non-empty body but is not
-    /// annotated `@reenter`.  Moore-style self-loops must be empty; Mealy-style
-    /// re-entry requires the explicit `@reenter` annotation so the compiler can
-    /// enforce that `entry`/`exit` run correctly.
-    MachineSelfTransitionNeedsReenter {
-        machine_name: String,
-        state_name: String,
-        event_name: String,
-    },
-    /// A transition body writes a field that is also written by the target
-    /// state's `entry` block or the source state's `exit` block, creating
-    /// ambiguous initialization/teardown order.  `secondary_spans` points at
-    /// the conflicting entry/exit site.
-    MachineEffectParityViolation {
-        machine_name: String,
-        /// The state whose `entry` or `exit` block conflicts.
-        state_name: String,
-        field_name: String,
-        transition_event: String,
-        /// Whether the conflict is with the target `entry` block (`true`) or
-        /// the source `exit` block (`false`).
-        is_entry_conflict: bool,
     },
     /// A direct `emit(E)` cycle was detected: a transition's `on E` arm
     /// contains `emit E`, which would immediately re-trigger the same handler.
@@ -361,22 +314,6 @@ pub enum HirDiagnosticKind {
     MachineEmitNotInManifest {
         machine_name: String,
         event_name: String,
-    },
-    /// A transition body reads `event.<field>` but `<field>` is not declared
-    /// on the triggering event type. This is a user type error — the field
-    /// does not exist — not a compiler limitation. The available field names
-    /// for the event are included in the note so the user can correct the
-    /// access without inspecting the machine declaration.
-    MachineEventFieldNotFound {
-        /// The machine name (e.g. `"TrafficLight"`).
-        machine_name: String,
-        /// The event type name (e.g. `"TrafficLightEvent"`).
-        event_name: String,
-        /// The field name the user wrote (e.g. `"wrong_field"`).
-        field_name: String,
-        /// Fields actually declared on this event (empty if the event
-        /// has no payload fields).
-        available_fields: Vec<String>,
     },
     /// A method call expression has no entry in `TypeCheckOutput.method_call_rewrites`
     /// AND no entry in `TypeCheckOutput.resolved_calls` for its span. Fail-closed
@@ -430,6 +367,14 @@ pub enum HirDiagnosticKind {
     ActorStateGuardMissing {
         /// Receive handler name.
         handler: String,
+    },
+    /// A lambda actor's body names the binding that holds its own handle.
+    /// The handle would then live in the state it addresses, so the actor
+    /// owns the only way to reach itself. A recursive actor gets a name and
+    /// is spawned, which keeps the handle and the state separate.
+    RecursiveLambdaActorHandle {
+        /// The captured binding that names the lambda's own handle.
+        name: String,
     },
     /// A checker-owned `expr_types` entry failed the `ResolvedTy::from_ty`
     /// boundary conversion.  This means the checker left an unresolved
@@ -520,43 +465,6 @@ pub enum HirDiagnosticKind {
     EnumLayoutCapExceeded {
         /// The configured cap (typically `MONOMORPHISATION_REGISTRY_CAP`,
         /// shared with the fn and record registries).
-        cap: usize,
-    },
-    /// The dedicated `MachineMonoPass`
-    /// ([`crate::machine_mono::run_machine_mono_pass`]) observed a
-    /// machine type whose substituted type args still carry a residual
-    /// type-parameter symbol (`ResolvedTy::Named { name, args: [] }`
-    /// where `name` is the name of a generic type-parameter declared
-    /// somewhere upstream in the program). After function-mono has
-    /// completed, every machine instantiation reachable from a
-    /// monomorphic entry point must be fully concrete — a residual
-    /// abstract symbol is a function-mono defect (the closure pass
-    /// failed to reach this site) or a checker-side authority gap
-    /// (the type wasn't recorded). Either way the machine-mono pass
-    /// fails closed rather than silently propagating an
-    /// under-instantiated layout to MIR/codegen.
-    ///
-    /// Per W3.033c Stage 2 (R244=B): this is the load-bearing
-    /// invariant that justifies the dedicated-pass design — the
-    /// observation that the pass runs after function-mono completes
-    /// is what makes residual abstract symbols an unambiguous defect.
-    UnresolvedMachineTypeParamPostMono {
-        /// Origin machine name as written in source.
-        machine: String,
-        /// Human-readable rendering of the residual abstract symbol
-        /// (e.g. `"T"`). Kept as a `String` to avoid leaking the full
-        /// `ResolvedTy` shape into the diagnostic schema; the surrounding
-        /// span pins the site for any deeper triage.
-        residual_var: String,
-    },
-    /// The dedicated `MachineMonoPass` discovered more distinct
-    /// machine instantiations than the configured monomorphisation cap
-    /// admits. Mirrors `MonomorphisationCapExceeded` for the
-    /// function-mono registry and `EnumLayoutCapExceeded` /
-    /// `RecordLayoutCapExceeded` for the layout registries.
-    MachineMonomorphisationCapExceeded {
-        /// The configured cap (shared with the function-mono and layout
-        /// registries — see [`crate::monomorph::MONOMORPHISATION_REGISTRY_CAP`]).
         cap: usize,
     },
     /// The dedicated layout-mono pass
@@ -669,30 +577,6 @@ pub enum HirDiagnosticKind {
         /// Site identifier for error reporting.
         site: SiteId,
     },
-    /// Spawned closure has params, args, or non-unit result. The spawned
-    /// closure must be zero-arg and return unit because value/result task
-    /// propagation remains fail-closed. Fail-closed per FC-P1-A1 audit.
-    SpawnedClosureSignatureUnsupported {
-        /// Site identifier for error reporting.
-        site: SiteId,
-    },
-    /// Spawned closure captures non-Send value. All captured values must be
-    /// Send for safe task migration. Fail-closed per FC-P1-A1 audit.
-    SpawnedClosureNonSendCapture {
-        /// Site identifier for error reporting.
-        site: SiteId,
-        /// Name of the non-Send captured value.
-        capture_name: String,
-    },
-    /// Fork block body is not supported shape. The fork block must contain
-    /// exactly one statement that is a direct function call with zero args
-    /// and unit return. Fail-closed per FC-P1-A1 audit.
-    ForkBlockBodyUnsupported {
-        /// Site identifier for error reporting.
-        site: SiteId,
-        /// Human-readable reason for rejection (e.g. "empty", "multi-statement").
-        reason: String,
-    },
     /// Deadline has non-empty body. The `after(...)` deadline must have an
     /// empty body in v0.5; deadline body execution is not yet wired.
     /// Fail-closed per FC-P1-A1 audit.
@@ -792,7 +676,7 @@ pub enum HirDiagnosticKind {
     /// `u32`, `i64`, `u64`, `f64`, `String` (retained/header-aware owner via
     /// `hew_vec_get_str`, balanced by the caller's scope-exit `hew_string_drop`),
     /// and any user-defined `Named` type (records, enums, `Duplex`,
-    /// `LambdaActorHandle`, etc., dispatched via `hew_vec_get_ptr` /
+    /// `ActorFn`, etc., dispatched via `hew_vec_get_ptr` /
     /// `hew_vec_get_layout` / `hew_vec_get_owned`).
     VecIndexElementTypeUnsupported {
         /// User-facing rendering of the unsupported element type
@@ -849,8 +733,7 @@ impl HirDiagnosticKind {
             | Self::RecordLayoutTypeArgsViolation { .. } => DiagChannel::Internal,
             Self::NotYetImplemented { .. }
             | Self::MonomorphisationCapExceeded { .. }
-            | Self::RecordLayoutCapExceeded { .. }
-            | Self::MachineMonomorphisationCapExceeded { .. } => DiagChannel::Limitation,
+            | Self::RecordLayoutCapExceeded { .. } => DiagChannel::Limitation,
             _ => DiagChannel::User,
         }
     }

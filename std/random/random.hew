@@ -16,6 +16,111 @@
 //!     println(random.randint(0, 10));
 //! }
 //! ```
+//!
+//! # `Rng`: independent seeded generators
+//!
+//! The module-level functions above (`seed`, `random`, `randint`, `shuffle`,
+//! `choices`, `gauss`) share one implicit generator per thread. `Rng` is a
+//! plain value a caller holds and passes around instead, so several
+//! independent streams can run in the same thread. It uses xoshiro256++
+//! (see `hew-runtime/src/random.rs` for the choice rationale) rather than
+//! MT19937, so its output does not match the module-level functions for the
+//! same seed.
+//!
+//! ```
+//! import std.random;
+//!
+//! fn main() {
+//!     let rng = random.Rng.new(42);
+//!     println(rng.next_u64());
+//!     println(rng.next_f64());
+//!     println(rng.range(0, 10));
+//! }
+//! ```
+
+import std.crypto.crypto;
+
+// ── Rng: independent seeded generators ─────────────────────────────────
+/// An independent, seedable pseudo-random generator (xoshiro256++).
+///
+/// Unlike the module-level functions, an `Rng` value is not shared
+/// thread-local state: create one with `Rng.new(seed)` and hold it wherever
+/// it is needed. Two `Rng` values created with the same seed produce
+/// identical sequences.
+pub type Rng {
+    state: Vec<u64>,
+}
+
+/// Methods available on an `Rng`.
+trait RngMethods {
+    fn next_u64(self) -> u64;
+
+    fn next_f64(self) -> f64;
+
+    fn range(self, lo: i64, hi: i64) -> i64;
+
+    fn shuffle(self, v: Vec<i64>);
+}
+
+impl RngMethods for Rng {
+    fn next_u64(rng: Rng) -> u64 {
+        unsafe {
+            hew_rng_next_u64(rng.state)
+        }
+    }
+    fn next_f64(rng: Rng) -> f64 {
+        unsafe {
+            hew_rng_next_f64(rng.state)
+        }
+    }
+    fn range(rng: Rng, lo: i64, hi: i64) -> i64 {
+        unsafe {
+            hew_rng_range(rng.state, lo, hi)
+        }
+    }
+    fn shuffle(rng: Rng, v: Vec<i64>) {
+        unsafe {
+            hew_rng_shuffle_i64(rng.state, v)
+        }
+    }
+}
+
+impl Rng {
+    /// Create a new generator seeded from `seed`.
+    ///
+    /// The seed is expanded into xoshiro256++'s 256 bits of state via four
+    /// splitmix64 steps, so every `i64` seed produces a well-mixed initial
+    /// state.
+    fn new(seed: i64) -> Rng {
+        unsafe {
+            Rng { state: hew_rng_new(seed) }
+        }
+    }
+}
+
+// ── Cryptographically secure randomness ─────────────────────────────────
+// Convenience wrappers over `crypto.random_bytes` (the `ring`-backed,
+// OS-entropy authority for secure randomness) — this module adds no second
+// entropy source. Both panic instead of returning `Result`; use
+// `crypto.random_bytes` directly to handle its rare failure cases (invalid
+// length, length above its cap, or entropy-source failure) without a panic.
+/// Return `n` cryptographically secure random bytes drawn from OS entropy.
+pub fn crypto_bytes(n: i64) -> bytes {
+    match crypto.random_bytes(n) {
+        .Ok(b) => b,
+        .Err(e) => panic(e),
+    }
+}
+
+/// Return a cryptographically secure random `u64` drawn from OS entropy.
+pub fn crypto_u64() -> u64 {
+    let b = crypto_bytes(8);
+    var v: u64 = 0;
+    for i in 0 .. 8 {
+        v = v | b[i] as u64 << i as u64 * 8;
+    }
+    v
+}
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 // All functions delegate to `hew-runtime/src/random.rs` via C ABI.
@@ -109,4 +214,9 @@ extern "C" {
     fn hew_random_randint(lo: i64, hi: i64) -> i64;
     fn hew_random_shuffle_i64(v: Vec<i64>);
     fn hew_random_choices_vec(v: Vec<f64>, total: f64, n: i64) -> i64;
+    fn hew_rng_new(seed: i64) -> Vec<u64>;
+    fn hew_rng_next_u64(state: Vec<u64>) -> u64;
+    fn hew_rng_next_f64(state: Vec<u64>) -> f64;
+    fn hew_rng_range(state: Vec<u64>, lo: i64, hi: i64) -> i64;
+    fn hew_rng_shuffle_i64(state: Vec<u64>, target: Vec<i64>);
 }

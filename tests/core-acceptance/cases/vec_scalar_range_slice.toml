@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_scalar_range_slice"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_scalar_range_slice.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\n20\n30\n"
+exit = 0

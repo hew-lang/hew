@@ -1,6 +1,6 @@
 // TCP three-way handshake — Mealy machine (outputs depend on state × event).
 //
-// Transition bodies emit a protocol event and carry the next state struct.
+// Transition bodies emit a protocol event and carry the next state record.
 // The example demonstrates:
 //   - States with payload fields (e.g. SynReceived carries the remote port)
 //   - Emit expressions in transition bodies (Mealy outputs)
@@ -16,36 +16,37 @@
 //   hew machine diagram examples/machine/tcp_handshake.hew --machine TcpHandshake
 machine TcpHandshake {
     events {
-        SynReceive { remote_port: u16; }
-        AckReceive;
-        FinReceive;
-        Reset;
+        SynReceive { remote_port: u16, },
+        AckReceive,
+        FinReceive,
+        Reset,
     }
 
     emits {
-        AckReceive;
+        AckReceive,
+        Log { message: string, },
     }
 
-    state Closed;
+    state Closed,
     state SynReceived {
-        remote_port: u16;
+        remote_port: u16,
         entry {
-            println("SYN received — sent SYN-ACK");
+            emit Log { message: "SYN received — sent SYN-ACK" };
         }
-    }
+    },
     state Established {
-        remote_port: u16;
+        remote_port: u16,
         entry {
-            println("connection established");
+            emit Log { message: "connection established" };
         }
-    }
+    },
     state CloseWait {
         entry {
 
             // Passive close: we received a FIN from the peer.
-            println("received FIN — entering close-wait");
+            emit Log { message: "received FIN — entering close-wait" };
         }
-    }
+    },
 
     on SynReceive(remote_port): Closed => SynReceived {
 
@@ -56,57 +57,21 @@ machine TcpHandshake {
         emit AckReceive {};
         SynReceived { remote_port: remote_port }
     }
-    on AckReceive: SynReceived => Established {
-
-        // Peer's ACK completes the handshake.
-        Established { remote_port: self.remote_port }
-    }
+    on AckReceive: SynReceived => Established { remote_port: state.remote_port }
     on FinReceive: Established => CloseWait {
 
         // Peer initiates close while established.
         emit AckReceive {};
-        TcpHandshake.CloseWait
+        CloseWait
     }
-    on AckReceive: CloseWait => Closed {
-
-        // Close-wait → closed (we have sent our FIN and got ACK).
-        TcpHandshake.Closed
-    }
-    on Reset: _ => Closed {
-
-        // Reset collapses to Closed from any state.
-        TcpHandshake.Closed
-    }
-    on SynReceive: SynReceived => SynReceived reenter {
-
-        // ── Wildcard fallbacks (protocol violations — stay in current state) ─
-
-        // SYN while not Closed: ignore (already connected or waiting).
-        SynReceived { remote_port: self.remote_port }
-    }
-    on SynReceive: Established => Established reenter {
-        Established { remote_port: self.remote_port }
-    }
-    on SynReceive: CloseWait => CloseWait reenter {
-        TcpHandshake.CloseWait
-    }
-    on AckReceive: Closed => Closed reenter {
-
-        // Unexpected ACK while Closed or Established: ignore.
-        TcpHandshake.Closed
-    }
-    on AckReceive: Established => Established reenter {
-        Established { remote_port: self.remote_port }
-    }
-    on FinReceive: Closed => Closed reenter {
-
-        // FIN while not Established: ignore (nothing to close).
-        TcpHandshake.Closed
-    }
-    on FinReceive: SynReceived => SynReceived reenter {
-        SynReceived { remote_port: self.remote_port }
-    }
-    on FinReceive: CloseWait => CloseWait reenter {
-        TcpHandshake.CloseWait
-    }
+    on AckReceive: CloseWait => Closed,
+    on Reset: _ => Closed,
+    on SynReceive: SynReceived => SynReceived reenter { remote_port: state.remote_port }
+    on SynReceive: Established => Established reenter { remote_port: state.remote_port }
+    on SynReceive: CloseWait => CloseWait reenter,
+    on AckReceive: Closed => Closed reenter,
+    on AckReceive: Established => Established reenter { remote_port: state.remote_port }
+    on FinReceive: Closed => Closed reenter,
+    on FinReceive: SynReceived => SynReceived reenter { remote_port: state.remote_port }
+    on FinReceive: CloseWait => CloseWait reenter,
 }

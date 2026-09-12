@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-cloneable-text-borrow"
+intent = "A borrowed enum releases its independent text owner and handles a scalar sibling without string cleanup."
+source = "cases/enum-cloneable-text-borrow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

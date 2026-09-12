@@ -1,5 +1,5 @@
-fn main() -> string {
+fn main() {
     let s = "hello";
     let _pair = (s, "anchor");
-    s
+    let _ = s;
 }

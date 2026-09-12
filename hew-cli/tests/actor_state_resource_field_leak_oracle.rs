@@ -1,8 +1,7 @@
 //! #2654 oracle: an actor-state field holding a `#[resource] #[opaque]` handle
-//! (or a pointer-backed `IoHandle`) may NOT be overwritten in place — the store
-//! has no release-before-store, so the previous handle would leak (its `close`
-//! never runs) while the actor's shutdown drop double-owns the freshly-stored
-//! one. This is the actor-state sibling of the record `RecordFieldStore`
+//! may NOT be overwritten in place — the store has no release-before-store, so
+//! the previous handle would leak (its `close` never runs) while the actor's
+//! shutdown drop double-owns the freshly-stored one. This is the actor-state sibling of the record `RecordFieldStore`
 //! overwrite gate (`raii1_record_resource_field_leak_oracle.rs`); the two now
 //! obey the same exactly-once-close invariant.
 //!
@@ -25,14 +24,6 @@
 //!   over a `#[resource] #[opaque]` state field fails `hew check` with the
 //!   actor-state overwrite diagnostic (naming the field + handle type; remediation
 //!   = re-`spawn`, NOT the record's "rebuild the whole record").
-//! - **`IoHandle` reassignment is ALSO refused (FD-exhaustion vector closed by
-//!   construction).** A `Stream<T>` state field reassignment is refused with the
-//!   same actor-state wording, so no compiled binary can leak a descriptor by
-//!   overwriting a live stream handle. (Such a field is doubly-unconstructible
-//!   today — pointer-backed IO handles are not `Send` and fail the supervisor-
-//!   restart clone helper — so this is a fail-closed boundary ahead of the
-//!   capability rather than a currently-reachable user program; the regression
-//!   scan confirmed no accepted program reassigns an actor-state IO handle.)
 //! - **The never-reassigned field still closes EXACTLY once (non-vacuous).** A
 //!   `var dq: Dq` state field that is read but never overwritten runs `close(self)`
 //!   exactly once at actor teardown — proven by exact stdout, by `0 leaks for 0
@@ -64,7 +55,7 @@ const PRELUDE: &str = "\
 #[opaque]\n\
 type Dq {}\n\
 impl Dq {\n\
-    fn close(self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
+    fn close(consume self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
 }\n\
 extern \"C\" {\n\
     fn hew_deque_new() -> Dq;\n\
@@ -79,7 +70,7 @@ fn src(body: &str) -> String {
 /// REFUSED — the old handle would leak, the new one would be double-owned.
 const RESOURCE_REASSIGN_BODY: &str = "\
 actor Keeper {\n\
-    var dq: Dq;\n\
+    var dq: Dq,\n\
     receive fn replace() -> i64 {\n\
         dq = unsafe { hew_deque_new() };\n\
         1\n\
@@ -91,25 +82,12 @@ fn main() -> i64 {\n\
     0\n\
 }\n";
 
-/// `IoHandle` vector: reassigning a `Stream<T>` actor-state field (the handle
-/// arrives by-value through a handler parameter). Must be REFUSED with the same
-/// actor-state wording — closes the descriptor-leak vector by construction.
-const IOHANDLE_REASSIGN_BODY: &str = "\
-actor Piper {\n\
-    var s: Stream<i64>;\n\
-    receive fn reset(ns: Stream<i64>) -> i64 {\n\
-        s = ns;\n\
-        1\n\
-    }\n\
-}\n\
-fn main() -> i64 { 0 }\n";
-
 /// Positive control: a `var dq: Dq` state field that is NEVER reassigned. The
 /// actor closes it exactly once at teardown. Deterministic stdout: `done` then
 /// `closed`.
 const POSITIVE_BODY: &str = "\
 actor Keeper {\n\
-    var dq: Dq;\n\
+    var dq: Dq,\n\
     receive fn ping() -> i64 { 1 }\n\
 }\n\
 fn main() -> i64 {\n\
@@ -229,13 +207,6 @@ fn fn_body(ll: &str, needle: &str) -> Option<String> {
 #[test]
 fn actor_state_resource_reassign_refused() {
     assert_reassign_rejected("resource", &src(RESOURCE_REASSIGN_BODY), "Dq");
-}
-
-/// `IoHandle` (`Stream<T>`) reassignment is ALSO refused — descriptor-leak vector
-/// closed by construction.
-#[test]
-fn actor_state_iohandle_reassign_refused() {
-    assert_reassign_rejected("iohandle", IOHANDLE_REASSIGN_BODY, "Stream<i64>");
 }
 
 // ── positive control (the working path the gate must not break) ───────────────

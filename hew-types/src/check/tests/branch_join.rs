@@ -24,8 +24,8 @@ const SOCKET: &str = r"
 type Socket { fd: i64 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 { self.fd }
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 { self.fd }
 }
 ";
 

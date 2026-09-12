@@ -1,8 +1,8 @@
 // Removed Result-only API names must fail at the public API boundary.
-import std.channel.channel;
+import std.channel;
 import std.crypto.crypto;
 import std.encoding.json;
-import std.metrics.metrics;
+import std.metrics;
 import std.net;
 import std.process;
 import std.stream;

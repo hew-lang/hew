@@ -909,6 +909,7 @@ mod tests {
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
             state: std::ptr::null_mut(),
@@ -952,6 +953,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }
     }
 

@@ -17,9 +17,9 @@
 import hew.privslot;
 
 fn main() {
-    let store: privslot.Store<string> = privslot.new();
-    store.add("hello");
-    store.add("world");
+    var store: privslot.Store<string> = privslot.new();
+    store = store.add("hello");
+    store = store.add("world");
     println(store.generation_at(0));
     println(store.generation_at(1));
 }

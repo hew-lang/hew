@@ -1,10 +1,10 @@
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 1, y: 2 });
     points.push(Point { x: 3, y: 4 });
     let first = points[0];

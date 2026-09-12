@@ -1,0 +1,10 @@
+//! One file imported by two files publishes its type and its constant into
+//! both importers' scopes. The root imported neither, so it reaches them only
+//! through the functions it did import.
+
+import "left.hew";
+import "right.hew";
+
+fn main() {
+    println(f"{left_total()}/{right_total()}");
+}

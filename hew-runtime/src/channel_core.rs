@@ -34,17 +34,19 @@
 //! does not exist on `wasm32`.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
 use hew_cabi::sink::TrySendResult;
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 use crate::actor::HewActor;
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::read_slot::{
     hew_read_slot_free, read_slot_deposit_status, read_slot_retain, HewReadSlot, ReadStatus,
 };
+use crate::wake::{HewWaker, OwnedWaker};
 
 /// Codegen ABI: the await entry parked the continuation; the runtime will wake
 /// it via `enqueue_resume`. The caller MUST `coro.suspend`.
@@ -71,6 +73,30 @@ struct Waiter {
     /// A parked producer's pending item, enqueued by the drainer when space
     /// frees. `None` for a consumer waiter.
     item: Option<Vec<u8>>,
+}
+
+/// Inline polls retain their notification; owned operations and selections
+/// lend a weak registration. Dropping an observer releases its target without
+/// clearing a later registration on the same queue.
+enum NativeRegistration {
+    Retained(Arc<OwnedWaker>),
+    Observe(std::sync::Weak<OwnedWaker>),
+}
+
+impl NativeRegistration {
+    fn is_live(&self) -> bool {
+        match self {
+            Self::Retained(_) => true,
+            Self::Observe(waker) => waker.strong_count() != 0,
+        }
+    }
+
+    fn into_waker(self) -> Option<Arc<OwnedWaker>> {
+        match self {
+            Self::Retained(waker) => Some(waker),
+            Self::Observe(waker) => waker.upgrade(),
+        }
+    }
 }
 
 struct Inner {
@@ -102,7 +128,11 @@ struct Inner {
     /// post-close send, and a parked producer woken by `close_stream`.
     /// `None` for Plain/String/Bytes elements — their envelopes own no heap
     /// beyond the `Vec<u8>` itself.
-    elem_layout: Option<HewVecElemLayout>,
+    elem_layout: Option<HewValueLayout>,
+    /// The checked consumer parked by [`ChannelCore::poll_recv_envelope`].
+    native_consumer: Option<NativeRegistration>,
+    /// Checked producers parked on a full ring by [`ChannelCore::poll_send_envelope`].
+    native_producers: Vec<NativeRegistration>,
 }
 
 /// Shared in-memory pipe state, held by `Arc` from BOTH the stream backing and
@@ -152,6 +182,8 @@ impl ChannelCore {
                 consumer: None,
                 producers: VecDeque::new(),
                 elem_layout: None,
+                native_consumer: None,
+                native_producers: Vec::new(),
             }),
             cv: Condvar::new(),
             #[cfg(test)]
@@ -196,7 +228,7 @@ impl ChannelCore {
     /// core aborts fail-closed — the ownership state of envelopes built under
     /// two witnesses is unknowable (one element type per pipe is a compiler
     /// invariant).
-    pub fn stamp_elem_layout(&self, layout: &HewVecElemLayout) {
+    pub fn stamp_elem_layout(&self, layout: &HewValueLayout) {
         let mut inner = self.locked();
         match &inner.elem_layout {
             None => inner.elem_layout = Some(*layout),
@@ -216,7 +248,7 @@ impl ChannelCore {
     /// the envelope's owned heap is dropped via `drop_fn` exactly once; for
     /// every other element kind the `Vec<u8>` drop is sufficient. Runs OUTSIDE
     /// the core lock (the thunk may free arbitrary owned heap).
-    fn drop_envelope(layout: Option<&HewVecElemLayout>, mut env: Vec<u8>) {
+    fn drop_envelope(layout: Option<&HewValueLayout>, mut env: Vec<u8>) {
         let Some(l) = layout else {
             return;
         };
@@ -259,6 +291,159 @@ impl ChannelCore {
         // Release the core's in-flight ref (the single authority for it).
         // SAFETY: the core owned this ref; nothing else releases it.
         unsafe { hew_read_slot_free(w.slot) };
+    }
+
+    // ── Checked native peers ─────────────────────────────────────────────────
+    //
+    // A checked coroutine polls with its retained waker instead of a read
+    // slot: the element bytes move straight between the caller's storage and
+    // the queue, and a parked peer is woken through the waker it left here.
+
+    /// Take the next queue envelope for a checked coroutine consumer,
+    /// retaining `waker` when nothing is available yet.
+    ///
+    /// Returns `(1, Some(envelope))` with an element, `(2, None)` at end of
+    /// stream, `(3, None)` after a producer fault, and `(0, None)` after
+    /// parking. The envelope is opaque here: its typed decode belongs to the
+    /// caller's element witness, which is the only authority on whether the
+    /// bytes are a slot image or content (`decode_elem_envelope`).
+    ///
+    /// # Safety
+    /// `waker` obeys the [`HewWaker`] contract.
+    pub unsafe fn poll_recv_envelope(&self, waker: &HewWaker) -> (i32, Option<Vec<u8>>) {
+        // SAFETY: the caller lends a live descriptor for this retain.
+        let registration =
+            NativeRegistration::Retained(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+        self.poll_recv_registered(registration)
+    }
+
+    pub(crate) fn poll_recv_observed(&self, waker: &Arc<OwnedWaker>) -> (i32, Option<Vec<u8>>) {
+        self.poll_recv_registered(NativeRegistration::Observe(Arc::downgrade(waker)))
+    }
+
+    fn poll_recv_registered(&self, registration: NativeRegistration) -> (i32, Option<Vec<u8>>) {
+        let item;
+        let producer_wake;
+        let native_producers;
+        {
+            let mut inner = self.locked();
+            match inner.queue.pop_front() {
+                Some(bytes) => {
+                    item = bytes;
+                    producer_wake = Self::drain_one_producer(&mut inner);
+                    native_producers = std::mem::take(&mut inner.native_producers);
+                }
+                None if inner.sink_fault => return (3, None),
+                None if inner.sink_closed => return (2, None),
+                None => {
+                    let previous = inner.native_consumer.replace(registration);
+                    drop(inner);
+                    drop(previous);
+                    return (0, None);
+                }
+            }
+        }
+        if let Some(w) = producer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        for producer in native_producers {
+            if let Some(producer) = producer.into_waker() {
+                producer.wake();
+            }
+        }
+        self.cv.notify_all();
+        (1, Some(item))
+    }
+
+    /// Observe whether the next receive would complete, registering `waker` when
+    /// it would not. Nothing is consumed: the selection's winning arm performs
+    /// the ordinary receive.
+    ///
+    /// Returns 1 with an element queued, 2 at end of channel, 3 after a
+    /// producer fault, and 0 after registering the waker.
+    ///
+    /// The caller owns the registration; the channel keeps only a weak reference.
+    pub fn poll_recv_ready(&self, waker: &Arc<OwnedWaker>) -> i32 {
+        let mut inner = self.locked();
+        if !inner.queue.is_empty() {
+            return 1;
+        }
+        if inner.sink_fault {
+            return 3;
+        }
+        if inner.sink_closed {
+            return 2;
+        }
+        let previous = inner
+            .native_consumer
+            .replace(NativeRegistration::Observe(Arc::downgrade(waker)));
+        drop(inner);
+        drop(previous);
+        0
+    }
+
+    /// Deposit one already-encoded envelope for a checked coroutine producer,
+    /// retaining `waker` when the ring is full.
+    ///
+    /// Returns 1 after the transfer, 2 when either half is closed or faulted,
+    /// and 0 after parking. On 0 and 2 the envelope is returned so the caller
+    /// keeps ownership of whatever it holds.
+    ///
+    /// # Safety
+    /// `waker` obeys the [`HewWaker`] contract.
+    pub unsafe fn poll_send_envelope(
+        &self,
+        waker: &HewWaker,
+        envelope: Vec<u8>,
+    ) -> (i32, Option<Vec<u8>>) {
+        // SAFETY: the caller lends a live descriptor for this retain.
+        let registration =
+            NativeRegistration::Retained(Arc::new(unsafe { OwnedWaker::retain(waker) }));
+        self.poll_send_registered(registration, envelope)
+    }
+
+    pub(crate) fn poll_send_observed(
+        &self,
+        waker: &Arc<OwnedWaker>,
+        envelope: Vec<u8>,
+    ) -> (i32, Option<Vec<u8>>) {
+        self.poll_send_registered(NativeRegistration::Observe(Arc::downgrade(waker)), envelope)
+    }
+
+    fn poll_send_registered(
+        &self,
+        registration: NativeRegistration,
+        envelope: Vec<u8>,
+    ) -> (i32, Option<Vec<u8>>) {
+        let consumer_wake;
+        let native_consumer;
+        {
+            let mut inner = self.locked();
+            if inner.stream_closed || inner.sink_closed || inner.sink_fault {
+                return (2, Some(envelope));
+            }
+            if inner.queue.len() >= inner.capacity {
+                inner.native_producers.retain(NativeRegistration::is_live);
+                inner.native_producers.push(registration);
+                return (0, Some(envelope));
+            }
+            inner.queue.push_back(envelope);
+            consumer_wake = inner.consumer.take();
+            native_consumer = inner
+                .native_consumer
+                .take()
+                .and_then(NativeRegistration::into_waker);
+        }
+        if let Some(w) = consumer_wake {
+            // SAFETY: removed under the lock; we own its in-flight ref.
+            unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
+        }
+        self.cv.notify_all();
+        (1, None)
     }
 
     // ── Consumer side ────────────────────────────────────────────────────────
@@ -655,14 +840,22 @@ impl ChannelCore {
     /// resume binds `None`.
     pub fn close_sink(&self) {
         let consumer_wake;
+        let native_consumer;
         {
             let mut inner = self.locked();
             inner.sink_closed = true;
             consumer_wake = inner.consumer.take();
+            native_consumer = inner
+                .native_consumer
+                .take()
+                .and_then(NativeRegistration::into_waker);
         }
         if let Some(w) = consumer_wake {
             // SAFETY: removed under the lock; we own its in-flight ref.
             unsafe { Self::wake(w) };
+        }
+        if let Some(consumer) = native_consumer {
+            consumer.wake();
         }
         self.cv.notify_all();
     }
@@ -674,15 +867,22 @@ impl ChannelCore {
         let mut wakes: Vec<Waiter> = Vec::new();
         let mut discarded: Vec<Vec<u8>> = Vec::new();
         let layout;
+        let native_producers;
         {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
+            native_producers = std::mem::take(&mut inner.native_producers);
             while let Some(mut w) = inner.producers.pop_front() {
                 if let Some(item) = w.item.take() {
                     discarded.push(item);
                 }
                 wakes.push(w);
+            }
+        }
+        for producer in native_producers {
+            if let Some(producer) = producer.into_waker() {
+                producer.wake();
             }
         }
         for w in wakes {
@@ -719,6 +919,7 @@ impl ChannelCore {
         let mut producer_wakes = Vec::new();
         let mut discarded = Vec::new();
         let layout;
+        let native_wakes;
         {
             let mut inner = self.locked();
             if !inner.sink_fault {
@@ -733,6 +934,20 @@ impl ChannelCore {
                 }
                 producer_wakes.push(producer);
             }
+            native_wakes = inner
+                .native_consumer
+                .take()
+                .and_then(NativeRegistration::into_waker)
+                .into_iter()
+                .chain(
+                    std::mem::take(&mut inner.native_producers)
+                        .into_iter()
+                        .filter_map(NativeRegistration::into_waker),
+                )
+                .collect::<Vec<_>>();
+        }
+        for peer in native_wakes {
+            peer.wake();
         }
         // `sink_fault` is now a stable terminal predicate. Notify foreign
         // condvar waiters before scheduler callbacks or recursive element-drop
@@ -844,6 +1059,34 @@ mod tests {
         hew_read_slot_new, hew_read_slot_status, install_read_slot_free_probe_for_test,
         new_read_slot_free_probe_for_test, read_slot_free_probe_count, read_slot_refs_for_test,
     };
+
+    #[test]
+    fn select_observation_detaches_without_consuming_or_disarming_a_successor() {
+        use crate::wake::blocking::Readiness;
+
+        let core = ChannelCore::new(1);
+        let (old_target, old_waker) = Readiness::new();
+        let old = Arc::new(old_waker);
+        assert_eq!(core.poll_recv_ready(&old), 0);
+        drop(old);
+        assert_eq!(Arc::strong_count(&old_target), 1);
+
+        let (target, waker) = Readiness::new();
+        let observation = Arc::new(waker);
+        assert_eq!(core.poll_recv_ready(&observation), 0);
+        // SAFETY: the retained descriptor outlives the synchronous send.
+        let sent = unsafe { core.poll_send_envelope(observation.descriptor(), b"value".to_vec()) };
+        assert_eq!(sent, (1, None));
+        assert!(target.take_ready());
+        assert!(!old_target.take_ready());
+        assert_eq!(core.poll_recv_ready(&observation), 1);
+        assert_eq!(core.pop(), Some(b"value".to_vec()));
+        assert_eq!(core.poll_recv_ready(&observation), 0);
+        drop(observation);
+        core.close_sink();
+        assert!(!target.take_ready());
+        assert_eq!(Arc::strong_count(&target), 1);
+    }
 
     #[test]
     fn fifo_push_pop_without_parking() {
@@ -1199,8 +1442,9 @@ mod tests {
         .fetch_add(1, Ordering::SeqCst);
     }
 
-    fn blocking_elem_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn blocking_elem_layout() -> HewValueLayout {
+        HewValueLayout {
+            visit_close: None,
             size: size_of::<u64>(),
             align: align_of::<u64>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1333,7 +1577,7 @@ mod tests {
         ready.join().expect("wait-ready thread");
     }
 
-    /// Mock heap-owning element: a tag plus one malloc'd 8-byte buffer. The
+    /// Mock heap-owning element: a tag plus one sized-block-allocated 8-byte buffer. The
     /// clone thunk duplicates the buffer; the drop thunk frees it. Leaks and
     /// double-frees surface under the sanitizer lanes; counts are asserted
     /// through the statics above.
@@ -1349,7 +1593,7 @@ mod tests {
     ) -> i32 {
         let s = &*src.cast::<OwnedElem>();
         let d = &mut *dst.cast::<OwnedElem>();
-        let dup = libc::malloc(8).cast::<u8>();
+        let dup = crate::mem::buf_try_alloc(8).cast::<u8>();
         if !s.heap.is_null() {
             std::ptr::copy_nonoverlapping(s.heap, dup, 8);
         }
@@ -1361,14 +1605,15 @@ mod tests {
     unsafe extern "C" fn owned_elem_drop(slot: *mut core::ffi::c_void) {
         let e = &mut *slot.cast::<OwnedElem>();
         if !e.heap.is_null() {
-            libc::free(e.heap.cast());
+            crate::mem::buf_free(e.heap.cast());
             e.heap = std::ptr::null_mut();
         }
         OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn owned_elem_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn owned_elem_layout() -> HewValueLayout {
+        HewValueLayout {
+            visit_close: None,
             size: size_of::<OwnedElem>(),
             align: align_of::<OwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -1382,7 +1627,7 @@ mod tests {
     /// (the caller keeps its value; the envelope owns an independent copy).
     fn owned_envelope(tag: u64) -> Vec<u8> {
         unsafe {
-            let heap = libc::malloc(8).cast::<u8>();
+            let heap = crate::mem::buf_try_alloc(8).cast::<u8>();
             std::ptr::write_bytes(heap, 0xA5, 8);
             let src = OwnedElem { tag, heap };
             let mut env = vec![0u8; size_of::<OwnedElem>()];
@@ -1395,7 +1640,7 @@ mod tests {
                 owned_elem_clone((&raw const src).cast(), env.as_mut_ptr().cast()),
                 0
             );
-            libc::free(heap.cast());
+            crate::mem::buf_free(heap.cast());
             env
         }
     }

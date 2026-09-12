@@ -140,6 +140,7 @@ fn record_measurement_float_field_derives_send_clone_copy() {
 fn record_cb_function_field_not_eq_not_hash() {
     let mut reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I64),
     };
@@ -156,18 +157,19 @@ fn record_cb_function_field_not_eq_not_hash() {
 }
 
 #[test]
-fn record_cb_function_field_derives_send_copy() {
+fn record_cb_erased_function_field_has_no_implicit_capabilities() {
     let mut reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I64),
     };
     let cb = register_named_record(&mut reg, "Cb", vec![fn_ty]);
 
-    // Function is Send/Copy/Clone
-    assert!(reg.implements_marker(&cb, MarkerTrait::Send));
-    assert!(reg.implements_marker(&cb, MarkerTrait::Copy));
-    assert!(reg.implements_marker(&cb, MarkerTrait::Clone));
+    // Plain fn carries neither a duplication guarantee nor capture Send evidence.
+    assert!(!reg.implements_marker(&cb, MarkerTrait::Send));
+    assert!(!reg.implements_marker(&cb, MarkerTrait::Copy));
+    assert!(!reg.implements_marker(&cb, MarkerTrait::Clone));
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +276,12 @@ fn tuple_record_duplex_field_not_copy_not_resource() {
 fn record_closure_field_not_eq_not_hash_not_copy() {
     let mut reg = TraitRegistry::new();
     let closure = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::FUNCTION_ITEM,
         params: vec![],
         ret: Box::new(Ty::Unit),
         captures: vec![Ty::I64],

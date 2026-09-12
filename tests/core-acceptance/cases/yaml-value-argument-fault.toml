@@ -1,0 +1,11 @@
+[[case]]
+id = "yaml-value-argument-fault"
+intent = "A consuming encoding value and nested caller sibling both clean up when later argument evaluation faults before the callee begins."
+source = "cases/yaml-value-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_nested_record_rest"
+intent = "A nested record rest (`Inner { a, .. }`) is materialized through the same PatternPlan as the top-level record-let, so the omitted owned field `b` projects as a wildcard rather than vanishing from the field list — one field-list source, no erasure-ordering divergence. The nested __rec temp's composite drop discharges the wildcarded field exactly once."
+source = "cases/pattern_nested_record_rest.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_iter_user_shadow"
+intent = "The fixture runs to completion and exits 43."
+source = "../vertical-slice/accept/hashmap_iter_user_shadow.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 43

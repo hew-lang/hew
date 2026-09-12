@@ -1,0 +1,12 @@
+PASS: lookup returns valid node
+PASS: consistent mapping
+PASS: keys map to different nodes
+PASS: key stability after add (74 of 100 unchanged)
+PASS: new node gets keys (26)
+PASS: removed node gets no keys
+PASS: distribution across nodes
+PASS: empty ring lookup
+---
+Passed: 8
+Failed: 0
+ALL PASS

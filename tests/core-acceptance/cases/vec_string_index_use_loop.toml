@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_string_index_use_loop"
+intent = "The fixture runs to completion and exits 14."
+source = "../vertical-slice/accept/vec_string_index_use_loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 14

@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_clone_unclonable_opaque_value"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/hashmap_clone_unclonable_opaque_value.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 31
+column = 19
+message = "copies each value out of the map"

@@ -1,0 +1,13 @@
+[[case]]
+id = "f01_actor_spawn_owned_vec_drop_segv"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/f01_actor_spawn_owned_vec_drop_segv.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "r=1\ndone\n"
+exit = 0

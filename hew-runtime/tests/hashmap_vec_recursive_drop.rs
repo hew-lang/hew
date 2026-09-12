@@ -1,8 +1,11 @@
 use core::ffi::c_void;
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use hew_cabi::map::{HewMapKeyLayout, HewMapValueLayout};
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVec, HewVecElemLayout};
+use hew_cabi::map::{HewMapKeyLayout, HewValueLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewVec};
 use hew_runtime::hashmap::{
     hew_hashmap_free_layout, hew_hashmap_insert_layout, hew_hashmap_new_with_layout,
 };
@@ -11,14 +14,39 @@ use hew_runtime::vec::{hew_vec_free_owned, hew_vec_new_with_elem_layout, hew_vec
 static MAP_VALUE_DROPS: AtomicUsize = AtomicUsize::new(0);
 static INNER_ELEMENT_DROPS: AtomicUsize = AtomicUsize::new(0);
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    // SAFETY: descriptor users pass an i64 key blob.
-    unsafe { (*key.cast::<i64>()).cast_unsigned() }
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        // SAFETY: descriptor users pass an i64 key blob.
+        unsafe { (*key.cast::<i64>()).cast_unsigned() }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    // SAFETY: descriptor users pass i64 key blobs.
-    unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) }
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        // SAFETY: descriptor users pass i64 key blobs.
+        unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) }
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 unsafe extern "C" fn clone_i64(_src: *const c_void, _dst: *mut c_void) -> i32 {
@@ -44,21 +72,27 @@ fn hashmap_of_vec_drops_every_nested_element_exactly_once() {
     INNER_ELEMENT_DROPS.store(0, Ordering::SeqCst);
 
     let key_layout = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64),
         eq_fn: Some(eq_i64),
-        drop_fn: None,
     };
-    let value_layout = HewMapValueLayout {
+    let value_layout = HewValueLayout {
+        visit_close: None,
         size: size_of::<*mut HewVec>(),
         align: align_of::<*mut HewVec>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
         drop_fn: Some(drop_vec_value),
         clone_fn: None,
     };
-    let elem_layout = HewVecElemLayout {
+    let elem_layout = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -74,7 +108,15 @@ fn hashmap_of_vec_drops_every_nested_element_exactly_once() {
             for value in [key * 10, key * 10 + 1] {
                 hew_vec_push_owned(vec, (&raw const value).cast());
             }
-            hew_hashmap_insert_layout(map, (&raw const key).cast(), (&raw const vec).cast());
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    map,
+                    (&raw const key).cast(),
+                    (&raw const vec).cast(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         hew_hashmap_free_layout(map);
     }

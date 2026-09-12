@@ -17,7 +17,7 @@ static DARWIN_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 static LINUX_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-const REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL: &str = "hew_lambda_drain_all";
+const REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL: &str = "hew_shutdown_wait";
 
 fn workspace() -> tempfile::TempDir {
     tempfile::Builder::new()

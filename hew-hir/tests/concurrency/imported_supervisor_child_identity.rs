@@ -10,6 +10,10 @@ use hew_types::{module_registry::ModuleRegistry, Checker, TypeCheckOutput};
 const WORKER_MODULE: &str = "imported_supervisor_child_support.worker";
 const NAMED_WORKER_MODULE: &str = "services.workers";
 
+fn child_handle(name: &str) -> hew_types::ResolvedTy {
+    hew_types::ResolvedTy::named_builtin(name, hew_types::BuiltinType::ActorHandle, Vec::new())
+}
+
 fn file_import_program(
     imported_src: &str,
     root_src: &str,
@@ -42,7 +46,7 @@ fn file_import_program(
             _ => None,
         })
         .expect("root file import");
-    import.resolved_items = Some(imported_items.clone());
+    import.resolved_items = Some(imported_items.clone().into());
     import.resolved_item_source_paths = vec![worker_path.clone(); imported_items.len()];
     import.resolved_source_paths = vec![worker_path.clone()];
 
@@ -107,7 +111,7 @@ fn actor_import_program(
 ) -> Program {
     let imported = hew_parser::parse(
         "pub actor Worker {\n\
-         \x20   let id: i64;\n\
+         \x20   let id: i64,\n\
          \x20   receive fn identify() -> i64 { id }\n\
          }\n",
     );
@@ -122,7 +126,7 @@ fn actor_import_program(
             selection_trailing_comma: false,
             module_alias: module_alias.map(str::to_string),
             file_path: None,
-            resolved_items: Some(imported.program.items.clone()),
+            resolved_items: Some(imported.program.items.clone().into()),
             resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         }),
@@ -218,12 +222,12 @@ fn supervisor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a HirSuperv
 fn file_imported_supervisor_child_and_protocol_share_full_actor_identity() {
     let (output, checked) = lower_file_import(
         "pub actor ImportedWorker {\n\
-         \x20   let id: i64;\n\
+         \x20   let id: i64,\n\
          \x20   receive fn identify() -> i64 { id }\n\
          }\n",
         "import \"imported_supervisor_child_support/worker.hew\";\n\
          supervisor ImportedWorkerPool {\n\
-         \x20   child worker: ImportedWorker(id: 17);\n\
+         \x20   child worker: ImportedWorker(id: 17),\n\
          }\n",
     );
     assert!(
@@ -248,7 +252,10 @@ fn file_imported_supervisor_child_and_protocol_share_full_actor_identity() {
 
     let pool = supervisor(&output, "ImportedWorkerPool");
     assert_eq!(pool.children.len(), 1);
-    assert_eq!(pool.children[0].ty, imported.qualified_name());
+    assert_eq!(
+        pool.children[0].ty,
+        child_handle(&imported.qualified_name())
+    );
 }
 
 #[test]
@@ -256,14 +263,14 @@ fn file_imported_actor_cycle_capability_uses_full_checker_identity() {
     let expected = format!("{WORKER_MODULE}.CyclicImported");
     let (output, checked) = lower_file_import_with(
         "pub actor CyclicImported {\n\
-         \x20   let peer: LocalPid<CyclicImported>;\n\
+         \x20   let peer: CyclicImported,\n\
          }\n\
          pub actor AcyclicImported {\n\
-         \x20   let value: i64;\n\
+         \x20   let value: i64,\n\
          }\n",
         "import \"imported_supervisor_child_support/worker.hew\";\n\
          actor RootAcyclic {\n\
-         \x20   let value: i64;\n\
+         \x20   let value: i64,\n\
          }\n",
         |checked| {
             assert!(checked.cycle_capable_actors.contains(&expected));
@@ -300,7 +307,7 @@ fn file_imported_actor_cycle_capability_uses_full_checker_identity() {
 fn named_and_aliased_supervisor_children_use_the_imported_actor_identity() {
     for (alias, binding) in [(None, "Worker"), (Some("Renamed"), "Renamed")] {
         let source =
-            format!("supervisor App {{ child worker: {binding}(id: 17) restart: temporary; }}");
+            format!("supervisor App {{ child worker: {binding}(id: 17) restart: temporary, }}");
         let (output, checked) = lower_named_import(alias, &source);
         assert!(
             checked.errors.is_empty(),
@@ -322,7 +329,7 @@ fn named_and_aliased_supervisor_children_use_the_imported_actor_identity() {
         );
         assert_eq!(
             supervisor(&output, "App").children[0].ty,
-            "services.workers.Worker"
+            child_handle("services.workers.Worker")
         );
     }
 }
@@ -330,13 +337,13 @@ fn named_and_aliased_supervisor_children_use_the_imported_actor_identity() {
 #[test]
 fn whole_module_supervisor_child_uses_the_imported_actor_identity() {
     let (output, checked) = lower_whole_module_import(
-        "supervisor App { child worker: workers.Worker(id: 17) restart: temporary; }",
+        "supervisor App { child worker: workers.Worker(id: 17) restart: temporary, }",
     );
     assert!(checked.errors.is_empty(), "{:#?}", checked.errors);
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "App").children[0].ty,
-        "services.workers.Worker"
+        child_handle("services.workers.Worker")
     );
 }
 
@@ -344,7 +351,7 @@ fn whole_module_supervisor_child_uses_the_imported_actor_identity() {
 fn selected_alias_does_not_authorize_a_raw_canonical_actor_path_in_hir() {
     let (output, checked) = lower_named_import(
         Some("Renamed"),
-        "supervisor App { child worker: services.workers.Worker restart: temporary; }",
+        "supervisor App { child worker: services.workers.Worker restart: temporary, }",
     );
     assert!(checked.errors.iter().any(|error| {
         matches!(
@@ -354,7 +361,7 @@ fn selected_alias_does_not_authorize_a_raw_canonical_actor_path_in_hir() {
             }
         )
     }));
-    let diagnostic = output
+    output
         .diagnostics
         .iter()
         .find(|diagnostic| {
@@ -362,22 +369,21 @@ fn selected_alias_does_not_authorize_a_raw_canonical_actor_path_in_hir() {
                 &diagnostic.kind,
                 hew_hir::HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
                     if name == "services.workers.Worker"
-                        && reason == "supervisor child has no lexical actor authority"
+                        && reason == "supervisor child has no checked handle type"
             )
         })
         .expect("forced HIR lowering must fail closed at the checker boundary");
-    assert!(diagnostic.note.contains("exact module binding"));
 }
 
 #[test]
 fn file_imported_supervisor_resolves_its_same_file_actor_by_exact_owner() {
     let (output, checked) = lower_file_import(
         "pub actor Worker {\n\
-         \x20   let id: i64;\n\
+         \x20   let id: i64,\n\
          \x20   receive fn identify() -> i64 { id }\n\
          }\n\
          pub supervisor Inner {\n\
-         \x20   child worker: Worker(id: 23) restart: temporary;\n\
+         \x20   child worker: Worker(id: 23) restart: temporary,\n\
          }\n",
         "import \"imported_supervisor_child_support/worker.hew\";",
     );
@@ -385,7 +391,7 @@ fn file_imported_supervisor_resolves_its_same_file_actor_by_exact_owner() {
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert_eq!(
         supervisor(&output, "Inner").children[0].ty,
-        format!("{WORKER_MODULE}.Worker")
+        child_handle(&format!("{WORKER_MODULE}.Worker"))
     );
 }
 
@@ -394,11 +400,14 @@ fn root_actor_keeps_authority_over_same_leaf_named_import_in_hir() {
     let (output, checked) = lower_named_import(
         None,
         "actor Worker { receive fn identify() -> i64 { 9 } }\n\
-         supervisor App { child worker: Worker restart: temporary; }",
+         supervisor App { child worker: Worker restart: temporary, }",
     );
     assert!(checked.errors.is_empty(), "{:#?}", checked.errors);
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
-    assert_eq!(supervisor(&output, "App").children[0].ty, "Worker");
+    assert_eq!(
+        supervisor(&output, "App").children[0].ty,
+        child_handle("Worker")
+    );
     assert!(output.module.items.iter().any(|item| matches!(
         item,
         HirItem::Actor(actor) if actor.name == "Worker" && actor.defining_module.is_none()

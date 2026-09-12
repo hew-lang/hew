@@ -1,0 +1,10 @@
+PASS: new deque is empty
+PASS: push_back and size
+PASS: peek front/back
+PASS: pop_front returns front
+PASS: pop_back returns back
+PASS: remaining element is 20
+PASS: push_front
+PASS: mixed front/back ops
+8/8 tests passed
+ALL PASS

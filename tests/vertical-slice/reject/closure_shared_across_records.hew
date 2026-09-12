@@ -3,7 +3,7 @@
 // of one environment (double free at scope exit). The second store is a
 // use-after-move anchored at the first.
 type Button {
-    on_click: fn(i64) -> i64;
+    on_click: fn(i64) -> i64,
 }
 
 fn handler(base: i64) -> fn(i64) -> i64 {

@@ -1,0 +1,11 @@
+[[case]]
+id = "exit-status-trap"
+intent = "A trap in `main` prints its typed failure line and exits 1; the private trap code is not the process status."
+source = "cases/exit-status-trap.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "before\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

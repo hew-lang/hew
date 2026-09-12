@@ -143,3 +143,105 @@ pub fn sin(x: f64) -> f64 {}
 /// Return the cosine of `x` (radians).
 #[intrinsic("math.cos")]
 pub fn cos(x: f64) -> f64 {}
+
+/// Return the tangent of `x` (radians).
+#[intrinsic("math.tan")]
+pub fn tan(x: f64) -> f64 {}
+
+/// Return the arcsine of `x`, in radians, in the range [-pi/2, pi/2].
+#[intrinsic("math.asin")]
+pub fn asin(x: f64) -> f64 {}
+
+/// Return the arccosine of `x`, in radians, in the range [0, pi].
+#[intrinsic("math.acos")]
+pub fn acos(x: f64) -> f64 {}
+
+/// Return the arctangent of `x`, in radians, in the range [-pi/2, pi/2].
+#[intrinsic("math.atan")]
+pub fn atan(x: f64) -> f64 {}
+
+/// Return the four-quadrant arctangent of `y / x`, in radians, using the
+/// signs of both arguments to select the correct quadrant.
+#[intrinsic("math.atan2")]
+pub fn atan2(y: f64, x: f64) -> f64 {
+    0.0
+}
+
+/// Return the hyperbolic sine of `x`.
+#[intrinsic("math.sinh")]
+pub fn sinh(x: f64) -> f64 {}
+
+/// Return the hyperbolic cosine of `x`.
+#[intrinsic("math.cosh")]
+pub fn cosh(x: f64) -> f64 {}
+
+/// Return the hyperbolic tangent of `x`.
+#[intrinsic("math.tanh")]
+pub fn tanh(x: f64) -> f64 {}
+
+/// Return 2 raised to the power `x`.
+#[intrinsic("math.exp2")]
+pub fn exp2(x: f64) -> f64 {}
+
+/// Return the base-2 logarithm of `x`.
+#[intrinsic("math.log2")]
+pub fn log2(x: f64) -> f64 {}
+
+/// Return the base-10 logarithm of `x`.
+#[intrinsic("math.log10")]
+pub fn log10(x: f64) -> f64 {}
+
+/// Return the natural logarithm of `1 + x`, accurate for `x` near zero.
+#[intrinsic("math.log1p")]
+pub fn log1p(x: f64) -> f64 {}
+
+/// Return `e^x - 1`, accurate for `x` near zero.
+#[intrinsic("math.expm1")]
+pub fn expm1(x: f64) -> f64 {}
+
+/// Return the cube root of `x`.
+#[intrinsic("math.cbrt")]
+pub fn cbrt(x: f64) -> f64 {}
+
+/// Return `sqrt(x*x + y*y)`, computed without spurious overflow or underflow.
+#[intrinsic("math.hypot")]
+pub fn hypot(x: f64, y: f64) -> f64 {
+    0.0
+}
+
+/// Return `a * b + c`, computed as one correctly-rounded ternary operation
+/// (fused multiply-add).
+#[intrinsic("math.fma")]
+pub fn fma(a: f64, b: f64, c: f64) -> f64 {
+    0.0
+}
+
+/// Return `x` truncated toward zero to the nearest integer value.
+#[intrinsic("math.trunc")]
+pub fn trunc(x: f64) -> f64 {}
+
+/// Return a value with the magnitude of `x` and the sign of `y`.
+#[intrinsic("math.copysign")]
+pub fn copysign(x: f64, y: f64) -> f64 {
+    0.0
+}
+
+/// Return `x` raised to the integer power `n`.
+///
+/// `n` is `i32`: LLVM's `powi` intrinsic is parameterized on a fixed integer
+/// width and does not generalize across widths the way `pow`'s float
+/// exponent does.
+#[intrinsic("math.powi")]
+pub fn powi(x: f64, n: i32) -> f64 {
+    0.0
+}
+
+/// Reinterpret the bits of `bits` as an `f64` (the inverse of `x.to_bits()`).
+///
+/// Spelled as a module function rather than the static call `f64.from_bits`:
+/// the checker does not admit a bare builtin type name as a call receiver
+/// today.
+#[intrinsic("math.from_bits")]
+pub fn from_bits(bits: u64) -> f64 {
+    0.0
+}

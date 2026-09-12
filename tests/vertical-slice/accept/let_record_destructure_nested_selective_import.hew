@@ -4,8 +4,8 @@ import let_record_destructure_selective_import_module;
 import let_record_destructure_selective_import_module.{ Vec2 };
 
 type Line {
-    a: let_record_destructure_selective_import_module.Vec2;
-    b: i64;
+    a: let_record_destructure_selective_import_module.Vec2,
+    b: i64,
 }
 
 fn main() {

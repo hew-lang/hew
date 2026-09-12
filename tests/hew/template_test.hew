@@ -28,8 +28,8 @@ fn _empty_template_returns_empty_string() {
 // ── {{.key}} scalar substitution ─────────────────────────────────────
 #[test]
 fn _dot_key_string_substituted() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "name", "Alice");
+    var ctx = template.new_ctx();
+    ctx.set_str("name", "Alice");
     let r = template.render("Hello {{.name}}!", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "Hello Alice!"),
@@ -39,8 +39,8 @@ fn _dot_key_string_substituted() {
 
 #[test]
 fn _dot_key_int_substituted() {
-    let ctx = template.new_ctx();
-    template.ctx_set_int(ctx, "count", 42);
+    var ctx = template.new_ctx();
+    ctx.set_int("count", 42);
     let r = template.render("count={{.count}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "count=42"),
@@ -50,8 +50,8 @@ fn _dot_key_int_substituted() {
 
 #[test]
 fn _dot_key_bool_true_substituted() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "flag", true);
+    var ctx = template.new_ctx();
+    ctx.set_bool("flag", true);
     let r = template.render("flag={{.flag}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "flag=true"),
@@ -71,9 +71,9 @@ fn _dot_key_missing_key_expands_to_empty() {
 
 #[test]
 fn _multiple_substitutions_in_one_template() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "a", "foo");
-    template.ctx_set_str(ctx, "b", "bar");
+    var ctx = template.new_ctx();
+    ctx.set_str("a", "foo");
+    ctx.set_str("b", "bar");
     let r = template.render("{{.a}} and {{.b}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "foo and bar"),
@@ -84,8 +84,8 @@ fn _multiple_substitutions_in_one_template() {
 // ── {{if}} / {{else}} / {{end}} ───────────────────────────────────────
 #[test]
 fn _if_true_branch_rendered() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "ok", true);
+    var ctx = template.new_ctx();
+    ctx.set_bool("ok", true);
     let r = template.render("{{if .ok}}yes{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "yes"),
@@ -95,8 +95,8 @@ fn _if_true_branch_rendered() {
 
 #[test]
 fn _if_false_branch_suppressed() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "ok", false);
+    var ctx = template.new_ctx();
+    ctx.set_bool("ok", false);
     let r = template.render("{{if .ok}}yes{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, ""),
@@ -106,8 +106,8 @@ fn _if_false_branch_suppressed() {
 
 #[test]
 fn _if_else_true_branch_rendered() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "active", "yes");
+    var ctx = template.new_ctx();
+    ctx.set_str("active", "yes");
     let r = template.render("{{if .active}}on{{else}}off{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "on"),
@@ -117,8 +117,8 @@ fn _if_else_true_branch_rendered() {
 
 #[test]
 fn _if_else_false_branch_rendered() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "active", false);
+    var ctx = template.new_ctx();
+    ctx.set_bool("active", false);
     let r = template.render("{{if .active}}on{{else}}off{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "off"),
@@ -128,8 +128,8 @@ fn _if_else_false_branch_rendered() {
 
 #[test]
 fn _if_surrounds_literal_text_correctly() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "show", "1");
+    var ctx = template.new_ctx();
+    ctx.set_str("show", "1");
     let r = template.render("A{{if .show}}B{{end}}C", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "ABC"),
@@ -140,12 +140,12 @@ fn _if_surrounds_literal_text_correctly() {
 // ── {{range}} / {{.}} ─────────────────────────────────────────────────
 #[test]
 fn _range_non_empty_list_iterates_all_elements() {
-    let ctx = template.new_ctx();
-    let items: Vec<string> = Vec.new();
+    var ctx = template.new_ctx();
+    var items: Vec<string> = Vec.new();
     items.push("a");
     items.push("b");
     items.push("c");
-    template.ctx_set_list(ctx, "xs", items);
+    ctx.set_list("xs", items);
     let r = template.render("{{range .xs}}[{{.}}]{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "[a][b][c]"),
@@ -155,9 +155,9 @@ fn _range_non_empty_list_iterates_all_elements() {
 
 #[test]
 fn _range_empty_list_produces_no_output() {
-    let ctx = template.new_ctx();
+    var ctx = template.new_ctx();
     let empty: Vec<string> = Vec.new();
-    template.ctx_set_list(ctx, "xs", empty);
+    ctx.set_list("xs", empty);
     let r = template.render("{{range .xs}}X{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, ""),
@@ -167,10 +167,10 @@ fn _range_empty_list_produces_no_output() {
 
 #[test]
 fn _range_dot_is_current_element() {
-    let ctx = template.new_ctx();
-    let items: Vec<string> = Vec.new();
+    var ctx = template.new_ctx();
+    var items: Vec<string> = Vec.new();
     items.push("hello");
-    template.ctx_set_list(ctx, "words", items);
+    ctx.set_list("words", items);
     let r = template.render("{{range .words}}{{.}}{{end}}", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "hello"),
@@ -180,10 +180,10 @@ fn _range_dot_is_current_element() {
 
 #[test]
 fn _range_surrounds_literal_text_correctly() {
-    let ctx = template.new_ctx();
-    let items: Vec<string> = Vec.new();
+    var ctx = template.new_ctx();
+    var items: Vec<string> = Vec.new();
     items.push("x");
-    template.ctx_set_list(ctx, "xs", items);
+    ctx.set_list("xs", items);
     let r = template.render("before{{range .xs}}{{.}}{{end}}after", ctx);
     match r {
         .Ok(s) => testing.assert_eq_str(s, "beforexafter"),
@@ -194,12 +194,12 @@ fn _range_surrounds_literal_text_correctly() {
 // ── Nested directives ─────────────────────────────────────────────────
 #[test]
 fn _nested_substitution_and_literal_in_range() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "sep", ", ");
-    let items: Vec<string> = Vec.new();
+    var ctx = template.new_ctx();
+    ctx.set_str("sep", ", ");
+    var items: Vec<string> = Vec.new();
     items.push("one");
     items.push("two");
-    template.ctx_set_list(ctx, "parts", items);
+    ctx.set_list("parts", items);
     // range body contains a literal plus {{.}} — the {{.sep}} lookup is for
     // the outer context scalar, not the range element
     let r = template.render("{{range .parts}}{{.}}{{end}}", ctx);
@@ -222,8 +222,8 @@ fn _malformed_unclosed_brace_returns_error() {
 
 #[test]
 fn _malformed_unclosed_if_returns_error() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "x", "1");
+    var ctx = template.new_ctx();
+    ctx.set_str("x", "1");
     let r = template.render("{{if .x}}body", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{if}}"),
@@ -233,10 +233,10 @@ fn _malformed_unclosed_if_returns_error() {
 
 #[test]
 fn _malformed_unclosed_range_returns_error() {
-    let ctx = template.new_ctx();
-    let items: Vec<string> = Vec.new();
+    var ctx = template.new_ctx();
+    var items: Vec<string> = Vec.new();
     items.push("a");
-    template.ctx_set_list(ctx, "xs", items);
+    ctx.set_list("xs", items);
     let r = template.render("{{range .xs}}body", ctx);
     match r {
         .Ok(_) => panic("expected error for unclosed {{range}}"),
@@ -296,9 +296,9 @@ fn _test_render_rejects_an_else_that_belongs_to_a_range() {
 
 #[test]
 fn _test_render_still_accepts_one_else_per_if() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "a", true);
-    template.ctx_set_bool(ctx, "c", false);
+    var ctx = template.new_ctx();
+    ctx.set_bool("a", true);
+    ctx.set_bool("c", false);
     let r = template.render("{{if .a}}A{{else}}B{{end}}{{if .c}}C{{else}}D{{end}}", ctx);
     match r {
         .Ok(out) => testing.assert_eq_str(out, "AD"),
@@ -308,9 +308,9 @@ fn _test_render_still_accepts_one_else_per_if() {
 
 #[test]
 fn _test_render_still_accepts_an_else_after_a_closed_inner_if() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "a", true);
-    template.ctx_set_bool(ctx, "b", false);
+    var ctx = template.new_ctx();
+    ctx.set_bool("a", true);
+    ctx.set_bool("b", false);
     let r = template.render("{{if .a}}{{if .b}}X{{else}}Y{{end}}{{else}}Z{{end}}", ctx);
     match r {
         .Ok(out) => testing.assert_eq_str(out, "Y"),
@@ -320,8 +320,8 @@ fn _test_render_still_accepts_an_else_after_a_closed_inner_if() {
 
 #[test]
 fn _test_render_selects_the_else_branch_with_a_spaced_end_tag() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "a", false);
+    var ctx = template.new_ctx();
+    ctx.set_bool("a", false);
     let r = template.render("{{if .a}}yes{{else}}no{{ end }}", ctx);
     match r {
         .Ok(out) => testing.assert_eq_str(out, "no"),

@@ -1,0 +1,10 @@
+[[case]]
+id = "string-ordering"
+intent = "String relational operators and standard sorting compare complete UTF-8 values including embedded NUL bytes."
+source = "cases/string-ordering.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ordered\n"
+exit = 0

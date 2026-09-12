@@ -1,0 +1,11 @@
+[[case]]
+id = "string_ops"
+intent = "String runtime helpers."
+source = "cases/string_ops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ell\nhello, world\n12\n"
+exit = 3

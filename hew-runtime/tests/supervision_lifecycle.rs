@@ -13,8 +13,9 @@
 //! Supervisor and standalone-actor handle lifecycle is funnelled through
 //! `hew_runtime_testkit::{TestSupervisor, TestActor}`. The runtime's child-
 //! management FFI (`HewChildSpec`, `hew_supervisor_add_child_spec`,
-//! `wait_restart`, `get_child_wait`, `set_child_state_drop`, …) is inherently
-//! raw and is annotated per-test below.
+//! `get_child_wait`, `set_child_state_drop`, …) and the Rust-only
+//! `test_wait_for_restart` restart observer are inherently raw and annotated
+//! per-test below.
 
 #![allow(
     clippy::undocumented_unsafe_blocks,
@@ -40,14 +41,13 @@ use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
     hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait,
     hew_supervisor_set_child_lifecycle, hew_supervisor_set_child_state_drop,
-    hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify,
-    hew_supervisor_wait_restart, HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED,
-    HEW_CIRCUIT_BREAKER_OPEN,
+    hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify, test_wait_for_restart,
+    HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED, HEW_CIRCUIT_BREAKER_OPEN,
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
 // HANG CEILING, not expected duration. These bound the logical-event waits
-// (`wait_for_down_count`, `wait_restart`, `wait_for_circuit_state`) — each
+// (`wait_for_down_count`, `test_wait_for_restart`, `wait_for_circuit_state`) — each
 // returns the instant its event lands, so a fast quiet run pays ~0.2s and only a
 // genuine never-arriving event reaches the ceiling. The supervisor crash/restart
 // dispatch runs on worker threads that are starved under `cargo llvm-cov`
@@ -62,7 +62,7 @@ use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSuperv
 // this headroom; coverage instrumentation needs it on every platform.
 const SUPERVISOR_TIMEOUT: Duration = Duration::from_secs(30);
 /// Same value as [`SUPERVISOR_TIMEOUT`] expressed in milliseconds for
-/// `hew_supervisor_wait_restart`'s `timeout_ms` parameter.
+/// `test_wait_for_restart`'s `timeout_ms` parameter.
 const SUPERVISOR_TIMEOUT_MS: u64 = 30_000;
 
 /// Global lock to serialize all tests in this file.
@@ -384,7 +384,7 @@ fn supervised_actor_crash_and_restart() {
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
 
         // Wait for restart cycle.
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor should report a completed restart cycle"
@@ -509,7 +509,7 @@ fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
         // Crash the child and wait for the supervisor to complete one restart.
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor should report a completed restart cycle"
@@ -615,8 +615,7 @@ fn circuit_breaker_trips_on_repeated_crashes() {
                 .expect("watcher should observe each crash");
 
             if crash_num == 0 {
-                let restart_count =
-                    hew_supervisor_wait_restart(sup.as_ptr(), 1, SUPERVISOR_TIMEOUT_MS);
+                let restart_count = test_wait_for_restart(sup.as_ptr(), 1, SUPERVISOR_TIMEOUT_MS);
                 assert!(
                     restart_count >= 1,
                     "first crash should complete a supervisor restart cycle"
@@ -710,7 +709,7 @@ fn link_delivers_exit_on_crash() {
 ///
 /// The EXIT-enqueue probe sends directly from the crash teardown path after
 /// `propagate_exit_to_links`, while a separate waiter thread sends when
-/// `hew_supervisor_wait_restart` observes restart completion. The test drains
+/// `test_wait_for_restart` observes restart completion. The test drains
 /// the shared channel and asserts the first signal is the EXIT enqueue, so the
 /// assertion is not constructed by sequentially waiting for EXIT before restart.
 #[test]
@@ -835,7 +834,7 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
             let restart_waiter_ready = Arc::clone(&restart_waiter_ready);
             std::thread::spawn(move || {
                 restart_waiter_ready.wait();
-                let restart_count = hew_supervisor_wait_restart(
+                let restart_count = test_wait_for_restart(
                     sup_addr as *mut hew_runtime::supervisor::HewSupervisor,
                     1,
                     5_000,
@@ -1173,6 +1172,10 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
             0,
             "add_child_spec must succeed"
         );
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), 0),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), 0, supervisor_child_state_drop);
 
         assert_eq!(sup.start(), 0, "supervisor must start");
@@ -1180,6 +1183,7 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
         let child = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
         assert!(!child.is_null(), "child must be spawned");
         let original_id = (*child).id;
+        *(*child).state.cast::<u64>() = 0;
 
         assert!(
             (*child).state_drop_fn.is_some(),
@@ -1189,7 +1193,7 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
 
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "supervisor must report at least one completed restart"
@@ -1208,6 +1212,7 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
             "restarted actor must have state_drop_fn registered"
         );
         assert!((*restarted).state_drop_borrowed.load(Ordering::Acquire));
+        assert_eq!(*(*restarted).state.cast::<u64>(), 0xDEAD_BEEF);
 
         hew_deterministic_reset();
     }
@@ -1267,11 +1272,16 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
 
         let idx = hew_supervisor_add_child_dynamic(sup.as_ptr(), &raw const spec);
         assert!(idx >= 0, "add_child_dynamic must succeed");
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), idx),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), idx, supervisor_child_state_drop);
 
         let child = hew_supervisor_get_child_wait(sup.as_ptr(), idx, 5_000);
         assert!(!child.is_null(), "dynamically added child must be spawned");
         let original_id = (*child).id;
+        *(*child).state.cast::<u64>() = 0;
 
         assert!(
             (*child).state_drop_fn.is_some(),
@@ -1281,7 +1291,7 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
 
         hew_fault_inject_crash(original_id, 1);
         hew_actor_send(child, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "supervisor must restart the dynamically added child"
@@ -1299,6 +1309,7 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
             "restarted dynamic child must have state_drop_fn registered"
         );
         assert!((*restarted).state_drop_borrowed.load(Ordering::Acquire));
+        assert_eq!(*(*restarted).state.cast::<u64>(), 0xCAFE_BABE);
 
         hew_deterministic_reset();
     }
@@ -1393,7 +1404,15 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
 
         assert_eq!(sup.start(), 0, "supervisor must start");
 
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), 0),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), 0, supervisor_child_state_drop);
+        assert_eq!(
+            hew_runtime::supervisor::hew_supervisor_set_child_state_borrowed(sup.as_ptr(), 1),
+            0
+        );
         hew_supervisor_set_child_state_drop(sup.as_ptr(), 1, supervisor_child_state_drop);
 
         let child0 = hew_supervisor_get_child_wait(sup.as_ptr(), 0, 5_000);
@@ -1419,9 +1438,12 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
         );
 
         let id0 = (*child0).id;
+        let id1 = (*child1).id;
+        *(*child0).state.cast::<u64>() = 0;
+        *(*child1).state.cast::<u64>() = 0;
         hew_fault_inject_crash(id0, 1);
         hew_actor_send(child0, 1, std::ptr::null_mut(), 0);
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 10_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 10_000);
         assert!(
             restart_count >= 1,
             "ONE_FOR_ALL supervisor must complete a restart cycle"
@@ -1440,6 +1462,8 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
             "restarted child 0 must have state_drop_fn registered"
         );
         assert!((*restarted0).state_drop_borrowed.load(Ordering::Acquire));
+        assert_ne!((*restarted0).id, id0);
+        assert_eq!(*(*restarted0).state.cast::<u64>(), 0xAAAA_0000);
 
         let restarted1 = hew_supervisor_get_child_wait(sup.as_ptr(), 1, 5_000);
         assert!(!restarted1.is_null(), "restarted child 1 must appear");
@@ -1448,6 +1472,8 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
             "restarted child 1 must have state_drop_fn registered"
         );
         assert!((*restarted1).state_drop_borrowed.load(Ordering::Acquire));
+        assert_ne!((*restarted1).id, id1);
+        assert_eq!(*(*restarted1).state.cast::<u64>(), 0xBBBB_0000);
 
         hew_deterministic_reset();
     }

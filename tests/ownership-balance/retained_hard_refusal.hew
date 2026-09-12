@@ -1,22 +1,35 @@
-type Pair {
-    a: string,
-    b: string,
+// The corpus's deliberate hard refusal: a record hands one owned field away
+// and then reads that same field back.
+//
+// Reading the sibling `label` is legal — the move took `booking.ticket` and
+// nothing else — so the refusal below is the only blocking diagnostic this
+// fixture produces.
+#[resource]
+type Ticket {
+    id: i64,
 }
 
-fn make_pair() -> Pair {
-    Pair {
-        a: string_concat("a-", "payload"),
-        b: string_concat("b-", "payload"),
+impl Ticket {
+    fn close(consume self) {
+        println(f"closing ticket {self.id}");
     }
 }
 
+type Booking {
+    ticket: Ticket,
+    label: string,
+}
+
+fn redeem(consume ticket: Ticket) -> i64 {
+    ticket.id
+}
+
 fn main() -> i64 {
-    let pair = make_pair();
-    let first = match pair {
-        Pair { a: value, b: _ } => value,
-    };
-    println(first);
-    let stale = pair.b;
-    println(stale);
+    let booking = Booking { ticket: Ticket { id: 7 }, label: "seat-1" };
+    let redeemed = redeem(booking.ticket);
+    println(f"redeemed {redeemed}");
+    println(booking.label);
+    let again = redeem(booking.ticket);
+    println(f"redeemed {again}");
     0
 }

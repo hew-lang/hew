@@ -3,12 +3,11 @@
 //! Flags `for i in 0 .. xs.len() { ... }` loops where the index `i` is used
 //! for nothing but indexing `xs` (`xs[i]` or `xs.get(i)`), so the loop is
 //! exactly equivalent to iterating the collection directly
-//! (`for x in xs { ... }`) for elements with semantic clone support.
+//! (`for x in xs { ... }`).
 //!
-//! The clone qualifier is load-bearing: direct iteration clones each element
-//! out through `VecIter::next`, so an element with no semantic clone (a
-//! resource handle, or a generic parameter with no `Clone` bound to prove one)
-//! gets no suggestion — the rewrite would not compile.
+//! A clone-free element iterates by borrow (D432), which is what `xs[i]` reads
+//! anyway, so the suggestion holds for it too. A `Vec<dyn Trait>` is the one
+//! exclusion: direct `for` over it is refused in favour of `into_iter()`.
 //!
 //! This is the compiler-side analogue of Clippy's `needless_range_loop`: a
 //! *use* check, not a global dataflow analysis. It runs on the typed AST in
@@ -31,8 +30,8 @@
 //! - at least one real `xs[i]` / `xs.get(i)` access must be present.
 
 use hew_parser::ast::{
-    BinaryOp, Block, CallArg, ElseBlock, Expr, Literal, MatchArm, Pattern, SelectArm, Spanned,
-    Stmt, StringPart,
+    condition_exprs, BinaryOp, Block, CallArg, ConditionItem, ElseBlock, Expr, Literal, MatchArm,
+    Pattern, SelectArm, Spanned, Stmt, StringPart,
 };
 
 use crate::builtin_type::BuiltinType;
@@ -65,14 +64,13 @@ fn find_in_block(ctx: &LintCtx, levels: &LintLevels, block: &Block, out: &mut Ve
 fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<TypeError>) {
     match stmt {
         Stmt::For {
-            is_await,
             pattern,
             iterable,
             body,
             ..
         } => {
             // Test this loop, then descend so nested range loops are found too.
-            try_flag(ctx, levels, *is_await, pattern, iterable, body, out);
+            try_flag(ctx, levels, pattern, iterable, body, out);
             find_in_expr(ctx, levels, &iterable.0, out);
             find_in_block(ctx, levels, body, out);
         }
@@ -83,8 +81,12 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
             find_in_expr(ctx, levels, &condition.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
         }
         Stmt::If {
@@ -99,15 +101,16 @@ fn find_in_stmt(ctx: &LintCtx, levels: &LintLevels, stmt: &Stmt, out: &mut Vec<T
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(eb) = else_body {
-                find_in_block(ctx, levels, eb, out);
+                find_in_expr(ctx, levels, &eb.0, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -190,15 +193,16 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(eb) = else_body {
-                find_in_block(ctx, levels, eb, out);
+                find_in_expr(ctx, levels, &eb.0, out);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -214,17 +218,20 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             find_in_expr(ctx, levels, &duration.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Expr::Timeout { expr, duration } => {
-            find_in_expr(ctx, levels, &expr.0, out);
-            find_in_expr(ctx, levels, &duration.0, out);
-        }
         Expr::Await(inner)
         | Expr::AwaitRestart(inner)
+        | Expr::ReturnError(inner)
         | Expr::Clone(inner)
         | Expr::PostfixTry(inner)
         | Expr::Unary { operand: inner, .. }
         | Expr::ForkChild { expr: inner, .. } => find_in_expr(ctx, levels, &inner.0, out),
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             find_in_expr(ctx, levels, &left.0, out);
             find_in_expr(ctx, levels, &right.0, out);
         }
@@ -242,15 +249,11 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
 fn try_flag(
     ctx: &LintCtx,
     levels: &LintLevels,
-    is_await: bool,
     pattern: &Spanned<Pattern>,
     iterable: &Spanned<Expr>,
     body: &Block,
     out: &mut Vec<TypeError>,
 ) {
-    if is_await {
-        return;
-    }
     // pattern must be a plain `i` binding.
     let Pattern::Identifier(idx) = &pattern.0 else {
         return;
@@ -284,14 +287,14 @@ fn try_flag(
     };
     // `coll` must be a collection where direct iteration is executable and
     // yields exactly the elements that `coll[i]` / `coll.get(i)` produce.
-    // Inside a generic template that is a question about the element type's
-    // declared bounds, not about the unsubstituted parameter — see
-    // `Checker::supports_direct_vec_iteration`.
+    // Since D432 that is every Vec element except a trait object: a clone-free
+    // element iterates by borrow, exactly as `coll[i]` reads it.
     let Some(coll_ty) = ctx.resolved_type_at(&receiver.1) else {
         return;
     };
     if !is_lintable_collection(&coll_ty)
-        || !vec_element_type(&coll_ty).is_some_and(|elem| ctx.supports_direct_vec_iteration(elem))
+        || vec_element_type(&coll_ty)
+            .is_none_or(|elem| matches!(elem, Ty::Error | Ty::TraitObject { .. }))
     {
         return;
     }
@@ -442,19 +445,20 @@ impl BodyScan<'_> {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                if self.pattern_shadows(&pattern.0) {
+                if self.condition_shadows(conditions) {
                     self.ok = false;
                     return;
                 }
-                self.expr(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.expr(&expr.0);
+                }
                 self.block(body);
                 if let Some(eb) = else_body {
-                    self.block(eb);
+                    self.expr(&eb.0);
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -487,16 +491,15 @@ impl BodyScan<'_> {
                 self.block(body);
             }
             Stmt::WhileLet {
-                pattern,
-                expr,
-                body,
-                ..
+                conditions, body, ..
             } => {
-                if self.pattern_shadows(&pattern.0) {
+                if self.condition_shadows(conditions) {
                     self.ok = false;
                     return;
                 }
-                self.expr(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.expr(&expr.0);
+                }
                 self.block(body);
             }
             Stmt::Break { value, .. } | Stmt::Return(value) => {
@@ -550,8 +553,7 @@ impl BodyScan<'_> {
                     self.ok = false;
                 }
             }
-            Expr::This
-            | Expr::QualifiedAssoc(_)
+            Expr::QualifiedAssoc(_)
             | Expr::Literal(_)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
@@ -580,20 +582,32 @@ impl BodyScan<'_> {
                     self.expr(&base.0);
                 }
             }
-            Expr::Binary { left, right, .. } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
                 self.expr(&left.0);
                 self.expr(&right.0);
             }
             Expr::Unary { operand, .. } => self.expr(&operand.0),
-            Expr::Clone(inner)
+            Expr::ReturnError(inner)
+            | Expr::Clone(inner)
             | Expr::Await(inner)
             | Expr::AwaitRestart(inner)
             | Expr::PostfixTry(inner)
             | Expr::Cast { expr: inner, .. }
             | Expr::FieldAccess { object: inner, .. } => self.expr(&inner.0),
-            Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+            Expr::Tuple(items) | Expr::Race(items) => {
                 for item in items {
                     self.expr(&item.0);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    self.expr(&element.expr().0);
                 }
             }
             Expr::ArrayRepeat { value, count } => {
@@ -623,19 +637,20 @@ impl BodyScan<'_> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                if self.pattern_shadows(&pattern.0) {
+                if self.condition_shadows(conditions) {
                     self.ok = false;
                     return;
                 }
-                self.expr(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.expr(&expr.0);
+                }
                 self.block(body);
                 if let Some(eb) = else_body {
-                    self.block(eb);
+                    self.expr(&eb.0);
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -673,13 +688,7 @@ impl BodyScan<'_> {
                     self.expr(&value.0);
                 }
             }
-            Expr::ForkChild { binding, expr } => {
-                if binding.as_deref() == Some(self.idx) || binding.as_deref() == Some(self.coll) {
-                    self.ok = false;
-                    return;
-                }
-                self.expr(&expr.0);
-            }
+            Expr::ForkChild { expr } => self.expr(&expr.0),
             Expr::ScopeDeadline { duration, body } => {
                 self.expr(&duration.0);
                 self.block(body);
@@ -718,10 +727,6 @@ impl BodyScan<'_> {
                     self.expr(&timeout.duration.0);
                     self.expr(&timeout.body.0);
                 }
-            }
-            Expr::Timeout { expr, duration } => {
-                self.expr(&expr.0);
-                self.expr(&duration.0);
             }
             Expr::Yield(value) | Expr::Return(value) => {
                 if let Some(v) = value {
@@ -800,6 +805,15 @@ impl BodyScan<'_> {
     fn pattern_shadows(&self, pattern: &Pattern) -> bool {
         pattern_binds(pattern, self.idx) || pattern_binds(pattern, self.coll)
     }
+
+    /// Whether any `let` operand of a pattern condition rebinds the loop's
+    /// index or collection name.
+    fn condition_shadows(&self, conditions: &[ConditionItem]) -> bool {
+        conditions.iter().any(|item| match item {
+            ConditionItem::Let { pattern, .. } => self.pattern_shadows(&pattern.0),
+            ConditionItem::Expr(_) => false,
+        })
+    }
 }
 
 fn is_ident(expr: &Expr, name: &str) -> bool {
@@ -859,7 +873,6 @@ fn expr_mentions(idx: &str, coll: &str, expr: &Expr) -> bool {
             expr_mentions(idx, coll, &object.0) || expr_mentions(idx, coll, &index.0)
         }
         Expr::FieldAccess { object, .. } => expr_mentions(idx, coll, &object.0),
-        Expr::This => false,
         _ => true,
     }
 }

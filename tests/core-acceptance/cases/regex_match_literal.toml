@@ -1,0 +1,11 @@
+[[case]]
+id = "regex_match_literal"
+intent = "Regex literals in match-arm predicate position."
+source = "cases/regex_match_literal.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "0\n1\n2\n"
+exit = 0

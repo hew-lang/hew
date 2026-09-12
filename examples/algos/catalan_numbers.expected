@@ -1,0 +1,10 @@
+PASS: C(0)=1
+PASS: C(1)=1
+PASS: C(2)=2
+PASS: C(3)=5
+PASS: C(4)=14
+PASS: C(5)=42
+PASS: C(6)=132
+---
+Passed: 7 / 7
+ALL PASS

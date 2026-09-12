@@ -1,10 +1,11 @@
 // A supervised incarnation runs init/on(start), handles a message, restarts,
 // repeats init/on(start), handles another message, then runs on(stop) during
 // supervisor teardown. Every hook mutates state outside a same-actor scheduler
-// dispatch transaction; the receive handler still runs inside one.
+// dispatch transaction; the receive handler still runs inside one. `value` is
+// initialized by init, so the child declaration names no arguments.
 
 actor Worker {
-    var value: i64;
+    var value: i64,
 
     init() {
         value = 10;
@@ -30,21 +31,21 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child worker: Worker(value: 7);
+    child worker: Worker,
 }
 
 fn main() -> i64 {
     let sup = spawn App;
-    let first = match await sup.worker.get() {
+    let first = match sup.worker.get() {
         .Ok(value) => value,
         .Err(_) => return 1,
     };
-    sup.worker.crash();
+    let _ = sup.worker.crash();
     let restarted = await_restart sup.worker;
-    let second = match await restarted.get() {
+    let second = match restarted.get() {
         .Ok(value) => value,
         .Err(_) => return 2,
     };

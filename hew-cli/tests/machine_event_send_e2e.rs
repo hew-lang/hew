@@ -19,40 +19,26 @@ use support::{run_hew_in, strip_ansi, tempdir};
 
 const POSITIVE: &str = r"machine TcpState {
     events {
-        Syn;
-        Ack;
-        Reset;
+        Syn,
+        Ack,
+        Reset,
     }
 
-    state Closed;
-    state SynReceived;
-    state Established;
+    state Closed,
+    state SynReceived,
+    state Established,
 
-    on Syn: Closed => SynReceived {
-        TcpState.SynReceived
-    }
-    on Ack: Closed => Closed reenter {
-        TcpState.Closed
-    }
-    on Syn: SynReceived => SynReceived reenter {
-        TcpState.SynReceived
-    }
-    on Ack: SynReceived => Established {
-        TcpState.Established
-    }
-    on Syn: Established => Established reenter {
-        TcpState.Established
-    }
-    on Ack: Established => Established reenter {
-        TcpState.Established
-    }
-    on Reset: _ => Closed {
-        TcpState.Closed
-    }
+    on Syn: Closed => SynReceived,
+    on Ack: Closed => Closed reenter,
+    on Syn: SynReceived => SynReceived reenter,
+    on Ack: SynReceived => Established,
+    on Syn: Established => Established reenter,
+    on Ack: Established => Established reenter,
+    on Reset: _ => Closed,
 }
 
 actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed;
+    var tcp: TcpState = TcpState.Closed,
 
     receive fn handle(event: TcpStateEvent) {
         tcp.step(event);
@@ -62,27 +48,23 @@ actor ConnectionManager {
 
 fn main() {
     let cm = spawn ConnectionManager;
-    cm.handle(TcpStateEvent.Syn);
-    cm.handle(TcpStateEvent.Ack);
+    let _ = cm.handle(TcpStateEvent.Syn);
+    let _ = cm.handle(TcpStateEvent.Ack);
     sleep(100ms);
 }
 ";
 
 const NEGATIVE: &str = r#"machine Sensor {
     events {
-        Reading { value: Rc<i64>; }
-        Reset;
+        Reading { value: Rc<i64>, }
+        ,Reset,
     }
 
-    state Idle;
-    state Active;
+    state Idle,
+    state Active,
 
-    on Reading: _ => Active {
-        Sensor.Active
-    }
-    on Reset: _ => Idle {
-        Sensor.Idle
-    }
+    on Reading: _ => Active,
+    on Reset: _ => Idle,
 }
 
 actor Collector {

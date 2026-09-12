@@ -17,7 +17,7 @@ fn count_items(xs: Vec<Item>) -> i64 {
 }
 
 fn round(k: i64) -> i64 {
-    let xs: Vec<Item> = Vec.new();
+    var xs: Vec<Item> = Vec.new();
     xs.push(Item { name: "alpha-" + string.from_int(k), n: k });
     xs.push(Item { name: "beta-" + string.from_int(k), n: k + 1 });
     count_items(xs)

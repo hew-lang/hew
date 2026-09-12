@@ -40,9 +40,7 @@ use self::workspace::{build_code_lenses, collect_project_workspace_symbols};
 
 // Items additionally needed by the test module (only compiled in test builds).
 #[cfg(test)]
-use self::analysis::{
-    analyze_document, build_diagnostics, diagnostic_data, populate_user_module_imports,
-};
+use self::analysis::{analyze_document, diagnostic_data};
 #[cfg(test)]
 use self::convert::analysis_symbol_kind_to_lsp;
 #[cfg(test)]
@@ -125,7 +123,6 @@ const TOKEN_TYPES: &[SemanticTokenType] = &[
 const TOKEN_MODIFIERS: &[SemanticTokenModifier] = &[
     SemanticTokenModifier::DECLARATION, // bit 0
     SemanticTokenModifier::READONLY,    // bit 1
-    SemanticTokenModifier::ASYNC,       // bit 2
 ];
 const RUN_TEST_COMMAND: &str = "hew.runTest";
 const REMOVE_UNUSED_IMPORTS_KIND: &str = "source.removeUnusedImports";
@@ -146,6 +143,10 @@ struct DocumentState {
     line_offsets: Vec<usize>,
     parse_result: ParseResult,
     type_output: Option<TypeCheckOutput>,
+    /// Files the resolved module graph reaches, so an edit to one of them
+    /// re-analyses this document. `None` when the frontend stopped before
+    /// resolution completed, which leaves the dependency set unknown.
+    dependency_uris: Option<Vec<Url>>,
     diagnostics_by_uri: DiagnosticMap,
 }
 
@@ -868,10 +869,8 @@ mod tests {
     #[test]
     fn diagnostics_from_parse_error() {
         let source = "fn {";
-        let result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let diags = build_diagnostics(&uri, source, &lo, &result, None);
+        let diags = analyzed_diagnostics(&uri, source);
         assert!(!diags.is_empty());
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::ERROR));
     }
@@ -884,6 +883,7 @@ mod tests {
             line_offsets: compute_line_offsets(""),
             parse_result,
             type_output: None,
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         let items = hew_analysis::completions::complete(
@@ -899,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn snippets_match_select_and_timeout_syntax() {
+    fn snippets_match_select_syntax() {
         let snippets = hew_analysis::completions::keyword_snippets();
         let select = snippets
             .iter()
@@ -918,15 +918,6 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains(" from "));
-
-        let timeout = snippets
-            .iter()
-            .find(|item| item.label == "timeout...")
-            .unwrap();
-        assert_eq!(
-            timeout.insert_text.as_deref(),
-            Some("${1:expr} | after ${2:duration}")
-        );
     }
 
     #[test]
@@ -965,15 +956,14 @@ mod tests {
     }
 
     #[test]
-    fn semantic_token_modifiers_async_and_const() {
-        let source = "const Y = 1; async fn foo() {}";
+    fn semantic_token_modifiers_const() {
+        let source = "const Y = 1;";
         let lo = compute_line_offsets(source);
         let analysis_tokens = hew_analysis::semantic_tokens::build_semantic_tokens(source);
         let tokens = analysis_tokens_to_lsp(source, &lo, &analysis_tokens)
             .expect("semantic token encoding should succeed");
         let decl = modifier_bit(&SemanticTokenModifier::DECLARATION);
         let readonly = modifier_bit(&SemanticTokenModifier::READONLY);
-        let async_mod = modifier_bit(&SemanticTokenModifier::ASYNC);
         // Find the `const` keyword and the identifier after it.
         let const_tok = &tokens[0]; // `const`
         assert_eq!(const_tok.token_type, hew_analysis::token_types::KEYWORD);
@@ -988,16 +978,6 @@ mod tests {
             y_tok.token_modifiers_bitset & readonly,
             readonly,
             "Y should be READONLY"
-        );
-
-        // Find `async` keyword — should have ASYNC modifier.
-        let async_tok = tokens.iter().find(|t| {
-            t.token_type == hew_analysis::token_types::KEYWORD
-                && t.token_modifiers_bitset & async_mod == async_mod
-        });
-        assert!(
-            async_tok.is_some(),
-            "should find async keyword with ASYNC modifier"
         );
     }
 
@@ -1097,7 +1077,7 @@ mod tests {
         // Place the cursor right after the dot (before the field name) to simulate
         // the user typing `p.` and requesting completions.
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1112,6 +1092,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         // Offset right after the dot in `p.x`
@@ -1156,6 +1137,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         let dot_pos = source.find("s.recv").unwrap() + 2;
@@ -1185,9 +1167,10 @@ mod tests {
             labels.contains(&"collect"),
             "expected method 'collect' in completions, got: {labels:?}"
         );
+        // `lines`, `chunks` and `take` are stream methods on the final path.
         assert!(
-            !labels.contains(&"lines"),
-            "method 'lines' should not appear in completions, got: {labels:?}"
+            labels.contains(&"lines"),
+            "expected method 'lines' in completions, got: {labels:?}"
         );
         let recv_item = items
             .iter()
@@ -1204,9 +1187,13 @@ mod tests {
     }
 
     #[test]
-    fn dot_completions_for_actor_handle_surface_send_primitives_and_handlers() {
-        // Completing on an actor handle surfaces LocalPid's own impl methods
-        // and the actor's declared receive handlers.
+    fn dot_completions_for_actor_handle_surface_its_receive_handlers() {
+        // An actor is the type of its handle, so a dot on a handle offers the
+        // actor's declared receive handlers. There is no handle wrapper with
+        // its own impl block any more: `send` was a method on the retired
+        // `LocalPid<T>` and the checker refuses `.send` on a handle whose actor
+        // declares no `receive fn send`, so offering it would teach a call that
+        // does not compile. Internal state fields stay hidden.
         let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -1214,7 +1201,7 @@ mod tests {
         let registry = hew_types::module_registry::ModuleRegistry::new(vec![repo_root]);
         let source = concat!(
             "actor Counter {\n",
-            "    count: i64;\n",
+            "    count: i64,\n",
             "    receive fn increment(n: i64) { count = count + n; }\n",
             "}\n",
             "fn main() {\n",
@@ -1235,6 +1222,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         // Cursor right after `c.` in `c.increment(1)`.
@@ -1247,8 +1235,9 @@ mod tests {
         );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert!(
-            labels.contains(&"send"),
-            "expected `send` in actor-handle completions, got: {labels:?}"
+            !labels.contains(&"send"),
+            "`send` is not a method on an actor handle; delivery is by handler \
+             name, got: {labels:?}"
         );
         let removed_method = ["to_remote", "_via"].concat();
         assert!(
@@ -1268,7 +1257,7 @@ mod tests {
 
     #[test]
     fn completions_enum_variant_after_dot() {
-        let source = "enum Color { Blue; Point { x: i32, y: i32 }; Rgb(u8, u8, u8); }\nfn main() { let color = Color.Blue; }";
+        let source = "enum Color { Blue, Point { x: i32, y: i32 }, Rgb(u8, u8, u8), }\nfn main() { let color = Color.Blue; }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1288,6 +1277,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         let offset = source.find("Color.Blue").unwrap() + "Color.".len();
@@ -1318,6 +1308,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         let spawn_offset = source.find("spawn ").unwrap() + 7;
@@ -1362,6 +1353,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         // Position the cursor immediately after the trailing `is`.
@@ -1403,6 +1395,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         let offset = source.find("0 }").unwrap();
@@ -1443,6 +1436,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
         let offset = source.rfind("outside\n").unwrap();
@@ -1463,8 +1457,8 @@ mod tests {
     #[test]
     fn completions_cover_type_impl_methods_if_else_match_and_patterns() {
         let source = r"
-type Point { x: i32; y: i32; }
-enum Result { Ok(i32); Err(i32); }
+type Point { x: i32, y: i32, }
+enum Result { Ok(i32), Err(i32), }
 
 type Worker {
     fn process(input: i32, point: Point, result: Result) -> i32 {
@@ -1507,6 +1501,7 @@ impl Worker {
             line_offsets: compute_line_offsets(source),
             parse_result,
             type_output: None,
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         };
 
@@ -1560,7 +1555,7 @@ impl Worker {
 
     #[test]
     fn goto_def_receive_method() {
-        let source = "actor Counter {\n    count: i32;\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
+        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) {\n        count = count + n;\n    }\n}\nfn main() { let c = spawn Counter(count: 0); c.increment(1); }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let call_offset = source.rfind("increment").unwrap();
@@ -1611,7 +1606,7 @@ impl Worker {
     #[test]
     fn goto_def_resolves_struct_field_access_fallback() {
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let doc = make_typed_doc(source);
         let offset = source.rfind("p.x").unwrap() + 2;
         let word = word_at_offset(source, offset).unwrap();
@@ -1792,7 +1787,7 @@ impl Worker {
     #[test]
     fn hover_on_type_name() {
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let parse_result = hew_parser::parse(source);
         let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
         let type_output = checker.check_program(&parse_result.program);
@@ -1855,7 +1850,7 @@ impl Worker {
     #[test]
     fn folding_ranges_for_actor() {
         let source = r"actor Counter {
-    count: i32;
+    count: i32,
     receive fn increment(n: i32) {
         count = count + n;
     }
@@ -1939,7 +1934,7 @@ impl Worker {
 
     #[test]
     fn type_hierarchy_item_for_struct() {
-        let source = "type Point { x: i32; y: i32 }";
+        let source = "type Point { x: i32, y: i32 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
@@ -2403,16 +2398,16 @@ impl Worker {
     #[test]
     fn workspace_symbols_include_fields_states_and_events() {
         let source = r"type Point {
-    x: i32;
+    x: i32,
 }
 
 machine Traffic {
     events {
-        Start;
+        Start,
     }
 
-    state Idle;
-    on Start: Idle => .Idle;
+    state Idle,
+    on Start: Idle => .Idle,
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -2550,12 +2545,8 @@ machine Traffic {
     #[test]
     fn diagnostics_from_type_errors() {
         let source = "fn main() -> i32 { undefined_var }";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        let diags = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output));
+        let diags = analyzed_diagnostics(&uri, source);
         assert!(
             !diags.is_empty(),
             "expected diagnostics for undefined variable"
@@ -2570,12 +2561,8 @@ machine Traffic {
     #[test]
     fn diagnostics_tag_unused_warnings_as_unnecessary() {
         let source = "fn main() -> i32 { let unused = 42; 0 }";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        let diag = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output))
+        let diag = analyzed_diagnostics(&uri, source)
             .into_iter()
             .find(|diag| {
                 diag.data
@@ -2597,12 +2584,8 @@ machine Traffic {
     #[test]
     fn diagnostics_include_suggestions_in_message() {
         let source = "fn main() -> i32 { let counter = 42; counte }";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        let diags = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output));
+        let diags = analyzed_diagnostics(&uri, source);
         // Look for a diagnostic that contains "Did you mean" (suggestion text)
         let has_suggestion = diags
             .iter()
@@ -2628,10 +2611,8 @@ machine Traffic {
     fn diagnostics_parser_warning_severity() {
         // Empty source produces no diagnostics
         let source = "";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let diags = build_diagnostics(&uri, source, &lo, &parse_result, None);
+        let diags = analyzed_diagnostics(&uri, source);
         assert!(diags.is_empty(), "empty source should have no diagnostics");
     }
 
@@ -2798,7 +2779,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_actor_with_receive() {
-        let source = "actor Counter {\n    count: i32;\n    receive fn increment(n: i32) { count = count + n; }\n}";
+        let source = "actor Counter {\n    count: i32,\n    receive fn increment(n: i32) { count = count + n; }\n}";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2814,7 +2795,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_for_enum() {
-        let source = "enum Colour { Red; Green; Blue; }";
+        let source = "enum Colour { Red, Green, Blue, }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2830,7 +2811,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_with_children() {
-        let source = "type Point { x: i32; y: i32; fn distance() -> i32 { 0 } }";
+        let source = "type Point { x: i32, y: i32, fn distance() -> i32 { 0 } }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -2854,16 +2835,16 @@ machine Traffic {
     #[test]
     fn document_symbols_use_child_definition_ranges() {
         let source = r"type Point {
-    x: i32;
+    x: i32,
 }
 
 machine Traffic {
     events {
-        Start;
+        Start,
     }
 
-    state Idle;
-    on Start: Idle => .Idle;
+    state Idle,
+    on Start: Idle => .Idle,
 }";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -3045,12 +3026,9 @@ machine Traffic {
     fn code_actions_for_undefined_variable() {
         use hew_analysis::code_actions::{build_code_actions, DiagnosticInfo};
         let source = "fn main() -> i32 { let counter = 42; counte }";
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        let diags = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output));
+        let lo = compute_line_offsets(source);
+        let diags = analyzed_diagnostics(&uri, source);
         // Find a diagnostic with suggestions
         let diag_with_suggestions = diags.iter().find(|d| {
             d.data
@@ -3095,19 +3073,16 @@ machine Traffic {
     fn code_actions_for_non_exhaustive_match() {
         use hew_analysis::code_actions::{build_code_actions, DiagnosticInfo};
         let source = r#"
-            enum Colour { Red; Blue; }
+            enum Colour { Red, Blue, }
             fn label(colour: Colour) -> string {
                 match colour {
                     .Red => "red",
                 }
             }
         "#;
-        let parse_result = hew_parser::parse(source);
-        let lo = compute_line_offsets(source);
         let uri = Url::parse("file:///test.hew").unwrap();
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        let diag = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output))
+        let lo = compute_line_offsets(source);
+        let diag = analyzed_diagnostics(&uri, source)
             .into_iter()
             .find(|diag| {
                 diag.data
@@ -3267,11 +3242,7 @@ machine Traffic {
         // (acceptance criterion for #1579).
         let source = "fn main() -> i32 { let counter = 42; counte }";
         let uri = Url::parse("file:///test.hew").unwrap();
-        let lo = compute_line_offsets(source);
-        let parse_result = hew_parser::parse(source);
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parse_result.program);
-        let diags = build_diagnostics(&uri, source, &lo, &parse_result, Some(&type_output));
+        let diags = analyzed_diagnostics(&uri, source);
 
         let diag = diags
             .into_iter()
@@ -3416,6 +3387,8 @@ machine Traffic {
 
     // ── cross-file goto-definition tests ────────────────────────────
 
+    use super::analysis::tests::make_temp_workspace_dir;
+
     fn make_doc(source: &str) -> DocumentState {
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
@@ -3424,8 +3397,16 @@ machine Traffic {
             line_offsets: lo,
             parse_result,
             type_output: None,
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         }
+    }
+
+    /// Diagnostics the LSP publishes for `uri`, through the shared frontend
+    /// driver, which is the path a real client exercises.
+    fn analyzed_diagnostics(uri: &Url, source: &str) -> Vec<Diagnostic> {
+        let mut document = analyze_document(uri, source, &DashMap::new(), &[]);
+        document.diagnostics_by_uri.remove(uri).unwrap_or_default()
     }
 
     fn make_typed_doc(source: &str) -> DocumentState {
@@ -3438,6 +3419,7 @@ machine Traffic {
             line_offsets: lo,
             parse_result,
             type_output: Some(type_output),
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         }
     }
@@ -3465,18 +3447,20 @@ machine Traffic {
         }
     }
 
+    /// Whether analyzing `uri` left an error anywhere it published.
+    ///
+    /// The frontend stops at the first import it cannot use and locates the
+    /// diagnostic in the file that carries the problem: the importer for a
+    /// missing module, the imported file for one that does not parse. Both
+    /// land in the analyzing document's own map.
     fn has_unresolved_import(documents: &DashMap<Url, DocumentState>, uri: &Url) -> bool {
-        documents
-            .get(uri)
-            .and_then(|doc| {
-                doc.type_output.as_ref().map(|output| {
-                    output
-                        .errors
-                        .iter()
-                        .any(|error| error.kind == TypeErrorKind::UnresolvedImport)
-                })
-            })
-            .is_some_and(|has_unresolved| has_unresolved)
+        documents.get(uri).is_some_and(|document| {
+            document
+                .diagnostics_by_uri
+                .values()
+                .flatten()
+                .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+        })
     }
 
     /// Returns the `ImportDecl`s extracted from the parsed program, mirroring
@@ -4542,13 +4526,24 @@ machine Traffic {
 
     // ── In-memory module parity tests ───────────────────────────────
 
-    /// `populate_user_module_imports` prefers the in-memory buffer for an open
-    /// sibling module over anything that might be on disk.
+    /// Error-severity diagnostics the LSP publishes for `uri`; lints and
+    /// warnings are not what these module-resolution tests are about.
+    fn published_errors(document: &DocumentState, uri: &Url) -> Vec<String> {
+        document
+            .diagnostics_by_uri
+            .get(uri)
+            .into_iter()
+            .flatten()
+            .filter(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR))
+            .map(|diagnostic| diagnostic.message.clone())
+            .collect()
+    }
+
+    /// An open buffer for a sibling module is what the importing document is
+    /// checked against, so a module that exists only in the editor resolves.
     #[test]
-    fn populate_prefers_open_document_over_disk() {
-        // Simulate: main.hew imports shapes::circle.
-        // circle.hew is "open" in the editor with a pub function `area`.
-        let main_source = "import shapes.circle;\nfn main() { circle.area(1.0) }";
+    fn open_sibling_module_resolves_for_the_importing_document() {
+        let main_source = "import shapes.circle;\nfn main() { circle.area(1.0); }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4557,47 +4552,18 @@ machine Traffic {
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url, make_doc(circle_source));
 
-        let mut parse_result = hew_parser::parse(main_source);
+        let document = analyze_document(&main_url, main_source, &documents, &[]);
+        let errors = published_errors(&document, &main_url);
         assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors in main_source: {:?}",
-            parse_result.errors
-        );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        // The import should now have resolved_items populated from the in-memory buffer.
-        let import_decl = parse_result
-            .program
-            .items
-            .iter()
-            .find_map(|(item, _)| {
-                if let hew_parser::ast::Item::Import(d) = item {
-                    Some(d)
-                } else {
-                    None
-                }
-            })
-            .expect("import should be present");
-
-        assert!(
-            import_decl.resolved_items.is_some(),
-            "resolved_items should be populated from the open document"
-        );
-        let resolved = import_decl.resolved_items.as_ref().unwrap();
-        let has_area_fn = resolved.iter().any(
-            |(item, _)| matches!(item, hew_parser::ast::Item::Function(f) if f.name == "area"),
-        );
-        assert!(
-            has_area_fn,
-            "resolved items should include the 'area' function from circle.hew"
+            errors.is_empty(),
+            "an open sibling module must resolve, got: {errors:?}"
         );
     }
 
-    /// `populate_user_module_imports` also resolves string-literal file imports
-    /// from the in-memory document store before type checking.
+    /// The same rule for a string-literal file import.
     #[test]
-    fn populate_prefers_open_document_for_file_import() {
-        let main_source = "import \"shapes/circle.hew\";\nfn main() { area(1.0) }";
+    fn open_file_import_resolves_for_the_importing_document() {
+        let main_source = "import \"shapes/circle.hew\";\nfn area_check() -> f64 { area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4606,111 +4572,11 @@ machine Traffic {
         let documents: DashMap<Url, DocumentState> = DashMap::new();
         documents.insert(circle_url, make_doc(circle_source));
 
-        let mut parse_result = hew_parser::parse(main_source);
+        let document = analyze_document(&main_url, main_source, &documents, &[]);
+        let errors = published_errors(&document, &main_url);
         assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors in main_source: {:?}",
-            parse_result.errors
-        );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        let import_decl = parse_result
-            .program
-            .items
-            .iter()
-            .find_map(|(item, _)| {
-                if let hew_parser::ast::Item::Import(d) = item {
-                    Some(d)
-                } else {
-                    None
-                }
-            })
-            .expect("import should be present");
-
-        assert!(
-            import_decl.resolved_items.is_some(),
-            "resolved_items should be populated from the open file import document"
-        );
-        let resolved = import_decl.resolved_items.as_ref().unwrap();
-        let has_area_fn = resolved.iter().any(
-            |(item, _)| matches!(item, hew_parser::ast::Item::Function(f) if f.name == "area"),
-        );
-        assert!(
-            has_area_fn,
-            "resolved items should include the 'area' function from shapes/circle.hew"
-        );
-    }
-
-    /// Type-checking a file that imports an open sibling module should produce
-    /// no `UnresolvedImport` error when the sibling is in the document store.
-    #[test]
-    fn typecheck_sees_open_sibling_module_no_unresolved_import() {
-        let main_source = "import shapes.circle;\nfn main() { circle.area(1.0) }";
-        let circle_source = "pub fn area(r: f64) -> f64 { r }";
-
-        let main_url = make_test_uri("/fake/project/main.hew");
-        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
-
-        let documents: DashMap<Url, DocumentState> = DashMap::new();
-        documents.insert(circle_url, make_doc(circle_source));
-
-        let mut parse_result = hew_parser::parse(main_source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            parse_result.errors
-        );
-
-        // Populate resolved_items from the documents map.
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parse_result.program);
-
-        let unresolved: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UnresolvedImport))
-            .collect();
-        assert!(
-            unresolved.is_empty(),
-            "should have no UnresolvedImport when sibling is open in documents: {unresolved:?}"
-        );
-    }
-
-    /// Type-checking with an open file import should not emit false editor
-    /// errors once the imported file has been loaded into `resolved_items`.
-    #[test]
-    fn typecheck_sees_open_file_import_no_unresolved_import() {
-        let main_source = "import \"shapes/circle.hew\";\nfn main() -> f64 { area(1.0) }";
-        let circle_source = "pub fn area(r: f64) -> f64 { r }";
-
-        let main_url = make_test_uri("/fake/project/main.hew");
-        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
-
-        let documents: DashMap<Url, DocumentState> = DashMap::new();
-        documents.insert(circle_url, make_doc(circle_source));
-
-        let mut parse_result = hew_parser::parse(main_source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            parse_result.errors
-        );
-
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parse_result.program);
-
-        let hard_errors: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| e.severity == hew_types::error::Severity::Error)
-            .collect();
-        assert!(
-            hard_errors.is_empty(),
-            "open file import should not produce hard diagnostics: {hard_errors:?}"
+            errors.is_empty(),
+            "an open file-import target must resolve, got: {errors:?}"
         );
     }
 
@@ -4819,7 +4685,7 @@ machine Traffic {
 
     #[test]
     fn typecheck_opening_package_directory_import_target_refreshes_open_importer_diagnostics() {
-        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn area_check() -> f64 { circle.area(1.0) }";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
         let main_url = make_test_uri("/fake/project/main.hew");
@@ -4852,7 +4718,7 @@ machine Traffic {
 
     #[test]
     fn typecheck_changing_package_directory_import_target_refreshes_open_importer_diagnostics() {
-        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.area(1.0) }";
+        let main_source = "import shapes.circle;\nfn area_check() -> f64 { circle.area(1.0) }";
         let invalid_circle_source = "pub fn area(";
         let circle_source = "pub fn area(r: f64) -> f64 { r }";
 
@@ -4885,35 +4751,18 @@ machine Traffic {
         );
     }
 
-    /// Without the in-memory document, a missing sibling module produces an
-    /// `UnresolvedImport` diagnostic (fail-closed behaviour preserved).
+    /// Negative control: a sibling module that is neither open nor on disk is
+    /// reported unfound, the same refusal `hew check` gives.
     #[test]
-    fn typecheck_emits_unresolved_import_for_missing_sibling() {
-        let main_source = "import shapes.missing_module;\nfn main() { missing_module.foo() }";
+    fn a_missing_sibling_module_is_reported_unfound() {
+        let main_source = "import shapes.missing_module;\nfn main() { missing_module.foo(); }";
         let main_url = make_test_uri("/fake/project/main.hew");
 
-        // Empty documents map — nothing is open.
-        let documents: DashMap<Url, DocumentState> = DashMap::new();
-
-        let mut parse_result = hew_parser::parse(main_source);
+        let document = analyze_document(&main_url, main_source, &DashMap::new(), &[]);
+        let diagnostics = published_errors(&document, &main_url);
         assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            parse_result.errors
-        );
-
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parse_result.program);
-
-        let has_unresolved = output
-            .errors
-            .iter()
-            .any(|e| matches!(e.kind, hew_types::error::TypeErrorKind::UnresolvedImport));
-        assert!(
-            has_unresolved,
-            "should emit UnresolvedImport for a sibling module not in documents or on disk"
+            diagnostics.iter().any(|message| message.contains("not found")),
+            "a module in neither the editor nor the filesystem must be reported unfound, got: {diagnostics:?}"
         );
     }
 
@@ -4932,83 +4781,122 @@ machine Traffic {
         assert!(
             util_diags
                 .iter()
-                .any(|diag| diag.message.contains("unresolved import 'missing.thing'")),
+                .any(|diag| diag.message.contains("module `missing.thing` not found")),
             "expected dangling import diagnostic, got: {util_diags:?}"
         );
     }
 
+    /// An import cycle stops the frontend, so the editor shows the compiler's
+    /// positioned cycle diagnostic on the file carrying the closing edge with
+    /// a note on the other member, exactly as `hew check` renders it.
     #[test]
-    fn refresh_document_surfaces_module_cycle_diagnostic_and_keeps_per_file_analysis() {
-        let main_source = "import \"foo.hew\";\nfn main() -> i32 { true }";
-        let foo_source = "import \"main.hew\";\npub fn exported() -> i32 { true }";
-        let main_url = make_test_uri("/fake/project/main.hew");
-        let foo_url = make_test_uri("/fake/project/foo.hew");
+    fn refresh_document_surfaces_the_compilers_module_cycle_diagnostic() {
+        let root = make_temp_workspace_dir(&[
+            ("main.hew", "import \"foo.hew\";\nfn main() -> i32 { 0 }\n"),
+            (
+                "foo.hew",
+                "import \"main.hew\";\npub fn exported() -> i32 { 1 }\n",
+            ),
+        ]);
+        #[cfg(unix)]
+        let editor_root = {
+            let alias = root.join("editor");
+            std::os::unix::fs::symlink(&root, &alias).unwrap();
+            alias
+        };
+        #[cfg(not(unix))]
+        let editor_root = root.clone();
+        let main_url =
+            Url::from_file_path(editor_root.join("main.hew")).expect("workspace path is absolute");
+        let foo_url =
+            Url::from_file_path(editor_root.join("foo.hew")).expect("workspace path is absolute");
+        let main_source = std::fs::read_to_string(root.join("main.hew")).expect("read main.hew");
+        let foo_source = std::fs::read_to_string(root.join("foo.hew")).expect("read foo.hew");
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
+        refresh_document_and_dependents(&main_url, &main_source, &documents, &[]);
+        let refreshed = refresh_document_and_dependents(&foo_url, &foo_source, &documents, &[]);
 
-        refresh_document_and_dependents(&main_url, main_source, &documents, &[]);
-        let refreshed = refresh_document_and_dependents(&foo_url, foo_source, &documents, &[]);
+        let foo_diagnostics = refreshed
+            .iter()
+            .find(|(uri, _)| uri == &foo_url)
+            .map(|(_, diagnostics)| diagnostics)
+            .expect("the cycle's closing edge belongs to foo.hew");
+        let cycle = foo_diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.message.contains("import cycle"))
+            .expect("expected the compiler's cycle diagnostic on foo.hew");
+        assert!(
+            cycle
+                .related_information
+                .as_ref()
+                .is_some_and(|notes| notes.iter().any(|note| note.location.uri == main_url)),
+            "the cycle diagnostic must point at the other member, got: {:?}",
+            cycle.related_information
+        );
 
-        for expected_uri in [&main_url, &foo_url] {
-            let diagnostics = refreshed
-                .iter()
-                .find(|(uri, _)| uri == expected_uri)
-                .map(|(_, diagnostics)| diagnostics)
-                .expect("cycle refresh must publish diagnostics for both open cycle members");
-            assert!(
-                diagnostics.iter().any(|diagnostic| {
-                    diagnostic.source.as_deref() == Some("hew-lsp")
-                        && diagnostic.message.contains("import cycle detected")
-                        && diagnostic
-                            .message
-                            .contains("falling back to per-file analysis")
-                }),
-                "expected cycle diagnostic for {expected_uri:?}, got: {diagnostics:?}"
-            );
-            assert!(
-                diagnostics
-                    .iter()
-                    .any(|diagnostic| diagnostic.source.as_deref() == Some("hew-types")),
-                "expected per-file type-check diagnostics for {expected_uri:?}, got: {diagnostics:?}"
-            );
-        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// `populate_user_module_imports` leaves `resolved_items` as None for a
-    /// module that is absent from both the document store and the disk, so
-    /// the type checker can emit a proper diagnostic.
+    #[cfg(unix)]
     #[test]
-    fn populate_leaves_resolved_items_none_for_missing_module() {
-        let main_source = "import shapes.nonexistent;\nfn main() { 0 }";
-        let main_url = make_test_uri("/fake/project/main.hew");
-
-        let documents: DashMap<Url, DocumentState> = DashMap::new();
-
-        let mut parse_result = hew_parser::parse(main_source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            parse_result.errors
-        );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        let import_decl = parse_result
-            .program
-            .items
+    fn symlinked_open_import_preserves_related_locations_and_refreshes_dependents() {
+        let main_source = "import \"dep.hew\";\nfn main() -> i64 { dep.dup() }\n";
+        let disk_source = "pub fn dup() -> i64 { 1 }\n";
+        let duplicate_source = "pub fn dup() -> i64 { 1 }\npub fn dup() -> i64 { 2 }\n";
+        let root = make_temp_workspace_dir(&[("main.hew", main_source), ("dep.hew", disk_source)]);
+        let alias = root.join("editor");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let main_uri = Url::from_file_path(alias.join("main.hew")).unwrap();
+        let dep_uri = Url::from_file_path(alias.join("dep.hew")).unwrap();
+        let documents = DashMap::new();
+        refresh_document_and_dependents(&dep_uri, duplicate_source, &documents, &[]);
+        let published = refresh_document_and_dependents(&main_uri, main_source, &documents, &[]);
+        let diagnostic = published
             .iter()
-            .find_map(|(item, _)| {
-                if let hew_parser::ast::Item::Import(d) = item {
-                    Some(d)
-                } else {
-                    None
-                }
+            .find(|(uri, _)| *uri == dep_uri)
+            .and_then(|(_, diagnostics)| {
+                diagnostics.iter().find(|diagnostic| {
+                    diagnostic.source.as_deref() == Some("hew-types")
+                        && diagnostic
+                            .related_information
+                            .as_ref()
+                            .is_some_and(|notes| !notes.is_empty())
+                })
             })
-            .expect("import should be present");
+            .expect("the imported unsaved duplicate must be diagnosed on its open URI");
+        let note = &diagnostic.related_information.as_ref().unwrap()[0];
+        assert_eq!(note.location.uri, dep_uri);
+        assert_ne!(diagnostic.range.start.line, note.location.range.start.line);
 
+        let changed = "pub fn dup() -> bool { true }\n";
+        let published = refresh_document_and_dependents(&dep_uri, changed, &documents, &[]);
+        let main_diagnostics = &published
+            .iter()
+            .find(|(uri, _)| *uri == main_uri)
+            .expect("editing an aliased dependency must refresh its importer")
+            .1;
         assert!(
-            import_decl.resolved_items.is_none(),
-            "resolved_items must stay None for a module not in documents or on disk"
+            main_diagnostics.iter().any(|diagnostic| {
+                diagnostic.source.as_deref() == Some("hew-types")
+                    && diagnostic.severity == Some(DiagnosticSeverity::ERROR)
+            }),
+            "the importer must observe the unsaved return type: {main_diagnostics:?}"
         );
+
+        let published = close_document_and_dependents(&dep_uri, &documents, &[]);
+        let main_diagnostics = &published
+            .iter()
+            .find(|(uri, _)| *uri == main_uri)
+            .expect("closing an aliased dependency must refresh its importer from disk")
+            .1;
+        assert!(
+            main_diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.severity != Some(DiagnosticSeverity::ERROR)),
+            "the on-disk integer return must restore the importer: {main_diagnostics:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     // ── Transitive-refresh regression tests ──────────────────────────────
@@ -5023,9 +4911,9 @@ machine Traffic {
         // C exports `provided`.
         // B imports C and re-exports `provided` as `b_provided`.
         // A imports B and calls `b_provided`.
-        let c_source = "pub fn provided() -> i32 { 1 }";
-        let b_source = "import \"c.hew\";\npub fn b_provided() -> i32 { provided() }";
-        let a_source = "import \"b.hew\";\nfn main() -> i32 { b_provided() }";
+        let c_source = "pub fn provided() -> i32 { 1 }\n";
+        let b_source = "import c;\npub fn b_provided() -> i32 { c.provided() }\n";
+        let a_source = "import b;\nfn main() -> i32 { b.b_provided() }\n";
 
         let a_url = make_test_uri("/fake/project/a.hew");
         let b_url = make_test_uri("/fake/project/b.hew");
@@ -5062,11 +4950,11 @@ machine Traffic {
         );
         assert!(
             !has_unresolved_import(&documents, &b_url),
-            "B should have no UnresolvedImport after C is open"
+            "B should have no unresolved import after C is open"
         );
         assert!(
             !has_unresolved_import(&documents, &a_url),
-            "A should have no UnresolvedImport after C is open (transitive refresh)"
+            "A should have no unresolved import after C is open (transitive refresh)"
         );
     }
 
@@ -5109,50 +4997,39 @@ machine Traffic {
         );
     }
 
-    /// Stale on-disk content is superseded by an open editor buffer.
-    /// The type-checker should see the in-memory version's exported type,
-    /// not whatever might be saved on disk.
+    /// An open buffer supersedes the file on disk: the importing document is
+    /// checked against the editor's version of its sibling, not the saved one.
     #[test]
     fn in_memory_version_supersedes_disk_for_type_checking() {
-        // circle.hew on disk (if it existed) would have `fn area(r: f64) -> f64`.
-        // In-memory version renames it to `fn circumference(r: f64) -> f64`.
-        // main.hew calls `circle.circumference` — this should resolve without error
-        // only if the in-memory version is used.
-        let main_source = "import shapes.circle;\nfn main() -> f64 { circle.circumference(1.0) }";
-        let circle_inmem_source = "pub fn circumference(r: f64) -> f64 { r }";
+        let root =
+            make_temp_workspace_dir(&[("shapes/circle.hew", "pub fn area(r: f64) -> f64 { r }\n")]);
+        let main_source =
+            "import shapes.circle;\nfn circumference_check() -> f64 { circle.circumference(1.0) }";
+        let main_url =
+            Url::from_file_path(root.join("main.hew")).expect("workspace path is absolute");
+        let circle_url = Url::from_file_path(root.join("shapes/circle.hew"))
+            .expect("workspace path is absolute");
 
-        let main_url = make_test_uri("/fake/project/main.hew");
-        let circle_url = make_test_uri("/fake/project/shapes/circle.hew");
+        // Negative control: the saved sibling has no `circumference`.
+        let saved = analyze_document(&main_url, main_source, &DashMap::new(), &[]);
+        assert!(
+            !published_errors(&saved, &main_url).is_empty(),
+            "the saved sibling declares no `circumference`"
+        );
 
         let documents: DashMap<Url, DocumentState> = DashMap::new();
-        documents.insert(circle_url, make_doc(circle_inmem_source));
-
-        let mut parse_result = hew_parser::parse(main_source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "unexpected parse errors: {:?}",
-            parse_result.errors
+        documents.insert(
+            circle_url,
+            make_doc("pub fn circumference(r: f64) -> f64 { r }\n"),
         );
-        populate_user_module_imports(&main_url, &mut parse_result.program.items, &documents, &[]);
-
-        let mut checker = Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parse_result.program);
-
-        let errors: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| {
-                !matches!(
-                    e.kind,
-                    hew_types::error::TypeErrorKind::UnusedImport
-                        | hew_types::error::TypeErrorKind::UnusedVariable
-                )
-            })
-            .collect();
+        let document = analyze_document(&main_url, main_source, &documents, &[]);
+        let errors = published_errors(&document, &main_url);
         assert!(
             errors.is_empty(),
-            "type-checking with in-memory circle.hew should produce no errors: {errors:?}"
+            "the open buffer declares `circumference`, got: {errors:?}"
         );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // ── plan_workspace_rename: aliased-importer guard (Fix 1) ──────────
@@ -6340,7 +6217,7 @@ machine Traffic {
     //  v05_generators                     | accepted                       | generator functions; LSP test passes
     //  v05_impl_where_clause              | accepted                       | impl<T> … where T: Display; LSP test passes
     //  v05_index_trait                    | accepted                       | Indexable trait; type errors intentional (fixture exercises error-recovery); LSP test passes
-    //  v05_is_operator                    | accepted                       | `is` operator on the accepted `LocalPid<Worker>` actor-handle value form (D340); the RHS type-pattern surfaces (resolver, semantic-token, completion) are asserted on an inline refused program, since no user declaration has an accepted `expr is Name` form (#3134)
+    //  v05_is_operator                    | accepted                       | `is` operator on the accepted `Worker` actor-handle value form (D340); the RHS type-pattern surfaces (resolver, semantic-token, completion) are asserted on an inline refused program, since no user declaration has an accepted `expr is Name` form (#3134)
     //  v05_link_monitor                   | accepted                       | actor link/monitor; LSP test passes
     //  v05_machine_generics               | accepted                       | generic machine `machine Boxed<T>`; one-state semantic error is intentional fixture design; LSP test passes
     //  v05_machine_methods                | accepted                       | machine methods; non-exhaustive event coverage intentional; LSP test passes
@@ -6696,8 +6573,8 @@ machine Traffic {
         assert_lsp_rejection_diagnostic(
             "lsp_reject_gen_in_transition",
             include_str!("../../tests/fixtures/lsp_reject_gen_in_transition.hew"),
-            "E_GENBLOCK_IN_MACHINE_TRANSITION",
-            "GenBlockInMachineTransition",
+            "MachineExhaustivenessError",
+            "MachineExhaustivenessError",
             9, // 0-indexed: `gen { yield Open; }` is on line 9 (1-indexed line 10)
         );
     }
@@ -6707,9 +6584,22 @@ machine Traffic {
         assert_lsp_rejection_diagnostic(
             "lsp_reject_await_in_transition",
             include_str!("../../tests/fixtures/lsp_reject_await_in_transition.hew"),
-            "E_AWAIT_IN_MACHINE_TRANSITION",
-            "AwaitInMachineTransition",
+            "MachineExhaustivenessError",
+            "MachineExhaustivenessError",
             9, // 0-indexed: `await pending;` is on line 9 (1-indexed line 10)
+        );
+    }
+
+    #[test]
+    fn lsp_reject_self_in_transition_diagnostic_code() {
+        // `self` in a machine body is refused (E_MACHINE_SELF), and the
+        // refusal has to reach the editor rather than only the CLI.
+        assert_lsp_rejection_diagnostic(
+            "lsp_reject_self_in_transition",
+            include_str!("../../tests/fixtures/lsp_reject_self_in_transition.hew"),
+            "MachineExhaustivenessError",
+            "MachineExhaustivenessError",
+            9, // 0-indexed: `self.hits` is on line 9 (1-indexed line 10)
         );
     }
 
@@ -6772,7 +6662,7 @@ machine Traffic {
 
     /// An `is` whose RHS names a user declaration. No such program type-checks
     /// after #3134: the only identity-bearing user `TypeDef` is an actor, and
-    /// an actor's values are `LocalPid<T>` handles, so `handle is Actor` is a
+    /// an actor's values are actor handles, so `handle is Actor` is a
     /// type-pattern mismatch and every other declaration is a value type. The
     /// LSP still has to resolve the RHS as a type — jump-to-definition,
     /// semantic tokens and completion serve the buffer the user is typing,
@@ -6782,10 +6672,10 @@ machine Traffic {
     /// This source is inline rather than a `tests/fixtures/*.hew` file because
     /// the hew-corpus gate compiles every tracked `.hew` in the tree, and a
     /// refused program there would need a ratchet row it has not earned. The
-    /// accepted `LocalPid<Worker>` value form lives in the fixture instead.
+    /// accepted `Worker` actor-handle value form lives in the fixture instead.
     const IS_RHS_TYPE_PATTERN_SOURCE: &str = "enum Payload {\n\
-         First;\n\
-         Second;\n\
+         First,\n\
+         Second,\n\
          }\n\
          \n\
          fn is_probe() -> i32 {\n\
@@ -6802,7 +6692,7 @@ machine Traffic {
 
     #[test]
     fn v05_is_operator_value_form_fixture_is_accepted() {
-        // Negative control for the test below: the `LocalPid<Worker>` value
+        // Negative control for the test below: the `Worker` actor-handle value
         // form the fixture uses carries no hard type error, so the rejection
         // asserted there is about the enum operand and not about `is` itself.
         let source = include_str!("../../tests/fixtures/v05_is_operator.hew");
@@ -7231,75 +7121,6 @@ machine Traffic {
             source,
             "select_probe",
             &["Responder", "ask", "select_probe", "select_arms"],
-        );
-    }
-
-    /// `await expr | after duration` (`Expr::Timeout`) parses and is accepted
-    /// by the LSP without false diagnostics.  Uses actor ask so no `std::net`
-    /// import is required.  Verifies parse-clean symbol coverage and hover.
-    #[test]
-    fn v05_await_deadline_lsp_coverage() {
-        assert_v05_lsp_fixture(
-            "v05_await_deadline",
-            include_str!("../../tests/fixtures/v05_await_deadline.hew"),
-            "await_deadline_probe",
-            &[
-                "Responder",
-                "ask",
-                "await_deadline_probe",
-                "await_deadline_coverage",
-            ],
-        );
-    }
-
-    /// `await conn.read_string() | after duration` deadline form (NEW-6c).
-    /// Checks that the parser accepts the form and the LSP produces no false
-    /// parse-level diagnostics.  Hover and goto-definition are tested on the
-    /// probe function; the unresolved net import is expected in unit-test context.
-    #[test]
-    fn v05_read_string_deadline_lsp_coverage() {
-        let source = include_str!("../../tests/fixtures/v05_read_string_deadline.hew");
-        // Verify: no parse errors (the deadline form must parse cleanly).
-        let parse_result = hew_parser::parse(source);
-        let parse_errors: Vec<_> = parse_result
-            .errors
-            .iter()
-            .filter(|e| e.severity == hew_parser::Severity::Error)
-            .collect();
-        assert!(
-            parse_errors.is_empty(),
-            "v05_read_string_deadline must have no parse errors; got: {parse_errors:?}"
-        );
-        // Verify: document symbols include the probe function (parse-level coverage).
-        assert_v05_document_symbols(
-            "v05_read_string_deadline",
-            source,
-            &[
-                "read_string_deadline_probe",
-                "read_string_deadline_coverage",
-            ],
-        );
-    }
-
-    /// `await ln.accept() | after duration` deadline form (NEW-6d).
-    /// Same contract as `v05_read_string_deadline_lsp_coverage`.
-    #[test]
-    fn v05_accept_deadline_lsp_coverage() {
-        let source = include_str!("../../tests/fixtures/v05_accept_deadline.hew");
-        let parse_result = hew_parser::parse(source);
-        let parse_errors: Vec<_> = parse_result
-            .errors
-            .iter()
-            .filter(|e| e.severity == hew_parser::Severity::Error)
-            .collect();
-        assert!(
-            parse_errors.is_empty(),
-            "v05_accept_deadline must have no parse errors; got: {parse_errors:?}"
-        );
-        assert_v05_document_symbols(
-            "v05_accept_deadline",
-            source,
-            &["accept_deadline_probe", "accept_deadline_coverage"],
         );
     }
 

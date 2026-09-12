@@ -11,14 +11,14 @@
 //! deque_test.hew and vec_layout_remove.hew on v05-integration).
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 // ── record-element clone preserves contents ──────────────────────────────────
 #[test]
 fn test_clone_record_vec_copies_all_elements() {
-    let src: Vec<Point> = Vec.new();
+    var src: Vec<Point> = Vec.new();
     src.push(Point { x: 10, y: 20 });
     src.push(Point { x: 30, y: 40 });
     src.push(Point { x: 50, y: 60 });
@@ -62,7 +62,7 @@ fn test_clone_empty_record_vec_is_empty() {
 // ── clone is independent of the source (mutation does not leak) ──────────────
 #[test]
 fn test_clone_is_independent_of_source_after_set() {
-    let src: Vec<Point> = Vec.new();
+    var src: Vec<Point> = Vec.new();
     src.push(Point { x: 1, y: 2 });
     src.push(Point { x: 3, y: 4 });
     let dst = src.clone();
@@ -94,9 +94,9 @@ fn test_clone_is_independent_of_source_after_set() {
 // ── pushing into the clone does not affect the source ────────────────────────
 #[test]
 fn test_clone_grows_independently_of_source() {
-    let src: Vec<Point> = Vec.new();
+    var src: Vec<Point> = Vec.new();
     src.push(Point { x: 7, y: 8 });
-    let dst = src.clone();
+    var dst = src.clone();
     dst.push(Point { x: 100, y: 200 });
     if src.len() != 1 {
         panic(f"expected src len 1, got {src.len()}");

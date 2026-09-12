@@ -1,0 +1,10 @@
+[[case]]
+id = "scope-result-task-handle"
+intent = "A handler's result is derived from the values of two forked actor calls, so the lexical task scope drains before the reply and no task handle outlives it."
+source = "cases/scope-result-task-handle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "18\n"
+exit = 0

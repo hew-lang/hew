@@ -13,12 +13,12 @@
 import std.testing;
 
 type Rec {
-    s: string;
+    s: string,
 }
 
 #[test]
 fn heap_owning_tuple_element_round_trips() {
-    let v: Vec<(Rec, i64)> = Vec.new();
+    var v: Vec<(Rec, i64)> = Vec.new();
     v.push((Rec { s: "hello" }, 1));
     v.push((Rec { s: "world" }, 2));
     let p0 = v[0];
@@ -31,7 +31,7 @@ fn heap_owning_tuple_element_round_trips() {
 
 #[test]
 fn heap_owning_tuple_element_sum_payload() {
-    let v: Vec<(Rec, i64)> = Vec.new();
+    var v: Vec<(Rec, i64)> = Vec.new();
     v.push((Rec { s: "a" }, 10));
     v.push((Rec { s: "b" }, 32));
     testing.assert_eq(v[0].1 + v[1].1, 42);

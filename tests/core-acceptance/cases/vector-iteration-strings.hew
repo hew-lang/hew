@@ -1,0 +1,18 @@
+fn main() -> i64 {
+    var values = ["first", "skip", "last", "unseen"];
+    var result = "";
+    for value in values {
+        let local = value.to_upper();
+        values.clear();
+        if local == "SKIP" {
+            continue;
+        }
+        result = local;
+        if local == "LAST" {
+            break;
+        }
+    }
+    println(result);
+    println(values.len());
+    0
+}

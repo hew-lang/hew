@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_values_string"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/hashmap_values_string.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "maple\n"
+exit = 0

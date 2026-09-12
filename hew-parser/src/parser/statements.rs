@@ -144,14 +144,28 @@ impl Parser<'_> {
                     let value = self.parse_expr()?;
                     self.expect(&Token::Semicolon)?;
                     let span = expr.1.start..value.1.end;
-                    stmts.push((
-                        Stmt::Assign {
-                            target: expr,
-                            op: None,
-                            value,
-                        },
-                        span,
-                    ));
+                    // `_ = expr;` is the explicit discard: the same statement as
+                    // `let _ = expr;`, spelled without a binding no one reads.
+                    if matches!(&expr.0, Expr::Identifier(name) if name == "_") {
+                        stmts.push((
+                            Stmt::Let {
+                                pattern: (Pattern::Wildcard, expr.1.clone()),
+                                ty: None,
+                                value: Some(value),
+                                else_block: None,
+                            },
+                            span,
+                        ));
+                    } else {
+                        stmts.push((
+                            Stmt::Assign {
+                                target: expr,
+                                op: None,
+                                value,
+                            },
+                            span,
+                        ));
+                    }
                 } else if self.eat(&Token::Semicolon) {
                     // Expression statement
                     while self.peek() == Some(&Token::Semicolon) {
@@ -161,10 +175,7 @@ impl Parser<'_> {
                     }
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
-                } else if Self::is_block_expr(&expr.0)
-                    && (self.peek() != Some(&Token::RightBrace)
-                        || matches!(expr.0, Expr::ForkBlock { .. } | Expr::ScopeDeadline { .. }))
-                {
+                } else if Self::is_block_expr(&expr.0) && self.peek() != Some(&Token::RightBrace) {
                     // Block-like expressions (if, match, blocks, loops) don't need semicolons
                     let span = expr.1.clone();
                     stmts.push((Stmt::Expression(expr), span));
@@ -189,6 +200,24 @@ impl Parser<'_> {
             stmts,
             trailing_expr,
         })
+    }
+
+    /// Parse the arm after an `if let`'s `else`, which the caller has already
+    /// consumed. The arm is an expression, so `if let` chains with `else if`
+    /// and `else if let` exactly as `if` does.
+    ///
+    /// `else if ..` is parsed as a statement and promoted, which builds the
+    /// same tree `{ if .. }` produces and keeps the trailing `if` from
+    /// swallowing whatever follows its block.
+    fn parse_if_let_else_arm(&mut self) -> Option<Box<Spanned<Expr>>> {
+        if self.peek() == Some(&Token::If) {
+            let if_stmt = self.parse_stmt()?;
+            return Some(Box::new(Self::promote_stmt_to_trailing_expr(if_stmt)?));
+        }
+        let start = self.peek_span().start;
+        let block = self.parse_block()?;
+        let end = self.peek_span().start;
+        Some(Box::new((Expr::Block(block), start..end)))
     }
 
     /// Convert a value-bearing statement (`Stmt::If`, `Stmt::IfLet`,
@@ -252,16 +281,14 @@ impl Parser<'_> {
                 ))
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                // Stmt::IfLet and Expr::IfLet share the same `else_body: Option<Block>` type.
+                // Stmt::IfLet and Expr::IfLet share the same `else_body` type.
                 Some((
                     Expr::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     },
@@ -317,6 +344,66 @@ impl Parser<'_> {
                 parent_end..parent_end,
             )
         }
+    }
+
+    /// Parse an `if` / `while` condition (§12.5): one or more operands joined
+    /// with `&&`, each either `let PATTERN = expr` or a boolean expression.
+    ///
+    /// A plain boolean condition parses as a single operand through the
+    /// ordinary expression parser, so `a || b && c` keeps its precedence. Once
+    /// a `let` joins the chain the operands bind tighter than `&&` and `||`, so
+    /// each one ends at its joiner; `||` cannot join a `let` operand and is
+    /// refused here rather than silently regrouping the condition.
+    pub(crate) fn parse_condition(&mut self) -> Option<Vec<ConditionItem>> {
+        let mut items = Vec::new();
+        let mut has_let = false;
+        if self.eat(&Token::Let) {
+            items.push(self.parse_let_condition()?);
+            has_let = true;
+        } else {
+            items.push(ConditionItem::Expr(self.parse_cond_expr()?));
+        }
+        while self.eat(&Token::AmpAmp) {
+            if self.eat(&Token::Let) {
+                items.push(self.parse_let_condition()?);
+                has_let = true;
+            } else {
+                items.push(ConditionItem::Expr(self.parse_condition_operand()?));
+            }
+        }
+        if has_let && self.peek() == Some(&Token::PipePipe) {
+            self.error_with_hint(
+                "E_OR_JOINED_LET_CONDITION: `||` cannot join a `let` pattern in a condition"
+                    .to_string(),
+                "split the alternatives into separate `if let` arms, or match on the value",
+            );
+            // Recovery: consume the rest of the condition so the block still
+            // parses and the reader gets one diagnostic instead of a cascade.
+            while self.eat(&Token::PipePipe) || self.eat(&Token::AmpAmp) {
+                let _ = self.eat(&Token::Let);
+                items.push(ConditionItem::Expr(self.parse_condition_operand()?));
+            }
+        }
+        Some(items)
+    }
+
+    /// Parse one `let PATTERN = expr` condition operand, the `let` already
+    /// consumed.
+    fn parse_let_condition(&mut self) -> Option<ConditionItem> {
+        let pattern = self.parse_pattern()?;
+        self.expect(&Token::Equal)?;
+        // The scrutinee keeps ordinary expression rules, so a struct literal
+        // still reads as one (`if let P = Point { x: 1, y: 2 } { … }`); only
+        // the joiner precedence is capped so the operand ends at `&&`.
+        let expr = self.parse_expr_bp(CONDITION_OPERAND_BP)?;
+        Some(ConditionItem::Let { pattern, expr })
+    }
+
+    /// Parse one operand of a pattern condition: an expression that stops at
+    /// the `&&` or `||` that joins it to the next operand.
+    fn parse_condition_operand(&mut self) -> Option<Spanned<Expr>> {
+        let _guard = self.set_no_struct_literal(true);
+        self.parse_expr_bp(CONDITION_OPERAND_BP)
     }
 
     #[expect(clippy::too_many_lines, reason = "parser function with many branches")]
@@ -385,26 +472,19 @@ impl Parser<'_> {
 
                 let pattern = self.parse_pattern()?;
 
-                // `let r? = expr;` is syntactic sugar for `let r = expr?;`.
-                // The `?` must immediately follow a simple identifier pattern;
-                // complex patterns (tuples, constructors) cannot carry the
-                // propagation suffix — the binding site is ambiguous without a
-                // single name to anchor the unwrapped value to.
-                let propagate = if self.peek() == Some(&Token::Question) {
+                // One place carries error propagation: the `?` operator on the
+                // expression. A `?` on the binding name is refused.
+                if self.peek() == Some(&Token::Question) {
                     let q_span = self.peek_span();
-                    if !matches!(pattern.0, Pattern::Identifier(_)) {
-                        self.error_at(
-                            "`?` propagation suffix requires a simple identifier pattern"
-                                .to_string(),
-                            q_span,
-                        );
-                        return None;
-                    }
-                    self.advance();
-                    true
-                } else {
-                    false
-                };
+                    self.error_at_with_hint(
+                        "`?` on a `let` binding is not valid; propagation belongs on the \
+                         expression"
+                            .to_string(),
+                        q_span,
+                        "write `let value = call()?;`",
+                    );
+                    return None;
+                }
 
                 let ty = if self.eat(&Token::Colon) {
                     Some(self.parse_type()?)
@@ -413,26 +493,7 @@ impl Parser<'_> {
                 };
 
                 let value = if self.eat(&Token::Equal) {
-                    let (expr, expr_span) = self.parse_expr()?;
-                    if propagate {
-                        // Desugar: wrap RHS in PostfixTry so `let r? = e;`
-                        // is exactly `let r = e?;` from the type-checker onward.
-                        // The span covers the full RHS so diagnostics from the
-                        // `?` type-check land on the expression, not on `r?`.
-                        let end = expr_span.end;
-                        Some((
-                            Expr::PostfixTry(Box::new((expr, expr_span))),
-                            pattern.1.start..end,
-                        ))
-                    } else {
-                        Some((expr, expr_span))
-                    }
-                } else if propagate {
-                    self.error(
-                        "`let r? = expr;` requires an initialiser; `let r?;` is not valid"
-                            .to_string(),
-                    );
-                    return None;
+                    Some(self.parse_expr()?)
                 } else {
                     None
                 };
@@ -441,20 +502,9 @@ impl Parser<'_> {
                 // fallback clause, parsed AFTER the value and BEFORE the
                 // terminating `;`. The else block is carried structurally so
                 // the checker can enforce that it diverges; it is NOT desugared
-                // away here. `let r? = e else {…}` is rejected: the `?`
-                // propagation suffix already supplies a fallback path, so an
-                // `else` clause would be contradictory. An `else` with no
-                // initialiser (`let x else {…}`) has nothing to bind, so it is
-                // also rejected.
+                // away here. An `else` with no initialiser (`let x else {…}`)
+                // has nothing to bind, so it is rejected.
                 let else_block = if self.eat(&Token::Else) {
-                    if propagate {
-                        self.error(
-                            "`?` propagation suffix and an `else` clause cannot both \
-                             appear on a `let`; use one or the other"
-                                .to_string(),
-                        );
-                        return None;
-                    }
                     if value.is_none() {
                         self.error(
                             "`let … else { … }` requires an initialiser before the \
@@ -500,24 +550,26 @@ impl Parser<'_> {
             // These don't need semicolons (they have blocks)
             Some(Token::If) => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     let else_body = if self.eat(&Token::Else) {
-                        Some(self.parse_block()?)
+                        Some(self.parse_if_let_else_arm()?)
                     } else {
                         None
                     };
                     Stmt::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     }
                 } else {
-                    let condition = self.parse_cond_expr()?;
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
                     let then_block = self.parse_block()?;
 
                     let else_block = if self.eat(&Token::Else) {
@@ -578,19 +630,21 @@ impl Parser<'_> {
             }
             Some(Token::While) => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     Stmt::WhileLet {
                         label: None,
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                     }
                 } else {
-                    let condition = self.parse_cond_expr()?;
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
                     let body = self.parse_block()?;
                     Stmt::While {
                         label: None,
@@ -601,51 +655,16 @@ impl Parser<'_> {
             }
             Some(Token::For) => {
                 self.advance();
-                let is_await = self.eat(&Token::Await);
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Stmt::For {
                     label: None,
-                    is_await,
                     pattern,
                     iterable,
                     body,
                 }
-            }
-            // `scope { .. }` is a statement, not a `Primary` (HEW-SPEC-2026
-            // §4.2): it brackets structured concurrency and produces no value,
-            // so it gets a dedicated arm here the way `if`/`while`/`for` do.
-            // `parse_primary` refuses the token outright, which is what closes
-            // every value position — a `let` initialiser, a call argument, a
-            // match-arm body, a block's trailing expression.
-            Some(Token::Scope) => {
-                self.advance();
-                // Reject obsolete surfaces: `scope.method()` and `scope |s| { ... }`.
-                if self.eat(&Token::Dot) {
-                    self.error(
-                        "'scope.method()' syntax has been removed; use 'scope { ... }' with `fork name = expr;` bindings instead"
-                            .to_string(),
-                    );
-                    return None;
-                }
-                if self.peek() == Some(&Token::Pipe) {
-                    self.error(
-                        "'scope |s| { s.launch / s.spawn / s.cancel }' has been removed; use 'scope { fork name = call(...); }' instead"
-                            .to_string(),
-                    );
-                    return None;
-                }
-                self.scope_expr_depth += 1;
-                let body = self.parse_block()?;
-                self.scope_expr_depth -= 1;
-                let expr_span = start..self.peek_span().start;
-                // A trailing `;` after the closing brace is the idiomatic
-                // spelling and is absorbed here, so `parse_block`'s stray-semicolon
-                // warning stays about actually stray semicolons.
-                self.eat(&Token::Semicolon);
-                Stmt::Expression((Expr::Scope { body }, expr_span))
             }
             Some(Token::Break) => {
                 self.advance();
@@ -680,6 +699,17 @@ impl Parser<'_> {
             }
             Some(Token::Return) => {
                 self.advance();
+                if self.eat_error_return_marker() {
+                    let value = self.parse_expr()?;
+                    let end = value.1.end;
+                    if self.peek() != Some(&Token::RightBrace) {
+                        self.expect(&Token::Semicolon)?;
+                    }
+                    return Some((
+                        Stmt::Expression((Expr::ReturnError(Box::new(value)), start..end)),
+                        start..end,
+                    ));
+                }
                 let value = if matches!(self.peek(), Some(Token::Semicolon | Token::RightBrace)) {
                     None
                 } else {
@@ -729,19 +759,21 @@ impl Parser<'_> {
         let stmt = match self.peek() {
             Some(Token::While) => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
                     Stmt::WhileLet {
                         label: Some(label),
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                     }
                 } else {
-                    let condition = self.parse_cond_expr()?;
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
                     let body = self.parse_block()?;
                     Stmt::While {
                         label: Some(label),
@@ -760,14 +792,12 @@ impl Parser<'_> {
             }
             Some(Token::For) => {
                 self.advance();
-                let is_await = self.eat(&Token::Await);
                 let pattern = self.parse_pattern()?;
                 self.expect(&Token::In)?;
                 let iterable = self.parse_expr()?;
                 let body = self.parse_block()?;
                 Stmt::For {
                     label: Some(label),
-                    is_await,
                     pattern,
                     iterable,
                     body,

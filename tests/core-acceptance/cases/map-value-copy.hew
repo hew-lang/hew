@@ -1,0 +1,20 @@
+fn main() -> i64 {
+    var original: HashMap<string, Vec<string>> = HashMap.new();
+    let key = "clé\0key";
+    var input = ["first", "second"];
+    original.insert(key, input);
+    input.clear();
+    var copied = original;
+    let selected = match original.get(key) {
+        .Some(value) => value,
+        .None => ["missing"],
+    };
+    original.clear();
+    copied.insert(key, ["replacement"]);
+    println(selected[0]);
+    println(selected.len());
+    println(copied[key][0]);
+    println(original.len());
+    println(input.len());
+    0
+}

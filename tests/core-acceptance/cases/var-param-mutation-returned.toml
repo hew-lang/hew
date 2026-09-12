@@ -1,0 +1,7 @@
+[[case]]
+id = "var-param-mutation-returned"
+intent = "Returning the mutated `var` parameter reports no lost write: the negative control for var-param-mutation-lost."
+source = "cases/var-param-mutation-returned.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

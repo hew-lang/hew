@@ -7,7 +7,7 @@ use hew_types::error::{Severity, TypeErrorKind};
 fn test_non_exhaustive_match() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn check(c: Colour) -> i64 {
             match c {
                 .Red => 1,
@@ -41,7 +41,7 @@ fn test_non_exhaustive_match() {
 fn test_non_exhaustive_match_stmt() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn main() {
             let colour: Colour = Red;
             match colour {
@@ -151,9 +151,9 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
     let output = typecheck(
         r"
         enum Packet {
-            Empty;
-            Value(i64);
-            Named { count: i64 };
+            Empty,
+            Value(i64),
+            Named { count: i64 },
         }
 
         fn label(packet: Packet) -> i64 {
@@ -168,9 +168,11 @@ fn test_non_exhaustive_match_suggestions_include_arm_patterns() {
         .iter()
         .find(|e| e.kind == TypeErrorKind::NonExhaustiveMatch)
         .expect("expected NonExhaustiveMatch error for Packet");
+    // A struct variant's suggestion names its fields, so the editor quick fix
+    // inserts an arm the programmer can fill in rather than a `..` sketch.
     assert_eq!(
         err.suggestions,
-        vec!["Named { .. }".to_string(), "Value(_)".to_string()]
+        vec!["Named { count: _ }".to_string(), "Value(_)".to_string()]
     );
 }
 
@@ -214,7 +216,7 @@ fn test_exhaustive_or_result_match() {
 fn test_exhaustive_or_enum_match() {
     let output = typecheck(
         r"
-        enum Colour { Red; Green; Blue; }
+        enum Colour { Red, Green, Blue, }
         fn check(c: Colour) -> i64 {
             match c {
                 .Red | .Green | .Blue => 1,
@@ -390,7 +392,7 @@ fn test_lambda_arity_mismatch() {
 fn test_receiver_param_rejects_mismatched_generics() {
     let output = typecheck(
         r"
-        type Box<T> { value: T; }
+        type Box<T> { value: T, }
         impl Box<i64> {
             fn bad(b: Box<string>) -> i64 { 0 }
         }
@@ -410,19 +412,16 @@ fn test_receiver_param_rejects_mismatched_generics() {
 
 /// A non-first parameter whose type matches the impl target must not be
 /// flagged as a mutable receiver. Only the first parameter can be the receiver.
-///
-/// `var other: Box` is itself rejected — a `var` by-value aggregate parameter
-/// has no caller-visible effect (#2810) — and that rejection is the proof this
-/// test wants: `reject_ineffective_mutable_value_param` exempts receivers, so
-/// its firing on `other` shows `other` was not classified as one. No *other*
-/// error may appear.
 #[test]
 fn test_non_receiver_param_same_type_not_flagged() {
     let output = typecheck(
         r"
-        type Box { value: i64; }
+        type Box { value: i64, }
         impl Box {
-            fn combine(b: Box, var other: Box) -> i64 { b.value + other.value }
+            fn combine(b: Box, var other: Box) -> i64 {
+                other.value = other.value + 1;
+                b.value + other.value
+            }
         }
         fn main() {
             let b1 = Box { value: 1 };
@@ -431,20 +430,9 @@ fn test_non_receiver_param_same_type_not_flagged() {
         }
     ",
     );
-    let unrelated: Vec<&str> = output
-        .errors
-        .iter()
-        .map(|e| e.message.as_str())
-        .filter(|m| !m.contains("has no caller-visible effect"))
-        .collect();
     assert!(
-        unrelated.is_empty(),
-        "non-receiver param of same type should not trigger receiver warning: {unrelated:?}"
-    );
-    assert!(
-        output.errors.iter().any(|e| e.message
-            == "`var other` on a by-value parameter of type `Box` has no caller-visible effect"),
-        "expected the ineffective-var rejection on the non-receiver param, got: {:?}",
+        output.errors.is_empty(),
+        "a private mutable parameter must not become an inherent mutable receiver: {:?}",
         output.errors
     );
 }

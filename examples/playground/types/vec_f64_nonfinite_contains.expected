@@ -1,4 +1,4 @@
-[nan].contains(nan)   false
+[nan].contains(nan)   true
 [nan].contains(inf)   false
 [inf].contains(-inf)  false
 [2.5].contains(2.5)   true

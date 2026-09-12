@@ -11,7 +11,7 @@
 // Usage:
 //   HEW_PPROF=:6060 hew run profiler_demo.hew
 actor Counter {
-    var count: i32;
+    var count: i32,
     receive fn tick() {
         count = count + 1;
     }
@@ -28,10 +28,10 @@ fn main() {
     let counter = spawn Counter(count: 0);
     // Send 3000 messages.
     for i in 0 .. 3000 {
-        counter.tick();
+        let _ = counter.tick();
     }
     // Give actors time to process.
     sleep(2s);
-    counter.report();
+    let _ = counter.report();
     println("=== Done ===");
 }

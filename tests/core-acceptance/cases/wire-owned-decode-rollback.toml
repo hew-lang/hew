@@ -1,0 +1,11 @@
+[[case]]
+id = "wire-owned-decode-rollback"
+intent = "Malformed narrow fields release partially decoded variants, records, maps and nested vectors."
+source = "../vertical-slice/accept/wire_owned_decode_rollback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 42

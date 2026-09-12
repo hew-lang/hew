@@ -1,6 +1,6 @@
-//! W4.001 Stage C0b — permanent gate: every `MethodTarget.symbol_name`
-//! produced by the Stage B `collection_dispatch_registry` must name a real
-//! `#[no_mangle] extern "C"` symbol exported by `hew-runtime`.
+//! Runtime-backed collection method endpoints must name real exported symbols.
+//! Composed semantic methods carry no runtime endpoint; their typed dispatch
+//! is checked separately from these link witnesses.
 //!
 //! This is the test that would have caught Stage B's bare-name vs
 //! linkable-symbol regression (the registry seeded `"hew_hashmap_insert"`
@@ -281,6 +281,19 @@ fn every_stage_b_method_target_symbol_is_link_resolved() {
     for (_impl_id, def) in registry.iter() {
         for (method_name, target) in &def.methods {
             let symbol = target.symbol_name.as_str();
+            if target.family
+                == hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::IsEmpty)
+            {
+                assert!(
+                    symbol.is_empty(),
+                    "composed emptiness has no runtime endpoint"
+                );
+                assert!(hew_types::runtime_call::MapValueOp::from_method(
+                    hew_types::HashMapMethod::IsEmpty
+                )
+                .is_none());
+                continue;
+            }
             if def.trait_name == "Seq" && symbol.ends_with("_FAMILY") {
                 // Vec placeholders are resolved per call site by the shared
                 // source-derived authority; family roots are not runtime exports.
@@ -333,6 +346,12 @@ fn every_stage_b_symbol_uses_canonical_kernel_suffix() {
     let mut violations: Vec<String> = Vec::new();
     for (_impl_id, def) in registry.iter() {
         for (method_name, target) in &def.methods {
+            if target.family
+                == hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::IsEmpty)
+            {
+                // The linkage test above proves this composition has no endpoint.
+                continue;
+            }
             if def.trait_name == "Seq" && target.symbol_name.ends_with("_FAMILY") {
                 // Vec placeholder roots are overwritten per call site by the
                 // shared authority; only concrete HashMap/HashSet kernel symbols

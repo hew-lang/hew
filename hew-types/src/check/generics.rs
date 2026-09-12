@@ -101,7 +101,12 @@ impl Checker {
                     })
                     .collect(),
             },
-            Ty::Function { params, ret } => Ty::Function {
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|p| self.freshen_inner(p, mapping))
@@ -109,10 +114,13 @@ impl Checker {
                 ret: Box::new(self.freshen_inner(ret, mapping)),
             },
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
+                identity,
             } => Ty::Closure {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|p| self.freshen_inner(p, mapping))
@@ -122,6 +130,7 @@ impl Checker {
                     .iter()
                     .map(|c| self.freshen_inner(c, mapping))
                     .collect(),
+                identity: identity.clone(),
             },
             _ => ty.clone(),
         }
@@ -132,6 +141,16 @@ impl Checker {
         sig: &FnSig,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
+    ) -> (Vec<Ty>, Ty, Vec<Ty>) {
+        self.instantiate_fn_sig_for_receiver_call(sig, type_args, span, &[])
+    }
+
+    pub(super) fn instantiate_fn_sig_for_receiver_call(
+        &mut self,
+        sig: &FnSig,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+        receiver_type_args: &[Ty],
     ) -> (Vec<Ty>, Ty, Vec<Ty>) {
         let mut params = sig.params.clone();
         let mut ret = sig.return_type.clone();
@@ -195,6 +214,15 @@ impl Checker {
         // to make generic builtins like println work with different types each call.
         // Use a shared mapping so params and return type share the same fresh vars.
         let mut mapping: HashMap<u32, Ty> = HashMap::new();
+        // Receiver arguments already belong to the caller's inference graph.
+        // Freshening them would detach `factory().expect(...)` from later
+        // constraints on the extracted value.
+        let mut receiver_vars = HashSet::new();
+        for argument in receiver_type_args {
+            collect_unresolved_inference_vars(&self.subst.resolve(argument), &mut receiver_vars);
+        }
+        mapping.extend(receiver_vars.into_iter().map(|var| (var.0, Ty::Var(var))));
+
         let freshened_params = params
             .iter()
             .map(|param| self.freshen_inner(param, &mut mapping))
@@ -402,54 +430,6 @@ impl Checker {
         self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
     }
 
-    /// Actor-spawn-site bound enforcement.
-    ///
-    /// Called from `check_spawn` when explicit type args are supplied for a
-    /// generic actor. Clones the pattern of `enforce_machine_instantiation_bounds`
-    /// verbatim — actors and machines share the same bound-enforcement semantics
-    /// but are stored in separate tables so the two categories cannot suppress
-    /// each other's violations via the shared dedup set.
-    ///
-    /// The dedup key includes the actor name, resolved type args, and span.
-    /// Identical `(actor, args, span)` triples across repeated checker passes
-    /// emit exactly one diagnostic.
-    pub(super) fn enforce_actor_instantiation_bounds(
-        &mut self,
-        actor_name: &str,
-        type_args: &[Ty],
-        span: &Span,
-    ) {
-        if type_args.is_empty() {
-            return;
-        }
-        let Some(bounds) = self.actor_type_param_bounds.get(actor_name).cloned() else {
-            return;
-        };
-        let dedup_key = (
-            actor_name.to_string(),
-            type_args.to_vec(),
-            SpanKey::in_module(span, self.current_module_idx),
-        );
-        if !self.reported_actor_bound_violations.insert(dedup_key) {
-            return;
-        }
-        // Recover positional type-param names from the registered TypeDef so
-        // that `enforce_named_type_param_bounds` can look up bounds by name.
-        // Falls back to placeholder names for positions without a TypeDef entry
-        // (defensive; should not occur for a registered actor).
-        let mut type_params: Vec<String> = Vec::with_capacity(type_args.len());
-        for (idx, _) in type_args.iter().enumerate() {
-            if let Some(td) = self.type_defs.get(actor_name) {
-                if let Some(name) = td.type_params.get(idx) {
-                    type_params.push(name.clone());
-                    continue;
-                }
-            }
-            type_params.push(format!("__unbounded_{idx}"));
-        }
-        self.enforce_named_type_param_bounds(&type_params, &bounds, type_args, span);
-    }
-
     /// Generic bound-enforcement entry point parameterised by type-param names
     /// and a bounds map.  Used by `enforce_type_param_bounds` (`FnSig` calls)
     /// and by use-site enforcement for machine generic constructors that do
@@ -504,7 +484,12 @@ impl Checker {
             // the codegen output, preventing unresolved holes from reaching the
             // codegen backend. `drain_deferred_bound_checks` revisits the
             // deferred entry once post-inference defaulting settles.
-            if resolved_arg.has_inference_var() {
+            if resolved_arg.has_inference_var()
+                || (!self.type_decls_registered
+                    && bounds
+                        .iter()
+                        .any(|bound| MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)))
+            {
                 self.deferred_bound_checks.push(DeferredBoundCheck {
                     type_param: param_name.clone(),
                     bounds,
@@ -588,6 +573,23 @@ impl Checker {
                 );
                 continue;
             }
+            // A composite over abstract parameters has no concrete selection
+            // yet. Carry its Eq demand through the same instantiation graph as
+            // an ordinary comparison. Bare parameters still need their declared
+            // bound in the active scope.
+            if MarkerTrait::from_name(bound) == Some(MarkerTrait::Eq)
+                && !matches!(resolved_arg, Ty::Named { args, builtin: None, .. } if args.is_empty())
+                && Self::ty_mentions_type_params(
+                    resolved_arg,
+                    &self
+                        .current_type_param_names()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                )
+            {
+                self.record_eq_requirement(resolved_arg, span);
+                continue;
+            }
             if self.type_satisfies_trait_bound(resolved_arg, bound) {
                 self.report_missing_dispatchable_supertrait_impls(
                     param_name,
@@ -602,7 +604,17 @@ impl Checker {
                 "type `{}` does not implement trait `{bound_display}` required by `{param_name}`",
                 resolved_arg.user_facing()
             );
-            let suggestions = self.diagnose_bound_failure_suggestions(resolved_arg, bound);
+            // A Display bound fails because nothing renders the type, so name
+            // the impl the program is missing rather than its absent methods.
+            let suggestions = if MarkerTrait::from_name(bound) == Some(MarkerTrait::Display) {
+                vec![format!(
+                    "write `impl {bound_display} for {} {{ fn fmt(...) -> string {{ ... }} }}`, \
+                     or render the parts that already have one",
+                    resolved_arg.user_facing()
+                )]
+            } else {
+                self.diagnose_bound_failure_suggestions(resolved_arg, bound)
+            };
             self.report_error_with_suggestions(
                 TypeErrorKind::BoundsNotSatisfied,
                 span,
@@ -1068,6 +1080,43 @@ impl Checker {
     }
 
     pub(super) fn type_satisfies_trait_bound(&mut self, ty: &Ty, trait_name: &str) -> bool {
+        // One authority decides Display: the impl lookup f-string interpolation
+        // already uses. The structural marker derivation would grant it to
+        // `Vec<i64>`, tuples and records, none of which have an impl for HIR to
+        // call, so `println([1, 2])` reached lowering with no symbol.
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Display) {
+            // An unresolved or already-errored type says nothing about Display;
+            // reporting it here would cascade a second diagnostic onto the
+            // first failure (`require_display_impl` guards the same way).
+            if matches!(self.subst.resolve(ty), Ty::Var(_) | Ty::Error) {
+                return true;
+            }
+            return self.display_impl_type(ty).is_some();
+        }
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Send) {
+            return self.registry.implements_marker_with_bounds(
+                ty,
+                MarkerTrait::Send,
+                &|name, marker| {
+                    marker == MarkerTrait::Send && self.type_param_carries_bound(name, trait_name)
+                },
+            );
+        }
+        if MarkerTrait::from_name(trait_name) == Some(MarkerTrait::Eq)
+            && !Self::ty_mentions_type_params(
+                ty,
+                &self
+                    .current_type_param_names()
+                    .into_iter()
+                    .collect::<Vec<_>>(),
+            )
+        {
+            let ty = self.normalize_for_use(ty).materialize_literal_defaults();
+            return Self::selected_eq_available(
+                &mut TypeFactService::new(self.type_fact_context(), BTreeMap::new()),
+                &ty,
+            );
+        }
         match ty {
             // `instant` is a monotonic i64-nanos timestamp; it canonicalises to
             // i64 at the MIR boundary and renders through the i64 Display arm
@@ -1435,6 +1484,19 @@ impl Checker {
             }
         };
 
+        // A trait that declares no methods of its own - `trait Error: Display {}`
+        // - is a marker over its super-traits. Having the super-trait's methods
+        // says nothing about the marker, so it still needs an explicit impl.
+        // The empty-surface guard below sees the whole chain and would not
+        // catch this.
+        if self
+            .trait_defs
+            .get(&trait_name)
+            .is_some_and(|info| info.methods.is_empty())
+        {
+            return false;
+        }
+
         // Collect required methods across the full super-trait chain.
         // Returns None if any E1 guard triggers anywhere in the chain.
         let Some(required) = self.collect_structural_required_methods(&trait_name, &mut Vec::new())
@@ -1598,6 +1660,70 @@ impl Checker {
         method: &str,
     ) -> Option<(String, FnSig)> {
         self.lookup_trait_method_with_origin_inner(trait_name, method, true)
+    }
+
+    /// The ordered vtable method slots for one trait-object bound.
+    ///
+    /// Slot `3 + index` names `(declaring trait key, declaring trait spelling,
+    /// method name)`. The bound trait's own methods come first in declaration
+    /// order, then each supertrait's methods depth-first in supertrait
+    /// declaration order; a method name already claimed by an earlier slot is
+    /// not repeated, so a supertrait redeclaration keeps the sub-trait's slot.
+    ///
+    /// This is the one authority for the layout: the coercion site fills the
+    /// vtable in this order and every dispatch site reads its slot index from
+    /// the same list. Slots 0..3 are the runtime's fixed prefix triple
+    /// (`drop_in_place`, `size_of`, `align_of` — see
+    /// `hew-runtime/src/trait_object.rs`).
+    pub(super) fn dyn_vtable_slots(&self, trait_name: &str) -> Vec<(String, String, String)> {
+        let mut slots: Vec<(String, String, String)> = Vec::new();
+        let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut stack: Vec<(String, String)> = vec![(
+            self.trait_ref_lookup_key(trait_name),
+            trait_name.to_string(),
+        )];
+        while let Some((key, spelling)) = stack.pop() {
+            if !visited.insert(key.clone()) {
+                continue;
+            }
+            if let Some(info) = self.trait_defs.get(&key) {
+                for method in &info.methods {
+                    if claimed.insert(method.name.clone()) {
+                        slots.push((key.clone(), spelling.clone(), method.name.clone()));
+                    }
+                }
+            }
+            if let Some(supers) = self.trait_super.get(&key) {
+                for super_key in supers.iter().rev() {
+                    let spelling = super_key
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(super_key.as_str())
+                        .to_string();
+                    stack.push((super_key.clone(), spelling));
+                }
+            }
+        }
+        slots
+    }
+
+    /// The vtable slot a dynamic dispatch of `method` on `dyn trait_name`
+    /// occupies, with the trait that declares it.
+    pub(super) fn dyn_vtable_slot_for_method(
+        &self,
+        trait_name: &str,
+        method: &str,
+    ) -> Option<(u32, String, String)> {
+        self.dyn_vtable_slots(trait_name)
+            .into_iter()
+            .enumerate()
+            .find(|(_, (_, _, name))| name == method)
+            .map(|(index, (key, spelling, _))| {
+                // A trait's method count is bounded far below `u32::MAX`;
+                // `try_from` keeps the boundary explicit.
+                (3 + u32::try_from(index).unwrap_or(u32::MAX), key, spelling)
+            })
     }
 
     /// Walk `trait_name` and ALL of its (transitive) supertraits, collecting

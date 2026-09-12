@@ -1,0 +1,13 @@
+[[case]]
+id = "composite_return_result"
+intent = "The fixture runs to completion and exits 106."
+source = "../vertical-slice/accept/composite_return_result.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 106

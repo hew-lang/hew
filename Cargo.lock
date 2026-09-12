@@ -1271,7 +1271,6 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
- "rand_core 0.6.4",
  "serde",
  "sha2 0.10.9",
  "subtle",
@@ -1390,17 +1389,6 @@ name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
-
-[[package]]
-name = "fd-lock"
-version = "4.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
-dependencies = [
- "cfg-if",
- "rustix",
- "windows-sys 0.52.0",
-]
 
 [[package]]
 name = "fiat-crypto"
@@ -1770,7 +1758,6 @@ dependencies = [
  "clap",
  "clap_complete",
  "dirs",
- "fd-lock",
  "filetime",
  "finl_unicode",
  "hew-analysis",
@@ -1781,7 +1768,6 @@ dependencies = [
  "hew-mir",
  "hew-parser",
  "hew-pkg",
- "hew-runtime",
  "hew-sir",
  "hew-testutil",
  "hew-types",
@@ -1802,17 +1788,16 @@ dependencies = [
 name = "hew-codegen-rs"
 version = "0.6.0-rc3"
 dependencies = [
- "cc",
- "hew-cabi",
  "hew-hir",
  "hew-mir",
  "hew-parser",
  "hew-runtime",
- "hew-testutil",
+ "hew-sir",
+ "hew-std",
  "hew-types",
  "inkwell",
- "libc",
  "llvm-sys",
+ "serde_json",
  "tempfile",
 ]
 
@@ -1820,7 +1805,6 @@ dependencies = [
 name = "hew-compile"
 version = "0.6.0-rc3"
 dependencies = [
- "hew-codegen-rs",
  "hew-hir",
  "hew-lexer",
  "hew-mir",
@@ -1866,7 +1850,6 @@ dependencies = [
  "hew-compile",
  "hew-hir",
  "hew-lexer",
- "hew-mir",
  "hew-parser",
  "hew-types",
  "serde_json",
@@ -1882,15 +1865,9 @@ name = "hew-mir"
 version = "0.6.0-rc3"
 dependencies = [
  "hew-hir",
- "hew-mir",
  "hew-parser",
- "hew-runtime",
  "hew-sir",
  "hew-types",
- "proptest",
- "serde",
- "siphasher",
- "toml",
 ]
 
 [[package]]
@@ -1927,10 +1904,8 @@ dependencies = [
  "base64",
  "clap",
  "ed25519-dalek",
- "fd-lock",
  "libc",
  "rand 0.10.1",
- "rand_core 0.10.1",
  "semver",
  "serde",
  "serde_json",
@@ -1954,7 +1929,6 @@ dependencies = [
  "criterion",
  "crossbeam-deque",
  "crossbeam-utils",
- "fd-lock",
  "finl_unicode",
  "flate2",
  "hew-cabi",
@@ -2013,6 +1987,7 @@ dependencies = [
 name = "hew-sir"
 version = "0.6.0-rc3"
 dependencies = [
+ "heck",
  "hew-hir",
  "hew-parser",
  "hew-types",
@@ -2067,7 +2042,6 @@ version = "0.6.0-rc3"
 name = "hew-testutil"
 version = "0.6.0-rc3"
 dependencies = [
- "fd-lock",
  "libc",
  "tempfile",
 ]
@@ -6053,6 +6027,8 @@ dependencies = [
  "quick-xml",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]

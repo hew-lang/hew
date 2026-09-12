@@ -325,13 +325,10 @@ impl std::error::Error for InvalidLocation {}
 #[cfg(not(target_arch = "wasm32"))]
 mod session_journal {
     use std::fmt;
-    use std::fs::{File, OpenOptions};
+    use std::fs::{File, OpenOptions, TryLockError};
     use std::io::{self, Read, Seek, SeekFrom, Write};
-    use std::mem::ManuallyDrop;
     use std::path::{Path, PathBuf};
-    use std::ptr::NonNull;
 
-    use fd_lock::{RwLock, RwLockWriteGuard};
     use sha2::{Digest, Sha256};
 
     use super::NodeId;
@@ -405,36 +402,20 @@ mod session_journal {
     }
 
     struct SessionFileLock {
-        guard: ManuallyDrop<RwLockWriteGuard<'static, File>>,
-        owner: NonNull<RwLock<File>>,
+        file: File,
     }
-
-    // SAFETY: `owner` is an exclusively owned heap allocation, `guard` is its
-    // only live mutable borrow, and no file access occurs after construction.
-    // The final owner may release the OS lock and allocation on any thread.
-    unsafe impl Send for SessionFileLock {}
-    // SAFETY: shared access exposes no mutable operation; mutation is confined
-    // to acquisition before the lock is published and to final drop.
-    unsafe impl Sync for SessionFileLock {}
 
     impl SessionFileLock {
         fn try_acquire(file: File, path: &Path) -> Result<Self, SessionJournalError> {
-            let owner = Box::new(RwLock::new(file));
-            let owner_ptr = NonNull::from(Box::leak(owner));
-            let guard = loop {
-                // SAFETY: `owner_ptr` is the leaked exclusive allocation above;
-                // no other reference is created while the guard lives.
-                match unsafe { owner_ptr.as_ptr().as_mut().unwrap().try_write() } {
-                    Ok(guard) => break guard,
-                    Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                        // SAFETY: no guard was created, so reclaim the leaked box.
-                        drop(unsafe { Box::from_raw(owner_ptr.as_ptr()) });
+            loop {
+                match file.try_lock() {
+                    Ok(()) => return Ok(Self { file }),
+                    Err(TryLockError::Error(error))
+                        if error.kind() == io::ErrorKind::Interrupted => {}
+                    Err(TryLockError::WouldBlock) => {
                         return Err(SessionJournalError::InUse(path.to_path_buf()));
                     }
-                    Err(source) => {
-                        // SAFETY: no guard was created, so reclaim the leaked box.
-                        drop(unsafe { Box::from_raw(owner_ptr.as_ptr()) });
+                    Err(TryLockError::Error(source)) => {
                         return Err(SessionJournalError::Io {
                             operation: "lock",
                             path: path.to_path_buf(),
@@ -442,33 +423,17 @@ mod session_journal {
                         });
                     }
                 }
-            };
-            // SAFETY: the pinned owner and manual drop order above guarantee the
-            // referenced lock outlives this guard.
-            let guard = unsafe {
-                std::mem::transmute::<RwLockWriteGuard<'_, File>, RwLockWriteGuard<'static, File>>(
-                    guard,
-                )
-            };
-            Ok(Self {
-                guard: ManuallyDrop::new(guard),
-                owner: owner_ptr,
-            })
+            }
         }
 
         fn file_mut(&mut self) -> &mut File {
-            &mut self.guard
+            &mut self.file
         }
     }
 
     impl Drop for SessionFileLock {
         fn drop(&mut self) {
-            // SAFETY: the guard was initialized exactly once and must release
-            // the OS lock before its exclusively owned allocation is reclaimed.
-            unsafe {
-                ManuallyDrop::drop(&mut self.guard);
-                drop(Box::from_raw(self.owner.as_ptr()));
-            }
+            let _ = self.file.unlock();
         }
     }
 

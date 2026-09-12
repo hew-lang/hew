@@ -476,7 +476,7 @@ pub extern "C" fn actorcabi_probe() -> i64 {
         r#"extern "C" { fn actorcabi_probe() -> i64; }
 
 actor Adder {
-    var total: i64 = 0;
+    var total: i64 = 0,
     receive fn add(n: i64) -> i64 {
         total = total + n;
         total
@@ -486,7 +486,7 @@ actor Adder {
 fn main() {
     let ffi: i64 = unsafe { actorcabi_probe() };
     let adder = spawn Adder();
-    match await adder.add(ffi) {
+    match adder.add(ffi) {
         .Ok(v) => println(f"total={v}"),
         .Err(_) => println("err"),
     }

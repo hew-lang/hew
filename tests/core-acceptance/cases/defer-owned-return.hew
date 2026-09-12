@@ -1,0 +1,10 @@
+fn saved() -> string {
+    var value = "before";
+    defer { println(value); }
+    defer { value = "after"; }
+    return value;
+}
+
+fn main() {
+    println(saved());
+}

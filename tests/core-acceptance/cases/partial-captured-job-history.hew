@@ -1,0 +1,26 @@
+type Job {
+    run: fn[once]() -> string,
+    label: string,
+    values: Vec<string>,
+    payload: bytes,
+}
+
+fn make_job(label: string) -> Job {
+    let message = f"run:{label}".to_upper();
+    Job { run: move || message, label: label.to_upper(), values: ["queued".to_upper()], payload: label.to_bytes() }
+}
+
+fn main() -> i64 {
+    let captured = make_job("captured");
+    let report = move || {
+        let result = captured.run();
+        f"{result}:{captured.label}:{captured.values[0]}:{captured.payload.len()}"
+    };
+    println(report());
+    var job = make_job("mutable");
+    let result = job.run();
+    job.values.push(result);
+    job.values.push("done".to_upper());
+    println(f"{job.label}:{job.values.len()}:{job.values[0]}:{job.values[1]}:{job.values[2]}:{job.payload.len()}");
+    0
+}

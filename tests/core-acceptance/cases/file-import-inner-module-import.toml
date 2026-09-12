@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-inner-module-import"
+intent = "A file the root pulled in with `import \"sub.hew\";` keeps its own `import lib.{ ... };` scope through HIR: the constant, the type and the function it selected all resolve inside that file. Its own declarations answer to both the bare and the file-qualified spelling in the root."
+source = "fixtures/file-import-inner-module-import/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "6\n10\n10\n"
+exit = 0

@@ -49,7 +49,7 @@ fn contains_unary(expr: &HirExpr, expected: UnaryOp) -> bool {
 
 #[test]
 fn lowers_checker_typed_bool_not_to_hir_unary() {
-    let output = checked_lower("fn main() -> bool { !false }");
+    let output = checked_lower("fn sample() -> bool { !false }");
     assert!(
         output.diagnostics.is_empty(),
         "HIR diagnostics: {:?}",
@@ -64,7 +64,7 @@ fn lowers_checker_typed_bool_not_to_hir_unary() {
 
 #[test]
 fn unary_missing_checker_type_info_fails_closed() {
-    let parsed = hew_parser::parse("fn main() -> bool { !false }");
+    let parsed = hew_parser::parse("fn sample() -> bool { !false }");
     assert!(
         parsed.errors.is_empty(),
         "parse errors: {:?}",

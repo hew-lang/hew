@@ -118,7 +118,7 @@ exit "${MAKE_STATUS:-0}"
         self.assertFalse((self.root / "calls").exists())
 
     def test_retries_preserve_dirty_worktrees_and_propagate_failure(self) -> None:
-        result = self.run_helper("test-vertical-slice")
+        result = self.run_helper("core-acceptance")
         self.assertEqual(result.returncode, 0, result.stderr)
         parent = self.home / "runs with spaces"
         (first,) = parent.iterdir()
@@ -131,7 +131,7 @@ exit "${MAKE_STATUS:-0}"
         self.assertEqual((first / "tracked").read_text(), "unfinished work\n")
         self.assertEqual((first / "untracked").read_text(), "keep this too\n")
         calls = (self.root / "calls").read_text()
-        self.assertIn("test-vertical-slice /llvm with spaces", calls)
+        self.assertIn("core-acceptance /llvm with spaces", calls)
         self.assertIn("preflight /llvm with spaces", calls)
         self.assertIn("Retained CI worktree:", result.stdout)
 

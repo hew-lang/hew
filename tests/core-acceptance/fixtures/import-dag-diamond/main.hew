@@ -1,0 +1,10 @@
+//! Every module imports both modules of the level below, so 51 modules are
+//! reachable by exponentially many import paths. Every walk over the resolved
+//! import graph must be bounded by the module, not by the path that reaches it.
+
+import level24a;
+import level24b;
+
+fn main() {
+    println(level24a.value0() + level24b.value1());
+}

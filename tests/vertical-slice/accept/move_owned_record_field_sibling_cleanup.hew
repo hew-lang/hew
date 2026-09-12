@@ -1,6 +1,6 @@
 type Pair {
-    moved: Vec<i64>;
-    sibling: Vec<i64>;
+    moved: Vec<i64>,
+    sibling: Vec<i64>,
 }
 
 fn main() {

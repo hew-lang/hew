@@ -35,8 +35,8 @@
 // `hew run examples/v05/hashset_actor_drop_run_pass.hew` must complete with
 // exit 0 and print `ok`.
 actor SetHolder {
-    let ints: HashSet<i64>;
-    let names: HashSet<string>;
+    let ints: HashSet<i64>,
+    let names: HashSet<string>,
 
     // Touch nothing on the moved-in sets — the load-bearing exercise is the
     // teardown free of the NON-EMPTY layout sets, not in-receive access.
@@ -49,7 +49,7 @@ fn main() {
     // Populate both sets so the state-drop path frees NON-EMPTY storage on
     // shutdown — an empty set never iterates occupied slots and so would not
     // exercise the corrupting free.
-    let ints = HashSet.new<i64>();
+    var ints = HashSet.new<i64>();
     ints.insert(1);
     ints.insert(2);
     ints.insert(3);
@@ -58,7 +58,7 @@ fn main() {
     ints.insert(6);
     ints.insert(7);
     ints.insert(8);
-    let names = HashSet.new<string>();
+    var names = HashSet.new<string>();
     names.insert("alpha");
     names.insert("beta");
     names.insert("gamma");
@@ -70,7 +70,7 @@ fn main() {
     let holder = spawn SetHolder(ints: ints, names: names);
     // Synchronous ask so the actor is alive and reachable; teardown (and the
     // state_drop_fn free of both non-empty sets) runs as the program winds down.
-    let r = await holder.ping();
+    let r = holder.ping();
     match r {
         .Ok(acked) => {
             if acked == 1 {

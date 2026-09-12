@@ -20,8 +20,8 @@ use hew_types::Ty;
 
 fn make_pub_fn(name: &str) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: name.to_string(),
@@ -64,7 +64,7 @@ fn make_user_import(
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(items),
+        resolved_items: Some(items.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }
@@ -261,7 +261,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
     let root_source = r#"
         import myapp.widgets.{Describable, Label, describe};
 
-        fn main() -> string {
+        fn describe_label() -> string {
             describe(Label { text: "hello" })
         }
     "#;
@@ -271,7 +271,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         }
 
         pub type Label {
-            text: string;
+            text: string,
         }
 
         impl Describable for Label {
@@ -297,12 +297,12 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => {
+            Item::Function(fd) if fd.name == "describe_label" => {
                 fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
             }
             _ => None,
         })
-        .expect("main trailing call should exist");
+        .expect("describe_label trailing call should exist");
 
     let module = hew_parser::parse(module_source);
     assert!(
@@ -320,7 +320,7 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = isolated_checker();
     let output = checker.check_program(&root.program);
@@ -365,8 +365,8 @@ fn test_private_items_not_visible() {
     use hew_parser::ast::Block;
 
     let private_fn = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private, // private
         name: "private_fn".to_string(),
@@ -426,6 +426,7 @@ fn test_private_items_not_visible() {
 #[test]
 fn test_pub_type_accessible_qualified() {
     let pub_type = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "Config".to_string(),
@@ -470,6 +471,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
     // reachable through its qualifier. This is NOT a duplicate definition —
     // the collision is only between two declarations *in the same module*.
     let local_type = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "Config".to_string(),
@@ -485,6 +487,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
         lang_item: None,
     };
     let imported_type = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: "Config".to_string(),
@@ -539,6 +542,7 @@ fn test_pub_type_import_coexists_with_local_same_name() {
 
 fn pub_struct(name: &str) -> TypeDecl {
     TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: name.to_string(),
@@ -680,8 +684,8 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
     );
     let consumer = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: "take_alpha".to_string(),
@@ -740,6 +744,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
 /// Used to build two same-bare-name types with divergent layouts.
 fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDecl {
     TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: name.to_string(),
@@ -773,6 +778,7 @@ fn pub_struct_with_scalar_field(name: &str, field: &str, scalar: &str) -> TypeDe
 /// resolution of a bare name that collides across modules.
 fn pub_holder_with_named_field(name: &str, field: &str, member: &str) -> TypeDecl {
     TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Pub,
         kind: TypeDeclKind::Struct,
         name: name.to_string(),
@@ -987,8 +993,8 @@ fn colliding_unqualified_imports_are_typed_error() {
     );
     // A function signature referencing bare `Value`.
     let consumer = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "use_value".to_string(),
@@ -1064,8 +1070,8 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
         vec![(Item::TypeDecl(pub_struct("Value")), 0..0)],
     );
     let consumer = FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: "use_value".to_string(),

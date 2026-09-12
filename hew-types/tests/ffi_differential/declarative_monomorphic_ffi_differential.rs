@@ -2,7 +2,7 @@
 //!
 //! The assertions pin checker-owned method rewrites to the
 //! `#[extern_symbol]` annotations declared in stdlib source for
-//! `duration`, `instant`, and `LambdaActorHandle`.
+//! `duration` and `instant`.
 
 use crate::common;
 
@@ -75,51 +75,6 @@ fn instant_methods_resolve_through_extern_symbol_annotations() {
         output.errors
     );
     for symbol in ["hew_instant_elapsed", "hew_instant_duration_since"] {
-        assert!(
-            has_rewrite(&output, symbol),
-            "expected {symbol} in method_call_rewrites; got: {:#?}",
-            output.method_call_rewrites
-        );
-    }
-}
-
-#[test]
-fn lambda_actor_handle_methods_resolve_through_extern_symbol_annotations() {
-    let source = r"
-        import std.concurrency.lambda_actor;
-
-        fn exercise(
-            handle: lambda_actor.LambdaActorHandle,
-            weak: lambda_actor.LambdaActorWeakHandle,
-        ) {
-            let payload = bytes.new();
-
-            let _: i32 = handle.send(payload);
-            let _: i32 = handle.ask(bytes.new());
-            let _: lambda_actor.LambdaActorHandle = handle.clone();
-            let _: lambda_actor.LambdaActorWeakHandle = handle.downgrade();
-            let _: i32 = handle.release();
-            let _: i32 = weak.send(bytes.new());
-            let _: lambda_actor.LambdaActorWeakHandle = weak.clone();
-            let _: i32 = weak.release();
-        }
-    ";
-    let output = typecheck(source);
-    assert!(
-        output.errors.is_empty(),
-        "lambda actor extern-symbol canaries should typecheck; got: {:#?}",
-        output.errors
-    );
-    for symbol in [
-        "hew_lambda_actor_send",
-        "hew_lambda_actor_ask",
-        "hew_lambda_actor_clone",
-        "hew_lambda_actor_release",
-        "hew_lambda_actor_downgrade",
-        "hew_lambda_actor_weak_send",
-        "hew_lambda_actor_weak_clone",
-        "hew_lambda_actor_weak_drop",
-    ] {
         assert!(
             has_rewrite(&output, symbol),
             "expected {symbol} in method_call_rewrites; got: {:#?}",

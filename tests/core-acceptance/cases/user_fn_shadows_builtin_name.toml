@@ -1,0 +1,14 @@
+[[case]]
+id = "user_fn_shadows_builtin_name"
+intent = "User fns shadowing builtin bridge names."
+source = "cases/user_fn_shadows_builtin_name.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+# The retired checked-mir harness ran every fixture with the actor-box
+# balance check armed; keep it here so a leaked actor lands as exit 93.
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = ""
+exit = 0

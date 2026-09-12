@@ -1,0 +1,10 @@
+[[case]]
+id = "unary-literal-arithmetic-width"
+suites = ["acceptance", "safety"]
+intent = "Unary negation over literal-only or i32 arithmetic narrows to the contextual width instead of defaulting to i64 and failing MIR lowering."
+source = "cases/unary-literal-arithmetic-width.hew"
+timeout_seconds = 15
+
+[case.expected]
+stdout = "-3\n-5\ntrue\n"
+exit = 0

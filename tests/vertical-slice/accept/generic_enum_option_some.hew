@@ -2,8 +2,8 @@
 // Maybe::Some(42) must lower through HIR EnumLayoutRegistry → MIR layout-gather
 // → codegen and exit 42.
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn main() -> i64 {

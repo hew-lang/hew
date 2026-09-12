@@ -2,6 +2,10 @@
 // Each node: [value, next_node_index] stored in a flat Vec<i64>
 // next_node_index = -1 means end of stack
 // Push creates a new version (new head), old versions remain accessible.
+//
+// A parameter is the callee's own copy, so push returns the grown store
+// alongside the new head and the caller reassigns. The store is append-only,
+// so every earlier head index still names the same nodes.
 
 // Node storage: pairs of [value, next] in a Vec<i64>
 // Node i is at positions i*2 and i*2+1
@@ -11,11 +15,11 @@ fn ps_new() -> i64 {
 }
 
 // Push value onto stack version 'head', return new version (new head index)
-fn ps_push(store: Vec<i64>, head: i64, value: i64) -> i64 {
+fn ps_push(var store: Vec<i64>, head: i64, value: i64) -> (Vec<i64>, i64) {
     let idx = store.len() / 2;
     store.push(value);
     store.push(head);
-    idx
+    (store, idx)
 }
 
 // Peek at top value of stack version 'head'
@@ -52,7 +56,7 @@ fn ps_size(store: Vec<i64>, head: i64) -> i64 {
 
 // Collect stack elements into a Vec (top to bottom order)
 fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
-    let result: Vec<i64> = Vec.new();
+    var result: Vec<i64> = Vec.new();
     var curr = head;
     while curr >= 0 {
         result.push(store[curr * 2]);
@@ -64,7 +68,7 @@ fn ps_collect(store: Vec<i64>, head: i64) -> Vec<i64> {
 fn main() {
     var passed = 0;
     var failed = 0;
-    let store: Vec<i64> = Vec.new();
+    var store: Vec<i64> = Vec.new();
     // v0 = empty stack
     let v0 = ps_new();
     // Test 1: Empty stack
@@ -81,7 +85,8 @@ fn main() {
         failed = failed + 1;
     }
     // v1 = push 10 onto v0
-    let v1 = ps_push(store, v0, 10);
+    let (store_v1, v1) = ps_push(store, v0, 10);
+    store = store_v1;
     // Test 2: Push creates new version
     if ps_peek(store, v1) == 10 {
         if ps_size(store, v1) == 1 {
@@ -96,7 +101,8 @@ fn main() {
         failed = failed + 1;
     }
     // v2 = push 20 onto v1
-    let v2 = ps_push(store, v1, 20);
+    let (store_v2, v2) = ps_push(store, v1, 20);
+    store = store_v2;
     // Test 3: Second push
     if ps_peek(store, v2) == 20 {
         if ps_size(store, v2) == 2 {
@@ -111,7 +117,8 @@ fn main() {
         failed = failed + 1;
     }
     // v3 = push 30 onto v2
-    let v3 = ps_push(store, v2, 30);
+    let (store_v3, v3) = ps_push(store, v2, 30);
+    store = store_v3;
     // Test 4: Old version v1 is still accessible
     if ps_peek(store, v1) == 10 {
         if ps_size(store, v1) == 1 {
@@ -167,7 +174,8 @@ fn main() {
     }
     // Test 8: Branch from v1 (create divergent history)
     // v4 = push 99 onto v1
-    let v4 = ps_push(store, v1, 99);
+    let (store_v4, v4) = ps_push(store, v1, 99);
+    store = store_v4;
     if ps_peek(store, v4) == 99 {
         if ps_size(store, v4) == 2 {
             // v4 = [99, 10], v2 = [20, 10], v3 = [30, 20, 10]

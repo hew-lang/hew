@@ -1,28 +1,27 @@
-// Fluent calls preserve one JSON root owner, child Values transfer, and
-// navigation results are independent deep owners.
+// Selected values and captured copies survive their parent's lexical scope.
 import std.encoding.json;
 
 fn early_exit(flag: bool) {
-    let value = json.object();
-    value.with("n", json.from_int(11));
-    let child = value.get_field("n");
+    var value = json.object();
+    value.set("n", json.from_int(11)).expect("set succeeds");
+    let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     if flag {
         return;
     }
-    println(child.get_int());
+    println(child.get_int().expect("get_int succeeds"));
 }
 
 fn _panic_exit() {
-    let value = json.object();
-    value.with("n", json.from_int(12));
-    let _child = value.get_field("n");
+    var value = json.object();
+    value.set("n", json.from_int(12)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     panic("json value panic probe");
 }
 
 fn cancel_exit() {
-    let value = json.object();
-    value.with("n", json.from_int(13));
-    let _child = value.get_field("n");
+    var value = json.object();
+    value.set("n", json.from_int(13)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     var i: i64 = 0;
     while i < 2 {
         i = i + 1;
@@ -38,18 +37,20 @@ actor JsonCancelDriver {
 }
 
 fn main() {
-    let value = json.object();
-    value.with("n", json.from_int(7));
-    value.with_bool("flag", true);
-    let child = value.get_field("n");
-    let keys = value.keys();
-    value.close();
-    println(child.get_int());
-    println(keys.array_len());
+    let (read, keys) = {
+        var value = json.object();
+        value.set("n", json.from_int(7)).expect("set succeeds");
+        value.set("flag", json.from_bool(true)).expect("set succeeds");
+        let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
+        (|| child.get_int().expect("get_int succeeds"), value.keys().expect("keys succeeds"))
+    };
+    println(read());
+    println(keys.array_len().expect("array_len succeeds"));
 
-    // An invalid parent still consumes the child transfer.
-    let invalid = json.parse("{");
-    invalid.with("child", json.from_int(1));
-    invalid.free();
+    // A parse failure returns an error without an owning value payload.
+    match json.parse("{") {
+        .Ok(_) => panic("malformed JSON unexpectedly parsed"),
+        .Err(_) => {},
+    }
     early_exit(true);
 }

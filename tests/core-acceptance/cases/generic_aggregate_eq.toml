@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_aggregate_eq"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/generic_aggregate_eq.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "pair=true pair-ne=false record=true record-ne=false bag=true bag-ne=false\n"
+exit = 0

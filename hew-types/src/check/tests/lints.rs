@@ -31,12 +31,12 @@ fn raii_handle_bindings_suppress_unused_lint_but_plain_still_warns() {
     // suppression is type-targeted, not a blanket disable.
     let source = "\
 #[resource]\n\
-type Guard { id: i64; }\n\
-impl Guard { fn close(g: Guard) { } }\n\
+type Guard { id: i64, }\n\
+impl Guard { fn close(consume self) { } }\n\
 fn open() -> Guard { Guard { id: 1 } }\n\
 #[linear]\n\
-type Txn { id: i64; }\n\
-impl Txn { fn commit(consuming self) -> i64 { 0 } }\n\
+type Txn { id: i64, }\n\
+impl Txn { fn commit(consume self) -> i64 { 0 } }\n\
 fn mk() -> Txn { Txn { id: 0 } }\n\
 fn main() { let g = open(); let t = mk(); let plain = 42; }\n";
     let result = hew_parser::parse(source);
@@ -272,7 +272,7 @@ fn where_clause_assoc_binding_projects_iterator_item_in_generic_body() {
         }
 
         fn main() -> i64 {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(42);
             first_or_zero(v.into_iter())
         }
@@ -317,7 +317,7 @@ fn where_clause_assoc_binding_projects_non_iterator_assoc_type() {
         }
 
         type Meter {
-            value: i64;
+            value: i64,
         }
 
         impl Projector for Meter {
@@ -444,7 +444,15 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
     let mut checker = Checker::new(test_registry());
     checker.register_builtins();
 
-    for name in ["print", "println", "to_string", "assert_eq", "assert_ne"] {
+    // The assertions render both operands, so they carry Display like the
+    // printing builtins, plus the Eq their comparison needs.
+    for (name, bounds) in [
+        ("print", vec!["Display".to_string()]),
+        ("println", vec!["Display".to_string()]),
+        ("to_string", vec!["Display".to_string()]),
+        ("assert_eq", vec!["Eq".to_string(), "Display".to_string()]),
+        ("assert_ne", vec!["Eq".to_string(), "Display".to_string()]),
+    ] {
         let sig = checker
             .fn_sigs
             .get(name)
@@ -456,8 +464,8 @@ fn builtin_print_registration_keeps_display_bounds_on_bare_names() {
         );
         assert_eq!(
             sig.type_param_bounds.get("T"),
-            Some(&vec!["Display".to_string()]),
-            "{name} should keep a Display bound on its bare-name registration"
+            Some(&bounds),
+            "{name} should keep its bare-name registration bounds"
         );
     }
 
@@ -473,7 +481,7 @@ fn print_and_println_reject_struct_without_display_impl() {
     let (errors, warnings) = parse_and_check_with_stdlib(
         r"
         type Hidden {
-            value: i64;
+            value: i64,
         }
 
         fn main() {
@@ -499,11 +507,48 @@ fn print_and_println_reject_struct_without_display_impl() {
 }
 
 #[test]
+fn equality_assertions_reject_a_type_without_eq() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r#"
+        type Holder {
+            action: fn() -> i64,
+        }
+
+        impl Display for Holder {
+            fn fmt(holder: Holder) -> string {
+                "holder"
+            }
+        }
+
+        fn main() {
+            let left = Holder { action: || 1 };
+            let right = Holder { action: || 2 };
+            assert_eq(left, right);
+            assert_ne(left, right);
+        }
+        "#,
+    );
+
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    let bounds_errors: Vec<_> = errors
+        .iter()
+        .filter(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied && error.message.contains("Eq")
+        })
+        .collect();
+    assert_eq!(
+        bounds_errors.len(),
+        2,
+        "assert_eq/assert_ne should reject a Display type with no equality: {errors:?}"
+    );
+}
+
+#[test]
 fn display_impl_satisfies_bounded_magic_builtins() {
     let (errors, warnings) = parse_and_check_with_stdlib(
         r#"
         type Widget {
-            value: i64;
+            value: i64,
         }
 
         impl Display for Widget {
@@ -692,6 +737,18 @@ fn no_warn_var_actually_mutated() {
 }
 
 #[test]
+fn bytes_receiver_transform_counts_as_reassignment() {
+    let (errors, warnings) = parse_and_check_with_stdlib(include_str!(
+        "../../../../tests/core-acceptance/cases/bytes-copy-mutate.hew"
+    ));
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(
+        warnings.is_empty(),
+        "the bytes receiver transform must remain clean under --Werror: {warnings:?}"
+    );
+}
+
+#[test]
 fn mutable_param_can_be_reassigned() {
     let (errors, warnings) = parse_and_check("fn bump(var x: i64) -> i64 { x = x + 1; x }");
     assert!(errors.is_empty(), "errors: {errors:?}");
@@ -723,7 +780,7 @@ fn immutable_param_cannot_be_reassigned() {
 #[test]
 fn immutable_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn main() { let p = Point { x: 1 }; p.x = 2; }\n",
     ));
     assert!(
@@ -743,7 +800,7 @@ fn immutable_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_param_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn bump(p: Point) { p.x = 2; }\n",
     ));
     assert!(
@@ -763,7 +820,7 @@ fn immutable_param_field_assignment_root_is_rejected() {
 #[test]
 fn immutable_compound_field_assignment_root_is_rejected() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn main() { let p = Point { x: 1 }; p.x += 2; }\n",
     ));
     assert!(
@@ -783,7 +840,7 @@ fn immutable_compound_field_assignment_root_is_rejected() {
 #[test]
 fn mutable_field_assignment_root_counts_as_mutation() {
     let (errors, warnings) = parse_and_check(concat!(
-        "type Point { x: i64; }\n",
+        "type Point { x: i64, }\n",
         "fn main() { var p = Point { x: 1 }; p.x = 2; println(p.x); }\n",
     ));
     assert!(errors.is_empty(), "errors: {errors:?}");
@@ -954,7 +1011,7 @@ fn no_warn_unused_println() {
 fn no_warn_unused_spawn() {
     // spawn is a side-effect expression — don't warn about discarded return
     let (_, warnings) = parse_and_check(concat!(
-        "actor Worker { count: i32;\n",
+        "actor Worker { count: i32,\n",
         "    receive fn work() {} }\n",
         "fn main() { let _w = spawn Worker(count: 0); }\n",
     ));
@@ -1033,7 +1090,7 @@ fn suggest_similar_function() {
 fn suggest_similar_type() {
     // Use a misspelled type in a constructor position, which triggers undefined type lookup
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: i32; y: i32; }\n",
+        "type Point { x: i32, y: i32, }\n",
         "fn make() { let p = Pont { x: 0, y: 0 }; println(p.x); }\n",
     ));
     let err = errors
@@ -1050,7 +1107,7 @@ fn suggest_similar_type() {
 #[test]
 fn suggest_similar_field() {
     let (errors, _) = parse_and_check(concat!(
-        "type Point { x: i32; y: i32; }\n",
+        "type Point { x: i32, y: i32, }\n",
         "fn get_z(p: Point) -> i32 { p.z }\n",
     ));
     let err = errors
@@ -1170,33 +1227,30 @@ fn needless_range_loop_flags_index_access() {
 }
 
 #[test]
-fn needless_range_loop_not_flagged_when_vec_element_lacks_semantic_clone() {
+fn needless_range_loop_flagged_when_vec_element_lacks_semantic_clone() {
     let (errors, warnings) = parse_and_check(
         r"
-        actor Client {
-            receive fn deliver() {}
-        }
-
-        fn broadcast(clients: Vec<LocalPid<Client>>) {
-            for i in 0..clients.len() {
-                clients[i].deliver();
+        fn drain(inputs: Vec<Stream<i64>>) {
+            for i in 0..inputs.len() {
+                let _ = inputs[i];
             }
         }
         ",
     );
     assert!(
         errors.is_empty(),
-        "the indexed LocalPid broadcast must type-check: {errors:?}"
+        "the indexed stream walk must type-check: {errors:?}"
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
-        0,
-        "the lint must not suggest direct Vec iteration when VecIter cannot clone the element: {warnings:?}"
+        1,
+        "a clone-free element iterates by borrow, which is what `inputs[i]` already \
+         reads, so the direct-iteration rewrite compiles: {warnings:?}"
     );
 }
 
 #[test]
-fn needless_range_loop_not_flagged_for_unbounded_generic_element() {
+fn needless_range_loop_flagged_for_unbounded_generic_element() {
     let (errors, warnings) = parse_and_check(
         r"
         fn scan<T>(xs: Vec<T>) -> i64 {
@@ -1215,9 +1269,9 @@ fn needless_range_loop_not_flagged_for_unbounded_generic_element() {
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
-        0,
-        "an unbounded `T` has no proven clone, so the direct-iteration rewrite is not \
-         guaranteed to compile at every monomorphisation: {warnings:?}"
+        1,
+        "an unbounded `T` iterates by borrow at every monomorphisation, so the \
+         direct-iteration rewrite compiles: {warnings:?}"
     );
 }
 
@@ -1247,7 +1301,7 @@ fn needless_range_loop_flags_clone_bounded_generic_element() {
 }
 
 #[test]
-fn needless_range_loop_not_flagged_for_unbounded_generic_inside_container() {
+fn needless_range_loop_flagged_for_unbounded_generic_inside_container() {
     let (errors, warnings) = parse_and_check(
         r"
         fn scan<T>(xs: Vec<Option<T>>) -> i64 {
@@ -1266,8 +1320,39 @@ fn needless_range_loop_not_flagged_for_unbounded_generic_inside_container() {
     );
     assert_eq!(
         count_needless_range_loop(&warnings),
+        1,
+        "an unbounded `T` nested in the element type iterates by borrow too: {warnings:?}"
+    );
+}
+
+/// Negative control for the three cases above: `Vec<dyn Trait>` is the one
+/// element the direct loop refuses, so it keeps its indexed walk.
+#[test]
+fn needless_range_loop_not_flagged_for_trait_object_element() {
+    let (errors, warnings) = parse_and_check(
+        r"
+        trait Shape {
+            fn area(self) -> i64;
+        }
+
+        fn total(shapes: Vec<dyn Shape>) -> i64 {
+            var sum = 0;
+            for i in 0..shapes.len() {
+                sum = sum + shapes[i].area();
+            }
+            sum
+        }
+        ",
+    );
+    assert!(
+        errors.is_empty(),
+        "the indexed trait-object walk must type-check: {errors:?}"
+    );
+    assert_eq!(
+        count_needless_range_loop(&warnings),
         0,
-        "an unbounded `T` nested in the element type is equally unproven: {warnings:?}"
+        "direct `for` over `Vec<dyn Trait>` is refused in favour of `into_iter()`, \
+         so no rewrite is suggested: {warnings:?}"
     );
 }
 
@@ -2412,7 +2497,7 @@ fn test_actor_field_shadowing_is_error() {
     // unambiguous names.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             receive fn update(count: i64) {
                 println(count);
             }
@@ -2436,7 +2521,7 @@ fn for_binder_shadowing_actor_field_is_error() {
     // reached two storages and the program silently computed the wrong total.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             receive fn go() {
                 for count in [10, 20, 30] {
                     count = count + 1;
@@ -2460,7 +2545,7 @@ fn for_binder_shadowing_a_local_stays_exempt() {
     // silent — neither an error nor the shadowing warning a `let` would draw.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             receive fn go() {
                 let step = 100;
                 for step in 0..3 {
@@ -2486,7 +2571,7 @@ fn test_actor_fn_method_field_shadowing_is_error() {
     // Shadowing an actor field via an fn helper method is also a hard error.
     let source = r"
         actor Counter {
-            var count: i64 = 0;
+            var count: i64 = 0,
             fn helper(count: i64) -> i64 { count }
         }
     ";
@@ -2654,10 +2739,12 @@ fn unused_free_fn_param_is_not_warned() {
 }
 
 #[test]
-fn actor_this_field_points_to_bare_state_field() {
+fn this_is_not_a_word_in_hew() {
+    // `this` carries no actor meaning: inside an actor the handle is `self`,
+    // so `this` is an ordinary (undefined) identifier.
     let source = r"
         actor Counter {
-            let count: i64;
+            let count: i64,
             receive fn get() -> i64 {
                 this.count
             }
@@ -2665,16 +2752,11 @@ fn actor_this_field_points_to_bare_state_field() {
     ";
     let (errors, _) = parse_and_check(source);
     assert!(
-        errors.iter().any(|error| {
-            error.kind == TypeErrorKind::UndefinedField
-                && error.message.contains("`this` is the actor handle")
-                && error.message.contains("not `this.count`")
-                && error
-                    .suggestions
-                    .iter()
-                    .any(|suggestion| suggestion == "count")
-        }),
-        "`this.field` in actor body should suggest bare field access; got: {errors:?}",
+        errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedVariable
+                && error.message.contains("undefined variable `this`")),
+        "`this` must not resolve to an actor handle; got: {errors:?}",
     );
 }
 
@@ -2917,60 +2999,6 @@ fn no_warn_used_import() {
     );
 }
 
-#[test]
-fn stdlib_json_supertrait_import_does_not_warn_value_trait_unused() {
-    let source = "import std.encoding.json;\nfn main() { let v = json.parse(\"[]\"); println(v); }";
-    let result = hew_parser::parse(source);
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&result.program);
-    assert!(
-        !output.warnings.iter().any(|w| {
-            w.kind == TypeErrorKind::UnusedImport && w.message.contains("value_trait")
-        }),
-        "json's CanonicalValueMethods supertrait use must consume its value_trait import: {:?}",
-        output.warnings
-    );
-}
-
-#[test]
-fn no_warn_named_import_type_used_bare() {
-    // A named import (`::{ T }`) of a type used only as a bare type reference
-    // must mark the module used — qualified-by-default routes bare references
-    // through the published binding, which must still consume the import so the
-    // unused-import lint does not false-positive.
-    let source = "import std.io.closable.{ CloseError };\n\
-                  fn handle(e: CloseError) -> i64 { 0 }\n\
-                  fn main() { let _ = handle; println(1); }";
-    let result = hew_parser::parse(source);
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&result.program);
-    assert!(
-        !output
-            .warnings
-            .iter()
-            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
-        "named import used via a bare type reference must not warn unused: {:?}",
-        output.warnings
-    );
-}
-
-#[test]
-fn warn_named_import_type_unused() {
-    // The complement: a named import whose type is never referenced still warns.
-    let source = "import std.io.closable.{ CloseError };\nfn main() { println(1); }";
-    let result = hew_parser::parse(source);
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&result.program);
-    assert!(
-        output
-            .warnings
-            .iter()
-            .any(|w| w.kind == TypeErrorKind::UnusedImport && w.message.contains("closable")),
-        "an unused named import must still warn: {:?}",
-        output.warnings
-    );
-}
-
 // ── Selective-import load-bearing use false positive (D8) ─────────────
 //
 // A selectively-imported type used only through expression-position
@@ -2998,13 +3026,13 @@ fn check_resolved_selective_import(child_source: &str, root_source: &str) -> Typ
             _ => None,
         })
         .expect("fixture import");
-    import.resolved_items = Some(child.program.items);
+    import.resolved_items = Some(child.program.items.into());
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.check_program(&root.program)
 }
 
-const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string; }\n\
-                                  pub enum Status { Ok(string); Err(string); }\n";
+const D8_FIXTURE_SOURCE: &str = "pub type Widget { label: string, }\n\
+                                  pub enum Status { Ok(string), Err(string), }\n";
 
 #[test]
 fn no_warn_selective_import_used_only_as_record_literal() {
@@ -3063,7 +3091,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
     let root_source = r"
         import std.string;
 
-        fn main() -> string {
+        fn describe_label() -> string {
             string.describe(string.make_label())
         }
     ";
@@ -3073,7 +3101,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         }
 
         pub type Label {
-            text: string;
+            text: string,
         }
 
         pub fn make_label() -> Label {
@@ -3103,12 +3131,12 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
         .items
         .iter()
         .find_map(|(item, _)| match item {
-            Item::Function(fd) if fd.name == "main" => {
+            Item::Function(fd) if fd.name == "describe_label" => {
                 fd.body.trailing_expr.as_ref().map(|expr| expr.1.clone())
             }
             _ => None,
         })
-        .expect("main trailing call should exist");
+        .expect("describe_label trailing call should exist");
     let module = hew_parser::parse(module_source);
     assert!(
         module.errors.is_empty(),
@@ -3125,7 +3153,7 @@ fn stdlib_import_registers_trait_impls_for_generic_bounds() {
             _ => None,
         })
         .expect("root import should exist");
-    import_decl.resolved_items = Some(module.program.items.clone());
+    import_decl.resolved_items = Some(module.program.items.clone().into());
 
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&root.program);
@@ -3251,7 +3279,7 @@ fn impl_for_user_struct_does_not_pollute_primitive_trait_impl_table() {
         }
 
         pub type MyType {
-            value: i64;
+            value: i64,
         }
 
         impl Display for MyType {
@@ -3542,7 +3570,7 @@ fn pub_type_receiver_with_user_trait_impl_still_dispatches_via_existing_path() {
     let source = r#"
         pub trait Display { fn fmt(val: Self) -> string; }
         pub type Foo {
-            value: i64;
+            value: i64,
         }
         impl Display for Foo {
             fn fmt(f: Foo) -> string { "" }
@@ -3615,7 +3643,7 @@ fn ufcs_on_pub_type_receiver_does_not_record_primitive_trait_impl_metadata() {
     // entirely by the receiver-form dispatch path.
     let source = r#"
         pub trait UserDisplay { fn show(val: Self) -> string; }
-        pub type Widget { value: i64; }
+        pub type Widget { value: i64, }
         impl UserDisplay for Widget {
             fn show(w: Widget) -> string { "" }
         }
@@ -3967,7 +3995,7 @@ fn print_user_struct_without_display_impl_is_rejected_by_checker() {
     // relying on PrintOpLowering's unsupported-aggregate terminal.
     let source = r#"
         pub type Foo {
-            label: string;
+            label: string,
         }
 
         fn main() {
@@ -4071,7 +4099,7 @@ fn duplicate_stdlib_import_with_same_resolved_source_does_not_reregister_items()
             _ => None,
         })
     {
-        import_decl.resolved_items = Some(bench_module.program.items.clone());
+        import_decl.resolved_items = Some(bench_module.program.items.clone().into());
         import_decl.resolved_source_paths = vec![bench_path.clone()];
     }
 
@@ -4197,28 +4225,16 @@ fn warn_dead_code_self_recursive_function() {
 // -----------------------------------------------------------------------
 // must_use lint
 // -----------------------------------------------------------------------
+//
+// Delivery outcomes (send/ask) are no longer a lint tier: discarding one is
+// `E_SEND_RESULT_DROPPED`, covered in `check::tests::actor_delivery`. What
+// remains here is `WriteError` and the machine step report.
 
 fn count_must_use(diags: &[TypeError]) -> usize {
     diags
         .iter()
         .filter(|d| d.kind == TypeErrorKind::Lint(LintId::MustUse))
         .count()
-}
-
-/// A fieldless actor whose `process` reply makes `await d.process(_)` resolve to
-/// `Result<i64, AskError>` — the ask-shaped must-use case. `AskError` is a
-/// compiler-owned builtin whose exact owner comes from the generated catalog.
-const ASK_ACTOR: &str = "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n";
-
-#[test]
-fn must_use_flags_discarded_send_result() {
-    let src = "fn caller() { let log = actor |n: i64| { let _ = n; }; log(5); }";
-    let (_, warnings) = parse_and_check(src);
-    let hit = warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
-        .expect("a discarded Result<(), SendError> must fire must_use");
-    assert!(hit.message.contains("SendError"), "msg: {}", hit.message);
 }
 
 #[test]
@@ -4234,63 +4250,8 @@ fn must_use_flags_bare_error_value() {
 }
 
 #[test]
-fn must_use_not_flagged_when_handled_by_question() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() -> Result<(), AskError> {{ \
-         let d = spawn Doubler; await d.process(5)?; Ok(()) }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "`?` consumes the Result, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_explicitly_bound() {
-    let src =
-        format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; let _ = await d.process(5); }}");
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "`let _ =` is the documented opt-out, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_in_tail_position() {
-    // The trailing expression is the block's value (used), not a discard.
-    let src = format!(
-        "{ASK_ACTOR}fn caller() -> Result<i64, AskError> {{ \
-         let d = spawn Doubler; await d.process(5) }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a tail Result is the function's value, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_matched() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; \
-         match await d.process(5) {{ Ok(_) => {{}} Err(_) => {{}} }} }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a matched Result is handled, warnings: {warnings:?}"
-    );
-}
-
-#[test]
 fn must_use_not_flagged_for_ordinary_result() {
-    // Only WriteError/SendError are must-use; an unrelated error is left alone.
+    // Only WriteError is must-use; an unrelated error is left alone.
     let src = "fn g() -> Result<(), i64> { Ok(()) }\nfn caller() { g(); }";
     let (_, warnings) = parse_and_check(src);
     assert_eq!(
@@ -4302,9 +4263,9 @@ fn must_use_not_flagged_for_ordinary_result() {
 
 #[test]
 fn must_use_rejects_user_same_leaf_error_names() {
-    let src = "enum SendError { Closed; }\n\
-        enum AskError { Timeout; }\n\
-        enum WriteError { Disconnected; }\n\
+    let src = "enum SendError { Closed, }\n\
+        enum AskError { Timeout, }\n\
+        enum WriteError { Disconnected, }\n\
         fn send() -> SendError { SendError.Closed }\n\
         fn ask() -> AskError { AskError.Timeout }\n\
         fn write() -> WriteError { WriteError.Disconnected }\n\
@@ -4323,113 +4284,26 @@ fn must_use_rejects_user_same_leaf_error_names() {
     );
 }
 
+/// A `#[test]` function is entered by the test harness, so it is a dead-code
+/// root exactly as `main` is, and so is everything it calls. Fixtures compile
+/// with warnings as errors, so a warning here fails the build.
 #[test]
-fn must_use_deny_routes_to_errors() {
-    let src = format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; await d.process(5); }}");
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Deny);
-    assert_eq!(count_must_use(&out.errors), 1, "errors: {:?}", out.errors);
-    assert_eq!(count_must_use(&out.warnings), 0);
-}
-
-#[test]
-fn must_use_allow_suppresses() {
-    let src = format!("{ASK_ACTOR}fn caller() {{ let d = spawn Doubler; await d.process(5); }}");
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Allow);
-    assert_eq!(count_must_use(&out.warnings), 0);
-    assert_eq!(count_must_use(&out.errors), 0);
-}
-
-#[test]
-fn must_use_suppressed_by_directive() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() {{\n    let d = spawn Doubler;\n    // hew:allow(must_use)\n    await d.process(5);\n}}"
-    );
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
-    assert_eq!(
-        count_must_use(&out.warnings),
-        0,
-        "a directive above the discard must suppress, warnings: {:?}",
-        out.warnings
-    );
-}
-
-#[test]
-fn must_use_flags_discarded_await_ask() {
-    // A bare `await actor.msg()` in statement position drops a
-    // `Result<_, AskError>` — a lost timeout/full-mailbox/stopped-actor signal.
-    let src = format!("{ASK_ACTOR}fn main() {{ let d = spawn Doubler; await d.process(5); }}");
-    let (errors, warnings) = parse_and_check(&src);
-    assert!(errors.is_empty(), "fixture should type-check: {errors:?}");
-    let hit = warnings
+fn dead_code_treats_a_test_fn_as_a_root() {
+    let src = "fn helper() -> i64 { 7 }\n\
+        #[test]\n\
+        fn checks_the_helper() { assert_eq(helper(), 7); }\n\
+        fn stranded() -> i64 { 1 }";
+    let out = check_with_lint_defaults(src);
+    let dead: Vec<_> = out
+        .warnings
         .iter()
-        .find(|w| w.kind == TypeErrorKind::Lint(LintId::MustUse))
-        .expect("a discarded `await actor.msg()` (Result<_, AskError>) must fire must_use");
+        .filter(|w| w.kind == TypeErrorKind::Lint(LintId::DeadCode))
+        .collect();
+    assert_eq!(dead.len(), 1, "warnings: {:?}", out.warnings);
     assert!(
-        hit.message.contains("AskError") && hit.message.contains("ask error"),
-        "primary message should name AskError and the ask class: {}",
-        hit.message
-    );
-    assert!(
-        hit.suggestions.iter().any(|s| {
-            s.contains("timeout") && s.contains("mailbox") && s.contains("stopped actor")
-        }),
-        "suggestion should name the concrete ask failures: {:?}",
-        hit.suggestions
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_await_matched() {
-    let src = format!(
-        "{ASK_ACTOR}fn main() {{ let d = spawn Doubler; \
-         match await d.process(5) {{ Ok(_) => {{}} Err(_) => {{}} }} }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a matched await ask is handled, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_await_explicitly_bound() {
-    let src =
-        format!("{ASK_ACTOR}fn main() {{ let d = spawn Doubler; let _ = await d.process(5); }}");
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "`let _ = await …` is an explicit discard, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_not_flagged_when_await_in_tail_position() {
-    let src = format!(
-        "{ASK_ACTOR}fn caller() -> Result<i64, AskError> \
-         {{ let d = spawn Doubler; await d.process(5) }}"
-    );
-    let (_, warnings) = parse_and_check(&src);
-    assert_eq!(
-        count_must_use(&warnings),
-        0,
-        "a tail await is the function's value, warnings: {warnings:?}"
-    );
-}
-
-#[test]
-fn must_use_await_suppressed_by_directive() {
-    let src = format!(
-        "{ASK_ACTOR}fn main() {{\n    let d = spawn Doubler;\n    \
-         // hew:allow(must_use)\n    await d.process(5);\n}}"
-    );
-    let out = check_with_lint_level(&src, LintId::MustUse, LintLevel::Warn);
-    assert_eq!(
-        count_must_use(&out.warnings),
-        0,
-        "a directive above the discarded await must suppress, warnings: {:?}",
-        out.warnings
+        dead[0].message.contains("stranded"),
+        "only the genuinely unreachable fn is dead: {}",
+        dead[0].message
     );
 }
 
@@ -4445,7 +4319,7 @@ fn count_sleep_loop_blocks_mailbox(diags: &[TypeError]) -> usize {
 }
 
 const SLEEP_LOOP_REPRO: &str = "actor Worker {\n\
-     var running: bool = true;\n\
+     var running: bool = true,\n\
      receive fn run() { while running { sleep(10ms); } }\n\
      receive fn stop() { running = false; }\n\
      }\n";
@@ -4521,7 +4395,7 @@ fn sleep_loop_blocks_mailbox_ignores_non_actor_function() {
 fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\
-         var running: bool = true;\n\
+         var running: bool = true,\n\
          receive fn run() { let f = || { while running { sleep(10ms); } }; let _ = f; }\n\
          receive fn stop() { running = false; }\n\
          }\n",
@@ -4538,7 +4412,7 @@ fn sleep_loop_blocks_mailbox_ignores_sleep_loop_inside_lambda() {
 fn sleep_loop_blocks_mailbox_ignores_loop_with_reachable_break() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\
-         var flag: bool = false;\n\
+         var flag: bool = false,\n\
          receive fn run() { while true { sleep(1s); if flag { break; } } }\n\
          }\n",
     );
@@ -4566,7 +4440,7 @@ fn sleep_loop_blocks_mailbox_ignores_bare_sleep_without_loop() {
 fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
     let (errors, warnings) = parse_and_check(
         "actor Worker {\n\
-         var running: bool = true;\n\
+         var running: bool = true,\n\
          receive fn run() { while running { sleep(10ms); running = false; } }\n\
          }\n",
     );
@@ -4581,7 +4455,7 @@ fn sleep_loop_blocks_mailbox_ignores_loop_assigning_its_guard() {
 #[test]
 fn sleep_loop_blocks_mailbox_suppressed_by_directive() {
     const SOURCE: &str = "actor Worker {\n\
-         var running: bool = true;\n\
+         var running: bool = true,\n\
          receive fn run() {\n\
              // hew:allow(sleep_loop_blocks_mailbox)\n\
              while running { sleep(10ms); }\n\

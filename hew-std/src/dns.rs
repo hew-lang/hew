@@ -1,15 +1,14 @@
 //! Hew `std::net::dns` — DNS hostname resolution.
 //!
 //! Resolves hostnames to IP address strings using the system resolver
-//! (`std::net::ToSocketAddrs`). All returned strings are allocated with
-//! `libc::malloc` and NUL-terminated.
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+//! (`std::net::ToSocketAddrs`). Hostnames borrow managed UTF-8 strings; results
+//! transfer managed owners. Null is the canonical empty string.
+use hew_cabi::string::{string_as_str, string_from_str, string_release, HewString};
 use hew_cabi::vec::HewVec;
 use hew_runtime::blocking_pool::{
     shared_blocking_pool_opt, spawn_blocking_result, BlockingPoolError,
 };
 use std::net::{IpAddr, ToSocketAddrs};
-use std::os::raw::c_char;
 use std::time::Duration;
 
 // ---------------------------------------------------------------------------
@@ -74,14 +73,14 @@ fn resolve_via_pool(host: &str, deadline_ms: i64) -> Result<Vec<IpAddr>, bool> {
 
 /// Resolve a hostname to all associated IP addresses.
 ///
-/// Returns a `HewVec` of malloc-allocated C strings, one per resolved address.
-/// Returns an empty vec on failure, deadline expiry, or null input.
+/// Returns an owned `Vec<string>`, one managed string per resolved address.
+/// Returns an empty vector on failure, deadline expiry, empty input or embedded NUL.
 ///
 /// # Safety
 ///
-/// `hostname` must be a valid NUL-terminated C string, or null.
+/// `hostname` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_dns_resolve(hostname: *const c_char) -> *mut HewVec {
+pub unsafe extern "C" fn hew_dns_resolve(hostname: *const HewString) -> *mut HewVec {
     // SAFETY: forwarded contract; deadline_ms=0 means no deadline (legacy
     // behaviour). `hew_dns_resolve_timed` is the deadline-bounded entrypoint.
     unsafe { hew_dns_resolve_timed(hostname, 0) }
@@ -95,21 +94,19 @@ pub unsafe extern "C" fn hew_dns_resolve(hostname: *const c_char) -> *mut HewVec
 ///
 /// # Safety
 ///
-/// `hostname` must be a valid NUL-terminated C string, or null.
+/// `hostname` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_dns_resolve_timed(
-    hostname: *const c_char,
+    hostname: *const HewString,
     deadline_ms: i64,
 ) -> *mut HewVec {
     // SAFETY: hew_vec_new_str allocates a valid string-typed HewVec.
     let vec = unsafe { hew_cabi::vec::hew_vec_new_str() };
 
-    // SAFETY: forwarding to cstr_to_str with same contract.
-    let Some(host) = (unsafe { cstr_to_str(hostname) }) else {
-        return vec;
-    };
+    // SAFETY: hostname borrows a live managed string or canonical empty.
+    let host = unsafe { string_as_str(hostname) };
 
-    if host.is_empty() {
+    if host.is_empty() || host.contains('\0') {
         return vec;
     }
 
@@ -118,12 +115,12 @@ pub unsafe extern "C" fn hew_dns_resolve_timed(
     };
 
     for addr in addrs {
-        let ip = str_to_malloc(&addr.to_string());
-        // SAFETY: vec is a valid HewVec; ip is a malloc'd C string.
-        // push_str internally strdup's, so free the original.
+        let ip = string_from_str(&addr.to_string());
+        // SAFETY: vec is a live Vec<string>; push retains the borrowed managed
+        // address. Release the producer owner after the vector acquires its own.
         unsafe {
             hew_cabi::vec::hew_vec_push_str(vec, ip);
-            hew_cabi::cabi::free_cstring(ip); // CSTRING-FREE: str-open (frees str_to_malloc ip string)
+            string_release(ip);
         }
     }
 
@@ -132,14 +129,14 @@ pub unsafe extern "C" fn hew_dns_resolve_timed(
 
 /// Resolve a hostname to its first IP address.
 ///
-/// Returns a malloc-allocated, NUL-terminated C string with the first
-/// resolved address, or null if resolution fails.
+/// Returns an owned managed string with the first resolved address; release it
+/// with `string_release`. Failure, empty input or embedded NUL returns null.
 ///
 /// # Safety
 ///
-/// `hostname` must be a valid NUL-terminated C string, or null.
+/// `hostname` must be a live managed string handle (null means empty).
 #[no_mangle]
-pub unsafe extern "C" fn hew_dns_lookup_host(hostname: *const c_char) -> *mut c_char {
+pub unsafe extern "C" fn hew_dns_lookup_host(hostname: *const HewString) -> *mut HewString {
     // SAFETY: forwarded contract; deadline_ms=0 means no deadline.
     unsafe { hew_dns_lookup_host_timed(hostname, 0) }
 }
@@ -152,18 +149,16 @@ pub unsafe extern "C" fn hew_dns_lookup_host(hostname: *const c_char) -> *mut c_
 ///
 /// # Safety
 ///
-/// `hostname` must be a valid NUL-terminated C string, or null.
+/// `hostname` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_dns_lookup_host_timed(
-    hostname: *const c_char,
+    hostname: *const HewString,
     deadline_ms: i64,
-) -> *mut c_char {
-    // SAFETY: forwarding to cstr_to_str with same contract.
-    let Some(host) = (unsafe { cstr_to_str(hostname) }) else {
-        return std::ptr::null_mut();
-    };
+) -> *mut HewString {
+    // SAFETY: hostname borrows a live managed string or canonical empty.
+    let host = unsafe { string_as_str(hostname) };
 
-    if host.is_empty() {
+    if host.is_empty() || host.contains('\0') {
         return std::ptr::null_mut();
     }
 
@@ -172,7 +167,7 @@ pub unsafe extern "C" fn hew_dns_lookup_host_timed(
     };
 
     match addrs.into_iter().next() {
-        Some(addr) => str_to_malloc(&addr.to_string()),
+        Some(addr) => string_from_str(&addr.to_string()),
         None => std::ptr::null_mut(),
     }
 }
@@ -184,28 +179,28 @@ pub unsafe extern "C" fn hew_dns_lookup_host_timed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use crate::test_string::ManagedString;
 
     // Resolving through the blocking pool now requires an installed runtime
     // (`shared_blocking_pool()` reads `rt_current()`); this guard installs a
     // real scheduler under a process-wide lock and stops the pool on drop.
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
 
-    /// Helper: read a C string pointer and free it.
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
+    /// Helper: copy and release an owned managed string.
+    unsafe fn read_and_free(ptr: *mut HewString) -> String {
         assert!(!ptr.is_null());
-        // SAFETY: ptr is non-null (asserted above) and points to a valid NUL-terminated C string.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with libc::malloc by the FFI layer.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
+        // SAFETY: ptr is non-null (asserted above) and points to a live managed string handle.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr was returned as an owned managed string by the FFI layer.
+        unsafe { string_release(ptr) };
         s
     }
 
     #[test]
     fn resolve_localhost() {
         let _rt = NetErrorSlotRuntimeGuard::new();
-        let host = CString::new("localhost").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string.
+        let host = ManagedString::new("localhost");
+        // SAFETY: host is a live managed string handle.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null());
 
@@ -217,22 +212,42 @@ mod tests {
         // SAFETY: vec is valid and index 0 is within bounds (len > 0).
         let first = unsafe { hew_cabi::vec::hew_vec_get_str(vec, 0) };
         assert!(!first.is_null());
-        // SAFETY: first is a non-null, valid NUL-terminated C string from the vec.
-        let first_str = unsafe { CStr::from_ptr(first) }.to_str().unwrap();
+        // SAFETY: get retained the managed result, which survives the vector's release.
+        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+        // SAFETY: first still owns the reference returned by the getter.
+        let first_str = unsafe { read_and_free(first.cast_mut()) };
         assert!(
             first_str == "127.0.0.1" || first_str == "::1",
             "expected 127.0.0.1 or ::1, got {first_str}"
         );
+    }
 
-        // SAFETY: vec was allocated by hew_dns_resolve and has not been freed.
-        unsafe { hew_cabi::vec::hew_vec_free(vec) };
+    #[test]
+    fn managed_nul_hostname_does_not_resolve_a_valid_prefix() {
+        let _runtime = NetErrorSlotRuntimeGuard::new();
+        for text in ["127.0.0.1\0suffix", "localhost\0suffix", "\0"] {
+            let host = ManagedString::new(text);
+            // SAFETY: each input is valid managed UTF-8; embedded NUL is an invalid hostname.
+            unsafe {
+                let plain = hew_dns_resolve(host.as_ptr());
+                let timed = hew_dns_resolve_timed(host.as_ptr(), 1_000);
+                for result in [plain, timed] {
+                    assert!(!result.is_null());
+                    assert_eq!(hew_cabi::vec::hew_vec_len(result), 0);
+                    hew_cabi::vec::hew_vec_free(result);
+                }
+                assert!(hew_dns_lookup_host(host.as_ptr()).is_null());
+                assert!(hew_dns_lookup_host_timed(host.as_ptr(), 1_000).is_null());
+                assert_eq!(string_as_str(host.as_ptr()), text);
+            }
+        }
     }
 
     #[test]
     fn lookup_host_localhost() {
         let _rt = NetErrorSlotRuntimeGuard::new();
-        let host = CString::new("localhost").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string.
+        let host = ManagedString::new("localhost");
+        // SAFETY: host is a live managed string handle.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(!result.is_null());
 
@@ -270,8 +285,8 @@ mod tests {
             "test requires no runtime installed"
         );
 
-        let host = CString::new("example.com").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string; reaching the offload
+        let host = ManagedString::new("example.com");
+        // SAFETY: host is a live managed string handle; reaching the offload
         // with no runtime must return an empty vec, not abort.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null(), "must return an empty vec, not null/abort");
@@ -285,7 +300,7 @@ mod tests {
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
 
         // The lookup variant fails closed to null on the same path.
-        // SAFETY: host is a valid NUL-terminated C string.
+        // SAFETY: host is a live managed string handle.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(
             result.is_null(),
@@ -303,8 +318,8 @@ mod tests {
     #[test]
     fn resolve_invalid_hostname_returns_empty() {
         let _rt = NetErrorSlotRuntimeGuard::new();
-        let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string.
+        let host = ManagedString::new("this-host-does-not-exist.invalid.test");
+        // SAFETY: host is a live managed string handle.
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null());
         // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
@@ -316,16 +331,16 @@ mod tests {
     #[test]
     fn lookup_host_invalid_returns_null() {
         let _rt = NetErrorSlotRuntimeGuard::new();
-        let host = CString::new("this-host-does-not-exist.invalid.test").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string.
+        let host = ManagedString::new("this-host-does-not-exist.invalid.test");
+        // SAFETY: host is a live managed string handle.
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(result.is_null());
     }
 
     #[test]
     fn resolve_empty_string_returns_empty() {
-        let host = CString::new("").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string (empty).
+        let host = ManagedString::new("");
+        // SAFETY: host is a live managed string handle (empty).
         let vec = unsafe { hew_dns_resolve(host.as_ptr()) };
         assert!(!vec.is_null());
         // SAFETY: vec is a valid HewVec returned by hew_dns_resolve.
@@ -336,8 +351,8 @@ mod tests {
 
     #[test]
     fn lookup_host_empty_string_returns_null() {
-        let host = CString::new("").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string (empty).
+        let host = ManagedString::new("");
+        // SAFETY: host is a live managed string handle (empty).
         let result = unsafe { hew_dns_lookup_host(host.as_ptr()) };
         assert!(result.is_null());
     }
@@ -348,8 +363,8 @@ mod tests {
     #[test]
     fn resolve_timed_zero_means_no_deadline() {
         let _rt = NetErrorSlotRuntimeGuard::new();
-        let host = CString::new("localhost").unwrap();
-        // SAFETY: host is a valid NUL-terminated C string.
+        let host = ManagedString::new("localhost");
+        // SAFETY: host is a live managed string handle.
         let vec = unsafe { hew_dns_resolve_timed(host.as_ptr(), 0) };
         assert!(!vec.is_null());
         // SAFETY: vec is a valid HewVec returned by hew_dns_resolve_timed.

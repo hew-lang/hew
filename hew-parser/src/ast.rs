@@ -8,6 +8,61 @@ pub type Span = std::ops::Range<usize>;
 /// A value with an associated source span.
 pub type Spanned<T> = (T, Span);
 
+/// How invocation may access an owned callable's environment.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum CallableCallMode {
+    #[default]
+    Read,
+    Var,
+    Once,
+}
+
+/// Callable guarantees preserved when its concrete environment is erased.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub struct CallableCapabilities {
+    pub call: CallableCallMode,
+    /// Independent value duplication, not necessarily bitwise `Copy`.
+    pub clone: bool,
+    /// Invocation may suspend the caller: `fn[suspends](...) -> T`. A written
+    /// callable type never suspends unless it says so; a closure literal or
+    /// named function infers the effect from its body instead.
+    pub suspends: bool,
+}
+
+impl CallableCapabilities {
+    /// A plain function item has no captured state and can be duplicated.
+    pub const FUNCTION_ITEM: Self = Self {
+        call: CallableCallMode::Read,
+        clone: true,
+        suspends: false,
+    };
+}
+
+impl std::fmt::Display for CallableCapabilities {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if *self == Self::default() {
+            return Ok(());
+        }
+        let mut qualifiers = Vec::new();
+        match self.call {
+            CallableCallMode::Read => {}
+            CallableCallMode::Var => qualifiers.push("var"),
+            CallableCallMode::Once => qualifiers.push("once"),
+        }
+        if self.clone {
+            qualifiers.push("clone");
+        }
+        if self.suspends {
+            qualifiers.push("suspends");
+        }
+        write!(f, "[{}]", qualifiers.join(", "))
+    }
+}
+
 /// A dotted syntactic path whose segments have not yet been resolved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Path {
@@ -25,6 +80,40 @@ pub struct ContextVariantExpr {
 pub struct ContextVariantRecord {
     pub fields: Vec<(String, Spanned<Expr>)>,
     pub base: Option<Box<Spanned<Expr>>>,
+}
+
+/// One item in a bracket literal: an ordinary element or a `..operand`
+/// spread that splices the operand's elements at that position.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ArrayElement {
+    /// A single element value.
+    Value(Spanned<Expr>),
+    /// `..operand` — the operand's elements, in order, at this position.
+    /// The span is the operand's, so a diagnostic points at what was spread.
+    Spread(Spanned<Expr>),
+}
+
+impl ArrayElement {
+    /// The element's operand expression, whichever kind it is.
+    #[must_use]
+    pub fn expr(&self) -> &Spanned<Expr> {
+        match self {
+            Self::Value(expr) | Self::Spread(expr) => expr,
+        }
+    }
+
+    /// The element's operand expression, for in-place rewrites.
+    pub fn expr_mut(&mut self) -> &mut Spanned<Expr> {
+        match self {
+            Self::Value(expr) | Self::Spread(expr) => expr,
+        }
+    }
+
+    /// Whether this item splices a collection rather than contributing one value.
+    #[must_use]
+    pub fn is_spread(&self) -> bool {
+        matches!(self, Self::Spread(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -215,7 +304,7 @@ pub enum Expr {
     /// Fully-qualified associated item, `<T as module.Trait>.Item`.
     QualifiedAssoc(Box<QualifiedAssocExpr>),
     Tuple(Vec<Spanned<Expr>>),
-    Array(Vec<Spanned<Expr>>),
+    Array(Vec<ArrayElement>),
     ArrayRepeat {
         value: Box<Spanned<Expr>>,
         count: Box<Spanned<Expr>>,
@@ -230,10 +319,13 @@ pub enum Expr {
         else_block: Option<Box<Spanned<Expr>>>,
     },
     IfLet {
-        pattern: Box<Spanned<Pattern>>,
-        expr: Box<Spanned<Expr>>,
+        conditions: Vec<ConditionItem>,
         body: Block,
-        else_body: Option<Block>,
+        /// The `else` arm, if written. Like `If::else_block` this is an
+        /// expression, so `if let` chains with `else if` and `else if let`
+        /// exactly as `if` does; a plain `else { .. }` arrives as
+        /// [`Expr::Block`].
+        else_body: Option<Box<Spanned<Expr>>>,
     },
     Match {
         scrutinee: Box<Spanned<Expr>>,
@@ -241,6 +333,8 @@ pub enum Expr {
     },
     Lambda {
         is_move: bool,
+        /// Existing outer names made privately mutable in this environment.
+        private_captures: Vec<Spanned<String>>,
         type_params: Option<Vec<TypeParam>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
@@ -263,28 +357,19 @@ pub enum Expr {
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
     },
-    /// Structured-concurrency block: `scope { ... }`.
-    ///
-    /// Establishes a lexical-lifetime boundary for any tasks spawned inside.
-    /// Statement-position call expressions become spawned tasks (TI-1);
-    /// `fork name = call(...)` statements introduce `Task<T>` bindings (TI-2).
-    /// All tasks are awaited at the closing brace.
+    /// A smaller lexical lifetime boundary for child tasks: `scope { ... }`.
     Scope {
         body: Block,
     },
-    /// Child-task binding inside a `scope { ... }` block: `fork name = call(...)`
-    /// or bare `fork call(...)`.
-    ///
-    /// Outside a scope this is malformed and rejected during HIR lowering.
+    /// Start a child and produce its handle: `fork work(input)`.
     ForkChild {
-        binding: Option<String>,
         expr: Box<Spanned<Expr>>,
     },
-    /// Anonymous child-task block inside a `scope { ... }` block: `fork { ... }`.
+    /// Start a child whose result is the block's result: `fork { ... }`.
     ForkBlock {
         body: Block,
     },
-    /// Scope deadline clause inside a `scope { ... }` block: `after(duration) { ... }`.
+    /// A value-producing lexical child scope: `scope within duration { ... }`.
     ScopeDeadline {
         duration: Box<Spanned<Expr>>,
         body: Block,
@@ -319,11 +404,8 @@ pub enum Expr {
         arms: Vec<SelectArm>,
         timeout: Option<Box<TimeoutClause>>,
     },
-    Join(Vec<Spanned<Expr>>),
-    Timeout {
-        expr: Box<Spanned<Expr>>,
-        duration: Box<Spanned<Expr>>,
-    },
+    /// First completed child result, published after all losing children drain.
+    Race(Vec<Spanned<Expr>>),
     UnsafeBlock(Box<Block>),
     Yield(Option<Box<Spanned<Expr>>>),
     /// `return [expr]` in expression position — a divergent (`!`-typed) early
@@ -338,7 +420,8 @@ pub enum Expr {
     /// expression). The checker synthesizes `Ty::Never`; HIR lowers it to
     /// `HirExprKind::Return` (sibling of `HirExprKind::Break`).
     Return(Option<Box<Spanned<Expr>>>),
-    This,
+    /// Explicit failure return from the current `fails` function.
+    ReturnError(Box<Spanned<Expr>>),
     FieldAccess {
         object: Box<Spanned<Expr>>,
         field: String,
@@ -352,6 +435,18 @@ pub enum Expr {
         ty: Spanned<TypeExpr>,
     },
     PostfixTry(Box<Spanned<Expr>>),
+    /// Evaluate the right operand only when the left Option is absent.
+    Coalesce {
+        left: Box<Spanned<Expr>>,
+        right: Box<Spanned<Expr>>,
+    },
+    /// Recover one Result expression. The error binder exists only in the
+    /// ordinary lexical handler block, not in the operand or continuation.
+    Handle {
+        operand: Box<Spanned<Expr>>,
+        error: Spanned<String>,
+        body: Box<Spanned<Expr>>,
+    },
     Range {
         start: Option<Box<Spanned<Expr>>>,
         end: Option<Box<Spanned<Expr>>>,
@@ -413,6 +508,59 @@ pub enum Expr {
     },
 }
 
+/// One operand of an `if` / `while` pattern condition (§12.5).
+///
+/// A `let` operand binds its pattern for the operands to its right and for the
+/// then block; nothing it binds is visible in the `else` arm. An expression
+/// operand is an ordinary boolean test. Operands are joined with `&&`,
+/// evaluated left to right, and stop at the first that fails. `||` cannot join
+/// a `let` operand.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ConditionItem {
+    Let {
+        pattern: Spanned<Pattern>,
+        expr: Spanned<Expr>,
+    },
+    Expr(Spanned<Expr>),
+}
+
+impl ConditionItem {
+    /// Source span of the whole operand.
+    #[must_use]
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Let { pattern, expr } => pattern.1.start..expr.1.end,
+            Self::Expr(expr) => expr.1.clone(),
+        }
+    }
+
+    /// The operand's expression: a `let` operand's scrutinee, or the boolean
+    /// test itself.
+    #[must_use]
+    pub fn expr(&self) -> &Spanned<Expr> {
+        match self {
+            Self::Let { expr, .. } | Self::Expr(expr) => expr,
+        }
+    }
+}
+
+/// Every expression evaluated by a condition, in evaluation order. Walkers that
+/// only care about the expressions (`break` scanning, capture analysis, init
+/// tracking) use this instead of destructuring each operand.
+pub fn condition_exprs(conditions: &[ConditionItem]) -> impl Iterator<Item = &Spanned<Expr>> {
+    conditions.iter().map(ConditionItem::expr)
+}
+
+/// Mutable twin of [`condition_exprs`], for the passes that rewrite expressions
+/// in place (tail-call marking).
+pub fn condition_exprs_mut(
+    conditions: &mut [ConditionItem],
+) -> impl Iterator<Item = &mut Spanned<Expr>> {
+    conditions.iter_mut().map(|item| match item {
+        ConditionItem::Let { expr, .. } | ConditionItem::Expr(expr) => expr,
+    })
+}
+
 // ── Statements ───────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -446,10 +594,13 @@ pub enum Stmt {
         else_block: Option<ElseBlock>,
     },
     IfLet {
-        pattern: Box<Spanned<Pattern>>,
-        expr: Box<Spanned<Expr>>,
+        conditions: Vec<ConditionItem>,
         body: Block,
-        else_body: Option<Block>,
+        /// The `else` arm, if written. Like `If::else_block` this is an
+        /// expression, so `if let` chains with `else if` and `else if let`
+        /// exactly as `if` does; a plain `else { .. }` arrives as
+        /// [`Expr::Block`].
+        else_body: Option<Box<Spanned<Expr>>>,
     },
     Match {
         scrutinee: Spanned<Expr>,
@@ -461,7 +612,6 @@ pub enum Stmt {
     },
     For {
         label: Option<String>,
-        is_await: bool,
         pattern: Spanned<Pattern>,
         iterable: Spanned<Expr>,
         body: Block,
@@ -473,8 +623,7 @@ pub enum Stmt {
     },
     WhileLet {
         label: Option<String>,
-        pattern: Box<Spanned<Pattern>>,
-        expr: Box<Spanned<Expr>>,
+        conditions: Vec<ConditionItem>,
         body: Block,
     },
     Break {
@@ -493,6 +642,11 @@ pub enum Stmt {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TypeExpr {
+    /// A function return clause `T fails E`, represented semantically by Result.
+    Fallible {
+        success: Box<Spanned<TypeExpr>>,
+        error: Box<Spanned<TypeExpr>>,
+    },
     Named {
         name: String,
         type_args: Option<Vec<Spanned<TypeExpr>>>,
@@ -511,6 +665,14 @@ pub enum TypeExpr {
     },
     Slice(Box<Spanned<TypeExpr>>),
     Function {
+        capabilities: CallableCapabilities,
+        params: Vec<Spanned<TypeExpr>>,
+        return_type: Box<Spanned<TypeExpr>>,
+    },
+    /// An anonymous actor's handle type, `actor(M) -> R`, mirroring `fn(M) -> R`.
+    /// Several parameters describe one tuple message, as an anonymous actor's
+    /// body takes one message per turn.
+    ActorFn {
         params: Vec<Spanned<TypeExpr>>,
         return_type: Box<Spanned<TypeExpr>>,
     },
@@ -709,7 +871,11 @@ pub enum IntRadix {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Literal {
     Integer {
-        value: i64,
+        /// Exact mathematical value of the literal. `i128` is an evaluation
+        /// carrier, not a Hew source type: it contains every value of every
+        /// Hew integer type, including `i64::MIN` and `u64::MAX`. The checker
+        /// owns range admission against the contextual type.
+        value: i128,
         radix: IntRadix,
     },
     Float(f64),
@@ -721,13 +887,16 @@ pub enum Literal {
 }
 
 // Custom Serialize/Deserialize for Literal so that Integer { value, radix }
-// serializes as just the plain i64 on the wire (backward-compatible with the codegen wire contract).
-// The radix field is only used by the Rust-side formatter and is not sent over MessagePack.
+// serializes as just the value on the wire; radix is presentation metadata used
+// only by the Rust-side formatter. Integer payloads are decimal strings for
+// every integer literal (D421): the `hew-wasm` `parse_source` JSON is read by
+// JavaScript, which cannot represent `u64::MAX` exactly as a number. One
+// schema, no number-or-string threshold for consumers to guess at.
 impl serde::Serialize for Literal {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         #[derive(serde::Serialize)]
         enum LiteralWire<'a> {
-            Integer(i64),
+            Integer(String),
             Float(f64),
             String(&'a str),
             Bool(bool),
@@ -735,7 +904,7 @@ impl serde::Serialize for Literal {
             Duration(i64),
         }
         match self {
-            Literal::Integer { value, .. } => LiteralWire::Integer(*value),
+            Literal::Integer { value, .. } => LiteralWire::Integer(value.to_string()),
             Literal::Float(v) => LiteralWire::Float(*v),
             Literal::String(s) => LiteralWire::String(s),
             Literal::Bool(b) => LiteralWire::Bool(*b),
@@ -750,7 +919,7 @@ impl<'de> serde::Deserialize<'de> for Literal {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         #[derive(serde::Deserialize)]
         enum LiteralWire {
-            Integer(i64),
+            Integer(String),
             Float(f64),
             String(String),
             Bool(bool),
@@ -760,7 +929,7 @@ impl<'de> serde::Deserialize<'de> for Literal {
         let wire = LiteralWire::deserialize(deserializer)?;
         Ok(match wire {
             LiteralWire::Integer(v) => Literal::Integer {
-                value: v,
+                value: v.parse::<i128>().map_err(serde::de::Error::custom)?,
                 radix: IntRadix::Decimal,
             },
             LiteralWire::Float(v) => Literal::Float(v),
@@ -925,10 +1094,23 @@ impl Visibility {
 
 // ── Item-level types ─────────────────────────────────────────────────
 
+/// Compiler-owned provenance of an ordinary normalized declaration.
+/// Source syntax and serialized ASTs cannot request generated semantics.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DeclarationOrigin {
+    #[default]
+    Authored,
+    MachineState,
+    MachineStep,
+    MachineReport,
+    MachineCompanion,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FnDecl {
+    #[serde(skip)]
+    pub origin: DeclarationOrigin,
     pub attributes: Vec<Attribute>,
-    pub is_async: bool,
     pub is_generator: bool,
     #[serde(default)]
     pub visibility: Visibility,
@@ -963,13 +1145,13 @@ pub struct FnDecl {
     /// remove the corresponding catalog rows in the migration slices.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intrinsic: Option<String>,
-    /// `true` when this method declares a `consuming self` receiver — the
-    /// terminal single-consume surface (`fn build(consuming self) -> T`, a
+    /// `true` when this method declares a `consume self` receiver — the
+    /// terminal single-consume surface (`fn build(consume self) -> T`, a
     /// `#[linear]` type's consuming method). The receiver is moved into the call
     /// and a later use of the binding surfaces `UseAfterMove`; the checker
     /// registers the method into its consume-receiver set so the move-checker
     /// marks the receiver consumed. Only meaningful on inherent-impl methods —
-    /// type-body `consuming self` methods carry the same fact through
+    /// type-body `consume self` methods carry the same fact through
     /// `TypeDecl.consuming_methods` instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consumes_self: bool,
@@ -992,8 +1174,10 @@ pub struct ImportDecl {
     pub file_path: Option<String>,
     /// Resolved items from the imported file (populated by `resolve_file_imports`).
     /// Used by the type checker to register user module items under the module namespace.
+    /// Shared imports retain the same immutable module body rather than cloning
+    /// their transitive dependency graph into a tree at every import edge.
     #[serde(skip)]
-    pub resolved_items: Option<Vec<Spanned<Item>>>,
+    pub resolved_items: Option<std::sync::Arc<Vec<Spanned<Item>>>>,
     /// Per-item source path for `resolved_items` (same length/order when present).
     #[serde(skip)]
     pub resolved_item_source_paths: Vec<std::path::PathBuf>,
@@ -1027,7 +1211,7 @@ pub struct ConstDecl {
 /// Ownership discipline marker placed on a type via `#[resource]` or `#[linear]`.
 ///
 /// - `Resource`: type holds an external resource; the runtime implicitly calls
-///   `fn close(consuming self) -> Result<(), E>` on scope exit.
+///   `fn close(consume self) -> Result<(), E>` on scope exit.
 /// - `Linear`: single-owner type with no implicit drop; every consuming method
 ///   declared on the type exhausts it; all live bindings must be consumed on
 ///   every exit path.
@@ -1042,6 +1226,8 @@ pub enum ResourceMarker {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TypeDecl {
+    #[serde(skip)]
+    pub origin: DeclarationOrigin,
     #[serde(default)]
     pub visibility: Visibility,
     pub kind: TypeDeclKind,
@@ -1065,7 +1251,7 @@ pub struct TypeDecl {
     /// `*mut T`. Orthogonal to `resource_marker` (representation vs ownership).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_opaque: bool,
-    /// Names of methods declared with a `consuming self` receiver in this type body.
+    /// Names of methods declared with a `consume self` receiver in this type body.
     /// Populated by the parser; used by the type checker to validate ownership rules.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub consuming_methods: Vec<String>,
@@ -1448,6 +1634,8 @@ pub struct SupervisorDecl {
     #[serde(default)]
     pub visibility: Visibility,
     pub name: String,
+    #[serde(default)]
+    pub type_params: Vec<TypeParam>,
     /// Construction-time config parameters, written `supervisor App(config: T)`.
     /// In scope throughout the body (the child init-arg exprs reference them, so
     /// a child's init value can derive from runtime config). Empty when the
@@ -1491,6 +1679,8 @@ pub enum SupervisorStrategy {
 pub struct ChildSpec {
     pub name: String,
     pub actor_type: String,
+    #[serde(default)]
+    pub type_args: Vec<Spanned<TypeExpr>>,
     /// Named init args for this child's actor, e.g. `child w: Worker(id: 7)`.
     /// Mirrors `Spawn.args` at the AST level: each entry is `(field_name, expr)`.
     /// Positional args (no `name:` prefix) are rejected by the parser with a
@@ -1601,14 +1791,10 @@ pub struct MachineDecl {
     pub where_clause: Option<WhereClause>,
     pub states: Vec<MachineState>,
     pub events: Vec<MachineEvent>,
-    /// Optional `emits { … }` Mealy-output manifest. Each entry is the name of
-    /// an event the machine may produce via `emit Name { … }` in a transition
-    /// body. Names reference declared `events`; the manifest is an auditable
-    /// allowlist, not a second declaration site. When non-empty, the HIR
-    /// cross-checks that every `emit` in a body names an event in this list.
-    /// Empty when the machine declares no `emits {}` header (no cross-check).
+    /// Independent typed output vocabulary constructed by `emit` and returned
+    /// in the step report. Outputs never feed the input transition relation.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub emits: Vec<String>,
+    pub emits: Vec<MachineEvent>,
     pub transitions: Vec<MachineTransition>,
     #[serde(default)]
     pub has_default: bool, // `default { self }` — unhandled events stay in current state
@@ -1710,6 +1896,16 @@ pub struct MachineTransition {
     /// and strip that prelude. Empty when the rule used no head binding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_bindings: Vec<String>,
+    /// The composite state this rule named as its target, when it named one.
+    /// `target_state` holds the group's `initial` substate, which is the live
+    /// target; without this the formatter would rewrite `=> Connected` into
+    /// `=> Authenticating` and the source would stop following a later change
+    /// of which substate is `initial`.
+    ///
+    /// Additive and serde-defaulted, like `target_is_contextual`: a rule that
+    /// named a leaf state keeps the field out of the wire form entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_composite: Option<String>,
     /// Number of leading `body` statements that are composite entry/exit hook
     /// splices (D2/D3), prepended by the parser's composite post-pass. The
     /// formatter strips exactly this many leading statements so the authored

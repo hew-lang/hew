@@ -1,6 +1,5 @@
 // A240 retain-on-share Stage S1: compiled ownership probe for every bytes
 // co-owner mint plus mutation-triggered copy-on-write.
-
 type Holder {
     payload: bytes,
 }
@@ -16,7 +15,7 @@ fn field_load_share() -> i64 {
 }
 
 fn container_element_read() -> i64 {
-    let values: Vec<((bytes, i64), bool)> = Vec.new();
+    var values: Vec<((bytes, i64), bool)> = Vec.new();
     let source = "container-read".to_bytes();
     values.push(((source, 7), true));
     let item = values[0];
@@ -44,7 +43,7 @@ fn duplicating_return() -> i64 {
 
 fn local_share_cow() -> i64 {
     let source = "abc".to_bytes();
-    let shared = source;
+    var shared = source;
     shared.set(0, 90);
     if source[0] == 97 && shared[0] == 90 {
         source.len() + shared.len()
@@ -82,14 +81,7 @@ fn main() -> i64 {
     while i < 20 {
         let borrowed = "borrowed-param-coown".to_bytes();
         let escaped = owned_partner_escape();
-        total = total
-            + field_load_share()
-            + container_element_read()
-            + live_local_coown()
-            + duplicating_return()
-            + local_share_cow()
-            + param_coown_share(borrowed)
-            + escaped.len();
+        total = total + field_load_share() + container_element_read() + live_local_coown() + duplicating_return() + local_share_cow() + param_coown_share(borrowed) + escaped.len();
         i = i + 1;
     }
     if total > 0 {

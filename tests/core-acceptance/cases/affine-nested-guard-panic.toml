@@ -1,0 +1,11 @@
+[[case]]
+id = "affine-nested-guard-panic"
+intent = "A panic inside a match guard releases the probed generator payload and the caller's deferred cleanup exactly once."
+source = "cases/affine-nested-guard-panic.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "guarded\nguarded cleaned\nMAIN cleaned\n"
+stderr = "hew: failure: UserPanic (212): guard failure\n"
+exit = 1

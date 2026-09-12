@@ -27,8 +27,8 @@ fn lower_two_module(program: &Program) -> hew_hir::LowerOutput {
 fn supervisor_spawn_no_args_accepted() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
@@ -63,12 +63,12 @@ fn config_supervisor_spawn_with_config_arg_accepted() {
     let source = r"
         type AppConfig { size: i64 }
         actor Cache {
-            var capacity: i64;
+            var capacity: i64,
             receive fn get_cap() -> i64 { capacity }
         }
         supervisor App(config: AppConfig) {
-            strategy: one_for_one;
-            child cache: Cache(capacity: config.size);
+            strategy: one_for_one,
+            child cache: Cache(capacity: config.size),
         }
         fn main() {
             let cfg = AppConfig { size: 7 };
@@ -99,8 +99,8 @@ fn config_supervisor_spawn_with_config_arg_accepted() {
 fn supervisor_spawn_with_args_rejected() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
@@ -135,102 +135,6 @@ fn supervisor_spawn_with_args_rejected() {
     );
 }
 
-/// `spawn Root(value: 1)` placed inside a `machine` transition body must
-/// trigger the gate. The walker must visit `MachineTransition::body` (per
-/// A242: HIR pre-pass walkers must cover ALL FOUR `Item::Machine` positions —
-/// state.entry, state.exit, transition.guard, transition.body).
-#[test]
-fn supervisor_spawn_with_args_in_machine_transition_body_rejected() {
-    let source = r"
-        supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        machine M {
-            events {
-                Tick;
-            }
-
-            state Active;
-            on Tick: Active => Active reenter {
-                let s = spawn Root(value: 1);
-                Active
-            }
-        }
-        fn main() {}
-    ";
-    let output = lower(source);
-
-    let spawn_gate_hits: Vec<&str> = output
-        .diagnostics
-        .iter()
-        .filter_map(|d| match &d.kind {
-            HirDiagnosticKind::SupervisorSpawnArgsUnsupported { supervisor_name } => {
-                Some(supervisor_name.as_str())
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        spawn_gate_hits,
-        vec!["Root"],
-        "Expected SupervisorSpawnArgsUnsupported for `Root` in machine transition body, all diagnostics: {:?}",
-        output.diagnostics
-    );
-}
-
-/// `spawn Root(value: 1)` placed inside a `machine` state `entry` block must
-/// trigger the gate. Covers the `state.entry` position from the A242 four-
-/// position invariant. (A symmetric `exit` test is omitted because the
-/// walker handles entry and exit through the same code path; the parallel is
-/// asserted structurally in `scan_item_for_supervisor_spawn`.)
-#[test]
-fn supervisor_spawn_with_args_in_machine_state_entry_rejected() {
-    let source = r"
-        supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
-        }
-        actor Worker {
-            receive fn work() {}
-        }
-        machine M {
-            events {
-                Tick;
-            }
-
-            state Idle {
-                entry {
-                    let s = spawn Root(value: 1);
-                }
-            }
-            on Tick: Idle => Idle reenter { Idle }
-        }
-        fn main() {}
-    ";
-    let output = lower(source);
-
-    let spawn_gate_hits: Vec<&str> = output
-        .diagnostics
-        .iter()
-        .filter_map(|d| match &d.kind {
-            HirDiagnosticKind::SupervisorSpawnArgsUnsupported { supervisor_name } => {
-                Some(supervisor_name.as_str())
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        spawn_gate_hits,
-        vec!["Root"],
-        "Expected SupervisorSpawnArgsUnsupported for `Root` in machine state.entry block, all diagnostics: {:?}",
-        output.diagnostics
-    );
-}
-
 /// `spawn Worker(value: 1)` on a *regular actor* (not a supervisor) must NOT
 /// trigger the supervisor-spawn gate. The gate is supervisor-specific —
 /// actor spawn with init args is a separate, supported path.
@@ -238,7 +142,7 @@ fn supervisor_spawn_with_args_in_machine_state_entry_rejected() {
 fn actor_spawn_with_args_accepted() {
     let source = r"
         actor Worker {
-            var value: int = 0;
+            var value: int = 0,
             receive fn work() {}
         }
         fn main() {
@@ -355,8 +259,8 @@ fn module_local_supervisor_spawn_with_args_rejected() {
     ";
     let module_src = r"
         pub supervisor LocalSup {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         pub actor Worker {
             receive fn work() {}
@@ -397,8 +301,8 @@ fn module_local_supervisor_spawn_with_args_rejected() {
 fn root_supervisor_name_does_not_false_positive_in_module() {
     let root_src = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: Worker();
+            strategy: one_for_one,
+            child worker: Worker(),
         }
         actor Worker {
             receive fn work() {}
@@ -411,7 +315,7 @@ fn root_supervisor_name_does_not_false_positive_in_module() {
         // actor, so the supervisor-spawn gate must not match against the
         // root program's `Root` supervisor.
         pub actor Root {
-            var value: int = 0;
+            var value: int = 0,
             receive fn ping() {}
         }
         pub fn make() {

@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-call-return"
+intent = "A by-value ordinary call preserves the caller value and returns an independent logical value."
+source = "cases/owned-call-return.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "source=CORE;returned=CORE\n"
+exit = 0

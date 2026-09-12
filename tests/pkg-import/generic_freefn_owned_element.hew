@@ -8,7 +8,7 @@
 import hew.genhelpers;
 
 type Boxed {
-    payload: [i64];
+    payload: [i64],
 }
 
 fn main() {

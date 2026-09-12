@@ -284,20 +284,18 @@ fn binop_in_machine_transition_body_rejected() {
         r"
         machine M {
             events {
-                Go;
+                Go,
             }
 
-            state A { n: i32; }
-            state B { n: i32; }
+            state A { n: i32, },
+            state B { n: i32, },
 
 
             on Go: A => B {
                 let _ = 1..10;
                 B { n: 0 }
             }
-            on Go: B => A {
-                A { n: 0 }
-            }
+            on Go: B => A { n: 0 }
         }
         ",
     );
@@ -323,21 +321,21 @@ fn binop_in_machine_state_entry_rejected() {
         r"
         machine M {
             events {
-                Go;
+                Go,
             }
 
             state A {
-                n: i32;
+                n: i32,
                 entry {
                     let _ = 1..10;
                     A { n: 0 }
                 }
-            }
-            state B { n: i32; }
+            },
+            state B { n: i32, },
 
 
-            on Go: A => B { B { n: 0 } }
-            on Go: B => A { A { n: 0 } }
+            on Go: A => B { n: 0 }
+            on Go: B => A { n: 0 }
         }
         ",
     );
@@ -359,21 +357,21 @@ fn binop_in_machine_state_exit_rejected() {
         r"
         machine M {
             events {
-                Go;
+                Go,
             }
 
             state A {
-                n: i32;
+                n: i32,
                 exit {
                     let _ = 1..=10;
                     A { n: 0 }
                 }
-            }
-            state B { n: i32; }
+            },
+            state B { n: i32, },
 
 
-            on Go: A => B { B { n: 0 } }
-            on Go: B => A { A { n: 0 } }
+            on Go: A => B { n: 0 }
+            on Go: B => A { n: 0 }
         }
         ",
     );
@@ -399,18 +397,16 @@ fn binop_in_machine_transition_guard_rejected() {
 
         machine M {
             events {
-                Go;
+                Go,
             }
 
-            state A { n: i32; }
-            state B { n: i32; }
+            state A { n: i32, },
+            state B { n: i32, },
 
 
-            on Go: A => B when in_range(0..2) {
-                B { n: 0 }
-            }
-            on Go: A => B { B { n: 0 } }
-            on Go: B => A { A { n: 0 } }
+            on Go: A => B when in_range(0..2) { n: 0 }
+            on Go: A => B { n: 0 }
+            on Go: B => A { n: 0 }
         }
         ",
     );

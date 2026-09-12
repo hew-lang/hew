@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-init-deferred-fields"
+intent = "Fields without a default that init assigns take their first value inside init: scalar, owned string, let field, a differently named init parameter, a both-arm conditional, the self spelling, a replacement of an initialized owned field and a method call once every field holds a value."
+source = "cases/actor-init-deferred-fields.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "READY!/quick\nREADY!\n7\nquick\n1\nLATER!/SLOW\nLATER!\n42\nSLOW\n1\n"
+exit = 0

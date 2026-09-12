@@ -1,0 +1,13 @@
+[[case]]
+id = "listener-accept-loop-return"
+kind = "check"
+intent = "Returning an affine resource the declaration only borrows is refused by the checker with the ordinary borrowed-consumption diagnostic and its `consume` help, rather than reaching SIR as a late ownership refusal."
+source = "cases/listener-accept-loop-return.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 14
+column = 5
+message = "cannot consume a value through borrowed parameter `listener`"

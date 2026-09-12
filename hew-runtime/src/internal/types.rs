@@ -490,53 +490,82 @@ pub enum AskError {
     /// The monitor subscription for the ask's reply was lost before the
     /// reply arrived (e.g. the monitor actor was stopped or evicted).
     MonitorLost = 21,
+    /// The receiving handler failed. Its actor owns the fault; the caller
+    /// receives an ordinary error and may continue independently.
+    HandlerTrapped = 22,
 }
 
 /// The only runtime-to-public translation for ask result tags.
 ///
 /// The runtime keeps [`AskError::None`] as its zero-valued success sentinel,
-/// while the public `AskError` enum contains errors only. Codegen crosses this
-/// ABI seam before materializing a public `Result`.
+/// while the public `ActorError` envelope contains errors only. Codegen crosses
+/// this ABI seam before materializing a public `Result`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PublicAskResultTag {
     Ok,
     Err(i32),
 }
 
-/// Translate a runtime ask tag into the public `Result<T, AskError>` domain.
+/// Translate a runtime ask tag into the public `ActorError<E>` domain.
+///
+/// The public discriminants are `ActorError`'s declaration order in
+/// `std/builtins.hew`: `Rejected` 0, `Failed` 1, `Trapped` 2, `Dead` 3,
+/// `Timeout` 4, `NodeNotRunning` 5, `RoutingFailed` 6, `EncodeFailed` 7,
+/// `ConnectionDropped` 8, `Partition` 9. `Rejected` and `Failed` carry
+/// payloads and are built at the call site, never here.
+///
+/// The runtime's internal tags are finer-grained than the public envelope, so
+/// each folds to the public variant with the same consequence for the caller.
+/// Every fold that is not an exact rename lands on a non-retryable variant:
+/// only `Rejected`, which this function never produces, is safe to resubmit.
 ///
 /// An unknown tag is returned unchanged as an error so callers must refuse it
 /// rather than defaulting it to a public error variant.
 ///
 /// # Errors
 ///
-/// Returns the unmapped runtime tag when it has no public `AskError` mapping.
+/// Returns the unmapped runtime tag when it has no public `ActorError` mapping.
 pub fn translate_ask_error_tag_for_public_result(
     runtime_tag: i32,
 ) -> Result<PublicAskResultTag, i32> {
     match runtime_tag {
         tag if tag == AskError::None as i32 => Ok(PublicAskResultTag::Ok),
-        tag if tag == AskError::NodeNotRunning as i32 => Ok(PublicAskResultTag::Err(0)),
-        tag if tag == AskError::RoutingFailed as i32 => Ok(PublicAskResultTag::Err(1)),
-        tag if tag == AskError::EncodeFailed as i32 => Ok(PublicAskResultTag::Err(2)),
-        tag if tag == AskError::SendFailed as i32 => Ok(PublicAskResultTag::Err(3)),
-        tag if tag == AskError::Timeout as i32 => Ok(PublicAskResultTag::Err(4)),
-        tag if tag == AskError::ConnectionDropped as i32 => Ok(PublicAskResultTag::Err(5)),
-        tag if tag == AskError::PayloadSizeMismatch as i32 => Ok(PublicAskResultTag::Err(6)),
-        tag if tag == AskError::WorkerAtCapacity as i32 => Ok(PublicAskResultTag::Err(7)),
-        tag if tag == AskError::ActorStopped as i32 => Ok(PublicAskResultTag::Err(8)),
-        tag if tag == AskError::MailboxFull as i32 => Ok(PublicAskResultTag::Err(9)),
-        tag if tag == AskError::OrphanedAsk as i32 => Ok(PublicAskResultTag::Err(10)),
-        tag if tag == AskError::NoRunnableWork as i32 => Ok(PublicAskResultTag::Err(11)),
-        tag if tag == AskError::DecodeFailure as i32 => Ok(PublicAskResultTag::Err(12)),
-        tag if tag == AskError::Partition as i32 => Ok(PublicAskResultTag::Err(13)),
-        tag if tag == AskError::StaleRef as i32 => Ok(PublicAskResultTag::Err(14)),
-        tag if tag == AskError::Cancelled as i32 => Ok(PublicAskResultTag::Err(15)),
-        tag if tag == AskError::LocalShutdown as i32 => Ok(PublicAskResultTag::Err(16)),
-        tag if tag == AskError::VersionMismatch as i32 => Ok(PublicAskResultTag::Err(17)),
-        tag if tag == AskError::Unauthorized as i32 => Ok(PublicAskResultTag::Err(18)),
-        tag if tag == AskError::Backpressure as i32 => Ok(PublicAskResultTag::Err(19)),
-        tag if tag == AskError::MonitorLost as i32 => Ok(PublicAskResultTag::Err(20)),
+        tag if tag == AskError::HandlerTrapped as i32 => Ok(PublicAskResultTag::Err(2)),
+        // The target is gone, or its fate is settled against ever running this
+        // request: the caller must not resubmit.
+        tag if tag == AskError::SendFailed as i32
+            || tag == AskError::ActorStopped as i32
+            || tag == AskError::MailboxFull as i32
+            || tag == AskError::OrphanedAsk as i32
+            || tag == AskError::StaleRef as i32
+            || tag == AskError::Cancelled as i32
+            || tag == AskError::MonitorLost as i32 =>
+        {
+            Ok(PublicAskResultTag::Err(3))
+        }
+        // A deadline elapsed, or the scheduler cannot advance this ask further.
+        tag if tag == AskError::Timeout as i32 || tag == AskError::NoRunnableWork as i32 => {
+            Ok(PublicAskResultTag::Err(4))
+        }
+        tag if tag == AskError::NodeNotRunning as i32 || tag == AskError::LocalShutdown as i32 => {
+            Ok(PublicAskResultTag::Err(5))
+        }
+        // The request could not be placed with the peer that owns the actor.
+        tag if tag == AskError::RoutingFailed as i32
+            || tag == AskError::PayloadSizeMismatch as i32
+            || tag == AskError::WorkerAtCapacity as i32
+            || tag == AskError::VersionMismatch as i32
+            || tag == AskError::Unauthorized as i32
+            || tag == AskError::Backpressure as i32 =>
+        {
+            Ok(PublicAskResultTag::Err(6))
+        }
+        // A payload could not be coded on either side of the wire.
+        tag if tag == AskError::EncodeFailed as i32 || tag == AskError::DecodeFailure as i32 => {
+            Ok(PublicAskResultTag::Err(7))
+        }
+        tag if tag == AskError::ConnectionDropped as i32 => Ok(PublicAskResultTag::Err(8)),
+        tag if tag == AskError::Partition as i32 => Ok(PublicAskResultTag::Err(9)),
         tag => Err(tag),
     }
 }
@@ -662,6 +691,15 @@ pub const HEW_TRAP_WIRE_DECODE_FAILED: i32 = 210;
 /// imports this constant so a renumber here fails the codegen build closed.
 pub const HEW_TRAP_JOIN_BRANCH_FAILED: i32 = 211;
 
+/// Explicit user panic carried by the private logical-fault ABI.
+pub const HEW_TRAP_USER_PANIC: i32 = 212;
+
+/// A `fails` handler submitted through a mailbox view returned its declared
+/// error (error code 213). A one-way submission carries no reply channel, so
+/// the failure has no caller to answer: it becomes the actor's own fault and
+/// reaches its supervisor. The diagnostic carries the error's `Display` text.
+pub const HEW_TRAP_ACTOR_UNHANDLED_FAILURE: i32 = 213;
+
 // ── Reply-failure classification ─────────────────────────────────────────
 //
 // Discriminants recorded on a reply channel (`HewReplyChannel.fail_reason`,
@@ -718,7 +756,9 @@ pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
         | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH
         | HEW_TRAP_MODULE_INIT_REGEX_FAILED
         | HEW_TRAP_WIRE_DECODE_FAILED
-        | HEW_TRAP_JOIN_BRANCH_FAILED => Some(code),
+        | HEW_TRAP_JOIN_BRANCH_FAILED
+        | HEW_TRAP_USER_PANIC
+        | HEW_TRAP_ACTOR_UNHANDLED_FAILURE => Some(code),
         _ => None,
     }
 }
@@ -772,6 +812,11 @@ pub enum ExitReason {
     /// diagnostic before the trap fires. Reachable whenever a joined actor
     /// dies mid-join — an environmental failure, not a producer regression.
     JoinBranchFailed,
+    /// Explicit user panic (logical error code 212).
+    UserPanic,
+    /// A `fails` handler submitted through a mailbox view returned its
+    /// declared error with no caller to receive it (error code 213).
+    ActorUnhandledFailure,
     /// Actor crashed with a hardware signal or via `hew_panic`. The raw
     /// signal number is preserved.
     Signal(i32),
@@ -802,6 +847,8 @@ impl ExitReason {
             ExitReason::ModuleInitRegexFailed => "ModuleInitRegexFailed",
             ExitReason::WireDecodeFailed => "WireDecodeFailed",
             ExitReason::JoinBranchFailed => "JoinBranchFailed",
+            ExitReason::UserPanic => "UserPanic",
+            ExitReason::ActorUnhandledFailure => "ActorUnhandledFailure",
             ExitReason::Signal(_) => "Signal",
             ExitReason::Normal => "Normal",
         }
@@ -825,6 +872,8 @@ impl ExitReason {
             HEW_TRAP_MODULE_INIT_REGEX_FAILED => ExitReason::ModuleInitRegexFailed,
             HEW_TRAP_WIRE_DECODE_FAILED => ExitReason::WireDecodeFailed,
             HEW_TRAP_JOIN_BRANCH_FAILED => ExitReason::JoinBranchFailed,
+            HEW_TRAP_USER_PANIC => ExitReason::UserPanic,
+            HEW_TRAP_ACTOR_UNHANDLED_FAILURE => ExitReason::ActorUnhandledFailure,
             sig => ExitReason::Signal(sig),
         }
     }
@@ -832,7 +881,7 @@ impl ExitReason {
     /// Project this runtime `ExitReason` into the link-cascade `CrashKind`
     /// surfaced to a linked actor.
     ///
-    /// This is the M-6 projection: the runtime distinguishes 13 exit reasons,
+    /// This is the M-6 projection: the runtime distinguishes individual exit reasons,
     /// but a linked actor only observes the coarse CLASS of a peer's failure
     /// (`std/failure.hew::CrashKind`), never the peer's private trap details.
     ///
@@ -871,6 +920,8 @@ impl ExitReason {
             | ExitReason::ModuleInitRegexFailed
             | ExitReason::WireDecodeFailed
             | ExitReason::JoinBranchFailed
+            | ExitReason::UserPanic
+            | ExitReason::ActorUnhandledFailure
             | ExitReason::Signal(_)
             | ExitReason::Normal => CrashKind::Crashed,
         }
@@ -966,6 +1017,7 @@ mod crash_kind_projection_tests {
             HEW_TRAP_MODULE_INIT_REGEX_FAILED,
             HEW_TRAP_WIRE_DECODE_FAILED,
             HEW_TRAP_JOIN_BRANCH_FAILED,
+            HEW_TRAP_USER_PANIC,
         ] {
             assert_eq!(
                 CrashKind::tag_from_error_code(code),
@@ -1004,6 +1056,7 @@ mod crash_kind_projection_tests {
             ExitReason::ModuleInitRegexFailed,
             ExitReason::WireDecodeFailed,
             ExitReason::JoinBranchFailed,
+            ExitReason::UserPanic,
             ExitReason::Signal(-1),
             ExitReason::Normal,
         ];

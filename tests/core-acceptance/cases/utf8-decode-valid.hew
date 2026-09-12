@@ -1,0 +1,29 @@
+import std.encoding.utf8 as text;
+import std.string;
+
+fn decode(data: bytes) -> string fails text.Utf8Error {
+    text.decode(data)?
+}
+
+fn main() -> i64 {
+    let retained = {
+        let original = b"A\xc3\xa9\xe4\xb8\xad\xf0\x9f\x99\x82";
+        let value = decode(original) handle error { println(error.fmt()); return 1; };
+        var changed = original;
+        changed.push(33);
+        if original.len() != 10 || changed.len() != 11 { return 2; }
+        value
+    };
+    let copied = retained;
+    if copied != "Aé中🙂" || retained.len() != 4 || retained.byte_len() != 10 {
+        return 3;
+    }
+    let empty = decode(b"") handle error { println(error.fmt()); return 4; };
+    if empty != "" { return 5; }
+    let nul = decode(b"a\0b") handle error { println(error.fmt()); return 6; };
+    if nul != "a\0b" { return 7; }
+    println(retained);
+    println(nul);
+    println(f"{retained.len()}:{retained.byte_len()}:{empty.len()}");
+    0
+}

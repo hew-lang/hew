@@ -110,19 +110,20 @@ fn assert_hashset_vec_iter(
         },
         "`HashSet::to_vec` must carry its checker-authored Vec result type"
     );
-    let HirExprKind::ResolvedImplCall {
-        receiver,
-        method_name,
-        target_symbol,
-        ret_ty,
+    let HirExprKind::Call {
+        target:
+            hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Set(
+                hew_types::runtime_call::SetValueOp::Elements,
+            )),
+        args,
         ..
     } = &vec.kind
     else {
-        panic!("VecIter.vec must be the resolved HashSet projection, got {vec:#?}");
+        panic!("VecIter.vec must be the semantic HashSet projection, got {vec:#?}");
     };
-    assert_eq!(method_name, "to_vec");
-    assert_eq!(target_symbol, "hew_hashset_to_vec_layout");
-    assert_eq!(ret_ty, &vec.ty);
+    let [receiver] = args.as_slice() else {
+        panic!("HashSet elements must carry exactly its receiver: {args:#?}");
+    };
     assert_eq!(
         receiver.ty,
         ResolvedTy::Named {
@@ -191,21 +192,22 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
     );
     for (field_name, projection) in fields.iter().take(2) {
         let expected_method = match field_name.as_str() {
-            "ks" => "keys",
-            "vs" => "values",
+            "ks" => hew_types::runtime_call::MapValueOp::Keys,
+            "vs" => hew_types::runtime_call::MapValueOp::Values,
             _ => unreachable!("the first two HashMapIter fields are ks/vs"),
         };
-        let HirExprKind::ResolvedImplCall {
-            receiver,
-            method_name,
-            ret_ty,
+        let HirExprKind::Call {
+            target: hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Map(operation)),
+            args,
             ..
         } = &projection.kind
         else {
-            panic!("HashMapIter.{field_name} must be a resolved projection: {projection:#?}");
+            panic!("HashMapIter.{field_name} must be a semantic projection: {projection:#?}");
         };
-        assert_eq!(method_name, expected_method);
-        assert_eq!(ret_ty, &projection.ty);
+        assert_eq!(*operation, expected_method);
+        let [receiver] = args.as_slice() else {
+            panic!("Map projection must carry exactly its receiver: {args:#?}");
+        };
         assert!(matches!(
             receiver.ty,
             ResolvedTy::Named {
@@ -227,10 +229,10 @@ fn assert_hashmap_into_iter_field(output: &hew_hir::LowerOutput) {
 fn hashset_for_in_preserves_receiver_and_projection_types_across_place_shapes() {
     let output = lower(
         r"
-type SetBox { s: HashSet<i64>; }
-type Outer { inner: SetBox; }
-type OwnedBox { s: HashSet<string>; }
-type MapBox { m: HashMap<i64, i64>; }
+type SetBox { s: HashSet<i64>, }
+type Outer { inner: SetBox, }
+type OwnedBox { s: HashSet<string>, }
+type MapBox { m: HashMap<i64, i64>, }
 
 fn direct(s: HashSet<i64>) {
     for x in s { let _ = x; }

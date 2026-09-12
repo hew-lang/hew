@@ -1,10 +1,10 @@
 #[resource]
 type Conn {
-    fd: i64;
+    fd: i64,
 }
 
 impl Conn {
-    fn close(consuming self) {}
+    fn close(consume self) {}
 }
 
 fn main() -> i64 {

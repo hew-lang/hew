@@ -1,0 +1,28 @@
+import std.sort;
+
+fn main() {
+    let first = "a\0b".to_upper();
+    let second = "a\0c".to_upper();
+    assert(first < second);
+    assert(first <= second);
+    assert(second > first);
+    assert(second >= first);
+    assert(first <= first);
+    assert(first >= first);
+    assert(!(first < first));
+    assert(!(first > first));
+    assert("" < first);
+    assert("a" < "a\0");
+    assert("é" < "Ω");
+    assert("Ω" < "🙂");
+    let values: Vec<string> = ["🙂", "Ω", second, "é", first, ""];
+    let ordered = sort.sort_strings(values);
+    assert(ordered[0] == "");
+    assert(ordered[1] == first);
+    assert(ordered[2] == second);
+    assert(ordered[3] == "é");
+    assert(ordered[4] == "Ω");
+    assert(ordered[5] == "🙂");
+    assert(values[0] == "🙂");
+    println("ordered");
+}

@@ -1,0 +1,14 @@
+// A mutable value parameter changes its own vector and preserves the caller.
+fn set_first(var v: Vec<i64>) -> Vec<i64> {
+    v[0] = 9;
+    v.push(7);
+    v
+}
+
+fn main() {
+    let original: Vec<i64> = [1, 2];
+    let changed = set_first(original);
+    assert(changed[0] == 9 && changed.len() == 3);
+    assert(original[0] == 1 && original.len() == 2);
+    println("independent vector");
+}

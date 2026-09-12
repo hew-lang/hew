@@ -75,22 +75,22 @@ const SLOPE_TOLERANCE: usize = 5;
 /// final ones exactly once.
 fn collection_overwrite_source(frames: usize) -> String {
     format!(
-        "actor Cache {{\n\
-         \x20   var items: Vec<string>;\n\
-         \x20   var index: HashMap<string, i64>;\n\
-         \x20   var seen: HashSet<i64>;\n\
+        "actor Cache {{ \n\
+         \x20   var items: Vec<string>,\n\
+         \x20   var index: HashMap<string, i64>,\n\
+         \x20   var seen: HashSet<i64>,\n\
          \n\
          \x20   receive fn refresh(round: i64) {{\n\
-         \x20       let next: Vec<string> = Vec.new();\n\
-         \x20       next.push(\"entry\");\n\
-         \x20       items = next;\n\
-         \x20       let m: HashMap<string, i64> = HashMap.new();\n\
-         \x20       m.insert(\"k\", round);\n\
-         \x20       index = m;\n\
-         \x20       let s: HashSet<i64> = HashSet.new();\n\
-         \x20       s.insert(round);\n\
-         \x20       seen = s;\n\
-         \x20   }}\n\
+         \x20       var next: Vec<string> = Vec.new(), \n\
+         \x20       next.push(\"entry\"), \n\
+         \x20       items = next, \n\
+         \x20       var m: HashMap<string, i64> = HashMap.new(), \n\
+         \x20       m.insert(\"k\", round), \n\
+         \x20       index = m, \n\
+         \x20       var s: HashSet<i64> = HashSet.new(), \n\
+         \x20       s.insert(round), \n\
+         \x20       seen = s, \n\
+         \x20 }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
          \x20       items.len()\n\
@@ -101,11 +101,11 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20   let c = spawn Cache(items: Vec.new(), index: HashMap.new(), seen: HashSet.new());\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       c.refresh(i);\n\
+         \x20       let _ = c.refresh(i);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await c.size() {{\n\
+         \x20   match c.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -136,7 +136,7 @@ fn record_functional_update_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   var cur: Outer;\n\
+         \x20   var cur: Outer,\n\
          \n\
          \x20   receive fn bump() {{\n\
          \x20       cur = Outer {{\n\
@@ -161,11 +161,11 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       k.bump();\n\
+         \x20       let _ = k.bump();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await k.count() {{\n\
+         \x20   match k.count() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -189,7 +189,7 @@ fn nested_record_alias_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   var cur: Wrap;\n\
+         \x20   var cur: Wrap,\n\
          \n\
          \x20   receive fn rewrite() {{\n\
          \x20       cur = Wrap {{ leaf: cur.leaf }};\n\
@@ -206,11 +206,11 @@ fn nested_record_alias_source(frames: usize) -> String {
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       keeper.rewrite();\n\
+         \x20       let _ = keeper.rewrite();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await keeper.size() {{\n\
+         \x20   match keeper.size() {{\n\
          \x20       .Ok(n) => n,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -230,8 +230,8 @@ fn enum_payload_alias_source(frames: usize) -> String {
          }}\n\
          \n\
          enum Payload {{\n\
-         \x20   Empty;\n\
-         \x20   Hold(Leaf);\n\
+         \x20   Empty,\n\
+         \x20   Hold(Leaf),\n\
          }}\n\
          \n\
          type Wrap {{\n\
@@ -239,7 +239,7 @@ fn enum_payload_alias_source(frames: usize) -> String {
          }}\n\
          \n\
          actor Keeper {{\n\
-         \x20   var cur: Wrap;\n\
+         \x20   var cur: Wrap,\n\
          \n\
          \x20   receive fn rewrite() {{\n\
          \x20       cur = Wrap {{ payload: cur.payload }};\n\
@@ -259,11 +259,11 @@ fn enum_payload_alias_source(frames: usize) -> String {
          \x20   }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       keeper.rewrite();\n\
+         \x20       let _ = keeper.rewrite();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await keeper.size() {{\n\
+         \x20   match keeper.size() {{\n\
          \x20       .Ok(n) => n,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -277,13 +277,13 @@ fn enum_payload_alias_source(frames: usize) -> String {
 fn enum_overwrite_source(frames: usize) -> String {
     format!(
         "enum Status {{\n\
-         \x20   Idle;\n\
-         \x20   Working(string);\n\
-         \x20   Done(string, i64);\n\
+         \x20   Idle,\n\
+         \x20   Working(string),\n\
+         \x20   Done(string, i64),\n\
          }}\n\
          \n\
          actor Tracker {{\n\
-         \x20   var status: Status;\n\
+         \x20   var status: Status,\n\
          \n\
          \x20   receive fn advance(n: i64) {{\n\
          \x20       status = match n % 3 {{\n\
@@ -306,11 +306,11 @@ fn enum_overwrite_source(frames: usize) -> String {
          \x20   let t = spawn Tracker(status: Status.Idle);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       t.advance(i);\n\
+         \x20       let _ = t.advance(i);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await t.code() {{\n\
+         \x20   match t.code() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -329,13 +329,13 @@ fn enum_overwrite_source(frames: usize) -> String {
 /// buffer is orthogonal and already correct.
 fn string_inspect_overwrite_source(frames: usize) -> String {
     format!(
-        "actor Namer {{\n\
-         \x20   var name: string;\n\
+        "actor Namer {{ \n\
+         \x20   var name: string,\n\
          \n\
          \x20   receive fn tick() {{\n\
          \x20       if name.len() < 1000000 {{\n\
-         \x20           name = name + \"x\";\n\
-         \x20       }}\n\
+         \x20           name = name + \"x\", \n\
+         \x20 }}\n\
          \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
@@ -347,11 +347,11 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
          \x20   let h = spawn Namer(name: \"seed\".to_upper());\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       h.tick();\n\
+         \x20       let _ = h.tick();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await h.size() {{\n\
+         \x20   match h.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -370,14 +370,14 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
 /// the load must classify `Borrowed` and alias the actor's still-owned Vec.
 fn collection_iterate_source(frames: usize) -> String {
     format!(
-        "actor Summer {{\n\
-         \x20   var items: Vec<i64>;\n\
+        "actor Summer {{ \n\
+         \x20   var items: Vec<i64>,\n\
          \n\
          \x20   receive fn spin() {{\n\
-         \x20       var s: i64 = 0;\n\
+         \x20       var s: i64 = 0, \n\
          \x20       for v in items {{\n\
-         \x20           s = s + v;\n\
-         \x20       }}\n\
+         \x20           s = s + v, \n\
+         \x20 }}\n\
          \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
@@ -386,18 +386,18 @@ fn collection_iterate_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let xs: Vec<i64> = Vec.new();\n\
+         \x20   var xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1);\n\
          \x20   xs.push(2);\n\
          \x20   xs.push(3);\n\
          \x20   let h = spawn Summer(items: xs);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       h.spin();\n\
+         \x20       let _ = h.spin();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await h.size() {{\n\
+         \x20   match h.size() {{\n\
          \x20       Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
@@ -418,7 +418,7 @@ type Profile {
 }
 
 actor Keeper {
-    var prof: Profile;
+    var prof: Profile,
 
     receive fn refresh() {
         prof = prof;
@@ -433,11 +433,11 @@ fn main() -> i64 {
     let k = spawn Keeper(prof: Profile { name: \"self-store-name\".to_upper(), hits: 1 });
     var i: i64 = 0;
     while i < 25 {
-        k.refresh();
+        let _ = k.refresh();
         i = i + 1;
     }
     sleep(1000ms);
-    match await k.name_len() {
+    match k.name_len() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -457,7 +457,7 @@ type Pair {
 }
 
 actor Swapper {
-    var pair: Pair;
+    var pair: Pair,
 
     receive fn swap() {
         pair = Pair { a: pair.b, b: pair.a };
@@ -472,11 +472,11 @@ fn main() -> i64 {
     let s = spawn Swapper(pair: Pair { a: \"left\".to_upper(), b: \"right-side\".to_upper() });
     var i: i64 = 0;
     while i < 25 {
-        s.swap();
+        let _ = s.swap();
         i = i + 1;
     }
     sleep(1000ms);
-    match await s.len_a() {
+    match s.len_a() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -499,8 +499,8 @@ fn main() -> i64 {
 /// a clean exit code.
 const VEC_SWAP_SOURCE: &str = "\
 actor TwoVecs {
-    var x: Vec<i64>;
-    var y: Vec<i64>;
+    var x: Vec<i64>,
+    var y: Vec<i64>,
 
     receive fn flip() {
         let t = x;
@@ -516,18 +516,18 @@ actor TwoVecs {
 }
 
 fn main() -> i64 {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(1); xs.push(2); xs.push(3);
-    let ys: Vec<i64> = Vec.new();
+    var ys: Vec<i64> = Vec.new();
     ys.push(10); ys.push(20); ys.push(30); ys.push(40);
     let a = spawn TwoVecs(x: xs, y: ys);
     var i: i64 = 0;
     while i < 25 {
-        a.flip();
+        let _ = a.flip();
         i = i + 1;
     }
     sleep(1000ms);
-    match await a.sum_x() {
+    match a.sum_x() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -541,8 +541,8 @@ fn main() -> i64 {
 /// `y` (`"RIGHT-SIDE"`, len 10).
 const STRING_SWAP_SOURCE: &str = "\
 actor TwoStrings {
-    var x: string;
-    var y: string;
+    var x: string,
+    var y: string,
 
     receive fn flip() {
         let t = x;
@@ -559,11 +559,11 @@ fn main() -> i64 {
     let a = spawn TwoStrings(x: \"left\".to_upper(), y: \"right-side\".to_upper());
     var i: i64 = 0;
     while i < 25 {
-        a.flip();
+        let _ = a.flip();
         i = i + 1;
     }
     sleep(1000ms);
-    match await a.len_x() {
+    match a.len_x() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -579,8 +579,8 @@ type Box {
 }
 
 actor TwoBoxes {
-    var x: Box;
-    var y: Box;
+    var x: Box,
+    var y: Box,
 
     receive fn flip() {
         let t = x;
@@ -596,18 +596,18 @@ actor TwoBoxes {
 }
 
 fn main() -> i64 {
-    let xv: Vec<i64> = Vec.new();
+    var xv: Vec<i64> = Vec.new();
     xv.push(1); xv.push(2); xv.push(3);
-    let yv: Vec<i64> = Vec.new();
+    var yv: Vec<i64> = Vec.new();
     yv.push(10); yv.push(20); yv.push(30); yv.push(40);
     let a = spawn TwoBoxes(x: Box { v: xv }, y: Box { v: yv });
     var i: i64 = 0;
     while i < 25 {
-        a.flip();
+        let _ = a.flip();
         i = i + 1;
     }
     sleep(1000ms);
-    match await a.sum_x() {
+    match a.sum_x() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -632,7 +632,7 @@ type Box {
 }
 
 actor Summer {
-    var b: Box;
+    var b: Box,
 
     receive fn total() -> i64 {
         var s: i64 = 0;
@@ -642,11 +642,11 @@ actor Summer {
 }
 
 fn main() -> i64 {
-    let bv: Vec<i64> = Vec.new();
+    var bv: Vec<i64> = Vec.new();
     bv.push(10); bv.push(20); bv.push(30); bv.push(40);
     let a = spawn Summer(b: Box { v: bv });
     sleep(500ms);
-    match await a.total() {
+    match a.total() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -700,8 +700,11 @@ fn ir_function_body<'a>(ir: &'a str, signature: &str) -> &'a str {
 }
 
 /// Compile one aggregate-alias shape and pin the exact static ownership
-/// authority in LLVM: one recursive string retain in the handler, one
-/// overwrite-release call, and one old-record drop in the helper.
+/// authority in LLVM: one recursive string retain and one old-record string
+/// release, both inlined directly into the handler (the current physical
+/// pipeline lowers the overwrite release in place; it no longer factors it
+/// into a separate `__hew_record_overwrite_release_*` helper the way the
+/// legacy lowerer did).
 fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispatch: bool) {
     require_codegen();
 
@@ -712,7 +715,7 @@ fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispa
     let _bin = compile_to_native(source, dir.path(), shape_name);
     let ir = std::fs::read_to_string(dir.path().join(format!("{shape_name}.ll")))
         .expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    let handler = ir_function_body(&ir, "@__hew_actor_0_Keeper__rewrite(");
     assert_eq!(
         handler.matches("call ptr @hew_string_clone").count(),
         1,
@@ -720,45 +723,29 @@ fn assert_recursive_retain_ir(shape_name: &str, source: &str, expects_enum_dispa
          string occurrence and therefore needs exactly one recursive retain:\n{handler}"
     );
     assert_eq!(
-        handler
-            .matches("call void @__hew_record_overwrite_release_Wrap")
-            .count(),
+        handler.matches("call void @hew_string_drop").count(),
         1,
-        "{shape_name}: the actor-state store must release exactly one old Wrap:\n{handler}"
+        "{shape_name}: the actor-state store must release exactly one old string leaf:\n{handler}"
     );
     assert_eq!(
-        handler.contains("mir_aggregate_share_d0_enum_tag"),
+        handler.contains("switch i8 %variant.tag,"),
         expects_enum_dispatch,
         "{shape_name}: active-enum dispatch presence drifted:\n{handler}"
     );
     if expects_enum_dispatch {
-        let oob_start = handler
-            .find("mir_aggregate_share_d0_enum_tag_oob:")
+        let invalid_start = handler
+            .find("variant.clone.invalid:")
             .expect("recursive enum retain must have an invalid-tag block");
-        let variant_start = handler[oob_start..]
-            .find("mir_aggregate_share_d0_enum_v0:")
-            .map(|offset| oob_start + offset)
+        let case_start = handler[invalid_start..]
+            .find("variant.clone.case.0:")
+            .map(|offset| invalid_start + offset)
             .expect("recursive enum retain must dispatch its first variant");
-        let oob = &handler[oob_start..variant_start];
+        let invalid = &handler[invalid_start..case_start];
         assert!(
-            oob.contains("call void @hew_trap_with_code")
-                && oob.contains("call void @llvm.trap")
-                && oob.contains("unreachable"),
-            "{shape_name}: an invalid enum tag must trap fail-closed:\n{oob}"
+            invalid.contains("call void @llvm.trap()") && invalid.contains("unreachable"),
+            "{shape_name}: an invalid enum tag must trap fail-closed:\n{invalid}"
         );
     }
-
-    let overwrite = ir_function_body(
-        &ir,
-        "define internal void @__hew_record_overwrite_release_Wrap",
-    );
-    assert_eq!(
-        overwrite
-            .matches("call void @__hew_record_drop_inplace_Wrap")
-            .count(),
-        1,
-        "{shape_name}: overwrite helper must run one old-value drop spine:\n{overwrite}"
-    );
 }
 
 /// Build the shape at LOW and HIGH frame counts, measure leak NODE
@@ -960,37 +947,43 @@ fn record_self_store_emits_one_recursive_clone_authority() {
     let _bin = compile_to_native(RECORD_SELF_STORE_SOURCE, dir.path(), "record_self_store_ir");
     let ir = std::fs::read_to_string(dir.path().join("record_self_store_ir.ll"))
         .expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__refresh");
-    assert_eq!(
-        handler
-            .matches("call i32 @__hew_record_clone_inplace_Profile")
-            .count(),
-        1,
-        "the Owned actor-state load must mint exactly one recursive clone:\n{handler}"
-    );
+    let handler = ir_function_body(&ir, "@__hew_actor_0_Keeper__refresh(");
+    // The current physical pipeline inlines the field-by-field clone directly
+    // into the handler rather than calling a separate
+    // `__hew_record_clone_inplace_Profile` helper (see assert_recursive_retain_ir).
+    // `hits: i64` needs no retain; `name: string` needs exactly one — the
+    // Owned actor-state load minting a second, redundant retain would double
+    // the count.
     assert_eq!(
         handler.matches("call ptr @hew_string_clone").count(),
-        0,
-        "borrowed-aggregate ingress must not double-retain the Owned load:\n{handler}"
+        1,
+        "the Owned actor-state load must mint exactly one recursive retain of \
+         the name field, not a second double-retain:\n{handler}"
     );
 }
 
-/// The string-only walk follows the registered tuple clone kind. Three tuple
-/// occurrences yield three exact string owners.
+/// The string-only walk follows the tuple's own shape. Three tuple occurrences
+/// yield three exact string owners, and the old state's three leaves are
+/// released once each — after the retains, so an aliased leaf is never read
+/// through freed storage.
 #[test]
 fn tuple_alias_emits_one_retain_per_string_occurrence() {
-    const SOURCE: &str = r"
+    const SOURCE: &str = r#"
 type Wrap { nested: (string, string, string) }
 
 actor Keeper {
-    var cur: Wrap;
+    var cur: Wrap,
     receive fn rewrite() {
         cur = Wrap { nested: cur.nested };
     }
 }
 
-fn main() -> i64 { 0 }
-";
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Wrap { nested: ("a", "b", "c") });
+    let _ = k.rewrite();
+    0
+}
+"#;
     require_codegen();
 
     let dir = tempfile::Builder::new()
@@ -999,22 +992,33 @@ fn main() -> i64 { 0 }
         .expect("tempdir");
     let _bin = compile_to_native(SOURCE, dir.path(), "tuple_ir");
     let ir = std::fs::read_to_string(dir.path().join("tuple_ir.ll")).expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    let handler = ir_function_body(&ir, "define i32 @__hew_actor_0_Keeper__rewrite(");
     assert_eq!(
         handler.matches("call ptr @hew_string_clone").count(),
         3,
         "the tuple has three string occurrences:\n{handler}"
     );
+    assert_eq!(
+        handler.matches("call void @hew_string_drop").count(),
+        3,
+        "the replaced state's three tuple leaves must be released once each:\n{handler}"
+    );
+    let last_retain = handler
+        .rfind("call ptr @hew_string_clone")
+        .expect("a retain per occurrence");
+    let first_release = handler
+        .find("call void @hew_string_drop")
+        .expect("a release per replaced occurrence");
     assert!(
-        handler.contains("mir_aggregate_share_d0_tuple_f0")
-            && handler.contains("mir_aggregate_share_d0_tuple_f1")
-            && handler.contains("mir_aggregate_share_d0_tuple_f2"),
-        "the recursive retain must follow the tuple clone kind:\n{handler}"
+        last_retain < first_release,
+        "every incoming leaf must be retained before the old value is released:\n{handler}"
     );
 }
 
 /// A borrowed aggregate with no inline string leaves is a true codegen no-op:
-/// it needs neither a retain call nor even recursive GEP/tag scaffolding.
+/// the handler moves the scalar leaves and emits no retain or release call at
+/// all. (The retired `mir_aggregate_share_*` thunk names are gone with the
+/// out-of-line recursive walk; `hew_string_*` is the live signal.)
 #[test]
 fn zero_string_aggregate_alias_emits_no_recursive_retain_code() {
     const SOURCE: &str = r"
@@ -1022,13 +1026,17 @@ type Leaf { value: i64 }
 type Wrap { leaf: Leaf }
 
 actor Keeper {
-    var cur: Wrap;
+    var cur: Wrap,
     receive fn rewrite() {
         cur = Wrap { leaf: cur.leaf };
     }
 }
 
-fn main() -> i64 { 0 }
+fn main() -> i64 {
+    let k = spawn Keeper(cur: Wrap { leaf: Leaf { value: 1 } });
+    let _ = k.rewrite();
+    0
+}
 ";
     require_codegen();
 
@@ -1039,9 +1047,9 @@ fn main() -> i64 { 0 }
     let _bin = compile_to_native(SOURCE, dir.path(), "zero_string_alias_ir");
     let ir = std::fs::read_to_string(dir.path().join("zero_string_alias_ir.ll"))
         .expect("read emitted LLVM IR");
-    let handler = ir_function_body(&ir, "define internal i8 @Keeper__recv__rewrite");
+    let handler = ir_function_body(&ir, "define i32 @__hew_actor_0_Keeper__rewrite(");
     assert!(
-        !handler.contains("hew_string_clone") && !handler.contains("mir_aggregate_share"),
+        !handler.contains("hew_string_"),
         "zero-string aggregate ingress must emit no recursive retain code:\n{handler}"
     );
 }

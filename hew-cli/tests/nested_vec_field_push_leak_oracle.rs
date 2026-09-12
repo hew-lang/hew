@@ -67,7 +67,7 @@ fn field_push_drop_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let xs: [[i64]] = [];\n\
+         \x20       var xs: [[i64]] = [];\n\
          \x20       let r = Rec {{ field: [i, i + 1, i + 2] }};\n\
          \x20       xs.push(r.field);\n\
          \x20       total = total + xs[0].len() + r.field.len();\n\
@@ -85,7 +85,7 @@ fn field_push_drop_loop_source(frames: usize) -> String {
 const FIELD_PUSH_EXACT_SOURCE: &str = "type Rec { field: [i64] }\n\
      \n\
      fn main() {\n\
-     \x20   let xs: [[i64]] = [];\n\
+     \x20   var xs: [[i64]] = [];\n\
      \x20   let r = Rec { field: [10, 20, 30] };\n\
      \x20   xs.push(r.field);\n\
      \x20   let clone_sum = xs[0][0] + xs[0][1] + xs[0][2];\n\

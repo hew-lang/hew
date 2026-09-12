@@ -1,13 +1,20 @@
-// Reject fixture: HashMap.clone() must fail closed when V contains no clone_fn.
+// Reject fixture: a map value with no copy operation fails closed at the
+// operation that copies it out.
 //
-// `m.clone()` deep-clones every value blob through the descriptor clone
-// discipline. A value containing an `#[opaque]` runtime handle has no map-value
-// clone thunk, so admitting the clone would require a shallow pointer copy that
-// would later double-free. The checker rejects it at the same admission seam
-// that guards `HashMap::get` / `insert`.
+// `values()` copies every value out of the map, so a value whose class carries
+// no copy operation has nothing to hand back. An unmarked `#[opaque]` id is a
+// bare pass-through value that copies by bits (ir-ladder.md §1.1), so the value
+// that genuinely refuses is std's convention: a `#[resource]` wrapper that owns
+// the close. `clone()` on the same map is refused one step earlier, by the
+// clone-capability rule that names the resource member.
 
 #[opaque]
+#[resource]
 type Handle {}
+
+impl Handle {
+    fn close(consume self) {}
+}
 
 type WrappedHandle {
     h: Handle,
@@ -18,9 +25,9 @@ extern "C" {
 }
 
 fn main() -> i64 {
-    let m: HashMap<string, WrappedHandle> = HashMap.new();
+    var m: HashMap<string, WrappedHandle> = HashMap.new();
     let h = unsafe { hew_handle_create() };
     m.insert("h", WrappedHandle { h: h });
-    let _c = m.clone();
+    let _values = m.values();
     0
 }

@@ -3,7 +3,7 @@ pub trait Describable {
 }
 
 pub type Label {
-    text: string;
+    text: string,
 }
 
 impl Describable for Label {

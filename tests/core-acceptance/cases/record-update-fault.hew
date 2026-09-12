@@ -1,0 +1,17 @@
+type Packet { label: string, payload: string, sequence: i64 }
+
+fn stamp(packet: Packet, sequence: i64) -> Packet {
+    let stamped = Packet { sequence: sequence, ..packet };
+    println(f"{stamped.label}:{stamped.payload}:{stamped.sequence}");
+    if sequence > 1 {
+        panic("sequence exhausted");
+    }
+    stamped
+}
+
+fn main() {
+    let original = Packet { label: "orig", payload: "body", sequence: 0 };
+    let first = stamp(original, 1);
+    let second = stamp(Packet { payload: "again", ..first }, 2);
+    println(second.label);
+}

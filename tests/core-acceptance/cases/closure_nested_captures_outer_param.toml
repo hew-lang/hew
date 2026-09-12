@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_nested_captures_outer_param"
+intent = "A nested closure captures the OUTER closure's parameter."
+source = "../vertical-slice/accept/closure_nested_captures_outer_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "15\n"
+exit = 0

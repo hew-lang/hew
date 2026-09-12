@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_element_widths"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_element_widths.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\nfalse\ntrue\n2\n-8\n-1\n-1\n7\n200\n255\n-1234\n32767\n50000\n65535\n-9\n9223372036854775807\n42\n1234567890123\n33\n2\n"
+exit = 0

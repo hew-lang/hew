@@ -8,7 +8,7 @@ use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, SpanKey, T
 #[test]
 fn tuple_literal_basic_construction() {
     let source = r"
-fn main() -> (i64, bool) {
+fn sample() -> (i64, bool) {
     (42, true)
 }
 ";
@@ -41,19 +41,22 @@ fn main() -> (i64, bool) {
         .iter()
         .find(|item| {
             if let hew_hir::node::HirItem::Function(f) = item {
-                f.name == "main"
+                f.name == "sample"
             } else {
                 false
             }
         })
-        .expect("main function not found");
+        .expect("sample function not found");
 
     if let hew_hir::node::HirItem::Function(f) = main_fn {
         let has_tuple_literal = matches!(
             &f.body.tail.as_ref().unwrap().kind,
             hew_hir::node::HirExprKind::TupleLiteral { .. }
         );
-        assert!(has_tuple_literal, "Expected TupleLiteral node in main body");
+        assert!(
+            has_tuple_literal,
+            "Expected TupleLiteral node in sample body"
+        );
     }
 }
 

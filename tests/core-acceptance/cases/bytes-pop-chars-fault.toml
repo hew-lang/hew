@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-pop-chars-fault"
+intent = "A logical failure after a pop releases the shrunk receiver, the owned scalars vector and the retained alias without leaking or double-releasing."
+source = "cases/bytes-pop-chars-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "99\n4\n3\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

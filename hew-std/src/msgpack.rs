@@ -2,12 +2,16 @@
 //!
 //! Provides `MessagePack` encoding and decoding for compiled Hew programs.
 //! Uses `rmp_serde` with `serde_json::Value` as the intermediate type for
-//! JSON↔`MessagePack` conversion. All returned buffers are allocated with
-//! `libc::malloc` and must be freed with [`hew_msgpack_free`]. All returned
-//! strings are allocated with `libc::malloc` and NUL-terminated.
+//! JSON↔`MessagePack` conversion. The Hew-facing `_hew` entry points and
+//! [`hew_msgpack_last_error`] exchange managed strings: the caller receives
+//! one owner and releases it with `hew_string_drop`; null is the canonical
+//! empty string. The raw byte-buffer codec functions below them are not part
+//! of the Hew ABI surface and remain sized-block-allocator-based, freed with
+//! [`hew_msgpack_free`] (which calls `buf_free`).
 use hew_cabi::cabi::{cstr_to_str, malloc_bytes, str_to_malloc};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
-use std::ffi::c_char;
+use std::ffi::{c_char, CStr};
 
 const MAX_MSGPACK_DEPTH: usize = 128;
 const MALFORMED_MSGPACK_ERROR: &str = "msgpack: malformed input during depth pre-scan";
@@ -300,11 +304,12 @@ pub unsafe extern "C" fn hew_msgpack_to_json(data: *const u8, len: usize) -> *mu
 
 /// Return this actor's last `MessagePack` error.
 ///
-/// Returns an empty string when the most recent codec call succeeded. Reading
-/// does not consume the detail; a later successful codec call clears it.
+/// Returns an owned managed string; release it with `hew_string_drop`.
+/// Returns canonical empty (null) when the most recent codec call succeeded.
+/// Reading does not consume the detail; a later successful codec call clears it.
 #[no_mangle]
-pub extern "C" fn hew_msgpack_last_error() -> *mut c_char {
-    str_to_malloc(&get_msgpack_last_error())
+pub extern "C" fn hew_msgpack_last_error() -> *mut HewString {
+    string_from_str(&get_msgpack_last_error())
 }
 
 /// Encode a single integer as `MessagePack`.
@@ -471,7 +476,7 @@ pub unsafe extern "C" fn hew_msgpack_free(ptr: *mut u8) {
         return;
     }
     // SAFETY: ptr is a malloc_bytes buffer and has not been freed.
-    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (hew_msgpack_free: opaque *mut u8 encode buffers = malloc_bytes; to_json strings drop via hew_string_drop, NOT here)
+    unsafe { hew_cabi::mem::buf_free(ptr.cast()) }; // CSTRING-FREE: sized-block (hew_msgpack_free: opaque *mut u8 encode buffers = malloc_bytes; to_json strings drop via hew_string_drop, NOT here)
 }
 
 // ---------------------------------------------------------------------------
@@ -573,34 +578,64 @@ unsafe fn triple_from_codec_buf(ptr: *mut u8, out_len: usize) -> BytesTriple {
 ///
 /// # Safety
 ///
-/// `json` must be a valid NUL-terminated C string (or null).
+/// `json` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_from_json_hew(json: *const c_char) -> BytesTriple {
-    let mut out_len: usize = 0;
-    // SAFETY: json is null-or-valid per caller contract; out_len is writable.
-    let ptr = unsafe { hew_msgpack_from_json(json, &raw mut out_len) };
-    // SAFETY: ptr is null-or-valid for out_len bytes.
-    unsafe { triple_from_codec_buf(ptr, out_len) }
+pub unsafe extern "C" fn hew_msgpack_from_json_hew(json: *const HewString) -> BytesTriple {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let s = unsafe { string_as_str(json) };
+    let value = match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(value) => value,
+        Err(err) => {
+            set_msgpack_last_error(format!("msgpack: failed to parse JSON input: {err}"));
+            return BytesTriple {
+                ptr: std::ptr::null_mut(),
+                offset: 0,
+                len: 0,
+            };
+        }
+    };
+    let Ok(bytes) = rmp_serde::to_vec(&value) else {
+        set_msgpack_last_error("msgpack: failed to serialize to MessagePack");
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    };
+    clear_msgpack_last_error();
+    bytes_triple_from_slice(&bytes)
 }
 
 /// Decode a `bytes` `BytesTriple` of `MessagePack` data to a JSON string.
 ///
-/// Returns an empty string on error or null/empty input.
+/// Returns an owned managed string; release it with `hew_string_drop`.
+/// Returns null on error or null/empty input.
 ///
 /// # Safety
 ///
 /// `v` must be null or a valid `*const BytesTriple`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *const BytesTriple) -> *mut c_char {
+pub unsafe extern "C" fn hew_msgpack_to_json_hew(v: *const BytesTriple) -> *mut HewString {
     // SAFETY: v is null-or-valid per caller contract.
     let bytes = unsafe { bytes_slice_from_triple(v) };
     if bytes.is_empty() {
-        // Null/empty input → empty string (the C layer rejects len == 0).
         set_msgpack_last_error("msgpack: invalid input buffer");
-        return str_to_malloc("");
+        return std::ptr::null_mut();
     }
     // SAFETY: bytes slice is valid for its length.
-    unsafe { hew_msgpack_to_json(bytes.as_ptr(), bytes.len()) }
+    let json_ptr = unsafe { hew_msgpack_to_json(bytes.as_ptr(), bytes.len()) };
+    if json_ptr.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: json_ptr is a valid NUL-terminated C string from hew_msgpack_to_json,
+    // which serializes through serde_json and therefore always produces valid UTF-8.
+    let json = unsafe { CStr::from_ptr(json_ptr) }
+        .to_str()
+        .unwrap_or_default()
+        .to_owned();
+    // SAFETY: json_ptr came from hew_msgpack_to_json's header-aware C-string allocation.
+    unsafe { hew_cabi::cabi::free_cstring(json_ptr) }; // CSTRING-FREE: str-open (bridges hew_msgpack_to_json's header-aware C-string output into a managed string)
+    string_from_str(&json)
 }
 
 /// Encode an i64 integer as a `MessagePack` varint, returning a `BytesTriple`.
@@ -617,20 +652,27 @@ pub unsafe extern "C" fn hew_msgpack_encode_int_hew(val: i64) -> BytesTriple {
     unsafe { triple_from_codec_buf(ptr, out_len) }
 }
 
-/// Encode a C string as `MessagePack` str, returning a `BytesTriple`.
+/// Encode a string as `MessagePack` str, returning a `BytesTriple`.
 ///
-/// Returns an empty `BytesTriple` ({null, 0, 0}) on null input or encode failure.
+/// Returns an empty `BytesTriple` ({null, 0, 0}) on encode failure.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string (or null).
+/// `s` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_msgpack_encode_string_hew(s: *const c_char) -> BytesTriple {
-    let mut out_len: usize = 0;
-    // SAFETY: s is null-or-valid per caller contract; out_len is writable.
-    let ptr = unsafe { hew_msgpack_encode_string(s, &raw mut out_len) };
-    // SAFETY: ptr is null-or-valid for out_len bytes.
-    unsafe { triple_from_codec_buf(ptr, out_len) }
+pub unsafe extern "C" fn hew_msgpack_encode_string_hew(s: *const HewString) -> BytesTriple {
+    // SAFETY: the caller borrows a live managed string or canonical empty handle.
+    let rust_str = unsafe { string_as_str(s) };
+    let Ok(bytes) = rmp_serde::to_vec(rust_str) else {
+        set_msgpack_last_error("msgpack: failed to encode string");
+        return BytesTriple {
+            ptr: std::ptr::null_mut(),
+            offset: 0,
+            len: 0,
+        };
+    };
+    clear_msgpack_last_error();
+    bytes_triple_from_slice(&bytes)
 }
 
 /// Encode a `bytes` `BytesTriple` as a `MessagePack` bin, returning a `BytesTriple`.
@@ -656,7 +698,18 @@ pub unsafe extern "C" fn hew_msgpack_encode_bytes_hew(v: *const BytesTriple) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use hew_cabi::string::string_release;
+    use std::ffi::CString;
+
+    /// Read and release a managed string returned by `hew_msgpack_last_error`.
+    unsafe fn read_and_free_managed(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is null or a live managed string owner per caller.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: null is a documented no-op release; otherwise this test holds
+        // the only owner of `ptr`.
+        unsafe { string_release(ptr) };
+        s
+    }
 
     #[test]
     fn output_allocation_failure_is_reported_instead_of_empty_success() {
@@ -699,15 +752,6 @@ mod tests {
         // SAFETY: ptr was allocated by a hew_msgpack_* codec function.
         unsafe { hew_msgpack_free(ptr) };
         bytes
-    }
-
-    unsafe fn read_and_free(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string allocated with malloc.
-        let value = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (read_and_free test helper for to_json strings)
-        value
     }
 
     #[test]
@@ -944,7 +988,7 @@ mod tests {
         unsafe {
             assert!(hew_msgpack_to_json(nested.as_ptr(), nested.len()).is_null());
             assert_eq!(
-                read_and_free(hew_msgpack_last_error()),
+                read_and_free_managed(hew_msgpack_last_error()),
                 depth_exceeded_error()
             );
         }
@@ -959,7 +1003,7 @@ mod tests {
         unsafe {
             assert!(hew_msgpack_to_json(nested.as_ptr(), nested.len()).is_null());
             assert_eq!(
-                read_and_free(hew_msgpack_last_error()),
+                read_and_free_managed(hew_msgpack_last_error()),
                 depth_exceeded_error()
             );
         }
@@ -983,7 +1027,7 @@ mod tests {
             });
             let actual: serde_json::Value = serde_json::from_str(json_str).unwrap();
             assert_eq!(actual, expected);
-            assert_eq!(read_and_free(hew_msgpack_last_error()), "");
+            assert_eq!(read_and_free_managed(hew_msgpack_last_error()), "");
 
             hew_cabi::cabi::free_cstring(json); // CSTRING-FREE: str-open (to_json json)
         }
@@ -998,7 +1042,7 @@ mod tests {
             let json = hew_msgpack_to_json(empty_array.as_ptr(), empty_array.len());
             assert!(!json.is_null());
             assert_eq!(CStr::from_ptr(json).to_str().unwrap(), "[]");
-            assert_eq!(read_and_free(hew_msgpack_last_error()), "");
+            assert_eq!(read_and_free_managed(hew_msgpack_last_error()), "");
             hew_cabi::cabi::free_cstring(json); // CSTRING-FREE: str-open (to_json json)
         }
     }

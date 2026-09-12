@@ -13,12 +13,15 @@
 // shims are emitted: `i64` (a `BitCopy` capture, copied into the env) and
 // `string` (an OWNED capture, whose heap buffer the escaping env free thunk
 // must release — see closure_env_drop_leak_oracle).
-fn pick<T>(x: T) -> T {
-    let get = || x;
+//
+// A capture with no independent snapshot operation needs `move`, and moving
+// out of a parameter needs the parameter declared `consume`.
+fn pick<T>(consume x: T) -> T {
+    let get = move || x;
     get()
 }
 
 fn main() {
-    println(pick(42));        // i64 monomorphisation
+    println(pick(42)); // i64 monomorphisation
     println(pick("closure")); // string monomorphisation (owned capture)
 }

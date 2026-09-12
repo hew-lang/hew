@@ -23,7 +23,6 @@
       "mut",
       "fn",
       "gen",
-      "async",
       "pub",
       "import",
       "package",
@@ -46,18 +45,15 @@
       "fork",
       "move",
       "select",
-      "join",
+      "race",
       "after",
-      "from",
       "await",
-      "await_restart",
-      "this"
+      "await_restart"
     ],
     "wire": [
       "reserved",
       "optional",
-      "deprecated",
-      "default"
+      "deprecated"
     ],
     "supervisor_config": [
       "child",
@@ -70,8 +66,7 @@
       "one_for_one",
       "one_for_all",
       "rest_for_one",
-      "simple_one_for_one",
-      "pool"
+      "simple_one_for_one"
     ],
     "logical": [
       "true",
@@ -84,22 +79,12 @@
       "on",
       "when",
       "entry",
-      "exit",
-      "emit"
+      "exit"
     ],
     "other": [
       "dyn",
       "unsafe",
       "is"
-    ],
-    "reserved_unused": [
-      "try",
-      "catch",
-      "race",
-      "foreign",
-      "cooperate",
-      "super",
-      "budget"
     ]
   },
   "all_keywords": [
@@ -120,7 +105,6 @@
     "import",
     "pub",
     "package",
-    "super",
     "indirect",
     "enum",
     "trait",
@@ -129,7 +113,6 @@
     "supervisor",
     "child",
     "restart",
-    "budget",
     "strategy",
     "permanent",
     "transient",
@@ -138,41 +121,31 @@
     "one_for_all",
     "rest_for_one",
     "simple_one_for_one",
-    "pool",
     "brutal_kill",
     "scope",
     "fork",
     "spawn",
-    "async",
     "await",
     "await_restart",
     "receive",
     "init",
     "type",
-    "this",
     "dyn",
     "move",
-    "try",
     "true",
     "false",
     "reserved",
     "optional",
     "deprecated",
-    "default",
     "unsafe",
     "extern",
-    "foreign",
     "in",
     "select",
     "race",
-    "join",
-    "from",
     "after",
     "gen",
     "yield",
     "where",
-    "cooperate",
-    "catch",
     "defer",
     "as",
     "machine",
@@ -182,13 +155,18 @@
     "when",
     "entry",
     "exit",
-    "emit",
     "is"
   ],
   "contextual_identifiers": {
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
-    "clone": "Prefix clone operator (clone <operand>) when immediately followed by an operand; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "capture": "Private closure capture prefix capture(var name, ...) before pipe parameters; an ordinary identifier outside that prefix.",
+    "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
+    "suspends": "Suspending invocation effect inside written function type qualifiers: fn[suspends](...) -> T; an ordinary identifier elsewhere.",
+    "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
+    "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
+    "error": "Explicit error return: return error expression; an ordinary identifier elsewhere.",
     "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
     "events": "Machine input-event vocabulary block header (contextual inside machine body)",
     "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
@@ -197,11 +175,14 @@
     "mailbox": "Actor mailbox configuration block",
     "overflow": "Mailbox overflow policy",
     "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
-    "within": "Supervisor intensity window separator",
+    "within": "Scope deadline (scope within duration { ... }) and supervisor intensity window separator",
     "shutdown": "Supervisor child graceful-stop deadline clause",
     "infinity": "Supervisor child shutdown: wait indefinitely (accepted-only)",
     "wired_to": "Supervisor child sibling-wiring clause",
     "count": "Supervisor pool arity clause (pool ws: Worker(..) count: N)",
+    "pool": "Supervisor child-pool declaration marker (contextual inside a supervisor body)",
+    "default": "Machine fallback transition marker (contextual inside a machine body)",
+    "emit": "Machine event emission marker (contextual before an event name)",
     "export": "FFI export attribute",
     "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
     "linear": "Type-decl ownership attribute — must be consumed exactly once",
@@ -218,6 +199,7 @@
     "fail": "Overflow policy: reject the send with Full"
   },
   "operators": {
+    "optional": ["?", "??"],
     "arithmetic": [
       "+",
       "-",
@@ -318,15 +300,12 @@
       "None"
     ],
     "concurrency": [
-      "LocalPid",
       "RemotePid",
-      "LambdaPid",
       "Stream",
       "Sink",
       "Task",
       "Scope",
-      "Generator",
-      "AsyncGenerator"
+      "Generator"
     ],
     "marker_traits": [
       "Send",

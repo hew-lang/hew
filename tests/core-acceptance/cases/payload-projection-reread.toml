@@ -1,0 +1,10 @@
+[[case]]
+id = "payload-projection-reread"
+intent = "Projecting a value payload gives the arm its own value, so the scrutinee stays readable: every place shape is re-projected across a loop and still yields its full length, an aggregate is re-matched after both fields are projected, and a guard that copies its binder leaves the payload live for the arm it falls through to. Every buffer is released exactly once."
+source = "cases/payload-projection-reread.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "binding 18\nfield 18\nnested-field 18\ntuple 18\nblock 18\nif 18\ntwo-field 12\nguard-false 3\nguard-true 1\n"
+exit = 0

@@ -355,7 +355,7 @@ pub enum ValueClass {
     CowValue,
     PersistentShare,
     /// `@resource` types — external-resource values with an implicit drop side
-    /// effect (`close(consuming self)`). Drop elaboration emits an explicit
+    /// effect (`close(consume self)`). Drop elaboration emits an explicit
     /// `ElabMir::Drop { drop_fn: Some(close) }` on every reachable exit.
     AffineResource,
     /// `@linear` types — single-owner values with **no implicit drop**.
@@ -417,17 +417,17 @@ impl ValueClass {
             | ResolvedTy::Bytes
             | ResolvedTy::Array(_, _)
             | ResolvedTy::Tuple(_) => Self::CowValue,
-            // A `Generator<Y, R>` / `AsyncGenerator<Y>` value is an owned, affine
+            // A `Generator<Y, R>` value is an owned, affine
             // runtime handle (`*mut HewGenCtx`), same as CancellationToken: it
             // has exactly one owner, must be released exactly once on scope exit
             // (via `hew_gen_free`), and is never bit-copied. Classifying it as
             // `AffineResource` makes the construction binding enter `owned_locals`
             // and get a scope-exit drop.
-            ResolvedTy::CancellationToken
+            // A task handle owns a reference independently of scope execution.
+            ResolvedTy::Task(_) | ResolvedTy::CancellationToken
             | ResolvedTy::Named {
                 builtin: Some(
                     BuiltinType::Generator
-                        | BuiltinType::AsyncGenerator
                         | BuiltinType::Rc
                         | BuiltinType::Weak,
                 ),
@@ -458,14 +458,6 @@ impl ValueClass {
                     }
                 }
             }
-            // Task handles are consume-once: MirCheck::MustConsume fires if a
-            // ForkTaskHandle binding is live at an exit without being consumed
-            // via AwaitTask or the implicit block-end join. Linear is the
-            // correct class — it threads through C2's existing UseAfterConsume /
-            // MustConsume machinery without new checks. The inner type T's own
-            // class is checked independently when the task is awaited and T is
-            // produced.
-            ResolvedTy::Task(_) => Self::Linear,
             // An abstract parameter's value-class depends on the type that
             // monomorphisation substitutes in. Until then it is genuinely
             // unknown, so it routes through the conservative `Unknown` arm
@@ -528,7 +520,7 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
                 collect_named_type_components(arg, components);
             }
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret , .. } => {
             for param in params {
                 collect_named_type_components(param, components);
             }
@@ -538,7 +530,7 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
             params,
             ret,
             captures,
-        } => {
+         .. } => {
             for param in params {
                 collect_named_type_components(param, components);
             }

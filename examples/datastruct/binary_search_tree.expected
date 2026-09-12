@@ -1,0 +1,9 @@
+=== Binary Search Tree ===
+PASS: BST inorder is sorted
+PASS: BST search
+PASS: BST min/max
+PASS: BST sorted insert
+PASS: BST single element
+
+5/5 tests passed
+PASS

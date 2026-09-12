@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_owned_project_predicate_borrow"
+intent = "A record and a tuple whose owned string fields are only tested by literal predicates are borrowed by the match rather than projected, so each composite stays whole for the later arms and is released once by its own owner."
+source = "cases/pattern_owned_project_predicate_borrow.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 6

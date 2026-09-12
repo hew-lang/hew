@@ -19,16 +19,13 @@ fn http_request_source(frames: usize) -> String {
 import std.net.http.http_client;
 import std.net.http;
 
-actor Client {{
-    let url: string;
-    var complete: i64;
+actor Client {{ 
+    let url: string,
+    var complete: i64,
 
     receive fn fetch(unused: i64) {{
-        http_client.set_timeout(5000);
-        let response = http_client.get(url);
-        if response.status() != 200 {{
-            panic("HTTP request retention response failed");
-        }}
+        http_client.set_timeout(5000), let response = http_client.get(url), if response.status() != 200 {{
+            panic("HTTP request retention response failed") }}
         response.close();
         complete = 1;
     }}
@@ -83,20 +80,16 @@ fn http_response_source(frames: usize) -> String {
 import std.net.http.http_client;
 import std.net.http;
 
-actor Client {{
-    let url: string;
-    let frames: i64;
-    var complete: i64;
+actor Client {{ 
+    let url: string,
+    let frames: i64,
+    var complete: i64,
 
     receive fn fetch(unused: i64) {{
-        http_client.set_timeout(5000);
-        let response = http_client.get(url);
-        for _ in 0..frames {{
+        http_client.set_timeout(5000), let response = http_client.get(url), for _ in 0..frames {{
             let checksum = response.body().len()
                 + response.content_type().len()
-                + response.header("Content-Type").len();
-            println(checksum);
-        }}
+                + response.header("Content-Type").len(), println(checksum) }}
         response.close();
         complete = 1;
     }}
@@ -148,18 +141,17 @@ fn websocket_message_source(frames: usize) -> String {
         r#"
 import std.net.websocket;
 
-actor Client {{
-    let url: string;
-    let frames: i64;
-    var complete: i64;
+actor Client {{ 
+    let url: string,
+    let frames: i64,
+    var complete: i64,
 
     receive fn send_frames(unused: i64) {{
         match websocket.connect(url) {{
             Ok(connection) => {{
                 for _ in 0..frames {{
                     if connection.send_text("message-owner") != 0 {{
-                        panic("WebSocket retention send failed");
-                    }}
+                        panic("WebSocket retention send failed") }}
                 }}
                 connection.close();
                 complete = 1;

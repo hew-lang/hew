@@ -1,0 +1,16 @@
+fn values() -> Vec<string> {
+    println("evaluated");
+    ["first", "second"]
+}
+
+fn main() -> i64 {
+    for value in values() {
+        println(value);
+    }
+    var cursor = values().into_iter();
+    match cursor.next() {
+        .Some(value) => println(value),
+        .None => println("missing"),
+    }
+    0
+}

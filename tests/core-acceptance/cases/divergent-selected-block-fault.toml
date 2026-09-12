@@ -1,0 +1,11 @@
+[[case]]
+id = "divergent-selected-block-fault"
+intent = "A selected value arm that faults before its unreachable tail releases the payload and surrounding owned values."
+source = "cases/divergent-selected-block-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): SELECTED FAULT\n"
+exit = 1

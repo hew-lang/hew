@@ -2,10 +2,11 @@
 //! open-end forms) lowering.
 //!
 //! `Expr::Index { object, index: Expr::Range { .. } }` lowers to
-//! `HirExprKind::Slice { container, start, end, inclusive }`, distinct
-//! from C-2's `HirExprKind::Index { container, index }` for single-
-//! element access. Open endpoints survive into HIR as `None`; MIR fills
-//! them at lowering (open `start := 0`, open `end := hew_vec_len(v)`).
+//! `HirExprKind::Slice { container, start, end }`, distinct from C-2's
+//! `HirExprKind::Index { container, index }` for single-element access.
+//! Open endpoints survive into HIR as `None`; semantic lowering fills them
+//! (open `start := 0`, open `end := the container's open-ended operation`).
+//! The end bound is always exclusive: `xs[a..=b]` lowers to `xs[a..b + 1]`.
 //!
 //! Result type is `Vec<T>` (a freshly-allocated copy), read from the
 //! checker's `expr_types` side-table. LESSONS: `checker-authority` (P0).
@@ -52,28 +53,43 @@ fn closed_slice_a_b_lowers_to_hir_slice() {
     // `xs[a..b]` lowers to HirExprKind::Slice (NOT Index).
     let out = lower("fn f(xs: Vec<i64>, a: i64, b: i64) -> Vec<i64> { xs[a..b] }");
     let kind = tail_kind(&out, "f");
-    let HirExprKind::Slice {
-        start,
-        end,
-        inclusive,
-        ..
-    } = kind
-    else {
+    let HirExprKind::Slice { start, end, .. } = kind else {
         panic!("xs[a..b] must lower to HirExprKind::Slice; got {kind:?}");
     };
     assert!(start.is_some(), "closed start must lower to Some");
     assert!(end.is_some(), "closed end must lower to Some");
-    assert!(!inclusive, "..= flag must be false for ..");
+    let end = end.as_ref().expect("closed end");
+    assert!(
+        !matches!(end.kind, HirExprKind::Binary { .. }),
+        "`..` must carry the source bound unchanged; got {:?}",
+        end.kind
+    );
 }
 
 #[test]
-fn inclusive_slice_a_eq_b_carries_inclusive_flag() {
+fn inclusive_slice_a_eq_b_lowers_to_an_exclusive_bound_plus_one() {
+    // `xs[a..=b]` carries no inclusive flag past HIR: the bound becomes
+    // `b + 1`, whose checked addition traps on overflow, and every later
+    // stage sees the single exclusive range shape.
     let out = lower("fn f(xs: Vec<i64>, a: i64, b: i64) -> Vec<i64> { xs[a..=b] }");
     let kind = tail_kind(&out, "f");
-    let HirExprKind::Slice { inclusive, .. } = kind else {
+    let HirExprKind::Slice { end, .. } = kind else {
         panic!("xs[a..=b] must lower to HirExprKind::Slice; got {kind:?}");
     };
-    assert!(*inclusive, "inclusive flag must propagate from parser");
+    let end = end.as_ref().expect("inclusive end must lower to Some");
+    let HirExprKind::Binary { op, right, .. } = &end.kind else {
+        panic!("inclusive end must lower to `b + 1`; got {:?}", end.kind);
+    };
+    assert_eq!(*op, hew_parser::ast::BinaryOp::Add);
+    assert!(
+        matches!(
+            right.kind,
+            HirExprKind::Literal(hew_hir::HirLiteral::Integer(1))
+        ),
+        "inclusive end must add the literal one; got {:?}",
+        right.kind
+    );
+    assert_eq!(end.ty, ResolvedTy::I64, "the added bound keeps its width");
 }
 
 #[test]

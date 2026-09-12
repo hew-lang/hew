@@ -14,8 +14,8 @@
 //! What remains here:
 //! - Type-checker rejects anonymous `.send()` on actors with no `send` handler.
 //! - Type-checker rejects anonymous `.send()` on actors with only a non-send handler.
-//! - `await actor.compute(msg)` (ask form, user-named handler) compiles clean.
-//! - `await actor.send(msg)` (user `receive fn send` → ask under `await`) compiles clean.
+//! - `actor.compute(msg)` (ask form, user-named handler) compiles clean.
+//! - `actor.send(msg)` (user `receive fn send` → ask) compiles clean.
 //! - Bare `actor.send(msg)` for user `receive fn send` returning non-unit is
 //!   rejected at type-check (ask requires `await`).
 //! - Lambda-actor `.send()` (`Duplex<Msg, Reply>`) compiles clean.
@@ -64,7 +64,7 @@ fn actor_bare_send_no_handler_rejected_at_typecheck() {
     let tco = typecheck(
         r"
         actor Worker {
-            let count: i64;
+            let count: i64,
             receive fn handle(n: i64) {
             }
         }
@@ -94,7 +94,7 @@ fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
     let tco = typecheck(
         r"
         actor Calculator {
-            let total: i64;
+            let total: i64,
 
             receive fn compute(x: i64) -> i64 {
                 return x + 1;
@@ -118,14 +118,16 @@ fn actor_bare_send_non_unit_named_handler_rejected_at_typecheck() {
 }
 
 #[test]
-fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
-    // Same rejection when the anonymous send is nested inside a machine
-    // transition body.  The type-checker runs before HIR, so the rejection
-    // is at check time regardless of the enclosing construct.
+fn actor_spawn_and_send_in_machine_transition_refused_by_purity() {
+    // A transition body is a pure evaluator (A371): it cannot spawn an actor
+    // or send to one. The refusal comes from machine normalization, which runs
+    // before method resolution, so this program never reaches the anonymous
+    // `.send()` gate that `actor_bare_send_no_handler_rejected_at_typecheck`
+    // covers outside a machine.
     let tco = typecheck(
         r"
         actor Calculator {
-            let total: i64;
+            let total: i64,
 
             receive fn compute(x: i64) -> i64 {
                 return x + 1;
@@ -134,29 +136,27 @@ fn actor_bare_send_no_handler_in_machine_transition_rejected_at_typecheck() {
 
         machine M {
             events {
-                Tick;
+                Tick,
             }
 
-            state Active;
-            state Idle;
+            state Active,
+            state Idle,
 
             on Tick: Active => Active reenter {
                 let c = spawn Calculator(total: 0);
                 c.send(3);
                 Active
             }
-            on Tick: Idle => Active {
-                Active
-            }
+            on Tick: Idle => Active,
         }
         ",
     );
     assert!(
         tco.errors
             .iter()
-            .any(|e| e.kind == hew_types::error::TypeErrorKind::UndefinedMethod),
-        "anonymous `.send()` inside a machine transition must produce \
-         UndefinedMethod at type-check; got: {:#?}",
+            .any(|e| e.message.contains("pure machine evaluator")),
+        "spawning and sending inside a machine transition must be refused as \
+         impure at type-check; got: {:#?}",
         tco.errors
     );
 }
@@ -169,7 +169,7 @@ fn actor_ask_non_unit_handler_accepted() {
     let output = lower_clean(
         r"
         actor Calculator {
-            let total: i64;
+            let total: i64,
 
             receive fn compute(x: i64) -> i64 {
                 return x + 1;
@@ -178,13 +178,13 @@ fn actor_ask_non_unit_handler_accepted() {
 
         fn main() {
             let c = spawn Calculator(total: 0);
-            let _ = await c.compute(3);
+            let _ = c.compute(3);
         }
         ",
     );
     assert!(
         output.diagnostics.is_empty(),
-        "ask-form (`await c.compute(...)`) must lower cleanly; got: {:#?}",
+        "ask-form (`c.compute(...)`) must lower cleanly; got: {:#?}",
         output.diagnostics
     );
 }
@@ -192,7 +192,7 @@ fn actor_ask_non_unit_handler_accepted() {
 #[test]
 fn awaited_send_non_unit_handler_accepted() {
     // A user `receive fn send(...) -> T` invoked as an ask via
-    // `await ref.send(...)` — correct shape.
+    // `ref.send(...)` — correct shape.
     let output = lower_clean(
         r"
         actor Doubler {
@@ -203,7 +203,7 @@ fn awaited_send_non_unit_handler_accepted() {
 
         fn main() -> i64 {
             let d = spawn Doubler;
-            match await d.send(21) {
+            match d.send(21) {
                 .Ok(v) => v,
                 .Err(_) => 0,
             }
@@ -253,7 +253,7 @@ fn actor_send_unknown_handler_skipped() {
             let printer = actor |x: i64| {
                 println(x);
             };
-            printer.send(42);
+            _ = printer.send(42);
         }
         ",
     );

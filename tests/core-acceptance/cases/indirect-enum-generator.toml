@@ -1,0 +1,11 @@
+[[case]]
+id = "indirect-enum-generator"
+intent = "A generator yielding indirect enums, and one yielding a vector of them, release each yielded frame when the body consumes it, both when the loop runs to completion and when it abandons the generator midway."
+source = "cases/indirect-enum-generator.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "[step0]\n[[0]]\n[step1]\n[[1]]\ngenerator cleaned\n[step0]\n[[0]]\n[step1]\ngenerator cleaned\nb0;[0];\nb1;[1];\nbatches cleaned\n2\n2\nbatches cleaned\ndone\n"
+stderr = ""
+exit = 0

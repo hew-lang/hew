@@ -1,4 +1,4 @@
-pub type Envelope { message: string; }
+pub type Envelope { message: string, }
 
 pub fn unit_result(ok: bool) -> Result<(), string> {
     if ok { return Ok(()); }

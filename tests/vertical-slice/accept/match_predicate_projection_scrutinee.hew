@@ -1,0 +1,23 @@
+//! Accept: a literal-predicate record match on a projection scrutinee.
+//!
+//! `match holder.pair { ... }` matches a copy of the projected field, so the
+//! source aggregate is untouched and readable afterwards.
+//!
+//! Observable contract: prints the selected arm's result and then the
+//! still-intact `holder.pair.b`.
+
+type Pair { tag: i64, a: string, b: string }
+type Holder { pair: Pair }
+
+fn main() -> i64 {
+    let holder = Holder {
+        pair: Pair { tag: 0, a: "a" + "x", b: "b" + "y" },
+    };
+    let result = match holder.pair {
+        Pair { tag: 0, a, b: _ } => a.len(),
+        Pair { tag: _, a: _, b: _ } => 2,
+    };
+    println(result);
+    println(holder.pair.b);
+    0
+}

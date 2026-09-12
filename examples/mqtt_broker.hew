@@ -8,14 +8,21 @@
 // inbound suspension while ClientHandler owns outbound delivery.
 //
 // Architecture:
-//   main          — constructs the actor graph and keeps the process alive
-//   Acceptor      — accept loop; spawns ClientHandler per connection
+//   main          — constructs the actor graph and waits on the acceptor
+//   Acceptor      — accept loop; spawns a ClientHandler and a ClientReader per
+//                   connection and forks the reader's pump, so the loop never
+//                   waits on a connection
 //   ClientHandler — owns one connection, handles inbound and outbound messages
 //   Router        — tracks clients and subscriptions, fans out publishes
 //
-// Router state uses only clonable types (strings, i32, LocalPid handles) so the
-// actor is supervisor-restartable. Runtime stream/sink halves have one owner
-// each and close automatically with their actors.
+// Calls between actors wait for the handler's turn, so no actor calls back
+// into an actor that is waiting on it: the reader asks the handler, the
+// handler asks the router, and the router submits deliveries through a
+// one-way mailbox view. Router state uses only clonable types (strings, i32,
+// actor handles) so the actor is supervisor-restartable. Runtime stream/sink
+// halves have one owner each and close automatically with their actors.
+import std.encoding.utf8;
+
 import std.net;
 
 import std.stream.{Sink, Stream};
@@ -34,7 +41,7 @@ const MAX_PACKET_BYTES: i64 = 1048576;
 
 // ── Bytes helpers ─────────────────────────────────────────────────────────────
 fn bytes_slice(data: bytes, start: i64, end: i64) -> bytes {
-    let result = bytes.new();
+    var result = bytes.new();
     for i in start .. end {
         result.push(data[i]);
     }
@@ -50,12 +57,17 @@ fn read_u16(data: bytes, offset: i64) -> i32 {
     data[offset] as i32 * 256 + data[offset + 1] as i32
 }
 
-fn push_u16(buf: bytes, val: i32) {
+// Byte builders return the bytes they encode: `bytes` is a value, so a
+// callee cannot grow its caller's buffer through a parameter.
+fn u16_be(val: i32) -> bytes {
+    var buf = bytes.new();
     buf.push((val / 256) as u8);
     buf.push((val % 256) as u8);
+    buf
 }
 
-fn push_varint(buf: bytes, val: i32) {
+fn varint(val: i32) -> bytes {
+    var buf = bytes.new();
     var remaining = val;
     loop {
         let digit = remaining % 128;
@@ -67,6 +79,7 @@ fn push_varint(buf: bytes, val: i32) {
             break;
         }
     }
+    buf
 }
 
 fn read_varint_value(data: bytes, offset: i64) -> i32 {
@@ -102,13 +115,14 @@ fn read_varint_len(data: bytes, offset: i64) -> i64 {
     0
 }
 
-// Push length-prefixed MQTT string.
-fn push_mqtt_str(buf: bytes, s: string) {
+// A length-prefixed MQTT string.
+fn mqtt_str(s: string) -> bytes {
     let slen: i64 = s.len();
-    push_u16(buf, slen as i32);
+    var buf = u16_be(slen as i32);
     for i in 0 .. slen {
         buf.push(s.char_at(i).unwrap_or('\0') as u8);
     }
+    buf
 }
 
 // Return the complete wire width of a length-prefixed MQTT string, or -1 when
@@ -125,19 +139,19 @@ fn mqtt_str_wire_len(data: bytes, offset: i64, limit: i64) -> i64 {
 }
 
 // Read a length-prefixed MQTT string whose wire width was already validated.
-fn read_mqtt_str(data: bytes, offset: i64) -> string {
+fn read_mqtt_str(data: bytes, offset: i64) -> string fails utf8.Utf8Error {
     let len: i64 = read_u16(data, offset) as i64;
-    let s = bytes.new();
+    var s = bytes.new();
     let start: i64 = offset + 2;
     for i in start .. start + len {
         s.push(data[i]);
     }
-    s.to_string()
+    utf8.decode(s)?
 }
 
 // ── Packet builders ───────────────────────────────────────────────────────────
 fn build_connack(session_present: i32, return_code: i32) -> bytes {
-    let buf = bytes.new();
+    var buf = bytes.new();
     buf.push(0x20 as u8);
     buf.push(2 as u8);
     buf.push(session_present as u8);
@@ -146,34 +160,34 @@ fn build_connack(session_present: i32, return_code: i32) -> bytes {
 }
 
 fn build_puback(packet_id: i32) -> bytes {
-    let buf = bytes.new();
+    var buf = bytes.new();
     buf.push(0x40 as u8);
     buf.push(2 as u8);
-    push_u16(buf, packet_id);
+    buf.append(u16_be(packet_id));
     buf
 }
 
 fn build_suback(packet_id: i32, return_codes: bytes) -> bytes {
-    let body = bytes.new();
-    push_u16(body, packet_id);
+    var body = bytes.new();
+    body.append(u16_be(packet_id));
     body.append(return_codes);
-    let buf = bytes.new();
+    var buf = bytes.new();
     buf.push(0x90 as u8);
-    push_varint(buf, body.len() as i32);
+    buf.append(varint(body.len() as i32));
     buf.append(body);
     buf
 }
 
 fn build_unsuback(packet_id: i32) -> bytes {
-    let buf = bytes.new();
+    var buf = bytes.new();
     buf.push(0xB0 as u8);
     buf.push(2 as u8);
-    push_u16(buf, packet_id);
+    buf.append(u16_be(packet_id));
     buf
 }
 
 fn build_pingresp() -> bytes {
-    let buf = bytes.new();
+    var buf = bytes.new();
     buf.push(0xD0 as u8);
     buf.push(0 as u8);
     buf
@@ -181,16 +195,16 @@ fn build_pingresp() -> bytes {
 
 // Build a PUBLISH packet. payload is raw bytes (not a string).
 fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> bytes {
-    let body: bytes = bytes.new();
-    push_mqtt_str(body, topic);
+    var body: bytes = bytes.new();
+    body.append(mqtt_str(topic));
     if qos > 0 {
-        push_u16(body, packet_id);
+        body.append(u16_be(packet_id));
     }
     body.append(payload);
     let flags = 0x30 + qos * 2;
-    let buf = bytes.new();
+    var buf = bytes.new();
     buf.push(flags as u8);
-    push_varint(buf, body.len() as i32);
+    buf.append(varint(body.len() as i32));
     buf.append(body);
     buf
 }
@@ -201,36 +215,35 @@ fn build_publish(topic: string, payload: bytes, qos: i32, packet_id: i32) -> byt
 // forwards frames as actor messages, so an idle subscriber never blocks
 // publication delivery to ClientHandler.
 actor ClientHandler {
-    let sink: Sink<bytes>;
-    let session_id: string;
-    var client_id: string;
-    let router: LocalPid<Router>;
-    var buf: bytes;
-    var registered: bool;
-    receive fn register(reader: LocalPid<ClientReader>) {
-        let accepted = match await router.register_client(session_id.clone(), this) {
+    let sink: Sink<bytes>,
+    let session_id: string,
+    var client_id: string,
+    let router: Router,
+    var buf: bytes,
+    var registered: bool,
+    receive fn register() -> bool {
+        let accepted = match router.register_client(session_id.clone(), self) {
             .Ok(value) => value,
             .Err(_) => false,
         };
         if accepted {
             registered = true;
-            reader.start();
         } else {
             unsafe {
                 hew_sink_shutdown(sink)
             };
-            reader.stop();
             unsafe {
                 hew_actor_self_stop()
             };
         }
+        accepted
     }
     receive fn deliver(packet: bytes) {
         sink.send(packet);
     }
     receive fn on_data(chunk: bytes) -> bool {
         var connected = true;
-        let next_buf = bytes.new();
+        var next_buf = bytes.new();
         next_buf.append(buf);
         next_buf.append(chunk);
         buf = next_buf;
@@ -270,7 +283,11 @@ actor ClientHandler {
                     if pflags != 0 || proto_wire_len < 0 {
                         connected = false;
                     } else {
-                        let protocol_name = read_mqtt_str(buf, var_off);
+                        let protocol_name = read_mqtt_str(buf, var_off) handle error {
+                            println(f"[mqtt] invalid UTF-8: {error}");
+                            connected = false;
+                            break;
+                        };
                         let header_off: i64 = var_off + proto_wire_len;
                         if protocol_name != "MQTT" || !has_bytes(packet_end, header_off, 4) {
                             connected = false;
@@ -281,8 +298,12 @@ actor ClientHandler {
                             if protocol_level != 4 || client_id_wire_len < 0 {
                                 connected = false;
                             } else {
-                                let new_client_id = read_mqtt_str(buf, payload_off);
-                                let claim_status = match await router.claim_client_id(session_id.clone(), new_client_id.clone()) {
+                                let new_client_id = read_mqtt_str(buf, payload_off) handle error {
+                                    println(f"[mqtt] invalid UTF-8: {error}");
+                                    connected = false;
+                                    break;
+                                };
+                                let claim_status = match router.claim_client_id(session_id.clone(), new_client_id.clone()) {
                                     .Ok(value) => {
                                         if value {
                                             1
@@ -323,7 +344,11 @@ actor ClientHandler {
                     if qos == 3 || topic_wire_len <= 2 {
                         connected = false;
                     } else {
-                        let topic = read_mqtt_str(buf, var_off);
+                        let topic = read_mqtt_str(buf, var_off) handle error {
+                            println(f"[mqtt] invalid UTF-8: {error}");
+                            connected = false;
+                            break;
+                        };
                         var payload_off: i64 = var_off + topic_wire_len;
                         var packet_id: i32 = 0;
                         if qos > 0 {
@@ -338,7 +363,7 @@ actor ClientHandler {
                         if connected {
                             let payload_bytes = bytes_slice(buf, payload_off, packet_end);
                             println(f"[mqtt] PUBLISH topic={topic} qos={qos}");
-                            router.publish(topic, payload_bytes, qos as i32, packet_id);
+                            let _ = router.publish(topic, payload_bytes, qos as i32, packet_id);
                         }
                     }
                     if !connected {
@@ -352,21 +377,25 @@ actor ClientHandler {
                     } else {
                         let sub_packet_id = read_u16(buf, var_off);
                         var topic_off: i64 = var_off + 2;
-                        let return_codes: bytes = bytes.new();
+                        var return_codes: bytes = bytes.new();
                         while connected && topic_off < packet_end {
                             let tw = mqtt_str_wire_len(buf, topic_off, packet_end);
                             if tw <= 2 || !has_bytes(packet_end, topic_off + tw, 1) {
                                 connected = false;
                                 break;
                             }
-                            let stopic = read_mqtt_str(buf, topic_off);
+                            let stopic = read_mqtt_str(buf, topic_off) handle error {
+                                println(f"[mqtt] invalid UTF-8: {error}");
+                                connected = false;
+                                break;
+                            };
                             let req_qos: i32 = buf[topic_off + tw] as i32;
                             if req_qos > 1 || stopic.contains("#") || stopic.contains("+") {
                                 // This compact broker implements exact-topic
                                 // matching only; reject filters it cannot honor.
                                 return_codes.push(0x80 as u8);
                             } else {
-                                router.subscribe(stopic, session_id.clone(), req_qos);
+                                let _ = router.subscribe(stopic, session_id.clone(), req_qos);
                                 return_codes.push(req_qos as u8);
                             }
                             topic_off = topic_off + tw + 1;
@@ -393,8 +422,12 @@ actor ClientHandler {
                                 connected = false;
                                 break;
                             }
-                            let utopic = read_mqtt_str(buf, topic_off);
-                            router.unsubscribe(utopic, session_id.clone());
+                            let utopic = read_mqtt_str(buf, topic_off) handle error {
+                                println(f"[mqtt] invalid UTF-8: {error}");
+                                connected = false;
+                                break;
+                            };
+                            let _ = router.unsubscribe(utopic, session_id.clone());
                             topic_off = topic_off + tw;
                         }
                         if connected {
@@ -438,7 +471,7 @@ actor ClientHandler {
         }
         if !connected {
             if registered {
-                router.client_disconnect(session_id.clone());
+                let _ = router.client_disconnect(session_id.clone());
                 registered = false;
             }
             println(f"[mqtt] connection closed for {client_id}");
@@ -453,7 +486,7 @@ actor ClientHandler {
     }
     receive fn on_close() {
         if registered {
-            router.client_disconnect(session_id.clone());
+            let _ = router.client_disconnect(session_id.clone());
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
@@ -470,20 +503,20 @@ actor ClientHandler {
 // occupying a scheduler worker, then asks ClientHandler whether parsing should
 // continue. Dropping this actor closes the stream half exactly once.
 actor ClientReader {
-    let input: Stream<bytes>;
-    let client: LocalPid<ClientHandler>;
+    let input: Stream<bytes>,
+    let client: ClientHandler,
     receive fn start() {
         var reading = true;
         while reading {
-            match await input.recv() {
+            match input.recv() {
                 .Some(chunk) => {
-                    reading = match await client.on_data(chunk) {
+                    reading = match client.on_data(chunk) {
                         .Ok(keep_reading) => keep_reading,
                         .Err(_) => false,
                     };
                 },
                 .None => {
-                    client.on_close();
+                    let _ = client.on_close();
                     reading = false;
                 },
             }
@@ -492,28 +525,23 @@ actor ClientReader {
             hew_actor_self_stop()
         };
     }
-    receive fn stop() {
-        unsafe {
-            hew_actor_self_stop()
-        };
-    }
 }
 
 // Router — tracks clients and subscriptions; fans out publishes directly.
 //
-// State uses only clonable types: strings, i32, and LocalPid actor handles.
+// State uses only clonable types: strings, i32, and actor handles.
 // A generated session ID is the immutable registry and delivery authority;
 // the peer-selected ClientId is metadata claimed atomically during CONNECT.
 // Parallel arrays: session_ids[i] <-> client_ids[i] <-> clients[i]
 // Parallel arrays: sub_topics[i] <-> sub_session_ids[i] <-> sub_qos[i]
 actor Router {
-    var session_ids: Vec<string>;
-    var client_ids: Vec<string>;
-    var clients: Vec<LocalPid<ClientHandler>>;
-    var sub_topics: Vec<string>;
-    var sub_session_ids: Vec<string>;
-    var sub_qos: Vec<i32>;
-    receive fn register_client(session_id: string, client: LocalPid<ClientHandler>) -> bool {
+    var session_ids: Vec<string>,
+    var client_ids: Vec<string>,
+    var clients: Vec<ClientHandler>,
+    var sub_topics: Vec<string>,
+    var sub_session_ids: Vec<string>,
+    var sub_qos: Vec<i32>,
+    receive fn register_client(session_id: string, client: ClientHandler) -> bool {
         for existing_session in session_ids {
             if existing_session == session_id {
                 println(f"[router] duplicate session_id={session_id} rejected");
@@ -560,8 +588,10 @@ actor Router {
                 let sub_q = sub_qos[i];
                 for j in 0 .. session_ids.len() {
                     if session_ids[j] == sub_session {
-                        let target = clients[j];
-                        target.deliver(build_publish(topic, payload, sub_q, packet_id));
+                        // Submit without waiting: the target may itself be
+                        // inside `on_data`, waiting on this publish.
+                        let outbox = mailbox(clients[j], on_full: .Wait);
+                        let _ = outbox.deliver(build_publish(topic, payload, sub_q, packet_id));
                         break;
                     }
                 }
@@ -571,9 +601,9 @@ actor Router {
     }
     receive fn unsubscribe(topic: string, session_id: string) {
         let before = sub_topics.len();
-        let new_topics: Vec<string> = Vec.new();
-        let new_sessions: Vec<string> = Vec.new();
-        let new_qos: Vec<i32> = Vec.new();
+        var new_topics: Vec<string> = Vec.new();
+        var new_sessions: Vec<string> = Vec.new();
+        var new_qos: Vec<i32> = Vec.new();
         for i in 0 .. sub_topics.len() {
             if sub_session_ids[i] == session_id {
                 if sub_topics[i] == topic {
@@ -594,9 +624,9 @@ actor Router {
         // Remove from client registry
         let clients_before = session_ids.len();
         let subscriptions_before = sub_topics.len();
-        let new_sessions: Vec<string> = Vec.new();
-        let new_client_ids: Vec<string> = Vec.new();
-        let new_clients: Vec<LocalPid<ClientHandler>> = Vec.new();
+        var new_sessions: Vec<string> = Vec.new();
+        var new_client_ids: Vec<string> = Vec.new();
+        var new_clients: Vec<ClientHandler> = Vec.new();
         for i in 0 .. session_ids.len() {
             if session_ids[i] != session_id {
                 new_sessions.push(session_ids[i]);
@@ -608,9 +638,9 @@ actor Router {
         client_ids = new_client_ids;
         clients = new_clients;
         // Remove subscriptions for this client
-        let new_sub_topics: Vec<string> = Vec.new();
-        let new_sub_sessions: Vec<string> = Vec.new();
-        let new_sub_qos: Vec<i32> = Vec.new();
+        var new_sub_topics: Vec<string> = Vec.new();
+        var new_sub_sessions: Vec<string> = Vec.new();
+        var new_sub_qos: Vec<i32> = Vec.new();
         for j in 0 .. sub_session_ids.len() {
             if sub_session_ids[j] != session_id {
                 new_sub_topics.push(sub_topics[j]);
@@ -632,8 +662,8 @@ actor Router {
 // struct name codegen assigns the stdlib `net.Listener` opaque handle
 // type (see https://github.com/hew-lang/hew/issues/2509).
 actor Acceptor {
-    let router: LocalPid<Router>;
-    let addr: string;
+    let router: Router,
+    let addr: string,
     receive fn start() {
         let lst = match net.listen(addr) {
             .Ok(listener) => listener,
@@ -642,12 +672,20 @@ actor Acceptor {
         println(f"[listener] MQTT broker ready on {addr}");
         var next_id: i32 = 1;
         loop {
-            let conn = await lst.accept();
+            let conn = lst.accept();
             let cid = f"client-{next_id}";
             let (input, sink) = conn.into_stream_sink();
             let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false);
-            let reader = spawn ClientReader(input: input, client: handler);
-            handler.register(reader);
+            let accepted = match handler.register() {
+                .Ok(value) => value,
+                .Err(_) => false,
+            };
+            if accepted {
+                // The pump runs as a forked task owned by this accept loop's
+                // scope, which never exits, so the loop returns to `accept`.
+                let reader = spawn ClientReader(input: input, client: handler);
+                fork reader.start();
+            }
             next_id = next_id + 1;
         }
     }
@@ -663,14 +701,12 @@ fn main() {
     let addr = f"127.0.0.1:{port}";
     let empty_sessions: Vec<string> = Vec.new();
     let empty_ids: Vec<string> = Vec.new();
-    let empty_clients: Vec<LocalPid<ClientHandler>> = Vec.new();
+    let empty_clients: Vec<ClientHandler> = Vec.new();
     let empty_sub_topics: Vec<string> = Vec.new();
     let empty_sub_sessions: Vec<string> = Vec.new();
     let empty_sub_qos: Vec<i32> = Vec.new();
     let router = spawn Router(session_ids: empty_sessions, client_ids: empty_ids, clients: empty_clients, sub_topics: empty_sub_topics, sub_session_ids: empty_sub_sessions, sub_qos: empty_sub_qos);
     let listener = spawn Acceptor(router: router, addr: addr);
-    listener.start();
-    loop {
-        sleep(1s);
-    }
+    // The accept loop never returns; this call keeps the process alive.
+    let _ = listener.start();
 }

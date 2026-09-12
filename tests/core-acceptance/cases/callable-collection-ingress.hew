@@ -1,0 +1,17 @@
+fn callbacks() -> Vec<fn(string) -> string> {
+    let prefix = "prefix".to_upper();
+    let named = |value: string| -> string { prefix + value };
+    var values: Vec<fn(string) -> string> = Vec.new();
+    values.push(named);
+    println(named(" retained"));
+    values.push(|value: string| -> string { prefix + value });
+    values
+}
+fn main() {
+    var values = callbacks();
+    println(values[0](" first"));
+    println(values[1](" second"));
+    let removed = values.pop();
+    println(removed(" removed"));
+    println(values[0](" retained"));
+}

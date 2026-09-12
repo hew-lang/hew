@@ -1,0 +1,11 @@
+[[case]]
+id = "string-inspection-values"
+intent = "Unicode string predicates distinguish empty and mixed input, and returned line vectors retain their owned elements after the source string leaves scope."
+source = "cases/string-inspection-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "Zoë\n雪\nstring inspection passed\n"
+stderr = ""
+exit = 0

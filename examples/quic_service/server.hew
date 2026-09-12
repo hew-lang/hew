@@ -60,7 +60,10 @@ fn main() {
     println("[server] accepted stream");
 
     // Receive a UTF-8 message from the client.
-    let msg = stream.recv_string();
+    let msg = stream.recv_string() handle error {
+        println(f"invalid UTF-8: {error}");
+        return;
+    };
     println(f"[server] received: {msg}");
 
     // Echo back a response.

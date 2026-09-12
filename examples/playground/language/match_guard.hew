@@ -2,9 +2,9 @@
 //! @description Guarded enum match arms fall through when the guard is false
 
 enum Score {
-    High(i64);
-    Low(i64);
-    Zero;
+    High(i64),
+    Low(i64),
+    Zero,
 }
 
 fn classify(s: Score) -> string {

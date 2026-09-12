@@ -1,0 +1,11 @@
+[[case]]
+id = "map-selected-key-methods"
+intent = "Derived outer keys preserve exact generic Hash and Eq overrides, and map and set insertion borrow their owning inputs."
+source = "cases/map-selected-key-methods.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nREPLACEMENT\nFIRST\ntrue\nfalse\n1\n"
+stderr = ""
+exit = 0

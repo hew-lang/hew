@@ -1,0 +1,75 @@
+type Pull {
+    head_sha: string,
+    base_sha: string,
+}
+
+// A record cloned out of a Vec index and bound inside an `if` whose body may
+// return: the block releases its own temporary on the fall-through edge, so
+// the join at the function exit sees the same live owners on both paths.
+fn publish(existing: Vec<Pull>, head: string) -> Result<string, string> {
+    if existing.len() == 1 {
+        let candidate = existing[0].clone();
+        if candidate.head_sha == head {
+            return Ok("matched " + candidate.base_sha);
+        }
+    }
+    Err("no match")
+}
+
+// Control: the same comparison without binding the record.
+fn publish_unbound(existing: Vec<Pull>, head: string) -> Result<string, string> {
+    if existing.len() == 1 {
+        if existing[0].head_sha == head {
+            return Ok("matched unbound");
+        }
+    }
+    Err("no match")
+}
+
+// Control: the same binding inside a loop body, released once per iteration.
+fn publish_loop(existing: Vec<Pull>, head: string) -> Result<string, string> {
+    var index = 0;
+    while index < existing.len() {
+        let candidate = existing[index].clone();
+        if candidate.head_sha == head {
+            return Ok("matched loop " + candidate.base_sha);
+        }
+        index = index + 1;
+    }
+    Err("no match")
+}
+
+// Control: an early return guards the binding, which then lives at function
+// scope instead of inside a conditional block.
+fn publish_flat(existing: Vec<Pull>, head: string) -> Result<string, string> {
+    if existing.len() != 1 {
+        return Err("no match");
+    }
+    let candidate = existing[0].clone();
+    if candidate.head_sha == head {
+        return Ok("matched flat " + candidate.base_sha);
+    }
+    Err("no match")
+}
+
+fn report(outcome: Result<string, string>) {
+    match outcome {
+        .Ok(message) => println(message),
+        .Err(message) => println(message),
+    }
+}
+
+fn main() {
+    var one: Vec<Pull> = Vec.new();
+    one.push(Pull { head_sha: "h", base_sha: "b" });
+    var many: Vec<Pull> = Vec.new();
+    many.push(Pull { head_sha: "x", base_sha: "y" });
+    many.push(Pull { head_sha: "h", base_sha: "b" });
+
+    report(publish(one, "h"));
+    report(publish(one, "other"));
+    report(publish(many, "h"));
+    report(publish_unbound(one, "h"));
+    report(publish_loop(many, "h"));
+    report(publish_flat(one, "h"));
+}

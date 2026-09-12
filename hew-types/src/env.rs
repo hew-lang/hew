@@ -53,6 +53,29 @@ fn path_extends(path: &[String], prefix: &[String]) -> bool {
     path.len() >= prefix.len() && path[..prefix.len()] == *prefix
 }
 
+/// Places privately replaced on both paths; overlapping parent/child entries
+/// preserve the narrower place that is definitely independent on either path.
+fn common_parameter_replacements(left: &[PlacePath], right: &[PlacePath]) -> Vec<PlacePath> {
+    let mut common = Vec::new();
+    for a in left {
+        for b in right {
+            let shared = if path_extends(a, b) {
+                Some(a)
+            } else if path_extends(b, a) {
+                Some(b)
+            } else {
+                None
+            };
+            if let Some(path) = shared {
+                if !common.contains(path) {
+                    common.push(path.clone());
+                }
+            }
+        }
+    }
+    common
+}
+
 /// A binding in the type environment.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -62,6 +85,11 @@ pub struct Binding {
     pub ty: Ty,
     /// Whether the binding is mutable (var vs let)
     pub is_mutable: bool,
+    /// Whether this parameter declaration transfers ownership to the callee.
+    pub parameter_ownership: ParameterOwnership,
+    /// Parameter places definitely replaced by private values on this path.
+    /// An empty path denotes replacement of the whole parameter binding.
+    pub parameter_replacements: Vec<PlacePath>,
     /// Whether the value has been moved (e.g., sent to an actor)
     pub is_moved: bool,
     /// Where the move happened, for error reporting
@@ -80,8 +108,17 @@ pub struct Binding {
     pub released_at: Option<Span>,
     /// Count of read accesses (incremented by lookup, decremented by `unmark_used`).
     pub read_count: u32,
-    /// Whether the variable has been reassigned after initial definition
-    pub is_written: bool,
+    /// Count of reads that observe the binding's value rather than resolve a
+    /// mutation of it. A read taken while [`TypeEnv::begin_mutation`] names
+    /// this binding is part of the mutation (`n = n + 1`, `v.push(x)`), not an
+    /// observation of its result, so it does not count here.
+    pub observing_reads: u32,
+    /// Whether the binding has been reassigned, and whether anything read the
+    /// result. See [`MutationState`].
+    pub mutation: MutationState,
+    /// Any-path consuming use while checking the current closure body.
+    /// This is a body capability fact, independent of the current path's moves.
+    pub(crate) capture_consumption: crate::ClosureCaptureConsumption,
     /// Source span of the definition, for diagnostics. None for synthetic bindings.
     pub def_span: Option<Span>,
     /// Source span used **only** for outer-scope shadowing classification
@@ -99,11 +136,45 @@ pub struct Binding {
     /// Where this binding came from: a parameter, a user-written local, or a
     /// compiler-synthesised binding.
     ///
-    /// Diagnostics that offer "declare it `var`" as a fix must consult this:
-    /// on a by-value aggregate parameter `var` is itself rejected (see
-    /// `reject_ineffective_mutable_value_param`), so suggesting it there
-    /// routes the user into a construct the compiler refuses.
+    /// Receiver parameters retain their distinct caller-visible write-back
+    /// contract; ordinary mutable value parameters use private storage.
     pub origin: BindingOrigin,
+}
+
+/// Ownership explicitly declared at a source parameter boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParameterOwnership {
+    /// The caller keeps ownership throughout the call.
+    Borrow,
+    /// The declaration acquires the argument's ownership.
+    Consume,
+}
+
+impl ParameterOwnership {
+    /// Translate an explicit source declaration without inspecting the body.
+    #[must_use]
+    pub fn from_consume(is_consume: bool) -> Self {
+        if is_consume {
+            Self::Consume
+        } else {
+            Self::Borrow
+        }
+    }
+}
+
+/// How far a binding's mutation has travelled.
+///
+/// Two facts that only make sense together: a binding nothing ever wrote has
+/// no mutation to observe, and a `var` parameter left at
+/// [`MutationState::Unobserved`] at scope exit wrote into a copy nobody reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MutationState {
+    /// Never reassigned — a `var` that could be a `let`.
+    Unwritten,
+    /// Written, and nothing has read the result since.
+    Unobserved,
+    /// Written, and a later read observed the result.
+    Observed,
 }
 
 /// What produced a [`Binding`].
@@ -122,9 +193,25 @@ pub enum BindingOrigin {
     /// A method receiver parameter. Receivers have caller-visible write-back
     /// semantics and are exempt from ordinary by-value parameter guards.
     ReceiverParameter,
+    /// An actor state field that `init` owns (D447): it enters the init body
+    /// uninitialized, so `is_moved` means "not yet initialized" until the
+    /// first store, and every branch join must agree on it.
+    DeferredField,
 }
 
 impl Binding {
+    /// Whether this binding is a deferred actor init field (D447).
+    #[must_use]
+    pub fn deferred_init(&self) -> bool {
+        matches!(self.origin, BindingOrigin::DeferredField)
+    }
+
+    /// Whether the binding has been reassigned since it was defined.
+    #[must_use]
+    pub fn is_written(&self) -> bool {
+        self.mutation != MutationState::Unwritten
+    }
+
     /// Whether this binding is a function parameter.
     #[must_use]
     pub fn is_param(&self) -> bool {
@@ -141,22 +228,39 @@ impl Binding {
     }
 }
 
-/// The move/release facts tracked per execution path for one binding.
+/// The move, release and parameter-replacement facts tracked per execution path.
 ///
-/// These four fields are the ONLY flow-sensitive ownership state. `read_count`
-/// and `is_written` are any-path lint accumulators (unused / never-mutated) and
+/// This is the canonical flow-sensitive ownership state. `read_count`
+/// and `mutation` are any-path lint accumulators (unused / never-mutated /
+/// lost mutation) and
 /// deliberately stay outside the snapshot: restoring them per branch arm would
 /// erase reads and writes that genuinely happened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnershipState {
+    /// Parameter places definitely replaced by private values on this path.
+    pub parameter_replacements: Vec<PlacePath>,
     /// Whether the value has been moved on this path.
     pub is_moved: bool,
     /// Where the move happened, for error reporting.
     pub moved_at: Option<Span>,
+    /// See [`Binding::deferred_init`].
+    pub deferred_init: bool,
     /// Strict sub-places consumed on this path.
     pub moved_places: Vec<MovedPlace>,
     /// Where the close obligation was discharged on this path.
     pub released_at: Option<Span>,
+}
+
+#[derive(Debug, Clone)]
+struct LoopScope {
+    label: Option<String>,
+    floor: usize,
+    entry: OwnershipSnapshot,
+    exits: Vec<OwnershipSnapshot>,
+    /// Each visible binding's `observing_reads` when the body opened, so
+    /// [`TypeEnv::exit_loop`] can tell a body that observed the binding from
+    /// one that only mutated it.
+    observing_reads: HashMap<TypeBindingId, u32>,
 }
 
 /// Ownership state of every visible binding at one point in the control flow.
@@ -211,6 +315,9 @@ pub enum ScopeWarningKind {
     Unused,
     /// Declared `var` but never reassigned — could be `let`
     NeverMutated,
+    /// A by-value `var` parameter was mutated and nothing ever read the
+    /// result: the callee owns the copy, so the write reached nobody.
+    VarParamMutationLost,
 }
 
 /// Lexically-scoped type environment.
@@ -222,8 +329,12 @@ pub struct TypeEnv {
     scopes: Vec<HashMap<String, Binding>>,
     /// Deferred bodies registered in each lexical scope, parallel to `scopes`.
     deferred_scopes: Vec<Vec<Spanned<Expr>>>,
-    /// Lexical scope floors for active loops, paired with their optional labels.
-    loop_scope_floors: Vec<(Option<String>, usize)>,
+    /// Active loop labels, lexical floors and entry ownership snapshots.
+    loop_scope_floors: Vec<LoopScope>,
+    /// The binding whose mutation is currently being checked, if any. Reads
+    /// taken while it is set resolve or feed that mutation (`n = n + 1`), so
+    /// they do not count as observations of its result.
+    mutation_root: Option<TypeBindingId>,
     next_binding_id: u32,
 }
 
@@ -235,6 +346,7 @@ impl TypeEnv {
             scopes: vec![HashMap::new()],
             deferred_scopes: vec![Vec::new()],
             loop_scope_floors: Vec::new(),
+            mutation_root: None,
             next_binding_id: 0,
         }
     }
@@ -301,8 +413,33 @@ impl TypeEnv {
 
     /// Record the lexical scope depth immediately before a loop body opens.
     pub fn enter_loop(&mut self, label: Option<&str>) {
-        self.loop_scope_floors
-            .push((label.map(str::to_string), self.deferred_scopes.len()));
+        let observing_reads = self
+            .scopes
+            .iter()
+            .flat_map(HashMap::values)
+            .map(|binding| (binding.id, binding.observing_reads))
+            .collect();
+        self.loop_scope_floors.push(LoopScope {
+            label: label.map(str::to_string),
+            floor: self.deferred_scopes.len(),
+            entry: self.ownership_snapshot(),
+            exits: Vec::new(),
+            observing_reads,
+        });
+    }
+
+    /// Retain the ownership state of an early loop edge before later source
+    /// traversal can reinitialize places on a different path.
+    pub fn record_loop_exit(&mut self, label: Option<&str>) {
+        let state = self.ownership_snapshot();
+        if let Some(scope) = self
+            .loop_scope_floors
+            .iter_mut()
+            .rev()
+            .find(|scope| label.is_none() || scope.label.as_deref() == label)
+        {
+            scope.exits.push(state);
+        }
     }
 
     /// Retire the innermost loop boundary.
@@ -311,10 +448,28 @@ impl TypeEnv {
     ///
     /// Panics if no loop boundary is active, which indicates an unbalanced
     /// checker traversal.
-    pub fn exit_loop(&mut self) {
-        self.loop_scope_floors
+    pub fn exit_loop(&mut self) -> Vec<TypeBindingId> {
+        let mut scope = self
+            .loop_scope_floors
             .pop()
             .expect("cannot exit loop with no active loop boundary");
+        // Conservatively include zero iterations, normal body completion and
+        // early edges. They all use the same ownership join as branch arms.
+        scope.exits.push(scope.entry.clone());
+        scope.exits.push(self.ownership_snapshot());
+        // A loop body that both observed and mutated the binding observes its
+        // own writes on the next iteration, even when the source reads before
+        // it writes. Traversal sees the body once, so credit the observation
+        // here rather than leaving the write looking lost.
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            let floor = scope.observing_reads.get(&binding.id).copied();
+            if binding.mutation == MutationState::Unobserved
+                && floor.is_some_and(|floor| binding.observing_reads > floor)
+            {
+                binding.mutation = MutationState::Observed;
+            }
+        }
+        self.merge_ownership(&scope.entry, &scope.exits)
     }
 
     /// Deferred bodies materialized by a `break` or `continue` edge.
@@ -324,13 +479,13 @@ impl TypeEnv {
     /// source checker cannot identify the loop boundary.
     #[must_use]
     pub fn loop_edge_defers(&self, label: Option<&str>) -> Option<Vec<Spanned<Expr>>> {
-        let (_, floor) = self
+        let scope = self
             .loop_scope_floors
             .iter()
             .rev()
-            .find(|(candidate, _)| label.is_none() || candidate.as_deref() == label)?;
+            .find(|scope| label.is_none() || scope.label.as_deref() == label)?;
         Some(
-            self.deferred_scopes[*floor..]
+            self.deferred_scopes[scope.floor..]
                 .iter()
                 .rev()
                 .flat_map(|scope| scope.iter().rev().cloned())
@@ -348,18 +503,47 @@ impl TypeEnv {
                     id,
                     ty,
                     is_mutable,
+                    parameter_ownership: ParameterOwnership::Borrow,
+                    parameter_replacements: Vec::new(),
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
                     released_at: None,
                     read_count: 1, // synthetic bindings are always "used"
-                    is_written: false,
+                    observing_reads: 0,
+                    mutation: MutationState::Unwritten,
+                    capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: None,
                     origin: BindingOrigin::Synthetic,
                 },
             );
         }
+    }
+
+    /// Bind an actor state field that `init` must initialize (D447). It is
+    /// mutable, uninitialized on entry and exempt from the unused lint.
+    pub fn define_deferred_field(&mut self, name: &str, ty: Ty) {
+        self.define(name.to_string(), ty, true);
+        if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+            binding.origin = BindingOrigin::DeferredField;
+            binding.is_moved = true;
+        }
+    }
+
+    /// Whether `name` is a deferred init field still awaiting its first store.
+    #[must_use]
+    pub fn deferred_field_uninitialized(&self, name: &str) -> bool {
+        self.lookup_ref(name)
+            .is_some_and(|binding| binding.deferred_init() && binding.is_moved)
+    }
+
+    /// The binding id of `name` when it is a deferred init field.
+    #[must_use]
+    pub fn deferred_field_id(&self, name: &str) -> Option<TypeBindingId> {
+        self.lookup_ref(name)
+            .filter(|binding| binding.deferred_init())
+            .map(|binding| binding.id)
     }
 
     /// Define a user-visible variable with a source span for diagnostics.
@@ -372,12 +556,16 @@ impl TypeEnv {
                     id,
                     ty,
                     is_mutable,
+                    parameter_ownership: ParameterOwnership::Borrow,
+                    parameter_replacements: Vec::new(),
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
                     released_at: None,
                     read_count: 0,
-                    is_written: false,
+                    observing_reads: 0,
+                    mutation: MutationState::Unwritten,
+                    capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
                     origin: BindingOrigin::Local,
@@ -404,6 +592,14 @@ impl TypeEnv {
             span,
             BindingOrigin::Parameter,
         );
+    }
+
+    /// Preserve declared parameter ownership independently of local mutability.
+    pub fn set_parameter_consume(&mut self, name: &str, is_consume: bool) {
+        if let Some(binding) = self.scopes.last_mut().and_then(|scope| scope.get_mut(name)) {
+            debug_assert!(binding.is_param());
+            binding.parameter_ownership = ParameterOwnership::from_consume(is_consume);
+        }
     }
 
     /// Define a method receiver parameter, preserving its caller-visible
@@ -440,12 +636,16 @@ impl TypeEnv {
                     id,
                     ty,
                     is_mutable,
+                    parameter_ownership: ParameterOwnership::Borrow,
+                    parameter_replacements: Vec::new(),
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
                     released_at: None,
                     read_count: 1, // exempt from unused-variable lint, like `define`
-                    is_written: false,
+                    observing_reads: 0,
+                    mutation: MutationState::Unwritten,
+                    capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: Some(span),
                     origin,
@@ -454,10 +654,59 @@ impl TypeEnv {
         }
     }
 
+    /// Check a closure against independent environment fields while retaining
+    /// lexical binding identities for the checker-to-HIR capture contract.
+    pub(crate) fn closure_environment(
+        &self,
+        private: &std::collections::HashSet<TypeBindingId>,
+        actor_body: bool,
+    ) -> Self {
+        let mut environment = self.clone();
+        environment.loop_scope_floors.clear();
+        environment.mutation_root = None;
+        for scope in &mut environment.deferred_scopes {
+            scope.clear();
+        }
+        for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if !actor_body {
+                binding.is_mutable = private.contains(&binding.id);
+            }
+            binding.capture_consumption = crate::ClosureCaptureConsumption::Retained;
+        }
+        environment
+    }
+
+    /// Preserve reads and fresh identities from a checked body without applying
+    /// its private mutations or invocation-time moves to the enclosing scope.
+    pub(crate) fn merge_closure_reads(&mut self, body: &Self) {
+        self.next_binding_id = body.next_binding_id;
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if let Some(checked) = body.binding_by_id(binding.id) {
+                binding.read_count = binding.read_count.max(checked.read_count);
+                // A closure that reads the binding observes whatever the
+                // enclosing body wrote into it, whenever the closure runs.
+                binding.observing_reads = binding.observing_reads.max(checked.observing_reads);
+                if checked.mutation == MutationState::Observed
+                    && binding.mutation == MutationState::Unobserved
+                {
+                    binding.mutation = MutationState::Observed;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn binding_by_id(&self, id: TypeBindingId) -> Option<&Binding> {
+        self.scopes
+            .iter()
+            .flat_map(HashMap::values)
+            .find(|binding| binding.id == id)
+    }
+
     /// Mark a variable as moved, returning `true` if found.
     pub fn mark_moved(&mut self, name: &str, span: Span) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 binding.is_moved = true;
                 binding.moved_at = Some(span);
                 return true;
@@ -476,6 +725,7 @@ impl TypeEnv {
         debug_assert!(!path.is_empty(), "empty place path is `mark_moved`");
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 if !binding.moved_places.iter().any(|m| m.path == path) {
                     binding.moved_places.push(MovedPlace {
                         path,
@@ -516,6 +766,20 @@ impl TypeEnv {
         })
     }
 
+    /// Whether a selected place still carries an ordinary parameter borrow.
+    #[must_use]
+    pub fn place_borrows_parameter(&self, name: &str, path: &[String]) -> bool {
+        self.lookup_ref(name).is_some_and(|binding| {
+            binding.is_param()
+                && !binding.is_receiver()
+                && binding.parameter_ownership == ParameterOwnership::Borrow
+                && !binding
+                    .parameter_replacements
+                    .iter()
+                    .any(|replacement| path_extends(path, replacement))
+        })
+    }
+
     /// Plug the hole a consuming use left: re-initialising `name` at `path`
     /// gives that storage a fresh owner, discharging every consumed place at or
     /// under it.
@@ -525,6 +789,18 @@ impl TypeEnv {
     pub fn reinit_place(&mut self, name: &str, path: &[String]) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                if binding.is_param()
+                    && binding.parameter_ownership == ParameterOwnership::Borrow
+                    && !binding
+                        .parameter_replacements
+                        .iter()
+                        .any(|replacement| path_extends(path, replacement))
+                {
+                    binding
+                        .parameter_replacements
+                        .retain(|replacement| !path_extends(replacement, path));
+                    binding.parameter_replacements.push(path.to_vec());
+                }
                 binding
                     .moved_places
                     .retain(|moved| !path_extends(&moved.path, path));
@@ -543,6 +819,7 @@ impl TypeEnv {
     pub fn mark_released(&mut self, name: &str, span: Span) -> Option<Option<Span>> {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
+                binding.capture_consumption = crate::ClosureCaptureConsumption::Consumed;
                 let prior = binding.released_at.clone();
                 binding.released_at = Some(span);
                 return Some(prior);
@@ -553,7 +830,7 @@ impl TypeEnv {
 
     /// Restore a binding after a validated receiver-identity method result is
     /// discarded in place. The method temporarily transfers the one owner
-    /// through `consuming self` and returns that exact owner to this binding.
+    /// through `consume self` and returns that exact owner to this binding.
     pub fn unmark_moved(&mut self, name: &str) -> bool {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
@@ -577,8 +854,10 @@ impl TypeEnv {
                 states.insert(
                     binding.id,
                     OwnershipState {
+                        parameter_replacements: binding.parameter_replacements.clone(),
                         is_moved: binding.is_moved,
                         moved_at: binding.moved_at.clone(),
+                        deferred_init: binding.deferred_init(),
                         moved_places: binding.moved_places.clone(),
                         released_at: binding.released_at.clone(),
                     },
@@ -597,22 +876,70 @@ impl TypeEnv {
         Self::apply_ownership(&mut self.scopes, &snap.states);
     }
 
+    /// Apply only the moves introduced by a selected pattern. Guards run
+    /// before those transfers and may change unrelated ownership state, so
+    /// restoring or joining the entire post-pattern snapshot would undo
+    /// valid guard reinitializations.
+    pub(crate) fn apply_pattern_moves(
+        &mut self,
+        before: &OwnershipSnapshot,
+        selected: &OwnershipSnapshot,
+    ) {
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            let (Some(before), Some(selected)) = (before.get(binding.id), selected.get(binding.id))
+            else {
+                continue;
+            };
+            if selected.is_moved && !before.is_moved {
+                binding.is_moved = true;
+                binding.moved_at.clone_from(&selected.moved_at);
+            }
+            for place in &selected.moved_places {
+                if !before.moved_places.iter().any(|old| old.path == place.path)
+                    && !binding
+                        .moved_places
+                        .iter()
+                        .any(|old| old.path == place.path)
+                {
+                    binding.moved_places.push(place.clone());
+                }
+            }
+        }
+    }
+
     /// Join alternative execution paths: for every binding that existed at
     /// `entry`, take the union of its state across `exits`.
     ///
+    /// Definite parameter replacements intersect across reaching exits.
     /// Union (may-analysis) is the sound direction for a consume: a value moved
     /// on any path is not usable after the join. Callers pass one exit snapshot
     /// per path that reaches the join — including the implicit fall-through
     /// path of an `if` without an `else`.
-    pub fn merge_ownership(&mut self, entry: &OwnershipSnapshot, exits: &[OwnershipSnapshot]) {
+    ///
+    /// Returns the deferred init fields (D447) whose initialization differs
+    /// between reaching paths: a field initialized on one path and not on
+    /// another has no single store kind, so the join is a source error.
+    pub fn merge_ownership(
+        &mut self,
+        entry: &OwnershipSnapshot,
+        exits: &[OwnershipSnapshot],
+    ) -> Vec<TypeBindingId> {
         let mut merged: HashMap<TypeBindingId, OwnershipState> =
             HashMap::with_capacity(entry.states.len());
+        let mut conflicts = Vec::new();
         for (id, entry_state) in &entry.states {
-            let mut state = entry_state.clone();
-            for exit in exits {
-                let Some(exit_state) = exit.states.get(id) else {
-                    continue;
-                };
+            let mut reaching = exits.iter().filter_map(|exit| exit.states.get(id));
+            // Entry identifies bindings, not an additional execution path.
+            // Joining only reaching exits lets every arm repair a moved field.
+            let mut state = reaching.next().unwrap_or(entry_state).clone();
+            for exit_state in reaching {
+                if state.deferred_init && exit_state.is_moved != state.is_moved {
+                    conflicts.push(*id);
+                }
+                state.parameter_replacements = common_parameter_replacements(
+                    &state.parameter_replacements,
+                    &exit_state.parameter_replacements,
+                );
                 if exit_state.is_moved && !state.is_moved {
                     state.is_moved = true;
                     state.moved_at.clone_from(&exit_state.moved_at);
@@ -620,11 +947,7 @@ impl TypeEnv {
                 if state.moved_at.is_none() {
                     state.moved_at.clone_from(&exit_state.moved_at);
                 }
-                // Place moves union the same monotone way whole-binding moves
-                // do: a place consumed on ANY path is not usable after the
-                // join, and a place re-initialised on only SOME paths still
-                // carries the obligation. Union only ever ADDS facts, which is
-                // what keeps the join structurally sound.
+                // A place missing on any reaching path remains unavailable.
                 for place in &exit_state.moved_places {
                     if !state.moved_places.iter().any(|m| m.path == place.path) {
                         state.moved_places.push(place.clone());
@@ -637,6 +960,9 @@ impl TypeEnv {
             merged.insert(*id, state);
         }
         Self::apply_ownership(&mut self.scopes, &merged);
+        conflicts.sort_unstable_by_key(|id| id.0);
+        conflicts.dedup();
+        conflicts
     }
 
     fn apply_ownership(
@@ -646,6 +972,9 @@ impl TypeEnv {
         for scope in scopes.iter_mut() {
             for binding in scope.values_mut() {
                 if let Some(state) = states.get(&binding.id) {
+                    binding
+                        .parameter_replacements
+                        .clone_from(&state.parameter_replacements);
                     binding.is_moved = state.is_moved;
                     binding.moved_at.clone_from(&state.moved_at);
                     binding.moved_places.clone_from(&state.moved_places);
@@ -656,10 +985,48 @@ impl TypeEnv {
     }
 
     /// Mark a variable as written (reassigned after definition).
+    ///
+    /// The write starts a fresh observation window: whatever was read before
+    /// it saw the old value, so `mutation_observed` resets here and only a
+    /// later read can set it again.
     pub fn mark_written(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
-                binding.is_written = true;
+                binding.mutation = MutationState::Unobserved;
+                return;
+            }
+        }
+    }
+
+    /// Enter the checking of a mutation of `name`, returning the previous
+    /// mutation root to hand back to [`TypeEnv::end_mutation`].
+    ///
+    /// Reads taken inside this window resolve the target place or compute the
+    /// new value from the old one; neither observes the mutation's result.
+    pub fn begin_mutation(&mut self, name: &str) -> Option<TypeBindingId> {
+        let previous = self.mutation_root;
+        self.mutation_root = self.lookup_ref(name).map(|binding| binding.id);
+        previous
+    }
+
+    /// Leave a mutation window opened by [`TypeEnv::begin_mutation`].
+    pub fn end_mutation(&mut self, previous: Option<TypeBindingId>) {
+        self.mutation_root = previous;
+    }
+
+    /// Discount the receiver read a mutating method call already took.
+    ///
+    /// `v.push(x)` resolves `v` as an ordinary read before the checker knows
+    /// the method writes back, which is the same target resolution that plain
+    /// assignment undoes with `unmark_used`. Skipped when the receiver is
+    /// already the mutation root, since that read was never counted.
+    pub fn discount_mutation_receiver_read(&mut self, name: &str) {
+        let root = self.mutation_root;
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                if root != Some(binding.id) {
+                    binding.observing_reads = binding.observing_reads.saturating_sub(1);
+                }
                 return;
             }
         }
@@ -677,12 +1044,32 @@ impl TypeEnv {
             .expect("cannot pop empty defer-scope stack");
         let mut warnings = Vec::new();
         for (name, binding) in &scope {
-            let Some(span) = &binding.def_span else {
-                continue; // synthetic binding (self, params without spans, etc.)
-            };
             if name.starts_with('_') {
                 continue; // convention: _ prefix means intentionally unused
             }
+            let Some(span) = &binding.def_span else {
+                // A by-value `var` parameter has no `def_span` (it is exempt
+                // from the unused / never-mutated lints), but a mutation of it
+                // that nothing goes on to read is still a defect: the callee
+                // owns the copy, so the write dies with the call frame. A
+                // `consume` parameter took the caller's value outright, and a
+                // receiver writes back, so neither is lost.
+                if binding.origin == BindingOrigin::Parameter
+                    && binding.is_mutable
+                    && binding.parameter_ownership == ParameterOwnership::Borrow
+                    && binding.mutation == MutationState::Unobserved
+                {
+                    if let Some(span) = &binding.shadow_span {
+                        warnings.push(ScopeWarning {
+                            name: name.clone(),
+                            span: span.clone(),
+                            kind: ScopeWarningKind::VarParamMutationLost,
+                            ty: binding.ty.clone(),
+                        });
+                    }
+                }
+                continue; // synthetic binding (self, params without spans, etc.)
+            };
             if binding.read_count == 0 {
                 warnings.push(ScopeWarning {
                     name: name.clone(),
@@ -690,7 +1077,7 @@ impl TypeEnv {
                     kind: ScopeWarningKind::Unused,
                     ty: binding.ty.clone(),
                 });
-            } else if binding.is_mutable && !binding.is_written {
+            } else if binding.is_mutable && !binding.is_written() {
                 warnings.push(ScopeWarning {
                     name: name.clone(),
                     span: span.clone(),
@@ -705,13 +1092,40 @@ impl TypeEnv {
     /// Look up a variable by name, marking it as used.
     #[must_use]
     pub fn lookup(&mut self, name: &str) -> Option<&Binding> {
+        let root = self.mutation_root;
         for scope in self.scopes.iter_mut().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.read_count += 1;
+                Self::record_observing_read(binding, root);
                 return Some(binding);
             }
         }
         None
+    }
+
+    /// Credit one read against the binding's mutation-observation state,
+    /// unless the read belongs to a mutation of that same binding.
+    fn record_observing_read(binding: &mut Binding, mutation_root: Option<TypeBindingId>) {
+        if mutation_root == Some(binding.id) {
+            return;
+        }
+        binding.observing_reads += 1;
+        if binding.mutation == MutationState::Unobserved {
+            binding.mutation = MutationState::Observed;
+        }
+    }
+
+    /// Widen a binding's recorded type without marking it as used.
+    ///
+    /// Used when a reassignment joins an inferred closure binding to the
+    /// callable shape that holds every closure assigned to it.
+    pub fn widen_ty(&mut self, name: &str, ty: Ty) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                binding.ty = ty;
+                return;
+            }
+        }
     }
 
     /// Look up a variable by name without marking it as used.
@@ -742,9 +1156,11 @@ impl TypeEnv {
     /// Look up a variable by name, returning the scope depth where it was found. Marks as used.
     #[must_use]
     pub fn lookup_with_depth(&mut self, name: &str) -> Option<(usize, &Binding)> {
+        let root = self.mutation_root;
         for (i, scope) in self.scopes.iter_mut().enumerate().rev() {
             if let Some(binding) = scope.get_mut(name) {
                 binding.read_count += 1;
+                Self::record_observing_read(binding, root);
                 return Some((i, binding));
             }
         }
@@ -925,7 +1341,7 @@ mod tests {
         // Not yet used
         let b = env.lookup_ref("x").unwrap();
         assert_eq!(b.read_count, 0);
-        assert!(!b.is_written);
+        assert!(!b.is_written());
         assert_eq!(b.def_span, Some(0..5));
 
         // lookup() marks as used
@@ -973,7 +1389,7 @@ mod tests {
 
         let b = env.lookup_ref("x").unwrap();
         assert_eq!(b.read_count, 1);
-        assert!(b.is_written);
+        assert!(b.is_written());
     }
 
     #[test]
@@ -1003,6 +1419,28 @@ mod tests {
         assert!(!env.lookup_ref("x").unwrap().is_moved);
         env.pop_scope();
         assert!(env.lookup_ref("x").unwrap().is_moved);
+    }
+
+    #[test]
+    fn parameter_replacements_join_selected_places_without_touching_siblings() {
+        let mut env = TypeEnv::new();
+        env.define_param_with_span("holder".to_string(), Ty::Unit, true, 0..1);
+        let entry = env.ownership_snapshot();
+        let parent = vec!["nested".to_string()];
+        let child = vec!["nested".to_string(), "next".to_string()];
+        let sibling = vec!["nested".to_string(), "other".to_string()];
+        env.reinit_place("holder", &parent);
+        let parent_exit = env.ownership_snapshot();
+        env.restore_ownership(&entry);
+        env.reinit_place("holder", &child);
+        let child_exit = env.ownership_snapshot();
+        env.merge_ownership(&entry, &[parent_exit, child_exit]);
+        assert!(!env.place_borrows_parameter("holder", &child));
+        assert!(env.place_borrows_parameter("holder", &sibling));
+        assert!(env.place_borrows_parameter("holder", &[]));
+        let replaced = env.ownership_snapshot();
+        env.merge_ownership(&entry, &[replaced, entry.clone()]);
+        assert!(env.place_borrows_parameter("holder", &child));
     }
 
     #[test]
@@ -1086,9 +1524,9 @@ mod tests {
     fn test_mark_written() {
         let mut env = TypeEnv::new();
         env.define_with_span("x".to_string(), Ty::I32, true, 0..5);
-        assert!(!env.lookup_ref("x").unwrap().is_written);
+        assert!(!env.lookup_ref("x").unwrap().is_written());
         env.mark_written("x");
-        assert!(env.lookup_ref("x").unwrap().is_written);
+        assert!(env.lookup_ref("x").unwrap().is_written());
     }
 
     #[test]

@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_new_turbofish_arity_mismatch"
+intent = "The retired Rust-style turbofish spelling must produce the cutover diagnostic with the equivalent dotted Hew spelling."
+source = "../vertical-slice/reject/vec_new_turbofish_arity_mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_LEGACY_TURBOFISH"
+line = 6
+column = 17
+message = "E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _v = Vec<i64, i32>.new();`"

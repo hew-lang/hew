@@ -1,0 +1,10 @@
+[[case]]
+id = "builtin-inherent-impl-calls"
+intent = "Inherent impl methods on a builtin receiver execute: `Vec.append` copies every source element into the receiver - scalars by value, strings by retain - and leaves the source usable, and `Vec.join` concatenates a `Vec<string>`, answering the empty string for an empty vector."
+source = "cases/builtin-inherent-impl-calls.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "nums=4 last=4 more=2\nwords=alpha-beta-gamma rest=beta empty=[] emptylen=0\n"
+exit = 0

@@ -11,15 +11,15 @@
 import std.testing;
 
 type Item {
-    name: string;
-    n: i64;
+    name: string,
+    n: i64,
 }
 
 // Clone a Vec of owned records; assert each cloned element holds the
 // correct field values (the owned `string` leaf was deep-copied, not aliased).
 #[test]
 fn test_clone_vec_of_owned_records_copies_fields() {
-    let xs: Vec<Item> = Vec.new();
+    var xs: Vec<Item> = Vec.new();
     xs.push(Item { name: "alpha", n: 10 });
     xs.push(Item { name: "beta", n: 20 });
     let ys = xs.clone();
@@ -36,9 +36,9 @@ fn test_clone_vec_of_owned_records_copies_fields() {
 // the clone owns a distinct backing allocation.
 #[test]
 fn test_clone_vec_of_owned_records_is_independent() {
-    let xs: Vec<Item> = Vec.new();
+    var xs: Vec<Item> = Vec.new();
     xs.push(Item { name: "only", n: 1 });
-    let ys = xs.clone();
+    var ys = xs.clone();
     ys.push(Item { name: "extra", n: 2 });
     testing.assert_eq(xs.len(), 1);
     testing.assert_eq(ys.len(), 2);

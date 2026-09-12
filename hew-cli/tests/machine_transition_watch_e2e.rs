@@ -121,7 +121,7 @@ fn run_inline_scribbled(label: &str, source: &str, expected_stdout: &str) {
 fn select_record_element_cross_block_arm_runs_clean() {
     run_inline_scribbled(
         "select_record_element",
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          type Transition {\n\
          \x20   from_state: string,\n\
@@ -130,7 +130,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \n\
          actor Combined {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       tx.send(Transition { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
@@ -148,7 +148,7 @@ fn select_record_element_cross_block_arm_runs_clean() {
          \n\
          fn main() {\n\
          \x20   let c = spawn Combined;\n\
-         \x20   c.run();\n\
+         \x20   let _ = c.run();\n\
          \x20   sleep(200ms);\n\
          }\n",
         "Created -> Initialising\n",
@@ -164,15 +164,15 @@ fn select_record_element_cross_block_arm_runs_clean() {
 fn select_enum_element_thunks_resolve_and_run_clean() {
     run_inline_scribbled(
         "select_enum_element",
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          enum Transition {\n\
-         \x20   Moved { from_state: string, to_state: string };\n\
+         \x20   Moved { from_state: string, to_state: string },\n\
          }\n\
          \n\
          actor Combined {\n\
          \x20   receive fn run() {\n\
-         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       tx.send(Transition.Moved { from_state: \"Created\", to_state: \"Initialising\" });\n\
          \x20       tx.close();\n\
          \x20       select {\n\
@@ -194,7 +194,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
          \n\
          fn main() {\n\
          \x20   let c = spawn Combined;\n\
-         \x20   c.run();\n\
+         \x20   let _ = c.run();\n\
          \x20   sleep(200ms);\n\
          }\n",
         "Created -> Initialising\n",
@@ -204,7 +204,7 @@ fn select_enum_element_thunks_resolve_and_run_clean() {
 /// A `channel.Receiver<string>` as a receive-fn parameter source. The
 /// cross-actor watch handoff needs this exact shape green.
 fn receiver_param_source() -> &'static str {
-    "import std.channel.channel;\n\
+    "import std.channel;\n\
      \n\
      actor Observer {\n\
      \x20   receive fn watch(rx: channel.Receiver<string>) {\n\
@@ -217,11 +217,11 @@ fn receiver_param_source() -> &'static str {
      }\n\
      \n\
      fn main() {\n\
-     \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+     \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20   tx.send(\"hello\");\n\
      \x20   tx.close();\n\
      \x20   let obs = spawn Observer;\n\
-     \x20   obs.watch(rx);\n\
+     \x20   let _ = obs.watch(rx);\n\
      \x20   sleep(200ms);\n\
      }\n"
 }
@@ -248,7 +248,7 @@ fn channel_receiver_actor_message_arg_transfers_locally() {
 fn channel_sender_actor_message_arg_transfers_locally() {
     run_inline_scribbled(
         "sender_param_transfer",
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn notify(tx: channel.Sender<string>) {\n\
@@ -258,9 +258,9 @@ fn channel_sender_actor_message_arg_transfers_locally() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let worker = spawn Worker;\n\
-         \x20   worker.notify(tx);\n\
+         \x20   let _ = worker.notify(tx);\n\
          \x20   match rx.recv() {\n\
          \x20       .Some(value) => println(value),\n\
          \x20       .None => println(\"closed\"),\n\
@@ -282,7 +282,7 @@ fn channel_handle_use_after_transfer_refused() {
     let source = dir.path().join("use_after_transfer.hew");
     std::fs::write(
         &source,
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<string>, label: string) {\n\
@@ -291,7 +291,7 @@ fn channel_handle_use_after_transfer_refused() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let obs = spawn Observer;\n\
          \x20   obs.watch(rx, \"watch\");\n\
@@ -332,7 +332,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
     run_inline_scribbled(
         "cross_actor_transition_watch",
         "import std.concurrency.lifecycle;\n\
-         import std.channel.channel;\n\
+         import std.channel;\n\
          \n\
          type Transition {\n\
          \x20   from_state: string,\n\
@@ -390,12 +390,12 @@ fn cross_actor_record_transition_watch_runs_clean() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = channel.new(8);\n\
-         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx, done_tx);\n\
+         \x20   let _ = fork obs.watch(rx, done_tx);\n\
          \x20   let svc = spawn Service;\n\
-         \x20   svc.drive(tx);\n\
+         \x20   let _ = svc.drive(tx);\n\
          \x20   let _ = done_rx.recv();\n\
          \x20   done_rx.close();\n\
          }\n",
@@ -414,7 +414,7 @@ fn cross_actor_record_transition_watch_runs_clean() {
 fn select_after_genuine_expiry_takes_after_arm() {
     run_inline_scribbled(
         "select_after_genuine_expiry",
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>, done: channel.Sender<i64>) {\n\
@@ -434,10 +434,10 @@ fn select_after_genuine_expiry_takes_after_arm() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
-         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let (done_tx, done_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx, done_tx);\n\
+         \x20   let _ = obs.watch(rx, done_tx);\n\
          \x20   let _ = done_rx.recv();\n\
          \x20   done_rx.close();\n\
          \x20   tx.close();\n\
@@ -446,20 +446,15 @@ fn select_after_genuine_expiry_takes_after_arm() {
     );
 }
 
-/// The resume-edge gate's emitted shape, pinned in the `.ll` dump: a -1
-/// scan consults the deadline arbiter, and each status routes to its
-/// proven-safe continuation. Behavioural coverage exists for the
-/// `TimedOut` arm (`select_after_genuine_expiry_takes_after_arm`) and the
-/// no-stale-timeout direction (`cross_actor_record_transition_watch_runs_clean`);
-/// the Pending-respark and Completed-rescan edges fire only on wake/scan
-/// races that cannot be forced end to end, so their CFG is pinned here:
-/// - `suspending_select_respark` loops back to the suspend point
-///   (Pending: re-park, never fabricate a timeout);
-/// - `suspending_select_rescan` loops back to the scan (Completed: the
-///   racing winner's readiness is visible, the re-scan finds it);
-/// - the fail-closed trap is reachable ONLY from the Completed check
-///   (i.e. only for Cancelled, the no-live-source state).
+/// A resumed select checks cancellation before polling readiness. Pending
+/// selections suspend again; only a valid channel/timer index can complete.
+/// The runtime-cycle and invalid-index paths release the selection and fault.
+/// These race-dependent edges complement the behavioural timeout tests.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the source fixture and its cancellation-edge assertions together"
+)]
 fn suspending_select_wake_gate_ir_shape_holds() {
     require_codegen();
 
@@ -467,7 +462,7 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     let source = dir.path().join("gate_shape.hew");
     std::fs::write(
         &source,
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor Observer {\n\
          \x20   receive fn watch(rx: channel.Receiver<i64>) {\n\
@@ -485,9 +480,9 @@ fn suspending_select_wake_gate_ir_shape_holds() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let obs = spawn Observer;\n\
-         \x20   obs.watch(rx);\n\
+         \x20   let _ = obs.watch(rx);\n\
          \x20   tx.close();\n\
          \x20   sleep(20ms);\n\
          }\n",
@@ -512,41 +507,60 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     );
 
     let ll = std::fs::read_to_string(emit_dir.join("gate_shape.ll"))
-        .expect("--emit-dir must produce gate_shape.ll");
+        .expect("--emit-dir must produce gate_shape.ll")
+        .replace("\r\n", "\n");
 
-    assert!(
-        ll.contains("%suspending_select_wake_status = call i32 @hew_await_cancel_status"),
-        "the -1 edge must consult the arbiter status"
-    );
-    let suspend_label = ll
-        .lines()
-        .find(|l| l.starts_with("suspending_select_suspend:"))
-        .expect("suspend block label present");
-    assert!(
-        suspend_label.contains("%suspending_select_respark"),
-        "Pending must re-suspend: respark is a predecessor of the suspend \
-         point; got: {suspend_label}"
-    );
-    let scan_label = ll
-        .lines()
-        .find(|l| l.starts_with("suspending_select_scan:"))
-        .expect("scan block label present");
-    assert!(
-        scan_label.contains("%suspending_select_rescan"),
-        "Completed must re-scan: rescan is a predecessor of the scan; \
-         got: {scan_label}"
-    );
-    let trap_label = ll
-        .lines()
-        .find(|l| l.starts_with("suspending_select_stale_trap:"))
-        .expect("stale-trap block label present");
-    assert!(
-        trap_label.contains("%suspending_select_completed_check")
-            && !trap_label.contains("%suspending_select_no_ready")
-            && !trap_label.contains("%suspending_select_pending_check"),
-        "the fail-closed trap must be reachable only from the Completed \
-         check (Cancelled); got: {trap_label}"
-    );
+    let bodies: Vec<_> = ll
+        .split("\ndefine ")
+        .filter_map(|function| function.split_once("\n}").map(|(body, _)| body))
+        .filter(|body| body.contains("call i64 @hew_checked_task_select_poll("))
+        .collect();
+    assert!(!bodies.is_empty(), "the fixture must reach select lowering");
+    for body in bodies {
+        let block = |name: &str| {
+            let label = format!("\n{name}:");
+            let (_, tail) = body.split_once(&label).expect("select block exists");
+            tail.split("\n\n").next().unwrap()
+        };
+        let gate = body
+            .split("\n\n")
+            .find(|block| block.contains("%select.cancel.requested ="))
+            .expect("select cancellation gate");
+        assert!(gate.contains("call i32 @hew_coro_state_is_cancelled("));
+        assert!(gate.contains(
+            "br i1 %select.cancel.requested, label %select.cancelled, label %select.inspect"
+        ));
+        assert!(!gate.contains("@hew_checked_task_select_poll("));
+        let inspect = block("select.inspect");
+        assert!(inspect.contains("call i64 @hew_checked_task_select_poll("));
+        assert!(inspect.contains("i64 -1, label %"), "pending must suspend");
+        assert!(inspect.contains("i64 -3, label %select.cycle"));
+        let outcome = block("select.outcome");
+        assert!(outcome.contains("icmp ult i64 %select.index, 2"));
+        assert!(outcome
+            .contains("br i1 %select.valid.index, label %select.completed, label %select.failed"));
+        for exit in [
+            "select.completed",
+            "select.cancelled",
+            "select.failed",
+            "select.cycle",
+        ] {
+            assert_eq!(
+                block(exit)
+                    .matches("call void @hew_checked_task_select_free(")
+                    .count(),
+                1,
+                "{exit} must release its selection exactly once"
+            );
+        }
+        assert!(block("select.cancelled").contains("@hew_coro_state_cancel_code("));
+        assert!(block("select.failed").contains("@hew_fault_new("));
+        assert!(block("select.cycle").contains("@hew_checked_task_select_fault("));
+        assert!(
+            !inspect.contains("@hew_fault_new("),
+            "pending cannot fabricate a fault"
+        );
+    }
 }
 
 /// A heap-payload machine held in actor state: step into the
@@ -560,24 +574,18 @@ fn heap_payload_machine_actor_field_steps_clean() {
         "heap_machine_field",
         "machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
-         \x20       Reset;\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
+         \x20       ,Reset,\n\
          \x20   }\n\
          \n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   on Connect: Idle => Open {\n\
-         \x20       Conn.Open\n\
-         \x20   }\n\
-         \x20   on Fail: Open => Failed {\n\
-         \x20       Conn.Failed { reason: event.reason }\n\
-         \x20   }\n\
-         \x20   on Reset: Failed => Idle {\n\
-         \x20       Conn.Idle\n\
-         \x20   }\n\
+         \x20   ,on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
+         \x20   on Reset: Failed => Idle,\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
          \x20   }\n\
@@ -590,7 +598,7 @@ fn heap_payload_machine_actor_field_steps_clean() {
          }\n\
          \n\
          actor Holder {\n\
-         \x20   var c: Conn = Conn.Idle;\n\
+         \x20   var c: Conn = Conn.Idle,\n\
          \n\
          \x20   receive fn drive() {\n\
          \x20       c.step(ConnEvent.Connect);\n\
@@ -604,66 +612,53 @@ fn heap_payload_machine_actor_field_steps_clean() {
          \n\
          fn main() {\n\
          \x20   let h = spawn Holder;\n\
-         \x20   h.drive();\n\
+         \x20   let _ = h.drive();\n\
          \x20   sleep(150ms);\n\
          }\n",
         "Open\nFailed\nIdle\n",
     );
 }
 
-/// Machine-state actors as SUPERVISOR children stay fail-closed: the
-/// child-init slice admits only integer/bool/float literal field
-/// defaults, and a machine field's default is a state constructor. The
-/// restart-clone surface for machine state opens when that slice widens —
-/// this pin fails first.
+/// A supervised child resets its machine state after a fault and restart.
 #[test]
-fn supervisor_child_with_machine_state_fails_closed() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let source = dir.path().join("machine_child.hew");
-    std::fs::write(
-        &source,
-        "machine Light {\n\
-         \x20   events {\n\
-         \x20       Flip;\n\
-         \x20   }\n\
-         \x20   state Off;\n\
-         \x20   state On;\n\
-         \x20   on Flip: Off => On { Light.On }\n\
-         \x20   on Flip: On => Off { Light.Off }\n\
-         }\n\
-         \n\
-         actor Worker {\n\
-         \x20   var l: Light = Light.Off;\n\
-         \x20   receive fn ping() {}\n\
-         }\n\
-         \n\
-         supervisor Pool {\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
-         \n\
-         \x20   child w: Worker();\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let sup = spawn Pool;\n\
-         \x20   sleep(20ms);\n\
-         }\n",
-    )
-    .unwrap();
-
-    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
-
-    assert!(
-        !output.status.success(),
-        "machine-state supervisor child must fail closed today; it compiled:\n{}",
-        support::describe_output(&output),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED") && stderr.contains("supported child init values"),
-        "expected the named child-init refusal; got:\n{stderr}",
+fn supervisor_child_machine_state_resets_after_restart() {
+    run_inline_scribbled(
+        "machine_child_restart",
+        r#"
+machine Light {
+    events { Flip, }
+    state Off,
+    state On,
+    on Flip: Off => On,
+    on Flip: On => Off,
+}
+actor Worker {
+    var light: Light = Light.Off,
+    receive fn flip() { let _ = light.step(.Flip); }
+    receive fn is_on() -> bool { match light { .On => true, .Off => false, } }
+    receive fn fail() { panic("restart machine child"); }
+}
+supervisor Pool {
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child worker: Worker(),
+}
+fn main() {
+    let pool = spawn Pool;
+    let role = pool.worker;
+    assert(!role.is_on().expect("initial state"));
+    role.flip().expect("flip state");
+    assert(role.is_on().expect("changed state"));
+    let _ = role.fail();
+    let _ = await_restart pool.worker;
+    assert(!role.is_on().expect("restarted state"));
+    role.flip().expect("flip restarted child");
+    assert(role.is_on().expect("live restarted child"));
+    close(pool);
+    println("machine state resets after restart");
+}
+"#,
+        "machine state resets after restart\n",
     );
 }
 
@@ -683,24 +678,20 @@ fn machine_snapshot_select_watch_matches_state_variants() {
         "\
          // Snapshot watch: machine values as channel elements through the sealed\n\
          // select arm, state-variant pattern matching on the received snapshot.\n\
-         import std.channel.channel;\n\
+         import std.channel;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
          \x20   }\n\
          \n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   on Connect: Idle => Open {\n\
-         \x20       Conn.Open\n\
-         \x20   }\n\
-         \x20   on Fail: Open => Failed {\n\
-         \x20       Conn.Failed { reason: event.reason }\n\
-         \x20   }\n\
+         \x20   ,on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
          \x20   }\n\
@@ -711,7 +702,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \n\
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(ConnEvent.Connect);\n\
          \x20       tx.send(c);\n\
@@ -749,7 +740,7 @@ fn machine_snapshot_select_watch_matches_state_variants() {
          \n\
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
-         \x20   match await o.run() {\n\
+         \x20   match o.run() {\n\
          \x20       .Ok(_) => {},\n\
          \x20       .Err(_) => println(\"ask failed\"),\n\
          \x20   }\n\
@@ -759,15 +750,14 @@ fn machine_snapshot_select_watch_matches_state_variants() {
     );
 }
 
-/// `Vec<machine>` is fail-closed at compile time: machine values are valid
-/// as channel/queue elements but have no Vec-construction thunk path today.
-/// Admitting them into Vec would compile and then panic at runtime (the
-/// owned-element admission widening for channels must not bleed into Vec);
-/// this pin ensures the compile-time refusal and named diagnostic survive.
-/// The machine has a heap-carrying state variant (string payload) so it is
-/// not Copy and reaches the admissibility gate.
+/// A machine value is a collection element like any other value: its class is
+/// the join over its state payloads, so a machine with a heap-carrying state
+/// rides the owned-element descriptor whose clone and destroy actions come
+/// from that same class. This was refused by a hand-written element allowlist
+/// that named machines directly; the class rule replaced it, and the pin is now
+/// that `Vec<machine>` builds, runs and releases each element.
 #[test]
-fn vec_machine_element_refuses_at_compile_time() {
+fn vec_machine_element_stores_and_releases_each_value() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -776,50 +766,45 @@ fn vec_machine_element_refuses_at_compile_time() {
         &source,
         "machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, },\n\
          \x20   }\n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
-         \x20   on Connect: Idle => Open { Conn.Open }\n\
-         \x20   on Fail: Open => Failed { Conn.Failed { reason: event.reason } }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, },\n\
+         \x20   on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
          \x20   on Connect: _ => _ { state }\n\
          \x20   on Fail: _ => _ { state }\n\
          }\n\
          \n\
-         actor Owner {\n\
-         \x20   receive fn run() {\n\
-         \x20       var conns: Vec<Conn> = [];\n\
-         \x20       var c: Conn = Conn.Idle;\n\
-         \x20       conns.push(c);\n\
-         \x20   }\n\
-         }\n\
-         \n\
          fn main() {\n\
-         \x20   let _ = spawn Owner;\n\
-         \x20   sleep(20ms);\n\
+         \x20   var conns: Vec<Conn> = [];\n\
+         \x20   conns.push(Conn.Idle);\n\
+         \x20   conns.push(Conn.Failed { reason: \"peer\" + \" reset\" });\n\
+         \x20   println(f\"conns={conns.len()}\");\n\
          }\n",
     )
     .unwrap();
 
-    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
+    let output = support::run_hew_in(dir.path(), &["run", source.to_str().unwrap()]);
 
     assert!(
-        !output.status.success(),
-        "Vec<machine> must be refused at compile time; it compiled:\n{}",
+        output.status.success(),
+        "Vec<machine> must build and run; it failed:\n{}",
         support::describe_output(&output),
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("machine values cannot be `Vec` elements"),
-        "expected the named machine-Vec refusal diagnostic; got:\n{stderr}",
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "conns=2\n",
+        "{}",
+        support::describe_output(&output),
     );
 }
 
 /// A channel handle nested inside a tuple `(Receiver<i64>, i64)` is still a
 /// single-owner resource. Sending the tuple to an actor transfers the handle;
-/// the caller binding `rx` must be `UseAfterConsume` after the send.
+/// a later use of the caller binding `rx` is a use after that move.
 ///
 /// Before the fix, `checked_span_is_channel_handle` only matched the top-level
 /// type — a tuple arg was lowered as `Read` (`CowShare` in MIR), the caller
@@ -833,7 +818,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
     let source = dir.path().join("nested_handle_tuple.hew");
     std::fs::write(
         &source,
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn accept(pair: (channel.Receiver<i64>, i64)) {\n\
@@ -843,10 +828,10 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
-         \x20   w.accept((rx, 42));\n\
+         \x20   let _ = w.accept((rx, 42));\n\
          \x20   rx.close();\n\
          }\n",
     )
@@ -861,8 +846,8 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("used after it was consumed") && stderr.contains("`rx`"),
-        "expected UseAfterConsume on rx; got:\n{stderr}",
+        stderr.contains("use of moved value `rx`") && stderr.contains("value was consumed here"),
+        "expected the use-after-move refusal on rx; got:\n{stderr}",
     );
 }
 
@@ -874,7 +859,7 @@ fn nested_channel_handle_in_tuple_use_after_send_refused() {
 fn nested_channel_handle_in_tuple_transfers_correctly() {
     run_inline_scribbled(
         "nested_handle_tuple_transfer",
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor Worker {\n\
          \x20   receive fn deliver(pair: (channel.Receiver<i64>, i64)) {\n\
@@ -885,10 +870,10 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
          }\n\
          \n\
          fn main() {\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(4);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   tx.close();\n\
          \x20   let w = spawn Worker;\n\
-         \x20   w.deliver((rx, 99));\n\
+         \x20   let _ = w.deliver((rx, 99));\n\
          \x20   sleep(100ms);\n\
          \x20   println(\"done\");\n\
          }\n",
@@ -901,14 +886,15 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 ///
 /// The composition that fires the defect: an actor `receive fn run() -> i64`
 /// whose body runs a `select`/`after` arm over a channel carrying a `machine`
-/// value with a heap-payload state (`Failed { reason: string }`), invoked with
-/// the idiomatic AWAITED ask form (`await o.run()`). Under `MallocScribble` the
-/// channel's `ChannelCore` is released one time too many on this path — the
-/// receiver reference is lost while a `select`-poll thread and the resumed
-/// handler still hold it — so the next `try_recv` reads a freed core. The same
-/// shape with a plain `enum` element (not a `machine`) stays clean, and the
-/// fire-and-forget form (`o.run(); sleep(...)`) never trips it: the AWAIT that
-/// makes the handler a resumed coroutine is required.
+/// value with a heap-payload state (`Failed { reason: string }`), invoked
+/// with a plain ask (`o.run()`, which suspends the caller on its own — an
+/// explicit `await` is now redundant here and everywhere a plain call
+/// suspends). Under `MallocScribble` the channel's `ChannelCore` is released
+/// one time too many on this path — the receiver reference is lost while a
+/// `select`-poll thread and the resumed handler still hold it — so the next
+/// `try_recv` reads a freed core. The same shape with a plain `enum` element
+/// (not a `machine`) stays clean. A resumed-coroutine handler is required to
+/// trip it; that is now the only ask-call shape, since every ask suspends.
 ///
 /// Root cause (fixed): `Option<Conn>` — the binding the select's channel arm
 /// decodes into — was sized against the machine's still-opaque LLVM struct.
@@ -930,24 +916,20 @@ fn nested_channel_handle_in_tuple_transfers_correctly() {
 /// stdout — a single corrupted decode anywhere in the batch fails the test.
 #[test]
 fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
-    const SOURCE: &str = "import std.channel.channel;\n\
+    const SOURCE: &str = "import std.channel;\n\
          \n\
          machine Conn {\n\
          \x20   events {\n\
-         \x20       Connect;\n\
-         \x20       Fail { reason: string; }\n\
+         \x20       Connect,\n\
+         \x20       Fail { reason: string, }\n\
          \x20   }\n\
          \n\
-         \x20   state Idle;\n\
-         \x20   state Open;\n\
-         \x20   state Failed { reason: string; }\n\
+         \x20   state Idle,\n\
+         \x20   state Open,\n\
+         \x20   state Failed { reason: string, }\n\
          \n\
-         \x20   on Connect: Idle => Open {\n\
-         \x20       Conn.Open\n\
-         \x20   }\n\
-         \x20   on Fail: Open => Failed {\n\
-         \x20       Conn.Failed { reason: event.reason }\n\
-         \x20   }\n\
+         \x20   ,on Connect: Idle => Open,\n\
+         \x20   on Fail: Open => Failed { reason: event.reason }\n\
          \x20   on Connect: _ => _ {\n\
          \x20       state\n\
          \x20   }\n\
@@ -958,7 +940,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \n\
          actor Owner {\n\
          \x20   receive fn run() -> i64 {\n\
-         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = channel.new(4);\n\
+         \x20       let (tx, rx): (channel.Sender<Conn>, channel.Receiver<Conn>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20       var c: Conn = Conn.Idle;\n\
          \x20       c.step(ConnEvent.Connect);\n\
          \x20       c.step(ConnEvent.Fail { reason: \"peer reset\" });\n\
@@ -986,7 +968,7 @@ fn awaited_ask_select_machine_heap_payload_stays_clean_under_scribble() {
          \n\
          fn main() {\n\
          \x20   let o = spawn Owner;\n\
-         \x20   match await o.run() {\n\
+         \x20   match o.run() {\n\
          \x20       .Ok(r) => println(f\"r={r}\"),\n\
          \x20       .Err(_) => println(\"ask failed\"),\n\
          \x20   }\n\

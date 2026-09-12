@@ -1,5 +1,5 @@
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> where T: Display {

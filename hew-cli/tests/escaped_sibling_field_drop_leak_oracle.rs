@@ -1,6 +1,6 @@
 //! Escaped-sibling field-drop oracle (#2212) — the empirical
 //! (compiled-binary) half of the sibling-discharge contract whose MIR side
-//! lives in `examples/v05/checked-mir/escaped_sibling_field_drop.hew`.
+//! lives in `tests/core-acceptance/cases/escaped_sibling_field_drop.hew`.
 //!
 //! ## The shape
 //!
@@ -54,13 +54,13 @@ use support::{describe_output, require_codegen};
 fn escaped_sibling_loop_source(frames: usize) -> String {
     format!(
         "type Inner {{\n\
-         \x20   label: string;\n\
-         \x20   n: i64;\n\
+         \x20   label: string,\n\
+         \x20   n: i64,\n\
          }}\n\
          \n\
          type Outer {{\n\
-         \x20   inner: Inner;\n\
-         \x20   tag: string;\n\
+         \x20   inner: Inner,\n\
+         \x20   tag: string,\n\
          }}\n\
          \n\
          fn extract(k: i64) -> Inner {{\n\
@@ -93,13 +93,13 @@ fn escaped_sibling_loop_source(frames: usize) -> String {
 fn escaped_sibling_bystander_loop_source(frames: usize) -> String {
     format!(
         "type Inner {{\n\
-         \x20   label: string;\n\
-         \x20   n: i64;\n\
+         \x20   label: string,\n\
+         \x20   n: i64,\n\
          }}\n\
          \n\
          type Outer {{\n\
-         \x20   inner: Inner;\n\
-         \x20   tag: string;\n\
+         \x20   inner: Inner,\n\
+         \x20   tag: string,\n\
          }}\n\
          \n\
          fn extract(k: i64) -> Inner {{\n\
@@ -134,13 +134,13 @@ fn escaped_sibling_bystander_loop_source(frames: usize) -> String {
 /// observes (poisoned read / abort under the scribbled allocator).
 const ESCAPEE_USED_SCRIBBLE_SOURCE: &str = "\
 type Inner {\n\
-\x20   label: string;\n\
-\x20   n: i64;\n\
+\x20   label: string,\n\
+\x20   n: i64,\n\
 }\n\
 \n\
 type Outer {\n\
-\x20   inner: Inner;\n\
-\x20   tag: string;\n\
+\x20   inner: Inner,\n\
+\x20   tag: string,\n\
 }\n\
 \n\
 fn extract() -> Inner {\n\
@@ -167,17 +167,17 @@ fn main() -> i64 {\n\
 /// which is the fail-closed direction.
 const READ_AFTER_ESCAPE_SCRIBBLE_SOURCE: &str = "\
 type Inner {\n\
-\x20   label: string;\n\
-\x20   n: i64;\n\
+\x20   label: string,\n\
+\x20   n: i64,\n\
 }\n\
 \n\
 type Outer {\n\
-\x20   inner: Inner;\n\
-\x20   tag: string;\n\
+\x20   inner: Inner,\n\
+\x20   tag: string,\n\
 }\n\
 \n\
 type Wrap {\n\
-\x20   inner: Inner;\n\
+\x20   inner: Inner,\n\
 }\n\
 \n\
 fn pack() -> Wrap {\n\

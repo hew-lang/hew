@@ -1,0 +1,8 @@
+import lib.{ LIB_K, Widget, bump };
+
+pub const SUB_BASE: i64 = 10;
+
+pub fn sub_k() -> i64 {
+    let w = Widget { id: LIB_K };
+    return bump(w.id);
+}

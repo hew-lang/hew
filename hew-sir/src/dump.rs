@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
 use crate::{
-    CallResult, CallUnwind, LoweredModule, OwnKind, SemModule, SemOpKind, SemTerminator,
-    SirLoweringStatus,
+    AggregateShapeRef, CallResult, CallUnwind, LoweredModule, OwnKind, SemModule, SemOpKind,
+    SemTerminator, SirLoweringStatus,
 };
 
 /// Deterministic printer for a whole HIR→SIR lowering result.
@@ -111,6 +111,13 @@ const fn own_suffix(own: OwnKind) -> &'static str {
     }
 }
 
+fn aggregate_shape(shape: AggregateShapeRef) -> String {
+    match shape {
+        AggregateShapeRef::Tuple => "tuple".to_string(),
+        AggregateShapeRef::Record(id) => format!("record#{}", id.0),
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one arm per operation kind is the point of a closed textual rendering"
@@ -135,7 +142,63 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
     }
     match &op.kind {
-        SemOpKind::ConstI64(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::TaskScopeEnter {
+            scope,
+            parent,
+            duration,
+        } => {
+            writeln!(
+                out,
+                "task_scope.enter #{} parent {:?} duration {:?}",
+                scope.0, parent, duration
+            )
+            .expect("write to String");
+        }
+        SemOpKind::TaskScopeClose { scope } => {
+            writeln!(out, "task_scope.close #{}", scope.0).expect("write to String");
+        }
+        SemOpKind::GeneratorMake { callable, .. } => {
+            writeln!(out, "generator.make %{}", callable.value.0).expect("write to String");
+        }
+        SemOpKind::StreamPipe { capacity } => {
+            writeln!(out, "stream.pipe {capacity}").expect("write to String");
+        }
+        SemOpKind::TaskSpawn { scope, callable } => {
+            writeln!(out, "task.spawn #{} %{}", scope.0, callable.value.0)
+                .expect("write to String");
+        }
+        SemOpKind::RegisterDefer {
+            defer,
+            scope,
+            dependencies,
+        } => {
+            writeln!(
+                out,
+                "register_defer #{} scope #{} {:?}",
+                defer.0, scope.0, dependencies
+            )
+            .expect("write to String");
+        }
+        SemOpKind::FunctionMake { callable } => {
+            writeln!(out, "function.make @{}", callable.0).expect("write to String");
+        }
+        SemOpKind::ClosureMake { closure, fields } => {
+            write!(out, "closure.make #{}", closure.0).expect("write to String");
+            for field in fields {
+                write!(out, " %{}", field.value.0).expect("write to String");
+            }
+            writeln!(out).expect("write to String");
+        }
+        SemOpKind::CallableCoerce { source } => {
+            writeln!(out, "callable.coerce %{}", source.value.0).expect("write to String");
+        }
+        SemOpKind::DynMake { vtable, value } => {
+            writeln!(out, "dyn.make vt{} %{}", vtable.0, value.value.0).expect("write to String");
+        }
+        SemOpKind::LoadBorrow { place } => {
+            writeln!(out, "load.borrow p{}", place.0).expect("write to String");
+        }
+        SemOpKind::ConstInteger(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstBool(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::TupleMake { elements } => {
             write!(out, "tuple.make(").expect("write to String");
@@ -150,6 +213,105 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::TupleGet { tuple, index } => {
             writeln!(out, "tuple.get {}, {index}", operand(tuple)).expect("write to String");
         }
+        SemOpKind::ArrayMake { fields } => {
+            write!(out, "array.make {fields:?}").expect("write to string");
+        }
+        SemOpKind::ArrayRepeat { value } => {
+            write!(out, "array.repeat {value:?}").expect("write to string");
+        }
+        SemOpKind::AggregateMake { shape, fields } => {
+            write!(out, "aggregate.make {}(", aggregate_shape(*shape)).expect("write to String");
+            for (index, field) in fields.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{}", operand(field)).expect("write to String");
+            }
+            writeln!(out, ")").expect("write to String");
+        }
+        SemOpKind::AggregateProjectCopy {
+            shape,
+            aggregate,
+            field,
+        }
+        | SemOpKind::AggregateProjectBorrow {
+            shape,
+            aggregate,
+            field,
+        } => {
+            let operation = if op.kind.borrow_parent().is_some() {
+                "aggregate.project_borrow"
+            } else {
+                "aggregate.project_copy"
+            };
+            writeln!(
+                out,
+                "{operation} {} {}, {field}",
+                aggregate_shape(*shape),
+                operand(aggregate)
+            )
+            .expect("write to String");
+        }
+        SemOpKind::VariantMake {
+            shape,
+            variant,
+            fields,
+        } => {
+            write!(out, "variant.make #{}:{variant}(", shape.0).expect("write to String");
+            for (index, field) in fields.iter().enumerate() {
+                if index != 0 {
+                    write!(out, ", ").expect("write to String");
+                }
+                write!(out, "{}", operand(field)).expect("write to String");
+            }
+            writeln!(out, ")").expect("write to String");
+        }
+        SemOpKind::VariantIs {
+            shape,
+            variant,
+            source,
+        } => {
+            writeln!(out, "variant.is #{}:{variant} {}", shape.0, operand(source))
+                .expect("write to String");
+        }
+        SemOpKind::VariantProjectCopy {
+            shape,
+            variant,
+            source,
+            field,
+        }
+        | SemOpKind::VariantProjectBorrow {
+            shape,
+            variant,
+            source,
+            field,
+        } => {
+            let operation = if op.kind.borrow_parent().is_some() {
+                "variant.project_borrow"
+            } else {
+                "variant.project_copy"
+            };
+            writeln!(
+                out,
+                "{operation} #{}:{variant} {}, {field}",
+                shape.0,
+                operand(source)
+            )
+            .expect("write to String");
+        }
+        SemOpKind::VariantDestructure {
+            shape,
+            variant,
+            source,
+        } => {
+            writeln!(
+                out,
+                "variant.destructure #{}:{variant} {}",
+                shape.0,
+                operand(source)
+            )
+            .expect("write to String");
+        }
         SemOpKind::Unary { op, value } => {
             writeln!(out, "{op:?} {}", operand(value)).expect("write to String");
         }
@@ -160,7 +322,7 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
             writeln!(out, "cast {} to {}", operand(value), to.user_facing())
                 .expect("write to String");
         }
-        SemOpKind::ConstF64(value) => writeln!(out, "const {value}").expect("write to String"),
+        SemOpKind::ConstFloat(value) => writeln!(out, "const {value}").expect("write to String"),
         SemOpKind::ConstChar(value) => writeln!(out, "const {value:?}").expect("write to String"),
         SemOpKind::ConstUnit => writeln!(out, "const ()").expect("write to String"),
         SemOpKind::ConstDuration(nanos) => {
@@ -196,8 +358,14 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         SemOpKind::Fork { source } => {
             writeln!(out, "fork {}", operand(source)).expect("write to String");
         }
-        SemOpKind::Destructure { aggregate } => {
-            writeln!(out, "destructure {}", operand(aggregate)).expect("write to String");
+        SemOpKind::Destructure { shape, aggregate } => {
+            writeln!(
+                out,
+                "aggregate.destructure {} {}",
+                aggregate_shape(*shape),
+                operand(aggregate)
+            )
+            .expect("write to String");
         }
         SemOpKind::AllocPlace { place } => {
             writeln!(out, "alloc_place $p{}", place.0).expect("write to String");
@@ -221,8 +389,68 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
     }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep the closed terminator formatting match together"
+)]
 fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
     match term {
+        SemTerminator::EnterDefer { defer, park, body } => {
+            writeln!(
+                out,
+                "    enter_defer #{} park #{} bb{}{}",
+                defer.0,
+                park.0,
+                body.target.0,
+                edge_args(body)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::FinishDefer { defer, park, next } => {
+            writeln!(
+                out,
+                "    finish_defer #{} park #{} bb{}{}",
+                defer.0,
+                park.0,
+                next.target.0,
+                edge_args(next)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::RecoverFault {
+            result,
+            deadline_variant,
+            fault_variant,
+            normal,
+            unwind,
+        } => {
+            writeln!(
+                out,
+                "    recover_fault %{} deadline #{} fault #{} bb{} unwind bb{}",
+                result.id.0, deadline_variant, fault_variant, normal.target.0, unwind.target.0
+            )
+            .expect("write to String");
+        }
+        SemTerminator::CleanupDispatch { normal, fault } => {
+            writeln!(
+                out,
+                "    cleanup_dispatch bb{}{} fault bb{}{}",
+                normal.target.0,
+                edge_args(normal),
+                fault.target.0,
+                edge_args(fault)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::CheckedRaiseFault { kind, cleanup } => {
+            writeln!(
+                out,
+                "    checked_raise {kind:?} bb{}{}",
+                cleanup.target.0,
+                edge_args(cleanup)
+            )
+            .expect("write to String");
+        }
         SemTerminator::Return { value: Some(value) } => {
             writeln!(out, "    return {}", boundary_operand(value)).expect("write to String");
         }
@@ -247,6 +475,72 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             edge_args(else_target)
         )
         .expect("write to String"),
+        SemTerminator::SwitchVariant {
+            shape,
+            scrutinee,
+            arms,
+            ..
+        } => dump_variant_switch(out, *shape, scrutinee, arms),
+        SemTerminator::CheckedBinary {
+            op,
+            lhs,
+            rhs,
+            result,
+            normal,
+            failures,
+            ..
+        } => dump_checked_binary(out, *op, lhs, rhs, result, normal, failures),
+        SemTerminator::Call { .. }
+        | SemTerminator::ValueCall { .. }
+        | SemTerminator::IndirectCall { .. }
+        | SemTerminator::DynCall { .. }
+        | SemTerminator::ActorCall { .. }
+        | SemTerminator::WireCodec { .. }
+        | SemTerminator::RtCall { .. }
+        | SemTerminator::ExternCall { .. } => {
+            dump_call_terminator(out, module, term);
+        }
+        SemTerminator::Panic { message, cleanup } => {
+            writeln!(
+                out,
+                "    panic {} cleanup bb{}{}",
+                boundary_operand(message),
+                cleanup.target.0,
+                edge_args(cleanup)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::Trap { kind } => {
+            writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
+        }
+        SemTerminator::Suspend {
+            kind,
+            inputs,
+            result,
+            resumes,
+            cancel,
+            unwind,
+        } => {
+            dump_suspend(out, *kind, inputs, resumes, cancel);
+            writeln!(
+                out,
+                "      result {result:?} unwind bb{}{}",
+                unwind.target.0,
+                edge_args(unwind)
+            )
+            .expect("write to String");
+        }
+        SemTerminator::ResumeUnwind => writeln!(out, "    resume_unwind").expect("write to String"),
+        SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the closed call-terminator formatting match together"
+)]
+fn dump_call_terminator(out: &mut String, module: &SemModule, term: &SemTerminator) {
+    let (target, args, result, normal, unwind) = match term {
         SemTerminator::Call {
             callee,
             args,
@@ -259,15 +553,87 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
                 || format!("<invalid-callable:{}>", callee.0),
                 |callable| callable.symbol.clone(),
             );
-            dump_call(
-                out,
-                &format!("call @{target}"),
+            (
+                format!("call @{target}"),
                 args,
                 result,
-                normal,
+                normal.as_ref(),
                 unwind,
-            );
+            )
         }
+        SemTerminator::IndirectCall {
+            callee,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("indirect.call {}", boundary_operand(callee)),
+            args,
+            result,
+            normal.as_ref(),
+            unwind,
+        ),
+        SemTerminator::DynCall {
+            receiver,
+            slot,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("dyn.call slot {slot} {}", boundary_operand(receiver)),
+            args,
+            result,
+            normal.as_ref(),
+            unwind,
+        ),
+        SemTerminator::ValueCall {
+            ty,
+            capability,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("value.call{{{capability:?} {}}}", ty.user_facing()),
+            args,
+            result,
+            Some(normal),
+            unwind,
+        ),
+        SemTerminator::ActorCall {
+            operation,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("actor.call{{{operation:?}}}"),
+            args,
+            result,
+            Some(normal),
+            unwind,
+        ),
+        SemTerminator::WireCodec {
+            direction,
+            plan,
+            args,
+            result,
+            normal,
+            unwind,
+            ..
+        } => (
+            format!("wire.codec{{{direction:?}, {}}}", plan.ty.user_facing()),
+            args,
+            result,
+            Some(normal),
+            unwind,
+        ),
         SemTerminator::RtCall {
             family,
             args,
@@ -275,45 +641,119 @@ fn dump_term(out: &mut String, module: &SemModule, term: &SemTerminator) {
             normal,
             unwind,
             ..
-        } => dump_call(
-            out,
-            &format!("rt.call{{{family:?}}}"),
+        } => (
+            format!("rt.call{{{family:?}}}"),
+            args,
+            result,
+            Some(normal),
+            unwind,
+        ),
+        SemTerminator::ExternCall {
+            signature,
             args,
             result,
             normal,
             unwind,
+            ..
+        } => (
+            format!("extern.call{{{}}}", signature.symbol),
+            args,
+            result,
+            Some(normal),
+            unwind,
         ),
-        SemTerminator::Trap { kind } => {
-            writeln!(out, "    trap{{{kind:?}}}").expect("write to String");
+        _ => unreachable!("call formatter requires a call terminator"),
+    };
+    dump_call(out, &target, args, result, normal, unwind);
+}
+
+fn dump_suspend(
+    out: &mut String,
+    kind: crate::SuspendKind,
+    inputs: &[crate::BoundaryOperand],
+    resumes: &[crate::Edge],
+    cancel: &crate::Edge,
+) {
+    write!(out, "    suspend{{{kind:?}}}(").expect("write to String");
+    for (index, input) in inputs.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
         }
-        SemTerminator::Suspend {
-            kind,
-            inputs,
-            resumes,
-            cancel,
-        } => {
-            write!(out, "    suspend{{{kind:?}}}(").expect("write to String");
-            for (index, input) in inputs.iter().enumerate() {
-                if index != 0 {
-                    write!(out, ", ").expect("write to String");
-                }
-                write!(out, "{}", boundary_operand(input)).expect("write to String");
-            }
-            write!(out, ") resumes [").expect("write to String");
-            for (index, edge) in resumes.iter().enumerate() {
-                if index != 0 {
-                    write!(out, ", ").expect("write to String");
-                }
-                write!(out, "bb{}{}", edge.target.0, edge_args(edge)).expect("write to String");
-            }
-            writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel))
-                .expect("write to String");
-        }
-        SemTerminator::ResumeUnwind => {
-            writeln!(out, "    resume_unwind").expect("write to String");
-        }
-        SemTerminator::Unreachable => writeln!(out, "    unreachable").expect("write to String"),
+        write!(out, "{}", boundary_operand(input)).expect("write to String");
     }
+    write!(out, ") resumes [").expect("write to String");
+    for (index, edge) in resumes.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(out, "bb{}{}", edge.target.0, edge_args(edge)).expect("write to String");
+    }
+    writeln!(out, "] cancel bb{}{}", cancel.target.0, edge_args(cancel)).expect("write to String");
+}
+
+fn dump_variant_switch(
+    out: &mut String,
+    shape: crate::VariantShapeId,
+    scrutinee: &crate::Operand,
+    arms: &[crate::SemVariantArm],
+) {
+    write!(
+        out,
+        "    switch.variant #{} {} [",
+        shape.0,
+        operand(scrutinee)
+    )
+    .expect("write to String");
+    for (index, arm) in arms.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(
+            out,
+            "{} => bb{}{}",
+            arm.variant,
+            arm.target.target.0,
+            edge_args(&arm.target)
+        )
+        .expect("write to String");
+    }
+    writeln!(out, "]").expect("write to String");
+}
+
+fn dump_checked_binary(
+    out: &mut String,
+    op: hew_parser::ast::BinaryOp,
+    lhs: &crate::Operand,
+    rhs: &crate::Operand,
+    result: &crate::ValueDef,
+    normal: &crate::Edge,
+    failures: &[crate::CheckedFailure],
+) {
+    write!(
+        out,
+        "    %{}{} = checked.binary{{{op}}} {}, {} normal bb{}{} failures [",
+        result.id.0,
+        own_suffix(result.own),
+        operand(lhs),
+        operand(rhs),
+        normal.target.0,
+        edge_args(normal)
+    )
+    .expect("write to String");
+    for (index, failure) in failures.iter().enumerate() {
+        if index != 0 {
+            write!(out, ", ").expect("write to String");
+        }
+        write!(
+            out,
+            "{:?}: bb{}{}",
+            failure.kind,
+            failure.edge.target.0,
+            edge_args(&failure.edge)
+        )
+        .expect("write to String");
+    }
+    writeln!(out, "]").expect("write to String");
 }
 
 fn dump_call(
@@ -321,7 +761,7 @@ fn dump_call(
     name: &str,
     args: &[crate::BoundaryOperand],
     result: &CallResult,
-    normal: &crate::Edge,
+    normal: Option<&crate::Edge>,
     unwind: &CallUnwind,
 ) {
     write!(out, "    {name}(").expect("write to String");
@@ -333,6 +773,7 @@ fn dump_call(
     }
     match result {
         CallResult::Unit => write!(out, ")"),
+        CallResult::Never => write!(out, ") -> !"),
         CallResult::Value(value) => write!(
             out,
             ") -> %{}: {} [{:?}]",
@@ -342,7 +783,9 @@ fn dump_call(
         ),
     }
     .expect("write to String");
-    write!(out, " normal bb{}{}", normal.target.0, edge_args(normal)).expect("write to String");
+    if let Some(normal) = normal {
+        write!(out, " normal bb{}{}", normal.target.0, edge_args(normal)).expect("write to String");
+    }
     match unwind {
         CallUnwind::NotApplicable => writeln!(out, " unwind none"),
         CallUnwind::Cleanup(edge) => {
@@ -371,6 +814,7 @@ fn operand(operand: &crate::Operand) -> String {
 fn boundary_operand(input: &crate::BoundaryOperand) -> String {
     let decision = match input.decision {
         crate::BoundaryDecision::Borrow => "borrow",
+        crate::BoundaryDecision::BorrowMut => "borrow_mut",
         crate::BoundaryDecision::Copy => "copy",
         crate::BoundaryDecision::Move => "move",
         crate::BoundaryDecision::Snapshot(crate::SnapshotDecision::Share) => "snapshot.share",

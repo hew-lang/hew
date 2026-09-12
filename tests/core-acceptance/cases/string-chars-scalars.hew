@@ -1,0 +1,40 @@
+// `string.chars()` yields the Unicode scalars of a string as an owned
+// `Vec<char>`: ASCII, multi-byte scalars, an embedded NUL and the empty string.
+fn scalars(text: string) -> i64 {
+    var total = 0;
+    for c in text.chars() {
+        total = total + (c as i64);
+    }
+    return total
+}
+
+fn main() {
+    let ascii = "abc".chars();
+    assert(ascii.len() == 3);
+    assert(ascii[0] == 'a');
+    assert(ascii[2] == 'c');
+
+    // Each scalar is one element regardless of its UTF-8 width.
+    let mixed = "Aé中🙂".chars();
+    assert(mixed.len() == 4);
+    assert(mixed[0] == 'A');
+    assert(mixed[3] == '🙂');
+    assert((mixed[3] as i64) == 128578);
+
+    // A NUL is an ordinary scalar, not a terminator.
+    let nul = "a\0b".chars();
+    assert(nul.len() == 3);
+    assert(nul[1] == '\0');
+    assert(nul[2] == 'b');
+
+    assert("".chars().len() == 0);
+
+    // The source string is untouched and the result is the caller's.
+    let source = "hold".to_upper();
+    let held = source.chars();
+    assert(held.len() == 4);
+    assert(source == "HOLD");
+
+    assert(scalars("abc") == 294);
+    println("chars passed");
+}

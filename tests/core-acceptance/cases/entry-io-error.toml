@@ -1,0 +1,11 @@
+[[case]]
+id = "entry-io-error"
+intent = "A standard filesystem error satisfies the Error entry contract and retains its Display diagnostic."
+source = "cases/entry-io-error.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "error: NotFound(2)\n"
+exit = 1

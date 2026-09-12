@@ -1,0 +1,10 @@
+extern "C" {
+    fn oracle_make(seed: i32) -> bytes;
+}
+
+fn main() {
+    let value = unsafe {
+        oracle_make(17)
+    };
+    println(value.len());
+}

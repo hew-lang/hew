@@ -1,16 +1,187 @@
-//! Ownership vocabulary of the semantic IR (`docs/internal/ir-ladder.md` §1.2,
-//! §1.3, §1.5).
+//! Ownership vocabulary and checked aggregate recipes of the semantic IR.
 //!
 //! All ownership is explicit in the op stream. An operand's mode **is the op it
 //! feeds**; there is no side tag on a read.
 
-use crate::model::SemParamPassing;
-use crate::model::ValueId;
+use crate::model::{
+    AggregateShapeRef, SemAggregateShape, SemParamPassing, SemVariantShape, ValueId, VariantShapeId,
+};
 use hew_parser::ast::Span;
-use hew_types::{ResolvedTy, TypeInstanceKey, ValueClass};
+use hew_types::{CloneKind, ResolvedTy, TypeInstanceKey, ValueClass};
 
 /// The §6.2 fact table a module carries, as the ownership rules read it.
 pub type TypeFactTable = std::collections::BTreeMap<TypeInstanceKey, hew_types::TypeFacts>;
+
+/// One ordered aggregate field's ownership recipe.
+///
+/// This is derived solely from the exact concrete field type and the
+/// checker-published fact row. Physical lowering may choose storage and ABI,
+/// but it must consume this recipe instead of classifying a field again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateFieldRecipe {
+    pub ty: ResolvedTy,
+    pub own: OwnKind,
+    pub clone: CloneKind,
+}
+
+/// Resolve one operation's exact ordered aggregate field types.
+///
+/// Tuple shapes are structural. Named records must carry a module-local shape
+/// ID whose descriptor agrees with the operation's concrete aggregate type.
+/// No consumer may reconstruct a record descriptor from its display name.
+///
+/// # Errors
+///
+/// Refuses a non-tuple structural shape, a missing/non-canonical record
+/// ID, or a record descriptor whose concrete type differs from the operation.
+pub fn aggregate_field_types(
+    shape: AggregateShapeRef,
+    aggregate_ty: &ResolvedTy,
+    shapes: &[SemAggregateShape],
+) -> Result<Vec<ResolvedTy>, String> {
+    match shape {
+        AggregateShapeRef::Tuple => match aggregate_ty {
+            ResolvedTy::Tuple(fields) => Ok(fields.clone()),
+            _ => Err(format!(
+                "tuple aggregate operation has non-tuple type `{}`",
+                aggregate_ty.user_facing()
+            )),
+        },
+        AggregateShapeRef::Record(id) => {
+            let descriptor = shapes
+                .get(usize::try_from(id.0).map_err(|_| {
+                    format!("aggregate shape {} exceeds the host index range", id.0)
+                })?)
+                .filter(|descriptor| descriptor.id == id)
+                .ok_or_else(|| format!("aggregate shape {} is missing or non-canonical", id.0))?;
+            if &descriptor.aggregate_ty != aggregate_ty {
+                return Err(format!(
+                    "aggregate shape {} describes `{}`, not `{}`",
+                    id.0,
+                    descriptor.aggregate_ty.user_facing(),
+                    aggregate_ty.user_facing()
+                ));
+            }
+            Ok(descriptor
+                .fields
+                .iter()
+                .map(|field| field.ty.clone())
+                .collect())
+        }
+    }
+}
+
+/// Derive the single ordered ownership/copy recipe for one concrete aggregate.
+///
+/// Missing field facts are a hard refusal. This service is shared by the SIR
+/// verifier and physical lowering, so aggregate glue has one semantic input.
+///
+/// # Errors
+///
+/// Returns [`aggregate_field_types`]'s shape refusal or identifies the exact
+/// concrete field type whose checker-published fact row is absent.
+pub fn aggregate_field_recipes(
+    shape: AggregateShapeRef,
+    aggregate_ty: &ResolvedTy,
+    shapes: &[SemAggregateShape],
+    facts: &TypeFactTable,
+) -> Result<Vec<AggregateFieldRecipe>, String> {
+    aggregate_field_types(shape, aggregate_ty, shapes)?
+        .into_iter()
+        .map(|ty| {
+            let row = facts.get(&TypeInstanceKey(ty.clone())).ok_or_else(|| {
+                format!(
+                    "aggregate field `{}` has no concrete type-fact row",
+                    ty.user_facing()
+                )
+            })?;
+            Ok(AggregateFieldRecipe {
+                ty,
+                own: OwnKind::of_class(row.class),
+                clone: row.clone,
+            })
+        })
+        .collect()
+}
+
+/// Resolve one exact variant's ordered payload types.
+///
+/// # Errors
+///
+/// Refuses a missing/non-canonical shape, a descriptor for a different enum
+/// type, or an out-of-range declaration-order variant.
+pub fn variant_field_types(
+    shape: VariantShapeId,
+    variant: u32,
+    enum_ty: &ResolvedTy,
+    shapes: &[SemVariantShape],
+) -> Result<Vec<ResolvedTy>, String> {
+    let descriptor = shapes
+        .get(
+            usize::try_from(shape.0)
+                .map_err(|_| format!("variant shape {} exceeds the host index range", shape.0))?,
+        )
+        .filter(|descriptor| descriptor.id == shape)
+        .ok_or_else(|| format!("variant shape {} is missing or non-canonical", shape.0))?;
+    if !call_boundary_types_match(&descriptor.enum_ty, enum_ty) {
+        return Err(format!(
+            "variant shape {} describes `{}`, not `{}`",
+            shape.0,
+            descriptor.enum_ty.user_facing(),
+            enum_ty.user_facing()
+        ));
+    }
+    let variant = descriptor
+        .variants
+        .get(
+            usize::try_from(variant)
+                .map_err(|_| "variant index exceeds the host index range".to_string())?,
+        )
+        .ok_or_else(|| {
+            format!(
+                "variant {variant} is out of bounds for `{}` with {} variant(s)",
+                enum_ty.user_facing(),
+                descriptor.variants.len()
+            )
+        })?;
+    Ok(variant
+        .fields
+        .iter()
+        .map(|field| field.ty.clone())
+        .collect())
+}
+
+/// Derive one exact variant's ordered ownership/copy recipes from the
+/// checker-published type-fact rows.
+///
+/// # Errors
+///
+/// Returns [`variant_field_types`]'s descriptor refusal or identifies the
+/// concrete payload type whose checker-published fact row is absent.
+pub fn variant_field_recipes(
+    shape: VariantShapeId,
+    variant: u32,
+    enum_ty: &ResolvedTy,
+    shapes: &[SemVariantShape],
+    facts: &TypeFactTable,
+) -> Result<Vec<AggregateFieldRecipe>, String> {
+    variant_field_types(shape, variant, enum_ty, shapes)?
+        .into_iter()
+        .map(|ty| {
+            let row = facts.get(&TypeInstanceKey(ty.clone())).ok_or_else(|| {
+                format!(
+                    "variant field `{}` has no concrete type-fact row",
+                    ty.user_facing()
+                )
+            })?;
+            Ok(AggregateFieldRecipe {
+                ty,
+                own: OwnKind::of_class(row.class),
+                clone: row.clone,
+            })
+        })
+        .collect()
+}
 
 /// The ownership obligation carried by one SSA value (§1.2).
 ///
@@ -27,6 +198,27 @@ pub enum OwnKind {
 }
 
 impl OwnKind {
+    /// The kind of a runtime operation's loan result.
+    ///
+    /// A loan of a value the receiver still owns is `Guaranteed`: it carries
+    /// no obligation of its own and must not outlive the receiver's loan. A
+    /// concrete result type that carries no obligation at all was bit-copied
+    /// out of the slot, so it ties to nothing and is an ordinary independent
+    /// value. A generic template pins a borrowed read before its element types
+    /// are known, so the exact instance is where this is decided.
+    ///
+    /// # Errors
+    /// Returns the reason the result type has no ownership kind.
+    pub fn of_loan_result(
+        ty: &ResolvedTy,
+        facts: &crate::ownership::TypeFactTable,
+    ) -> Result<Self, String> {
+        Ok(match Self::of_ty(ty, facts)? {
+            Self::None => Self::None,
+            _ => Self::Guaranteed,
+        })
+    }
+
     /// The §1.2 table, as a total function of the class.
     #[must_use]
     pub const fn of_class(class: ValueClass) -> Self {
@@ -45,33 +237,17 @@ impl OwnKind {
     /// checker decided rather than deciding one of its own, so a value's kind
     /// cannot be settled by one rule and audited by another.
     ///
-    /// MARKED SHORTCUT — a type with no row falls back to the class rule over
-    /// an empty declaration context.
-    /// WHY: the checker publishes a row for every concrete accepted expression
-    /// type, closed under components, but the lowering also mints substituted
-    /// template types and synthesized unit types the checker never saw as an
-    /// expression type. Those are scalars and tuples of scalars in this domain,
-    /// which the class rule decides without declaration facts; a user `Named`
-    /// with no row classes `UnknownDeclaration` and this refuses, which is the
-    /// fail-closed answer.
-    /// WHEN: the substituted instance types the lowering mints are published on
-    /// `TypeCheckOutput` too, so every type SIR mentions has a row (L3).
-    /// WHAT: a missing row is `E_SIR_ICE structural MissingTypeFacts` (L2)
-    /// rather than a second computation of the class.
-    ///
     /// # Errors
     ///
-    /// Returns the class rule's refusal, rendered against the user-facing type
-    /// name, when neither the table nor §1.1 can decide the type's class.
+    /// Returns a fail-closed missing-facts error. Concrete fact expansion must
+    /// happen through `hew_types::TypeFactService` before a value is built.
     pub fn of_ty(ty: &ResolvedTy, facts: &TypeFactTable) -> Result<Self, String> {
-        if let Some(row) = facts.get(&TypeInstanceKey(ty.clone())) {
-            return Ok(Self::of_class(row.class));
-        }
-        hew_types::ValueClass::of_ty(ty, &hew_types::ClassContext::empty())
-            .map(Self::of_class)
-            .map_err(|error| {
+        facts
+            .get(&TypeInstanceKey(ty.clone()))
+            .map(|row| Self::of_class(row.class))
+            .ok_or_else(|| {
                 format!(
-                    "SIR cannot decide the ownership kind of `{}`: {error}",
+                    "SIR cannot decide the ownership kind of `{}`: concrete type facts are missing",
                     ty.user_facing()
                 )
             })
@@ -80,10 +256,9 @@ impl OwnKind {
     /// The §1.2 kind of a parameter, which is its ABI slot before it is its
     /// type's class.
     ///
-    /// Rule 3: a parameter whose header slot is [`SemParamPassing::Borrow`] is
-    /// a `Guaranteed` value for the whole body whatever its type's class says,
-    /// because the caller keeps the obligation. Every other slot takes the
-    /// class table's answer.
+    /// Shared and exclusive borrow slots are `Guaranteed` for the whole body
+    /// because the caller keeps the obligation. Consuming slots require an
+    /// owning concrete type and transfer its obligation to the callee.
     ///
     /// # Errors
     ///
@@ -95,7 +270,14 @@ impl OwnKind {
         facts: &TypeFactTable,
     ) -> Result<Self, String> {
         match passing {
-            SemParamPassing::Borrow => Ok(Self::Guaranteed),
+            SemParamPassing::Borrow | SemParamPassing::BorrowMut => Ok(Self::Guaranteed),
+            SemParamPassing::Consume => {
+                let own = Self::of_ty(ty, facts)?;
+                if own != Self::Owned {
+                    return Err("consuming parameter requires an owning concrete type".to_string());
+                }
+                Ok(own)
+            }
             SemParamPassing::ReadOnly => Self::of_ty(ty, facts),
         }
     }
@@ -107,13 +289,55 @@ pub struct PlaceId(pub u32);
 
 /// One place a function body can address.
 ///
-/// `runtime_owned` distinguishes an actor state field or an environment slot,
-/// whose exit obligations §1.3.6 states, from an ordinary function-owned place.
+/// The origin records who owns the place and its exit obligations.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlaceDecl {
     pub id: PlaceId,
     pub ty: ResolvedTy,
-    pub runtime_owned: bool,
+    pub origin: PlaceOrigin,
+}
+
+/// An explicit value or place dependency. Projection parents and local loans
+/// use the same identity vocabulary; neither invents another owning value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PlaceBase {
+    Value(ValueId),
+    Place(PlaceId),
+}
+
+/// The owner reached through a checked place path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OwnerRoot {
+    Value(ValueId),
+    Local(PlaceId),
+}
+
+/// The semantic owner of a memory place, without a physical field offset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlaceOrigin {
+    Local,
+    Runtime,
+    /// State protected by the enclosing strict actor turn. `initialized`
+    /// is false only in the actor's `init` body for a field init owns
+    /// (D447): that seat holds no value until init's first store.
+    ActorState {
+        actor: crate::ActorId,
+        state: ValueId,
+        field: u32,
+        initialized: bool,
+    },
+    /// An initialized field of this closure body's explicit receiver.
+    Capture {
+        environment: ValueId,
+        field: u32,
+    },
+    /// One exact field of the immediate aggregate base. Resolving that base
+    /// supplies the unique owning root; it is not repeated on each child.
+    Aggregate {
+        base: PlaceBase,
+        shape: AggregateShapeRef,
+        field: u32,
+    },
 }
 
 /// Module-local interned identity of a `string` literal (§1.3.1).
@@ -136,7 +360,109 @@ pub enum TrapKind {
     DivideByZero,
     SignedMinDivNegOne,
     ShiftOutOfRange,
+    IndexOutOfBounds,
 }
+
+#[must_use]
+pub const fn runtime_failure_trap_kind(
+    failure: hew_types::RuntimeLogicalFailure,
+) -> Option<TrapKind> {
+    match failure {
+        hew_types::RuntimeLogicalFailure::IndexOutOfBounds => Some(TrapKind::IndexOutOfBounds),
+        hew_types::RuntimeLogicalFailure::IntegerOverflow => Some(TrapKind::IntegerOverflow),
+        hew_types::RuntimeLogicalFailure::CallbackFault => None,
+    }
+}
+
+/// Exact language-visible failures for a checked binary integer operation.
+///
+/// This is the semantic authority shared by SIR construction, verification
+/// and the physical consumer. A backend may choose how to test these
+/// conditions, but it may neither add nor omit a failure edge.
+#[must_use]
+pub fn checked_binary_failure_kinds(
+    op: hew_parser::ast::BinaryOp,
+    ty: &ResolvedTy,
+) -> Option<&'static [TrapKind]> {
+    use hew_parser::ast::BinaryOp;
+
+    const OVERFLOW: &[TrapKind] = &[TrapKind::IntegerOverflow];
+    const DIV_UNSIGNED: &[TrapKind] = &[TrapKind::DivideByZero];
+    const DIV_SIGNED: &[TrapKind] = &[TrapKind::DivideByZero, TrapKind::SignedMinDivNegOne];
+    const SHIFT: &[TrapKind] = &[TrapKind::ShiftOutOfRange];
+
+    if !ty.is_integer() && *ty != ResolvedTy::Duration {
+        return None;
+    }
+    match op {
+        BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply => Some(OVERFLOW),
+        BinaryOp::Divide | BinaryOp::Modulo
+            if ty.is_signed_integer() || *ty == ResolvedTy::Duration =>
+        {
+            Some(DIV_SIGNED)
+        }
+        BinaryOp::Divide | BinaryOp::Modulo => Some(DIV_UNSIGNED),
+        BinaryOp::Shl | BinaryOp::Shr => Some(SHIFT),
+        BinaryOp::Equal
+        | BinaryOp::NotEqual
+        | BinaryOp::Less
+        | BinaryOp::LessEqual
+        | BinaryOp::Greater
+        | BinaryOp::GreaterEqual
+        | BinaryOp::And
+        | BinaryOp::Or
+        | BinaryOp::BitAnd
+        | BinaryOp::BitOr
+        | BinaryOp::BitXor
+        | BinaryOp::Range
+        | BinaryOp::RangeInclusive
+        | BinaryOp::WrappingAdd
+        | BinaryOp::WrappingSub
+        | BinaryOp::WrappingMul => None,
+    }
+}
+
+/// Check the operand and result relation for admitted checked arithmetic.
+/// Duration arithmetic uses signed nanoseconds; scaling currently admits i64.
+#[must_use]
+pub fn checked_binary_types_match(
+    op: hew_parser::ast::BinaryOp,
+    lhs: &ResolvedTy,
+    rhs: &ResolvedTy,
+    result: &ResolvedTy,
+) -> bool {
+    use hew_parser::ast::BinaryOp;
+    use ResolvedTy::{Duration, I64};
+    if lhs.is_integer() && lhs == rhs && lhs == result {
+        return true;
+    }
+    matches!(
+        (op, lhs, rhs, result),
+        (
+            BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Modulo,
+            Duration,
+            Duration,
+            Duration
+        ) | (
+            BinaryOp::Multiply | BinaryOp::Divide,
+            Duration,
+            I64,
+            Duration
+        ) | (BinaryOp::Multiply, I64, Duration, Duration)
+            | (BinaryOp::Divide, Duration, Duration, I64)
+            // `instant` is `I64` here: advancing or rewinding a timestamp by a
+            // duration keeps the timestamp, and the gap between two timestamps
+            // is a duration. SIR cannot tell an `instant` from any other `i64`,
+            // so these arms are stated in the canonical spelling.
+            | (BinaryOp::Add | BinaryOp::Subtract, I64, Duration, I64)
+            | (BinaryOp::Add, Duration, I64, I64)
+            | (BinaryOp::Subtract, I64, I64, Duration)
+    )
+}
+
+/// Function-local identity of a lexical structured-task lifetime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TaskScopeId(pub u32);
 
 /// Which runtime operation a `Suspend` terminator parks on (§1.5).
 ///
@@ -157,24 +483,95 @@ pub enum TrapKind {
 ///   neither reading is foreclosed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SuspendKind {
+    /// An owned native request with an exact result and input-loan contract.
+    NativeIo {
+        operation: hew_types::runtime_call::AsyncIoOp,
+    },
     Await,
     RestartWait,
     ActorSend,
-    Ask,
+    Ask {
+        actor: crate::ActorId,
+        message: u32,
+        /// Admission behaviour for this call when the destination mailbox is
+        /// full: `Wait` parks the caller, `Reject` refuses the call.
+        policy: hew_types::actor_delivery::SendPolicy,
+        deadline_ns: Option<i64>,
+        /// The input is the sealed request owner instead of fresh arguments.
+        sealed: bool,
+    },
     RemoteAsk,
     Read,
     Accept,
-    ChannelRecv,
-    StreamNext,
+    /// A channel consumer takes the next element. `park` is the `recv()`
+    /// contract: an empty channel with live senders parks the coroutine.
+    /// `try_recv()` is the same take with `park: false` — an empty channel
+    /// resumes immediately with `None`.
+    ChannelRecv {
+        park: bool,
+    },
+    /// A channel producer parks on a bounded channel's capacity. The element
+    /// is deep-copied into the queue, so the producer keeps its value.
+    ChannelSend,
+    /// A stream consumer takes the next element. `park` is the `recv()`
+    /// contract: an exhausted stream with a live producer parks the
+    /// coroutine. `try_recv()` is the same take with `park: false` — an empty
+    /// stream resumes immediately with `None`.
+    StreamNext {
+        park: bool,
+    },
     StreamSend,
     CallClosure,
-    Select,
+    /// Borrowed task observations, followed by an optional copied duration.
+    Select {
+        has_timeout: bool,
+        order: crate::TaskSelectionOrder,
+    },
     Timeout,
-    Join,
+    Join {
+        scope: TaskScopeId,
+        mode: TaskScopeJoinMode,
+    },
     ScopeDeadline,
     Yield,
+    GeneratorNext,
+    /// Drain owned children through the existing place leaf mask or SSA owner.
+    /// Preserve initialization and combine cleanup faults before ordinary release.
+    ValueClose {
+        place: Option<crate::PlaceId>,
+        selection: ValueCloseSelection,
+    },
     Sleep,
     SleepUntil,
+}
+
+/// The scope drain carries both cancellation intent and fault preservation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TaskScopeJoinMode {
+    Wait,
+    PropagateFault,
+    CancelLosers,
+    CancelLosersAfterFault,
+}
+
+impl TaskScopeJoinMode {
+    #[must_use]
+    pub const fn preserves_fault(self) -> bool {
+        matches!(self, Self::PropagateFault | Self::CancelLosersAfterFault)
+    }
+
+    #[must_use]
+    pub const fn cancels_losers(self) -> bool {
+        matches!(self, Self::CancelLosers | Self::CancelLosersAfterFault)
+    }
+}
+
+/// Which children of an owner must finish cleanup before execution continues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ValueCloseSelection {
+    Whole,
+    /// The second suspension operand is the copied vector index.
+    VectorElement,
 }
 
 /// How an owning value crosses an actor or task boundary (§2 rule 5).
@@ -193,6 +590,8 @@ pub enum SnapshotDecision {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BoundaryDecision {
     Borrow,
+    /// Exclusive access to caller-owned storage for a synchronous call.
+    BorrowMut,
     Copy,
     Move,
     Snapshot(SnapshotDecision),
@@ -235,6 +634,71 @@ pub struct Binding {
     pub span: Span,
     pub mutable: bool,
     pub target: BindingTarget,
+}
+
+/// The element type of an exact `Stream<T>`.
+#[must_use]
+pub fn stream_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Stream),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// The element type of an exact `Sink<T>`.
+#[must_use]
+pub fn sink_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sink),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// The element type of an exact `Sender<T>`.
+#[must_use]
+pub fn sender_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Sender),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// The element type of an exact `Receiver<T>`.
+#[must_use]
+pub fn receiver_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
+    match ty {
+        ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Receiver),
+            args,
+            ..
+        } if args.len() == 1 => args.first(),
+        _ => None,
+    }
+}
+
+/// Whether two checked types are the same value at a call boundary.
+#[must_use]
+pub fn call_boundary_types_match(left: &ResolvedTy, right: &ResolvedTy) -> bool {
+    left == right
+}
+
+/// The shared element type of one pipe's `Stream<T>` and `Sink<T>` halves.
+#[must_use]
+pub fn pipe_parts<'a>(stream: &'a ResolvedTy, sink: &ResolvedTy) -> Option<&'a ResolvedTy> {
+    let element = stream_element(stream)?;
+    (sink_element(sink) == Some(element)).then_some(element)
 }
 
 #[cfg(test)]

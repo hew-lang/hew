@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-quiet-values"
+intent = "Machines without outputs return the uniform step report with an uninhabited output type whose vector copies and iteration remain empty."
+source = "cases/machine-quiet-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Idle\n"
+exit = 0

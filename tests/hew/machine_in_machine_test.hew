@@ -23,15 +23,13 @@ import std.testing;
 // ── Order A: embedded machine declared FIRST (this always worked) ─────────
 machine InnerA {
     events {
-        go;
+        go,
     }
 
-    state Ready { payload: string; }
-    state Done;
+    state Ready { payload: string, },
+    state Done,
 
-    on go: Ready => Done {
-        InnerA.Done
-    }
+    on go: Ready => Done,
     on go: _ => _ {
         state
     }
@@ -39,15 +37,13 @@ machine InnerA {
 
 machine OuterA {
     events {
-        step;
+        step,
     }
 
-    state Holding { inner: InnerA; }
-    state Empty;
+    state Holding { inner: InnerA, },
+    state Empty,
 
-    on step: Holding => Empty {
-        OuterA.Empty
-    }
+    on step: Holding => Empty,
     on step: _ => _ {
         state
     }
@@ -72,15 +68,13 @@ fn machine_in_machine_embedded_declared_first() {
 // ── Order B: container declared FIRST (this segfaulted before the fix) ────
 machine OuterB {
     events {
-        step;
+        step,
     }
 
-    state HoldingB { inner: InnerB; }
-    state EmptyB;
+    state HoldingB { inner: InnerB, },
+    state EmptyB,
 
-    on step: HoldingB => EmptyB {
-        OuterB.EmptyB
-    }
+    on step: HoldingB => EmptyB,
     on step: _ => _ {
         state
     }
@@ -88,15 +82,13 @@ machine OuterB {
 
 machine InnerB {
     events {
-        go;
+        go,
     }
 
-    state ReadyB { payload: string; }
-    state DoneB;
+    state ReadyB { payload: string, },
+    state DoneB,
 
-    on go: ReadyB => DoneB {
-        InnerB.DoneB
-    }
+    on go: ReadyB => DoneB,
     on go: _ => _ {
         state
     }

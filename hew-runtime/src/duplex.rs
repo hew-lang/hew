@@ -936,8 +936,9 @@ pub unsafe extern "C" fn hew_duplex_try_send(
 }
 
 /// Block until a message is available on the unified Duplex's
-/// R-direction. The payload is allocated by the runtime (malloc'd via
-/// the system allocator) and ownership transfers to the caller, who
+/// R-direction. The payload is allocated by the runtime as a boxed byte
+/// slice (via the Rust global allocator) and ownership transfers to the
+/// caller, who
 /// must release it with [`hew_duplex_payload_free`]. On success,
 /// `*out_ptr` points at the payload bytes and `*out_len` carries the
 /// length. On closed-or-error, `*out_ptr` is null, `*out_len` is 0,

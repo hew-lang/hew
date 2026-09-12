@@ -5,7 +5,7 @@ use hew_sandbox_wasm::compile_to_sandbox_bytecode;
 const PROFILE: &str = "sandbox-vm-export";
 const ACTOR_HANDLE_IS: &str = r"
     actor Worker {
-        let _id: i64;
+        let _id: i64,
         receive fn ping() {}
     }
 

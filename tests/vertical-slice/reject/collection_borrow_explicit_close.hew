@@ -6,13 +6,13 @@ type Tok {
 }
 
 impl Tok {
-    fn close(self) {
+    fn close(consume self) {
         println(f"close {self.id}");
     }
 }
 
 fn main() {
-    let v: Vec<Tok> = Vec.new();
+    var v: Vec<Tok> = Vec.new();
     v.push(Tok { id: 1 });
     let e = v[0];
     e.close();

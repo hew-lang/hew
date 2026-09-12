@@ -2304,6 +2304,8 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
     // SAFETY: the mailbox pointer is valid for the actor's lifetime
     // (null-tolerant).
     if unsafe { mailbox::mailbox_stop_requested(mailbox) }
+        // SAFETY: the caller owns this activation and its parked child state.
+        && !unsafe { crate::actor_native::cancel_checked_turn(a) }
         && a.actor_state
             .compare_exchange(
                 HewActorState::Running as i32,
@@ -2355,6 +2357,8 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
         // this load) by waking the actor so this path runs again.
         // SAFETY: the mailbox pointer is valid for the actor's lifetime.
         if unsafe { mailbox::mailbox_stop_requested(mailbox) }
+        // SAFETY: the caller owns this activation and its parked child state.
+        && !unsafe { crate::actor_native::cancel_checked_turn(a) }
             && a.actor_state
                 .compare_exchange(
                     HewActorState::Suspended as i32,
@@ -2398,6 +2402,10 @@ unsafe fn settle_pending_resume(actor: *mut HewActor) {
 /// # Safety
 ///
 /// `actor` is owned by the calling activation frame (the Running CAS is held).
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the activation resume and cleanup sequence together"
+)]
 unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
@@ -2410,6 +2418,15 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     // would see no reply channel and the caller would hang (R1). The context is
     // a scheduler-owned stack carrier for the duration of the resume, restored
     // after (mirroring the fresh-dispatch carrier install/restore).
+    let invocation = a.checked_invocation.load(Ordering::Acquire);
+    // Snapshot before driving the frame: completion clears and frees invocation
+    // state before this activation reports its fault.
+    let message_type = if invocation.is_null() {
+        0
+    } else {
+        // SAFETY: activation ownership keeps the parked invocation live here.
+        unsafe { (*invocation.cast::<crate::coro_state::HewCoroState>()).actor_message_type }
+    };
     let stashed_reply = a.suspended_reply_channel.load(Ordering::Acquire);
     let stashed_cancel_token = a.suspended_cancel_token.load(Ordering::Acquire);
     let mut resume_context = HewExecutionContext {
@@ -2426,6 +2443,7 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         prev_context: crate::execution_context::current_context(),
         lock_seat: dispatch_lock_seat_for_actor(actor),
         reply_channel: stashed_reply,
+        checked_fault: crate::actor_native::CheckedActorFault::default(),
     };
     let prev_context = resume_context.prev_context;
     let installed_prev = crate::execution_context::set_current_context(&raw mut resume_context);
@@ -2465,16 +2483,37 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         unsafe { crate::coro_exec::resume_park(a) }
     }));
     let poll = match poll {
-        Ok(poll) => poll,
+        Ok(poll) => {
+            let fault = resume_context.checked_fault.take().and_then(|fault| {
+                // SAFETY: this scheduler activation owns the actor and completed fault.
+                unsafe { crate::actor_native::normalize_stopped_turn(actor, fault) }
+            });
+            if let Some(fault) = fault {
+                // SAFETY: the checked body returned through its cleanup graph;
+                // this activation owns the completed frame and actor state.
+                unsafe {
+                    finish_failed_resume(
+                        actor,
+                        &raw mut resume_context,
+                        message_type,
+                        crate::actor_native::DispatchFailure::Checked(fault),
+                    );
+                }
+                return;
+            }
+            poll
+        }
         Err(payload) => {
-            let code = payload
-                .downcast_ref::<crate::actor::HewPanic>()
-                .map_or(101, |panic| panic.code);
-            crate::util::quarantine_panic_payload(payload);
-            crate::crash::record_logical_crash(a.id, code, 0, a.dispatch.map_or(0, |f| f as usize));
             // SAFETY: catch_unwind proves the resumed stack is dead; this
             // activation still exclusively owns actor and resume_context.
-            unsafe { resume_crash_recovery(actor, &raw mut resume_context, code) };
+            unsafe {
+                finish_failed_resume(
+                    actor,
+                    &raw mut resume_context,
+                    message_type,
+                    crate::actor_native::DispatchFailure::Unwind(payload),
+                );
+            }
             return;
         }
     };
@@ -2544,32 +2583,25 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
     }
 }
 
-/// Crash recovery for a trap raised inside a RESUMED continuation.
+/// Finish a checked failure or native unwind from a resumed continuation.
 ///
-/// Reached only when [`resume_suspended_activation`]'s `catch_unwind` catches a
-/// logical Hew failure. Mirrors the fresh-dispatch unwind branch in
-/// [`activate_actor`]
-/// (lock release → swap unwind → reply routing → `Crashing` CAS → arena reset →
-/// late crash-reply → terminal `Crashed`), with the resume-specific differences:
-///   * the reply channel is read from the resume's installed context
-///     (`resume_context`, carrying the handler's stashed reply channel), not a
-///     mailbox node — a resume has no `msg` to free;
-///   * the crash-abandoned coroutine frame (tag stuck at `Resuming` because the
-///     unwind skipped the settle) is reclaimed via
-///     [`crate::coro_exec::abandon_resuming_after_crash`] BEFORE the actor frees,
-///     since `destroy_parked` refuses a `Resuming` tag.
+/// Both paths retire the parked reply and publish the actor fault through the
+/// same terminal transition. Checked completion has already run source cleanup
+/// and destroys its final frame normally. Native unwind instead recovers the
+/// abandoned frame's owners before raw reclamation.
 ///
 /// # Safety
 ///
-/// Called immediately after `catch_unwind` returned `Err` on this worker thread.
-/// `actor` is owned by this frame (Running CAS held). `resume_context` is the
+/// Called after a checked body reaches final suspend or `catch_unwind` returns
+/// `Err`. `actor` is owned by this frame (Running CAS held). `resume_context` is the
 /// still-installed dispatch context (a live stack local in the caller frame);
 /// the prior context is restored via `restore_current_context_after_dispatch`,
 /// which walks `resume_context`'s `prev_context`.
-unsafe fn resume_crash_recovery(
+unsafe fn finish_failed_resume(
     actor: *mut HewActor,
     resume_context: *mut HewExecutionContext,
-    code: i32,
+    message_type: i32,
+    failure: crate::actor_native::DispatchFailure,
 ) {
     // This frame is a crash teardown, and a crash teardown RELEASES OTHER
     // THREADS long before it reaches the trap that puts the crash on the
@@ -2583,6 +2615,31 @@ unsafe fn resume_crash_recovery(
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
     let actor_arena = a.arena;
+    let checked = matches!(&failure, crate::actor_native::DispatchFailure::Checked(_));
+    let code = match failure {
+        crate::actor_native::DispatchFailure::Checked(fault) => {
+            // SAFETY: the source cleanup returned normally; its actor state
+            // escrow remains borrowed and the final frame has one destroy owner.
+            if !unsafe { crate::cont::finish_dispatch_crash_cleanup() } {
+                eprintln!("fatal: checked resumed actor failure retained crash-cleanup owners");
+                std::process::abort();
+            }
+            crate::actor_native::report_checked_failure(&fault)
+        }
+        crate::actor_native::DispatchFailure::Unwind(payload) => {
+            let code = payload
+                .downcast_ref::<crate::actor::HewPanic>()
+                .map_or(101, |panic| panic.code);
+            crate::util::quarantine_panic_payload(payload);
+            code
+        }
+    };
+    crate::crash::record_logical_crash(
+        a.id,
+        code,
+        message_type,
+        a.dispatch.map_or(0, |f| f as usize),
+    );
 
     // Generated dispatch wrappers acquire the actor-state lock before the
     // handler body; the unwind may bypass their explicit release edge, so release any
@@ -2597,27 +2654,29 @@ unsafe fn resume_crash_recovery(
     // handler root. Exclude it while raw-reclaiming nested synchronous child
     // ramps; `abandon_resuming_after_crash` below removes/frees that root exactly
     // once. Its typed field obligations are independent and run in swap unwind.
-    let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
-    // A child suspending-closure call that unwound inside the resume
-    // bypassed the driver's swap-pop and driver-channel teardown. Restore the
-    // outer reply routing, tear those channels down, and typed-drop abandoned
-    // frame slots before raw reclamation. Root field drops run here exactly
-    // once; only its raw frame allocation remains reserved for the actor-slot
-    // authority below.
-    crate::execution_context::reply_channel_swap_unwind();
-    // SAFETY: catch_unwind proves the active resume stack is dead. The drain
-    // frees only positively tracked nested frames and preserves
-    // `scheduler_root` for the actor-slot authority.
-    let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
-    // Frame/nested owners are newer and drain first. The dispatch registry then
-    // releases ordinary stack owners and finally the structurally valid actor
-    // state escrow, all before arena reset and raw state disposal.
-    // SAFETY: catch_unwind proves the dispatch stack is abandoned and this recovery
-    // path exclusively owns its cleanup scope.
-    let outcome = unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };
-    if outcome.state_authority_consumed {
-        // SAFETY: this recovery frame exclusively owns the crashed actor.
-        unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+    if !checked {
+        let scheduler_root = a.suspended_cont.load(Ordering::Acquire);
+        // A child suspending-closure call that unwound inside the resume
+        // bypassed the driver's swap-pop and driver-channel teardown. Restore the
+        // outer reply routing, tear those channels down, and typed-drop abandoned
+        // frame slots before raw reclamation. Root field drops run here exactly
+        // once; only its raw frame allocation remains reserved for the actor-slot
+        // authority below.
+        crate::execution_context::reply_channel_swap_unwind();
+        // SAFETY: catch_unwind proves the active resume stack is dead. The drain
+        // frees only positively tracked nested frames and preserves
+        // `scheduler_root` for the actor-slot authority.
+        let _ = unsafe { crate::cont::reclaim_active_coroutine_frames_excluding(scheduler_root) };
+        // Frame/nested owners are newer and drain first. The dispatch registry then
+        // releases ordinary stack owners and finally the structurally valid actor
+        // state escrow, all before arena reset and raw state disposal.
+        // SAFETY: catch_unwind proves the dispatch stack is abandoned and this recovery
+        // path exclusively owns its cleanup scope.
+        let outcome = unsafe { crate::cont::recover_dispatch_crash_cleanup_with_outcome(false) };
+        if outcome.state_authority_consumed {
+            // SAFETY: this recovery frame exclusively owns the crashed actor.
+            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
+        }
     }
 
     // Capture the crashed resume's reply-channel state from the still-installed
@@ -2659,18 +2718,17 @@ unsafe fn resume_crash_recovery(
         }
     };
 
-    // Reclaim the crash-abandoned coroutine frame (tag stuck at `Resuming`)
-    // exactly once, while `Crashing` keeps the actor non-quiescent so the box
-    // stays alive. Frees the frame block WITHOUT running the `coro.destroy`
-    // cleanup outline — the coroutine was RUNNING (between suspend points) when
-    // it trapped, so re-running the last suspend's cleanup would double-free the
-    // registrations its resume edge already released. The frame-registry drain
-    // above already ran the root's registered typed field drops while reserving
-    // this raw allocation; arena reset below reclaims the remaining
-    // arena-backed state.
-    // SAFETY: the unwind killed the resume, so no concurrent resume/destroy can
-    // run; this worker owns the actor exclusively.
-    let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
+    // Retire the frame before publishing a quiescent actor state. The checked
+    // path reached Done; the unwind path abandoned a frame still tagged Resuming.
+    if checked {
+        // SAFETY: a returned checked fault has completed source cleanup and
+        // reached final suspend. Reclaim it through its normal destroy outline.
+        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+    } else {
+        // SAFETY: the native unwind abandoned a running frame; its typed
+        // obligations were recovered above, so only raw reclamation remains.
+        let _ = unsafe { crate::coro_exec::abandon_resuming_after_crash(a) };
+    }
 
     // Per-activation arena cleanup BEFORE publishing terminal `Crashed`.
     if took_crashing && !actor_arena.is_null() {
@@ -2710,6 +2768,18 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
     // SAFETY: caller owns `actor` via the Running CAS.
     let a = unsafe { &*actor };
     let mailbox = a.mailbox.cast::<HewMailbox>();
+
+    if let Some(code) = crate::actor::take_deferred_external_trap(a) {
+        debug_assert!(
+            a.checked_invocation.load(Ordering::Acquire).is_null(),
+            "a deferred external trap must wait for the checked turn to drain"
+        );
+        // SAFETY: this activation has completed its checked cancellation and
+        // still owns the mailbox consumer. Publish the originally requested
+        // crash through the ordinary activation-owned terminal path.
+        unsafe { crate::actor::hew_actor_trap_from_activation(actor, code) };
+        return;
+    }
 
     let cur_state = a.actor_state.load(Ordering::Acquire);
     if cur_state == HewActorState::Stopped as i32 || cur_state == HewActorState::Crashed as i32 {
@@ -2752,7 +2822,10 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
             // Clean self-stop on the resume path: notify monitors with the
             // Stopped reason, mirroring the crash trap and the non-resume
             // finalize. See the companion comment in `activate_actor`.
-            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            if a.native_completion.is_none() {
+                // Native completion publishes DOWN after typed state cleanup.
+                crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };
@@ -2940,6 +3013,10 @@ impl Drop for ActivationOwnership<'_> {
         #[cfg(test)]
         run_activation_pre_terminal_lock_hook(self.actor);
 
+        let native_pin = self.actor.native_completion.as_ref().and_then(|_| {
+            crate::lifetime::live_actors::pin_actor_by_id(self.actor.id)
+                .filter(|pin| std::ptr::eq(pin.actor(), self.actor))
+        });
         // Test terminal state, perform the final drain, and publish ownership
         // release under one terminal-reclaim lock. If an external trap gets the
         // lock first and observes this owner, this check must run afterward and
@@ -2968,6 +3045,18 @@ impl Drop for ActivationOwnership<'_> {
                     self.actor.dispatch_active.store(false, Ordering::Release);
                 },
             );
+        }
+        if let Some(pin) = native_pin {
+            let actor = pin.actor();
+            let state = actor.actor_state.load(Ordering::Acquire);
+            if (state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32)
+                && !actor.dispatch_active.load(Ordering::Acquire)
+            {
+                // SAFETY: the terminal state excludes future handler execution;
+                // the pin retains the allocation after activation release. All
+                // mailbox locks have been released before invoking destructors.
+                unsafe { crate::actor_native::finish_native_terminal(actor) };
+            }
         }
     }
 }
@@ -3136,6 +3225,8 @@ fn activate_queued_actor(actor: *mut HewActor) {
         // fresh-dispatch path only — this activation returns before reaching it.
         // SAFETY: mailbox pointer is valid for the lifetime of the actor.
         if unsafe { mailbox::mailbox_stop_requested(a.mailbox.cast::<HewMailbox>()) }
+            // SAFETY: this worker owns the activation and invocation borrow.
+            && !unsafe { crate::actor_native::cancel_checked_turn(a) }
             && a.actor_state
                 .compare_exchange(
                     HewActorState::Running as i32,
@@ -3270,6 +3361,21 @@ fn activate_queued_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
+                // The call owner may withdraw until this exact dispatch claim.
+                // Once claimed, losing its select only tombstones the reply;
+                // it does not cancel a handler that has already started.
+                // SAFETY: this node retains its sender-side reply reference.
+                if !unsafe {
+                    crate::reply_channel::claim_native_request_dispatch(
+                        msg_ref.reply_channel.cast(),
+                    )
+                } {
+                    // SAFETY: this worker owns the unclaimed node and its typed
+                    // request; normal node retirement settles the sender debt.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
+                }
                 let observe_dispatch_ticket = crate::observe::observe_dispatch_begin();
                 // Check for injected crash fault (testing only).
                 if crate::deterministic::check_crash_fault(a.id) {
@@ -3340,60 +3446,21 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     std::process::abort();
                 }
 
-                // Phase α COW: envelope-aware dispatch.  Legacy
-                // (copy-mode) nodes carry payload bytes in
-                // `data`/`data_size` and dispatch by value.
-                // Envelope-mode (aliased) nodes hold a refcounted
-                // `HewMsgEnvelope`; their receive ABI is borrow-only
-                // and does not exist yet (P5.2). Branch on the
-                // discriminator: copy-mode dispatches; envelope-mode
-                // fails closed (see the guard below) rather than
-                // double-dropping a payload through the owned-value
-                // handler.
                 let (dispatch_data, dispatch_size) = if msg_ref.envelope.is_null() {
                     (msg_ref.data, msg_ref.data_size)
                 } else {
-                    // FAIL-CLOSED (P5.3): an envelope-mode (aliased)
-                    // node has reached the *owned-value* dispatch ABI.
-                    //
-                    // Under the D355 borrow model the receiver of an
-                    // aliased message must BORROW the payload read-only
-                    // (via `hew_msg_envelope_payload_ptr`); the single
-                    // final `drop_glue` is owned by the envelope and run
-                    // exactly once by `hew_msg_envelope_release` when the
-                    // node is freed. `dispatch` below is the ordinary
-                    // owned-value handler trampoline — handing a
-                    // destructor-bearing payload (String / Vec / Arc) to
-                    // it *by value* would drop it once in the handler AND
-                    // again in `hew_msg_envelope_release`: a double-free /
-                    // use-after-free.
-                    //
-                    // No compiled program can reach this branch yet:
-                    // codegen alias lowering is a no-op until P5.2 adds
-                    // the borrow-only receive ABI (and an exactly-once-
-                    // drop ASan e2e). This guard exists so that FFI /
-                    // embedding misuse — anything that hand-builds an
-                    // envelope-mode node and feeds it to the scheduler
-                    // before that ABI exists — fails loudly instead of
-                    // corrupting memory. P5.2 removes this guard ONLY
-                    // when it lands the borrow-only receive lowering.
-                    //
-                    // This is the live boundary for the aliased-send gate
-                    // (moved here from the send path in P5.3): the send /
-                    // enqueue / release machinery is fully exercised, but
-                    // owned-value *dispatch* of an envelope node is
-                    // refused. Hard fail (`hew_panic`), never a
-                    // `debug_assert` — release builds must fail closed too.
-                    eprintln!(
-                        "fatal: envelope-mode (aliased) message reached owned-value \
-                             dispatch before the borrow-only receive ABI exists (P5.2); \
-                             refusing to double-drop"
-                    );
-                    crate::actor::hew_panic();
-                    // `hew_panic` never returns (unwinds to the scheduler's
-                    // actor boundary, or exits the process when no recovery
-                    // context is installed). Diverge to satisfy the type.
-                    unreachable!("hew_panic returned from the envelope-mode dispatch guard");
+                    // The generated adapter takes each payload field and clears
+                    // its owner bit before entering checked handler cleanup.
+                    // An aliased envelope cannot satisfy that exclusive contract.
+                    // SAFETY: this dequeued node owns one live envelope reference.
+                    let envelope = unsafe { &*msg_ref.envelope };
+                    if a.dispatch_ownership != crate::actor::HewDispatchOwnership::UniqueEnvelope
+                        || envelope.refcount.load(Ordering::Acquire) != 1
+                    {
+                        eprintln!("fatal: actor dispatch lacks unique envelope ownership");
+                        std::process::abort();
+                    }
+                    (envelope.payload, envelope.payload_size)
                 };
 
                 let mut execution_context = HewExecutionContext {
@@ -3410,6 +3477,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     prev_context: crate::execution_context::current_context(),
                     lock_seat: dispatch_lock_seat_for_actor(actor),
                     reply_channel: msg_ref.reply_channel,
+                    checked_fault: crate::actor_native::CheckedActorFault::default(),
                 };
                 let prev_context = execution_context.prev_context;
                 // Publish a single raw pointer to the dispatch-local context
@@ -3517,15 +3585,7 @@ fn activate_queued_actor(actor: *mut HewActor) {
                             msg_ref.msg_type,
                             dispatch_data,
                             dispatch_size,
-                            // P5-RX sub-stage 1: copy-mode receipt only.
-                            // Only copy-mode nodes
-                            // (`msg_ref.envelope.is_null()`) reach this
-                            // dispatch — envelope-mode nodes fail closed at
-                            // the guard above before this point — so
-                            // borrow_mode is unconditionally 0 here. The
-                            // live envelope-mode receipt (passing 1 + the
-                            // envelope pointer as `dispatch_data`) lands
-                            // with guard removal in a later sub-stage.
+                            // Both admitted adapters own their argument fields.
                             0,
                         )
                     },
@@ -3592,6 +3652,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
                 // codegen returns a non-null handle for in-handler
                 // await/ask/recv suspends, and the suspend edge parks it
                 // below.
+                // SAFETY: the returned callback relinquished this context's
+                // checked completion slot to its sole scheduler activation.
+                let dispatch_result =
+                    unsafe { crate::actor_native::dispatch_result(ec_ptr, dispatch_result) };
                 let suspend_handle: *mut c_void = match dispatch_result {
                     Ok(handle) => {
                         // SAFETY: normal dispatch return matches the cleanup
@@ -3604,35 +3668,13 @@ fn activate_queued_actor(actor: *mut HewActor) {
                         }
                         handle
                     }
-                    Err(panic_payload) => {
+                    Err(failure) => {
                         let _crash_publication = crate::exit_status::CrashPublication::begin();
-                        crate::execution_context::reply_channel_swap_unwind();
-                        // SAFETY: catch_unwind proves every synchronous
-                        // coroutine ramp frame is dead on this worker.
-                        let _ = unsafe {
-                            crate::cont::reclaim_active_coroutine_frames_excluding(
-                                std::ptr::null_mut(),
-                            )
-                        };
-                        // The LLVM landing pads have already destroyed
-                        // ordinary Hew locals. This compatibility escrow
-                        // handles actor-state writes until state itself is
-                        // represented as an OSSA owner.
-                        // SAFETY: this is the scheduler's exclusive recovery
-                        // boundary for the current dispatch; no other worker
-                        // may drain its thread-local cleanup registry.
-                        let outcome = unsafe {
-                            crate::cont::recover_dispatch_crash_cleanup_with_outcome(false)
-                        };
-                        if outcome.state_authority_consumed {
-                            // SAFETY: this activation exclusively owns actor.
-                            unsafe { crate::actor::record_dispatch_state_drop_consumed(actor) };
-                        }
-                        let code = panic_payload
-                            .downcast_ref::<crate::actor::HewPanic>()
-                            .map_or(101, |panic| panic.code);
-                        set_last_error("actor dispatch panicked");
-                        crate::util::quarantine_panic_payload(panic_payload);
+                        // SAFETY: the activation owns the returned native
+                        // completion or caught legacy unwind and its state seat.
+                        let code =
+                            unsafe { crate::actor_native::finish_dispatch_failure(actor, failure) };
+                        set_last_error("actor dispatch failed");
                         crate::crash::record_logical_crash(
                             a.id,
                             code,
@@ -3716,6 +3758,15 @@ fn activate_queued_actor(actor: *mut HewActor) {
                     unsafe { (*msg).reply_channel = std::ptr::null_mut() };
                 }
                 if !suspend_handle.is_null() {
+                    let invocation = a.checked_invocation.load(Ordering::Acquire);
+                    if !invocation.is_null() {
+                        // SAFETY: this activation owns the invocation until its
+                        // park is published; resume consumes the message identity.
+                        unsafe {
+                            (*invocation.cast::<crate::coro_state::HewCoroState>())
+                                .actor_message_type = msg_ref.msg_type;
+                        }
+                    }
                     // SAFETY: `ec_ptr` points at the live dispatch-local
                     // context; reading `cancel_token` through it avoids
                     // re-borrowing the local (which would Unique-retag and
@@ -3878,7 +3929,10 @@ fn activate_queued_actor(actor: *mut HewActor) {
             // path runs this from `hew_actor_trap`; the self-stop finalize is the
             // only place the Stopping → Stopped transition completes, so it must
             // run it too.
-            crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            if a.native_completion.is_none() {
+                // Native completion publishes DOWN after typed state cleanup.
+                crate::monitor::notify_monitors_on_death(a.id, HewActorState::Stopped as i32, 0);
+            }
             crate::actor_group::notify_actor_death(a.id);
             // SAFETY: actor just transitioned to Stopped; dispatch is finished.
             unsafe { crate::actor::call_terminate_fn(actor) };
@@ -5335,7 +5389,7 @@ mod tests {
         unsafe {
             let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
             assert!(!v.is_null());
-            libc::free(v.cast());
+            crate::mem::buf_free(v.cast());
             crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
@@ -5687,7 +5741,7 @@ mod tests {
             let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
             assert!(!v.is_null(), "the reply value must be readable on resume");
             assert_eq!(*v, 42, "the resumed caller binds the CORRECT reply value");
-            libc::free(v.cast());
+            crate::mem::buf_free(v.cast());
             crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
@@ -5800,7 +5854,7 @@ mod tests {
             let v = crate::reply_channel::hew_reply_wait(ch).cast::<i64>();
             assert!(!v.is_null());
             assert_eq!(*v, 7);
-            libc::free(v.cast());
+            crate::mem::buf_free(v.cast());
             crate::reply_channel::hew_reply_channel_free(ch);
         }
     }
@@ -5847,6 +5901,56 @@ mod tests {
         // Clean up the parked scratch frame.
         // SAFETY: parked handle is live and not yet destroyed.
         assert!(unsafe { crate::coro_exec::destroy_parked(&actor) }.is_ok());
+    }
+
+    #[test]
+    fn resumed_checked_crash_preserves_message_identity_after_invocation_cleanup() {
+        unsafe extern "C" fn fail_after_resume(frame: *mut c_void) {
+            let context = crate::execution_context::current_context();
+            // SAFETY: the test owns this active actor, invocation and scratch frame.
+            unsafe {
+                let actor = &*(*context).actor;
+                let invocation = actor.checked_invocation.load(Ordering::Acquire);
+                crate::coro_state::hew_coro_state_free(invocation.cast());
+                crate::actor_native::hew_actor_coro_set_fault(crate::fault::hew_fault_new(212));
+                (*frame.cast::<crate::coro_exec::test_support::ScratchFrame>()).resume = None;
+            }
+        }
+
+        let _runtime = crate::runtime_test_guard();
+        let actor = stub_actor();
+        actor
+            .actor_state
+            .store(HewActorState::Running as i32, Ordering::Release);
+        let actor_ptr = (&raw const actor).cast_mut();
+        let (_ready, waker) = crate::wake::blocking::Readiness::new();
+        let frame = crate::coro_exec::test_support::ScratchFrameOwner::new(1);
+        // SAFETY: the test publishes one invocation and one parked frame, both
+        // exclusively owned by the activation driven below.
+        unsafe {
+            let invocation =
+                crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut());
+            (*invocation).actor_message_type = 71;
+            actor
+                .checked_invocation
+                .store(invocation.cast(), Ordering::Release);
+            (*frame
+                .handle()
+                .cast::<crate::coro_exec::test_support::ScratchFrame>())
+            .resume = Some(fail_after_resume);
+            assert!(park_suspended_activation(actor_ptr, frame.handle()));
+        }
+        actor
+            .actor_state
+            .store(HewActorState::Runnable as i32, Ordering::Release);
+        activate_actor(actor_ptr);
+        // SAFETY: the crash log returns a value copy of the completed report.
+        let report = unsafe { crate::crash::hew_crash_log_last() };
+        assert_eq!(report.actor_id, actor.id);
+        assert_eq!(report.msg_type, 71);
+        assert_eq!(report.signal, 212);
+        assert!(actor.checked_invocation.load(Ordering::Acquire).is_null());
+        assert_eq!(frame.destroyed.load(Ordering::Acquire), 1);
     }
 
     /// Full seed round-trip through `activate_actor`: park a scratch cont that
@@ -6061,6 +6165,7 @@ mod tests {
         );
 
         let actor = HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 42,
             state: ptr::null_mut(),
@@ -6104,6 +6209,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 
@@ -6842,7 +6952,7 @@ mod tests {
         assert!(!mailbox.is_null());
         // `call_terminate_fn` skips a null-state actor, so give it real state.
         // SAFETY: malloc returns a valid 8-byte allocation or null.
-        let state = unsafe { libc::malloc(8) };
+        let state = crate::mem::buf_try_alloc(8);
         assert!(!state.is_null());
 
         let mut stub = stub_actor();
@@ -6906,7 +7016,7 @@ mod tests {
         drop(frame);
         // SAFETY: single-threaded test; both allocations unused afterwards.
         unsafe {
-            libc::free(state);
+            crate::mem::buf_free(state);
             mailbox::hew_mailbox_free(mailbox);
         }
     }
@@ -6970,7 +7080,7 @@ mod tests {
             let reply = unsafe { crate::actor::hew_actor_ask(target.0, 1, ptr::null_mut(), 0) };
             if !reply.is_null() {
                 // SAFETY: a deposited reply value is caller-owned.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             // Sending AFTER the ask returns means the caller-side
             // `hew_reply_channel_free` has already run, so the count read on the
@@ -7236,9 +7346,9 @@ mod tests {
         // SAFETY: fresh mailbox owned by the actor; `hew_actor_free` reclaims it.
         let mailbox = unsafe { mailbox::hew_mailbox_new() };
         assert!(!mailbox.is_null());
-        // SAFETY: malloc returns a valid 8-byte allocation or null. The free
-        // path reclaims this with `libc::free`.
-        let state = unsafe { libc::malloc(8) };
+        // SAFETY: buf_try_alloc returns a valid 8-byte allocation. The free
+        // path reclaims this with `buf_free`.
+        let state = crate::mem::buf_try_alloc(8);
         assert!(!state.is_null());
 
         let mut stub = stub_actor();
@@ -7284,7 +7394,7 @@ mod tests {
             };
             if !reply.is_null() {
                 // SAFETY: a deposited reply value is caller-owned.
-                unsafe { libc::free(reply) };
+                unsafe { crate::mem::buf_free(reply) };
             }
             // SAFETY: release this thread's creator reference after the wait.
             unsafe { crate::reply_channel::hew_reply_channel_free(channel.0) };
@@ -8856,6 +8966,7 @@ mod tests {
         );
 
         let actor = HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 7,
             state: ptr::null_mut(),
@@ -8899,6 +9010,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         };
         let actor_ptr: *mut HewActor = (&raw const actor).cast_mut();
 

@@ -1,0 +1,12 @@
+[[case]]
+id = "resource-param-trap-borrows"
+intent = "A consumed resource parameter is borrowed on both sides of a division that can trap; the normal exit and the checked-fault exit each release the stream exactly once, and the caller sees the failed ask before the unsupervised crash ends the run."
+source = "cases/resource-param-trap-borrows.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "one:20\ntwo failed\nreleased\n"
+stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Splitter.split (actor 1): DivideByZero\n"
+exit = 1

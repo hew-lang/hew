@@ -1,0 +1,19 @@
+type Packet { label: string, payload: bytes }
+
+fn duplicate(packet: Packet) -> Packet { packet }
+
+fn main() -> i64 {
+    let packet = Packet { payload: "A".to_bytes(), label: "core".to_upper() };
+    let copied = duplicate(packet);
+    let original_payload = packet.payload;
+    let copied_payload = copied.payload;
+    var changed = copied_payload;
+    changed.push(66);
+    if original_payload.len() != 1 || copied_payload.len() != 1 || changed.len() != 2 {
+        return 1;
+    }
+    let original_label = packet.label;
+    let copied_label = copied.label;
+    println(f"{original_label}/{copied_label}/{changed[1]}");
+    0
+}

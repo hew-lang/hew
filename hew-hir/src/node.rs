@@ -4,18 +4,14 @@ use std::{
 };
 
 use hew_parser::ast::{BinaryOp, OverflowPolicy, Span, UnaryOp};
+use hew_types::RcIntrinsicOp;
 use hew_types::{
     ChildSlot, DefId, ExecutionContextReader, ImplId, MethodTargetFamily, PoolAccessor, ResolvedTy,
     Ty, TyPattern, VariantMatch, WireLayoutTable,
 };
-use hew_types::{NumericMethodFamily, VecElementToken};
-use hew_types::{
-    NumericMethodOp, NumericSignedness, NumericWidth, TryConversionKind, WireCodecDirection,
-};
-use hew_types::{ProducedArgumentBoundary, ProducedValueOwnership, RcIntrinsicOp};
+use hew_types::{TryConversionKind, VecElementToken, WireCodecDirection};
 
 use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
-use crate::mono::MachineMonoEntry;
 use crate::monomorph::{EnumLayout, MonomorphizedFn, RecordLayout};
 use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::{IntentKind, ValueClass};
@@ -23,11 +19,6 @@ use crate::{IntentKind, ValueClass};
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     pub items: Vec<HirItem>,
-    /// Checker-authored result-ownership facts, projected from source spans to
-    /// stable HIR sites.  This is the sole HIR carrier for a successfully
-    /// published expression result: downstream phases must not reconstruct it
-    /// from a callee display name or linker symbol.
-    pub produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
     /// Source-module attribution for non-root top-level HIR items, keyed by
     /// item id. Diagnostics emitted while verifying one of these items inherit
     /// the same dotted module key used by `HirDiagnostic::source_module`.
@@ -45,25 +36,10 @@ pub struct HirModule {
     /// producer missing from `diagnostic_source_modules` cannot leak a false
     /// root caret — it simply is not in this set.
     pub root_item_ids: HashSet<ItemId>,
-    /// Resolver-minted declaration identity of the program's executable entry
-    /// point, when this compilation unit has one.
-    ///
-    /// HIR applies the language's entry rule exactly once — the root
-    /// compilation unit's monomorphic `main` declaration — and publishes the
-    /// resulting [`DefId`]. Downstream layers join on this identity; none of
-    /// them re-derives the entry by comparing a rendered declaration path or
-    /// an emitted symbol against `"main"`. `None` means this unit is not an
-    /// executable program, which every strict consumer must treat as a
-    /// fail-closed condition rather than a cue to go looking for a name.
-    pub entry_declaration: Option<DefId>,
-    /// Parameters whose resolved type has a checker-proven projection into
-    /// caller-visible storage, keyed by stable function item id and parameter
-    /// index.
-    ///
-    /// Presence is positive authority. MIR may only classify a borrowed
-    /// representation-replacing parameter when both this fact and a concrete
-    /// representation write survive lowering.
-    pub caller_visible_param_projections: HashSet<(ItemId, usize)>,
+    /// Checker-selected process entry and its complete typed exit contract.
+    /// Downstream layers join on the plan's declaration identity and execute
+    /// its action without rediscovering either fact.
+    pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
     /// Checker-authored wire layout metadata keyed by canonical type name.
     pub wire_layouts: Arc<WireLayoutTable>,
     /// Per-named-type classification table populated during HIR lowering from
@@ -94,10 +70,13 @@ pub struct HirModule {
     /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub monomorphisations: Vec<MonomorphizedFn>,
-    /// Per-call-site type arguments observed at generic function calls.
-    /// Keyed by the `SiteId` of the `HirExpr` whose `kind` is
-    /// `HirExprKind::Call` and whose callee is a generic top-level user
-    /// function.
+    /// Type arguments observed at generic calls and function values.
+    /// Keyed by the `SiteId` of the `HirExpr`: `Call` identifies an invocation;
+    /// `BindingRef` with `ResolvedRef::Item` identifies a function value.
+    /// Both retain the generic declaration as their origin. Static trait
+    /// calls (including mutable receiver calls) record the method's arguments
+    /// here; SIR binds the selected impl's parameters from the receiver and
+    /// prepends them when it requests the concrete method instance.
     ///
     /// The recorded `ResolvedTy`s mirror the checker's `call_type_args`
     /// side-table, with one important nuance: when a call appears
@@ -154,31 +133,6 @@ pub struct HirModule {
     /// LESSONS: `end-to-end-before-layer-thickening` (P1),
     /// `checker-authority` (P0).
     pub enum_layouts: Vec<EnumLayout>,
-    /// Distinct machine-type instantiations discovered by the dedicated
-    /// post-function-mono pass
-    /// ([`crate::machine_mono::run_machine_mono_pass`]). Populated after
-    /// `monomorphisations` is closed under substitution, before MIR
-    /// layout build.
-    ///
-    /// Per the R246 uniform-path ratification: every machine
-    /// declaration produces at least one entry — monomorphic machines
-    /// (no type params) get a single entry with empty `type_args`,
-    /// generic machines get one entry per concrete `(type_args,
-    /// const_args)` reach-through observed in the substituted-body
-    /// walk (annotations, struct-state inits, ctor forms,
-    /// spawn-target machines).
-    ///
-    /// Insertion-ordered for deterministic codegen. Downstream MIR
-    /// (W3.033c Stage 3) and codegen (Stage 4) iterate this list to
-    /// emit one `MachineLayout` per entry under the mangled name.
-    ///
-    /// Empty when the program contains no machine declarations.
-    /// `const_args` is empty on every entry until W3.039 Stage 3
-    /// populates the slot with constexpr-evaluated values.
-    ///
-    /// LESSONS: `end-to-end-before-layer-thickening` (P1),
-    /// `checker-authority` (P0).
-    pub machine_instantiations: Vec<MachineMonoEntry>,
     /// Per-field-access `SiteId` → `ChildSlot` for supervisor child accessor
     /// expressions. Populated during HIR lowering from the checker's
     /// `supervisor_child_slots` side-table (keyed by span) by translating each
@@ -215,7 +169,6 @@ pub struct HirModule {
 pub enum HirItem {
     Function(HirFn),
     TypeDecl(HirTypeDecl),
-    Machine(HirMachineDecl),
     Record(HirRecordDecl),
     Actor(HirActorDecl),
     Supervisor(HirSupervisorDecl),
@@ -263,10 +216,11 @@ pub enum HirItem {
 /// scope and fail closed at fold time.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirConstValue {
-    /// Folded integer value. The declared width lives in [`HirConst::ty`]
-    /// (`I32`/`I64`); this carries the value as `i64` and downstream codegen
-    /// truncates/zero-extends to the declared width.
-    Integer(i64),
+    /// Folded integer value. The declared width lives in [`HirConst::ty`];
+    /// this carries the exact mathematical value in the `i128` literal
+    /// carrier (D421) and physical lowering derives the destination-width
+    /// bit pattern.
+    Integer(i128),
     /// Folded string literal value (UTF-8, as written in source).
     String(String),
     /// Folded float literal value. The declared width lives in [`HirConst::ty`]
@@ -293,15 +247,15 @@ pub struct HirConst {
 ///
 /// This is a POSITIVE, per-item record of WHICH module the `extern` block was
 /// declared in, captured from the HIR lowering context (`current_module_name`)
-/// at construction time. It exists so downstream ownership classification of a
-/// C-ABI string return (see [`crate::node::HirExternFn`] →
-/// `hew_mir::ExternDecl::malloc_string_return`) is driven by a proven fact and
-/// is NEVER inferred by ABSENCE from a side table
-/// (`HirModule::diagnostic_source_modules`). That map conflates a root user
-/// extern (never recorded) with a std extern whose attribution was lost, and a
-/// wrong classification corrupts memory in either direction: adopting a
-/// header-aware Hew string frees `base + 16`, while treating a foreign C string
-/// as a Hew string reads a phantom header.
+/// at construction time. It is diagnostic and attribution provenance, NEVER
+/// inferred by ABSENCE from a side table (`HirModule::diagnostic_source_modules`),
+/// which conflates a root user extern (never recorded) with a std extern whose
+/// attribution was lost.
+///
+/// It does not classify C-ABI string-return ownership. On the final path a
+/// `string`, `bytes` or `Vec<T>` crosses an `extern` boundary as the runtime's
+/// own carrier in both directions, produced on the C side through `hew-cabi`;
+/// there is no raw C-string adoption, so provenance decides no release recipe.
 ///
 /// `Root` and `Module(_)` are the ONLY two ways an `extern` enters the HIR item
 /// list — the root compilation unit (module index 0) or a named imported module
@@ -312,15 +266,12 @@ pub struct HirConst {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternProvenance {
     /// The `extern` block was declared in the root compilation unit (the file
-    /// the user is compiling, HIR module index 0). Its symbols are foreign to
-    /// the standard library — a C-ABI string return is a raw malloc-owned C
-    /// string that codegen must adopt.
+    /// the user is compiling, HIR module index 0).
     Root,
     /// The `extern` block was declared in a named module, carried as that
     /// module's dotted path (`std.io`, `std.crypto.jwt`, `hew.testffi`,
     /// `subpkg.helper`). The standard library is recognised by the `std` path
-    /// prefix (see [`ExternProvenance::is_stdlib`]); every other path is a
-    /// user/package module whose C-ABI string returns are adopted.
+    /// prefix (see [`ExternProvenance::is_stdlib`]).
     Module(String),
 }
 
@@ -330,9 +281,7 @@ impl ExternProvenance {
     /// The standard library is recognised by the `std` dotted/`::`-scoped path
     /// prefix — the same spelling `hew-compile` resolves `std::…` imports under
     /// and `record_source_modules_for_items` stamps into
-    /// `diagnostic_source_modules` (`mod_id.path.join(".")`). Standard-library
-    /// C-ABI string producers return header-aware Hew strings, so they are the
-    /// header-aware (non-adopting) side of the ownership split.
+    /// `diagnostic_source_modules` (`mod_id.path.join(".")`).
     #[must_use]
     pub fn is_stdlib(&self) -> bool {
         match self {
@@ -485,10 +434,9 @@ pub struct HirActorDecl {
     pub defining_module: Option<String>,
     /// Generic type parameters declared on the actor (`actor Worker<T>`).
     ///
-    /// Names only, threaded verbatim from `ActorDecl::type_params`. MIR reads
-    /// it to tell a generic ORIGIN from a monomorphic actor: an origin's member
-    /// signatures may name a type parameter that has no `ValueClass` at the MIR
-    /// boundary, so nothing that would have to type one may be emitted for it.
+    /// SIR uses these names to specialize the actor's state and member bodies
+    /// for each demanded closed handle type. Generic origins remain templates;
+    /// only their concrete instances reach physical lowering.
     pub type_params: Vec<String>,
     /// `let <name>: <ty>;` state fields declared in the actor body. Field
     /// ordering is source order; the runtime layout follows the same order.
@@ -545,6 +493,15 @@ pub struct HirActorDecl {
     /// as fail-closed; the produced `msg_id` is no longer derivable from
     /// source order.
     pub protocol_descriptor: Option<hew_types::ActorProtocolDescriptor>,
+    /// `Some(actor(M) -> R)` when this declaration was synthesized from an
+    /// `actor |msg| { .. }` expression rather than written in source.
+    ///
+    /// A lambda actor is an ordinary actor with one handler and its captures
+    /// as state; only its handle spelling differs, because the checker types
+    /// the expression as the `ActorFn` handle `actor(M) -> R` rather than the
+    /// actor's own type. SIR resolves an `ActorFn` target to the declaration
+    /// answering to it.
+    pub lambda_handle_ty: Option<Box<ResolvedTy>>,
     pub span: Span,
 }
 
@@ -570,6 +527,8 @@ impl HirActorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorInit {
     pub declaration: DefId,
+    /// State bindings in declaration order, distinct from init parameters.
+    pub state_bindings: Vec<HirBinding>,
     pub params: Vec<HirBinding>,
     pub body: HirBlock,
 }
@@ -578,6 +537,8 @@ pub struct HirActorInit {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorReceiveFn {
     pub declaration: DefId,
+    /// Exact body bindings for the enclosing actor's declaration-order fields.
+    pub state_bindings: Vec<HirBinding>,
     pub name: String,
     pub is_generator: bool,
     pub params: Vec<HirBinding>,
@@ -619,6 +580,7 @@ pub enum HirActorStateGuard {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirActorMethod {
     pub declaration: DefId,
+    pub state_bindings: Vec<HirBinding>,
     pub name: String,
     pub params: Vec<HirBinding>,
     pub return_ty: ResolvedTy,
@@ -634,6 +596,7 @@ pub struct HirActorMethod {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLifecycleHook {
     pub declaration: DefId,
+    pub state_bindings: Vec<HirBinding>,
     pub kind: HirLifecycleHookKind,
     pub name: String,
     pub params: Vec<HirBinding>,
@@ -676,184 +639,18 @@ pub enum HirLifecycleHookKind {
 /// authored. Origin is preserved for downstream diagnostics that
 /// want to point at the predicate's source span (e.g. "the bound on
 /// `T` declared on line 12 is not satisfied"). For inline bounds the
-/// span is implicit in the surrounding `HirMachineDecl.span`; for
+/// span is implicit in the surrounding declaration's span; for
 /// where-clause bounds the span carries the LHS type's span lifted
 /// from `WherePredicate.ty`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum WhereOrigin {
     /// The bound was authored inline in the type-parameter list,
-    /// e.g. `machine Holder<T: Resource>`.
+    /// e.g. `type Holder<T: Resource>`.
     Inline,
     /// The bound was authored in a `where` clause, e.g.
-    /// `machine Holder<T> where T: Resource`. The carried span is the
+    /// `type Holder<T> where T: Resource`. The carried span is the
     /// `WherePredicate.ty` span (the LHS of the predicate).
     WhereClause(Span),
-}
-
-/// One `(param, trait_bound)` entry from a machine's combined inline
-/// `<T: Trait>` and `where T: Trait` predicates.
-///
-/// `param` is the bare type-parameter name (e.g. `"T"`); `trait_bound`
-/// reuses the cross-layer `ResolvedTraitBound` carrier from `hew-types`
-/// rather than forking a parallel HIR shape. Per Q230-B the carrier
-/// is a flat `Vec<HirMachineBound>`, one entry per `(param, trait)` pair —
-/// not a `HashMap<param, Vec<bounds>>` — so iteration order is the
-/// authored order and duplicate `(param, trait)` pairs from inline+where
-/// dedup can be observed by downstream consumers if they care to.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineBound {
-    /// The bound type-parameter name.
-    pub param: String,
-    /// The trait constraint.
-    pub trait_bound: hew_types::ResolvedTraitBound,
-    /// Where the predicate was authored.
-    pub origin: WhereOrigin,
-}
-
-/// Lowered machine declaration. Carries the full structural shape needed for
-/// static checks and visualisation; transition bodies are not lowered to `HirExpr`
-/// in Lane A (codegen/execution is Lane B).
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineDecl {
-    pub id: ItemId,
-    pub node: HirNodeId,
-    /// Canonical declaration identity of this machine, minted here beside the
-    /// [`HirFn::declaration`] and [`HirTypeDecl::declaration`] mints.
-    ///
-    /// The synthesized machine-step callable is a child of THIS declaration, so
-    /// its MIR callable key must project this field. Reconstructing an owner
-    /// from [`Self::qualified_name`] at the consumer would make the presentation
-    /// spelling a second identity authority — exactly the seam this carrier
-    /// closes.
-    pub declaration: DefId,
-    pub name: String,
-    /// Defining-module identity of this machine declaration.
-    ///
-    /// `None` denotes the root program namespace; `Some(module)` is the
-    /// dotted owner of a package-module machine.  The declaration spelling is
-    /// intentionally kept bare in [`Self::name`], while this provenance lets
-    /// post-HIR registries distinguish, for example, `left.Lifecycle` from
-    /// `right.Lifecycle` without any leaf-name recovery.
-    pub defining_module: Option<String>,
-    /// Generic type parameters declared on the machine (e.g. `Lifecycle<T>`).
-    ///
-    /// Names only — see `MachineDecl::type_params`. Threaded verbatim from
-    /// the parser AST; subsequent layers (type checker, MIR, codegen) are
-    /// responsible for interpreting these names.
-    pub type_params: Vec<String>,
-    /// Trait bounds declared on the machine's type parameters, drawn from
-    /// both the inline `<T: Trait>` form and the trailing `where T: Trait`
-    /// clause. One entry per `(param, trait_bound)` pair in authored order;
-    /// `WhereOrigin` preserves which form each entry came from for
-    /// diagnostic span recovery.
-    ///
-    /// Empty when the machine declares no type-param bounds. The checker's
-    /// canonical bound-enforcement seam consults a separate, dedup'd side
-    /// table during type checking; this HIR field exists so post-checker
-    /// passes (static trait dispatch, const-generic substrate, future
-    /// const-arg validation) have a structured carrier to read instead of
-    /// re-walking the parser AST.
-    pub type_param_bounds: Vec<HirMachineBound>,
-    pub states: Vec<HirMachineState>,
-    pub events: Vec<HirMachineEvent>,
-    pub transitions: Vec<HirMachineTransition>,
-    /// Whether an unhandled-event `default` arm is present. When true,
-    /// exhaustiveness checking is satisfied for any `(state, event)` pair
-    /// without an explicit transition.
-    pub has_default: bool,
-    pub span: Span,
-}
-
-impl HirMachineDecl {
-    /// Dotted canonical identity used by machine monomorphisation and layout
-    /// registries.  Root-program machines retain their source spelling.
-    #[must_use]
-    pub fn qualified_name(&self) -> String {
-        match &self.defining_module {
-            Some(module) => format!("{module}.{}", self.name),
-            None => self.name.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineState {
-    pub declaration: DefId,
-    pub entry_declaration: Option<DefId>,
-    pub exit_declaration: Option<DefId>,
-    pub name: String,
-    pub fields: Vec<HirField>,
-    /// Whether this state has an `entry { ... }` lifecycle block.
-    pub has_entry: bool,
-    /// Whether this state has an `exit { ... }` lifecycle block.
-    pub has_exit: bool,
-    /// Field names written by the `entry` block, each paired with the span of
-    /// the specific `self.field = ...` assignment (used for effect-parity
-    /// diagnostics that need to cite the offending entry-block site, not the
-    /// whole state).
-    pub entry_writes: Vec<(String, Span)>,
-    /// Field names written by the `exit` block, each paired with the span of
-    /// the specific `self.field = ...` assignment.
-    pub exit_writes: Vec<(String, Span)>,
-    /// Best-effort lowered `entry { ... }` block, populated when the source
-    /// state carries an entry block. Slice 1 substrate — downstream consumers
-    /// (MIR/codegen) are wired in later slices. Constructs that depend on
-    /// later-slice HIR forms (e.g. `emit`, `this`, bare state-name expressions)
-    /// lower to `HirExprKind::Unsupported` placeholders; the canonical
-    /// machine-body diagnostics still come from the AST-walking summary checks
-    /// driven by `entry_writes` / `body_emits`.
-    pub entry: Option<HirBlock>,
-    /// Best-effort lowered `exit { ... }` block. See `entry` for the
-    /// best-effort lowering contract.
-    pub exit: Option<HirBlock>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineEvent {
-    pub declaration: DefId,
-    pub name: String,
-    pub fields: Vec<HirField>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirMachineTransition {
-    pub declaration: DefId,
-    pub event_name: String,
-    pub source_state: String,
-    pub target_state: String,
-    /// Lowered transition guard expression (`on E: A -> B when <expr> { ... }`).
-    /// `None` when the transition has no guard. Lowered through the same
-    /// machine-body allowlist + implicit-binding scope as the transition body
-    /// (`lower_machine_expr_filtered`) so the guard sees `self`, the source-
-    /// state binding, and the event-field aliases.
-    ///
-    /// Carrying the guard expression in HIR (rather than the prior
-    /// `has_guard: bool`) is required for every machine-body walker —
-    /// call-shape gates, blocking-recv gates, effect-parity checks — to
-    /// actually visit guard sub-expressions instead of silently treating
-    /// guarded transitions as if the guard position were empty.
-    pub guard: Option<HirExpr>,
-    /// True when `source_state == target_state` (self-transition). In a
-    /// Moore machine, self-transitions do not re-run entry/exit.
-    pub is_self_transition: bool,
-    /// True when the transition carries `@reenter`.  Only meaningful for self-
-    /// transitions; HIR rejects `@reenter` on non-self-transitions.  When true,
-    /// the Lane B codegen must fire `source.exit` and `target.entry` even though
-    /// the state identity does not change.
-    pub reenter: bool,
-    /// Field names written by the transition body (used for effect-parity checking).
-    pub body_writes: Vec<String>,
-    /// Event names emitted directly from the transition body (used for emit-cycle checking).
-    pub body_emits: Vec<String>,
-    /// Lowered transition body. Constructs that depend on later-slice HIR
-    /// forms (notably `Expr::This` and bare state-name references) lower to
-    /// `HirExprKind::Unsupported` placeholders. `emit` expressions lower to
-    /// `HirExprKind::MachineEmit` (Slice 2). Downstream MIR/codegen consumers
-    /// are wired in later slices.
-    pub body: HirExpr,
-    pub span: Span,
 }
 
 /// Lowered `record` declaration.
@@ -931,6 +728,7 @@ pub struct HirSupervisorDecl {
     /// Exact source-owned identity projected by the later bootstrap adapter.
     pub bootstrap_declaration: DefId,
     pub name: String,
+    pub type_params: Vec<String>,
     /// Construction-time config parameters (`supervisor App(config: T)`). Bound
     /// in scope throughout the body so child init-arg exprs can reference them.
     /// Empty when the declaration omits the `(...)` clause. The MIR bootstrap
@@ -950,7 +748,8 @@ pub struct HirSupervisorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorChild {
     pub name: String,
-    pub ty: String,
+    /// Complete checked child handle, including any supervisor type parameters.
+    pub ty: ResolvedTy,
     pub restart_policy: Option<HirRestartPolicy>,
     /// Declarative sibling wiring: init-param name → sibling child name.
     /// `None` means no `wired_to:` clause. S-B validates key correctness.
@@ -1030,6 +829,13 @@ pub enum HirShutdownDirective {
     Infinity,
 }
 
+/// Semantic declaration kind, including enums with no inhabited variants.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirTypeDeclKind {
+    Struct,
+    Enum,
+}
+
 /// Lowered top-level type declaration.
 ///
 /// Carries the `#[resource]` / `#[linear]` marker (if any), the list of
@@ -1038,6 +844,7 @@ pub enum HirShutdownDirective {
 /// recorded for snapshot stability and future analysis passes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirTypeDecl {
+    pub kind: HirTypeDeclKind,
     pub id: ItemId,
     pub node: HirNodeId,
     /// Checker-owned canonical declaration identity. This is the semantic key
@@ -1077,7 +884,7 @@ pub struct HirTypeDecl {
     /// dereference. Construction emits `hew_alloc` + write + ptr-store;
     /// drop emits `hew_dealloc` after recursively freeing sub-trees.
     pub is_indirect: bool,
-    /// Names of methods declared with a `consuming self` receiver in the
+    /// Names of methods declared with a `consume self` receiver in the
     /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
     pub consuming_methods: Vec<String>,
     /// Source-declared generic type-parameter names, in order. Empty for
@@ -1204,6 +1011,10 @@ pub struct HirField {
     /// event fields are `false` (writes are governed by the binding root,
     /// not the field).
     pub is_mutable: bool,
+    /// An actor state field that `init` initializes (D447): it has no
+    /// default, a spawn cannot supply it, and its storage is uninitialized
+    /// until init's first store.
+    pub deferred: bool,
     pub span: Span,
 }
 
@@ -1222,6 +1033,10 @@ pub struct HirFn {
     pub name: String,
     pub type_params: Vec<String>,
     pub params: Vec<HirBinding>,
+    /// Exact receiver binding transferred into a recognized `var self` body
+    /// and returned in the second field of its `(result, Self)` result.
+    /// This internal transfer is independent of source `consume` spelling.
+    pub var_self_receiver: Option<BindingId>,
     /// For ordinary functions this is the declared return type. For generator
     /// functions (`is_generator`) this remains the declared `-> T` yield element
     /// type; the body itself lowers with unit expectation and produces a
@@ -1264,9 +1079,10 @@ pub struct HirBinding {
     /// `consume` modifier (`fn sink(consume c: Conn)`). Pins the by-move
     /// ownership disposition for the param-ownership classifier: the param is
     /// owned by the callee (auto-dropped at callee scope-exit unless moved out)
-    /// and the call site consumes the caller's argument. Always `false` for
-    /// non-param bindings (`let`/match/loop binders) and for params without the
-    /// modifier — those take the inferred borrow/consume disposition.
+    /// and the call site consumes the caller's argument. Compiler-generated
+    /// transfer bindings also set this flag when the checker requires moving
+    /// their initializer. Ordinary source `let`/match/loop binders leave it
+    /// false and retain their normal value semantics.
     pub is_consume: bool,
 }
 
@@ -1287,54 +1103,46 @@ pub struct HirStmt {
     pub span: Span,
 }
 
+/// One ordered field of an irrefutable aggregate destructure.
+///
+/// `binding` is `None` for a wildcard field (`Booking { ticket: _, .. }`).
+/// A wildcard names nothing and therefore takes nothing out of the source: it
+/// is the fact that lets SIR leave that field in place, and the checker leave
+/// it usable. Every field of the aggregate is listed either way, so the
+/// selector order stays the aggregate's declaration order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HirDestructureField {
+    pub selector: HirDestructureSelector,
+    pub binding: Option<HirBinding>,
+    /// This binding carries a nested pattern's projection rather than naming
+    /// a source value. It traverses the existing field place when available.
+    pub nested: bool,
+}
+
+/// Typed aggregate field identity selected by an irrefutable pattern.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirDestructureSelector {
+    Tuple(u32),
+    Record(String),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirStmtKind {
     Let(HirBinding, Option<HirExpr>),
-    /// `let Pat = scrutinee else { <divergent block> };` — the let-else
-    /// bind-or-diverge primitive.
-    ///
-    /// Unlike `HirExprKind::IfLet` (whose payload bindings are scoped to the
-    /// then-body), a let-else's `bindings` ESCAPE into the enclosing scope:
-    /// after the statement, the Ok-path binders are live for the rest of the
-    /// enclosing block. MIR lowers this as: evaluate the scrutinee, test the
-    /// variant tag, and branch — on a match, bind the payload fields into the
-    /// enclosing-scope `binding_locals` (and do NOT restore them, so they
-    /// persist); on a mismatch, run `else_body`, which is GUARANTEED divergent
-    /// (the type checker enforced `Ty::Never`), so control never falls through
-    /// to an unbound binder.
-    LetElse {
-        /// The matched expression. Its resolved type is the enum being
-        /// destructured.
-        scrutinee: Box<HirExpr>,
-        /// Zero-based variant index of the success-path constructor (e.g. the
-        /// index of `Ok` in `Result`).
-        variant_idx: u32,
-        /// Payload bindings introduced by the success-path pattern. These are
-        /// allocated in the ENCLOSING scope and escape the statement. For an
-        /// aggregate payload field (e.g. the tuple in `Ok((n, s))`) this holds
-        /// a synthetic `__payload_*` temp binding for the whole field; the
-        /// nested leaf binders (`n`, `s`) are produced by `success_prelude`.
-        bindings: Vec<HirMatchArmBinding>,
-        /// Destructure statements for aggregate payload subpatterns
-        /// (`Ok((n, s))`, `Ok(Point { x, y })`). They run on the SUCCESS path,
-        /// after the top-level payload fields are bound and before the
-        /// continuation, projecting the synthetic `__payload_*` temps into
-        /// their leaf binders. Each is a plain `HirStmtKind::Let`; the leaf
-        /// binders escape into the enclosing scope like the top-level
-        /// `bindings`. Empty when no payload field is an aggregate.
-        success_prelude: Vec<HirStmt>,
-        /// Nested constructor checks on payload fields, evaluated after the
-        /// outer tag check and before the bindings are made live. A failed
-        /// nested check routes to `else_body`, same as a top-level tag
-        /// mismatch.
-        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
-        /// The divergent else block, run when the pattern fails to match. The
-        /// checker has proven it has type `Ty::Never`.
-        else_body: HirBlock,
+    /// Bind every ordered field of one tuple or record value as a single
+    /// typed operation. Ownership is deliberately absent here; SIR decides
+    /// whether the source must first be copied before consuming a destructure.
+    Destructure {
+        value: HirExpr,
+        fields: Vec<HirDestructureField>,
     },
     Assign {
         target: HirExpr,
         value: Box<HirExpr>,
+        /// The target is a deferred actor state field receiving its first
+        /// value in `init` (D447): the store initializes empty storage and
+        /// destroys nothing. Decided by the checker, never re-derived.
+        first_store: bool,
     },
     Expr(HirExpr),
     Return(Option<HirExpr>),
@@ -1362,137 +1170,6 @@ pub struct HirExpr {
     pub intent: IntentKind,
     pub kind: HirExprKind,
     pub span: Span,
-}
-
-/// Non-evaluated HIR occurrence retained when a specialised lowering consumes
-/// a parsed child expression without retaining a [`HirExpr`] for that child.
-///
-/// Its stable site remains structurally parented by the specialised result and
-/// carries the checker's produced-value row. MIR ignores the anchor because the
-/// specialised parent performs the operation; evaluating it again would
-/// duplicate side effects.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirProducedValueSourceAnchor {
-    pub node: HirNodeId,
-    pub site: SiteId,
-    pub ty: ResolvedTy,
-    pub value_class: ValueClass,
-    pub intent: IntentKind,
-    pub producer: HirProducedValueProducer,
-    pub span: Span,
-    /// Ordered, recursively nested source occurrence consumed by this source
-    /// occurrence.  A chain preserves wrapper spines such as
-    /// Timeout -> Await -> `MethodCall` without flattening sites into siblings.
-    pub source: Option<Box<HirProducedValueSourceAnchor>>,
-}
-
-/// HIR's structural classification of a result-producing expression.
-///
-/// Kept deliberately closed and exhaustive over [`HirExprKind`].  Adding an
-/// executable HIR expression kind therefore requires a conscious ownership
-/// classification before it can carry a checker fact downstream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum HirProducedValueProducer {
-    Literal,
-    RcIntrinsic,
-    RegexLiteralRef,
-    BindingRef,
-    ContextReader,
-    Binary,
-    Unary,
-    NumericCast,
-    SaturatingWidthCast,
-    TryWidthCast,
-    TupleLiteral,
-    Call,
-    Spawn,
-    ActorSend,
-    ActorAsk,
-    ActorGenStream,
-    RemoteActorAsk,
-    ActorSelf,
-    Block,
-    If,
-    StructInit,
-    FieldAccess,
-    Scope,
-    SpawnedCall,
-    ForkBlock,
-    ScopeDeadline,
-    AwaitTask,
-    AwaitRestart,
-    Await,
-    Timeout,
-    ConnAwaitRead,
-    ListenerAwaitAccept,
-    ChannelRecvAwait,
-    StreamRecvAwait,
-    Select,
-    Join,
-    SpawnLambdaActor,
-    Closure,
-    GenBlock,
-    Yield,
-    TupleIndex,
-    Index,
-    Slice,
-    IdentityCompare,
-    CoerceToDynTrait,
-    CallDynMethod,
-    CallTraitMethodStatic,
-    VarSelfMethodCall,
-    ResolvedImplCall,
-    NumericMethod,
-    CancellationTokenIsCancelled,
-    GeneratorNext,
-    WireCodec,
-    RecordCloneCall,
-    CopyCloneNoop,
-    MachineEmit,
-    MachineStep,
-    MachineStateName,
-    MachineTakeEmits,
-    MachineVariantCtor,
-    MachineFieldAccess,
-    MachineEventFieldAccess,
-    While,
-    ForRange,
-    Match,
-    WhileLet,
-    IfLet,
-    Break,
-    Return,
-    Continue,
-    Loop,
-    Unsupported,
-}
-
-/// Checker-proven source relation for one produced-value fact, projected from
-/// span keys onto stable HIR sites.  `Leaf` deliberately carries no source;
-/// every other variant is a closed structural edge MIR can follow directly.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HirProducedValueRelation {
-    Leaf,
-    Identity(SiteId),
-    /// Structural child consumed by a specialised parent. Unlike `Identity`,
-    /// only the parent materializes a value and its type may differ.
-    Subsumes(SiteId),
-    MoveOut(SiteId),
-    Projection(SiteId),
-    Join(Vec<SiteId>),
-}
-
-/// Typed ownership publication fact attached to one stable HIR expression
-/// site.  `receiver` is populated only for `ReceiverIdentity`; preserving the
-/// site, rather than a name, makes receiver-owner transfer structurally exact.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HirProducedValueFact {
-    pub producer: HirProducedValueProducer,
-    pub ownership: ProducedValueOwnership,
-    pub relation: HirProducedValueRelation,
-    pub receiver: Option<SiteId>,
-    pub receiver_boundary: Option<ProducedArgumentBoundary>,
-    pub arguments: Vec<ProducedArgumentBoundary>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1535,10 +1212,10 @@ pub enum HirExprKind {
     /// the literal table entry is still allocated via `alloc_regex_literal`.
     ///
     /// `literal_id` is the 0-based index into `HirModule::regex_literals`.
-    /// MIR lowering (slice 4) will load the compiled handle from the
-    /// corresponding global slot. Codegen (slice 5) wires the global.
+    /// Semantic lowering passes it to `RuntimeCallFamily::RegexHandle`, which
+    /// clones the handle codegen compiled into that global slot.
     ///
-    /// Type: `ResolvedTy::Regex` (the opaque regex handle type).
+    /// Type: `std.text.regex.Pattern`, the record `regex.new` also returns.
     RegexLiteralRef {
         literal_id: u32,
         pattern: String,
@@ -1613,6 +1290,14 @@ pub enum HirExprKind {
     TupleLiteral {
         elements: Vec<HirExpr>,
     },
+    /// A checked fixed-size value; the exact element type and length remain in `ty`.
+    ArrayLiteral {
+        elements: Vec<HirExpr>,
+    },
+    /// Evaluate the seed once; the checked result type supplies the repeat length.
+    ArrayRepeat {
+        value: Box<HirExpr>,
+    },
     Call {
         /// Checker-selected direct, runtime, or indirect call target. The
         /// callee expression remains the evaluation payload, never the
@@ -1622,26 +1307,25 @@ pub enum HirExprKind {
         args: Vec<HirExpr>,
     },
     /// `spawn Actor(field: value, ...)` — named-actor spawn. The checker owns
-    /// the result type (`LocalPid<Actor>`); HIR carries only the structural spawn
-    /// surface and lowered init arguments for MIR/codegen.
+    /// the result type (`Actor`'s own actor-handle type); HIR carries only the
+    /// structural spawn surface and lowered init arguments for MIR/codegen.
     Spawn {
         actor_name: String,
         args: Vec<(String, HirExpr)>,
     },
-    /// Fire-and-forget actor receive dispatch, selected from the checker's
-    /// `actor_method_dispatch` side table. HIR does not reclassify receiver
-    /// types; absence of a checker discriminator for an actor receiver is a
-    /// boundary diagnostic.
-    ActorSend {
+    /// Owned message construction; this does not enqueue or suspend.
+    ActorMessage {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
-        /// `true` when the target actor declares a loss- or rejection-capable
-        /// mailbox policy and the call returns `Result<(), SendError>`.
-        checked: bool,
-        /// `true` when a bounded `block` mailbox send must cooperatively
-        /// suspend from an execution-context caller rather than park its worker.
-        blocking: bool,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
+    /// Checker-selected policy, destination change or submission operation.
+    ActorDelivery {
+        receiver: Box<HirExpr>,
+        args: Vec<HirExpr>,
+        operation: hew_types::actor_delivery::ActorDeliveryCall,
     },
     /// Request/reply actor receive dispatch, selected from the checker's
     /// `actor_method_dispatch` side table. `reply_ty` is checker-resolved and
@@ -1650,14 +1334,17 @@ pub enum HirExprKind {
         receiver: Box<HirExpr>,
         method_id: String,
         args: Vec<HirExpr>,
+        /// Source arguments stay ordered; this maps protocol slots to sources.
+        argument_order: Vec<usize>,
         reply_ty: ResolvedTy,
-        /// Parsed method-call occurrence consumed by the `await` rewrite.
-        /// Direct/unwrapped asks have no consumed child.
-        source_anchor: Option<HirProducedValueSourceAnchor>,
+        /// How this call's own admission behaves when the destination mailbox
+        /// is full: `Wait` for a bare handle, whatever the `policy(..)` view
+        /// carries when the call goes through one.
+        policy: hew_types::actor_delivery::SendPolicy,
         /// NEW-6b `await <actor>.<method>(...) | after d` deadline, in nanoseconds.
         /// `Some(ns)` attaches a fail-closed timeout to the suspending ask: when the
         /// deadline elapses before the reply, the in-flight ask is cancelled and the
-        /// `Result<R, AskError>` resolves to `Err(AskError::Timeout)`. `None` is a
+        /// `Result<R, ActorError>` resolves to `Err(ActorError.Timeout)`. `None` is a
         /// plain ask. Only literal `Duration` deadlines are carried (codegen-locals
         /// side-table); non-literal durations fail closed at CHECK time.
         deadline_ns: Option<i64>,
@@ -1677,7 +1364,7 @@ pub enum HirExprKind {
     },
     /// Cross-node request/reply dispatch on `RemotePid<T>::ask(msg, timeout_ms)`.
     ///
-    /// The expression type is the full `Result<T::Reply, AskError>`; `reply_ty`
+    /// The expression type is the full `Result<T.Reply, ActorError>`; `reply_ty`
     /// carries the decoded Ok payload type for MIR/codegen reply sizing.
     RemoteActorAsk {
         receiver: Box<HirExpr>,
@@ -1685,14 +1372,14 @@ pub enum HirExprKind {
         timeout_ms: Box<HirExpr>,
         reply_ty: ResolvedTy,
     },
-    /// `this` inside an actor `receive fn` — the actor's own handle.
+    /// Bare `self` inside an actor `receive fn` — the actor's own handle.
     ///
-    /// A zero-payload leaf: the `LocalPid<Self>` type recorded by the checker
-    /// at the `this` span (`Expr::This` synthesis) rides on the wrapping
+    /// A zero-payload leaf: `Self`, the actor's own type, recorded by the
+    /// checker at the `self` span rides on the wrapping
     /// `HirExpr.ty`, so this variant carries no fields. MIR lowers it via the
     /// `hew_actor_self()` runtime primitive — the same self-handle synthesis
     /// `link`/`monitor`/`unlink` already use implicitly — yielding the borrowed
-    /// `*mut HewActor` the current actor runs on. A self-send (`this.go()`)
+    /// `*mut HewActor` the current actor runs on. A self-send (`self.go()`)
     /// flows through the existing `ActorSend` machinery once the receiver
     /// lowers to this handle.
     ActorSelf,
@@ -1728,39 +1415,14 @@ pub enum HirExprKind {
         object: Box<HirExpr>,
         field: String,
     },
-    /// A `scope { stmts }` block. Every statement-call inside the body is a
-    /// child-task spawn (TI-1). Named bindings (`fork name = call(...)`)
-    /// produce `Ty::Task(call_ret)` typed bindings (TI-2). The block joins
-    /// all anonymous children implicitly at block exit. `scope` is the
-    /// structured-concurrency lifetime boundary; `fork` is the child-start verb.
+    /// A value-producing lexical lifetime boundary for child tasks.
+    /// Normal exits join children before publishing the body's result.
     Scope {
         body: HirBlock,
     },
-    /// A call expression that is recognised as a child-task spawn because it
-    /// appears as a statement-expression inside a `scope {}` body. The callee
-    /// and args are the same as `HirExprKind::Call`; the distinct kind routes
-    /// MIR lowering to the task-spawn ABI rather than a direct synchronous
-    /// call.
-    ///
-    /// `task_ty` is always `ResolvedTy::Task(call_return_ty)`. It duplicates
-    /// the `HirExpr::ty` field for convenience at codegen sites that pattern-
-    /// match on the kind without reaching back to the parent `HirExpr`.
-    SpawnedCall {
-        callee: Box<HirExpr>,
-        args: Vec<HirExpr>,
-        task_ty: ResolvedTy,
-        /// Non-executed occurrence of the source call consumed by this task
-        /// spawn rewrite. The spawned node performs the call exactly once.
-        source_anchor: HirProducedValueSourceAnchor,
-        /// `true` when this spawn was written as `fork t = callee()` (the task handle
-        /// is bound to a name and can be awaited for its result). `false` for an
-        /// implicit/unbound spawn (`callee()` as a bare statement inside a `scope{}`
-        /// body — the task handle is immediately discarded).
-        ///
-        /// MIR lowering uses this to determine whether a non-unit-returning callee
-        /// is permissible (bound → value-task supported) or must reject (unbound →
-        /// the result would be silently discarded, fail-closed).
-        bound: bool,
+    /// Race owns its children and drains losers before publishing the result.
+    Race {
+        body: HirBlock,
     },
     /// `fork { ... }` inside a scope. The block is an anonymous child task
     /// body; later MIR slices attach a derived cancellation token and spawn it.
@@ -1772,28 +1434,23 @@ pub enum HirExprKind {
         /// HIR lowering.
         captures: Vec<HirClosureCapture>,
     },
-    /// `after(duration) { ... }` inside a scope. The clause is the lexical
-    /// deadline edge that later MIR slices lower to scope-token cancellation.
+    /// A value-producing lexical child scope with a checked duration budget.
     ScopeDeadline {
         duration: Box<HirExpr>,
         body: HirBlock,
     },
-    /// `await name` consumes a `Task<T>` binding and produces `T`. Legal
-    /// positions in v0.5: statement-position inside a `scope{}` body. Future
-    /// versions extend this to select-arm source expressions (cluster-5).
-    ///
-    /// `output_ty` is the inner `T` extracted from the binding's
-    /// `ResolvedTy::Task(T)`. Stored here so codegen can emit the result slot
-    /// without re-inspecting the binding's type.
+    /// Recover this scope's own deadline or logical fault after child drain and
+    /// lexical cleanup. Parent cancellation bypasses the handler.
+    ScopeRecovery {
+        scope: Box<HirExpr>,
+        error: HirBinding,
+        handler: Box<HirExpr>,
+    },
+    /// Consume a task expression and produce its child result.
     AwaitTask {
-        /// The name of the task-handle binding being consumed.
-        binding_name: String,
-        /// The resolved binding id of the task handle.
-        binding_id: BindingId,
-        /// The `T` from `Task<T>` — the type produced by this await.
+        operand: Box<HirExpr>,
+        /// The `T` from `Task<T>`.
         output_ty: ResolvedTy,
-        /// Non-executed occurrence of the task binding consumed by this await.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await_restart <supervised-child>` — suspend the current actor until the
     /// named static supervised child's slot is Live again (it restarted), then
@@ -1830,8 +1487,6 @@ pub enum HirExprKind {
         /// NEW-6c `await conn.read() | after d` deadline, in nanoseconds. `None`
         /// preserves the plain-read bytes result and unconditional read-slot wake.
         deadline_ns: Option<i64>,
-        /// Parsed `.read*()` occurrence consumed by await specialisation.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await listener.accept()` — a non-blocking suspending listener accept
     /// (NEW-2). Produced by HIR lowering when an `await` wraps a
@@ -1848,8 +1503,6 @@ pub enum HirExprKind {
         /// wake. `Some(ns)` produces `Result<Connection, NetError>` with
         /// `NetError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
         deadline_ns: Option<i64>,
-        /// Parsed `.accept()` occurrence consumed by await specialisation.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await rx.recv() | after d` — a suspending channel recv with a deadline
     /// (NEW-6b).  Produced by [`super::lower::lower_await_deadline`] when the
@@ -1866,10 +1519,6 @@ pub enum HirExprKind {
         /// present as `Option<i64>` to share the same lowering interface as the
         /// other deadline kinds).
         deadline_ns: Option<i64>,
-        /// Non-executed `.recv()` occurrence consumed by the specialised
-        /// deadline node. It preserves the checker relation
-        /// `timeout -> await -> recv` without executing the receive twice.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// `await stream.recv() | after d` — a suspending stream recv with a
     /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
@@ -1882,10 +1531,6 @@ pub enum HirExprKind {
         stream: Box<HirExpr>,
         /// Deadline in nanoseconds.
         deadline_ns: Option<i64>,
-        /// Non-executed `.recv()` occurrence consumed by the specialised
-        /// deadline node. It preserves the checker relation
-        /// `timeout -> await -> recv` without executing the receive twice.
-        source_anchor: HirProducedValueSourceAnchor,
     },
     /// Sealed `select{}` expression.
     ///
@@ -1898,20 +1543,6 @@ pub enum HirExprKind {
     /// other surface shape is rejected with `SelectArmNotSealedForm`
     /// during lowering.
     Select(HirSelect),
-    /// `join { a.m(...), b.n(...) }` — the wait-ALL sibling of `select`.
-    ///
-    /// Every branch is an actor-ask issued concurrently; the construct
-    /// waits for ALL branches to reply and binds a tuple of the per-branch
-    /// reply values in declaration order. The construct's static type
-    /// (`HirExpr::ty`) is the tuple of branch reply types (or the single
-    /// reply type when there is exactly one branch), as the checker
-    /// records it via `expr_types`.
-    ///
-    /// Per HEW-SPEC-2026 §4.11.2 a branch trap cancels the remaining
-    /// branches and the trap propagates to the enclosing scope. Any branch
-    /// that is not an actor method call is rejected at lowering with
-    /// `JoinBranchNotActorAsk`.
-    Join(HirJoin),
     /// `actor |params| { body }` — a lambda-actor literal. Produces a
     /// `Duplex<Msg, Reply>` handle at runtime that addresses the
     /// spawned actor's message queue (the surface call syntax dispatches
@@ -2013,31 +1644,33 @@ pub enum HirExprKind {
         /// The index expression (type `i64`).
         index: Box<HirExpr>,
     },
-    /// `xs[a..b]` / `xs[a..=b]` / `xs[..b]` / `xs[a..]` / `xs[..]` —
-    /// range-slice on a `Vec<T>` container (C-3). The expression type is
-    /// `Vec<T>` (a freshly-allocated copy populated from `[start, end)`).
+    /// `xs[i]` where the checker decided the element is bound as a loan of
+    /// the slot the container still owns (D432). The result carries no
+    /// ownership obligation and cannot outlive the container's loan.
+    BorrowedIndex {
+        container: Box<HirExpr>,
+        index: Box<HirExpr>,
+    },
+    /// `xs[a..b]` / `xs[..b]` / `xs[a..]` / `xs[..]` — range-slice on a
+    /// `string`, `bytes` or `Vec<T>` container. The expression type is the
+    /// container's (a freshly-allocated copy populated from `[start, end)`).
     ///
-    /// Open endpoints (`start: None`, `end: None`) survive into HIR and
-    /// are desugared at MIR lowering: open `start` becomes the constant
-    /// `0`, open `end` becomes `hew_vec_len(container)`. The inclusive
-    /// flag (`a..=b`) is also desugared in MIR via `IntArithChecked(Add)`
-    /// on `b + 1` with a `TrapKind::IntegerOverflow` trap on overflow.
-    /// MIR additionally inserts a bounds-check pair (`start <= end` and
-    /// `end <= len(container)`) before calling
-    /// `CallRuntimeAbi(hew_vec_slice_range_T)`.
+    /// The bounds are always exclusive: lowering rewrites `xs[a..=b]` to
+    /// `xs[a..b + 1]`, so the added `Binary` carries the overflow trap and
+    /// downstream stages see one range shape. Open endpoints survive into HIR
+    /// and are desugared during semantic lowering: open `start` becomes the
+    /// constant `0`, open `end` selects the container's own open-ended runtime
+    /// operation so the container is evaluated exactly once.
     ///
-    /// LESSONS: `checker-authority` (P0) — produced only after the
-    /// checker has confirmed the receiver is `Vec<T>` and the endpoints
-    /// are integer-typed.
+    /// Produced only after the checker has confirmed the receiver is
+    /// sliceable and the endpoints are integer-typed.
     Slice {
-        /// The container expression (type `Vec<T>`).
+        /// The container expression.
         container: Box<HirExpr>,
         /// Lower bound (inclusive). `None` for `xs[..b]` / `xs[..]`.
         start: Option<Box<HirExpr>>,
-        /// Upper bound. `None` for `xs[a..]` / `xs[..]`.
+        /// Upper bound (exclusive). `None` for `xs[a..]` / `xs[..]`.
         end: Option<Box<HirExpr>>,
-        /// `true` for `xs[a..=b]`. MIR adds 1 to `end` with overflow trap.
-        inclusive: bool,
     },
     /// `lhs is rhs` — identity comparison on handle-typed or machine-typed
     /// operands. The checker (D-2) validates that both operands are allowable
@@ -2053,11 +1686,12 @@ pub enum HirExprKind {
     },
     /// Wrap a concrete value in a `dyn Trait` fat pointer. Emitted at
     /// every accepted `T → dyn Trait` coercion site (the checker's
-    /// `TypeCheckOutput::dyn_trait_coercions` side table). MIR lowers
-    /// 1:1 to `Instr::CoerceToDynTrait`.
+    /// `TypeCheckOutput::dyn_trait_coercions` side table). SIR lowers
+    /// 1:1 to `SemOpKind::DynMake` against the dispatch table it interns
+    /// from `vtable_entries`.
     ///
-    /// The carried `method_table` mirrors `DynCoercion::method_table` —
-    /// codegen consumes it to materialise per-trait vtable statics.
+    /// The carried `method_table` mirrors `DynCoercion::method_table` and
+    /// remains diagnostic payload; `vtable_entries` is the authority.
     /// `concrete_type` is the resolved `Self` type at the coercion site
     /// (after `materialize_literal_defaults`), which doubles as the
     /// `(Trait, ImplType)` dedup key for the vtable static.
@@ -2071,8 +1705,8 @@ pub enum HirExprKind {
     /// Dispatch a method call through a `dyn Trait` fat pointer's
     /// vtable. Emitted in place of an `HirExprKind::Call` whenever
     /// the receiver typed as `Ty::TraitObject` (the checker's
-    /// `TypeCheckOutput::dyn_trait_method_calls` side table). MIR
-    /// lowers 1:1 to `Instr::CallTraitMethod`.
+    /// `TypeCheckOutput::dyn_trait_method_calls` side table). SIR
+    /// lowers 1:1 to `SemTerminator::DynCall`.
     ///
     /// `slot` is the pre-computed vtable index
     /// (`3 + method_decl_order` for the originating trait — see
@@ -2090,11 +1724,10 @@ pub enum HirExprKind {
         /// Caller-side method signature after the checker substituted
         /// trait type parameters and associated-type bindings from the
         /// receiver's `Ty::TraitObject` bound (e.g. `Self::Item -> int`).
-        /// Mirrors [`hew_types::DynMethodCall::signature`]; MIR lowering
-        /// clones it onto `Instr::CallTraitMethod.signature` so codegen
-        /// (W3.031 Stage 7) can derive the erased indirect-call type
-        /// without re-resolving the trait/method. Receiver parameter is
-        /// already filtered out.
+        /// Mirrors [`hew_types::DynMethodCall::signature`]; SIR reads its
+        /// receiver mode from it and derives the erased boundary from the
+        /// argument types, so no later stage re-resolves the trait method.
+        /// Receiver parameter is already filtered out.
         ///
         /// Boxed to keep the `HirExprKind` variant under the
         /// `clippy::large_enum_variant` threshold.
@@ -2147,6 +1780,8 @@ pub enum HirExprKind {
     /// closed `ResolvedImplCall` arm.
     VarSelfMethodCall {
         receiver: Box<HirExpr>,
+        /// Checked receiver acquisition; staging requires an independent copy.
+        receiver_update: hew_types::ReceiverUpdate,
         /// Structured direct or static-trait target carried from checking.
         call_target: hew_types::CallTarget,
         target: HirVarSelfMethodTarget,
@@ -2223,22 +1858,6 @@ pub enum HirExprKind {
         /// downstream consumers do not have to plumb `expr_types` separately.
         ret_ty: ResolvedTy,
     },
-    /// Checker-authoritative integer opt-out method call:
-    /// `.wrapping_*`, `.checked_*`, or `.saturating_*` for add/sub/mul.
-    ///
-    /// Produced only from `TypeCheckOutput::numeric_method_lowerings`.
-    /// Downstream phases must consume the carried discriminators rather than
-    /// re-matching the surface method name.
-    NumericMethod {
-        receiver: Box<HirExpr>,
-        arg: Box<HirExpr>,
-        family: NumericMethodFamily,
-        op: NumericMethodOp,
-        result_ty: ResolvedTy,
-        operand_ty: ResolvedTy,
-        signedness: NumericSignedness,
-        width: NumericWidth,
-    },
     /// `CancellationToken.is_cancelled() -> bool`.
     ///
     /// The checker records this as a structured intrinsic so frontend lowering
@@ -2260,21 +1879,17 @@ pub enum HirExprKind {
         receiver: Box<HirExpr>,
         yield_ty: ResolvedTy,
     },
-    /// Binary wire codec call on a `#[wire]` struct.
+    /// Checked binary or text wire codec call for one exact value type.
     ///
-    /// `Encode`: `value.encode() -> bytes` — `operand` is the receiver value;
-    /// codegen calls `__hew_serialize_<key>(value_ptr, &out_len)` and wraps the
-    /// returned malloc'd buffer into a refcounted `bytes` value.
+    /// All directions borrow their operand. `value_ty` is the exact checked
+    /// value encoded or decoded, including generic collection arguments.
     ///
-    /// `Decode`: `Type.decode(bytes) -> Type` — `operand` is the `bytes`
-    /// argument; codegen calls `__hew_deserialize_<key>(data, len, &struct_size)`
-    /// and loads the reconstructed value out of the malloc'd result.
-    ///
-    /// `value_ty` is the wire-struct type. Codegen derives the thunk key via
-    /// `mangle_resolved_ty` — the same encoder the actor message path uses — so
-    /// a direct `.encode()` and an actor send of the same type share one thunk.
-    /// Only the binary `encode`/`decode` methods reach here; the text-format
-    /// wire methods stay fail-closed (no thunk exists yet).
+    /// SIR resolves a shared wire schema from the checker layout table. Native
+    /// callbacks use the physical value layouts and cleanup glue for both
+    /// directions; text formats transcode through the same CBOR representation.
+    /// Binary decode failure raises `WireDecodeFailed`. Text decode returns
+    /// `Result<value_ty, string>` for malformed input and propagates callback
+    /// faults through ordinary cleanup.
     WireCodec {
         direction: WireCodecDirection,
         operand: Box<HirExpr>,
@@ -2303,66 +1918,9 @@ pub enum HirExprKind {
         clone_fn_sym: String,
         record_name: String,
     },
-    /// Copy/BitCopy `.clone()` wrapper. The source is evaluated, but only the
-    /// outer site publishes the bit-copied result.
+    /// Transparent source-expression wrapper retained by lowering rewrites.
     SubsumedValue {
         source: Box<HirExpr>,
-        producer: HirProducedValueProducer,
-    },
-    /// `emit EventName { field: value, ... }` inside a machine transition body,
-    /// entry block, or exit block.
-    ///
-    /// `event_idx` is the zero-based index of the emitted event in the enclosing
-    /// machine's event list (`HirMachineDecl::events`). Resolved at HIR lowering
-    /// time from the `Expr::MachineEmit { event_name }` surface form; an unknown
-    /// event name emits `UnresolvedSymbol` and the HIR body is not produced.
-    ///
-    /// `fields` are the named field initialisers for the event payload. Unit
-    /// events (no declared fields) have an empty `fields` vec.
-    ///
-    /// MIR/codegen consumers: wired in Lane B Slices 4b and 7.
-    MachineEmit {
-        event_idx: usize,
-        fields: Vec<(String, HirExpr)>,
-    },
-    /// `m.step(event) -> ()` — advance the machine one step.
-    ///
-    /// The checker has verified that `receiver` is a mutable binding and that
-    /// `event` matches the `NameEvent` companion enum.  MIR/codegen consumers
-    /// lower this to a call to the internal `<machine_name>__step` helper
-    /// followed by a store-back into the receiver's binding slot (slice 6).
-    ///
-    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
-    MachineStep {
-        machine_name: String,
-        receiver: Box<HirExpr>,
-        event: Box<HirExpr>,
-    },
-    /// `m.state_name() -> String` — current state tag as a string.
-    ///
-    /// MIR/codegen consumers lower this to a static string-table lookup on
-    /// the tag field of the machine value (slice 6).
-    ///
-    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
-    MachineStateName {
-        machine_name: String,
-        receiver: Box<HirExpr>,
-    },
-    /// `m.take_emits(event) -> i64` — remove every queued emit matching
-    /// (this machine's type id, `event`'s discriminant tag) from the
-    /// thread-local emit queue and return the count removed.
-    ///
-    /// MIR/codegen consumers lower this to an `Instr::EnumTagLoad` on `event`
-    /// followed by `Instr::MachineEmitTake` keyed by the machine's stable
-    /// type id (`hew-mir`'s `machine_emit_type_id`, the same
-    /// `SipHasher13`-over-name authority the actor `msg_type` precedent
-    /// uses). Unconsumed events of other tags/machines stay queued.
-    ///
-    /// `machine_name` is the unqualified machine type name (e.g. `"TrafficLight"`).
-    MachineTakeEmits {
-        machine_name: String,
-        receiver: Box<HirExpr>,
-        event: Box<HirExpr>,
     },
     /// Tagged-union variant constructor — shared by machine states and user-defined
     /// enum unit variants.
@@ -2388,9 +1946,9 @@ pub enum HirExprKind {
     /// `machine_name`: the unqualified tagged-union type name. For machine states
     ///   this is the machine type (e.g. `"TrafficLight"`). For user enum variants
     ///   this is the enum type (e.g. `"Colour"`). The MIR consumer looks up the
-    ///   layout in the shared `MachineLayoutMap` / `EnumLayout` registry by this name.
+    ///   layout in the shared `EnumLayout` registry by this name.
     /// `state_idx`: zero-based ordinal of this variant within the tagged union.
-    ///   For machine states: index into `HirMachineDecl.states` (declaration order).
+    ///   Declaration-order index of the variant.
     ///   For user enum variants: position within `HirTypeDecl.variants` (declaration
     ///   order across unit + tuple + struct shapes — same index the
     ///   ctor-registry pre-pass assigns).
@@ -2405,37 +1963,6 @@ pub enum HirExprKind {
         machine_name: String,
         state_idx: usize,
         payload: Option<Vec<(String, HirExpr)>>,
-    },
-    /// Read a payload field from the machine value bound to `self` inside a
-    /// transition body. Resolved when `Expr::FieldAccess { object: Expr::This, field }`
-    /// appears inside a machine transition body.
-    ///
-    /// `machine_name`: enclosing machine type name.
-    /// `state_idx`: source state index (the transition's `from` state), which
-    ///   determines which variant's payload fields are in scope. Tag dominance
-    ///   is guaranteed by the transition dispatch context (Slice 4b).
-    /// `field_idx`: zero-based index into that state's `HirMachineState.fields`.
-    /// `field_name`: the field name for diagnostics and dump output.
-    ///
-    /// HIR derives the result type from `HirMachineState.fields[field_idx].ty`
-    /// (same HIR-side-authority deviation as `MachineVariantCtor`).
-    ///
-    /// MIR consumers: load via `Place::MachineVariant { binding: <self-binding>,
-    /// variant_idx: state_idx, field_idx }` (Slice 4b).
-    MachineFieldAccess {
-        machine_name: String,
-        state_idx: usize,
-        field_idx: usize,
-        field_name: String,
-        source_anchor: Option<HirProducedValueSourceAnchor>,
-    },
-    /// Read a payload field from the transition's matched `event` value.
-    MachineEventFieldAccess {
-        machine_name: String,
-        event_idx: usize,
-        field_idx: usize,
-        field_name: String,
-        source_anchor: Option<HirProducedValueSourceAnchor>,
     },
     /// `while cond { body }` / `@label: while cond { body }` — loops until
     /// `cond` evaluates to false.
@@ -2515,80 +2042,6 @@ pub enum HirExprKind {
         /// a wildcard arm or `Some(VariantMatch)` for a unit-variant arm.
         arms: Vec<HirMatchArm>,
     },
-    /// `while let <PayloadVariant>(bindings) = scrutinee { body }` /
-    /// `@label: while let ...` — loops while the scrutinee's tag matches
-    /// `variant_idx`. Each iteration
-    /// re-evaluates `scrutinee` from scratch (the surface semantics: the
-    /// pattern's right-hand side is checked anew on every iteration), then
-    /// either binds the variant's payload fields and runs `body` before
-    /// looping back, or exits the loop.
-    ///
-    /// The expression type is always `Unit`; a while-let loop never yields
-    /// a value. MIR lowering emits a four-block CFG (entry → header →
-    /// body → exit) mirroring `lower_while` + `lower_match_enum_tag`.
-    ///
-    /// **Scope (v0.5 substrate)**: only a single payload-bearing enum
-    /// constructor pattern (e.g. `Some(x)`) is accepted here. Unit-variant
-    /// patterns (`None`), or-patterns, guards, and arbitrary patterns are
-    /// rejected at HIR lowering with a structured `NotYetImplemented`
-    /// diagnostic — the same shape used by `HirExprKind::Match`.
-    WhileLet {
-        /// Optional source label targeted by `break @label` / `continue @label`.
-        label: Option<String>,
-        /// Re-evaluated each iteration. Its `ty` is the resolved enum type
-        /// (e.g. `Option<i64>`).
-        scrutinee: Box<HirExpr>,
-        /// Checker-resolved `(type_name, variant_name)` identity of the
-        /// continue-arm variant (`Some` for `Option<T>`).
-        variant_match: VariantMatch,
-        /// Zero-based variant index in declaration order; matches the
-        /// `EnumLayout.variants` ordering used by MIR/codegen.
-        variant_idx: u32,
-        /// Payload bindings introduced by the pattern. Walked at MIR
-        /// lowering to emit `Move { src: Place::MachineVariant }` at body
-        /// entry — identical to a `Match` arm's payload handling.
-        bindings: Vec<HirMatchArmBinding>,
-        /// Nested constructor checks that must pass before the loop body runs.
-        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
-        /// Loop body.
-        body: HirBlock,
-    },
-    /// `if let PAT = scrutinee { then_body } else { else_body }` — a
-    /// conditional that succeeds when the scrutinee matches a single enum
-    /// constructor pattern.
-    ///
-    /// MIR lowering emits a three-block CFG: a tag-check block branching to
-    /// `then_bb` or `else_bb`, both converging at a `join_bb`.  The `then_bb`
-    /// binds payload fields from `bindings` (identical to `Match` arm entry)
-    /// and lowers `body`; `else_bb` lowers `else_body` (or falls through as
-    /// Unit if absent).
-    ///
-    /// The expression type is `result_ty`, which is `Unit` when the `if let`
-    /// appears in statement position or when no else branch exists, and the
-    /// branch-unified type when used as an expression.
-    ///
-    /// **Scope (v0.5 substrate)**: same shape restrictions as `WhileLet` —
-    /// only a single payload-bearing enum-constructor pattern is accepted.
-    IfLet {
-        /// Evaluated once. Its `ty` is the resolved enum type.
-        scrutinee: Box<HirExpr>,
-        /// Checker-resolved `(type_name, variant_name)` identity of the
-        /// match-arm variant.
-        variant_match: VariantMatch,
-        /// Zero-based variant index in declaration order.
-        variant_idx: u32,
-        /// Payload bindings introduced by the pattern; bound for `body` only.
-        bindings: Vec<HirMatchArmBinding>,
-        /// Nested constructor checks that must pass before the then-branch runs.
-        payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
-        /// Then-branch body (executed when the pattern matches).
-        body: HirBlock,
-        /// Optional else-branch body; `None` when there is no `else` clause.
-        else_body: Option<HirBlock>,
-        /// The unified result type of both branches (`Unit` when no else or
-        /// in statement position).
-        result_ty: ResolvedTy,
-    },
     /// `break;` / `break @label;` / `break <value>;` — early exit from the
     /// innermost enclosing loop, or from the nearest enclosing loop carrying
     /// the requested label.
@@ -2644,301 +2097,6 @@ pub enum HirExprKind {
         body: HirBlock,
     },
     Unsupported(String),
-}
-
-impl HirProducedValueProducer {
-    /// Total structural classifier for HIR expression result producers.
-    #[must_use]
-    #[allow(
-        deprecated,
-        reason = "legacy producer remains classified until its removal gate lands"
-    )]
-    pub const fn classify(kind: &HirExprKind) -> Self {
-        match kind {
-            HirExprKind::Literal(_) => Self::Literal,
-            HirExprKind::RcIntrinsic { .. } => Self::RcIntrinsic,
-            HirExprKind::RegexLiteralRef { .. } => Self::RegexLiteralRef,
-            HirExprKind::BindingRef { .. } => Self::BindingRef,
-            HirExprKind::ContextReader { .. } => Self::ContextReader,
-            HirExprKind::Binary { .. } => Self::Binary,
-            HirExprKind::Unary { .. } => Self::Unary,
-            HirExprKind::NumericCast { .. } => Self::NumericCast,
-            HirExprKind::SaturatingWidthCast { .. } => Self::SaturatingWidthCast,
-            HirExprKind::TryWidthCast { .. } => Self::TryWidthCast,
-            HirExprKind::TupleLiteral { .. } => Self::TupleLiteral,
-            HirExprKind::Call { .. } => Self::Call,
-            HirExprKind::Spawn { .. } => Self::Spawn,
-            HirExprKind::ActorSend { .. } => Self::ActorSend,
-            HirExprKind::ActorAsk { .. } => Self::ActorAsk,
-            HirExprKind::ActorGenStream { .. } => Self::ActorGenStream,
-            HirExprKind::RemoteActorAsk { .. } => Self::RemoteActorAsk,
-            HirExprKind::ActorSelf => Self::ActorSelf,
-            HirExprKind::Block(_) => Self::Block,
-            HirExprKind::If { .. } => Self::If,
-            HirExprKind::StructInit { .. } => Self::StructInit,
-            HirExprKind::FieldAccess { .. } => Self::FieldAccess,
-            HirExprKind::Scope { .. } => Self::Scope,
-            HirExprKind::SpawnedCall { .. } => Self::SpawnedCall,
-            HirExprKind::ForkBlock { .. } => Self::ForkBlock,
-            HirExprKind::ScopeDeadline { .. } => Self::ScopeDeadline,
-            HirExprKind::AwaitTask { .. } => Self::AwaitTask,
-            HirExprKind::AwaitRestart { .. } => Self::AwaitRestart,
-            HirExprKind::ConnAwaitRead { .. } => Self::ConnAwaitRead,
-            HirExprKind::ListenerAwaitAccept { .. } => Self::ListenerAwaitAccept,
-            HirExprKind::ChannelRecvAwait { .. } => Self::ChannelRecvAwait,
-            HirExprKind::StreamRecvAwait { .. } => Self::StreamRecvAwait,
-            HirExprKind::Select(_) => Self::Select,
-            HirExprKind::Join(_) => Self::Join,
-            HirExprKind::SpawnLambdaActor { .. } => Self::SpawnLambdaActor,
-            HirExprKind::Closure { .. } => Self::Closure,
-            HirExprKind::GenBlock { .. } => Self::GenBlock,
-            HirExprKind::Yield { .. } => Self::Yield,
-            HirExprKind::TupleIndex { .. } => Self::TupleIndex,
-            HirExprKind::Index { .. } => Self::Index,
-            HirExprKind::Slice { .. } => Self::Slice,
-            HirExprKind::IdentityCompare { .. } => Self::IdentityCompare,
-            HirExprKind::CoerceToDynTrait { .. } => Self::CoerceToDynTrait,
-            HirExprKind::CallDynMethod { .. } => Self::CallDynMethod,
-            HirExprKind::CallTraitMethodStatic { .. } => Self::CallTraitMethodStatic,
-            HirExprKind::VarSelfMethodCall { .. } => Self::VarSelfMethodCall,
-            HirExprKind::ResolvedImplCall { .. } => Self::ResolvedImplCall,
-            HirExprKind::NumericMethod { .. } => Self::NumericMethod,
-            HirExprKind::CancellationTokenIsCancelled { .. } => Self::CancellationTokenIsCancelled,
-            HirExprKind::GeneratorNext { .. } => Self::GeneratorNext,
-            HirExprKind::WireCodec { .. } => Self::WireCodec,
-            HirExprKind::RecordCloneCall { .. } => Self::RecordCloneCall,
-            HirExprKind::SubsumedValue { producer, .. } => *producer,
-            HirExprKind::MachineEmit { .. } => Self::MachineEmit,
-            HirExprKind::MachineStep { .. } => Self::MachineStep,
-            HirExprKind::MachineStateName { .. } => Self::MachineStateName,
-            HirExprKind::MachineTakeEmits { .. } => Self::MachineTakeEmits,
-            HirExprKind::MachineVariantCtor { .. } => Self::MachineVariantCtor,
-            HirExprKind::MachineFieldAccess { .. } => Self::MachineFieldAccess,
-            HirExprKind::MachineEventFieldAccess { .. } => Self::MachineEventFieldAccess,
-            HirExprKind::While { .. } => Self::While,
-            HirExprKind::ForRange { .. } => Self::ForRange,
-            HirExprKind::Match { .. } => Self::Match,
-            HirExprKind::WhileLet { .. } => Self::WhileLet,
-            HirExprKind::IfLet { .. } => Self::IfLet,
-            HirExprKind::Break { .. } => Self::Break,
-            HirExprKind::Return { .. } => Self::Return,
-            HirExprKind::Continue { .. } => Self::Continue,
-            HirExprKind::Loop { .. } => Self::Loop,
-            HirExprKind::Unsupported(_) => Self::Unsupported,
-        }
-    }
-}
-
-#[cfg(test)]
-mod produced_value_tests {
-    use super::*;
-    use hew_types::{CallTarget, FnSig, VecMethod};
-
-    fn value() -> HirExpr {
-        HirExpr {
-            node: HirNodeId(0),
-            site: SiteId(0),
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind: HirExprKind::Literal(HirLiteral::Unit),
-            span: 0..0,
-        }
-    }
-
-    fn receiver() -> Box<HirExpr> {
-        Box::new(value())
-    }
-
-    fn source_anchor(producer: HirProducedValueProducer) -> HirProducedValueSourceAnchor {
-        HirProducedValueSourceAnchor {
-            node: HirNodeId(1),
-            site: SiteId(1),
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            producer,
-            span: 0..0,
-            source: None,
-        }
-    }
-
-    fn closure_callee() -> Box<HirExpr> {
-        Box::new(HirExpr {
-            kind: HirExprKind::Closure {
-                params: vec![],
-                ret_ty: ResolvedTy::Unit,
-                body: receiver(),
-                captures: vec![],
-                escape_kind: hew_types::ClosureEscapeKind::Local,
-            },
-            ..value()
-        })
-    }
-
-    #[test]
-    #[allow(
-        deprecated,
-        reason = "test pins the closed classification of the legacy producer"
-    )]
-    fn call_producer_families_have_distinct_closed_classifications() {
-        let cases = [
-            (
-                HirExprKind::Call {
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    callee: closure_callee(),
-                    args: vec![],
-                },
-                HirProducedValueProducer::Call,
-            ),
-            (
-                HirExprKind::ResolvedImplCall {
-                    receiver: receiver(),
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    impl_id: ImplId(0),
-                    method_name: "len".to_string(),
-                    target_symbol: "linker_only".to_string(),
-                    target_family: MethodTargetFamily::Vec(VecMethod::Len),
-                    type_args: vec![],
-                    args: vec![],
-                    ret_ty: ResolvedTy::I64,
-                },
-                HirProducedValueProducer::ResolvedImplCall,
-            ),
-            (
-                HirExprKind::CallTraitMethodStatic {
-                    receiver: receiver(),
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    receiver_type_param: "T".to_string(),
-                    bound_trait: "Display".to_string(),
-                    declaring_trait: "Display".to_string(),
-                    method_name: "show".to_string(),
-                    args: vec![],
-                    ret_ty: ResolvedTy::Unit,
-                },
-                HirProducedValueProducer::CallTraitMethodStatic,
-            ),
-            (
-                HirExprKind::CallDynMethod {
-                    receiver: receiver(),
-                    target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    trait_name: "Display".to_string(),
-                    method_name: "show".to_string(),
-                    slot: 3,
-                    args: vec![],
-                    ret_ty: ResolvedTy::Unit,
-                    signature: Box::new(FnSig::default()),
-                },
-                HirProducedValueProducer::CallDynMethod,
-            ),
-            (
-                HirExprKind::VarSelfMethodCall {
-                    receiver: receiver(),
-                    call_target: CallTarget::Unsupported {
-                        reason: "classification-only fixture".to_string(),
-                    },
-                    target: HirVarSelfMethodTarget::Direct,
-                    args: vec![],
-                    ret_ty: ResolvedTy::Unit,
-                    receiver_ty: ResolvedTy::Unit,
-                },
-                HirProducedValueProducer::VarSelfMethodCall,
-            ),
-        ];
-        for (kind, expected) in cases {
-            assert_eq!(HirProducedValueProducer::classify(&kind), expected);
-        }
-    }
-
-    #[test]
-    fn suspended_delivery_and_unknown_fact_are_preserved_fail_closed() {
-        let cases = [
-            (
-                HirExprKind::AwaitTask {
-                    binding_name: "t".to_string(),
-                    binding_id: BindingId(0),
-                    output_ty: ResolvedTy::Unit,
-                    source_anchor: source_anchor(HirProducedValueProducer::BindingRef),
-                },
-                HirProducedValueProducer::AwaitTask,
-            ),
-            (
-                HirExprKind::ConnAwaitRead {
-                    conn: receiver(),
-                    to_string: false,
-                    deadline_ns: None,
-                    source_anchor: source_anchor(HirProducedValueProducer::ConnAwaitRead),
-                },
-                HirProducedValueProducer::ConnAwaitRead,
-            ),
-            (
-                HirExprKind::ListenerAwaitAccept {
-                    listener: receiver(),
-                    deadline_ns: None,
-                    source_anchor: source_anchor(HirProducedValueProducer::ListenerAwaitAccept),
-                },
-                HirProducedValueProducer::ListenerAwaitAccept,
-            ),
-            (
-                HirExprKind::ChannelRecvAwait {
-                    receiver: receiver(),
-                    deadline_ns: Some(1),
-                    source_anchor: source_anchor(HirProducedValueProducer::ChannelRecvAwait),
-                },
-                HirProducedValueProducer::ChannelRecvAwait,
-            ),
-            (
-                HirExprKind::StreamRecvAwait {
-                    stream: receiver(),
-                    deadline_ns: Some(1),
-                    source_anchor: source_anchor(HirProducedValueProducer::StreamRecvAwait),
-                },
-                HirProducedValueProducer::StreamRecvAwait,
-            ),
-            (
-                HirExprKind::GeneratorNext {
-                    receiver: receiver(),
-                    yield_ty: ResolvedTy::Unit,
-                },
-                HirProducedValueProducer::GeneratorNext,
-            ),
-        ];
-        for (kind, expected) in cases {
-            assert_eq!(HirProducedValueProducer::classify(&kind), expected);
-        }
-
-        let fact = HirProducedValueFact {
-            producer: HirProducedValueProducer::Call,
-            ownership: ProducedValueOwnership::Unknown,
-            relation: HirProducedValueRelation::Leaf,
-            receiver: None,
-            receiver_boundary: None,
-            arguments: vec![],
-        };
-        assert_eq!(fact.ownership, ProducedValueOwnership::Unknown);
-    }
-
-    #[test]
-    fn receiver_identity_uses_a_site_not_a_symbol() {
-        let fact = HirProducedValueFact {
-            producer: HirProducedValueProducer::VarSelfMethodCall,
-            ownership: ProducedValueOwnership::ReceiverIdentity,
-            relation: HirProducedValueRelation::Leaf,
-            receiver: Some(SiteId(7)),
-            receiver_boundary: Some(ProducedArgumentBoundary::Transfer),
-            arguments: vec![],
-        };
-        assert_eq!(fact.receiver, Some(SiteId(7)));
-        assert_ne!(fact.ownership, ProducedValueOwnership::Unknown);
-    }
 }
 
 /// A compiled regex literal observed in a match arm.
@@ -3064,24 +2222,21 @@ pub struct HirPayloadPredicate {
     pub ty: ResolvedTy,
 }
 
-/// Nested constructor subpattern check on one payload slot of an
-/// `EnumVariant` match arm (e.g. the `IoError::NotFound` in
-/// `Err(IoError::NotFound)` or the inner `Ok(v)` in `Ok(Ok(v))`).
+/// Nested constructor subpattern check on one slot of a match arm's shape:
+/// a variant payload slot (the `IoError::NotFound` in
+/// `Err(IoError::NotFound)`, the inner `Ok(v)` in `Ok(Ok(v))`), a record
+/// field (`Point { x: .Some(n) }`) or a tuple element (`(.Some(n), m)`).
 ///
-/// MIR lowering evaluates these after the outer tag check and any literal
-/// payload predicates: it loads the payload slot into a fresh
-/// `payload_ty`-typed local (an unregistered transient alias — never entered
-/// into `owned_locals`, so ownership stays with the scrutinee), compares
-/// `EnumTag` of that local against `variant_idx`, and branches to the arm's
-/// fallthrough target on mismatch. On match, `bindings` are materialised
-/// from the nested variant's payload slots (registered exactly like
-/// top-level arm bindings) and `nested` children recurse with the transient
-/// local as their parent.
+/// SIR tests the nested tag, then its instantiated literal predicates and
+/// recursive children before selecting the arm. Candidate bindings preserve
+/// the payload owners while a literal or guard can still fall through; only
+/// the selected arm acquires those bindings for its body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirPayloadVariantPredicate {
-    /// 0-based payload slot within the ENCLOSING variant.
+    /// 0-based slot within the ENCLOSING shape: a variant payload position,
+    /// a declaration-order record field, or a tuple element.
     pub field_idx: u32,
-    /// Resolved enum type of that payload slot.
+    /// Resolved enum type of that slot.
     pub payload_ty: ResolvedTy,
     /// Checker-resolved identity of the nested variant.
     pub variant_match: VariantMatch,
@@ -3091,6 +2246,8 @@ pub struct HirPayloadVariantPredicate {
     pub variant_idx: u32,
     /// Bindings into THIS nested variant's payload slots.
     pub bindings: Vec<HirMatchArmBinding>,
+    /// Literal tests against this variant's instantiated payload fields.
+    pub literals: Vec<HirPayloadPredicate>,
     /// Deeper nested constructor subpatterns.
     pub nested: Vec<HirPayloadVariantPredicate>,
 }
@@ -3127,8 +2284,9 @@ pub struct HirMatchArm {
     /// Literal checks for constructor payload or record/tuple project fields,
     /// evaluated before bindings and the arm body.
     pub payload_predicates: Vec<HirPayloadPredicate>,
-    /// Nested constructor checks for constructor payload fields, evaluated
-    /// after `payload_predicates` and before bindings/guard/body.
+    /// Nested constructor checks for constructor payload slots, record fields
+    /// or tuple elements, evaluated after `payload_predicates` and before
+    /// bindings/guard/body.
     pub payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
     /// Optional guard expression (`Pattern if <guard> => ...`).
     ///
@@ -3177,9 +2335,9 @@ pub struct HirMatchArmBinding {
 ///
 /// The HIR `captures` field is the producer for the MIR
 /// `LambdaCapture` side-table; the structural fail-closed checker in
-/// `hew-mir` rejects malformed shapes (Weak on non-LambdaActorHandle,
-/// multiple Weak captures on the same handle) that would otherwise
-/// reach codegen.
+/// `hew-mir` rejects malformed shapes (Weak on a non-lambda-actor
+/// handle, multiple Weak captures on the same handle) that would
+/// otherwise reach codegen.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirLambdaCapture {
     /// The captured binding's id in the enclosing scope.
@@ -3188,6 +2346,10 @@ pub struct HirLambdaCapture {
     /// self-binding case — a `Weak` capture's name matches the
     /// lambda's own let-binding name.
     pub name: String,
+    /// The captured binding's type, taken from the reference that captured
+    /// it. This is the state-field type of the synthesized actor the lambda
+    /// lowers to, so the capture set is a complete state declaration.
+    pub ty: ResolvedTy,
     /// Capture-strength discriminator.
     pub kind: HirCaptureKind,
 }
@@ -3201,15 +2363,16 @@ pub struct HirClosureCapture {
     pub name: String,
     /// Fully-resolved field type stored in the generated environment record.
     pub ty: ResolvedTy,
-    /// Checker-selected by-value capture mode.
-    pub mode: hew_types::ClosureCaptureMode,
+    /// Checker-selected acquisition at environment construction.
+    pub acquisition: hew_types::ClosureCaptureAcquisition,
+    /// Permission to mutate this private environment field.
+    pub access: hew_types::ClosureCaptureAccess,
+    /// Invocation-time consumption of ownership from this field.
+    pub consumption: hew_types::ClosureCaptureConsumption,
     /// Whether the captured type satisfies the checker-owned Send contract.
     pub is_send: bool,
     /// Whether the captured type satisfies the checker-owned `Sync` contract.
-    /// Plumbed from `ClosureCaptureFact::is_sync`; consumed by
-    /// `ClosureEnvLayout::lock_slot_for` in MIR to decide whether a
-    /// non-`Sync` `BorrowMut` capture needs an auto-lock slot when the
-    /// follow-on auto-lock consumer enables lock injection.
+    /// Preserved from `ClosureCaptureFact::is_sync`.
     pub is_sync: bool,
 }
 
@@ -3272,7 +2435,15 @@ pub enum HirCaptureKind {
 /// sealed arm forms.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSelect {
+    pub order: HirSelectionOrder,
     pub arms: Vec<HirSelectArm>,
+}
+
+/// Ordering of already completed operations at a selection boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HirSelectionOrder {
+    Source,
+    Completion,
 }
 
 /// One arm of a sealed `select{}` expression. `binding_name` is `None`
@@ -3311,14 +2482,14 @@ pub enum HirSelectArmKind {
     StreamNext { stream: Box<HirExpr> },
     /// `pat from <actor-expr>.<method>(<args>) => body`. The arm
     /// dispatches an ask to `actor.method(args)` and waits for the
-    /// reply; the binding receives the reply value.
+    /// reply; the binding receives its complete checked `Result`.
     ActorAsk {
-        actor: Box<HirExpr>,
-        method: String,
-        args: Vec<HirExpr>,
+        /// The normalized checked call preserves exact protocol identity,
+        /// argument order, admission policy, deadline and complete result.
+        call: Box<HirExpr>,
     },
-    /// `pat from await <task-expr> => body`. The arm waits for `task`
-    /// to complete with `Ok(T)`; the binding receives `T`.
+    /// `pat from <task-expr> => body`. The arm waits for `task`
+    /// to complete; the binding receives `T`.
     /// Cancellation and trap outcomes propagate through the `select`
     /// site per HEW-SPEC-2026 §4.11.1.
     TaskAwait { task: Box<HirExpr> },
@@ -3333,34 +2504,12 @@ pub enum HirSelectArmKind {
     AfterTimer { duration: Box<HirExpr> },
 }
 
-/// Lowered `join { ... }` expression — the wait-ALL sibling of
-/// [`HirSelect`]. Each branch is an actor-ask issued concurrently; the
-/// construct waits for every branch to reply and materialises a tuple of
-/// the per-branch reply values in declaration order. See
-/// [`HirJoinBranch`] for the per-branch shape.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirJoin {
-    pub branches: Vec<HirJoinBranch>,
-}
-
-/// One branch of a `join { ... }` expression: a single actor-ask
-/// (`<actor-expr>.<method>(<args>)`). `reply_ty` is the
-/// checker-authoritative reply type for this branch, harvested from the
-/// `actor_method_dispatch` table exactly as `select`'s `ActorAsk` binding
-/// type is. MIR's `Terminator::Join` producer allocates a reply slot per
-/// branch and writes the branch's reply into the result tuple's matching
-/// element.
-#[derive(Debug, Clone, PartialEq)]
-pub struct HirJoinBranch {
-    pub actor: Box<HirExpr>,
-    pub method: String,
-    pub args: Vec<HirExpr>,
-    pub reply_ty: ResolvedTy,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirLiteral {
-    Integer(i64),
+    /// Exact mathematical value of an integer literal in the `i128` carrier
+    /// (D421). The concrete Hew type is the expression's `ResolvedTy`; the
+    /// checker has already admitted the value against it.
+    Integer(i128),
     Float(f64),
     String(String),
     Bool(bool),

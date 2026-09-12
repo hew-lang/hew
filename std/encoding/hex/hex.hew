@@ -9,7 +9,7 @@
 //! import std.encoding.hex;
 //!
 //! fn main() {
-//!     let data: bytes = bytes.new();
+//!     var data: bytes = bytes.new();
 //!     data.push(0xDE);
 //!     data.push(0xAD);
 //!     let s = hex.encode(data);
@@ -18,6 +18,8 @@
 //!     println(back.len());  // 2
 //! }
 //! ```
+
+import std.encoding.utf8;
 
 /// Encode binary data to a lowercase hex string.
 pub fn encode(data: bytes) -> string {
@@ -34,7 +36,7 @@ pub fn encode_upper(data: bytes) -> string {
 /// Returns an empty `bytes` buffer if the input is not valid hex.
 pub fn decode(s: string) -> bytes {
     let slen = s.len();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     if slen == 0 {
         return out;
     }
@@ -57,7 +59,7 @@ pub fn decode(s: string) -> bytes {
 
 /// Encode binary data to a hex string, optionally uppercase.
 fn encode_impl(data: bytes, upper: bool) -> string {
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     for i in 0 .. data.len() {
         let b = data[i];
         let hi = b as i32 / 16;
@@ -65,7 +67,9 @@ fn encode_impl(data: bytes, upper: bool) -> string {
         out.push(nibble_to_char(hi, upper) as u8);
         out.push(nibble_to_char(lo, upper) as u8);
     }
-    out.to_string()
+    utf8.decode(out) handle error {
+        panic("Hex encoder produces ASCII");
+    }
 }
 
 /// Convert a 4-bit nibble (0–15) to its ASCII hex character code.

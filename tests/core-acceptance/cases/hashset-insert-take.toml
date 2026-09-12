@@ -1,0 +1,10 @@
+[[case]]
+id = "hashset-insert-take"
+intent = "An owned element handed to `HashSet.insert` transfers on both the vacant and the already-present path, so a duplicate insert neither leaks the caller's element nor frees it twice, while a borrowed element is cloned and its binding survives."
+source = "cases/hashset-insert-take.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "distinct=3\nkept=kept-1 present=true len=4\nremoved=true len=3\ndrained=1\n"
+exit = 0

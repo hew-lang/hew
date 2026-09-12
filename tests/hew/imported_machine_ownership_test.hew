@@ -10,8 +10,8 @@ import tests.hew.imported_machine_support.machine_defs;
 import std.testing;
 
 type Envelope {
-    value: machine_defs.PayloadLifecycle;
-    marker: i64;
+    value: machine_defs.PayloadLifecycle,
+    marker: i64,
 }
 
 fn carry_hidden(value: machine_defs.RunLifecycle) -> machine_defs.RunLifecycle {

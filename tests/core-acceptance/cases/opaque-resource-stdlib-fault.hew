@@ -1,0 +1,22 @@
+import std.process;
+import std.stream;
+
+fn fail(divisor: i64) -> i64 {
+    let _pair = match stream.bytes_pipe(1) {
+        .Ok(pair) => pair,
+        .Err(_) => panic("bytes pipe allocation failed"),
+    };
+    let _output = match process.run("echo cleanup") {
+        .Ok(output) => output,
+        .Err(_) => panic("command failed"),
+    };
+    7 / divisor
+}
+
+fn main() -> i64 {
+    let _caller = match stream.pipe(1) {
+        .Ok(pair) => pair,
+        .Err(_) => panic("text pipe allocation failed"),
+    };
+    fail(0)
+}

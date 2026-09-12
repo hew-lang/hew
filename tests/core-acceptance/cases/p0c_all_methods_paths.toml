@@ -1,0 +1,13 @@
+[[case]]
+id = "p0c_all_methods_paths"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/p0c_all_methods_paths.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "5 / 7 / 9 / 11 / true / 13 / 17 / 19 / true / true\n"
+exit = 0

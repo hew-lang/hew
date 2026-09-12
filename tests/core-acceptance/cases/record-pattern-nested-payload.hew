@@ -1,0 +1,58 @@
+//! A record pattern nested inside an enum payload. The owned `label` moves
+//! into the arm's binding while its owned sibling is released by the arm's
+//! cleanup set, and a record scrutinee stays readable after an arm moves one
+//! of its fields out.
+
+type Sample {
+    label: string,
+    unit: string,
+}
+
+enum Signal {
+    Reading(Sample),
+    Silence,
+}
+
+fn make(text: string) -> Signal {
+    Signal.Reading(Sample {
+        label: ("label-" + text),
+        unit: ("unit-" + text),
+    })
+}
+
+fn both(signal: Signal) -> string {
+    match signal {
+        .Reading(Sample { label: label, unit: unit }) => (label + (" " + unit)),
+        .Silence => "silent",
+    }
+}
+
+fn only_label(signal: Signal) -> string {
+    match signal {
+        .Reading(Sample { label: label, unit: _ }) => label,
+        .Silence => "silent",
+    }
+}
+
+fn main() -> i64 {
+    println(both(make("a")));
+
+    var i: i64 = 0;
+    var last = "";
+    while i < 10000 {
+        last = only_label(make("b"));
+        i = i + 1;
+    }
+    println(last);
+
+    let sample = Sample {
+        label: ("label-" + "c"),
+        unit: ("unit-" + "c"),
+    };
+    let moved = match sample {
+        Sample { label: label, unit: _ } => label,
+    };
+    println(moved);
+    println(sample.unit);
+    0
+}

@@ -1,0 +1,40 @@
+type Inner {
+    data: Vec<string>,
+}
+
+impl Inner {
+    fn consume(self) -> i64 {
+        self.data.len()
+    }
+}
+
+type Claim {
+    config: Inner,
+    tag: string,
+}
+
+enum Preparation {
+    Claimed(Claim),
+    Empty,
+}
+
+fn make_claim() -> Result<Preparation, string> {
+    var data: Vec<string> = Vec.new();
+    data.push("a");
+    data.push("b");
+    Ok(Preparation.Claimed(Claim { config: Inner { data: data }, tag: "x" }))
+}
+
+fn main() {
+    let result = match make_claim() {
+        .Err(_) => 1,
+        .Ok(Preparation.Empty) => 2,
+        .Ok(Preparation.Claimed(claimed)) => {
+            let config = claimed.config;
+            let tag = claimed.tag;
+            let count = config.consume();
+            count + tag.len()
+        },
+    };
+    println(result);
+}

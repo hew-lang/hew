@@ -10,23 +10,23 @@
 import std.testing;
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 type Inner {
-    a: i64;
-    b: i64;
+    a: i64,
+    b: i64,
 }
 
 type Outer {
-    inner: Inner;
-    tag: i64;
+    inner: Inner,
+    tag: i64,
 }
 
 enum Shape {
-    Corner { x: i64, y: i64 };
-    Origin;
+    Corner { x: i64, y: i64 },
+    Origin,
 }
 
 /// A record match with `..` binds the listed field and ignores the rest.

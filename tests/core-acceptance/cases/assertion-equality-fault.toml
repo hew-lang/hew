@@ -1,0 +1,11 @@
+[[case]]
+id = "assertion-equality-fault"
+intent = "A failed assert_eq over owned record operands reports both rendered values, runs deferred cleanup and releases the owned temporary exactly once."
+source = "cases/assertion-equality-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: left != right\n  left: Point(3, ACTUAL)\n  right: Point(4, EXPECTED)\n"
+exit = 1

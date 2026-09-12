@@ -1,6 +1,7 @@
 // quic_mesh/client.hew — QUIC mesh client node
 //
 // Demonstrates:
+//   - Node.start(NodeConfig { transport: "quic-mesh", ... }) for QUIC-based mesh (TLS 1.3)
 //   - Connecting to a remote node over QUIC/TLS 1.3
 //   - Looking up a remote actor by name
 //   - Sending messages to a remote actor (transparent dispatch)
@@ -9,11 +10,11 @@
 //   hew run examples/quic_mesh/client.hew
 #[wire]
 enum CounterMsg {
-    Increment(i64);
+    Increment(i64),
 }
 
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn handle(msg: CounterMsg) {
         match msg {
             CounterMsg.Increment(n) => {
@@ -49,8 +50,11 @@ fn lookup_counter() -> Result<RemotePid<Counter>, LookupError> {
 
 fn main() {
     println("[client] starting QUIC mesh node...");
-    Node.set_transport("quic");
-    Node.start("127.0.0.1:9001");
+    let config = NodeConfig { bind: "127.0.0.1:9001", transport: "quic-mesh", key: "quic-mesh-client.key", trust: "pinned", peers: [], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
     println("[client] listening on 127.0.0.1:9001 (QUIC/TLS 1.3)");
 
     // Connect to the server node over QUIC.

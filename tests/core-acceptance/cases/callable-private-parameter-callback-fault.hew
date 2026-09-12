@@ -1,0 +1,23 @@
+fn invoke(var callback: fn[var, clone](i64) -> i64) -> i64 {
+    let local = "private parameter owner".to_upper();
+    callback(1);
+    let result = callback(0);
+    println(local);
+    result
+}
+
+fn main() -> i64 {
+    let caller = "caller owner".to_upper();
+    let text = "captured owner".to_upper();
+    let count = 10;
+    var callback: fn[var, clone](i64) -> i64 = move capture(var count) |divisor: i64| -> i64 {
+        count += 1;
+        let local = text.to_upper();
+        let bytes = local.to_bytes();
+        (bytes.len() + count) / divisor
+    };
+    let result = invoke(callback);
+    println(callback(1));
+    println(caller);
+    result
+}

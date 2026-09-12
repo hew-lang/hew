@@ -1,0 +1,20 @@
+// One receiver token carries every mode. `var self` on an inherent-impl
+// method mutates the receiver, and the caller observes the mutation — the
+// same contract a trait method's `var self` receiver carries.
+//
+// Expected stdout:
+//   2
+type Counter { n: i64, }
+
+impl Counter {
+    fn bump(var self) {
+        self.n = self.n + 1;
+    }
+}
+
+fn main() {
+    var c = Counter { n: 0 };
+    c.bump();
+    c.bump();
+    println(f"{c.n}");
+}

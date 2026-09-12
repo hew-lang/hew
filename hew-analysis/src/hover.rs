@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound, TraitItem,
-    TypeBodyItem, TypeExpr,
+    Block, ConditionItem, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound,
+    TraitItem, TypeBodyItem, TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey, TypeDef, TypeDefKind};
@@ -126,7 +126,7 @@ fn append_hover_fallback_notes(contents: &mut String, notes: impl IntoIterator<I
 }
 
 fn render_expr_hover(snippet: &str, ty: &Ty) -> String {
-    if let Ty::Function { params, ret } = ty {
+    if let Ty::Function { params, ret, .. } = ty {
         let param_displays: Vec<HoverTypeDisplay> =
             params.iter().map(fn_component_display).collect();
         let param_list: Vec<String> = param_displays
@@ -391,9 +391,17 @@ fn hover_binding_in_item(
                 }
             }
             for transition in &machine.transitions {
-                if let Some(result) =
-                    hover_binding_in_expr(&transition.body.0, type_output, word, word_span, offset)
-                {
+                // A braced transition body parses to `Expr::Block`, and
+                // `hover_binding_in_expr` expects an already-unwrapped trailing
+                // expression, so a block has to be walked as one — the same way
+                // the guard below is.
+                let body_hover = match &transition.body.0 {
+                    Expr::Block(block) => {
+                        hover_binding_in_block(block, type_output, word, word_span, offset)
+                    }
+                    body => hover_binding_in_expr(body, type_output, word, word_span, offset),
+                };
+                if let Some(result) = body_hover {
                     return Some(result);
                 }
                 // Also cover guard expressions, which may reference bound names.
@@ -493,13 +501,17 @@ fn hover_binding_in_expr(
             None
         }
         Expr::IfLet {
-            pattern,
-            expr: scrutinee,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&scrutinee.1)) {
+            for item in conditions {
+                let ConditionItem::Let { pattern, expr } = item else {
+                    continue;
+                };
+                let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) else {
+                    continue;
+                };
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
@@ -515,8 +527,8 @@ fn hover_binding_in_expr(
             {
                 return Some(result);
             }
-            else_body.as_ref().and_then(|block| {
-                hover_binding_in_block(block, type_output, word, word_span, offset)
+            else_body.as_ref().and_then(|else_expr| {
+                hover_binding_in_expr(&else_expr.0, type_output, word, word_span, offset)
             })
         }
         Expr::Match { scrutinee, arms } => type_output
@@ -637,13 +649,17 @@ fn hover_binding_in_stmt(
             })
         }
         Stmt::IfLet {
-            pattern,
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) {
+            for item in conditions {
+                let ConditionItem::Let { pattern, expr } = item else {
+                    continue;
+                };
+                let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) else {
+                    continue;
+                };
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
@@ -659,8 +675,8 @@ fn hover_binding_in_stmt(
             {
                 return Some(result);
             }
-            else_body.as_ref().and_then(|block| {
-                hover_binding_in_block(block, type_output, word, word_span, offset)
+            else_body.as_ref().and_then(|else_expr| {
+                hover_binding_in_expr(&else_expr.0, type_output, word, word_span, offset)
             })
         }
         Stmt::For {
@@ -692,12 +708,15 @@ fn hover_binding_in_stmt(
             hover_binding_in_block(body, type_output, word, word_span, offset)
         }
         Stmt::WhileLet {
-            pattern,
-            expr,
-            body,
-            ..
+            conditions, body, ..
         } => {
-            if let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) {
+            for item in conditions {
+                let ConditionItem::Let { pattern, expr } = item else {
+                    continue;
+                };
+                let Some(source_ty) = type_output.expr_types.get(&SpanKey::from(&expr.1)) else {
+                    continue;
+                };
                 if let Some(result) = hover_pattern_binding(
                     pattern,
                     source_ty,
@@ -994,7 +1013,6 @@ fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
                     BuiltinType::Stream
                     | BuiltinType::Receiver
                     | BuiltinType::Generator
-                    | BuiltinType::AsyncGenerator
                     | BuiltinType::Vec,
                 ),
             args,
@@ -1057,6 +1075,11 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             format_type_expr_hover(&err.0)
         ),
         TypeExpr::Option(inner) => format!("Option<{}>", format_type_expr_hover(&inner.0)),
+        TypeExpr::Fallible { success, error } => format!(
+            "{} fails {}",
+            format_type_expr_hover(&success.0),
+            format_type_expr_hover(&error.0)
+        ),
         TypeExpr::Tuple(elements) => format!(
             "({})",
             elements
@@ -1072,8 +1095,21 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
         TypeExpr::Function {
             params,
             return_type,
+            capabilities,
         } => format!(
-            "fn({}) -> {}",
+            "fn{capabilities}({}) -> {}",
+            params
+                .iter()
+                .map(|(param, _)| format_type_expr_hover(param))
+                .collect::<Vec<_>>()
+                .join(", "),
+            format_type_expr_hover(&return_type.0)
+        ),
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => format!(
+            "actor({}) -> {}",
             params
                 .iter()
                 .map(|(param, _)| format_type_expr_hover(param))
@@ -1211,14 +1247,31 @@ fn hover_param_in_item(
             }
             None
         }
-        Item::Machine(_) | Item::Supervisor(_) => {
-            // Machine transitions bind event fields as plain names (not Param
-            // objects with type annotations), and supervisors carry no callable
-            // bodies. Neither has a Param list for hover_param_in_decl.
+        Item::Machine(machine) => hover_machine_binding(machine, word, word_span, offset),
+        Item::Supervisor(_) => {
+            // Supervisors carry no callable bodies, so there is no Param list
+            // for hover_param_in_decl.
             None
         }
         _ => None,
     }
+}
+
+/// A machine body has no Param list, but it does bind `state` and `event`
+/// (HEW-SPEC-2026 §3.11.3). Report those with the types the rule refines them
+/// to.
+fn hover_machine_binding(
+    machine: &hew_parser::ast::MachineDecl,
+    word: &str,
+    word_span: OffsetSpan,
+    offset: usize,
+) -> Option<HoverResult> {
+    let scope = crate::machine_scope::scope_at(machine, offset)?;
+    let binding = scope.bindings.iter().find(|binding| binding.name == word)?;
+    Some(HoverResult {
+        contents: format!("```hew\n{word}: {}\n```", binding.ty),
+        span: Some(word_span),
+    })
 }
 
 fn hover_param_in_method(
@@ -1278,16 +1331,15 @@ fn span_contains_offset(span: &Span, offset: usize) -> bool {
     span.is_empty() || (span.start <= offset && offset <= span.end)
 }
 
-/// Format a bare function signature line: `[async] fn name(params)[-> ret]`.
+/// Format a bare function signature line: `fn name(params)[-> ret]`.
 #[must_use]
 pub fn format_fn_sig_line(name: &str, params: &[String], sig: &FnSig) -> String {
-    let async_prefix = if sig.is_async { "async " } else { "" };
     let ret = if sig.return_type == Ty::Unit {
         String::new()
     } else {
         format!(" -> {}", sig.return_type.user_facing())
     };
-    format!("{async_prefix}fn {name}({}){ret}", params.join(", "))
+    format!("fn {name}({}){ret}", params.join(", "))
 }
 
 /// Format a function signature in a markdown code block for hover display.
@@ -1328,6 +1380,7 @@ pub fn format_type_def_hover(type_def: &TypeDef) -> String {
         TypeDefKind::Struct => "type",
         TypeDefKind::Enum => "enum",
         TypeDefKind::Actor => "actor",
+        TypeDefKind::Supervisor => "supervisor",
         TypeDefKind::Machine => "machine",
         TypeDefKind::Record => "record",
     };
@@ -1403,10 +1456,7 @@ mod tests {
         fn_sigs.insert(name.to_string(), sig);
         TypeCheckOutput {
             expr_types: HashMap::new(),
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1438,21 +1488,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -1481,14 +1525,6 @@ mod tests {
         let line = format_fn_sig_line("run", &[], &sig);
         assert_eq!(line, "fn run()");
         assert!(!line.contains("->"));
-    }
-
-    #[test]
-    fn format_sig_line_async() {
-        let mut sig = make_fn_sig(vec![], vec![], Ty::Unit);
-        sig.is_async = true;
-        let line = format_fn_sig_line("fetch", &[], &sig);
-        assert!(line.starts_with("async fn fetch"));
     }
 
     #[test]
@@ -1623,6 +1659,20 @@ mod tests {
     }
 
     #[test]
+    fn hover_on_a_spread_operand_shows_the_operand_type() {
+        // `..xs` splices a collection, so the useful hover is the collection's
+        // own type, not the literal's.
+        let source = "fn f(xs: Vec<i64>) -> Vec<i64> {\n    [..xs, 1]\n}";
+        let pr = hew_parser::parse(source);
+        assert!(pr.errors.is_empty(), "{:?}", pr.errors);
+        let tc = type_check(&pr);
+        let offset = source.rfind("xs").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+
+        assert_eq!(result.contents, "```hew\nxs: Vec<i64>\n```");
+    }
+
+    #[test]
     fn hover_shows_actor_receive_param_type() {
         let source = "actor Worker {\n    receive fn handle(msg: string) {\n        msg\n    }\n}";
         let pr = hew_parser::parse(source);
@@ -1673,7 +1723,7 @@ mod tests {
 
     #[test]
     fn hover_finds_type_def() {
-        let source = "type Point {\n    x: f64;\n    y: f64;\n}";
+        let source = "type Point {\n    x: f64,\n    y: f64,\n}";
         let pr = hew_parser::parse(source);
         let mut type_defs = HashMap::new();
         type_defs.insert(
@@ -1698,10 +1748,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types: HashMap::new(),
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1733,21 +1780,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -1764,7 +1805,7 @@ mod tests {
     #[test]
     fn hover_shows_struct_field_declaration_type() {
         let source =
-            "type Point {\n    x: i32;\n    y: i32;\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32,\n    y: i32,\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("x: i32").unwrap();
@@ -1783,7 +1824,7 @@ mod tests {
     #[test]
     fn hover_shows_struct_field_access_type() {
         let source =
-            "type Point {\n    x: i32;\n    y: i32;\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point {\n    x: i32,\n    y: i32,\n}\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.rfind("p.x").unwrap() + 2;
@@ -1816,10 +1857,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1851,21 +1889,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -1894,10 +1926,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1929,21 +1958,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -2026,10 +2049,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -2061,21 +2081,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -2208,10 +2222,7 @@ mod tests {
         );
         let tc = TypeCheckOutput {
             expr_types,
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -2243,21 +2254,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],
@@ -2347,17 +2352,21 @@ mod tests {
 
     #[test]
     fn hover_machine_declaration_name_shows_type_def() {
-        // Hovering over the machine name at its declaration site should surface
-        // the machine's type-def hover (via the lookup_type_def fallback path).
-        // This was already reachable before this fix; the test pins the contract.
+        // Hovering over the machine name at its declaration site surfaces the
+        // machine's type-def hover through the lookup_type_def fallback path.
+        // The machine desugars to an enum before it reaches `type_defs`, so the
+        // hover renders the enum form with the machine's states and its
+        // synthesized `step`/`state_name`; the assertion names the states rather
+        // than the declaration keyword.
         let source = concat!(
             "machine Counter {\n",
             "    events {\n",
-            "        Start;\n",
+            "        Start,\n",
             "    }\n",
-            "    state Idle;\n",
-            "    state Running;\n",
-            "    on Start: Idle => Running { Idle }\n",
+            "    state Idle,\n",
+            "    state Running,\n",
+            "    on Start: Idle => Running,\n",
+            "    on Start: Running => Running,\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);
@@ -2372,9 +2381,47 @@ mod tests {
         );
         let hr = result.unwrap();
         assert!(
-            hr.contents.contains("machine Counter"),
-            "hover should include machine keyword and name; got: {}",
+            hr.contents.contains("Counter")
+                && hr.contents.contains("Idle")
+                && hr.contents.contains("Running")
+                && hr.contents.contains("state_name"),
+            "hover should name the machine, its states and its step surface; got: {}",
             hr.contents
+        );
+    }
+
+    #[test]
+    fn hover_reports_machine_state_and_event_bindings() {
+        // A machine body binds `state` and `event` and nothing else; the
+        // editor reports the types the rule refines them to.
+        let source = concat!(
+            "machine Counter {\n",
+            "    events { Tick { by: i64 } }\n",
+            "    state Idle,\n",
+            "    state Live { hits: i64 },\n",
+            "    on Tick: Idle => Live { hits: event.by }\n",
+            "    on Tick: Live => Live reenter { hits: state.hits + event.by }\n",
+            "}\n",
+        );
+        let pr = hew_parser::parse(source);
+        let tc = type_check(&pr);
+
+        let state_offset = source.find("state.hits").unwrap();
+        let state_hover = hover(source, &pr, Some(&tc), state_offset)
+            .expect("hover over `state` in a transition body must resolve");
+        assert!(
+            state_hover.contents.contains("state: Counter.Live"),
+            "hover should name the refined source state; got: {}",
+            state_hover.contents
+        );
+
+        let event_offset = source.rfind("event.by").unwrap();
+        let event_hover = hover(source, &pr, Some(&tc), event_offset)
+            .expect("hover over `event` in a transition body must resolve");
+        assert!(
+            event_hover.contents.contains("event: CounterEvent.Tick"),
+            "hover should name the selected input; got: {}",
+            event_hover.contents
         );
     }
 
@@ -2386,12 +2433,12 @@ mod tests {
             "fn compute() -> i64 { 42 }\n",
             "machine Counter {\n",
             "    events {\n",
-            "        Tick;\n",
+            "        Tick,\n",
             "    }\n",
-            "    state Idle;\n",
+            "    state Idle,\n",
             "    on Tick: Idle => Idle {\n",
             "        let result = compute();\n",
-            "        result\n",
+            "        Idle\n",
             "    }\n",
             "}\n",
         );
@@ -2430,7 +2477,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker();\n",
+            "    child w: Worker(),\n",
             "}\n",
         );
         let pr = hew_parser::parse(source);

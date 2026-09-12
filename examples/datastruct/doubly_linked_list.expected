@@ -1,0 +1,10 @@
+=== Doubly Linked List Tests ===
+PASS: insert_front
+PASS: insert_back
+PASS: backward traverse
+PASS: delete + bidirectional
+PASS: delete head
+PASS: delete tail
+
+Passed: 6/6
+OVERALL: PASS

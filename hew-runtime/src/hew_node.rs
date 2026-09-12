@@ -18,6 +18,8 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicU8, AtomicUsize,
 use std::sync::{Arc, Condvar, Mutex};
 
 use crate::set_last_error;
+use crate::vec::HewVec;
+use hew_cabi::string::{string_as_str, string_to_cstring, HewString};
 use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
@@ -1077,6 +1079,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::Unauthorized as i32 => Some(AskError::Unauthorized),
         x if x == AskError::Backpressure as i32 => Some(AskError::Backpressure),
         x if x == AskError::MonitorLost as i32 => Some(AskError::MonitorLost),
+        x if x == AskError::HandlerTrapped as i32 => Some(AskError::HandlerTrapped),
         _ => None,
     }
 }
@@ -1190,7 +1193,7 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
     }
 
     // SAFETY: malloc for reply buffer.
-    let result = unsafe { libc::malloc(reply_data.len()) };
+    let result = crate::mem::buf_try_alloc(reply_data.len());
     if result.is_null() {
         return ptr::null_mut();
     }
@@ -1585,7 +1588,7 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
         ));
         return;
     }
-    // The reconstructed value lives in a malloc'd buffer of `struct_size` bytes
+    // The reconstructed value lives in a sized-block-allocated buffer of `struct_size` bytes
     // (the in-memory struct size, NOT the wire length). hew_actor_send_by_id
     // deep-copies `struct_size` bytes into the mailbox, MOVING the owned heap
     // fields (strings/bytes) into the mailbox copy — exactly the move semantics
@@ -1602,8 +1605,8 @@ unsafe fn deliver_inbound_send(target_actor_id: u64, msg_type: i32, data: *mut u
             struct_size,
         )
     };
-    // SAFETY: value came from decode_payload (libc::malloc).
-    unsafe { libc::free(value) };
+    // SAFETY: value came from decode_payload's sized-block allocation.
+    unsafe { crate::mem::buf_free(value) };
 }
 
 /// Handle an inbound remote ask by performing a local blocking ask and
@@ -1724,8 +1727,8 @@ fn handle_inbound_ask(
     // Free the reconstructed request shell now the ask copied it into the mailbox
     // (owned fields moved into the mailbox copy, matching local-send semantics).
     if let Some((value, _)) = decoded_request {
-        // SAFETY: value came from decode_payload (libc::malloc).
-        unsafe { libc::free(value) };
+        // SAFETY: value came from decode_payload's sized-block allocation.
+        unsafe { crate::mem::buf_free(value) };
     }
 
     // Build the reply payload from the returned data.
@@ -1757,7 +1760,7 @@ fn handle_inbound_ask(
         // `(target dispatch, request msg_type)` — the same target actor type that
         // just produced the reply, so a colliding `msg_type` on another actor
         // type cannot select the wrong reply codec.
-        // SAFETY: reply_ptr came from hew_reply which malloc'd the reply struct.
+        // SAFETY: reply_ptr came from hew_reply's sized-block allocation of the reply struct.
         let size = unsafe { crate::actor::hew_reply_data_size(reply_ptr) };
         if size > 0 {
             let mut out_len: usize = 0;
@@ -1768,17 +1771,17 @@ fn handle_inbound_ask(
             let bytes = unsafe {
                 crate::xnode_serial::encode_reply(dispatch, msg_type, reply_ptr, &raw mut out_len)
             };
-            // SAFETY: reply_ptr was malloc'd by hew_reply; free after encoding.
+            // SAFETY: reply_ptr came from hew_reply's sized-block allocation; free after encoding.
             // NOTE (robustness gap): `reply_ptr` is a flat memcpy of the actor's
             // reply value.  If the reply type has owned string/bytes fields, their
             // heap allocations are bit-copied into this buffer.  `encode_reply`
             // serialises the contents but does not drop the field pointers, so
-            // `libc::free(reply_ptr)` frees the flat shell only — a bounded leak
+            // `crate::mem::buf_free(reply_ptr)` frees the flat shell only — a bounded leak
             // per reply with owned fields.  Fixing this requires a drop-thunk
             // registry entry (parallel to the serialize thunk).  Tracked for the
             // drop-thunk registry lane; not fixed here because the actor's own
             // lifecycle already holds references to the same heap objects.
-            unsafe { libc::free(reply_ptr) };
+            unsafe { crate::mem::buf_free(reply_ptr) };
             if bytes.is_null() {
                 // No reply codec registered — fail closed: send a rejection so
                 // the originating ask fails with a typed error instead of timing
@@ -1798,12 +1801,12 @@ fn handle_inbound_ask(
             }
             // SAFETY: bytes is valid for out_len bytes (from encode_reply).
             let v = unsafe { std::slice::from_raw_parts(bytes, out_len) }.to_vec();
-            // SAFETY: bytes came from encode_reply (libc::malloc).
+            // SAFETY: bytes came from encode_reply's sized-block allocation.
             unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
             v
         } else {
-            // SAFETY: reply_ptr was malloc'd by hew_reply.
-            unsafe { libc::free(reply_ptr) };
+            // SAFETY: reply_ptr came from hew_reply's sized-block allocation.
+            unsafe { crate::mem::buf_free(reply_ptr) };
             Vec::new()
         }
     };
@@ -2641,8 +2644,8 @@ pub unsafe extern "C" fn hew_node_free(node: *mut HewNode) {
     }
 
     if !node.bind_addr_owned.is_null() {
-        // SAFETY: bind_addr_owned was allocated via cstr_strdup (libc::malloc).
-        unsafe { libc::free(node.bind_addr_owned.cast::<c_void>()) };
+        // SAFETY: bind_addr_owned was allocated via cstr_strdup's sized-block allocation.
+        unsafe { crate::mem::buf_free(node.bind_addr_owned.cast::<c_void>()) };
         node.bind_addr_owned = ptr::null_mut();
         node.bind_addr = ptr::null();
     }
@@ -2941,7 +2944,7 @@ pub unsafe extern "C" fn hew_node_send_location(
     .is_none()
     {
         if let Some((bytes, _)) = serialized {
-            // SAFETY: bytes came from encode_payload (libc::malloc).
+            // SAFETY: bytes came from encode_payload's sized-block allocation.
             unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
         }
         return -1;
@@ -2966,7 +2969,7 @@ pub unsafe extern "C" fn hew_node_send_location(
     };
     if let Some((bytes, _)) = serialized {
         // hew_connmgr_send copies the bytes into its envelope; free our copy.
-        // SAFETY: bytes came from encode_payload (libc::malloc).
+        // SAFETY: bytes came from encode_payload's sized-block allocation.
         unsafe { crate::xnode_serial::hew_ser_free_bytes(bytes) };
     }
     rc
@@ -4938,6 +4941,277 @@ fn merge_start_env_into_config(
 /// # Safety
 ///
 /// `addr` must be a valid null-terminated C string.
+/// ABI view of the source-owned `NodeConfig` record. `Node.start` consumes the
+/// record, so this boundary copies the configuration into Rust values and
+/// releases every managed field before staging the runtime state.
+#[repr(C)]
+#[derive(Debug)]
+pub struct HewNodeConfig {
+    bind: *const HewString,
+    transport: *const HewString,
+    key: *const HewString,
+    trust: *const HewString,
+    peers: *mut HewVec,
+    seeds: *mut HewVec,
+}
+
+/// Serializes complete source-owned `NodeConfig` transactions. It owns no
+/// configuration state; `PEER_AUTH_STATE` remains the lifecycle authority.
+static NODE_CONFIG_TRANSACTION: std::sync::LazyLock<Mutex<()>> =
+    std::sync::LazyLock::new(|| Mutex::new(()));
+
+const _: () = {
+    assert!(std::mem::size_of::<HewNodeConfig>() == 6 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, bind) == 0);
+    assert!(std::mem::offset_of!(HewNodeConfig, transport) == std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, key) == 2 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, trust) == 3 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, peers) == 4 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, seeds) == 5 * std::mem::size_of::<usize>());
+};
+
+struct ConsumedNodeConfig {
+    bind: *const HewString,
+    transport: *const HewString,
+    key: *const HewString,
+    trust: *const HewString,
+    peers: *mut HewVec,
+    seeds: *mut HewVec,
+}
+
+impl Drop for ConsumedNodeConfig {
+    fn drop(&mut self) {
+        for field in [self.bind, self.transport, self.key, self.trust] {
+            if !field.is_null() {
+                // SAFETY: this owner is created only from the six moved fields
+                // of one NodeConfig and drops each managed string once.
+                unsafe { crate::string::hew_string_drop(field.cast_mut()) };
+            }
+        }
+        for field in [self.peers, self.seeds] {
+            if !field.is_null() {
+                // SAFETY: this owner is created only from the two moved vector
+                // fields of one NodeConfig and drops each vector once.
+                unsafe { crate::vec::hew_vec_free(field) };
+            }
+        }
+    }
+}
+
+unsafe fn config_string(value: *const HewString, field: &str) -> Result<String, c_int> {
+    if value.is_null() {
+        set_last_error(format!("NodeConfig.{field} is null"));
+        return Err(-1);
+    }
+    // SAFETY: ConsumedNodeConfig keeps the field live through this copy.
+    Ok(unsafe { string_as_str(value) }.to_owned())
+}
+
+unsafe fn config_strings(value: *mut HewVec, field: &str) -> Result<Vec<String>, c_int> {
+    if value.is_null() {
+        set_last_error(format!("NodeConfig.{field} is null"));
+        return Err(-1);
+    }
+    // SAFETY: ConsumedNodeConfig keeps the field live through this decode.
+    let len = unsafe { crate::vec::hew_vec_len(value) };
+    if len < 0 {
+        set_last_error(format!("NodeConfig.{field} has an invalid length"));
+        return Err(-1);
+    }
+    let mut strings = Vec::with_capacity(usize::try_from(len).map_err(|_| -1)?);
+    for index in 0..len {
+        // SAFETY: index is within the checked vector range.
+        let item = unsafe { crate::vec::hew_vec_get_str(value, index) };
+        if item.is_null() {
+            set_last_error(format!("NodeConfig.{field}[{index}] is null"));
+            return Err(-1);
+        }
+        // SAFETY: getter result is live until balanced below.
+        strings.push(unsafe { string_as_str(item) }.to_owned());
+        // SAFETY: balances the owned getter result.
+        unsafe { crate::string::hew_string_drop(item.cast_mut()) };
+    }
+    Ok(strings)
+}
+
+/// Clear a previous incomplete source-config staging transaction. A running
+/// node owns its state and must never be overwritten by a second start call.
+fn reset_node_config_staging() -> Result<(), c_int> {
+    let mut guard = PEER_AUTH_STATE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match guard.state {
+        ConfigState::Building(_) => {
+            guard.state = ConfigState::default();
+            Ok(())
+        }
+        ConfigState::Starting { .. } | ConfigState::Running { .. } => {
+            set_last_error("Node::start: a public node lifecycle is already active (fail-closed)");
+            Err(-1)
+        }
+    }
+}
+
+/// Start a node from one complete source-owned configuration record.
+///
+/// # Safety
+///
+/// The config pointer must name the exact compiler-lowered source record
+/// and remain live for the duration of this call.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one transaction keeps the staged configuration and rollback boundaries auditable"
+)]
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig) -> c_int {
+    let _transaction = NODE_CONFIG_TRANSACTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if config.is_null() {
+        set_last_error("Node::start: NodeConfig is null");
+        return -1;
+    }
+    // SAFETY: the ABI contract above requires a live compiler-lowered record.
+    let config = unsafe { &*config };
+    let owned = ConsumedNodeConfig {
+        bind: config.bind,
+        transport: config.transport,
+        key: config.key,
+        trust: config.trust,
+        peers: config.peers,
+        seeds: config.seeds,
+    };
+    // SAFETY: each helper validates its managed source handle before borrowing.
+    let Ok(bind) = (unsafe { config_string(owned.bind, "bind") }) else {
+        return -1;
+    };
+    // SAFETY: each helper validates its managed source handle before borrowing.
+    let Ok(transport) = (unsafe { config_string(owned.transport, "transport") }) else {
+        return -1;
+    };
+    let key = if owned.key.is_null() {
+        // The managed empty-string representation is a null handle. This is the
+        // NodeConfig.at default; start validation refuses it until the caller
+        // supplies a stable key path.
+        String::new()
+    } else {
+        // SAFETY: the helper validates the non-null managed source handle.
+        let Ok(key) = (unsafe { config_string(owned.key, "key") }) else {
+            return -1;
+        };
+        key
+    };
+    // SAFETY: each helper validates its managed source handle before borrowing.
+    let Ok(trust) = (unsafe { config_string(owned.trust, "trust") }) else {
+        return -1;
+    };
+    // SAFETY: the helper validates and balances every borrowed vector string.
+    let Ok(peers) = (unsafe { config_strings(owned.peers, "peers") }) else {
+        return -1;
+    };
+    // SAFETY: the helper validates and balances every borrowed vector string.
+    let Ok(seeds) = (unsafe { config_strings(owned.seeds, "seeds") }) else {
+        return -1;
+    };
+    if trust != "pinned" {
+        set_last_error("Node::start: NodeConfig.trust must be pinned");
+        return -1;
+    }
+    let Ok(transport) = CString::new(transport) else {
+        set_last_error("Node::start: transport contains NUL");
+        return -1;
+    };
+    let key = if key.is_empty() {
+        None
+    } else if let Ok(key) = CString::new(key) {
+        Some(key)
+    } else {
+        set_last_error("Node::start: key contains NUL");
+        return -1;
+    };
+    let mut peer_credentials = Vec::with_capacity(peers.len());
+    for peer in peers {
+        if let Ok(peer) = CString::new(peer) {
+            peer_credentials.push(peer);
+        } else {
+            set_last_error("Node::start: peer credential contains NUL");
+            return -1;
+        }
+    }
+    let Ok(bind_c) = CString::new(bind.clone()) else {
+        set_last_error("Node::start: bind contains NUL");
+        return -1;
+    };
+    let mut seed_addresses = Vec::with_capacity(seeds.len());
+    for seed in seeds {
+        if seed == bind {
+            continue;
+        }
+        if let Ok(seed) = CString::new(seed) {
+            seed_addresses.push(seed);
+        } else {
+            set_last_error("Node::start: seed contains NUL");
+            return -1;
+        }
+    }
+
+    // A complete config replaces an incomplete transaction rather than adding
+    // fields to it. This is the only public path that stages these low-level
+    // operations, and every error below restores the empty Building state.
+    if reset_node_config_staging().is_err() {
+        return -1;
+    }
+    let staged = (|| {
+        // SAFETY: the C string lives until this closure returns; the callee
+        // copies its selection into the locked staging record.
+        if unsafe { hew_node_api_set_transport(transport.as_ptr()) } != 0 {
+            return Err(-1);
+        }
+        if let Some(key) = key.as_ref() {
+            // SAFETY: the key C string lives for this complete transaction.
+            if unsafe { hew_node_api_load_keys(key.as_ptr()) } != 0 {
+                return Err(-1);
+            }
+        }
+        for (index, credential) in peer_credentials.iter().enumerate() {
+            let Ok(slot) = u16::try_from(index + 1) else {
+                set_last_error("Node::start: too many pinned peers");
+                return Err(-1);
+            };
+            // SAFETY: the credential C string lives for this transaction; the
+            // low-level call copies and validates it before returning.
+            if unsafe { hew_node_api_allow_peer(slot, credential.as_ptr()) } != 0 {
+                return Err(-1);
+            }
+        }
+        // SAFETY: the bind C string lives until the legacy start call has read it.
+        if unsafe { hew_node_api_start(bind_c.as_ptr()) } != 0 {
+            return Err(-1);
+        }
+        Ok(())
+    })();
+    if staged.is_err() {
+        let _ = reset_node_config_staging();
+        return -1;
+    }
+
+    for seed in seed_addresses {
+        // SAFETY: each seed C string is live for the duration of this call.
+        if unsafe { hew_node_api_connect(seed.as_ptr()) } != 0 {
+            // SAFETY: a successful start above owns the singleton public node;
+            // shutdown releases it and resets its staging state.
+            unsafe { node_api_shutdown_inner() };
+            return -1;
+        }
+    }
+    0
+}
+
+/// Create and start a node, binding to addr.
+///
+/// # Safety
+///
+/// The address must be a valid null-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
     if addr.is_null() {
@@ -5086,6 +5360,15 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
 /// valid.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_shutdown() -> c_int {
+    let _transaction = NODE_CONFIG_TRANSACTION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // SAFETY: the public lifecycle lock excludes an incomplete source start.
+    unsafe { node_api_shutdown_inner() }
+}
+
+/// Stop the public node while the caller owns its complete lifecycle transaction.
+unsafe fn node_api_shutdown_inner() -> c_int {
     // Claim CURRENT_NODE under the write lock so exactly one caller owns the
     // stop/free sequence.
     let Some(ptr) = with_current_node(|guard| {
@@ -5176,7 +5459,7 @@ pub unsafe extern "C" fn hew_node_api_register(
 
 /// `Node::register<T>(name, pid)` — Register a named actor by bare PID.
 ///
-/// `LocalPid<T>` lowers to a bare `u64` PID at this ABI boundary rather than a
+/// An actor handle lowers to a bare `u64` PID at this ABI boundary rather than a
 /// `*mut HewActor` pointer. The caller
 /// extracts the PID via `hew_actor_pid` before passing it here.
 ///
@@ -5224,6 +5507,30 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
         // valid C string; pid was validated above.
         unsafe { hew_node_register(node, name, pid) }
     })
+}
+
+/// Managed-string adapter for compiler-owned `Node::register` calls.
+///
+/// This keeps the public C-string ABI above available to native clients while
+/// making the Hew compiler's managed `String` ownership explicit at its FFI
+/// boundary. Embedded NUL names fail closed instead of truncating a registry
+/// identity.
+///
+/// # Safety
+///
+/// `name` must be null (the Hew empty string) or a live managed string handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_register_by_pid_string(
+    name: *const HewString,
+    pid: u64,
+) -> c_int {
+    // SAFETY: caller supplies a live managed string for this synchronous copy.
+    let Ok(name) = (unsafe { string_to_cstring(name) }) else {
+        set_last_error("Node::register: name contains an embedded NUL");
+        return -1;
+    };
+    // SAFETY: CString provides a live NUL-terminated pointer for this call.
+    unsafe { hew_node_api_register_by_pid(name.as_ptr(), pid) }
 }
 
 /// `Node::unregister(name)` — remove a name registration from the active node.
@@ -5278,6 +5585,28 @@ pub unsafe extern "C" fn hew_node_api_lookup_location(
         // SAFETY: node is pinned by the read lock; caller guarantees name/output.
         unsafe { hew_node_lookup_location(node, name, out) }
     })
+}
+
+/// Managed-string adapter for compiler-owned `Node::lookup` calls.
+///
+/// The public C-string ABI remains available above; this adapter owns the
+/// conversion boundary so a Hew `String` is never reinterpreted as a C string.
+///
+/// # Safety
+///
+/// `name` must be null (the Hew empty string) or a live managed string handle,
+/// and `out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn hew_node_api_lookup_location_string(
+    name: *const HewString,
+    out: *mut HewRemotePid,
+) -> c_int {
+    // SAFETY: caller supplies a live managed string for this synchronous copy.
+    let Ok(name) = (unsafe { string_to_cstring(name) }) else {
+        return -1;
+    };
+    // SAFETY: CString and output pointer satisfy the public ABI's requirements.
+    unsafe { hew_node_api_lookup_location(name.as_ptr(), out) }
 }
 
 /// `Node::set_transport(name)` — Set the transport type before starting.
@@ -5671,11 +6000,11 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
 /// - `Running` — the standalone `identity_export` clone captured at the
 ///   `Starting → Running` transition.
 ///
-/// Returns an **owned** hew string (empty string `""`, never null, when no
-/// stable identity has been loaded). The caller frees it via `hew_string_drop`;
-/// the runtime never retains the pointer.
+/// Returns an **owned** managed string, which is null when no stable identity
+/// has been loaded - null is the managed carrier's canonical empty string. The
+/// caller frees it via `hew_string_drop`; the runtime never retains it.
 #[no_mangle]
-pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
+pub extern "C" fn hew_node_api_identity_key() -> *mut hew_cabi::string::HewString {
     let export = {
         let guard = PEER_AUTH_STATE
             .lock()
@@ -5688,9 +6017,7 @@ pub extern "C" fn hew_node_api_identity_key() -> *mut c_char {
             } => identity_export.clone(),
         }
     };
-    // SAFETY: `export` is valid UTF-8 for its byte length; malloc_cstring copies
-    // exactly that many bytes and NUL-terminates (owned hew string).
-    unsafe { crate::cabi::malloc_cstring(export.as_ptr(), export.len()) }
+    hew_cabi::string::string_from_str(&export)
 }
 
 /// `Node::id()` — write the stable key-derived node identity when configured.
@@ -5955,7 +6282,7 @@ fn setup_remote_ask(
                 set_last_error(format!("hew_node_api_ask: {err}"));
                 reply_table().remove(request_id);
                 if let Some((b, _)) = serialized_req {
-                    // SAFETY: b came from encode_payload (libc::malloc).
+                    // SAFETY: b came from encode_payload's sized-block allocation.
                     unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
                 }
                 return RemoteAskSetupResult::Error(AskError::EncodeFailed);
@@ -5963,7 +6290,7 @@ fn setup_remote_ask(
         };
         // The envelope copied the request bytes; free our serialized copy.
         if let Some((b, _)) = serialized_req {
-            // SAFETY: b came from encode_payload (libc::malloc).
+            // SAFETY: b came from encode_payload's sized-block allocation.
             unsafe { crate::xnode_serial::hew_ser_free_bytes(b) };
         }
 
@@ -6054,8 +6381,8 @@ fn finish_remote_ask_outcome(
         // The reconstructed struct size must match the codegen reply slot. A
         // mismatch is a codec/layout drift — fail closed rather than hand the
         // caller a wrong-sized buffer.
-        // SAFETY: value came from decode_reply (libc::malloc).
-        unsafe { libc::free(value) };
+        // SAFETY: value came from decode_reply's sized-block allocation.
+        unsafe { crate::mem::buf_free(value) };
         return ask_null(AskError::PayloadSizeMismatch);
     }
     LAST_ASK_ERROR.with(|cell| cell.set(AskError::None as i32));
@@ -6735,8 +7062,8 @@ mod tests {
             }
             return std::ptr::null_mut();
         }
-        // SAFETY: malloc a u32-sized value the caller owns via libc::free.
-        let dst = unsafe { libc::malloc(std::mem::size_of::<u32>()) }.cast::<u32>();
+        // SAFETY: allocate a u32-sized value the caller owns via buf_free.
+        let dst = crate::mem::buf_try_alloc(std::mem::size_of::<u32>()).cast::<u32>();
         if dst.is_null() {
             return std::ptr::null_mut();
         }
@@ -6915,11 +7242,11 @@ mod tests {
         // SAFETY: tcp is a valid C string for this call.
         assert_eq!(unsafe { hew_node_api_set_transport(tcp.as_ptr()) }, 0);
 
-        let key_path = identity.dir.path().join("node.key");
-        let key_path = CString::new(key_path.to_str().expect("UTF-8 tempfile key path"))
+        let key = identity.dir.path().join("node.key");
+        let key = CString::new(key.to_str().expect("UTF-8 tempfile key path"))
             .expect("valid tempfile key path");
-        // SAFETY: key_path is a valid C string and the directory remains live in the guard.
-        assert_eq!(unsafe { hew_node_api_load_keys(key_path.as_ptr()) }, 0);
+        // SAFETY: key is a valid C string and the directory remains live in the guard.
+        assert_eq!(unsafe { hew_node_api_load_keys(key.as_ptr()) }, 0);
 
         identity
     }
@@ -7549,10 +7876,10 @@ mod tests {
             )
         };
         assert!(!reply_ptr.is_null(), "two-process echo ask returned null");
-        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        // SAFETY: reply_ptr came from hew_node_api_ask's sized-block allocation; valid for u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
-        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
-        unsafe { libc::free(reply_ptr) };
+        // SAFETY: reply_ptr came from the sized-block allocator and is our responsibility to free.
+        unsafe { crate::mem::buf_free(reply_ptr) };
         assert_eq!(
             reply_value, 42,
             "two-process echo-double ask must return 42"
@@ -8242,6 +8569,85 @@ mod tests {
         assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
     }
 
+    /// A complete `NodeConfig` start holds one transaction boundary from its
+    /// source-owned decode through the public node start. Concurrent callers
+    /// therefore cannot combine their staging steps: precisely one owns the
+    /// public node, and the losing record is still consumed and released.
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn concurrent_start_config_keeps_transactions_atomic() {
+        let _guard = crate::runtime_test_guard();
+        {
+            let mut g = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            g.state = ConfigState::default();
+        }
+
+        let identity_dir = tempfile::tempdir().expect("identity directory");
+        let key_path = std::sync::Arc::new(
+            identity_dir
+                .path()
+                .join("node.key")
+                .to_str()
+                .expect("temporary key path is UTF-8")
+                .to_owned(),
+        );
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let starts: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let key_path = key_path.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let config = HewNodeConfig {
+                        bind: hew_cabi::string::string_from_str("127.0.0.1:0"),
+                        transport: hew_cabi::string::string_from_str("tcp"),
+                        key: hew_cabi::string::string_from_str(&key_path),
+                        trust: hew_cabi::string::string_from_str("pinned"),
+                        // SAFETY: these freshly allocated string vectors are
+                        // moved into the consuming NodeConfig call below.
+                        peers: unsafe { crate::vec::hew_vec_new_str() },
+                        // SAFETY: these freshly allocated string vectors are
+                        // moved into the consuming NodeConfig call below.
+                        seeds: unsafe { crate::vec::hew_vec_new_str() },
+                    };
+                    // SAFETY: config names the exact live managed fields that
+                    // this consuming boundary owns for the duration of the call.
+                    unsafe { hew_node_api_start_config(&raw const config) }
+                })
+            })
+            .collect();
+
+        barrier.wait();
+        let results: Vec<_> = starts
+            .into_iter()
+            .map(|start| start.join().expect("start thread must not panic"))
+            .collect();
+        let succeeded = results.iter().filter(|&&rc| rc == 0).count();
+        if succeeded == 1 {
+            // SAFETY: exactly one completed transaction owns the public node.
+            assert_eq!(unsafe { hew_node_api_shutdown() }, 0);
+        }
+
+        assert_eq!(
+            succeeded, 1,
+            "one complete NodeConfig transaction must own the public node: {results:?}"
+        );
+        assert_eq!(
+            results.iter().filter(|&&rc| rc == -1).count(),
+            1,
+            "the competing complete configuration must fail closed: {results:?}"
+        );
+        let g = PEER_AUTH_STATE
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            matches!(g.state, ConfigState::Building(_)),
+            "shutdown must leave no partial configuration staged"
+        );
+    }
+
     #[test]
     fn node_lifecycle_start_stop() {
         let _guard = crate::runtime_test_guard();
@@ -8403,12 +8809,13 @@ mod tests {
         };
         let read = || {
             let p = hew_node_api_identity_key();
-            assert!(!p.is_null(), "identity_key must never return null");
-            // SAFETY: p is a freshly-owned NUL-terminated hew string.
-            let s = unsafe { std::ffi::CStr::from_ptr(p) }
-                .to_string_lossy()
-                .into_owned();
-            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
+            if p.is_null() {
+                // Null is the managed carrier's canonical empty string.
+                return String::new();
+            }
+            // SAFETY: p is one freshly-owned managed string.
+            let s = unsafe { hew_cabi::string::string_as_str(p) }.to_owned();
+            // SAFETY: p is that same owned string, dropped exactly once.
             unsafe { crate::string::hew_string_drop(p) };
             s
         };
@@ -8677,12 +9084,13 @@ mod tests {
         };
         let read_identity = || {
             let p = hew_node_api_identity_key();
-            assert!(!p.is_null());
-            // SAFETY: p is a freshly-owned NUL-terminated hew string.
-            let s = unsafe { std::ffi::CStr::from_ptr(p) }
-                .to_string_lossy()
-                .into_owned();
-            // SAFETY: p was allocated by malloc_cstring; free via hew_string_drop.
+            if p.is_null() {
+                // Null is the managed carrier's canonical empty string.
+                return String::new();
+            }
+            // SAFETY: p is one freshly-owned managed string.
+            let s = unsafe { hew_cabi::string::string_as_str(p) }.to_owned();
+            // SAFETY: p is that same owned string, dropped exactly once.
             unsafe { crate::string::hew_string_drop(p) };
             s
         };
@@ -9856,8 +10264,8 @@ mod tests {
         // Exact match still succeeds (non-null, owned buffer the caller frees).
         let ok = remote_reply_data_to_ptr(&[1u8, 2, 3, 4], 4);
         assert!(!ok.is_null(), "exact-size reply payload must succeed");
-        // SAFETY: ok was malloc'd by remote_reply_data_to_ptr; free it once.
-        unsafe { libc::free(ok) };
+        // SAFETY: ok came from remote_reply_data_to_ptr's sized-block allocation; free it once.
+        unsafe { crate::mem::buf_free(ok) };
     }
 
     #[test]
@@ -10772,7 +11180,7 @@ mod tests {
         // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
         let send_value: u32 = 21;
         let target = remote_pid_for_node(&node2, actor_id);
-        // SAFETY: send_value is a valid u32 on the stack; reply is malloc'd, freed below.
+        // SAFETY: send_value is a valid u32 on the stack; reply is sized-block-allocated, freed below.
         let reply_ptr = unsafe {
             hew_node_api_ask_location(
                 &raw const target,
@@ -10789,15 +11197,15 @@ mod tests {
             !reply_ptr.is_null(),
             "remote ask should return a non-null reply"
         );
-        // SAFETY: reply_ptr was malloc'd by hew_node_api_ask; valid for u32 read.
+        // SAFETY: reply_ptr came from hew_node_api_ask's sized-block allocation; valid for u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
         assert_eq!(
             reply_value,
             send_value * 2,
             "echo-double should return 21 * 2 = 42"
         );
-        // SAFETY: reply_ptr was malloc'd and is our responsibility to free.
-        unsafe { libc::free(reply_ptr) };
+        // SAFETY: reply_ptr came from the sized-block allocator and is our responsibility to free.
+        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actor and nodes were allocated in this test and are valid.
         unsafe {
@@ -10904,15 +11312,15 @@ mod tests {
             !reply_ptr.is_null(),
             "resumed async ask should bind a non-null reply"
         );
-        // SAFETY: reply_ptr was malloc'd by the finish path; valid for a u32 read.
+        // SAFETY: reply_ptr came from the finish path's sized-block allocation; valid for a u32 read.
         let reply_value = unsafe { *(reply_ptr.cast::<u32>()) };
         assert_eq!(
             reply_value,
             send_value * 2,
             "echo-double should return 21 * 2 = 42"
         );
-        // SAFETY: reply_ptr was malloc'd and is ours to free.
-        unsafe { libc::free(reply_ptr) };
+        // SAFETY: reply_ptr came from the sized-block allocator and is ours to free.
+        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // SAFETY: actors and nodes were allocated in this test and are valid.
         unsafe {
@@ -12081,8 +12489,8 @@ mod tests {
             )
         };
         assert!(!reply_ptr.is_null(), "remote ask must succeed");
-        // SAFETY: reply was malloc'd by hew_reply; we own it after the ask.
-        unsafe { libc::free(reply_ptr) };
+        // SAFETY: reply came from hew_reply's sized-block allocation; we own it after the ask.
+        unsafe { crate::mem::buf_free(reply_ptr) };
 
         // After the ask completes the handler thread exits, dropping InboundAskGuard.
         // Give it a brief moment to drain.

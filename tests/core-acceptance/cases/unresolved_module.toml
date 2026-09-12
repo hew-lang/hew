@@ -1,0 +1,12 @@
+[[case]]
+id = "unresolved_module"
+intent = "The fixture is refused, and the refusal names E_MODULE_NOT_FOUND."
+source = "../vertical-slice/reject/unresolved_module.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_MODULE_NOT_FOUND"
+line = 1
+column = 1

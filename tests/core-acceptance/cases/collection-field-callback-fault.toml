@@ -1,0 +1,11 @@
+[[case]]
+id = "collection-field-callback-fault"
+intent = "A callback fault during nested field mutation releases retained siblings, the consumed collection and caller-owned copies."
+source = "cases/collection-field-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

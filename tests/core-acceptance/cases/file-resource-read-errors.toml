@@ -1,0 +1,11 @@
+[[case]]
+id = "file-resource-read-errors"
+intent = "Checked file reads distinguish missing paths, directories and invalid UTF-8 from successful empty and embedded-NUL contents."
+source = "cases/file-resource-read-errors.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "read results\n"
+exit = 0

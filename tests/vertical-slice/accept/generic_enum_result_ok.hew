@@ -2,8 +2,8 @@
 // Outcome::Ok(7) must lower through HIR EnumLayoutRegistry → MIR → codegen
 // and exit 7.
 enum Outcome<T, E> {
-    Ok(T);
-    Err(E);
+    Ok(T),
+    Err(E),
 }
 
 fn main() -> i64 {

@@ -1,7 +1,7 @@
 #[resource]
 type Conn { fd: i64 }
 impl Conn {
-    fn close(c: Conn) { println(f"close {c.fd}"); }
+    fn close(consume self) { println(f"close {self.fd}"); }
 }
 actor Holder {
     receive fn take(c: Conn) { println(f"got {c.fd}"); }
@@ -9,6 +9,6 @@ actor Holder {
 fn main() {
     let h = spawn Holder();
     let c = Conn { fd: 1 };
-    h.take(c);
+    let _ = h.take(c);
     println("sent");
 }

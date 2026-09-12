@@ -27,7 +27,7 @@ type SemaphoreHandle {
 
 #[resource]
 pub type Semaphore {
-    handle: SemaphoreHandle;
+    handle: SemaphoreHandle,
 }
 
 /// Methods available on a `Semaphore`.
@@ -87,9 +87,9 @@ impl SemaphoreMethods for Semaphore {
 
 impl Semaphore {
     /// Release this semaphore early.
-    fn close(sem: Semaphore) {
+    fn close(consume self) {
         unsafe {
-            hew_semaphore_free(sem.handle)
+            hew_semaphore_free(self.handle)
         };
     }
 }

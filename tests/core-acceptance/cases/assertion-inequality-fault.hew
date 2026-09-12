@@ -1,0 +1,10 @@
+fn subject() -> string {
+    "same".to_upper()
+}
+
+fn main() {
+    let retained = ["caller owner".to_upper()];
+    defer { println(retained[0]); }
+    assert_ne(subject(), subject());
+    println("unreachable");
+}

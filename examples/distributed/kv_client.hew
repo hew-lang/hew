@@ -10,18 +10,18 @@ import std.os;
 
 // Mirror the server's serializable types.  Both nodes must agree on these.
 type KvPut {
-    key: string;
-    val: string;
+    key: string,
+    val: string,
 }
 
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut),
+    GetKey(string),
 }
 
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack,
+    Value(string),
 }
 
 // Minimal actor declaration — matches the server's ActorMsg contract.
@@ -44,16 +44,24 @@ impl ActorMsg for KeyValue {
 fn main() -> i64 {
     var port: string = "9100";
     var server_addr: string = "127.0.0.1";
-    if os.args().len() > 1 {
-        server_addr = os.args().get(1);
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        if let .Some(value) = arguments.get(1) {
+            server_addr = value;
+        }
     }
-    if os.args().len() > 2 {
-        port = os.args().get(2);
+    if arguments.len() > 2 {
+        if let .Some(value) = arguments.get(2) {
+            port = value;
+        }
     }
     let remote_addr = f"{server_addr}:{port}";
     println(f"[kv-client] starting node, will connect to {remote_addr}");
-    Node.set_transport("tcp");
-    Node.start("0.0.0.0:0");
+    let config = NodeConfig { bind: "0.0.0.0:0", transport: "tcp", key: "kv-client.key", trust: "pinned", peers: [], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
     println("[kv-client] local node started");
     sleep(500ms);
     Node.connect(remote_addr);
@@ -69,7 +77,7 @@ fn main() -> i64 {
             return 1;
         },
         .Ok(kv) => {
-            // Scenario 1: put("hello","world") — fire and forget via send.
+            // Scenario 1: put("hello","world") — wait for the remote handler.
             let send1 = kv.send(KvReq.Put(KvPut { key: "hello", val: "world" }));
             match send1 {
                 .Err(_) => {
@@ -79,7 +87,7 @@ fn main() -> i64 {
                 },
                 .Ok(_) => {},
             }
-            // Scenario 2: put("count","42") — fire and forget via send.
+            // Scenario 2: put("count","42") — wait for the remote handler.
             let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
             match send2 {
                 .Err(_) => {
@@ -90,10 +98,10 @@ fn main() -> i64 {
                 .Ok(_) => {},
             }
             println("[kv-client] put('hello','world') and put('count','42') dispatched");
-            // Give the server time to process the send messages before asking.
+            // The completion calls above already wait for their handlers.
             sleep(500ms);
 
-            // Scenario 3: get("hello") — blocking remote ask, exercises await-over-wire.
+            // Scenario 3: get("hello") — blocking remote ask, exercises the remote completion path.
             let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
             match ask1 {
                 .Err(_) => {

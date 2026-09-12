@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-destructure-fields"
+intent = "Record and tuple patterns transfer once fields and copy cloneable once fields independently of non-cloneable siblings; heap captures survive invocation and the original cloneable record field remains callable."
+source = "cases/callable-destructure-fields.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "RECORD ONCE\nRECORD SIBLING\nRECORD CLONE\nRECORD SIBLING\nRECORD CLONE\nTUPLE ONCE\nTUPLE SIBLING\nTUPLE CLONE\nTUPLE SIBLING\n"
+exit = 0

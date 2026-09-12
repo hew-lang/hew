@@ -59,8 +59,8 @@ fn q004_map_next_body_passes() {
         "{ITER_PRELUDE}{}",
         r"
 pub type Map<I, A, B> {
-    iter: I;
-    f: fn(A) -> B;
+    iter: I,
+    f: fn(A) -> B,
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -96,7 +96,7 @@ fn q004_inherent_impl_next_passes() {
         "{ITER_PRELUDE}{}",
         r"
 pub type IsPositive<I> {
-    inner: I;
+    inner: I,
 }
 
 impl<I> Iterator for IsPositive<I> where I: Iterator<Item = i64> {

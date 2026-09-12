@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    var value: bytes = bytes.new();
+    println(value.is_empty());
+    value.push(42);
+    println(value.is_empty());
+    let alias = value;
+    value.clear();
+    println(value.is_empty());
+    assert(alias.len() == 1);
+    assert(alias[0] == 42);
+    value.push(99);
+    assert(value[0] == 99);
+    assert(alias[0] == 42);
+    0
+}

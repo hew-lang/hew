@@ -1,4 +1,4 @@
-type P { a: i64; b: i64 }
+type P { a: i64, b: i64 }
 
 // A user `impl Eq` overrides the derived structural default (D26 as
 // amended by D340). Its body deliberately disagrees with structural

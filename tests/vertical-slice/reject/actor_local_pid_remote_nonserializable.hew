@@ -1,5 +1,5 @@
-// Reject fixture: a process-local `LocalPid` payload must never cross a
-// RemotePid (cross-node) boundary. `LocalPid<T>` is process-local — a bare
+// Reject fixture: a process-local actor handle payload must never cross a
+// RemotePid (cross-node) boundary. `T` is process-local — a bare
 // `*mut HewActor` pointer with no on-wire representation — and is therefore NOT
 // Serializable (it carries neither Encode nor Decode). Sending it through
 // `RemotePid::send` must fail closed at the checker's Serializable boundary
@@ -12,18 +12,18 @@
 // the actor-pid/handle family removed dead codec weight only — the impossible
 // cross-node case stays fail-closed here, at the type boundary.
 actor Holder {
-    receive fn take(p: LocalPid<Holder>) {
+    receive fn take(p: Holder) {
         println("took");
     }
 }
 
 impl ActorMsg for Holder {
-    type Msg = LocalPid<Holder>;
+    type Msg = Holder;
     type Reply = ();
 }
 
 fn main() {
-    let local: LocalPid<Holder> = spawn Holder();
+    let local: Holder = spawn Holder();
     let peer: RemotePid<Holder>;
     let sent: Result<(), SendError> = peer.send(local);
     match sent {

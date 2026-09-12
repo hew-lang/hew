@@ -17,7 +17,7 @@ fn actor_protocol_descriptor_populates_for_each_actor() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i64;
+            let count: i64,
 
             receive fn increment(n: i64) {
             }
@@ -72,7 +72,7 @@ fn actor_protocol_descriptor_msg_ids_are_stable_across_handler_reorder() {
     let original = typecheck(
         r"
         actor Counter {
-            let count: i64;
+            let count: i64,
 
             receive fn increment(n: i64) {
             }
@@ -86,7 +86,7 @@ fn actor_protocol_descriptor_msg_ids_are_stable_across_handler_reorder() {
     let reordered = typecheck(
         r"
         actor Counter {
-            let count: i64;
+            let count: i64,
 
             receive fn total() -> i64 {
                 return count;
@@ -123,14 +123,14 @@ fn actor_protocol_descriptor_qualifies_by_actor_name() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i64;
+            let count: i64,
 
             receive fn tick() {
             }
         }
 
         actor Gauge {
-            let value: i64;
+            let value: i64,
 
             receive fn tick() {
             }

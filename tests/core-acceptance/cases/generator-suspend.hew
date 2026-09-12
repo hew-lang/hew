@@ -1,0 +1,23 @@
+gen fn delayed() -> string {
+    let label = "producer".to_upper();
+    defer println(label + " cleaned");
+    sleep(1ms);
+    yield label;
+    sleep(1ms);
+    yield label + " again";
+}
+
+fn main() {
+    for value in delayed() {
+        println(value);
+    }
+    let label = "child".to_upper();
+    scope {
+        let child = fork {
+            sleep(1ms);
+            println(label);
+        };
+        await child;
+    };
+    println("done");
+}

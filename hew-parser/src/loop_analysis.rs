@@ -3,7 +3,7 @@
 /// Provides break-detection over the raw AST so both the type checker
 /// (`hew-types`) and HIR lowering (`hew-hir`) can share the logic without
 /// duplicating it.
-use crate::ast::{Block, Expr, Stmt};
+use crate::ast::{condition_exprs, Block, Expr, Stmt};
 
 /// Returns `true` if the `body` of a `loop { … }` contains a `break`
 /// statement that would exit THAT loop — i.e., a break that targets the
@@ -140,10 +140,13 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool 
             ast_expr_has_break(&condition.0, query, depth)
                 || ast_block_has_break(body, query, depth + 1)
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            // Header (scrutinee) at current depth, body at `depth + 1` — see the
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            // Header (condition) at current depth, body at `depth + 1` — see the
             // `For` arm for the header-scoping rationale.
-            ast_expr_has_break(&expr.0, query, depth) || ast_block_has_break(body, query, depth + 1)
+            condition_exprs(conditions).any(|expr| ast_expr_has_break(&expr.0, query, depth))
+                || ast_block_has_break(body, query, depth + 1)
         }
         Stmt::If {
             then_block,
@@ -174,20 +177,19 @@ fn ast_stmt_has_break(stmt: &Stmt, query: BreakQuery<'_>, depth: usize) -> bool 
             false
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            // Scrutinee is evaluated in the enclosing scope (not a loop).
-            if ast_expr_has_break(&expr.0, query, depth) {
+            // The condition is evaluated in the enclosing scope (not a loop).
+            if condition_exprs(conditions).any(|expr| ast_expr_has_break(&expr.0, query, depth)) {
                 return true;
             }
             if ast_block_has_break(body, query, depth) {
                 return true;
             }
             if let Some(eb) = else_body {
-                if ast_block_has_break(eb, query, depth) {
+                if ast_expr_has_break(&eb.0, query, depth) {
                     return true;
                 }
             }
@@ -290,20 +292,19 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
             false
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            // Scrutinee is evaluated in the enclosing scope (not a loop).
-            if ast_expr_has_break(&expr.0, query, depth) {
+            // The condition is evaluated in the enclosing scope (not a loop).
+            if condition_exprs(conditions).any(|expr| ast_expr_has_break(&expr.0, query, depth)) {
                 return true;
             }
             if ast_block_has_break(body, query, depth) {
                 return true;
             }
             if let Some(eb) = else_body {
-                return ast_block_has_break(eb, query, depth);
+                return ast_expr_has_break(&eb.0, query, depth);
             }
             false
         }
@@ -320,10 +321,16 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         }
 
         // ── Arithmetic / logical operators ────────────────────────────────
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             ast_expr_has_break(&left.0, query, depth) || ast_expr_has_break(&right.0, query, depth)
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             ast_expr_has_break(&operand.0, query, depth)
         }
         Expr::Is { lhs, rhs } => {
@@ -331,9 +338,12 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         }
 
         // ── Aggregate constructors ────────────────────────────────────────
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             exprs.iter().any(|e| ast_expr_has_break(&e.0, query, depth))
         }
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| ast_expr_has_break(&element.expr().0, query, depth)),
         Expr::ArrayRepeat { value, count } => {
             ast_expr_has_break(&value.0, query, depth) || ast_expr_has_break(&count.0, query, depth)
         }
@@ -446,11 +456,6 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
             }
             false
         }
-        Expr::Timeout { expr, duration } => {
-            ast_expr_has_break(&expr.0, query, depth)
-                || ast_expr_has_break(&duration.0, query, depth)
-        }
-
         // ── Control-flow expressions ──────────────────────────────────────
         // `return` and `yield` both carry an optional value expression.
         Expr::Return(opt) | Expr::Yield(opt) => opt
@@ -467,7 +472,6 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
         | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,
@@ -477,12 +481,20 @@ fn ast_expr_has_break(expr: &Expr, query: BreakQuery<'_>, depth: usize) -> bool 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ast::{BinaryOp, Literal, Spanned};
+    use crate::ast::{BinaryOp, ConditionItem, Literal, Spanned};
 
     // Helpers ──────────────────────────────────────────────────────────────
 
     fn span() -> crate::ast::Span {
         0..0
+    }
+
+    /// `let _ = <scrutinee>` as a single condition operand.
+    fn wildcard_let(scrutinee: Spanned<Expr>) -> ConditionItem {
+        ConditionItem::Let {
+            pattern: sp(crate::ast::Pattern::Wildcard),
+            expr: scrutinee,
+        }
     }
 
     fn sp<T>(val: T) -> Spanned<T> {
@@ -564,10 +576,8 @@ mod tests {
     #[test]
     fn break_inside_expr_iflet_then_detected() {
         // `loop { if let _ = v { break } }` — Expr::IfLet then-body
-        use crate::ast::Pattern;
         let if_let_expr = sp(Expr::IfLet {
-            pattern: Box::new(sp(Pattern::Wildcard)),
-            expr: Box::new(sp(Expr::Identifier("v".into()))),
+            conditions: vec![wildcard_let(sp(Expr::Identifier("v".into())))],
             body: block_with_stmts(vec![bare_break()]),
             else_body: None,
         });
@@ -577,12 +587,12 @@ mod tests {
 
     #[test]
     fn break_inside_expr_iflet_else_detected() {
-        use crate::ast::Pattern;
         let if_let_expr = sp(Expr::IfLet {
-            pattern: Box::new(sp(Pattern::Wildcard)),
-            expr: Box::new(sp(Expr::Identifier("v".into()))),
+            conditions: vec![wildcard_let(sp(Expr::Identifier("v".into())))],
             body: empty_block(),
-            else_body: Some(block_with_stmts(vec![bare_break()])),
+            else_body: Some(Box::new(sp(Expr::Block(block_with_stmts(vec![
+                bare_break(),
+            ]))))),
         });
         let body = block_with_stmts(vec![sp(Stmt::Expression(if_let_expr))]);
         assert!(loop_body_has_break(&body, None));
@@ -597,6 +607,7 @@ mod tests {
         let lambda_body = block_with_stmts(vec![bare_break()]);
         let lambda_expr = sp(Expr::Lambda {
             is_move: false,
+            private_captures: Vec::new(),
             type_params: None,
             params: vec![],
             return_type: None,
@@ -752,7 +763,7 @@ mod tests {
     // hiding in any of them (via a block-expr) escapes to the enclosing loop;
     // missing one types a breakable loop as `Never` (the B1 soundness hole).
 
-    fn int_lit(value: i64) -> Literal {
+    fn int_lit(value: i128) -> Literal {
         Literal::Integer {
             value,
             radix: crate::ast::IntRadix::Decimal,
@@ -825,7 +836,6 @@ mod tests {
         // outer loop (the iterable is evaluated in the enclosing scope).
         let for_stmt = sp(Stmt::For {
             label: None,
-            is_await: false,
             pattern: sp(Pattern::Identifier("x".into())),
             iterable: break_block_expr(),
             body: empty_block(),
@@ -840,7 +850,6 @@ mod tests {
         // not the outer loop, so the outer loop stays break-less.
         let for_stmt = sp(Stmt::For {
             label: None,
-            is_await: false,
             pattern: sp(Pattern::Identifier("x".into())),
             iterable: sp(Expr::Identifier("v".into())),
             body: block_with_stmts(vec![bare_break()]),
@@ -853,12 +862,10 @@ mod tests {
 
     #[test]
     fn break_in_while_let_scrutinee_detected() {
-        use crate::ast::Pattern;
         // `loop { while let _ = { break } { } }` — scrutinee header break.
         let wl = sp(Stmt::WhileLet {
             label: None,
-            pattern: Box::new(sp(Pattern::Wildcard)),
-            expr: Box::new(break_block_expr()),
+            conditions: vec![wildcard_let(break_block_expr())],
             body: empty_block(),
         });
         assert!(loop_body_has_break(&block_with_stmts(vec![wl]), None));
@@ -892,11 +899,9 @@ mod tests {
 
     #[test]
     fn break_in_stmt_iflet_scrutinee_detected() {
-        use crate::ast::Pattern;
         // `loop { if let _ = { break } { } }` — break in the if-let SCRUTINEE.
         let il = sp(Stmt::IfLet {
-            pattern: Box::new(sp(Pattern::Wildcard)),
-            expr: Box::new(break_block_expr()),
+            conditions: vec![wildcard_let(break_block_expr())],
             body: empty_block(),
             else_body: None,
         });
@@ -977,11 +982,9 @@ mod tests {
 
     #[test]
     fn break_in_expr_iflet_scrutinee_detected() {
-        use crate::ast::Pattern;
         // `loop { let _ = if let _ = { break } { } ... }` — Expr::IfLet scrutinee.
         let il = sp(Expr::IfLet {
-            pattern: Box::new(sp(Pattern::Wildcard)),
-            expr: Box::new(break_block_expr()),
+            conditions: vec![wildcard_let(break_block_expr())],
             body: empty_block(),
             else_body: None,
         });

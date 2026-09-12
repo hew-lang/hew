@@ -1,0 +1,11 @@
+PASS: single element min
+PASS: push smaller updates min
+PASS: push larger keeps min
+PASS: push even smaller
+PASS: pop reverts min to 3
+PASS: pop again min still 3
+PASS: pop 3 min becomes 5
+PASS: many elements min=10
+PASS: pop 4 min becomes 30
+9/9 tests passed
+ALL PASS

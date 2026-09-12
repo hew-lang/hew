@@ -685,9 +685,9 @@ pub fn add(a: i32, b: i32) -> i32 {
     fn render_enum_variants_with_docs() {
         let source = r"pub enum E {
     /// First variant.
-    A;
+    A,
     /// Second variant with payload.
-    B(i64);
+    B(i64),
 }
 ";
         let result = hew_parser::parse(source);

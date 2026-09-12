@@ -2,6 +2,10 @@
 // Each block holds up to BLOCK_CAP (4) elements.
 // Block layout: [count, e0, e1, e2, e3, next] = 6 slots per block
 // Block i starts at index i*6
+//
+// A parameter is the callee's own copy, so every helper that writes the block
+// pool returns it and the caller reassigns. Helpers that also report an index
+// return a tuple.
 fn block_count(n: Vec<i64>, b: i64) -> i64 {
     n[b * 6]
 }
@@ -14,19 +18,22 @@ fn block_next(n: Vec<i64>, b: i64) -> i64 {
     n[b * 6 + 5]
 }
 
-fn set_count(n: Vec<i64>, b: i64, c: i64) {
+fn set_count(var n: Vec<i64>, b: i64, c: i64) -> Vec<i64> {
     n.set(b * 6, c);
+    n
 }
 
-fn set_elem(n: Vec<i64>, b: i64, idx: i64, val: i64) {
+fn set_elem(var n: Vec<i64>, b: i64, idx: i64, val: i64) -> Vec<i64> {
     n.set(b * 6 + 1 + idx, val);
+    n
 }
 
-fn set_block_next(n: Vec<i64>, b: i64, nx: i64) {
+fn set_block_next(var n: Vec<i64>, b: i64, nx: i64) -> Vec<i64> {
     n.set(b * 6 + 5, nx);
+    n
 }
 
-fn alloc_block(n: Vec<i64>) -> i64 {
+fn alloc_block(var n: Vec<i64>) -> (Vec<i64>, i64) {
     let b = n.len() / 6;
     n.push(0);
     n.push(0);
@@ -34,16 +41,16 @@ fn alloc_block(n: Vec<i64>) -> i64 {
     n.push(0);
     n.push(0);
     n.push(-1);
-    b
+    (n, b)
 }
 
-// Insert at end of unrolled list. Returns head.
-fn unrolled_insert(n: Vec<i64>, head: i64, val: i64) -> i64 {
+// Insert at end of unrolled list. Returns the pool and the head.
+fn unrolled_insert(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
     if head == -1 {
-        let b = alloc_block(n);
-        set_elem(n, b, 0, val);
-        set_count(n, b, 1);
-        return b;
+        let (grown, b) = alloc_block(n);
+        n = set_elem(grown, b, 0, val);
+        n = set_count(n, b, 1);
+        return (n, b);
     }
     // Find last block
     var last = head;
@@ -52,19 +59,31 @@ fn unrolled_insert(n: Vec<i64>, head: i64, val: i64) -> i64 {
     }
     let cnt = block_count(n, last);
     if cnt < 4 {
-        set_elem(n, last, cnt, val);
-        set_count(n, last, cnt + 1);
+        n = set_elem(n, last, cnt, val);
+        n = set_count(n, last, cnt + 1);
     } else {
-        let b = alloc_block(n);
-        set_elem(n, b, 0, val);
-        set_count(n, b, 1);
-        set_block_next(n, last, b);
+        let (grown, b) = alloc_block(n);
+        n = set_elem(grown, b, 0, val);
+        n = set_count(n, b, 1);
+        n = set_block_next(n, last, b);
     }
-    head
+    (n, head)
 }
 
-// Iterate all elements in order into result vec
-fn unrolled_iterate(n: Vec<i64>, head: i64, result: Vec<i64>) {
+// Insert every value in order; returns the pool and the head.
+fn unrolled_insert_all(var n: Vec<i64>, head: i64, values: Vec<i64>) -> (Vec<i64>, i64) {
+    var curr_head = head;
+    for value in values {
+        let (grown, new_head) = unrolled_insert(n, curr_head, value);
+        n = grown;
+        curr_head = new_head;
+    }
+    (n, curr_head)
+}
+
+// Collect all elements in order
+fn unrolled_iterate(n: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     var b = head;
     while b != -1 {
         let cnt = block_count(n, b);
@@ -73,6 +92,7 @@ fn unrolled_iterate(n: Vec<i64>, head: i64, result: Vec<i64>) {
         }
         b = block_next(n, b);
     }
+    result
 }
 
 // Total element count
@@ -126,14 +146,11 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_insert_and_iterate() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = unrolled_insert(n, head, 10);
-    head = unrolled_insert(n, head, 20);
-    head = unrolled_insert(n, head, 30);
-    let r: Vec<i64> = Vec.new();
-    unrolled_iterate(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    let pool: Vec<i64> = Vec.new();
+    let values: Vec<i64> = [10, 20, 30];
+    let (n, head) = unrolled_insert_all(pool, -1, values);
+    let r = unrolled_iterate(n, head);
+    var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(20);
     e.push(30);
@@ -146,14 +163,10 @@ fn test_insert_and_iterate() -> i64 {
 }
 
 fn test_block_split() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
+    let pool: Vec<i64> = Vec.new();
     // Insert 5 elements - should create 2 blocks (4+1)
-    head = unrolled_insert(n, head, 1);
-    head = unrolled_insert(n, head, 2);
-    head = unrolled_insert(n, head, 3);
-    head = unrolled_insert(n, head, 4);
-    head = unrolled_insert(n, head, 5);
+    let values: Vec<i64> = [1, 2, 3, 4, 5];
+    let (n, head) = unrolled_insert_all(pool, -1, values);
     if block_count_total(n, head) == 2 {
         if unrolled_len(n, head) == 5 {
             println("PASS: block split");
@@ -165,14 +178,15 @@ fn test_block_split() -> i64 {
 }
 
 fn test_cross_block_iteration() -> i64 {
-    let n: Vec<i64> = Vec.new();
+    var n: Vec<i64> = Vec.new();
     var head = -1;
     // Insert 10 elements across 3 blocks (4+4+2)
     for i in 0 .. 10 {
-        head = unrolled_insert(n, head, (i + 1) * 10);
+        let (grown, new_head) = unrolled_insert(n, head, (i + 1) * 10);
+        n = grown;
+        head = new_head;
     }
-    let r: Vec<i64> = Vec.new();
-    unrolled_iterate(n, head, r);
+    let r = unrolled_iterate(n, head);
     var ok = 1;
     for i in 0 .. 10 {
         if r[i] != (i + 1) * 10 {
@@ -190,10 +204,12 @@ fn test_cross_block_iteration() -> i64 {
 }
 
 fn test_random_access() -> i64 {
-    let n: Vec<i64> = Vec.new();
+    var n: Vec<i64> = Vec.new();
     var head = -1;
     for i in 0 .. 8 {
-        head = unrolled_insert(n, head, i * 100);
+        let (grown, new_head) = unrolled_insert(n, head, i * 100);
+        n = grown;
+        head = new_head;
     }
     let v0 = unrolled_get(n, head, 0);
     let v3 = unrolled_get(n, head, 3);
@@ -214,9 +230,8 @@ fn test_random_access() -> i64 {
 }
 
 fn test_single_block() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = unrolled_insert(n, head, 42);
+    let pool: Vec<i64> = Vec.new();
+    let (n, head) = unrolled_insert(pool, -1, 42);
     if block_count_total(n, head) == 1 {
         if unrolled_get(n, head, 0) == 42 {
             println("PASS: single block");
@@ -228,17 +243,18 @@ fn test_single_block() -> i64 {
 }
 
 fn test_many_blocks() -> i64 {
-    let n: Vec<i64> = Vec.new();
+    var n: Vec<i64> = Vec.new();
     var head = -1;
     // 20 elements = 5 blocks of 4
     for i in 0 .. 20 {
-        head = unrolled_insert(n, head, i);
+        let (grown, new_head) = unrolled_insert(n, head, i);
+        n = grown;
+        head = new_head;
     }
     if block_count_total(n, head) == 5 {
         if unrolled_len(n, head) == 20 {
             // Verify order
-            let r: Vec<i64> = Vec.new();
-            unrolled_iterate(n, head, r);
+            let r = unrolled_iterate(n, head);
             var ok = 1;
             for i in 0 .. 20 {
                 if r[i] != i {

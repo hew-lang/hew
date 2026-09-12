@@ -95,37 +95,61 @@ mod fork_block_body_checks {
     }
 
     #[test]
-    fn fork_block_string_arg_parent_use_after_fork_block_rejected() {
-        // Ownership hole regression: `fork { shout(greeting) }` must mark
-        // `greeting` (a non-Copy `string`) moved into the child task, so that
-        // parent use after the fork reports `UseAfterMove`.
-        //
-        // The block form `fork { f(args) }` and the named form
-        // `fork ts = f(args)` must be symmetric — the named form already
-        // rejects parent-use-after-move; this test pins the block form.
+    fn fork_block_string_arg_capture_leaves_the_parent_live() {
+        // §4.3: "ordinary data gets an independent value, while an affine
+        // owner transfers to the child". A `string` clones independently, so
+        // the child captures a snapshot and the parent keeps its binding.
         let output = check_source(
             r#"
             fn shout(msg: string) {}
 
             fn main() {
                 let greeting: string = "hello" + " world";
-                scope {
-                    fork {
-                        shout(greeting);
-                    };
+                fork {
+                    shout(greeting);
                 };
-                // greeting was moved into the fork block — UseAfterMove here.
                 let _x = greeting;
             }
             "#,
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::UseAfterMove),
-            "parent use of a string arg after fork-block must be UseAfterMove \
-             (parity with named fork); got: {:#?}",
+            output.errors.is_empty(),
+            "a string captured by a fork block snapshots, leaving the parent \
+             binding live; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_block_resource_capture_moves_out_of_the_parent() {
+        // Negative control for the snapshot rule: a `#[resource]` has no
+        // independent clone, so the capture transfers and the parent use is
+        // rejected.
+        let output = check_source(
+            r"
+#[resource]
+type Socket { fd: i64 }
+
+impl Socket {
+    fn detach(consume self) -> i64 { self.fd }
+}
+
+fn main() {
+    let socket = Socket { fd: 3 };
+    fork {
+        let _ = socket.detach();
+    };
+    let _again = socket;
+}
+",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                e.kind,
+                TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+            )),
+            "a resource captured by a fork block must transfer out of the \
+             parent; got: {:#?}",
             output.errors
         );
     }
@@ -155,33 +179,6 @@ mod fork_block_body_checks {
             output.errors.is_empty(),
             "parent use of i64 args after fork-block must check clean \
              (BitCopy exemption); got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn fork_block_tail_expr_must_be_unit() {
-        // Arbitrary fork statements are supported, but a bare tail expression
-        // still has to satisfy the synthesized task's unit return type.
-        let output = check_source(
-            r"
-            fn main() {
-                scope {
-                    fork { 42 };
-                };
-            }
-            ",
-        );
-        let has_unit_mismatch = output.errors.iter().any(|e| {
-            matches!(
-                &e.kind,
-                TypeErrorKind::Mismatch { expected, actual }
-                    if expected == "()" && actual == "i64"
-            )
-        });
-        assert!(
-            has_unit_mismatch,
-            "fork {{ 42 }} must reject a non-unit child result; got: {:#?}",
             output.errors
         );
     }
@@ -242,7 +239,7 @@ fn check_source_with_handle(source: &str, handle_type: &str) -> TypeCheckOutput 
 #[test]
 fn checker_handle_rewrite_requires_exact_receiver_owner() {
     fn shared_info(symbol: &str, return_name: &str) -> crate::stdlib_loader::ModuleInfo {
-        let parsed = hew_parser::parse("pub type Handle { value: i32; }\n");
+        let parsed = hew_parser::parse("pub type Handle { value: i32, }\n");
         assert!(parsed.errors.is_empty());
         crate::stdlib_loader::ModuleInfo {
             source_path: None,
@@ -492,6 +489,7 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         for i in 0..n {
             let td = hew_parser::ast::TypeDecl {
+                origin: hew_parser::ast::DeclarationOrigin::Authored,
                 visibility: hew_parser::ast::Visibility::Private,
                 kind: hew_parser::ast::TypeDeclKind::Struct,
                 name: format!("S{i}"),
@@ -538,17 +536,16 @@ fn handle_bearing_refresh_deferred_to_single_fixpoint_pass() {
 // ── Task<T> surface rules ──────────────────────────────────────────────────
 //
 // `Task<T>` is a compiler-internal type. It has no user-source spelling:
-//   - `fork name = expr` inside a `fork{}` body is the only construction site;
-//     the binding's type is inferred to `Ty::Task(T)` by HIR lowering.
-//   - `await name` inside a `select` arm or `fork{}` body consumes the handle
-//     and yields `T`.
+//   - `fork call(args)` and `fork { ... }` are the construction sites; the
+//     expression's type is inferred to `Ty::Task(T)` (§4.3).
+//   - `await` consumes the handle and yields `T` (§4.4).
 //   - Any explicit `Task<T>` in a user-written type annotation is rejected with
 //     `E_TASK_NOT_NAMEABLE` (= `TypeErrorKind::TaskNotNameable`).
 //
-// §3.3 diagnostic-surface coverage: BOTH paths must be covered:
+// Diagnostic-surface coverage: BOTH paths must be covered:
 //   1. `Task<T>` written in an annotation → `TaskNotNameable` error (no infer).
-//   2. `scope.launch { ... }` / `ScopeLaunch` → inferred `Ty::Task(T)`;
-//      `await` on it yields `T` (no error on clean code).
+//   2. `fork` → inferred `Ty::Task(T)`; `await` on it yields `T` (no error on
+//      clean code).
 
 mod task_type_surface_rules {
     use super::*;
@@ -610,12 +607,12 @@ mod task_type_surface_rules {
         );
     }
 
-    // ── Accept path: `fork name = call(...)` inside scope{} infers Ty::Task;
+    // ── Accept path: `let name = fork call(...)` infers Ty::Task;
     // `await name` consumes the binding and yields T ──────────────────────────
 
     #[test]
     fn scope_fork_binding_infers_task_and_await_consumes_it() {
-        // `scope { fork task = compute(); await task; }` is the structured
+        // `scope { let task = fork compute(); await task; }` is the structured
         // surface for spawning a child task and joining it; it must type-check
         // with no errors at all (the binding types as Task<i64>, await unwraps).
         let output = check_source(
@@ -623,7 +620,7 @@ mod task_type_surface_rules {
             fn compute() -> i64 { 42 }
             fn main() {
                 scope {
-                    fork task = compute();
+                    let task = fork compute();
                     await task;
                 }
             }
@@ -631,7 +628,7 @@ mod task_type_surface_rules {
         );
         assert!(
             output.errors.is_empty(),
-            "clean scope {{ fork x = call(); await x; }} must check without errors; got: {:#?}",
+            "clean scope {{ let x = fork call(); await x; }} must check without errors; got: {:#?}",
             output.errors
         );
     }
@@ -645,7 +642,7 @@ mod task_type_surface_rules {
             fn compute() -> i64 { 42 }
             fn main() {
                 scope {
-                    fork x = compute();
+                    let x = fork compute();
                     let v: i64 = await x;
                     let _ = v;
                 }
@@ -669,7 +666,7 @@ mod task_type_surface_rules {
             fn compute() -> i64 { 42 }
             fn main() {
                 scope {
-                    fork x = compute();
+                    let x = fork compute();
                     let _v: string = await x;
                 }
             }
@@ -682,184 +679,154 @@ mod task_type_surface_rules {
     }
 
     #[test]
-    fn fork_non_call_rhs_rejected() {
-        // Parity with HIR's ForkChildNotACall gate, raised at check time.
+    fn await_vector_of_tasks_yields_vector_of_results() {
+        // `await tasks` joins one task layer through the vector: the annotation
+        // proves the result is `Vec<i64>`, not `Vec<Task<i64>>` or `Error`.
         let output = check_source(
             r"
+            fn compute(n: i64) -> i64 { n * 2 }
             fn main() {
-                scope {
-                    fork t = 42;
-                }
-            }
-            ",
-        );
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.message.contains("requires a call expression")),
-            "fork with non-call RHS must be rejected at check time; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn fork_outside_scope_rejected() {
-        let output = check_source(
-            r"
-            fn ping() {}
-            fn main() {
-                fork t = ping();
-            }
-            ",
-        );
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.message.contains("only valid inside a `scope { }` body")),
-            "fork outside scope must be rejected; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn fork_inside_lambda_in_scope_rejected() {
-        // A lambda body does not inherit the lexical task scope: the closure
-        // may run after the scope has joined, so fork inside it is rejected.
-        let output = check_source(
-            r"
-            fn ping() {}
-            fn main() {
-                scope {
-                    let f = || { fork t = ping(); };
-                    f();
-                }
-            }
-            ",
-        );
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.message.contains("only valid inside a `scope { }` body")),
-            "fork inside a lambda body must be rejected; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn fork_binding_not_visible_after_scope_block() {
-        // The Task binding scopes to the `scope { }` block, exactly like a
-        // `let` declared inside it.
-        let output = check_source(
-            r"
-            fn ping() {}
-            fn main() {
-                scope {
-                    fork t = ping();
-                    await t;
-                }
-                await t;
-            }
-            ",
-        );
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::UndefinedVariable),
-            "fork binding must not escape the scope block; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn fork_binding_shadows_outer_let_and_outer_survives() {
-        // Inside the scope block the fork binding shadows the outer `t`
-        // (mirroring `let` shadowing); after the block the outer i64 binding
-        // is intact.
-        let output = check_source(
-            r"
-            fn ping() {}
-            fn main() {
-                let t = 1;
-                scope {
-                    fork t = ping();
-                    await t;
-                }
-                let _y: i64 = t;
+                let tasks = [fork compute(1), fork compute(2)];
+                let values: Vec<i64> = await tasks;
+                let _ = values;
             }
             ",
         );
         assert!(
             output.errors.is_empty(),
-            "fork binding shadowing an outer let must check clean; got: {:#?}",
+            "await of Vec<Task<i64>> must type as Vec<i64>; got: {:#?}",
             output.errors
         );
     }
 
     #[test]
-    fn nested_scope_fork_in_inner_scope_accepted() {
-        // task_scope_depth is a counter, not a flag: fork inside a nested
-        // scope body is still in a valid spawn context.
+    fn await_vector_of_tasks_consumes_the_vector() {
+        // The join consumes the vector and every handle in it, exactly as
+        // `await task` consumes a single handle.
         let output = check_source(
             r"
-            fn ping() {}
+            fn compute(n: i64) -> i64 { n * 2 }
             fn main() {
-                scope {
-                    scope {
-                        fork t = ping();
-                        await t;
-                    }
-                }
+                let tasks = [fork compute(1), fork compute(2)];
+                let _values = await tasks;
+                let _again = tasks.len();
             }
             ",
         );
         assert!(
-            output.errors.is_empty(),
-            "fork inside a nested scope must check clean; got: {:#?}",
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("use of moved value `tasks`")),
+            "using a vector of tasks after the join must report the move; got: {:#?}",
             output.errors
         );
     }
 
-    // ── fork arg move semantics ──────────────────────────────────────────────
-    //
-    // These tests verify that non-Copy arguments to a named fork spawn are
-    // marked consumed in the parent scope, so that a subsequent use of the
-    // same binding is rejected as UseAfterMove. BitCopy scalars (i64, bool,
-    // etc.) are exempt and must remain live after the fork.
-    //
-    // Pin: hew-types/src/check/expressions.rs `synthesize_concurrency`
-    // (the `Expr::ForkChild` arm marks non-Copy arg identifiers moved after
-    // `synthesize` runs the call).
+    #[test]
+    fn await_vector_of_non_tasks_rejected() {
+        // Negative control: only a vector of task handles joins. A plain
+        // `Vec<i64>` keeps the ordinary non-task refusal.
+        let output = check_source(
+            r"
+            fn main() {
+                let numbers = [1, 2, 3];
+                let _joined = await numbers;
+            }
+            ",
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("`await` joins a task")
+                    && error.message.contains("Vec<i64>")),
+            "await of Vec<i64> must be refused as a non-task; got: {:#?}",
+            output.errors
+        );
+    }
 
     #[test]
-    fn fork_string_arg_parent_use_after_fork_rejected() {
-        // `fork ts = shout(greeting)` moves `greeting` (a non-Copy `string`)
-        // into the child task env. The parent must not be able to use it again
-        // — UseAfterMove must fire on the second reference.
+    fn fork_non_call_operand_rejected() {
+        // §4.3: `fork` takes a call, a fork block, or a batch of calls. A bare
+        // value operand is refused at check time.
+        let output = check_source(
+            r"
+            fn main() {
+                let _t = fork 42;
+            }
+            ",
+        );
+        assert!(
+            output.errors.iter().any(|e| e
+                .message
+                .contains("fork expects a call or a batch of calls")),
+            "fork with a non-call operand must be rejected at check time; got: {:#?}",
+            output.errors
+        );
+    }
+
+    // ── fork arg transfer semantics ──────────────────────────────────────────
+    //
+    // §4.3: "Arguments and captures are acquired before the child uses them:
+    // ordinary data gets an independent value, while an affine owner transfers
+    // to the child." A value with an independent clone snapshots and leaves the
+    // parent binding live; one without transfers and the parent use is refused.
+    //
+    // Pin: hew-types/src/check/effects.rs `check_fork_transfer`.
+
+    #[test]
+    fn fork_string_arg_snapshots_and_the_parent_survives() {
+        // A `string` clones independently, so the child gets a snapshot and
+        // `greeting` stays usable in the parent.
         let output = check_source(
             r#"
             fn shout(msg: string) {}
 
             fn main() {
                 let greeting: string = "hello" + " world";
-                scope {
-                    fork ts = shout(greeting);
-                    await ts;
-                }
-                // greeting was moved into the fork — UseAfterMove here.
+                let ts = fork shout(greeting);
+                await ts;
                 let _x = greeting;
             }
             "#,
         );
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::UseAfterMove),
-            "parent use of a string arg after fork must be UseAfterMove; got: {:#?}",
+            output.errors.is_empty(),
+            "a string fork argument snapshots, leaving the parent binding live; got: {:#?}",
+            output.errors
+        );
+    }
+
+    #[test]
+    fn fork_resource_arg_transfers_out_of_the_parent() {
+        // Negative control: a `#[resource]` has no independent clone, so the
+        // argument transfers to the child and the parent use is refused.
+        let output = check_source(
+            r"
+#[resource]
+type Socket { fd: i64 }
+
+impl Socket {
+    fn detach(consume self) -> i64 { self.fd }
+}
+
+fn take(s: Socket) -> i64 { s.detach() }
+
+fn main() {
+    let socket = Socket { fd: 3 };
+    let ts = fork take(socket);
+    let _ = await ts;
+    let _again = socket;
+}
+",
+        );
+        assert!(
+            output.errors.iter().any(|e| matches!(
+                e.kind,
+                TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+            )),
+            "a resource fork argument must transfer out of the parent; got: {:#?}",
             output.errors
         );
     }
@@ -876,10 +843,8 @@ mod task_type_surface_rules {
             fn main() {
                 let x: i64 = 20;
                 let y: i64 = 22;
-                scope {
-                    fork t = add_print(x, y);
-                    await t;
-                }
+                let t = fork add_print(x, y);
+                await t;
                 // BitCopy scalars remain live in the parent.
                 let _sum = x + y;
             }
@@ -1116,7 +1081,7 @@ mod opaque_receive_fn_param_rules {
             type Handle {}
 
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(h: Handle) {
                     count = count + 1;
                 }
@@ -1150,7 +1115,7 @@ mod opaque_receive_fn_param_rules {
         let output = check_source_with_handle(
             r"
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(p: regex.Pattern) {
                     count = count + 1;
                 }
@@ -1178,7 +1143,7 @@ mod opaque_receive_fn_param_rules {
             type Wrapper { conn: regex.Pattern }
 
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(w: Wrapper) {
                     count = count + 1;
                 }
@@ -1225,12 +1190,12 @@ mod opaque_receive_fn_param_rules {
             type Handle {}
 
             actor Worker {
-                let handle: Handle;
+                let handle: Handle,
                 receive fn run() {}
             }
 
             actor Server {
-                receive fn register(worker: LocalPid<Worker>) {}
+                receive fn register(worker: Worker) {}
                 receive fn register_remote(worker: RemotePid<Worker>) {}
             }
             ",
@@ -1251,7 +1216,7 @@ mod opaque_receive_fn_param_rules {
         let output = check_source(
             r"
             actor Server {
-                var count: i64 = 0;
+                var count: i64 = 0,
                 receive fn handle(n: i64, label: string) {
                     count = count + n;
                 }
@@ -1308,15 +1273,15 @@ mod actor_message_argument_transfer {
 type Socket { fd: i64 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 { self.fd }
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 { self.fd }
 }
 
 #[linear]
 type Ticket { id: i64 }
 
 impl Ticket {
-    fn redeem(consuming self) -> i64 { self.id }
+    fn redeem(consume self) -> i64 { self.id }
 }
 
 type Holder { socket: Socket }
@@ -1580,14 +1545,15 @@ actor Sink {
 
     #[test]
     fn lambda_actor_handle_shared_by_two_spawns_is_rejected() {
-        // A `LambdaPid` is a refcounted wrapper, not an address: the runtime
+        // An anonymous actor's handle (`actor(M) -> R`) is a refcounted wrapper,
+        // not an address: the runtime
         // exposes an explicit clone that allocates a distinct owning wrapper
         // precisely because copying the address is unsafe. Sharing one wrapper
         // between two actor states released it twice and crashed (SIGSEGV).
         let output = check_source(
             r"
             actor Holder {
-                let printer: LambdaPid<i64, ()>;
+                let printer: actor(i64),
                 receive fn go(n: i64) {
                     let _ = printer.send(n);
                 }
@@ -1630,7 +1596,7 @@ actor Sink {
             }
 
             actor Watcher {
-                let handle: MonitorRef;
+                let handle: MonitorRef,
                 receive fn go() {}
             }
 
@@ -1665,7 +1631,7 @@ actor Sink {
             }
 
             actor Registry {
-                receive fn register(worker: LocalPid<Leaf>) {}
+                receive fn register(worker: Leaf) {}
             }
 
             fn probe() {
@@ -1683,6 +1649,76 @@ actor Sink {
             "actor references are shareable; sending one must not consume the \
              sender's handle. errors: {:#?}",
             output.errors
+        );
+    }
+}
+
+#[test]
+fn ordinary_fork_values_infer_child_results() {
+    let output = check_source(
+        r"
+        fn number() -> i64 { 42 }
+        fn main() {
+            let task = fork number();
+            let first: i64 = await task;
+            let second: i64 = await fork number();
+            let third: i64 = await fork { return number(); };
+            let fourth: i64 = await fork { number() };
+            let _ = (first, second, third, fourth);
+        }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn ordinary_fork_result_is_not_unit() {
+    let output = check_source(
+        r"
+        fn number() -> i64 { 42 }
+        fn main() { let wrong: string = await fork number(); }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
+        "{:?}",
+        output.errors
+    );
+}
+
+mod actor_self_handle {
+    use super::*;
+
+    #[test]
+    fn bare_self_in_an_actor_body_is_the_actor_handle() {
+        // One receiver token: inside an actor, `self` names the actor's own
+        // handle. Actor state is still reached through a field.
+        let source = r"
+            actor Counter {
+                var count: i64 = 0,
+                receive fn tick() {
+                    let me = self;
+                    count = count + 1;
+                }
+            }
+        ";
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let handle_ty = output
+            .expr_types
+            .iter()
+            .find_map(|(key, ty)| {
+                (key.module_idx == 0 && source.get(key.start..key.end) == Some("self"))
+                    .then_some(ty)
+            })
+            .expect("the `self` span must carry a checker type");
+        assert_eq!(
+            handle_ty.user_facing().to_string(),
+            "Counter",
+            "bare `self` must synthesize the actor handle"
         );
     }
 }

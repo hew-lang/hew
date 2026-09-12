@@ -40,20 +40,137 @@ fn direct_calls(
             ..
         } = &block.terminator
         {
-            Some((*callee, result, normal, unwind))
+            Some((
+                *callee,
+                result,
+                normal.as_ref().expect("returning call"),
+                unwind,
+            ))
         } else {
             None
         }
     })
 }
 
+fn cleanup_terminal(function: &SemFunction, mut target: hew_sir::BlockId) -> hew_sir::BlockId {
+    loop {
+        match &function.blocks[target.0 as usize].terminator {
+            SemTerminator::Goto(edge) => target = edge.target,
+            _ => return target,
+        }
+    }
+}
+
 #[test]
-fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
-    // `main` is intentionally written before its callee. The callable table
-    // is declaration-sorted, while body lowering still handles this forward
-    // edge without any name-to-symbol reconstruction.
-    let lowered = lower_source(
-        r"
+fn returning_calls_require_a_successful_edge() {
+    for source in [
+        "fn identity(x: i64) -> i64 { x } fn main() -> i64 { identity(41) }",
+        "fn main() { let identity = |x: i64| x; println(identity(41)); }",
+    ] {
+        let mut module = lower_source(source).module;
+        assert!(verify_module(&module).is_empty());
+        let call = module
+            .functions
+            .iter_mut()
+            .flat_map(|function| &mut function.blocks)
+            .find_map(|block| match &mut block.terminator {
+                SemTerminator::Call { normal, .. } | SemTerminator::IndirectCall { normal, .. } => {
+                    Some(normal)
+                }
+                _ => None,
+            })
+            .expect("source must invoke a callable");
+        *call = None;
+        assert!(verify_module(&module)
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}").contains("normal edge")));
+    }
+}
+
+#[test]
+fn call_result_outside_its_normal_edge_is_rejected() {
+    for location in [
+        "argument",
+        "operation",
+        "unwind-edge",
+        "unwind",
+        "continuation",
+    ] {
+        let mut module =
+            lower_source("fn identity(x: i64) -> i64 { x } fn main() -> i64 { identity(41) }")
+                .module;
+        assert!(verify_module(&module).is_empty());
+        let main = module
+            .functions
+            .iter_mut()
+            .find(|f| f.declaration.full_path() == "main")
+            .unwrap();
+        let block = main
+            .blocks
+            .iter_mut()
+            .find(|b| matches!(b.terminator, SemTerminator::Call { .. }))
+            .unwrap();
+        let SemTerminator::Call {
+            args,
+            result: CallResult::Value(result),
+            normal,
+            unwind,
+            ..
+        } = &mut block.terminator
+        else {
+            unreachable!()
+        };
+        let value = result.id;
+        let target = match location {
+            "argument" => {
+                args[0].operand.value = value;
+                None
+            }
+            "operation" => {
+                block.ops[0].kind = hew_sir::SemOpKind::Unary {
+                    op: hew_parser::ast::UnaryOp::Negate,
+                    value: hew_sir::Operand { value },
+                };
+                None
+            }
+            "unwind" => {
+                let CallUnwind::Cleanup(edge) = unwind else {
+                    unreachable!()
+                };
+                Some(edge.target)
+            }
+            "unwind-edge" => {
+                let CallUnwind::Cleanup(edge) = unwind else {
+                    unreachable!()
+                };
+                edge.args.push(hew_sir::Operand { value });
+                None
+            }
+            "continuation" => Some(normal.as_ref().expect("returning call").target),
+            _ => unreachable!(),
+        };
+        if let Some(target) = target {
+            main.blocks
+                .iter_mut()
+                .find(|b| b.id == target)
+                .unwrap()
+                .terminator = SemTerminator::Return {
+                value: Some(hew_sir::BoundaryOperand {
+                    operand: hew_sir::Operand { value },
+                    decision: hew_sir::BoundaryDecision::Move,
+                }),
+            };
+        }
+        assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+            diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidCallResultUse { value: found, .. } if found == value
+        )), "call result used at {location} must be refused; only normal-edge forwarding defines the continuation value");
+    }
+}
+
+/// `main` is intentionally written before its callee, so resolving the call
+/// edge is what admits `add_one`.
+const FORWARD_SCALAR_CALL: &str = r"
         fn main() -> i64 {
             add_one(41)
         }
@@ -61,8 +178,13 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         fn add_one(value: i64) -> i64 {
             value + 1
         }
-        ",
-    );
+        ";
+
+#[test]
+fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
+    // The forward edge resolves through callable IDs, without any
+    // name-to-symbol reconstruction.
+    let lowered = lower_source(FORWARD_SCALAR_CALL);
     assert!(
         ["main", "add_one"].into_iter().all(|name| {
             matches!(
@@ -77,27 +199,33 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         lowered.statuses
     );
     let module = &lowered.module;
-    let add_one = module
-        .callables
-        .iter()
-        .find(|callable| callable.symbol == "add_one")
-        .expect("scalar callee must have a resolved callable");
-    let main_callable = module
-        .callables
-        .iter()
-        .find(|callable| callable.symbol == "main")
-        .expect("root main must have a resolved callable");
-    assert!(
+    for name in ["add_one", "main"] {
+        assert!(
+            module
+                .callables
+                .iter()
+                .any(|callable| callable.declaration.full_path() == name),
+            "the entry and the callee its edge admits must both have a callable"
+        );
+    }
+    // Callable IDs follow the entry's demand traversal, and that traversal is
+    // a function of the program: lowering the same HIR twice assigns the same
+    // IDs to the same declarations.
+    let again = lower_source(FORWARD_SCALAR_CALL);
+    assert_eq!(
         module
             .callables
             .iter()
-            .map(|callable| &callable.declaration)
-            .collect::<Vec<_>>()
-            .windows(2)
-            .all(|pair| pair[0] <= pair[1]),
-        "callable IDs must come from deterministic declaration ordering, not body order"
+            .map(|callable| (callable.id, callable.declaration.clone()))
+            .collect::<Vec<_>>(),
+        again
+            .module
+            .callables
+            .iter()
+            .map(|callable| (callable.id, callable.declaration.clone()))
+            .collect::<Vec<_>>(),
+        "callable IDs must be a function of the program, not of when a body ran"
     );
-    assert!(add_one.id < main_callable.id);
     assert_eq!(module.root_unit_callables.len(), 2);
     let entry = module
         .entry_callable
@@ -106,7 +234,7 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         module
             .callable(entry)
             .map(|callable| callable.symbol.as_str()),
-        Some("main")
+        Some("__hew_fn_main")
     );
     let main = module
         .function_index()
@@ -120,8 +248,8 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
         module
             .callable(callee)
             .map(|callable| callable.symbol.as_str()),
-        Some("add_one"),
-        "SIR call must carry CallableId, whose table owns the exact HIR symbol"
+        Some("__hew_fn_add_one"),
+        "SIR call must carry CallableId, whose table owns the exact private emitted symbol"
     );
     assert!(
         verify_module(module).is_empty(),
@@ -142,8 +270,9 @@ fn two_pass_lowering_resolves_forward_scalar_calls_through_callable_ids() {
     let CallUnwind::Cleanup(cleanup) = unwind else {
         panic!("ordinary direct call must publish its unwind cleanup edge");
     };
+    let cleanup_target = cleanup_terminal(main, cleanup.target);
     assert!(matches!(
-        main.blocks[cleanup.target.0 as usize].terminator,
+        main.blocks[cleanup_target.0 as usize].terminator,
         SemTerminator::ResumeUnwind
     ));
 }
@@ -164,7 +293,7 @@ fn unit_direct_call_is_a_zero_result_sir_terminator() {
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "unit_helper")
+        .find(|callable| callable.declaration.full_path() == "unit_helper")
         .expect("unit-returning declaration must retain an ABI callable entry");
     assert_eq!(unit_helper.signature.return_ty, hew_types::ResolvedTy::Unit);
     assert!(
@@ -238,7 +367,7 @@ fn scalar_binding_and_explicit_return_transfers_lower_without_erasing_resource_r
         .module
         .functions
         .iter()
-        .find(|function| function.name == "f")
+        .find(|function| function.declaration.full_path() == "f")
         .expect("the scalar helper must have a SIR body");
     assert!(
         f.blocks.iter().any(|block| matches!(
@@ -324,7 +453,7 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
     let countdown = module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "countdown")
+        .find(|callable| callable.declaration.full_path() == "countdown")
         .expect("recursive declaration must have a callable-table entry");
     let function = module
         .function_index()
@@ -437,15 +566,21 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         "id<i64>, id<bool>, relay<i64>, and countdown<i64> must be the complete concrete SIR instance set: {generic_callables:#?}"
     );
     assert!(
-        lowered
-            .module
-            .functions
-            .iter()
-            .all(|function| !["id", "relay", "countdown"].contains(&function.name.as_str())),
+        lowered.module.functions.iter().all(|function| ![
+            "__hew_fn_id",
+            "__hew_fn_relay",
+            "__hew_fn_countdown"
+        ]
+        .contains(&function.name.as_str())),
         "generic origin templates must never appear as abstract SIR functions: {:#?}",
         lowered.module.functions
     );
-    for symbol in ["id$$i64", "id$$bool", "relay$$i64", "countdown$$i64"] {
+    for symbol in [
+        "__hew_fn_id$$i64",
+        "__hew_fn_id$$bool",
+        "__hew_fn_relay$$i64",
+        "__hew_fn_countdown$$i64",
+    ] {
         assert!(
             lowered
                 .module
@@ -458,11 +593,10 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
 
     let id_i64 = generic_callables
         .iter()
-        .find(|callable| callable.symbol == "id$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_id$$i64")
         .expect("nested forwarding must request id<i64>");
-    let id_i64_key = match &id_i64.instance {
-        CallableInstance::Generic(key) => key,
-        CallableInstance::Monomorphic => panic!("id<i64> must retain a semantic instance key"),
+    let CallableInstance::Generic(id_i64_key) = &id_i64.instance else {
+        panic!("id<i64> must retain a semantic instance key")
     };
     assert_eq!(
         lowered
@@ -474,7 +608,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
     );
     let relay_i64 = generic_callables
         .iter()
-        .find(|callable| callable.symbol == "relay$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_relay$$i64")
         .expect("main must request relay<i64>");
     let relay_body = lowered
         .module
@@ -488,7 +622,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
 
     let countdown_i64 = generic_callables
         .iter()
-        .find(|callable| callable.symbol == "countdown$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_countdown$$i64")
         .expect("main must request countdown<i64>");
     let countdown_body = lowered
         .module
@@ -503,13 +637,19 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         lowered
             .callable_statuses
             .iter()
+            .filter(|(id, _)| lowered
+                .module
+                .callables
+                .iter()
+                .any(|callable| callable.id == *id
+                    && matches!(callable.instance, CallableInstance::Generic(_))))
             .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
         "every requested concrete instance must have a body: {:#?}",
         lowered.callable_statuses
     );
     let dump = dump_sir(&lowered.module);
-    assert!(dump.contains("fn relay$$i64("));
-    assert!(dump.contains("fn countdown$$i64("));
+    assert!(dump.contains("fn __hew_fn_relay$$i64("));
+    assert!(dump.contains("fn __hew_fn_countdown$$i64("));
 
     let mut forged_signature = lowered.module.clone();
     let id_i64_index = usize::try_from(id_i64.id.0).expect("callable ID fits usize");
@@ -590,13 +730,13 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "even$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_even$$i64")
         .expect("main must request a concrete even<i64> callable");
     let odd = lowered
         .module
         .callables
         .iter()
-        .find(|callable| callable.symbol == "odd$$i64")
+        .find(|callable| callable.symbol == "__hew_fn_odd$$i64")
         .expect("even<i64> must request a concrete odd<i64> callable");
     for (caller, expected_callee) in [(even, odd.id), (odd, even.id)] {
         let body = lowered
@@ -615,6 +755,12 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
         lowered
             .callable_statuses
             .iter()
+            .filter(|(id, _)| lowered
+                .module
+                .callables
+                .iter()
+                .any(|callable| callable.id == *id
+                    && matches!(callable.instance, CallableInstance::Generic(_))))
             .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
         "the closed mutual-recursive instance graph must have no missing body: {:#?}",
         lowered.callable_statuses

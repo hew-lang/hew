@@ -1,8 +1,8 @@
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Done;
+    Pending,
+    Active,
+    Done,
 }
 
 fn main() -> i64 {

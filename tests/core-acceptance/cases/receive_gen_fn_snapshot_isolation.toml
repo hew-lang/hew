@@ -1,0 +1,13 @@
+[[case]]
+id = "receive_gen_fn_snapshot_isolation"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/receive_gen_fn_snapshot_isolation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "100\n101\n102\n500\n501\n502\n"
+exit = 0

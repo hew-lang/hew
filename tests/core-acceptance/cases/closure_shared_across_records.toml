@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_shared_across_records"
+intent = "A closure pair is a sole-owner value: storing the same binding in two record fields would byte-copy the pair and give both records ownership of one environment (double free at scope exit)."
+source = "../vertical-slice/reject/closure_shared_across_records.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 16
+column = 37
+message = "use of moved value `h`"

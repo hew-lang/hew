@@ -1,0 +1,7 @@
+fn main() {
+    var value = "abc".to_bytes();
+    let alias = value;
+    println(alias.len());
+    value.set(3, 255);
+    panic("out-of-range update continued");
+}

@@ -1,0 +1,25 @@
+type Job {
+    run: fn[once](i64) -> i64,
+    label: string,
+    payload: bytes,
+}
+
+fn make_job(label: string) -> Job {
+    let captured = label.to_upper();
+    Job { run: move |divisor: i64| -> i64 {
+        println("callback entered");
+        let local = captured.to_upper();
+        let bytes = local.to_bytes();
+        let result = bytes.len() / divisor;
+        println("unexpected callback return");
+        result
+    }, label: label.to_upper(), payload: label.to_bytes() }
+}
+
+fn main() -> i64 {
+    let job = make_job("body fault");
+    let result = job.run(0);
+    println(job.label);
+    println(job.payload.len());
+    result
+}

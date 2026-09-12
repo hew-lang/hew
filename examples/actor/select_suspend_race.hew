@@ -17,7 +17,7 @@
 // always loses — its channel is cancelled on the winning edge. The `after 500ms`
 // arm is a safety net that must NOT fire under normal load (500ms >> 50ms).
 actor Fast {
-    let tag: i64;
+    let tag: i64,
     receive fn compute(n: i64) -> i64 {
         n + tag
     }
@@ -31,12 +31,18 @@ actor Slow {
 }
 
 actor Coordinator {
-    let fast: LocalPid<Fast>;
-    let slow: LocalPid<Slow>;
+    let fast: Fast,
+    let slow: Slow,
     receive fn race_two(n: i64) -> i64 {
         let winner = select {
-            reply from fast.compute(n) => reply,
-            reply from slow.compute(99) => reply,
+            reply from fast.compute(n) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
+            reply from slow.compute(99) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
             after 500ms => -7,
         };
         winner
@@ -50,7 +56,7 @@ fn main() {
     // Fast.compute(7) = 7 + 100 = 107; it replies before Slow wakes, so the
     // select binds 107. The Slow arm is the loser (cancelled); the deadline
     // never fires.
-    let r = await c.race_two(7);
+    let r = c.race_two(7);
     match r {
         .Ok(v) => println(f"winner={v}"),
         .Err(_) => println("race failed"),

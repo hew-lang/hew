@@ -5,7 +5,7 @@ use hew_parser::ast::{Item, Visibility};
 fn pub_method_nongeneric_impl_visibility() {
     let source = r"
         type Foo {
-            x: int;
+            x: int,
         }
 
         impl Foo {
@@ -55,7 +55,7 @@ fn pub_method_nongeneric_impl_visibility() {
 fn pub_method_generic_impl_visibility() {
     let source = r"
         type Wrapper<T> {
-            value: T;
+            value: T,
         }
 
         impl<T> Wrapper<T> {

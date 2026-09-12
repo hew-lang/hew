@@ -1,0 +1,13 @@
+[[case]]
+id = "task_entry_composite_cancel_owned_field"
+intent = "#2437 Validation candidate #4: an owned-field composite (a record with a heap-owned `string` field) forked and awaited through the TaskEntry adapter."
+source = "../vertical-slice/accept/task_entry_composite_cancel_owned_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "s=hello n=7\n"
+exit = 0

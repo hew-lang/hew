@@ -43,7 +43,9 @@ fn yaml_bytes_ffi_return_runs_natively_and_under_wasi() {
     let source = dir.path().join("yaml_bytes_ffi_return.hew");
     fs::write(
         &source,
-        r#"#[opaque]
+        r#"import std.encoding.utf8;
+
+#[opaque]
 type YamlValue {}
 
 extern "C" {
@@ -55,7 +57,11 @@ extern "C" {
 fn main() {
     let value = unsafe { hew_yaml_parse("'aGV3'") };
     let decoded: bytes = unsafe { hew_yaml_get_bytes(value) };
-    println(decoded.to_string());
+    let text = match utf8.decode(decoded) {
+        .Ok(decoded_text) => decoded_text,
+        .Err(error) => panic("YAML bytes payload is not valid UTF-8"),
+    };
+    println(text);
     unsafe { hew_yaml_free(value) };
 }
 "#,
@@ -185,7 +191,7 @@ fn actor_panic_is_module_fatal_on_production_wasi() {
 
 fn main() {
     let crasher = spawn Crasher;
-    match await crasher.fail() {
+    match crasher.fail() {
         .Ok(_) => println("contained"),
         .Err(_) => println("contained"),
     }
@@ -279,7 +285,7 @@ fn task_scope_stays_on_the_fail_closed_diagnostic_path_under_wasi() {
 actor Driver {
     receive fn run() -> i64 {
         scope {
-            fork task = worker();
+            let task = fork worker();
             await task;
         }
         7
@@ -335,7 +341,7 @@ fn toml_encoding_round_trips_under_wasi() {
         "import std.encoding.toml;\n\
          \n\
          fn main() {\n\
-         \x20   let doc = toml.parse(\"[package]\\nname = \\\"hew\\\"\");\n\
+         \x20   let doc = match toml.parse(\"[package]\\nname = \\\"hew\\\"\") { .Ok(value) => value, .Err(_) => panic(\"TOML parse failed\"), };\n\
          \x20   let pkg = doc.get_field(\"package\");\n\
          \x20   let name = pkg.get_field(\"name\");\n\
          \x20   println(name.get_string());\n\
@@ -398,10 +404,10 @@ fn wasm_channel_send_full_traps_instead_of_dropping() {
     let source = dir.path().join("channel_send_full_traps_wasi.hew");
     fs::write(
         &source,
-        r#"import std.channel.channel;
+        r#"import std.channel;
 
 fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(2);
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
     tx.send("msg-1");
     tx.send("msg-2");
@@ -453,7 +459,7 @@ const HASHMAP_HASHSET_LAYOUT_SOURCE: &str = r#"type Point {
 }
 
 fn main() {
-    let m: HashMap<Point, i64> = HashMap.new();
+    var m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, 10);
     m.insert(Point { x: 3, y: 4 }, 20);
     let n = m.len();
@@ -483,7 +489,7 @@ fn main() {
     let n2 = m.len();
     println(f"len_after_remove={n2}");
 
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("alpha");
     s.insert("beta");
     s.insert("alpha");
@@ -582,7 +588,7 @@ fn native_hashmap_hashset_layout_matches_wasi_output() {
 // double-free / use-after-free of a released string buffer would trap under
 // wasmtime and fail this run. Native and wasm stdout must match byte-for-byte.
 const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
-    let m: HashMap<string, string> = HashMap.new();
+    var m: HashMap<string, string> = HashMap.new();
     m.insert("alpha", "first");
     m.insert("beta", "second");
 
@@ -615,7 +621,7 @@ const HASHMAP_HASHSET_OWNERSHIP_SOURCE: &str = r#"fn main() {
     println(f"map_len={n}");
 
     // String set: insert/remove exercise hew_string_drop on the element.
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("x");
     s.insert("y");
     s.insert("z");
@@ -778,7 +784,7 @@ fn native_cooperative_sleep_matches_wasi_output() {
 // inside an actor is still gated on wasm (see backlog #1451), so an ask-based
 // variant would fail at codegen and prove nothing about the timer.
 const COOPERATIVE_PERIODIC_SOURCE: &str = r#"actor Pulse {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     #[every(20ms)]
     receive fn tick() {
@@ -810,11 +816,11 @@ fn main() {
 // runner. Guarding the send keeps first delivery a precondition for main
 // returning while leaving quiescence dependent only on shutdown cancelling the
 // periodic timer, which is the property under test.
-const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel.channel;
+const NATIVE_PERIODIC_HANDSHAKE_SOURCE: &str = r#"import std.channel;
 
 actor Pulse {
-    let ready: channel.Sender<i64>;
-    var count: i64 = 0;
+    let ready: channel.Sender<i64>,
+    var count: i64 = 0,
 
     #[every(20ms)]
     receive fn tick() {
@@ -827,7 +833,7 @@ actor Pulse {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     println("spawned");
     let _ = ready_rx.recv();

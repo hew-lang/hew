@@ -1,0 +1,11 @@
+[[case]]
+id = "string-char-at"
+intent = "Optional character lookup indexes Unicode scalars, preserves embedded NUL, refuses negative and out-of-range offsets, and shares optional-result construction with string find without consuming its text."
+source = "cases/string-char-at.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "character lookup preserves Unicode scalars and bounds\n"
+stderr = ""
+exit = 0

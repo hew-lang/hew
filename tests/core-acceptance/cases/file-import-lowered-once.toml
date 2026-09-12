@@ -1,0 +1,13 @@
+[[case]]
+id = "file-import-lowered-once"
+intent = "A file-imported declaration is lowered by one pass. The splice pass owns every item a file import contributes, so a HIR refusal on the declaration is reported exactly once and names the file that declared it."
+source = "fixtures/file-import-lowered-once/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "LinearNoConsumingMethods"
+file = "file-import-lowered-once/handle.hew"
+line = 4
+column = 1

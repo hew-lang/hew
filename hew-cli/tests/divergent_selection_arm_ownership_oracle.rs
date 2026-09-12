@@ -74,7 +74,7 @@ fn expected_lines(frames: usize) -> usize {
 
 const MAKE_VEC: &str = r"
 fn make() -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(40);
     v.push(2);
     return v;
@@ -83,7 +83,7 @@ fn make() -> Vec<i64> {
 
 const MAKE_STRINGS: &str = r#"
 fn make() -> Vec<string> {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("per-call-element-one");
     v.push("per-call-element-two");
     return v;
@@ -92,7 +92,7 @@ fn make() -> Vec<string> {
 
 const MAKE_MAP: &str = r#"
 fn make() -> HashMap<string, i64> {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alpha-key-one", 1);
     m.insert("beta-key-two", 2);
     return m;
@@ -308,7 +308,7 @@ fn main() -> i64 {{
 fn record_field_source(frames: usize) -> String {
     format!(
         "{MAKE_VEC}
-type Holder {{ items: Vec<i64>; }}
+type Holder {{  items: Vec<i64> }}
 
 fn probe(c: bool) -> i64 {{
     let a = Holder {{ items: make() }};

@@ -1,38 +1,33 @@
-//! Async HTTP/1.1 client codec — idiomatic Hew over a suspending `net.Connection`.
+//! HTTP/1.1 codec over ordinary `std.net` calls.
 //!
-//! This is the `await`-suspended sibling of `std.net.http.http_client`
-//! (which uses a blocking native engine and cannot suspend an actor). The codec
-//! here is pure Hew: an actor handler (or any execution-context caller) connects
-//! with `net.connect`, writes an HTTP/1.1 request built by [`build_request`],
-//! then drives an **`await conn.read()` loop** that suspends the worker until the
-//! server replies — exactly the NEW-1 escapee shape. The accumulated bytes are
-//! parsed by [`parse_response`] into an [`AsyncResponse`] exposing the same
-//! `status()` / `body()` / `header()` / `content_type()` accessor surface as the
-//! blocking client's `Response`.
+//! Call `conn.read()` directly; pending reads can suspend the caller.
+//! Use `fork` for concurrent work and `await` for the resulting task.
+//! The codec buffers bodies and uses one connection per request; HTTPS and
+//! connection pooling are not provided here.
 //!
-//! Scope (v0.5.0): HTTP/1.1 only, fully-buffered bodies, one connection per
-//! request (`Connection: close`, read-to-close framing). Chunked transfer +
-//! streaming bodies are NEW-7; HTTPS is BUG-NET-3; connection pooling is v0.5.1.
-//!
-//! # Example (the await-suspended round trip, inline in a handler)
+//! # Example
 //!
 //! ```
 //! import std.net;
 //! import std.net.http.http_async_client;
 //! import std.string;
+//! import std.encoding.utf8;
 //!
 //! actor Fetcher {
-//!     let addr: string;   // "127.0.0.1:8080"
-//!     let path: string;   // "/hello"
-//!     let host: string;   // "127.0.0.1"
+//!     let addr: string,   // "127.0.0.1:8080"
+//!     let path: string,   // "/hello"
+//!     let host: string,   // "127.0.0.1"
 //!     receive fn go(unused: i64) {
-//!         let conn = net.connect(addr);
-//!         conn.write_string(http_async_client.build_get(host, path));
+//!         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+//!         conn.write_string(http_async_client.build_get(host, path)).expect("write_string succeeds");
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;
 //!         while !done {
-//!             let chunk = await conn.read_string();   // suspends the worker
+//!             let chunk = utf8.decode(conn.read()) handle error {
+//!                 println(f"invalid UTF-8: {error}");
+//!                 return;
+//!             };   // suspends the worker
 //!             reads = reads + 1;
 //!             if string.is_empty(chunk) {
 //!                 done = true;
@@ -83,9 +78,9 @@ pub const CLIENT_MAX_READS: i64 = 8192;
 /// between the status line and the blank line, CRLF-separated), parsed on demand
 /// by [`AsyncResponse.header`].
 pub type AsyncResponse {
-    code: i64;
-    body_text: string;
-    header_section: string;
+    code: i64,
+    body_text: string,
+    header_section: string,
 }
 
 /// Methods on [`AsyncResponse`] — byte-identical surface to the blocking

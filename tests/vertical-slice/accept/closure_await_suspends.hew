@@ -1,0 +1,20 @@
+// A closure body that asks an actor suspends the caller and resumes with the
+// reply bound to the closure's declared result. `fn` types now carry suspension
+// through the invocation, so the caller reads 15 rather than the coroutine
+// ramp's continuation handle.
+actor Adder {
+    receive fn add(a: i64, b: i64) -> i64 {
+        a + b
+    }
+}
+
+fn main() {
+    let adder = spawn Adder;
+    let calculate = || {
+        match adder.add(7, 8) {
+            .Ok(value) => value,
+            .Err(_error) => 0,
+        }
+    };
+    println(calculate());
+}

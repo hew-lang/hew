@@ -1,0 +1,13 @@
+[[case]]
+id = "record_fn_field"
+intent = "A record with a fn-typed field is a first-class value: construct it with a capturing closure, return it by value (the env stays heap-live across the return), read the field, and drop the record — the environment is released exactly once by the record's drop as the pair's sole owner."
+source = "../vertical-slice/accept/record_fn_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\n11\n7\n"
+exit = 0

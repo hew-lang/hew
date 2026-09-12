@@ -1,4 +1,4 @@
-# std::encoding::wire
+# std.encoding.wire
 
 > The legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
 > `validate_header`) were removed when the CBOR-native wire format replaced the
@@ -7,7 +7,7 @@
 > [`docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md`](../../../docs/specs/HEW-WIRE-FORMAT-DOCTRINE.md)
 > §5 S1 for history.
 
-`std::encoding::wire` exposes one generic codec surface for every admitted
+`std.encoding.wire` exposes one generic codec surface for every admitted
 `Serializable` value:
 
 ```hew

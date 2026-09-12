@@ -10,14 +10,14 @@
 //! (pre-existing MethodCallNoRewrite limitation, see deque_test.hew on v05-integration).
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 // ── middle removal ────────────────────────────────────────────────────────────
 #[test]
 fn test_remove_middle_shrinks_length_and_shifts_tail() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 10, y: 20 });
     points.push(Point { x: 30, y: 40 });
     points.push(Point { x: 50, y: 60 });
@@ -46,7 +46,7 @@ fn test_remove_middle_shrinks_length_and_shifts_tail() {
 // ── first removal ─────────────────────────────────────────────────────────────
 #[test]
 fn test_remove_first_shifts_all_remaining() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 10, y: 20 });
     points.push(Point { x: 30, y: 40 });
     points.push(Point { x: 50, y: 60 });
@@ -75,7 +75,7 @@ fn test_remove_first_shifts_all_remaining() {
 // ── last removal ──────────────────────────────────────────────────────────────
 #[test]
 fn test_remove_last_element_leaves_prefix_intact() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 10, y: 20 });
     points.push(Point { x: 30, y: 40 });
     points.push(Point { x: 50, y: 60 });
@@ -104,10 +104,10 @@ fn test_remove_last_element_leaves_prefix_intact() {
 // ── single-element removal ────────────────────────────────────────────────────
 #[test]
 fn test_remove_sole_element_leaves_empty_vec() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 50, y: 60 });
     points.remove(0);
-    if points.len() != 0 {
+    if !points.is_empty() {
         panic(f"expected len 0, got {points.len()}");
     }
 }
@@ -115,7 +115,7 @@ fn test_remove_sole_element_leaves_empty_vec() {
 // ── chained removals ──────────────────────────────────────────────────────────
 #[test]
 fn test_sequential_removals_reach_empty() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 10, y: 20 });
     points.push(Point { x: 30, y: 40 });
     points.push(Point { x: 50, y: 60 });
@@ -137,7 +137,7 @@ fn test_sequential_removals_reach_empty() {
         panic(f"expected last.y=60, got {last.y}");
     }
     points.remove(0);
-    if points.len() != 0 {
+    if !points.is_empty() {
         panic(f"expected len 0, got {points.len()}");
     }
 }

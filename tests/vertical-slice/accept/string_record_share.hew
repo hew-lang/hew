@@ -1,7 +1,7 @@
-type Holder { value: string; }
+type Holder { value: string, }
 
-fn main() -> string {
+fn main() {
     let s = "hello";
     let _holder = Holder { value: s };
-    s
+    let _ = s;
 }

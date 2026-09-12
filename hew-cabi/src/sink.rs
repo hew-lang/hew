@@ -31,7 +31,7 @@ extern "C" {
     #[link_name = "hew_stream_set_last_error_with_errno"]
     fn rt_set_last_error_with_errno(ptr: *const u8, len: usize, errno: i32);
     #[link_name = "hew_stream_last_error"]
-    fn rt_last_error() -> *mut std::ffi::c_char;
+    fn rt_last_error() -> *mut crate::string::HewString;
     #[link_name = "hew_stream_last_errno"]
     fn rt_last_errno() -> i32;
 }
@@ -68,20 +68,13 @@ pub fn set_last_error_with_errno(msg: String, errno: i32) {
     unsafe { rt_set_last_error_with_errno(bytes.as_ptr(), bytes.len(), errno) };
 }
 
-/// Return the last stream/sink error as a header-aware C string, or NULL if none.
+/// Take the last stream/sink error as an owned managed string.
 ///
-/// Clears both the error message and the associated errno after reading.
-/// The returned string is allocated by the runtime via
-/// [`crate::cabi::alloc_cstring_from_str`] (the header-aware path) and MUST be
-/// released through `hew_string_drop` / [`crate::cabi::free_cstring`]. Bare
-/// `libc::free` will abort.
-///
-/// Safe wrapper over the runtime-owned `hew_stream_last_error` C symbol; the
-/// caller-owns-and-frees contract is unchanged from the previous in-crate export.
+/// The runtime clears the message and errno. Null represents no error or an
+/// empty message. Release the result with [`crate::string::string_release`].
 #[must_use]
-pub fn hew_stream_last_error() -> *mut std::ffi::c_char {
-    // SAFETY: the runtime export returns either NULL or a fresh header-aware
-    // cstring allocation that becomes the caller's to free.
+pub fn hew_stream_last_error() -> *mut crate::string::HewString {
+    // SAFETY: the runtime getter transfers a managed owner with no preconditions.
     unsafe { rt_last_error() }
 }
 
@@ -96,31 +89,21 @@ pub fn hew_stream_last_errno() -> i32 {
     unsafe { rt_last_errno() }
 }
 
-/// Take the last stream/sink error as an owned `String`, or `None` if none is set.
+/// Take a non-empty stream/sink error into a Rust `String`.
 ///
-/// Compatibility wrapper preserving the pre-single-owner `hew_cabi::sink` API.
-/// It forwards to the runtime-owned `hew_stream_last_error` C symbol, copies the
-/// returned header-aware C string into an owned `String`, and releases the C
-/// string through the matching [`crate::cabi::free_cstring`] path (a bare
-/// `libc::free` would abort). Reading clears both the message and the errno, so
-/// a subsequent call returns `None`.
+/// Consumes the runtime's managed result and clears the message and errno.
+/// No error and an empty message both have the canonical null representation
+/// and return `None`.
 #[must_use]
 pub fn take_last_error() -> Option<String> {
     let ptr = hew_stream_last_error();
     if ptr.is_null() {
         return None;
     }
-    // SAFETY: `ptr` is a fresh, NUL-terminated, header-aware cstring allocation
-    // handed to us by the runtime getter. We copy its bytes into an owned String
-    // (ending the borrow) before releasing the allocation below.
-    let msg = unsafe { std::ffi::CStr::from_ptr(ptr) }
-        .to_string_lossy()
-        .into_owned();
-    // SAFETY: `ptr` is the same non-null, header-aware allocation returned by the
-    // runtime getter and has not been freed; releasing it through the matching
-    // header-aware free path that pairs with `alloc_cstring_from_str` (a bare
-    // `libc::free` would abort). The earlier borrow has ended.
-    unsafe { crate::cabi::free_cstring(ptr) };
+    // SAFETY: ptr is a managed owner transferred by the runtime getter.
+    let msg = unsafe { crate::string::string_as_str(ptr) }.to_owned();
+    // SAFETY: the runtime transferred this managed owner; its borrow has ended.
+    unsafe { crate::string::string_release(ptr) };
     Some(msg)
 }
 
@@ -200,6 +183,8 @@ pub struct HewSink {
     /// the `dyn SinkOps` backing. The pointer borrows the `Arc<ChannelCore>`
     /// owned by the backing, so it stays valid for the lifetime of the sink.
     channel_core: *const std::ffi::c_void,
+    /// Borrowed transport handle owned by a TCP backing, cleared on close.
+    native_connection: Option<i32>,
 }
 
 impl std::fmt::Debug for HewSink {
@@ -209,6 +194,18 @@ impl std::fmt::Debug for HewSink {
 }
 
 impl HewSink {
+    /// Associate the TCP backing's live transport handle with native I/O.
+    /// The backing remains the sole resource owner.
+    pub fn set_native_connection(&mut self, connection: i32) {
+        self.native_connection = Some(connection);
+    }
+
+    /// Borrow the TCP backing's transport identity until this sink closes.
+    #[must_use]
+    pub fn native_connection(&self) -> Option<i32> {
+        self.native_connection
+    }
+
     /// Attach an opaque suspending-channel-core borrow (NEW-7). Called by the
     /// runtime pipe constructor after building the channel sink backing.
     pub fn set_channel_core(&mut self, core: *const std::ffi::c_void) {
@@ -260,6 +257,7 @@ impl HewSink {
         // Nulling it forces a later `hew_stream_await_send` onto the closed-sink
         // (fail-closed) path instead of dereferencing a possibly-freed core.
         self.channel_core = std::ptr::null();
+        self.native_connection = None;
         let Some(mut inner) = self.inner.take() else {
             return;
         };
@@ -289,6 +287,7 @@ pub fn into_sink_ptr<T: Send + 'static>(
             close,
         })),
         channel_core: std::ptr::null(),
+        native_connection: None,
     }))
 }
 
@@ -326,6 +325,7 @@ pub fn into_write_sink_ptr(backing: impl Write + Send + 'static) -> *mut HewSink
             close: close_via_write::<_>,
         })),
         channel_core: std::ptr::null(),
+        native_connection: None,
     }))
 }
 
@@ -384,6 +384,7 @@ pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut H
         // ALLOCATOR-PAIRING: GlobalAlloc
         inner: Some(Box::new(ChannelSinkBacking { tx })),
         channel_core: std::ptr::null(),
+        native_connection: None,
     }))
 }
 
@@ -400,7 +401,6 @@ pub fn into_channel_sink_ptr(tx: std::sync::mpsc::SyncSender<Vec<u8>>) -> *mut H
 #[cfg(test)]
 mod runtime_abi_stub {
     use std::cell::RefCell;
-    use std::ffi::c_char;
 
     thread_local! {
         static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -440,19 +440,13 @@ mod runtime_abi_stub {
     }
 
     #[no_mangle]
-    extern "C" fn hew_stream_last_error() -> *mut c_char {
+    extern "C" fn hew_stream_last_error() -> *mut crate::string::HewString {
         LAST_ERRNO.with(|e| *e.borrow_mut() = 0);
-        match LAST_ERROR.with(|e| e.borrow_mut().take()) {
-            Some(m) => {
-                let safe: &str = if m.contains('\0') {
-                    "hew_stream_last_error: stored error message contained interior NUL"
-                } else {
-                    &m
-                };
-                crate::cabi::alloc_cstring_from_str(safe)
-            }
-            None => std::ptr::null_mut(),
-        }
+        LAST_ERROR
+            .with(|e| e.borrow_mut().take())
+            .map_or(std::ptr::null_mut(), |message| {
+                crate::string::string_from_str(&message)
+            })
     }
 
     #[no_mangle]
@@ -471,26 +465,33 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
-    /// Proves the OLD allocator path (raw `libc::malloc`, no header) causes `free_cstring`
-    /// to abort. Run in a subprocess so the SIGABRT does not take down the test runner.
+    /// Proves a pointer lacking `CStringHeader`'s magic sentinel — what the OLD
+    /// raw-`libc::malloc` `hew_stream_last_error` allocator produced — causes
+    /// `free_cstring` to abort. Run in a subprocess so the SIGABRT does not
+    /// take down the test runner.
     ///
     /// This is the falsification probe: it demonstrates that the fix is not
     /// redundant and that the previous raw-malloc path was the actual hazard.
     #[test]
     fn free_cstring_aborts_on_raw_malloc_provenance() {
         if std::env::var("HEW_SINK_RUN_ABORT_PROBE").is_ok() {
-            // Simulate the OLD hew_stream_last_error allocator: a raw libc::malloc
-            // result with no header sentinel, as free_cstring expects.
+            // Simulate the OLD hew_stream_last_error allocator's output: a
+            // pointer with no CStringHeader sentinel, as free_cstring expects.
+            // Allocated via the sized-block allocator here (raw libc calls
+            // aren't used anymore) — the hazard is the missing CStringHeader,
+            // not which allocator produced the pointer.
             let msg = b"simulated old-path error\0";
-            // SAFETY: allocating len bytes via raw malloc, exactly as the old code did.
-            let ptr = unsafe { libc::malloc(msg.len()) }.cast::<std::ffi::c_char>();
+            // SAFETY: allocating len bytes via the sized-block allocator;
+            // buf_try_alloc returns a valid pointer or null.
+            let ptr = crate::mem::buf_try_alloc(msg.len()).cast::<std::ffi::c_char>();
             assert!(!ptr.is_null());
             // SAFETY: ptr is freshly allocated with msg.len() bytes.
             unsafe { std::ptr::copy_nonoverlapping(msg.as_ptr(), ptr.cast::<u8>(), msg.len()) };
             // free_cstring will read base = ptr - CSTRING_HEADER_SIZE, find no magic
             // sentinel, print a diagnostic, and call libc::abort. This must not return.
-            // SAFETY: ptr was just malloc'd; we are intentionally passing a headerless
-            // pointer to prove free_cstring detects the mismatch and aborts.
+            // SAFETY: ptr was just allocated via the sized-block allocator; we are intentionally
+            // passing a pointer without CStringHeader's header to prove
+            // free_cstring detects the mismatch and aborts.
             unsafe { crate::cabi::free_cstring(ptr) };
             // If we reach here the abort did NOT fire — exit cleanly so the parent fails.
             std::process::exit(0);
@@ -508,8 +509,8 @@ mod tests {
             .expect("spawn abort probe");
         assert!(
             !status.status.success(),
-            "free_cstring on a raw-malloc (headerless) pointer must abort (subprocess \
-             should not exit 0); stdout={:?} stderr={:?}",
+            "free_cstring on a pointer without CStringHeader's sentinel must abort \
+             (subprocess should not exit 0); stdout={:?} stderr={:?}",
             String::from_utf8_lossy(&status.stdout),
             String::from_utf8_lossy(&status.stderr),
         );
@@ -532,6 +533,20 @@ mod tests {
         set_last_error("disk offline".to_string());
         assert_eq!(take_last_error().as_deref(), Some("disk offline"));
         assert_eq!(take_last_error(), None, "second take must be None");
+    }
+
+    #[test]
+    fn take_managed_error_preserves_nul_and_unicode() {
+        set_last_error("failed\0é中🙂".to_owned());
+        assert_eq!(take_last_error().as_deref(), Some("failed\0é中🙂"));
+        assert_eq!(take_last_error(), None);
+        set_last_error_with_errno(String::new(), 42);
+        assert_eq!(take_last_error(), None, "empty is the canonical null value");
+        assert_eq!(
+            take_last_errno(),
+            0,
+            "reading still consumes error metadata"
+        );
     }
 
     /// `set_last_error_with_errno` stores both fields; the errno is readable via

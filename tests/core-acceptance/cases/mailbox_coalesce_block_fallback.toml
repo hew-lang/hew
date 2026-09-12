@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_coalesce_block_fallback"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/mailbox_coalesce_block_fallback.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 1
+column = 1
+message = "coalesce fallback 'block' is unsupported"

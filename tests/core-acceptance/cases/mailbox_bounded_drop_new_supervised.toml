@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_bounded_drop_new_supervised"
+intent = "A supervised actor honours its declared mailbox bound exactly as a directly spawned one does."
+source = "../vertical-slice/accept/mailbox_bounded_drop_new_supervised.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

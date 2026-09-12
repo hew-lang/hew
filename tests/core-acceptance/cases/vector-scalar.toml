@@ -1,0 +1,10 @@
+[[case]]
+id = "vector-scalar"
+intent = "Plain integer vector values compose through construction, indexing, updates and removal without ownership callbacks."
+source = "cases/vector-scalar.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\n"
+exit = 0

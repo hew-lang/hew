@@ -12,7 +12,7 @@
 import std.testing;
 
 actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(n: i64) -> i64 {
         if n == 999 {
             panic("boom");
@@ -25,31 +25,31 @@ actor Worker {
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child w1: Worker(id: 1);
-    child w2: Worker(id: 2);
-    child w3: Worker(id: 3);
+    child w1: Worker(id: 1),
+    child w2: Worker(id: 2),
+    child w3: Worker(id: 3),
 }
 
 actor Dispatcher {
-    var sup: LocalPid<Pool>;
+    var sup: Pool,
 
     // Crash w1, then ask w2 and w3 by name. Encodes the outcome positionally:
     // crashed * 100 + w2_id * 10 + w3_id = 123 when each sibling is reached.
     receive fn siblings_after_crash() -> i64 {
-        let r1 = await sup.w1.work(999);
+        let r1 = sup.w1.work(999);
         let crashed = match r1 {
             .Ok(_) => 0,
             .Err(_) => 1,
         };
-        let r2 = await sup.w2.whoami();
+        let r2 = sup.w2.whoami();
         let a = match r2 {
             .Ok(v) => v,
             .Err(_) => -1,
         };
-        let r3 = await sup.w3.whoami();
+        let r3 = sup.w3.whoami();
         let b = match r3 {
             .Ok(v) => v,
             .Err(_) => -1,
@@ -58,7 +58,7 @@ actor Dispatcher {
     }
 
     // Ask a slot whose supervisor has been stopped. The refusal must carry a
-    // real error kind: 1 = ActorStopped (expected), -1 = other kind.
+    // real error kind: 1 = Dead (expected), -1 = other kind.
     //
     // The precondition is a GRACEFUL `supervisor_stop`, not a crash loop past
     // the restart intensity. Both reach the same refusal path, but exhausting a
@@ -70,10 +70,10 @@ actor Dispatcher {
     // swallow defect from a crash. A stopped supervisor gives the same refused
     // ask with no fault at all.
     receive fn refusal_kind() -> i64 {
-        let refused = await sup.w1.whoami();
+        let refused = sup.w1.whoami();
         match refused {
             .Ok(_) => -2,
-            .Err(AskError.ActorStopped) => 1,
+            .Err(ActorError.Dead) => 1,
             .Err(_) => -1,
         }
     }
@@ -84,7 +84,7 @@ fn sibling_asks_after_crash_reach_named_children() {
     let sup = spawn Pool;
     sleep(30ms);
     let d = spawn Dispatcher(sup: sup);
-    match await d.siblings_after_crash() {
+    match d.siblings_after_crash() {
         .Ok(code) => testing.assert_eq(code, 123),
         .Err(_) => testing.assert_true(false),
     }
@@ -97,7 +97,7 @@ fn refused_role_ask_reports_real_error_kind() {
     let d = spawn Dispatcher(sup: sup);
     supervisor_stop(sup);
     sleep(80ms);
-    match await d.refusal_kind() {
+    match d.refusal_kind() {
         .Ok(kind) => testing.assert_eq(kind, 1),
         .Err(_) => testing.assert_true(false),
     }

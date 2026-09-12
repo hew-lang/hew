@@ -1,7 +1,7 @@
 //! Select-arm owned-binding leak oracle (#1875, select-arm half).
 //!
-//! A `select` arm's value binding (`reply from actor.ask(...)`,
-//! `msg from rx.recv()`) entered `binding_locals` but never
+//! A `select` arm's value binding (`reply = await actor.ask(...)`,
+//! `msg = rx.recv()`) entered `binding_locals` but never
 //! `register_owned_local`, so it never reached `owned_locals` and
 //! the drop elaborator released it on NO exit edge: every selected owned value
 //! leaked once per iteration (~1 leak-node/iter, 32 bytes per owned-string
@@ -61,7 +61,7 @@ fn ask_unused_binding_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let r = select {{\n\
-         \x20           _reply from w.get_string(i) => 1,\n\
+         \x20           _reply = await w.get_string(i) => 1,\n\
          \x20       }};\n\
          \x20       total = total + r;\n\
          \x20       i = i + 1;\n\
@@ -81,16 +81,16 @@ fn ask_unused_binding_loop_source(frames: usize) -> String {
 /// `select` and is a separate seam.
 fn recv_unused_binding_loop_source(frames: usize) -> String {
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   var hits: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       tx.send(\"recv-owned-heap-payload\");\n\
          \x20       let r = select {{\n\
-         \x20           _msg from rx.recv() => 1,\n\
+         \x20           _msg = rx.recv() => 1,\n\
          \x20           after 1s => 0,\n\
          \x20       }};\n\
          \x20       hits = hits + r;\n\
@@ -110,24 +110,24 @@ fn recv_unused_binding_loop_source(frames: usize) -> String {
 /// no drop of an unwritten slot.
 fn after_wins_owned_losers_loop_source(frames: usize) -> String {
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
-         actor SlowReplier {{\n\
+         actor SlowReplier {{ \n\
          \x20   receive fn fetch() -> string {{\n\
-         \x20       sleep(5ms);\n\
+         \x20       sleep(5ms), \n\
          \x20       \"after-wins-loser-reply\".to_upper()\n\
-         \x20   }}\n\
+         \x20 }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let slow = spawn SlowReplier;\n\
-         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   var timeouts: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let r = select {{\n\
-         \x20           _reply from slow.fetch() => 1,\n\
-         \x20           _msg from rx.recv() => 2,\n\
+         \x20           _reply = await slow.fetch() => 1,\n\
+         \x20           _msg = rx.recv() => 2,\n\
          \x20           after 1ms => 0,\n\
          \x20       }};\n\
          \x20       if r == 0 {{ timeouts = timeouts + 1; }}\n\
@@ -158,7 +158,7 @@ fn escape_binding_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let x = select {{\n\
-         \x20           r from m.make(i) => r,\n\
+         \x20           r = await m.make(i) => r.expect(\"ask reply\"),\n\
          \x20       }};\n\
          \x20       total = total + x.len();\n\
          \x20       i = i + 1;\n\
@@ -197,7 +197,7 @@ fn opt_string_escape_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let x = select {{\n\
-         \x20           r from m.make(i) => r,\n\
+         \x20           r = await m.make(i) => r.expect(\"ask reply\"),\n\
          \x20       }};\n\
          \x20       match x {{\n\
          \x20           .Some(s) => {{ total = total + s.len(); }}\n\
@@ -215,7 +215,7 @@ fn opt_string_escape_loop_source(frames: usize) -> String {
 /// interior owned field through the same one release.
 fn opt_record_escape_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; id: i64; }}\n\
+        "type Row {{ name: string, id: i64, }}\n\
          \n\
          actor Maker {{\n\
          \x20   receive fn make(n: i64) -> Option<Row> {{\n\
@@ -229,7 +229,7 @@ fn opt_record_escape_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let x = select {{\n\
-         \x20           r from m.make(i) => r,\n\
+         \x20           r = await m.make(i) => r.expect(\"ask reply\"),\n\
          \x20       }};\n\
          \x20       match x {{\n\
          \x20           Some(row) => {{ total = total + row.name.len(); }}\n\
@@ -247,7 +247,7 @@ fn opt_record_escape_loop_source(frames: usize) -> String {
 /// once on the loop-body edge; a suppressed drop re-opens a per-iteration leak.
 fn record_unused_binding_loop_source(frames: usize) -> String {
     format!(
-        "type Row {{ name: string; id: i64; }}\n\
+        "type Row {{ name: string, id: i64, }}\n\
          \n\
          actor Maker {{\n\
          \x20   receive fn make(n: i64) -> Row {{\n\
@@ -261,7 +261,7 @@ fn record_unused_binding_loop_source(frames: usize) -> String {
          \x20   var hits: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let r = select {{\n\
-         \x20           _row from m.make(i) => 1,\n\
+         \x20           _row = await m.make(i) => 1,\n\
          \x20       }};\n\
          \x20       hits = hits + r;\n\
          \x20       i = i + 1;\n\
@@ -285,7 +285,7 @@ actor Maker {\n\
 fn main() -> i64 {\n\
 \x20   let m = spawn Maker;\n\
 \x20   let x = select {\n\
-\x20       r from m.make() => r,\n\
+\x20       r = await m.make() => r.expect(\"ask reply\"),\n\
 \x20   };\n\
 \x20   match x {\n\
 \x20       .Some(s) => { print(s); }\n\
@@ -318,8 +318,8 @@ fn main() -> i64 {\n\
 \x20   let fast = spawn FastWorker;\n\
 \x20   let slow = spawn SlowWorker;\n\
 \x20   let winner = select {\n\
-\x20       reply from fast.label() => reply,\n\
-\x20       reply from slow.label() => reply,\n\
+\x20       reply = await fast.label() => reply.expect(\"ask reply\"),\n\
+\x20       reply = await slow.label() => reply.expect(\"ask reply\"),\n\
 \x20       after 100ms => \"timeout-owned-reply\".to_upper(),\n\
 \x20   };\n\
 \x20   print(winner);\n\
@@ -339,7 +339,7 @@ actor Maker {\n\
 fn main() -> i64 {\n\
 \x20   let m = spawn Maker;\n\
 \x20   let x = select {\n\
-\x20       r from m.make() => r,\n\
+\x20       r = await m.make() => r.expect(\"ask reply\"),\n\
 \x20   };\n\
 \x20   print(x);\n\
 \x20   0\n\
@@ -358,7 +358,7 @@ actor Maker {\n\
 fn main() -> i64 {\n\
 \x20   let m = spawn Maker;\n\
 \x20   let r = select {\n\
-\x20       _reply from m.make() => 7,\n\
+\x20       _reply = await m.make() => 7,\n\
 \x20   };\n\
 \x20   if r == 7 { print(\"k\"); }\n\
 \x20   0\n\

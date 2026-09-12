@@ -1,0 +1,18 @@
+// A unary negation over literal-only or i32-typed arithmetic must narrow
+// through to the contextual i32 width the same way `~(1 + 2)` already does;
+// otherwise the arithmetic defaults to i64 and MIR has no lowering for the
+// resulting mixed-width unary (UnaryOperatorUnsupportedInMir).
+fn negate_sum(x: i32) -> i32 {
+    return -(x + 1);
+}
+
+fn double_negate(x: i32) -> bool {
+    return x == --3;
+}
+
+fn main() {
+    let a: i32 = -(1 + 2);
+    println(f"{a}");
+    println(f"{negate_sum(4)}");
+    println(f"{double_negate(3)}");
+}

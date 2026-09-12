@@ -1,0 +1,13 @@
+[[case]]
+id = "guarded_arms_sink_fallthrough"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/guarded_arms_sink_fallthrough.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "first\nsecond\nthird\n"
+exit = 0

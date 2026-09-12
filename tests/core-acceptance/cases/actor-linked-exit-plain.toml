@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-linked-exit-plain"
+intent = "A native actor without lifecycle hooks turns an unhandled linked EXIT into a checked actor failure, preserving the peer panic reason and releasing its owned state."
+source = "cases/actor-linked-exit-plain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "unhandled EXIT terminated linked actor\n"
+stderr = "hew: failure: UserPanic (212): linked peer failed\nhew: actor crash in Peer.fail (actor 1): UserPanic\nhew: failure: UserPanic (212)\nhew: actor crash in Linked (actor 2): UserPanic\n"
+exit = 1

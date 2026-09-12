@@ -13,21 +13,21 @@
 import std.testing;
 
 type S {
-    n: i64;
-    v: Vec<i64>;
+    n: i64,
+    v: Vec<i64>,
 }
 
 type Pair {
-    n: i64;
-    a: Vec<i64>;
-    b: Vec<i64>;
+    n: i64,
+    a: Vec<i64>,
+    b: Vec<i64>,
 }
 
 fn mk() -> S {
     S { n: 0, v: Vec.new() }
 }
 
-fn grow(s: S) -> S {
+fn grow(var s: S) -> S {
     s.v.push(s.n);
     S { n: s.n + 1, v: s.v }
 }
@@ -36,7 +36,7 @@ fn _mk_pair() -> Pair {
     Pair { n: 0, a: Vec.new(), b: Vec.new() }
 }
 
-fn _grow_pair(p: Pair) -> Pair {
+fn _grow_pair(var p: Pair) -> Pair {
     p.a.push(p.n);
     p.b.push(p.n * 10);
     Pair { n: p.n + 1, a: p.a, b: p.b }
@@ -152,21 +152,21 @@ fn _test_literal_rhs_embedding_own_projection_is_exact() {
 // substrate in place: a regression to a blind drop (or a dropped guard)
 // corrupts the accumulator and fails the exact-element asserts below.
 type W {
-    a: Vec<i64>;
-    b: Vec<i64>;
+    a: Vec<i64>,
+    b: Vec<i64>,
 }
 
 fn swap_w(w: W) -> W {
     W { a: w.b, b: w.a }
 }
 
-fn grow_vec(v: Vec<i64>, x: i64) -> Vec<i64> {
+fn grow_vec(var v: Vec<i64>, x: i64) -> Vec<i64> {
     v.push(x);
     v
 }
 
 actor RecAcc {
-    var state: S = S { n: 0, v: Vec.new() };
+    var state: S = S { n: 0, v: Vec.new() },
     receive fn bump() {
         state = grow(state);
     }
@@ -182,7 +182,7 @@ actor RecAcc {
 }
 
 actor VecAcc {
-    var v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new(),
     receive fn bump(x: i64) {
         v = grow_vec(v, x);
     }
@@ -196,7 +196,7 @@ actor VecAcc {
 }
 
 actor Swapper {
-    var w: W = W { a: Vec.new(), b: Vec.new() };
+    var w: W = W { a: Vec.new(), b: Vec.new() },
     receive fn seed() {
         w.a.push(1);
         w.b.push(2);
@@ -215,17 +215,17 @@ actor Swapper {
 fn _test_actor_record_state_reassign_accumulates_exact() {
     let a = spawn RecAcc;
     for i in 0 .. 12 {
-        a.bump();
+        let _ = a.bump();
     }
-    match await a.report() {
+    match a.report() {
         .Ok(x) => testing.assert_eq(x, 12012),
         .Err(_) => testing.assert_true(false),
     }
-    match await a.at(0) {
+    match a.at(0) {
         .Ok(x) => testing.assert_eq(x, 0),
         .Err(_) => testing.assert_true(false),
     }
-    match await a.at(11) {
+    match a.at(11) {
         .Ok(x) => testing.assert_eq(x, 11),
         .Err(_) => testing.assert_true(false),
     }
@@ -238,15 +238,15 @@ fn _test_actor_record_state_reassign_accumulates_exact() {
 fn _test_actor_record_state_fresh_reset_is_exact() {
     let a = spawn RecAcc;
     for i in 0 .. 5 {
-        a.bump();
+        let _ = a.bump();
     }
-    a.reset();
-    a.bump();
-    match await a.report() {
+    let _ = a.reset();
+    let _ = a.bump();
+    match a.report() {
         .Ok(x) => testing.assert_eq(x, 1001),
         .Err(_) => testing.assert_true(false),
     }
-    match await a.at(0) {
+    match a.at(0) {
         .Ok(x) => testing.assert_eq(x, 0),
         .Err(_) => testing.assert_true(false),
     }
@@ -258,9 +258,9 @@ fn _test_actor_record_state_fresh_reset_is_exact() {
 fn _test_actor_vec_state_reassign_accumulates_exact() {
     let b = spawn VecAcc;
     for i in 0 .. 12 {
-        b.bump(i);
+        let _ = b.bump(i);
     }
-    match await b.checksum() {
+    match b.checksum() {
         .Ok(x) => testing.assert_eq(x, 6612),
         .Err(_) => testing.assert_true(false),
     }
@@ -272,11 +272,11 @@ fn _test_actor_vec_state_reassign_accumulates_exact() {
 #[test]
 fn _test_actor_record_state_field_swap_is_exact() {
     let s = spawn Swapper;
-    s.seed();
-    s.flip();
-    s.flip();
-    s.flip();
-    match await s.probe() {
+    let _ = s.seed();
+    let _ = s.flip();
+    let _ = s.flip();
+    let _ = s.flip();
+    match s.probe() {
         .Ok(x) => testing.assert_eq(x, 21),
         .Err(_) => testing.assert_true(false),
     }

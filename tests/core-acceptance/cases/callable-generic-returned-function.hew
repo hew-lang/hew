@@ -1,0 +1,16 @@
+fn identity<T>(value: T) -> T { value }
+
+fn factory<T>() -> fn[clone](T) -> T {
+    identity<T>
+}
+
+fn main() -> i64 {
+    let number = factory<i64>();
+    let text = factory<string>();
+    let copied = clone text;
+    println(number(42));
+    println(text("returned first".to_upper()));
+    println(copied("returned copy".to_upper()));
+    println(text("returned again".to_upper()));
+    0
+}

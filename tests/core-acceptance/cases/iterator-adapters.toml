@@ -1,0 +1,10 @@
+[[case]]
+id = "iterator-adapters"
+intent = "The `std.iter` adapters run end to end over scalars and records: each terminal drives `Iterator.next` through a where-clause bound, so the concrete `next` of the adapter it was handed is selected per monomorphised instance, and every collected vector is released once."
+source = "cases/iterator-adapters.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "6\n2\n12\n3\n6\n70\ntrue\nfalse\n5\n21\n2\ntrue\n15\n2\nbolt\nnut\n"
+exit = 0

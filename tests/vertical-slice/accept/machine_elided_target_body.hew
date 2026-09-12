@@ -1,0 +1,21 @@
+// A transition to a fielded state writes the field list with the target
+// elided (D480), and a `reenter` rule reads the source payload through
+// `state`. The lowered body keeps the checker's consumed children as source
+// anchors (hew-lang/hew#3241).
+machine Name {
+    events { EventY { payload: i64, } }
+
+    state StateA,
+    state StateB { field: i64, },
+
+    on EventY: StateA => StateB { field: event.payload }
+    on EventY: StateB => StateB reenter { field: state.field }
+}
+
+fn main() {
+    var m: Name = .StateA;
+    m.step(.EventY { payload: 3 });
+    println(m.state_name());
+    m.step(.EventY { payload: 7 });
+    println(m.state_name());
+}

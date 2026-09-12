@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_for_binder_shadows_state_field_bare"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_for_binder_shadows_state_field_bare.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Shadowing"
+line = 11
+column = 13
+message = "variable `count` shadows a binding in an outer scope"

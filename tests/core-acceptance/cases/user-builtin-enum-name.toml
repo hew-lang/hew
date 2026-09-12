@@ -1,0 +1,11 @@
+[[case]]
+id = "user-builtin-enum-name"
+intent = "A source enum sharing a generated builtin's public name retains its own nullary and owning-payload variants across function calls and matching."
+source = "cases/user-builtin-enum-name.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "idle\nsend 1\n"
+stderr = ""
+exit = 0

@@ -973,8 +973,36 @@ impl TcpApiState {
 static TCP_API_STATE: LazyLock<PoisonSafe<TcpApiState>> =
     LazyLock::new(|| PoisonSafe::new(TcpApiState::new()));
 
+/// Transfer a newly connected socket to the native handle table. The caller
+/// owns the returned handle and must close it if result delivery loses a race.
+pub(crate) fn tcp_adopt_connection(stream: TcpStream) -> c_int {
+    let _ = stream.set_nodelay(true);
+    tcp_counters().connect_count.fetch_add(1, Ordering::Relaxed);
+    tcp_register_owned_stream(stream)
+}
+
+/// Register an already-connected stream owner, including a cloned stream half.
+/// Splitting ownership does not report another network connection event.
+pub(crate) fn tcp_register_owned_stream(stream: TcpStream) -> c_int {
+    TCP_API_STATE.access(|state| {
+        let handle = state.alloc_handle();
+        state.streams.insert(handle, stream);
+        handle
+    })
+}
+
 fn tcp_clone_listener(handle: c_int) -> Option<TcpListener> {
-    TCP_API_STATE.access(|state| state.listeners.get(&handle)?.try_clone().ok())
+    tcp_clone_listener_result(handle).ok()
+}
+
+fn tcp_clone_listener_result(handle: c_int) -> std::io::Result<TcpListener> {
+    TCP_API_STATE.access(|state| {
+        state
+            .listeners
+            .get(&handle)
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EBADF))?
+            .try_clone()
+    })
 }
 
 /// Return the bound local port of a stdlib TCP listener handle, or `None` if
@@ -1286,11 +1314,20 @@ pub(crate) fn tcp_listener_raw_fd(handle: c_int) -> Option<c_int> {
 /// thread must never park in `accept()`). Returns `true` on success. The
 /// readiness-suspension sibling of [`tcp_conn_set_nonblocking`].
 pub(crate) fn tcp_listener_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
+    tcp_listener_set_nonblocking_result(handle, nonblocking).is_ok()
+}
+
+/// Preserve the OS failure for operation-owned asynchronous diagnostics.
+pub(crate) fn tcp_listener_set_nonblocking_result(
+    handle: c_int,
+    nonblocking: bool,
+) -> std::io::Result<()> {
     TCP_API_STATE.access(|state| {
         state
             .listeners
             .get(&handle)
-            .is_some_and(|listener| listener.set_nonblocking(nonblocking).is_ok())
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EBADF))?
+            .set_nonblocking(nonblocking)
     })
 }
 
@@ -1312,9 +1349,14 @@ pub(crate) enum AcceptOutcome {
 /// `await`), registers it as a fresh conn handle with `set_nodelay`, and returns
 /// the handle. The accept-path sibling of [`tcp_conn_read_available`].
 pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome {
-    let Some(listener) = tcp_clone_listener(listener) else {
-        return AcceptOutcome::Closed;
-    };
+    tcp_listener_accept_nonblocking_result(listener).unwrap_or(AcceptOutcome::Closed)
+}
+
+/// The same accept operation with its original error retained for async callers.
+pub(crate) fn tcp_listener_accept_nonblocking_result(
+    listener: c_int,
+) -> std::io::Result<AcceptOutcome> {
+    let listener = tcp_clone_listener_result(listener)?;
     match listener.accept() {
         Ok((stream, _)) => {
             let _ = stream.set_nodelay(true);
@@ -1324,12 +1366,12 @@ pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome 
                 state.streams.insert(handle, stream);
                 handle
             });
-            AcceptOutcome::Accepted(handle)
+            Ok(AcceptOutcome::Accepted(handle))
         }
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => AcceptOutcome::WouldBlock,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(AcceptOutcome::WouldBlock),
         Err(e) => {
             record_tcp_error_kind(e.kind());
-            AcceptOutcome::Closed
+            Err(e)
         }
     }
 }
@@ -1337,11 +1379,20 @@ pub(crate) fn tcp_listener_accept_nonblocking(listener: c_int) -> AcceptOutcome 
 /// Put a TCP connection handle's socket into non-blocking mode (active mode
 /// reads must never park the reactor thread). Returns `true` on success.
 pub(crate) fn tcp_conn_set_nonblocking(handle: c_int, nonblocking: bool) -> bool {
+    tcp_conn_set_nonblocking_result(handle, nonblocking).is_ok()
+}
+
+/// Preserve the OS failure for operation-owned asynchronous diagnostics.
+pub(crate) fn tcp_conn_set_nonblocking_result(
+    handle: c_int,
+    nonblocking: bool,
+) -> std::io::Result<()> {
     TCP_API_STATE.access(|state| {
         state
             .streams
             .get(&handle)
-            .is_some_and(|stream| stream.set_nonblocking(nonblocking).is_ok())
+            .ok_or_else(|| std::io::Error::from_raw_os_error(libc::EBADF))?
+            .set_nonblocking(nonblocking)
     })
 }
 
@@ -1363,8 +1414,16 @@ pub(crate) enum ActiveReadOutcome {
 /// triggered). Returns the concatenated bytes, or a non-`Data` outcome
 /// describing EOF / would-block / error.
 pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
-    let Some(mut stream) = tcp_clone_stream(handle) else {
-        return ActiveReadOutcome::Closed;
+    tcp_conn_read_available_result(handle).unwrap_or(ActiveReadOutcome::Closed)
+}
+
+/// Preserve the original read/clone error while sharing the active-mode syscall
+/// loop. Buffered bytes still precede EOF/error, matching the existing reader.
+pub(crate) fn tcp_conn_read_available_result(handle: c_int) -> std::io::Result<ActiveReadOutcome> {
+    let mut stream = match tcp_clone_stream_outcome(handle) {
+        CloneOutcome::Cloned(stream) => stream,
+        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        CloneOutcome::Failed(error) => return Err(error),
     };
     let mut out: Vec<u8> = Vec::new();
     let mut buf = [0u8; 8192];
@@ -1377,11 +1436,11 @@ pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
                 // Peer closed. If we already drained some bytes, deliver them
                 // first; the caller re-polls and observes EOF next time. With
                 // an empty buffer this is a clean EOF.
-                return if out.is_empty() {
+                return Ok(if out.is_empty() {
                     ActiveReadOutcome::Eof
                 } else {
                     ActiveReadOutcome::Data(out)
-                };
+                });
             }
             Ok(n) => {
                 out.extend_from_slice(&buf[..n]);
@@ -1392,18 +1451,18 @@ pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
                     tcp_counters()
                         .bytes_read
                         .fetch_add(out.len() as u64, Ordering::Relaxed);
-                    return ActiveReadOutcome::Data(out);
+                    return Ok(ActiveReadOutcome::Data(out));
                 }
             }
             Err(ref e) if e.kind() == ErrorKind::WouldBlock => {
                 tcp_counters()
                     .bytes_read
                     .fetch_add(out.len() as u64, Ordering::Relaxed);
-                return if out.is_empty() {
+                return Ok(if out.is_empty() {
                     ActiveReadOutcome::WouldBlock
                 } else {
                     ActiveReadOutcome::Data(out)
-                };
+                });
             }
             Err(ref e) if e.kind() == ErrorKind::Interrupted => {
                 // Retry the read; EINTR is not a failure.
@@ -1411,13 +1470,45 @@ pub(crate) fn tcp_conn_read_available(handle: c_int) -> ActiveReadOutcome {
             Err(e) => {
                 record_tcp_error_kind(e.kind());
                 return if out.is_empty() {
-                    ActiveReadOutcome::Closed
+                    Err(e)
                 } else {
-                    ActiveReadOutcome::Data(out)
+                    Ok(ActiveReadOutcome::Data(out))
                 };
             }
         }
     }
+}
+
+/// Read the socket's configured inactivity timeout before a native request.
+pub(crate) fn tcp_conn_timeout_result(
+    handle: c_int,
+    write: bool,
+) -> std::io::Result<Option<std::time::Duration>> {
+    let stream = match tcp_clone_stream_outcome(handle) {
+        CloneOutcome::Cloned(stream) => stream,
+        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        CloneOutcome::Failed(error) => return Err(error),
+    };
+    if write {
+        stream.write_timeout()
+    } else {
+        stream.read_timeout()
+    }
+}
+
+/// One nonblocking write for a reactor-owned request. The caller retains the
+/// connection loan and sets nonblocking mode before registering readiness.
+pub(crate) fn tcp_conn_write_some_result(handle: c_int, bytes: &[u8]) -> std::io::Result<usize> {
+    let mut stream = match tcp_clone_stream_outcome(handle) {
+        CloneOutcome::Cloned(stream) => stream,
+        CloneOutcome::NoEntry => return Err(std::io::Error::from_raw_os_error(libc::EBADF)),
+        CloneOutcome::Failed(error) => return Err(error),
+    };
+    let written = stream.write(bytes)?;
+    tcp_counters()
+        .bytes_written
+        .fetch_add(written as u64, Ordering::Relaxed);
+    Ok(written)
 }
 
 /// Open a TCP listener at `addr` (`host:port`).
@@ -1905,9 +1996,9 @@ fn clear_tcp_error_state() {
     let _ = hew_cabi::sink::hew_stream_last_errno();
     let ptr = hew_cabi::sink::hew_stream_last_error();
     if !ptr.is_null() {
-        // SAFETY: `ptr` is the fresh header-aware cstring the getter handed us;
-        // it must be released through the matching header-aware free path.
-        unsafe { crate::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
+        // SAFETY: `ptr` is the fresh managed string the getter handed us;
+        // it must be released through the matching managed release path.
+        unsafe { hew_cabi::string::string_release(ptr) };
     }
 }
 
@@ -3381,7 +3472,7 @@ pub unsafe extern "C" fn hew_tcp_attach(
 /// `*mut HewActor` pointer rather than a fully-formed `HewActorRef`.
 ///
 /// This is the entry point the Hew `conn.attach(handler)` surface lowers to:
-/// a Hew `LocalPid<T>` reaches the C ABI as the bare actor pointer (no
+/// a Hew actor handle reaches the C ABI as the bare actor pointer (no
 /// `HewActorRef` wrapper), so codegen cannot hand `hew_tcp_attach` the
 /// `*const HewActorRef` it expects. This wrapper constructs the local
 /// `HewActorRef` on the runtime side (the owner of that layout) and forwards
@@ -3436,7 +3527,7 @@ pub unsafe extern "C" fn hew_tcp_attach_local(
 /// reactor reads the bytes, deposits the result into `read_slot`, and
 /// `enqueue_resume`s the parked continuation.
 ///
-/// `actor` is the raw `*mut HewActor` the Hew `LocalPid` lowers to (same shape
+/// `actor` is the raw `*mut HewActor` the Hew actor handle lowers to (same shape
 /// as `hew_tcp_attach_local`); the runtime constructs the local `HewActorRef`.
 ///
 /// Returns 0 on success, -1 on failure (null args, unknown handle, reactor

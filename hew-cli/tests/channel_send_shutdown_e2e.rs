@@ -17,11 +17,11 @@ use std::process::Command;
 use support::{hew_binary, repo_root, require_codegen};
 
 /// A periodic handler filling a one-slot channel that `main` reads once.
-const FULL_SEND_AT_SHUTDOWN_SOURCE: &str = r#"import std.channel.channel;
+const FULL_SEND_AT_SHUTDOWN_SOURCE: &str = r#"import std.channel;
 
 actor Pulse {
-    let ready: channel.Sender<i64>;
-    var count: i64 = 0;
+    let ready: channel.Sender<i64>,
+    var count: i64 = 0,
 
     #[every(1ms)]
     receive fn tick() {
@@ -31,7 +31,7 @@ actor Pulse {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let _p = spawn Pulse(ready: ready_tx, count: 0);
     let _ = ready_rx.recv();
     sleep(200ms);
@@ -85,10 +85,10 @@ fn full_send_with_draining_receiver_still_backpressures() {
     let source = dir.path().join("full_send_backpressure.hew");
     fs::write(
         &source,
-        r#"import std.channel.channel;
+        r#"import std.channel;
 
 actor Pump {
-    let out: channel.Sender<i64>;
+    let out: channel.Sender<i64>,
 
     receive fn go(count: i64) {
         for i in 0..count {
@@ -98,9 +98,9 @@ actor Pump {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let pump = spawn Pump(out: tx);
-    pump.go(8);
+    let _ = fork pump.go(8);
     var seen: i64 = 0;
     for _i in 0..8 {
         match rx.recv() {

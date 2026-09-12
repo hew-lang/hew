@@ -3,8 +3,8 @@
 // Same pattern as circle.hew: type + impl + factory, all merged into the
 // single `shapes` namespace at import time.
 pub type Rectangle {
-    width: i64;
-    height: i64;
+    width: i64,
+    height: i64,
 }
 
 pub fn make_rectangle(width: i64, height: i64) -> Rectangle {

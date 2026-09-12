@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-pool-lifecycle"
+intent = "A `simple_one_for_one` pool of four fungible members reports its declared count, refuses an out-of-range `get`, and restarts one crashed member on its own slot: the replacement re-runs its init template including owned state, `await_restart` on that member resolves it Live, and the other three keep the mutation they were given."
+source = "cases/supervisor-pool-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "4\nno member 4\n4\n4\n4\n4\n1\n3\n11\n4\n4\n4\nstopped\n"
+stderr = "hew: failure: UserPanic (212): pool member failed\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\n"
+exit = 0

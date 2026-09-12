@@ -9,9 +9,7 @@
 //!
 //! Where `break` may be *written* is separate from what it may *carry*: a
 //! `break` carries no operand in either position (`E_BREAK_VALUE`), and
-//! `scope { .. }` is a statement rather than a `Primary`
-//! (`E_SCOPE_IS_STATEMENT`), so the block-opening arm-body set below covers
-//! only the openers that actually produce a value.
+//! Scopes are block expressions in both statement and value positions.
 
 use hew_parser::ast::{Block, Expr, Item, MatchArm, Stmt};
 use hew_parser::{parse, ParseDiagnosticKind};
@@ -273,7 +271,7 @@ fn comma_less_block_opening_arms_parse() {
     // are only legal inside a `scope`.
     parse_ok("fn f() { scope { let v = match 1 { 1 => fork { 1 } _ => 0 }; } }");
     // Expr::ScopeDeadline
-    parse_ok("fn f() { scope { let v = match 1 { 1 => after(1s) { 1 } _ => 0 }; } }");
+    parse_ok("fn f() { scope { let v = match 1 { 1 => scope within 1s { 1 } _ => 0 }; } }");
 }
 
 #[test]
@@ -288,41 +286,18 @@ fn comma_less_non_block_arms_still_error() {
 }
 
 #[test]
-fn scope_as_match_arm_body_is_refused() {
-    // A match-arm body is a value position, so `scope` leaving `Primary`
-    // closes it. This is why `Token::Scope` had to leave
-    // `arm_body_opens_block` in the same change: the token-side predicate must
-    // not promise a block-bodied arm the expression grammar no longer parses.
-    let result = parse("fn f() { match 1 { 1 => scope { 1 } _ => 0 } }");
-    assert!(
-        result
-            .errors
-            .iter()
-            .any(|e| e.message.contains("E_SCOPE_IS_STATEMENT")),
-        "expected E_SCOPE_IS_STATEMENT for a scope arm body, got: {:#?}",
-        result.errors
-    );
+fn scope_as_match_arm_body_parses() {
+    parse_ok("fn f() { match 1 { 1 => scope { 1 } _ => 0 } }");
+    parse_ok("fn f() { match 1 { 1 => scope within 1s { 1 } _ => 0 } }");
 }
 
 #[test]
 fn scope_as_bare_statement_and_block_tail_parses() {
-    // The accept twin: the statement spelling is untouched, with or without the
-    // trailing `;`, and a scope in tail position is not promoted to the
-    // block's trailing expression — it produces no value to promote.
     parse_ok("fn f() { scope { fork g(); }; }");
-
-    let body = parse_fn_body("scope { fork g(); }");
-    assert!(
-        body.trailing_expr.is_none(),
-        "an unterminated tail `scope` must stay a statement, got trailing expr {:?}",
-        body.trailing_expr
-    );
-    assert!(
-        matches!(
-            &body.stmts[..],
-            [(Stmt::Expression((Expr::Scope { .. }, _)), _)]
-        ),
-        "expected a single scope statement, got {:?}",
-        body.stmts
-    );
+    let body = parse_fn_body("scope { 42 }");
+    assert!(matches!(
+        body.trailing_expr.as_deref(),
+        Some((Expr::Scope { .. }, _))
+    ));
+    assert!(body.stmts.is_empty());
 }

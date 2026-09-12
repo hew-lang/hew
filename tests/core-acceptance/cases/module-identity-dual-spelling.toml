@@ -1,0 +1,10 @@
+[[case]]
+id = "module-identity-dual-spelling"
+intent = "One directory module reached through its package-qualified spelling and its directory-relative spelling in one compilation is one module: the entry file's private call keeps its target and both importers see the same declaration."
+source = "fixtures/module-identity-dual-spelling/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "lib/lib\n"
+exit = 0

@@ -1,10 +1,10 @@
-// Accept + run: explicit `.close()` on a `LambdaPid` handle compiles,
+// Accept + run: explicit `.close()` on an anonymous actor's handle compiles,
 // lowers, and runs without E_NOT_YET_IMPLEMENTED.
 //
-// `actor |x: i64| { println(x); }` produces `LambdaPid<i64, ()>`.
+// `actor |x: i64| { println(x); }` produces `actor(i64)`.
 // `.send(42)` delivers the message; the explicit `.close()` in statement
 // context invokes `hew_lambda_actor_release` (routed by
-// `Place::LambdaActorHandle` in `lower_duplex_close`). Exit 0 proves
+// the anonymous actor handle type in `lower_duplex_close`). Exit 0 proves
 // the program ran to completion; stdout "42" proves the message was
 // delivered before the handle was released.
 //
@@ -15,6 +15,6 @@ fn main() {
     let printer = actor |x: i64| {
         println(x);
     };
-    printer.send(42);
+    let _ = printer.send(42);
     printer.close();
 }

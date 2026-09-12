@@ -1,0 +1,13 @@
+[[case]]
+id = "check-select-no-arms"
+intent = "A `select` with no arms and no timeout waits on nothing and can never complete; the checker refuses it rather than lowering a suspension with no registered source."
+source = "cases/check-select-no-arms.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 10
+column = 9
+message = "needs at least one arm: a source arm"

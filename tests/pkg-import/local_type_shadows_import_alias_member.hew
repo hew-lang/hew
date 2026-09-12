@@ -18,11 +18,11 @@
 import hew.aliassrc.{ Payload as Tag };
 
 type Tag {
-    local: i64;
+    local: i64,
 }
 
 type Boxed {
-    item: Tag;
+    item: Tag,
 }
 
 fn main() {

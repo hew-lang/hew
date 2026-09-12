@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-from-module"
+intent = "A file import declared inside a module, not the root, publishes into that module: its function calls the imported name and the root reaches it through the module."
+source = "fixtures/file-import-from-module/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "helped\n"
+exit = 0

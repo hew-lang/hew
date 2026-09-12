@@ -21,19 +21,19 @@
 // field.
 
 type WorkItem {
-    name: string;
-    priority: i64;
+    name: string,
+    priority: i64,
 }
 
 actor TaskQueue {
-    var tasks: Vec<WorkItem>;
+    var tasks: Vec<WorkItem>,
 
     receive fn enqueue(item: WorkItem) {
         tasks.push(item);
     }
 
     receive fn remove_front() -> i64 {
-        let new_tasks: Vec<WorkItem> = Vec.new();
+        var new_tasks: Vec<WorkItem> = Vec.new();
         var i = 1;
         while i < tasks.len() {
             new_tasks.push(tasks[i]);
@@ -47,8 +47,8 @@ actor TaskQueue {
 fn main() {
     let t: Vec<WorkItem> = Vec.new();
     let q = spawn TaskQueue(tasks: t);
-    q.enqueue(WorkItem { name: "only", priority: 1 });
-    let r = await q.remove_front();
+    let _ = q.enqueue(WorkItem { name: "only", priority: 1 });
+    let r = q.remove_front();
     match r {
         .Ok(n) => println(f"r={n}"),
         .Err(_) => println("err"),

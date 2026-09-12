@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-snapshot-shadowing"
+intent = "Captured owned values preserve creation-time snapshots through source replacement, lexical shadowing and repeated calls."
+source = "cases/callable-snapshot-shadowing.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "SHADOW\nORIGINAL\nREPLACEMENT\nORIGINAL\n2\n90\n"
+exit = 0

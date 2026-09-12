@@ -7,8 +7,8 @@
 //   3. A recursive match-arm function traverses the tree correctly.
 //   4. Nesting ≥2 levels deep works: `Neg(Neg(Lit(3))) → 3`.
 indirect enum Expr {
-    Lit(i64);
-    Neg(Expr);
+    Lit(i64),
+    Neg(Expr),
 }
 
 fn eval(e: Expr) -> i64 {

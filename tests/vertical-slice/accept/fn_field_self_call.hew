@@ -6,7 +6,7 @@
 // "undefined function `self::f`"; after the fix the field access is
 // synthesised to `fn(i64)->i64` and routed through the indirect-call path.
 type Map {
-    f: fn(i64) -> i64;
+    f: fn(i64) -> i64,
 }
 
 impl Map {

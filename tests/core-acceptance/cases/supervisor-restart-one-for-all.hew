@@ -1,0 +1,39 @@
+actor Worker {
+    var name: string,
+    var value: i64 = 0,
+    #[on(start)]
+    fn started() { println("start " + name); }
+    #[on(stop)]
+    fn stopping() { println("stop " + name); }
+    receive fn bump() { value = value + 1; }
+    receive fn read() -> i64 { value }
+    receive fn boom() { panic("worker failed"); }
+}
+
+supervisor App {
+    strategy: one_for_all,
+    intensity: 3 within 60s,
+    child left: Worker(name: "left"),
+    child right: Worker(name: "right"),
+}
+
+fn main() {
+    let app = spawn App;
+    let _ = app.right.bump();
+    match app.right.read() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+    let _ = app.left.boom();
+    let replacement = await_restart app.left;
+    match replacement.read() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+    match app.right.read() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+    supervisor_stop(app);
+    println("stopped");
+}

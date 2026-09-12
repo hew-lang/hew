@@ -1,0 +1,71 @@
+type Counter { value: i64 }
+trait Bump { fn bump(var self) -> i64; }
+impl Bump for Counter {
+    fn bump(var self) -> i64 {
+        self.value += 1;
+        self.value
+    }
+}
+
+type Job { run: fn[suspends](i64) -> i64 }
+
+fn work(value: i64) -> i64 {
+    sleep(1ms);
+    value
+}
+
+fn identity<T>(value: T) -> T { value }
+
+fn outcome(value: i64) -> Result<i64, string> {
+    if value == 0 { return Err("ordinary error"); }
+    Ok(value)
+}
+
+fn main() {
+    var counter = Counter { value: 0 };
+    let first = fork work(counter.bump());
+    println(counter.value);
+    println(await first);
+
+    let job = Job { run: work };
+    let second = fork job.run(counter.bump());
+    println(counter.value);
+    println(await second);
+
+    let step = fork counter.bump();
+    println(await step);
+    println(counter.value);
+
+    let prefix = "hello";
+    let callback = |suffix: string| prefix + suffix;
+    let greeting = fork callback(" world");
+    println(await greeting);
+    println(prefix);
+
+    let text = "hello";
+    let length = fork text.len();
+    println(await length);
+    println(text);
+
+    let generic = fork identity("owned result");
+    println(await generic);
+
+    let pair = fork (work(counter.bump()), text.len());
+    println(counter.value);
+    let (value, size) = await pair;
+    println(value);
+    println(size);
+
+    let batch = fork [work(4), work(5)];
+    let values = await batch;
+    println(values[0]);
+    println(values[1]);
+
+    let results = await fork [outcome(0), outcome(7)];
+    for result in results {
+        match result {
+            .Ok(success) => println(success),
+            .Err(message) => println(message),
+        }
+    }
+}

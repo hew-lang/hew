@@ -4,22 +4,15 @@
 )]
 use super::*;
 use crate::builtin_names::BuiltinNamedType;
-use crate::check::admissibility::{
-    compute_copy_record_layout, hash_key_record_layout, identity_aggregate_layout,
-};
 use crate::check::calls::SignatureArgApplication;
 use crate::check::dispatch::resolve_method_call;
 use crate::check::types::GenericCallee;
 use crate::check::types::{BareActorResolution, DeferredBuiltinCloneAdmission};
-use crate::hash_eligibility::{ty_is_hash_eligible_with_resources, HashEligibility};
-use crate::lowering_facts::{
-    hashmap_layout_key_fact, hashmap_layout_key_layout_value_fact, hashset_layout_fact,
-    CollectionMethodDispatch, HashMapValueType,
-};
 use crate::method_resolution::{
     collect_method_sigs_for_receiver, instantiate_stdlib_method_sig, lookup_builtin_method_sig,
     lookup_named_method_sig as shared_lookup_named_method_sig,
 };
+use crate::runtime_call::{FloatMethodOp, IntArithKind, IntBitOp, IntMethodWidth};
 use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
@@ -143,10 +136,6 @@ pub(super) enum RecordCloneAdmissibility {
     OpaqueField { opaque_name: String, member: String },
     /// A stored member has no semantic clone capability.
     MissingClone { member: String, member_ty: Ty },
-    /// A stored member is a refcounted shared handle (`Rc`/`Weak`) whose
-    /// aggregate-ingress retain is missing, so the composite drop plan
-    /// over-releases. See `CloneCapabilityBlocker::UnbalancedSharedHandle`.
-    UnbalancedSharedHandle { type_name: String, member: String },
     /// The record has un-substituted generic type parameters; not yet supported.
     GenericRecord,
     /// The receiver is a bare type parameter (`x: T`) carrying a `Clone` bound
@@ -180,28 +169,6 @@ enum CloneCapabilityBlocker {
         member: String,
         member_ty: Ty,
     },
-    /// A refcounted shared handle (`Rc`/`Weak`) sitting INSIDE an aggregate.
-    ///
-    /// Cloning the handle itself is a retain and is fine; the aggregate is not,
-    /// because aggregate ingress of an `Rc` emits no retain while both the
-    /// source binder and the aggregate's composite drop release it (see
-    /// `alias_moved_owned_operand` in `hew-mir/src/lower/ownership.rs`, which
-    /// exempts only `string`/`bytes` from the `AggregateAlias` marker because
-    /// only those have an ingress-retain derivation). Admitting the clone would
-    /// hand codegen a plan whose inverse drop over-releases.
-    ///
-    /// WHY a refusal rather than a fix here: the missing ingress retain is not
-    /// a clone bug — `let pair = (shared, "tag");` aborts with
-    /// `Rc double-free` on `origin/main` with no `clone` in the program at all.
-    /// WHEN obsolete: when `Rc`/`Weak` gain an aggregate-ingress retain
-    /// derivation alongside `StringRetain`, at which point this arm is deleted
-    /// and the member walks through as a plain retain-on-clone leaf.
-    /// WHAT the real solution looks like: an `RcRetain` ingress instruction
-    /// with the same prover/codegen treatment `StringRetain` already has.
-    UnbalancedSharedHandle {
-        type_name: String,
-        member: String,
-    },
 }
 
 /// Pure-data shape of a single collection-method argument slot.
@@ -234,6 +201,8 @@ pub(super) enum RetTemplate {
     VecOfVal,
     /// `Vec<(K, V)>` (`HashMap` `entries`).
     VecOfPair,
+    /// `Vec<T>` (`HashSet` `to_vec`).
+    VecOfElem,
     /// The receiver collection type itself (`clone`).
     SelfTy,
 }
@@ -274,7 +243,9 @@ const fn desc(
 )]
 fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<CollectionMethodDesc> {
     use ArgTemplate::{Elem, Key, Value};
-    use RetTemplate::{Bool, SelfTy, Unit, VecOfKey, VecOfPair, VecOfVal, I64 as RetI64};
+    use RetTemplate::{
+        Bool, SelfTy, Unit, VecOfElem, VecOfKey, VecOfPair, VecOfVal, I64 as RetI64,
+    };
     Some(match kind {
         CollectionKind::HashMap => match method {
             "insert" => desc(Some(2), &[Key, Value], Unit),
@@ -296,7 +267,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "entries" => desc(Some(0), &[], VecOfPair),
             "clone" => desc(Some(0), &[], SelfTy),
             "len" => desc(None, &[], RetI64),
-            "is_empty" => desc(None, &[], Bool),
+            "is_empty" => desc(Some(0), &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
             _ => return None,
         },
@@ -304,6 +275,7 @@ fn collection_method_desc(kind: CollectionKind, method: &str) -> Option<Collecti
             "insert" => desc(Some(1), &[Elem], Bool),
             "contains" | "remove" => desc(Some(1), &[Elem], Bool),
             "clone" => desc(Some(0), &[], SelfTy),
+            "to_vec" => desc(Some(0), &[], VecOfElem),
             "len" => desc(None, &[], RetI64),
             "is_empty" => desc(None, &[], Bool),
             "clear" => desc(Some(0), &[], Unit),
@@ -358,68 +330,25 @@ impl CollectionTyCx {
     }
 }
 
+/// Map a checked receiver type to its `RuntimeCallFamily::IntMethod`/
+/// `IntArith` width, covering every integer width Hew has.
+fn int_method_width(ty: &Ty) -> Option<IntMethodWidth> {
+    match ty {
+        Ty::I8 => Some(IntMethodWidth::I8),
+        Ty::I16 => Some(IntMethodWidth::I16),
+        Ty::I32 => Some(IntMethodWidth::I32),
+        Ty::I64 => Some(IntMethodWidth::I64),
+        Ty::Isize => Some(IntMethodWidth::Isize),
+        Ty::U8 => Some(IntMethodWidth::U8),
+        Ty::U16 => Some(IntMethodWidth::U16),
+        Ty::U32 => Some(IntMethodWidth::U32),
+        Ty::U64 => Some(IntMethodWidth::U64),
+        Ty::Usize => Some(IntMethodWidth::Usize),
+        _ => None,
+    }
+}
+
 impl Checker {
-    /// Reject a mutable-receiver store-back through a non-receiver by-value
-    /// parameter when the declaration was admitted only because some separate
-    /// projection reaches shared collection storage.
-    ///
-    /// For example, `VecIter<T>` contains a shared `Vec<T>` but its `idx`
-    /// cursor is inline value storage. Calling `next()` on a by-value
-    /// `VecIter<T>` parameter advances only the callee's copy. Method bodies
-    /// can be external or dynamically dispatched, so the call site cannot
-    /// prove that their mutation crosses the shared boundary; reject
-    /// fail-closed and direct users to an explicit collection projection.
-    fn reject_private_param_mutable_receiver_call(
-        &mut self,
-        receiver_name: &str,
-        operation: &str,
-        span: &Span,
-    ) {
-        let Some(binding) = self.env.lookup_ref(receiver_name) else {
-            return;
-        };
-        if !binding.is_param() || binding.is_receiver() {
-            return;
-        }
-        let binding_ty = self.subst.resolve(&binding.ty);
-        if !self.param_ty_has_caller_visible_projection(&binding_ty) {
-            // Value-only aggregates were already rejected at their parameter
-            // declaration. Avoid a second diagnostic at every use.
-            return;
-        }
-        self.report_error_with_suggestions(
-            TypeErrorKind::MutabilityError,
-            span,
-            format!(
-                "`{receiver_name}` is a by-value parameter; {operation} writes back only to its \
-                 private copy, so the mutation is not proven caller-visible"
-            ),
-            vec![
-                "return the modified value to the caller".to_string(),
-                "mutate through a shared collection projection instead".to_string(),
-            ],
-        );
-    }
-
-    fn numeric_method_signedness(ty: &Ty) -> Option<NumericSignedness> {
-        match ty {
-            Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::Isize => Some(NumericSignedness::Signed),
-            Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize => Some(NumericSignedness::Unsigned),
-            _ => None,
-        }
-    }
-
-    fn numeric_method_width(ty: &Ty) -> Option<NumericWidth> {
-        match ty {
-            Ty::I8 | Ty::U8 => Some(NumericWidth::Bits(8)),
-            Ty::I16 | Ty::U16 => Some(NumericWidth::Bits(16)),
-            Ty::I32 | Ty::U32 => Some(NumericWidth::Bits(32)),
-            Ty::I64 | Ty::U64 => Some(NumericWidth::Bits(64)),
-            Ty::Isize | Ty::Usize => Some(NumericWidth::Pointer),
-            _ => None,
-        }
-    }
-
     pub(super) fn record_hashset_lowering_fact(&mut self, span: &Span, elem_ty: &Ty) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         // If deferred admission was already recorded for this span, the
@@ -427,588 +356,115 @@ impl Checker {
         // InferenceFailed diagnostic at this site.  Remove the deferred entry
         // to prevent a duplicate error from finalize_hashset_admission.
         self.deferred_hashset_admission.remove(&key);
+        // The resolver proves a template key from its declared bounds. No
+        // concrete scalar metadata exists until the type is instantiated.
+        if self.is_hashmap_abstract_key_param(elem_ty) {
+            return;
+        }
         self.pending_lowering_facts.insert(
             key,
             PendingLoweringFact::hashset(elem_ty.clone(), self.current_module.clone()),
         );
     }
 
-    /// Drain `pending_lowering_facts`, resolve element types through the
-    /// substitution, and materialize concrete [`LoweringFact`] entries.
-    ///
-    /// Any fact whose element type is still unresolved after inference emits a
-    /// checker error and is **not** inserted into the returned map.  Downstream
-    /// codegen (`requireLoweringFactOf`) will detect the missing entry and fail
-    /// closed rather than guessing.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "branching over HashSet element types including the new C-2c Named path is \
-                  inherently wide; factoring into sub-functions would obscure the single-pass flow"
-    )]
+    /// Retain scalar collection call metadata. Key admission is decided by the
+    /// semantic capability service, independently of target representation.
     pub(super) fn finalize_lowering_facts(&mut self) -> HashMap<SpanKey, LoweringFact> {
         let pending = std::mem::take(&mut self.pending_lowering_facts);
-        let mut result = HashMap::with_capacity(pending.len());
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
-        // Track which unresolved TypeVars have already produced a diagnostic so
-        // that repeated method calls on the same unresolved HashSet (e.g.
-        // `s.len(); s.is_empty()`) emit exactly one InferenceFailed rather than
-        // one per call site.  Each unique unresolved root var gets one error.
-        let mut reported_unresolved_vars: std::collections::HashSet<TypeVar> =
-            std::collections::HashSet::new();
-
-        for (span_key, pending_fact) in pending {
-            let resolved_ty = self
+        let mut result = HashMap::new();
+        let mut reported_vars = HashSet::new();
+        for (site, fact) in pending {
+            let ty = self
                 .subst
-                .resolve(&pending_fact.hashset_element_ty)
+                .resolve(&fact.hashset_element_ty)
                 .materialize_literal_defaults();
-            // Guard 1: element type is already erroneous — a prior diagnostic was
-            // reported on the upstream expression.  Drop the pending fact silently;
-            // downstream codegen fails closed via the absent lowering-fact entry.
-            // Emitting a new diagnostic here would produce a spurious secondary
-            // "element type is unresolved" error even though inference completed
-            // correctly — it just completed to Ty::Error.
-            if resolved_ty.contains_error() {
+            if ty.contains_error() {
                 continue;
             }
-            match LoweringFact::from_hashset_element_type(&resolved_ty) {
-                Ok(fact) => {
-                    result.insert(span_key, fact);
-                }
-                Err(LoweringFactError::UnresolvedHashSetElementType) => {
-                    // Inference did not resolve the element type by the checker
-                    // boundary.  Emit a clear diagnostic (at most once per
-                    // unique unresolved TypeVar) and prune the fact so
-                    // downstream codegen fails closed via requireLoweringFactOf.
-                    if let Ty::Var(var) = resolved_ty {
-                        if !reported_unresolved_vars.insert(var) {
-                            // Already emitted for this root var (another call
-                            // site on the same unresolved set).  Skip to avoid
-                            // spraying one error per method-call site.
-                            continue;
-                        }
-                    }
-                    let span = span_key.start..span_key.end;
-                    let mut err = crate::error::TypeError::new(
+            let before = self.errors.len();
+            if let Ty::Var(var) = &ty {
+                if reported_vars.insert(*var) {
+                    self.report_error(
                         TypeErrorKind::InferenceFailed,
-                        span,
-                        "cannot lower HashSet: element type is unresolved at the checker \
-                         boundary — add an explicit type annotation, e.g. \
-                         `HashSet<i64>` or `HashSet<String>`"
-                            .to_string(),
+                        &(site.start..site.end),
+                        "cannot infer HashSet element type; add an explicit type annotation".into(),
                     );
-                    if let Some(module) = &pending_fact.source_module {
-                        err = err.with_source_module(module.clone());
-                    }
-                    new_errors.push(err);
-                    // Fact NOT inserted — downstream will fail closed.
                 }
-                Err(LoweringFactError::UnsupportedHashSetElementType { .. }) => {
-                    // For Named (record) element types: run hash-eligibility (C-2c).
-                    // The inline `validate_hashset_element_type` pass already admitted Named
-                    // types optimistically; here we either produce a HashSetLoweringFact
-                    // (Eligible) or a diagnostic (ineligible).
-                    if let Ty::Named { name, .. } = &resolved_ty {
-                        let type_defs_snapshot = self.type_defs.clone();
-                        let hash_dispatch = self
-                            .user_trait_impl_method(name, "Hash", "hash")
-                            .map_or(CollectionMethodDispatch::Derived, |method| {
-                                CollectionMethodDispatch::User { method }
-                            });
-                        let eq_dispatch = self
-                            .user_trait_impl_method(name, "Eq", "eq")
-                            .map_or(CollectionMethodDispatch::Derived, |method| {
-                                CollectionMethodDispatch::User { method }
-                            });
-                        let has_user_hash =
-                            matches!(hash_dispatch, CollectionMethodDispatch::User { .. });
-                        let has_eq = matches!(eq_dispatch, CollectionMethodDispatch::User { .. })
-                            || self
-                                .registry
-                                .implements_marker(&resolved_ty, MarkerTrait::Eq);
-                        let eligibility = if has_user_hash && has_eq {
-                            HashEligibility::Eligible
-                        } else {
-                            ty_is_hash_eligible_with_resources(
-                                &resolved_ty,
-                                &type_defs_snapshot,
-                                self.registry.resource_type_names(),
-                            )
-                        };
-                        match eligibility {
-                            HashEligibility::Eligible => {
-                                let type_def = self.lookup_type_def(name);
-                                let layout =
-                                    identity_aggregate_layout(&resolved_ty).or_else(|| {
-                                        type_def.as_ref().and_then(|td| {
-                                            hash_key_record_layout(td, &type_defs_snapshot)
-                                        })
-                                    });
-                                if let Some((elem_size, elem_align)) = layout {
-                                    let mut fact =
-                                        hashset_layout_fact(name.clone(), elem_size, elem_align);
-                                    fact.hash_dispatch = hash_dispatch;
-                                    fact.eq_dispatch = eq_dispatch;
-                                    self.hashset_layout_facts.insert(span_key, fact);
-                                    // Fact inserted into hashset_layout_facts;
-                                    // NOT inserted into lowering_facts result.
-                                } else if type_def.is_some() {
-                                    let span = span_key.start..span_key.end;
-                                    let mut err = crate::error::TypeError::new(
-                                        TypeErrorKind::InvalidOperation,
-                                        span,
-                                        format!(
-                                            "`HashSet` element type `{name}` has zero size \
-                                             or contains a type whose layout cannot be \
-                                             determined; layout element types must have \
-                                             non-zero size",
-                                        ),
-                                    );
-                                    if let Some(module) = &pending_fact.source_module {
-                                        err = err.with_source_module(module.clone());
-                                    }
-                                    new_errors.push(err);
-                                }
-                                // TypeDef not found — silently drop; lookup failure
-                                // is a pre-existing error from the type-resolution pass.
-                            }
-                            HashEligibility::IneligibleManaged(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let msg = if bad_ty == resolved_ty {
-                                    format!(
-                                        "layout-managed HashSet elements require Copy; \
-                                         `{name}` is an indirect (managed) record and is not yet \
-                                         supported as a layout HashSet element"
-                                    )
-                                } else {
-                                    format!(
-                                        "`HashSet` element type `{name}` contains a managed field \
-                                         (`{}`); layout-element hashing requires fixed-size Copy \
-                                         fields — use a type without heap-managed fields",
-                                        bad_ty.user_facing(),
-                                    )
-                                };
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    msg,
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
-                            HashEligibility::IneligibleOwned(bad_ty)
-                            | HashEligibility::IneligibleTuple(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "`HashSet` element type `{name}` contains a field of type \
-                                         `{}` which is not a fixed-size Copy type; layout element \
-                                         types require all fields to be fixed-width primitives or \
-                                         nested Copy records",
-                                        bad_ty.user_facing(),
-                                    ),
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
-                            HashEligibility::IneligibleNamedNonRecord(bad_ty) => {
-                                let span = span_key.start..span_key.end;
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    span,
-                                    format!(
-                                        "`HashSet` element type `{}` must be a `record`-keyword type \
-                                         to use the layout element ABI; non-record named types are \
-                                         not guaranteed to be Copy value-semantic",
-                                        bad_ty.user_facing(),
-                                    ),
-                                );
-                                if let Some(module) = &pending_fact.source_module {
-                                    err = err.with_source_module(module.clone());
-                                }
-                                new_errors.push(err);
-                            }
-                            HashEligibility::IneligibleVar | HashEligibility::IneligibleError => {
-                                // Ty::Var / Ty::Error already guarded above; silently drop.
-                            }
-                        }
-                    }
-                    // For non-Named types that are unsupported: the checker already
-                    // rejected them via validate_hashset_element_type; skip silently
-                    // to avoid a duplicate diagnostic.
+            } else {
+                self.validate_collection_key_capabilities(&ty, "Set", &(site.start..site.end));
+                if let Ok(fact) = LoweringFact::from_hashset_element_type(&ty) {
+                    result.insert(site, fact);
                 }
             }
+            for error in &mut self.errors[before..] {
+                error.source_module.clone_from(&fact.source_module);
+            }
         }
-
-        self.errors.extend(new_errors);
         result
     }
 
-    /// Drain `deferred_hashmap_admission`, resolve key/value types through the
-    /// current substitution, and fail closed on any that are still unresolved
-    /// or error-typed at the checker boundary.
-    ///
-    /// * `Ty::Var` → `InferenceFailed`: inference did not resolve the type.
-    /// * `Ty::Error` → silent drop: upstream already emitted a diagnostic.
-    /// * `Ty::Named` key → hash-eligibility check via C-2a predicate; produces a
-    ///   `HashMapLoweringFact` on success or a diagnostic on failure.
-    /// * Fully-resolved scalar (String) unsupported pairs → already caught inline;
-    ///   silently skipped here to avoid duplicate diagnostics.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::single_match_else,
-        reason = "branching over HashEligibility + key/value layout paths is inherently wide; \
-                  factoring into sub-functions would obscure the flow more than help"
-    )]
+    /// Finish map admission after inference and declaration registration.
+    /// The replayed scope carries each type parameter's declared bounds from
+    /// the record site, so a bare key type parameter (e.g. `K` in a generic
+    /// actor's `HashMap<K, V>` field) is checked against its own `Hash + Eq`
+    /// bounds rather than skipped or checked against an empty bound set.
     pub(super) fn finalize_hashmap_admission(&mut self) {
         let checks = std::mem::take(&mut self.deferred_hashmap_admission);
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
-        let mut new_layout_facts: Vec<(SpanKey, crate::lowering_facts::HashMapLoweringFact)> =
-            Vec::new();
-        // Track which (key_var, val_var) pairs have already produced a
-        // diagnostic so that repeated method calls on the same unresolved
-        // HashMap (e.g. `m.len(); m.is_empty()`) emit exactly one
-        // InferenceFailed rather than one per call site.
-        let mut reported_var_pairs: std::collections::HashSet<(Option<TypeVar>, Option<TypeVar>)> =
-            std::collections::HashSet::new();
-
-        for (span_key, check) in checks {
-            let resolved_key = self
+        let mut reported_var_pairs = HashSet::new();
+        for (_, check) in checks {
+            let key = self
                 .subst
                 .resolve(&check.key_ty)
                 .materialize_literal_defaults();
-            let resolved_val = self
+            let value = self
                 .subst
                 .resolve(&check.val_ty)
                 .materialize_literal_defaults();
-
-            // Already-errored types: fail closed without cascading.
-            if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
+            if key.contains_error() || value.contains_error() {
                 continue;
             }
-
-            // Bare type-parameter keys are checked against their declared
-            // `K: Hash + Eq` bounds at the call site.  They have no concrete
-            // layout fact before monomorphization; the HashMap handle bakes the
-            // substituted K/V layouts at `HashMap::new()` for each instantiation.
-            if check.is_abstract_key_param {
-                continue;
-            }
-
-            // Still unresolved at the checker boundary → fail closed, but
-            // deduplicate across multiple call sites that share the same
-            // unresolved root vars.
-            if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
-                let key_var = if let Ty::Var(v) = resolved_key {
-                    Some(v)
-                } else {
-                    None
-                };
-                let val_var = if let Ty::Var(v) = resolved_val {
-                    Some(v)
-                } else {
-                    None
-                };
-                if !reported_var_pairs.insert((key_var, val_var)) {
-                    // Already emitted for this root (key_var, val_var) pair.
-                    continue;
+            let before = self.errors.len();
+            if key.has_inference_var() || value.has_inference_var() {
+                if reported_var_pairs.insert((key.clone(), value.clone())) {
+                    self.report_error(
+                        TypeErrorKind::InferenceFailed,
+                        &check.span,
+                        format!(
+                            "cannot infer HashMap key or value type at the checker boundary \
+                            (HashMap<{}, {}>); add an explicit type annotation",
+                            key.user_facing(),
+                            value.user_facing()
+                        ),
+                    );
                 }
-                let key_resolved_display = self
-                    .subst
-                    .resolve(&check.key_ty)
-                    .materialize_literal_defaults();
-                let val_resolved_display = self
-                    .subst
-                    .resolve(&check.val_ty)
-                    .materialize_literal_defaults();
-                let key_display = key_resolved_display.user_facing();
-                let val_display = val_resolved_display.user_facing();
-                let mut err = crate::error::TypeError::new(
-                    TypeErrorKind::InferenceFailed,
-                    check.span.clone(),
-                    format!(
-                        "cannot infer HashMap key or value type at the checker boundary \
-                         (HashMap<{key_display}, {val_display}>); add an explicit type \
-                         annotation, e.g. `HashMap<String, i64>`",
-                    ),
-                );
-                if let Some(module) = check.source_module {
-                    err = err.with_source_module(module);
-                }
-                new_errors.push(err);
-                continue;
+            } else {
+                self.current_type_param_bounds
+                    .push(super::types::TypeParamScope::new(
+                        check.type_param_bounds,
+                        HashMap::new(),
+                    ));
+                self.validate_collection_key_capabilities(&key, "Map", &check.span);
+                self.current_type_param_bounds.pop();
             }
-
-            // Named record key: run hash-eligibility check and produce a
-            // HashMapLoweringFact (C-2c). Fail closed with a diagnostic on
-            // any ineligibility reason.
-            if let Ty::Named { name: key_name, .. } = &resolved_key {
-                // Collect the type_defs snapshot before borrowing self mutably below.
-                let type_defs_snapshot = self.type_defs.clone();
-
-                let hash_dispatch = self
-                    .user_trait_impl_method(key_name, "Hash", "hash")
-                    .map_or(CollectionMethodDispatch::Derived, |method| {
-                        CollectionMethodDispatch::User { method }
-                    });
-                let eq_dispatch = self
-                    .user_trait_impl_method(key_name, "Eq", "eq")
-                    .map_or(CollectionMethodDispatch::Derived, |method| {
-                        CollectionMethodDispatch::User { method }
-                    });
-                let has_user_hash = matches!(hash_dispatch, CollectionMethodDispatch::User { .. });
-                let has_eq = matches!(eq_dispatch, CollectionMethodDispatch::User { .. })
-                    || self
-                        .registry
-                        .implements_marker(&resolved_key, MarkerTrait::Eq);
-                let eligibility = if has_user_hash && has_eq {
-                    HashEligibility::Eligible
-                } else {
-                    ty_is_hash_eligible_with_resources(
-                        &resolved_key,
-                        &type_defs_snapshot,
-                        self.registry.resource_type_names(),
-                    )
-                };
-
-                match eligibility {
-                    HashEligibility::Eligible => {
-                        let key_type_def = self.lookup_type_def(key_name);
-                        let key_layout = identity_aggregate_layout(&resolved_key).or_else(|| {
-                            key_type_def
-                                .as_ref()
-                                .and_then(|td| hash_key_record_layout(td, &type_defs_snapshot))
-                        });
-                        match key_layout {
-                            Some((key_size, key_align)) => {
-                                // Determine value type routing.
-                                match HashMapValueType::from_ty(&resolved_val) {
-                                    Ok(HashMapValueType::Layout) => {
-                                        // Value is also a Named record.
-                                        if let Ty::Named { name: val_name, .. } = &resolved_val {
-                                            let val_type_def = self.lookup_type_def(val_name);
-                                            match val_type_def {
-                                                Some(ref vtd) => {
-                                                    match compute_copy_record_layout(
-                                                        vtd,
-                                                        &type_defs_snapshot,
-                                                    ) {
-                                                        Some((val_size, val_align)) => {
-                                                            let mut fact =
-                                                                        hashmap_layout_key_layout_value_fact(
-                                                                            key_name.clone(),
-                                                                            key_size,
-                                                                            key_align,
-                                                                            val_name,
-                                                                            val_size,
-                                                                            val_align,
-                                                                        );
-                                                            fact.hash_dispatch
-                                                                .clone_from(&hash_dispatch);
-                                                            fact.eq_dispatch
-                                                                .clone_from(&eq_dispatch);
-                                                            new_layout_facts.push((span_key, fact));
-                                                        }
-                                                        None => {
-                                                            let mut err =
-                                                                crate::error::TypeError::new(
-                                                                    TypeErrorKind::InvalidOperation,
-                                                                    check.span.clone(),
-                                                                    format!(
-                                                                        "`HashMap` value type `{val_name}` has zero size or contains a type whose layout cannot be determined; layout-value types must have non-zero size",
-                                                                    ),
-                                                                );
-                                                            if let Some(module) =
-                                                                check.source_module
-                                                            {
-                                                                err =
-                                                                    err.with_source_module(module);
-                                                            }
-                                                            new_errors.push(err);
-                                                        }
-                                                    }
-                                                }
-                                                None => {
-                                                    let mut err = crate::error::TypeError::new(
-                                                        TypeErrorKind::InvalidOperation,
-                                                        check.span.clone(),
-                                                        format!(
-                                                            "`HashMap` value type `{val_name}` is not defined; cannot compute layout for layout-key `HashMap`",
-                                                        ),
-                                                    );
-                                                    if let Some(module) = check.source_module {
-                                                        err = err.with_source_module(module);
-                                                    }
-                                                    new_errors.push(err);
-                                                }
-                                            }
-                                        } else {
-                                            // Should not happen: HashMapValueType::Layout implies Named.
-                                            unreachable!(
-                                                "HashMapValueType::Layout produced for non-Named value type"
-                                            );
-                                        }
-                                    }
-                                    Ok(val_type) => {
-                                        // Scalar value path.
-                                        let mut fact = hashmap_layout_key_fact(
-                                            key_name.clone(),
-                                            key_size,
-                                            key_align,
-                                            val_type,
-                                        );
-                                        fact.hash_dispatch.clone_from(&hash_dispatch);
-                                        fact.eq_dispatch.clone_from(&eq_dispatch);
-                                        new_layout_facts.push((span_key, fact));
-                                    }
-                                    Err(e) => {
-                                        let mut err = crate::error::TypeError::new(
-                                            TypeErrorKind::InvalidOperation,
-                                            check.span.clone(),
-                                            format!(
-                                                "HashMap<{key_name}, {}> value type is not supported for layout-key HashMap: {:?}",
-                                                resolved_val.user_facing(),
-                                                e,
-                                            ),
-                                        );
-                                        if let Some(module) = check.source_module {
-                                            err = err.with_source_module(module);
-                                        }
-                                        new_errors.push(err);
-                                    }
-                                }
-                            }
-                            None => {
-                                let message = if key_type_def.is_some() {
-                                    format!(
-                                        "HashMap key type `{key_name}` has zero size or contains a type \
-                                         whose layout cannot be determined; layout keys must have non-zero size",
-                                    )
-                                } else {
-                                    format!(
-                                        "HashMap key type `{key_name}` is not defined; \
-                                         cannot verify hash eligibility for layout-key HashMap",
-                                    )
-                                };
-                                let mut err = crate::error::TypeError::new(
-                                    TypeErrorKind::InvalidOperation,
-                                    check.span.clone(),
-                                    message,
-                                );
-                                if let Some(module) = check.source_module {
-                                    err = err.with_source_module(module);
-                                }
-                                new_errors.push(err);
-                            }
-                        }
-                    }
-
-                    HashEligibility::IneligibleManaged(bad_ty) => {
-                        // Distinguish: is the key itself a managed (indirect) record,
-                        // or does it contain a managed field?
-                        let msg = if bad_ty == resolved_key {
-                            format!(
-                                "layout-managed HashMap keys require Copy; \
-                                 `{key_name}` is an indirect (managed) record and is not yet supported \
-                                 as a layout HashMap key"
-                            )
-                        } else {
-                            format!(
-                                "HashMap key type `{key_name}` contains a managed field \
-                                 (`{}`); layout-key hashing requires fixed-size Copy fields — \
-                                 use a type without heap-managed fields as the key",
-                                bad_ty.user_facing(),
-                            )
-                        };
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            msg,
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleOwned(bad_ty) => {
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{key_name}` contains a field of type `{}` \
-                                 which is not a fixed-size Copy type; layout keys require all fields \
-                                 to be fixed-width primitives or nested Copy records",
-                                bad_ty.user_facing(),
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleTuple(_) => {
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{key_name}` is or contains a tuple; \
-                                 tuple keys are not supported for the layout key ABI",
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleNamedNonRecord(bad_ty) => {
-                        let kind_name = self.lookup_type_def(key_name).map_or(
-                            "a non-record type",
-                            |td| match td.kind {
-                                TypeDefKind::Enum => "an enum",
-                                TypeDefKind::Struct => "a type",
-                                TypeDefKind::Actor => "an actor",
-                                TypeDefKind::Machine => "a machine",
-                                TypeDefKind::Record => "a record",
-                            },
-                        );
-                        let mut err = crate::error::TypeError::new(
-                            TypeErrorKind::InvalidOperation,
-                            check.span.clone(),
-                            format!(
-                                "HashMap key type `{}` must be a `record`-keyword type to use the \
-                                 layout key ABI; found {kind_name} which is not guaranteed Copy \
-                                 value-semantic",
-                                bad_ty.user_facing(),
-                            ),
-                        );
-                        if let Some(module) = check.source_module {
-                            err = err.with_source_module(module);
-                        }
-                        new_errors.push(err);
-                    }
-
-                    HashEligibility::IneligibleVar | HashEligibility::IneligibleError => {
-                        // Ty::Var / Ty::Error already handled above; should not reach here
-                        // for a Named key. Fail closed silently.
-                    }
-                }
+            for error in &mut self.errors[before..] {
+                error.source_module.clone_from(&check.source_module);
             }
-
-            // Fully resolved scalar (String/i64/u64) unsupported pair: the inline
-            // check should have already emitted a diagnostic. Skip to avoid duplicates.
         }
-
-        self.errors.extend(new_errors);
-        for (span_key, fact) in new_layout_facts {
-            self.hashmap_layout_facts.insert(span_key, fact);
+        // The value-copy obligations a copying operation left behind: the value
+        // type has settled by now.
+        for (_span_key, check) in std::mem::take(&mut self.deferred_hashmap_value_copy) {
+            let value = self
+                .subst
+                .resolve(&check.val_ty)
+                .materialize_literal_defaults();
+            if matches!(value, Ty::Error) || value.has_inference_var() {
+                continue;
+            }
+            let before = self.errors.len();
+            self.validate_hashmap_value_clone_type(&value, &check.operation, &check.span);
+            for error in &mut self.errors[before..] {
+                error.source_module.clone_from(&check.source_module);
+            }
         }
     }
 
@@ -1053,8 +509,9 @@ impl Checker {
                 new_errors.push(err);
             }
 
-            // Fully resolved but unsupported element: the inline check should
-            // have already emitted a diagnostic. Skip to avoid duplicates.
+            if !resolved.has_inference_var() {
+                self.validate_collection_key_capabilities(&resolved, "Set", &check.span);
+            }
         }
 
         self.errors.extend(new_errors);
@@ -1162,13 +619,6 @@ impl Checker {
                      `{}` has no Clone capability",
                     member_ty.user_facing()
                 ),
-                CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
-                    Self::unbalanced_shared_handle_clone_error_message(
-                        &receiver_name,
-                        &type_name,
-                        &member,
-                    )
-                }
             };
             let mut err =
                 crate::error::TypeError::new(TypeErrorKind::InvalidOperation, check.span, message);
@@ -1197,16 +647,7 @@ impl Checker {
     /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
     ///   the inline validation pass may have already emitted a diagnostic, but
     ///   deferred entries bypass that guard, so we re-check here.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "deferred channel resolution validates type, ABI, and ownership together"
-    )]
     pub(super) fn finalize_channel_rewrites(&mut self) {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-            ProducedValueOwnership as Ownership,
-        };
-
         let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
         let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
@@ -1299,39 +740,9 @@ impl Checker {
                         extern_identity: None,
                         elem_ty: None,
                         consumes_receiver,
+                        requires_mutable_receiver: false,
+                        receiver_update: crate::ReceiverUpdate::Replace,
                         returns_receiver_identity: false,
-                    },
-                );
-                let source_arg_count = self
-                    .produced_call_arities
-                    .get(&span_key)
-                    .map_or(0, |(_, count)| *count);
-                let ownership = match entry.method.as_str() {
-                    "recv" | "try_recv" => Ownership::owned(Acquisition::Delivery),
-                    "close" => Ownership::NoOwner,
-                    _ => Ownership::Unknown,
-                };
-                self.resolved_method_call_ownership.insert(
-                    span_key,
-                    PendingMethodCallOwnership {
-                        fact: ProducedValueFact {
-                            ownership,
-                            receiver_span: None,
-                            receiver_boundary: Some(if consumes_receiver {
-                                Boundary::Transfer
-                            } else {
-                                Boundary::Borrow
-                            }),
-                            arguments: match entry.method.as_str() {
-                                "send" => vec![Boundary::Transfer; source_arg_count],
-                                "recv" | "try_recv" | "close" => {
-                                    vec![Boundary::Borrow; source_arg_count]
-                                }
-                                _ => vec![Boundary::Unknown; source_arg_count],
-                            },
-                        },
-                        extern_identity: None,
-                        resolved_result_ty: resolved,
                     },
                 );
             } else {
@@ -1369,8 +780,7 @@ impl Checker {
     }
 
     /// Returns whether the qualified method name `Trait::method` is in the
-    /// recognised consume-receiver set. PR 1 (#1295) ships an empty set; PR 2
-    /// populates it for `Closable::close` when the trait is registered.
+    /// recognised consume-receiver set.
     fn is_consume_receiver_method(&self, qualified_name: &str) -> bool {
         self.consume_receiver_methods.contains(qualified_name)
     }
@@ -1378,8 +788,8 @@ impl Checker {
     /// Returns true if any trait impl on `type_name` registered a method
     /// named `method` that is in the recognised consume-receiver set.
     ///
-    /// Stdlib `impl Closable for T { fn close }` flattens trait methods into
-    /// the inherent-method table on `T`, so the dispatch at the named-type
+    /// Trait methods flatten into the inherent-method table on `T`, so the
+    /// dispatch at the named-type
     /// site doesn't carry the originating trait. To honour
     /// `consumes_receiver` declared on the trait, we walk the
     /// `trait_impls_set` for matching `(type, trait)` pairs and check the
@@ -1405,7 +815,7 @@ impl Checker {
     /// `close`, and the receiver must be by-value `self` (a `var self` /
     /// mutable-receiver method takes the in-place-mutation path and is NOT an
     /// ownership-transfer move — R4). A `#[resource]` type's `close` is required
-    /// to be `fn close(self)` by `check_resource_close_discipline`; this guard
+    /// to be `fn close(consume self)` by `check_resource_close_discipline`; this guard
     /// keeps the consume marking aligned with that contract.
     fn named_type_inherent_close_consumes_receiver(
         &self,
@@ -1520,25 +930,10 @@ impl Checker {
             };
             ActorMethodKind::StreamProducer(method_id, elem_ty)
         } else if matches!(resolved_reply, Ty::Unit) {
-            let actor_identity = method_id
-                .rsplit_once("::")
-                .map_or(method_id.as_str(), |(actor, _)| actor);
-            let overflow_policy = self.actor_overflow_policies.get(actor_identity);
-            let is_policy_sensitive = overflow_policy.is_some_and(|policy| {
-                matches!(
-                    policy,
-                    hew_parser::ast::OverflowPolicy::DropNew
-                        | hew_parser::ast::OverflowPolicy::DropOld
-                        | hew_parser::ast::OverflowPolicy::Fail
-                        | hew_parser::ast::OverflowPolicy::Coalesce { .. }
-                )
-            });
-            if is_policy_sensitive {
-                ActorMethodKind::CheckedFire(method_id)
-            } else if overflow_policy == Some(&hew_parser::ast::OverflowPolicy::Block) {
-                ActorMethodKind::BlockingFire(method_id)
-            } else {
-                ActorMethodKind::Fire(method_id)
+            ActorMethodKind::Message {
+                method_id,
+                policy: crate::actor_delivery::SendPolicy::Reject,
+                argument_order: Vec::new(),
             }
         } else {
             // Ask-shaped: the reply value crosses the actor boundary back to the
@@ -1597,10 +992,17 @@ impl Checker {
                     ),
                 ),
             }
-            ActorMethodKind::Ask(method_id, reply_ty.clone())
+            ActorMethodKind::Ask {
+                method_id,
+                reply_ty: reply_ty.clone(),
+                policy: crate::actor_delivery::SendPolicy::Wait,
+                argument_order: Vec::new(),
+            }
         };
         let call_ty = match &dispatch {
-            ActorMethodKind::CheckedFire(_) => Ty::result(Ty::Unit, Ty::send_error()),
+            ActorMethodKind::Ask {
+                reply_ty: reply, ..
+            } => Ty::result(reply.clone(), Ty::actor_error(Ty::never_type())),
             _ => reply_ty,
         };
         self.actor_method_dispatch
@@ -1663,11 +1065,8 @@ impl Checker {
         if !canonical_stdlib {
             return None;
         }
-        let family = declaration.family?;
-        // The descriptor is a three-way join: the source table names the only
-        // signature that may lift this family, and the typed family
-        // independently confirms that it emits the same ABI endpoint.
-        (family.c_symbol() == c_symbol).then_some(family)
+        // The exact trusted declaration selects the semantic operation.
+        declaration.family
     }
 
     /// Record a rewrite for a **closed-set builtin** runtime-ABI method call.
@@ -1688,13 +1087,21 @@ impl Checker {
         family: crate::runtime_call::RuntimeCallFamily,
     ) {
         let c_symbol = family.c_symbol().to_string();
-        // The consume verdict is derived once, here, from the resolved runtime
-        // symbol — the single rewrite-recording authority for runtime-symbol
-        // method calls (close-family handle releases route through this helper).
-        // Keying on the symbol (the dispatch discriminant) rather than a
-        // receiver type name keeps `.send()`/`.recv()` borrowing and only the
-        // `.close()`-family consuming (LESSONS: drop-allowset-from-value-flow).
-        let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
+        // Shared argument effects also govern captured receivers. An updated
+        // receiver retains its source binding; a consuming result does not.
+        let consumes_receiver =
+            family.semantic_contract().map_or_else(
+                || crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol),
+                |contract| {
+                    contract.arguments.first().is_some_and(|argument| {
+                        argument.effect == crate::RuntimeArgumentEffect::Move
+                    }) && !matches!(
+                        contract.result,
+                        crate::RuntimeResultEffect::UpdatedReceiver(_)
+                            | crate::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                    )
+                },
+            );
         // Recover the typed family for this closed builtin symbol. Because the
         // helper only ever sees checker-emitted catalog symbols (the extern
         // split routes every open-set `#[extern_symbol]` string elsewhere), this
@@ -1714,6 +1121,8 @@ impl Checker {
                 extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 returns_receiver_identity: false,
             },
         );
@@ -1742,6 +1151,8 @@ impl Checker {
                         extern_identity: None,
                         elem_ty: None,
                         consumes_receiver: false,
+                        requires_mutable_receiver: false,
+                        receiver_update: crate::ReceiverUpdate::Replace,
                         returns_receiver_identity: false,
                     },
                 );
@@ -1758,6 +1169,8 @@ impl Checker {
                     extern_identity: None,
                     elem_ty: None,
                     consumes_receiver: false,
+                    requires_mutable_receiver: false,
+                    receiver_update: crate::ReceiverUpdate::Replace,
                     returns_receiver_identity: false,
                 },
             );
@@ -1817,6 +1230,8 @@ impl Checker {
                 extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 returns_receiver_identity: false,
             },
         );
@@ -1827,7 +1242,7 @@ impl Checker {
     ///
     /// Unlike [`Self::record_runtime_method_call_rewrite`], the typed
     /// `descriptor` is unconditionally `None`. An `#[extern_symbol]` method —
-    /// stdlib `duration` / `instant` / `LambdaActorHandle` bindings as well as
+    /// stdlib `duration` / `instant` bindings as well as
     /// user-authored FFI on inherent impls — is open-set *by mechanism*: the
     /// checker has no first-class runtime-call-family knowledge for it. The
     /// family would only be recoverable by reverse-parsing the symbol string,
@@ -1851,6 +1266,8 @@ impl Checker {
         span: &Span,
         c_symbol: String,
         signature_key: String,
+        sig: &FnSig,
+        receiver_ty: &Ty,
     ) {
         let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
         let (declaring_module, trusted_compiled_stdlib) = self
@@ -1884,10 +1301,19 @@ impl Checker {
                                 extern_identity.signature_key
                             ),
                         },
-                        |declaration| CallTarget::Extern {
-                            declaration,
-                            endpoint: extern_identity.endpoint.clone(),
-                            trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                        |declaration| {
+                            self.publish_extern_method_signature(
+                                &declaration,
+                                &extern_identity,
+                                sig,
+                                receiver_ty,
+                                consumes_receiver,
+                            );
+                            CallTarget::Extern {
+                                declaration,
+                                endpoint: extern_identity.endpoint.clone(),
+                                trusted_compiled_stdlib: extern_identity.trusted_compiled_stdlib,
+                            }
                         },
                     )
             },
@@ -1904,9 +1330,50 @@ impl Checker {
                 extern_identity: Some(extern_identity),
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
                 returns_receiver_identity: false,
             },
         );
+    }
+
+    /// Publish the declared C-boundary signature of one `#[extern_symbol]`
+    /// method so later stages call through the declaration rather than
+    /// re-deriving a signature from the endpoint spelling.
+    fn publish_extern_method_signature(
+        &mut self,
+        declaration: &crate::DefId,
+        identity: &ExternMethodCallIdentity,
+        sig: &FnSig,
+        receiver_ty: &Ty,
+        consumes_receiver: bool,
+    ) {
+        // A receiver method's signature carries only its explicit parameters;
+        // the C boundary takes the receiver first, exactly as the source
+        // declaration spells it.
+        let params = std::iter::once(receiver_ty.clone())
+            .chain(sig.params.iter().cloned())
+            .map(|ty| self.subst.resolve(&ty).materialize_literal_defaults())
+            .collect::<Vec<_>>();
+        let consumes = std::iter::once(consumes_receiver)
+            .chain(
+                sig.param_ownership
+                    .iter()
+                    .map(|ownership| *ownership == crate::env::ParameterOwnership::Consume),
+            )
+            .collect();
+        let signature = crate::check::types::ExternMethodSignature {
+            endpoint: identity.endpoint.clone(),
+            params,
+            consumes,
+            result: self
+                .subst
+                .resolve(&sig.return_type)
+                .materialize_literal_defaults(),
+            declaring_module: identity.declaring_module.clone(),
+        };
+        self.extern_method_signatures
+            .insert((declaration.clone(), identity.endpoint.clone()), signature);
     }
 
     fn record_monomorphic_extern_symbol_rewrite_if_any(
@@ -1914,6 +1381,7 @@ impl Checker {
         sig: &FnSig,
         signature_key: &str,
         span: &Span,
+        receiver_ty: &Ty,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
             return false;
@@ -1940,6 +1408,8 @@ impl Checker {
             span,
             spec.template.raw.clone(),
             signature_key.to_string(),
+            sig,
+            receiver_ty,
         );
         true
     }
@@ -1951,6 +1421,7 @@ impl Checker {
         method: &str,
         sig: &FnSig,
         span: &Span,
+        receiver_ty: &Ty,
     ) -> bool {
         let Some(spec) = &sig.extern_symbol else {
             return false;
@@ -1967,6 +1438,8 @@ impl Checker {
                 span,
                 spec.template.raw.clone(),
                 signature_key,
+                sig,
+                receiver_ty,
             );
             return true;
         }
@@ -2018,6 +1491,8 @@ impl Checker {
             span,
             expanded,
             format!("{receiver_type_name}::{method}"),
+            sig,
+            receiver_ty,
         );
         true
     }
@@ -2036,11 +1511,11 @@ impl Checker {
         let Some(marker) = (match (receiver_builtin, method) {
             (BuiltinType::Option, "is_some") => Some(M::OptionIsSome),
             (BuiltinType::Option, "is_none") => Some(M::OptionIsNone),
-            (BuiltinType::Option, "unwrap") => Some(M::OptionUnwrap),
+            (BuiltinType::Option, "expect") => Some(M::OptionExpect),
             (BuiltinType::Option, "unwrap_or") => Some(M::OptionUnwrapOr),
             (BuiltinType::Result, "is_ok") => Some(M::ResultIsOk),
             (BuiltinType::Result, "is_err") => Some(M::ResultIsErr),
-            (BuiltinType::Result, "unwrap") => Some(M::ResultUnwrap),
+            (BuiltinType::Result, "expect") => Some(M::ResultExpect),
             (BuiltinType::Result, "unwrap_or") => Some(M::ResultUnwrapOr),
             _ => None,
         }) else {
@@ -2090,10 +1565,10 @@ impl Checker {
             (receiver_builtin, method),
             (
                 Some(BuiltinType::Option),
-                "is_some" | "is_none" | "unwrap" | "unwrap_or"
+                "is_some" | "is_none" | "expect" | "unwrap_or"
             ) | (
                 Some(BuiltinType::Result),
-                "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+                "is_ok" | "is_err" | "expect" | "unwrap_or"
             )
         )
     }
@@ -2105,6 +1580,7 @@ impl Checker {
         method: &str,
         args: &[CallArg],
         span: &Span,
+        receiver_ty: &Ty,
     ) -> Option<Ty> {
         let sig = self.lookup_named_method_sig(receiver_type_name, type_args, method)?;
         sig.extern_symbol.as_ref()?;
@@ -2130,7 +1606,7 @@ impl Checker {
                 owner_type_args: type_args,
             }),
         );
-        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span);
+        self.record_monomorphic_extern_symbol_rewrite_if_any(&sig, &method_key, span, receiver_ty);
         Some(applied_sig.return_type)
     }
 
@@ -2256,18 +1732,7 @@ impl Checker {
             self.current_module.clone(),
             self.current_module_idx,
             module_name.to_string(),
-        )) || crate::stdlib_authority::authority()
-            .prelude_exports()
-            .iter()
-            .filter(|export| export.kind == crate::PreludeExportKind::Module)
-            .any(|export| {
-                export.alias.as_deref().unwrap_or_else(|| {
-                    export
-                        .module
-                        .rsplit_once('.')
-                        .map_or(export.module.as_str(), |(_, leaf)| leaf)
-                }) == module_name
-            })
+        ))
     }
 
     /// Whether this module spelling resolves to a user-source declaration.
@@ -2314,30 +1779,6 @@ impl Checker {
             if owner == rejection.module && method == rejection.function {
                 self.reject_wasm_feature(span, rejection.feature);
             }
-        }
-    }
-
-    /// Attach the shared inferred element type to channel endpoints without
-    /// reconstructing the declaration's surrounding return type.
-    fn instantiate_channel_constructor_return(return_type: &Ty, element: &Ty) -> Ty {
-        match return_type {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } if args.is_empty() => {
-                match (*builtin).or_else(|| crate::builtin_type::lookup_builtin_type(name)) {
-                    Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)) => Ty::Named {
-                        name: name.clone(),
-                        args: vec![element.clone()],
-                        builtin: Some(kind),
-                    },
-                    _ => return_type.clone(),
-                }
-            }
-            _ => return_type.map_children_pub(&|child| {
-                Self::instantiate_channel_constructor_return(child, element)
-            }),
         }
     }
 
@@ -2403,7 +1844,7 @@ impl Checker {
         // Active-mode transport `attach(handler)` methods rewrite to
         // callee-name-dispatch symbols intercepted by the LLVM backend. The
         // backend resolves the concrete actor type from the `handler` arg's
-        // recorded `LocalPid<Actor>` (the structural handler coercion
+        // recorded actor-handle type (the structural handler coercion
         // deliberately does not erase that recorded type), synthesises each
         // transport protocol's handler `msg_id`s, and emits the real four-arg
         // runtime attach ABI. The source impl bodies are stubs, so these
@@ -2482,9 +1923,8 @@ impl Checker {
     /// resolves to a fieldless `#[opaque]` runtime handle: the receiver value is
     /// itself the runtime pointer, so a handle-method call is safe to rewrite to
     /// a direct extern that takes the receiver as the handle argument. False for
-    /// a fielded `#[resource]` wrapper — whose qualified name is not in the
-    /// opaque `handle_types` set and whose short name matches no fieldless
-    /// handle — so its methods keep dispatching through their real impl body.
+    /// a fielded `#[resource]` wrapper: its exact source declaration is not
+    /// an opaque handle, so its methods dispatch through their real impl body.
     pub(super) fn receiver_is_opaque_handle(&self, name: &str) -> bool {
         self.module_registry.is_handle_type(name)
     }
@@ -2773,9 +2213,9 @@ impl Checker {
     /// (`bank`), whereas the checker registers the actor under its exact source
     /// owner (`hew.bank.Account`, keyed off `current_module`). Left raw, the
     /// alias-prefixed string never matches the canonical `fn_sigs` /
-    /// `actor_init_params` / `type_defs` keys, so a `LocalPid<bank.Account>`
-    /// finds no `receive fn` and every wall keyed on the actor identity silently
-    /// skips.
+    /// `actor_init_params` / `type_defs` keys, so `bank.Account`'s own
+    /// actor-handle type finds no `receive fn` and every wall keyed on the
+    /// actor identity silently skips.
     ///
     /// Resolve dotted module bindings and bare named/aliased import bindings
     /// through the same lexical facts ordinary type resolution consumes. A
@@ -3082,8 +2522,20 @@ impl Checker {
                 None,
                 args,
                 span,
-                SignatureArgApplication::PositionalOnly {
-                    arity_context: format!("method `{method}`"),
+                if sig.return_type == Ty::Unit
+                    && self
+                        .actor_receive_methods
+                        .contains(&format!("{canonical_name}::{method}"))
+                {
+                    SignatureArgApplication::FunctionLike {
+                        param_names: &sig.param_names,
+                        accepts_kwargs: false,
+                        module_qualified: false,
+                    }
+                } else {
+                    SignatureArgApplication::PositionalOnly {
+                        arity_context: format!("method `{method}`"),
+                    }
                 },
                 true,
                 Some(GenericCallee::Method {
@@ -3165,6 +2617,8 @@ impl Checker {
                 extern_identity: None,
                 elem_ty: None,
                 consumes_receiver,
+                requires_mutable_receiver: sig.requires_mutable_receiver,
+                receiver_update: sig.receiver_update,
                 returns_receiver_identity: sig.returns_receiver_identity,
             },
         );
@@ -3575,26 +3029,6 @@ impl Checker {
                         },
                     );
                     self.enforce_actor_method_send_args(args);
-                    // Ask-without-await guard: if this receive fn returns a value
-                    // (ask-shaped), is not a generator (those use `for await`, not
-                    // bare `await`), and the call is not directly under `await`,
-                    // reject it with a clear diagnostic pointing at the fix.
-                    let resolved_ty = self.subst.resolve(&ty);
-                    let is_ask_shaped = !matches!(resolved_ty, Ty::Unit)
-                        && !self.receive_generator_methods.contains(&method_key);
-                    if is_ask_shaped && !self.inside_await_expr {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!(
-                                "actor ask `{name}.{method_name}` requires `await`; \
-                                 write `let v? = await ref.{method_name}(...)` \
-                                 or `match await ref.{method_name}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
-                            ),
-                        );
-                        // Still record the dispatch so HIR/MIR have a sane entry; the
-                        // type checker already emitted the error so this is recovery.
-                    }
                     return self.record_actor_method_dispatch(span, method_key, ty.clone());
                 }
                 self.record_method_call_receiver_kind(
@@ -3698,16 +3132,6 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    RecordCloneAdmissibility::UnbalancedSharedHandle { type_name, member } => {
-                        let receiver_name = receiver_ty.user_facing().to_string();
-                        self.report_unbalanced_shared_handle_clone_error(
-                            &receiver_name,
-                            &type_name,
-                            &member,
-                            span,
-                        );
-                        return Ty::Error;
-                    }
                     RecordCloneAdmissibility::GenericRecord => {
                         self.report_error(
                             TypeErrorKind::UndefinedMethod,
@@ -3803,12 +3227,40 @@ impl Checker {
         let field_ty =
             Self::instantiate_type_def_member(field_ty, &type_def.type_params, type_args);
         let resolved_field = self.subst.resolve(&field_ty);
+        // A record field holding a lambda-actor handle answers a call the same
+        // way the handle does: `job.run(3)` is the completion call on the
+        // stored handle, not an indirect function call.
+        if let Ty::Named {
+            args: ref type_args,
+            builtin: Some(crate::BuiltinType::ActorFn),
+            ..
+        } = resolved_field
+        {
+            if type_args.len() == 2 {
+                let type_args = type_args.clone();
+                let call =
+                    self.check_lambda_actor_call(&resolved_field, &type_args, args, span, None);
+                // The delivery receiver is the field read, so record the
+                // field's exact type for the lowering that builds it.
+                if let Ok(field_resolved) = crate::resolved_ty::ResolvedTy::from_ty(&resolved_field)
+                {
+                    self.record_method_call_rewrite(
+                        span,
+                        MethodCallRewrite::RecordFnFieldCall {
+                            field_ty: field_resolved,
+                        },
+                    );
+                }
+                return Some(call);
+            }
+        }
         let (params, ret) = match &resolved_field {
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+            Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 (params.clone(), (**ret).clone())
             }
             _ => return None,
         };
+        self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
         if args.len() != params.len() {
             self.report_error(
                 TypeErrorKind::ArityMismatch,
@@ -3842,14 +3294,14 @@ impl Checker {
     /// folding a single leading unary negation (`-2` parses as
     /// `Unary { Negate, Literal::Integer(2) }`).  Returns `None` for any
     /// non-literal expression — those are validated at runtime, never const.
-    fn literal_integer_value(expr: &Expr) -> Option<i64> {
+    fn literal_integer_value(expr: &Expr) -> Option<i128> {
         match expr {
             Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
             Expr::Unary {
                 op: UnaryOp::Negate,
                 operand,
             } => match &operand.0 {
-                Expr::Literal(Literal::Integer { value, .. }) => Some(value.wrapping_neg()),
+                Expr::Literal(Literal::Integer { value, .. }) => value.checked_neg(),
                 _ => None,
             },
             _ => None,
@@ -3946,9 +3398,6 @@ impl Checker {
                 CloneCapabilityBlocker::Missing { member, member_ty } => {
                     RecordCloneAdmissibility::MissingClone { member, member_ty }
                 }
-                CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
-                    RecordCloneAdmissibility::UnbalancedSharedHandle { type_name, member }
-                }
             };
         }
         // An enum is clone-eligible via the enum twin of the record thunk. It is
@@ -4009,48 +3458,6 @@ impl Checker {
         )
     }
 
-    /// Diagnostic for a refcounted shared handle sitting inside an aggregate.
-    ///
-    /// Names the exact member path so the programmer can see which leaf blocks
-    /// the clone, and states the mechanism rather than a bare "not supported".
-    fn unbalanced_shared_handle_clone_error_message(
-        receiver_name: &str,
-        type_name: &str,
-        member: &str,
-    ) -> String {
-        format!(
-            "type `{receiver_name}` cannot be cloned because member `{member}` of type \
-             `{type_name}` is a shared refcounted handle with no aggregate-ingress retain: \
-             the composite drop would release it once per owner"
-        )
-    }
-
-    fn report_unbalanced_shared_handle_clone_error(
-        &mut self,
-        receiver_name: &str,
-        type_name: &str,
-        member: &str,
-        span: &Span,
-    ) {
-        let message =
-            Self::unbalanced_shared_handle_clone_error_message(receiver_name, type_name, member);
-        // Deliberately NO workaround: cloning the handle on its own and
-        // rebuilding the aggregate re-enters the same ingress path and aborts
-        // at `hew-runtime/src/rc.rs` `Rc double-free`. Suggesting it would hand
-        // the programmer a crash. State the limitation instead.
-        self.report_error_with_suggestions(
-            TypeErrorKind::UndefinedMethod,
-            span,
-            message,
-            vec![format!(
-                "this is a known gap in shared-handle ownership, not a property of \
-                 `{receiver_name}`; a fix is pending. Until then keep the `{type_name}` handle \
-                 out of a cloned aggregate — pass the aggregate by move, or hold the handle in a \
-                 collection (`Vec<{type_name}>`), whose element clone retains correctly"
-            )],
-        );
-    }
-
     fn clone_member_path(parent: &str, member: &str) -> String {
         if parent.is_empty() {
             member.to_string()
@@ -4060,7 +3467,7 @@ impl Checker {
     }
 
     fn structural_clone_blocker(&self, ty: &Ty) -> Option<CloneCapabilityBlocker> {
-        self.structural_clone_blocker_inner(ty, "", false, &mut std::collections::HashSet::new())
+        self.structural_clone_blocker_inner(ty, "", &mut std::collections::HashSet::new())
     }
 
     /// Validate the exceptional element types that cannot use `Vec`'s
@@ -4100,19 +3507,10 @@ impl Checker {
         clippy::too_many_lines,
         reason = "the closed member walk keeps clone refusal paths aligned with every stored shape"
     )]
-    /// `in_value_aggregate` is true only when this position is a member of a
-    /// VALUE aggregate — a tuple element, an `Option`/`Result` payload, a record
-    /// field, or an enum variant payload. It is deliberately NOT inherited: a
-    /// builtin heap container resets it for its own elements, because a
-    /// container clones its elements through the owned-element thunk (which
-    /// retains) rather than by bit-copying a shared handle into a second
-    /// composite drop plan. `clone Vec<Rc<T>>` is balanced today and must stay
-    /// admitted; `clone (Rc<T>, string)` is not.
     fn structural_clone_blocker_inner(
         &self,
         ty: &Ty,
         path: &str,
-        in_value_aggregate: bool,
         visiting: &mut std::collections::HashSet<String>,
     ) -> Option<CloneCapabilityBlocker> {
         use hew_parser::ast::ResourceMarker;
@@ -4123,7 +3521,7 @@ impl Checker {
                 for (index, item) in items.iter().enumerate() {
                     let member = Self::clone_member_path(path, &index.to_string());
                     if let Some(blocker) =
-                        self.structural_clone_blocker_inner(item, &member, true, visiting)
+                        self.structural_clone_blocker_inner(item, &member, visiting)
                     {
                         return Some(blocker);
                     }
@@ -4134,14 +3532,6 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                if in_value_aggregate
-                    && matches!(builtin, Some(BuiltinType::Rc | BuiltinType::Weak))
-                {
-                    return Some(CloneCapabilityBlocker::UnbalancedSharedHandle {
-                        type_name: resolved.user_facing().to_string(),
-                        member: path.to_string(),
-                    });
-                }
                 if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
@@ -4154,11 +3544,9 @@ impl Checker {
                 // `enforce_type_param_bounds` rejects an argument that does not
                 // satisfy the bound — so an affine resource can never reach a
                 // `T: Clone` position. This is the single template-capability
-                // authority; structural equality applies the same split from
-                // the other side (see `finalize_generic_structural_eq`), where
-                // the checker re-runs the eligibility walk per instantiation
-                // because a semantic `Eq` bound does not imply a structural
-                // compare path.
+                // authority for Clone. Equality demands use
+                // `finalize_eq_requirements` to select the exact concrete Eq
+                // implementation at each instantiation.
                 if let Some(capability) = self.type_param_template_clone_capability(&resolved) {
                     return if capability {
                         None
@@ -4205,7 +3593,7 @@ impl Checker {
                         };
                         let member = Self::clone_member_path(path, label);
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(arg, &member, true, visiting)
+                            self.structural_clone_blocker_inner(arg, &member, visiting)
                         {
                             return Some(blocker);
                         }
@@ -4221,7 +3609,7 @@ impl Checker {
                         };
                         let member = Self::clone_member_path(path, &label);
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(arg, &member, false, visiting)
+                            self.structural_clone_blocker_inner(arg, &member, visiting)
                         {
                             return Some(blocker);
                         }
@@ -4246,7 +3634,7 @@ impl Checker {
                         );
                         let member = Self::clone_member_path(path, field_name);
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(&field_ty, &member, true, visiting)
+                            self.structural_clone_blocker_inner(&field_ty, &member, visiting)
                         {
                             visiting.remove(&visit_key);
                             return Some(blocker);
@@ -4264,7 +3652,7 @@ impl Checker {
                         );
                         let member = Self::clone_member_path(path, &index.to_string());
                         if let Some(blocker) =
-                            self.structural_clone_blocker_inner(&field_ty, &member, true, visiting)
+                            self.structural_clone_blocker_inner(&field_ty, &member, visiting)
                         {
                             visiting.remove(&visit_key);
                             return Some(blocker);
@@ -4291,7 +3679,7 @@ impl Checker {
                                         &format!("{variant_name}.{index}"),
                                     );
                                     self.structural_clone_blocker_inner(
-                                        &field_ty, &member, true, visiting,
+                                        &field_ty, &member, visiting,
                                     )
                                 })
                             }
@@ -4307,7 +3695,7 @@ impl Checker {
                                         &format!("{variant_name}.{field_name}"),
                                     );
                                     self.structural_clone_blocker_inner(
-                                        &field_ty, &member, true, visiting,
+                                        &field_ty, &member, visiting,
                                     )
                                 })
                             }
@@ -4323,8 +3711,7 @@ impl Checker {
             }
             Ty::Array(elem, _) => {
                 let member = Self::clone_member_path(path, "element");
-                if let Some(blocker) =
-                    self.structural_clone_blocker_inner(elem, &member, false, visiting)
+                if let Some(blocker) = self.structural_clone_blocker_inner(elem, &member, visiting)
                 {
                     return Some(blocker);
                 }
@@ -4371,7 +3758,7 @@ impl Checker {
     /// name found, or `None` if clean. Uses `canonical_owned_handle_type_name`
     /// as the single opaque-detection authority (mirrors `ty_contains_owned_handle`
     /// in `registration.rs`); the substitution mirrors
-    /// `vec_element_contains_structural_array` (admissibility.rs).
+    /// the ordinary recursive member walk.
     fn record_field_contains_opaque(
         &self,
         name: &str,
@@ -4465,7 +3852,7 @@ impl Checker {
     ) -> Option<String> {
         // Resolve inference vars so a field whose type is still a `Ty::Var`
         // bound in the substitution environment is walked at its concrete type
-        // (mirrors `vec_element_contains_structural_array`).
+        // through each concrete member.
         let resolved = self.subst.resolve(ty);
         match &resolved {
             Ty::Named {
@@ -4480,7 +3867,7 @@ impl Checker {
                         Some(
                             crate::BuiltinType::Sender
                                 | crate::BuiltinType::Receiver
-                                | crate::BuiltinType::LocalPid
+                                | crate::BuiltinType::ActorHandle
                                 | crate::BuiltinType::RemotePid
                         )
                     )
@@ -4622,12 +4009,29 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            "chunks" => {
+            // The lazy adaptors: each consumes its source stream and returns a
+            // fresh one. The runtime adaptors work on the type-erased envelope,
+            // so only the content witnesses (`string`, `bytes`) reach them;
+            // `chunks` counts bytes on both.
+            "lines" | "chunks" | "take" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, param_ty);
                     }
+                }
+                if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`Stream<{}>.{method}` is not supported: the stream \
+                             adaptors read the content witness, so they need a \
+                             `string` or `bytes` element",
+                            inner.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
                 }
                 let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
@@ -4644,17 +4048,13 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            "take" | "map" | "filter" => {
-                // These lazy adapters have builtin signatures (so they
-                // type-check) but no MIR lowering: they routed to the legacy
-                // `DeferToLowering` codegen path the Rust MIR pipeline does not
-                // consume, dead-ending in HIR lowering with two misleading,
-                // internal-shaped `E_NOT_YET_IMPLEMENTED` notes. Fail closed here
-                // at the checker with one honest capability-boundary diagnostic
-                // so the user sees a single clear message pointing at the
-                // supported alternative, and lowering never reaches the stub.
-                // Still check the argument so an ill-typed adapter arg is not
-                // masked by this boundary error.
+            "map" | "filter" => {
+                // `map`/`filter` carry a user callback, so they have no
+                // type-erased runtime row the way `lines`/`chunks`/`take` do
+                // (`builtin_names` gives them `BuiltinMethodRuntime::None`).
+                // Fail closed here with one honest capability-boundary
+                // diagnostic pointing at the supported alternative. Still check
+                // the argument so an ill-typed adapter arg is not masked.
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
@@ -4668,10 +4068,10 @@ impl Checker {
                     },
                     span,
                     format!(
-                        "`Stream<{}>.{method}` is not yet supported: the lazy \
-                         stream adapters (`take`/`map`/`filter`) have no lowering \
-                         yet; consume the stream directly with `for await x in \
-                         s {{ ... }}` (applying the `take`/`map`/`filter` logic in \
+                        "`Stream<{}>.{method}` is not yet supported: the \
+                         callback adapters (`map`/`filter`) have no lowering \
+                         yet; consume the stream directly with `for x in \
+                         s {{ ... }}` (applying the `map`/`filter` logic in \
                          the loop body), or `.recv()` in a loop \
                          [E_STREAM_ADAPTER_UNSUPPORTED]",
                         inner.user_facing()
@@ -4767,12 +4167,12 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
                 // Return type depends on reply direction, mirroring call-syntax dispatch:
                 //   tell-shaped (R = ())  → Result<(), SendError>
-                //   ask-shaped  (R = R)   → Result<R, AskError>
+                //   ask-shaped  (R = R)   → Result<R, ActorError>
                 let resolved_r = self.subst.resolve(&r_ty);
                 if matches!(resolved_r, Ty::Unit) {
                     Ty::result(Ty::Unit, Ty::send_error())
                 } else {
-                    Ty::result(resolved_r, Ty::ask_error())
+                    Ty::result(resolved_r, Ty::actor_error(Ty::never_type()))
                 }
             }
             "try_send" => {
@@ -4885,19 +4285,16 @@ impl Checker {
         }
     }
 
-    /// Type-check a method call on `LambdaPid<M, R>` — the lambda-actor handle.
+    /// Type-check a method call on `actor(M) -> R` — the lambda-actor handle.
     ///
     /// Wired methods (the actor surface, NOT the channel surface):
     ///   - `.send(msg: M)` → `Result<(), SendError>` (tell-shaped, R = ()) or
     ///     `Result<R, AskError>` (ask-shaped). Verifies `M: @send`. Secondary
-    ///     surface to the canonical call-syntax `handle(msg)`; both route
-    ///     through `Place::LambdaActorHandle` to `hew_lambda_actor_send` at MIR.
+    ///     surface to the canonical call-syntax `handle(msg)`.
     ///   - `.close()` → `()` — consuming; moves the handle. Deliberately returns
     ///     plain `()` rather than `Result<(), CloseError>` (unlike `Duplex::close`):
     ///     the lambda-actor release is unconditionally successful, and the
-    ///     `CloseError` layout is not yet codegen-able. Lowers to
-    ///     `hew_lambda_actor_release` via the `Place::LambdaActorHandle` drop
-    ///     discriminator.
+    ///     `CloseError` layout is not yet codegen-able.
     ///
     /// `.recv()` / `.try_recv()` / `.try_send()` / `.send_half()` / `.recv_half()`
     /// are NOT a lambda-actor surface: a lambda actor is not a channel. The caller
@@ -4912,8 +4309,8 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        // Extract M and R from LambdaPid<M, R>; fabricate fresh vars if malformed.
-        let (m_ty, r_ty) = if let [m, r] = type_args {
+        // Extract M and R from the `actor(M) -> R` handle; fabricate fresh vars if malformed.
+        let (m_ty, _r_ty) = if let [m, r] = type_args {
             (m.clone(), r.clone())
         } else {
             for arg in args {
@@ -4923,7 +4320,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
-                "internal error: LambdaPid type has wrong arity".to_string(),
+                "internal error: actor(M) -> R handle type has wrong arity".to_string(),
             );
             return Ty::Error;
         };
@@ -4935,7 +4332,7 @@ impl Checker {
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid.send expects one argument (the message), but {} were supplied",
+                            "`send` on an actor handle expects one argument (the message), but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4956,30 +4353,22 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-send entry hint; MIR's `lower_duplex_send`
-                // re-routes by `Place::LambdaActorHandle` to `hew_lambda_actor_send`
-                // (the two-level checker-type vs MIR-discriminator design).
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
-                // Return type depends on reply direction, mirroring call-syntax dispatch:
-                //   tell-shaped (R = ())  → Result<(), SendError>
-                //   ask-shaped  (R = R)   → Result<R, AskError>
-                let resolved_r = self.subst.resolve(&r_ty);
-                if matches!(resolved_r, Ty::Unit) {
-                    Ty::result(Ty::Unit, Ty::send_error())
-                } else {
-                    Ty::result(resolved_r, Ty::ask_error())
-                }
+                // `.send(msg)` is the same completion call as `handle(msg)`,
+                // so it publishes the same dispatch and yields the same
+                // envelope rather than a second spelling with its own
+                // delivery and error type.
+                self.check_lambda_actor_call(receiver_ty, type_args, args, span, None)
             }
             "close" => {
                 // No arguments expected. Synthesize any supplied args for
                 // recovery diagnostics, but do not accept them: MIR lowers only
-                // the receiver for LambdaPid::close.
+                // the receiver for the handle's close.
                 if !args.is_empty() {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
                         span,
                         format!(
-                            "LambdaPid.close expects no arguments, but {} were supplied",
+                            "`close` on an actor handle expects no arguments, but {} were supplied",
                             args.len()
                         ),
                     );
@@ -4988,15 +4377,14 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                // Records the duplex-close rewrite symbol.  MIR's
-                // `lower_duplex_close` routes by the receiver's `Place` variant:
-                //   - `Place::LambdaActorHandle` → `hew_lambda_actor_release`
-                //     (the lambda stop-on-last-drop ritual).
-                //   - anything else → raw `Duplex` close (not yet lowered).
-                // Mirrors `.send`'s two-level routing: checker records one symbol;
-                // MIR selects the real ABI from the Place discriminator.
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
-                // Consuming: the LambdaPid<M, R> binding is moved.
+                // `.close()` is the same terminal release `close(handle)`
+                // performs on any local actor handle.
+                self.actor_delivery_calls.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    crate::actor_delivery::ActorDeliveryCall::Close,
+                );
+                self.record_submission_suspension(span, true);
+                // Consuming: the actor(M) -> R handle binding is moved.
                 self.method_call_consumes_receiver
                     .insert(SpanKey::in_module(span, self.current_module_idx));
                 let resolved_recv = self.subst.resolve(receiver_ty);
@@ -5219,9 +4607,14 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        if let Some(ret_ty) =
-            self.dispatch_monomorphic_extern_symbol_method("string", &[], method, args, span)
-        {
+        if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+            "string",
+            &[],
+            method,
+            args,
+            span,
+            &Ty::String,
+        ) {
             return ret_ty;
         }
         self.check_primitive_receiver_method_fallback(&Ty::String, "string", method, args, span)
@@ -5366,7 +4759,7 @@ impl Checker {
         let resolved =
             resolve_method_call(&registry, trait_name, method, receiver, &|marker, ty| {
                 let ty = Self::dispatch_pattern_to_ty(ty);
-                self.registry.implements_marker(&ty, marker)
+                self.collection_key_marker_available(&ty, marker)
             });
         match resolved {
             Ok(call) => {
@@ -5581,12 +4974,37 @@ impl Checker {
         if !self.resolved_calls.contains_key(&key) {
             return;
         }
+        // `append` gives the receiver its own copy of every source element, so
+        // an element that owns a closure environment has nothing to copy: a
+        // shallow buffer copy would leave two owners of one environment.
+        if vec_method == VecMethod::Append
+            && matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. })
+        {
+            self.report_vec_symbol_unsupported(
+                vec_method,
+                &elem_ty,
+                crate::vec_authority::VecUnsupported::FunctionSharedCopy,
+                span,
+            );
+            self.resolved_calls.remove(&key);
+            return;
+        }
+        if let Some(op) = crate::VecValueOp::from_method(vec_method) {
+            // Final value operations retain semantic identity. Element ABI
+            // selection belongs to physical MIR after concrete type demand.
+            self.resolved_calls
+                .get_mut(&key)
+                .expect("resolved Vec call")
+                .method_target
+                .symbol_name = crate::RuntimeCallFamily::Vector(op).c_symbol().to_string();
+            return;
+        }
 
         let is_abstract = self.vec_element_contains_abstract_type_param(&elem_ty);
         let is_copy_layout = self.vec_element_has_copy_layout(&elem_ty);
         let profile = crate::vec_authority::VecElementProfile {
             abi: crate::vec_authority::classify_element(&elem_ty, &self.type_defs),
-            is_owned: !is_copy_layout && self.vec_owned_element_admissible(&elem_ty),
+            is_owned: self.element_owns_heap(&elem_ty),
             is_copy_layout,
             is_function_like: matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }),
             is_abstract,
@@ -5621,6 +5039,13 @@ impl Checker {
         reason: crate::vec_authority::VecUnsupported,
         span: &Span,
     ) {
+        // A class-rule refusal keeps its own kind and message: the element has
+        // no class at all, so naming the runtime symbol it would have selected
+        // would blame the method for the declaration's limit.
+        if let Some((kind, refusal)) = self.element_admission_refusal(elem_ty) {
+            self.report_error(kind, span, refusal);
+            return;
+        }
         let message = match reason {
             crate::vec_authority::VecUnsupported::FunctionGet => {
                 "`Vec.get` on a function/closure element is not supported under \
@@ -5640,12 +5065,12 @@ impl Checker {
                 bitcopy_supported,
             } => {
                 if bitcopy_supported {
-                    let why = self.vec_element_rejection_reason(elem_ty);
                     format!(
-                        "`{}` cannot be a `Vec` element for `Vec.{}`: {why} \
-                         (runtime symbol `{expected_symbol}`)",
-                        elem_ty.user_facing(),
-                        method.name()
+                        "`Vec.{}` on `{}` is not runtime-backed: its value class needs a copy \
+                         this operation has no symbol for (runtime symbol \
+                         `{expected_symbol}`)",
+                        method.name(),
+                        elem_ty.user_facing()
                     )
                 } else {
                     format!(
@@ -5735,7 +5160,7 @@ impl Checker {
     /// and `string` elements unconditionally, and pointer / layout-descriptor
     /// elements **only when the element is `Copy`**. The `Copy` gate is what
     /// makes the pointer and layout arms safe: it admits identity handles
-    /// (`LocalPid`) and bit-copy value records, while deferring
+    /// (actor handles) and bit-copy value records, while deferring
     /// every shape with an ownership contract — owned heap-handles, non-`Copy`
     /// records, closures (each owns a captured environment), and nested
     /// collections (each owns a backing store). Those would alias an owner
@@ -5915,6 +5340,7 @@ impl Checker {
             RetTemplate::I64 => Ty::I64,
             RetTemplate::VecOfKey => self.make_vec_type(cx.key.clone(), span),
             RetTemplate::VecOfVal => self.make_vec_type(cx.val.clone(), span),
+            RetTemplate::VecOfElem => self.make_vec_type(cx.elem.clone(), span),
             RetTemplate::VecOfPair => {
                 self.make_vec_type(Ty::Tuple(vec![cx.key.clone(), cx.val.clone()]), span)
             }
@@ -5954,14 +5380,23 @@ impl Checker {
             CollectionKind::HashMap => {
                 // Owned-vs-key_value validator split (deliberate per-arm asymmetry).
                 let validated = match method {
-                    "insert" | "get" | "remove" => {
+                    "insert" | "get" | "remove" | "keys" | "values" | "entries" => {
                         self.validate_hashmap_owned_element_types(&cx.key, &cx.val, span)
                     }
-                    "keys" | "values" | "entries" => self
-                        .validate_hashmap_projection_element_types(&cx.key, &cx.val, method, span),
                     _ => self.validate_hashmap_key_value_types(&cx.key, &cx.val, span),
                 };
                 if !validated {
+                    return false;
+                }
+                // Only the operations that copy a value out of the map need a
+                // value clone; `get` borrows and `remove` moves.
+                if matches!(method, "values" | "entries" | "clone")
+                    && !self.validate_hashmap_value_clone_type(
+                        &cx.val,
+                        &format!("HashMap.{method}()"),
+                        span,
+                    )
+                {
                     return false;
                 }
                 if matches!(
@@ -5971,6 +5406,7 @@ impl Checker {
                         | "remove"
                         | "contains_key"
                         | "len"
+                        | "is_empty"
                         | "keys"
                         | "values"
                         | "entries"
@@ -5994,7 +5430,14 @@ impl Checker {
                 self.record_hashset_lowering_fact(span, &cx.elem);
                 if matches!(
                     method,
-                    "insert" | "contains" | "remove" | "len" | "is_empty" | "clone" | "clear"
+                    "insert"
+                        | "contains"
+                        | "remove"
+                        | "len"
+                        | "is_empty"
+                        | "clone"
+                        | "clear"
+                        | "to_vec"
                 ) {
                     self.record_resolved_hashset_call(method, &cx.elem, span);
                 }
@@ -6124,9 +5567,26 @@ impl Checker {
                     canonical_receiver: "HashMap".to_string(),
                 },
             );
+            // D432: a value with no clone is read as a loan of the slot the
+            // map still owns, so `Some` carries the loan and the owning
+            // removal stays the way to move a value out.
+            let resolved_val = self.subst.resolve(&val_ty);
+            let Some(mode) = self.vec_iteration_element_mode(&resolved_val, span) else {
+                return Ty::Error;
+            };
             // Records the `Map::get` resolved call. `<HashMap<K, V> as
             // Index>::Output` is `V`, so the projected return is `Option<V>`.
             self.record_resolved_hashmap_call("get", &key_ty, &val_ty, span);
+            if mode == super::types::VecIterationMode::Borrow {
+                let key = SpanKey::in_module(span, self.current_module_idx);
+                self.borrowed_element_option_reads.insert(key.clone());
+                if let Some(call) = self.resolved_calls.get_mut(&key) {
+                    call.method_target.symbol_name =
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::GetBorrow)
+                            .c_symbol()
+                            .to_string();
+                }
+            }
             return Ty::option(val_ty);
         }
         // `HashMap::remove(k) -> Option<V>` (A233): the removing twin of `get`.
@@ -6162,17 +5622,13 @@ impl Checker {
         // abstract receiver the checker cannot admit (see std/builtins.hew).
         if method == "into_iter" {
             self.check_arity(args, 0, "`HashMap.into_iter`", span);
+            if !self.validate_hashmap_value_clone_type(&val_ty, "HashMap.into_iter()", span) {
+                return Ty::Error;
+            }
             let keys_span = span.start..span.start;
             let values_span = span.end..span.end;
             let mut iter_ty = Ty::Error;
-            if self.validate_hashmap_projection_element_types(&key_ty, &val_ty, "keys", &keys_span)
-                && self.validate_hashmap_projection_element_types(
-                    &key_ty,
-                    &val_ty,
-                    "values",
-                    &values_span,
-                )
-            {
+            if self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
                 let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
                 let val_vec = self.make_vec_type(val_ty.clone(), &values_span);
                 self.record_type(&keys_span, &key_vec);
@@ -6414,133 +5870,6 @@ impl Checker {
         );
     }
 
-    /// Decide whether a non-Copy `Vec<T>` element type may route through the
-    /// W5.016 owned-element ABI (`hew_vec_*_owned`).
-    ///
-    /// Admissible when the element is a user record or enum whose concrete
-    /// fields have clone/drop thunks. Tuple
-    /// elements are NOT yet admitted here: their `__hew_tuple_*_inplace` thunk
-    /// synthesis lands in a later slice; until then they stay fail-closed.
-    ///
-    /// Stays fail-closed for every element that lacks a thunk path: an element
-    /// containing a `Vec`/`HashMap`/`HashSet` field (general container-in-
-    /// container clone/drop is a separate lane) and any non-record/enum nominal.
-    /// Explain why a non-`Copy` Vec element type was rejected at construction,
-    /// for use in the fail-closed diagnostic. Returns a clause that completes
-    /// "element type `X` cannot be a Vec element: {clause}". Only called on the
-    /// non-`Copy` + not-admissible path, so the element genuinely lacks a Vec
-    /// lowering today.
-    ///
-    /// Distinguishes the common self-recursive / container-in-container case
-    /// (`enum R { Array(Vec<R>); ... }`) — which IS owned but needs the
-    /// recursive owned-thunk synthesis that is a separate follow-on — from a
-    /// generically unsupported element shape, so the message does not
-    /// misleadingly blame `Copy` or name `hew_vec_new_with_layout` for an
-    /// owned enum.
-    pub(super) fn vec_element_rejection_reason(&self, elem_ty: &Ty) -> String {
-        if matches!(elem_ty, Ty::Tuple(_)) {
-            if self.vec_element_contains_function(elem_ty, &mut HashSet::new()) {
-                return "it contains a function value, whose closure environment cannot be \
-                        cloned by the owned-element Vec runtime"
-                    .to_string();
-            }
-            if self.vec_element_contains_unowned_container(
-                elem_ty,
-                &HashSet::new(),
-                &mut HashSet::new(),
-            ) {
-                return "it contains a `Vec`/`HashMap`/`HashSet` field, which cannot be \
-                        cloned from inside a nested tuple element"
-                    .to_string();
-            }
-        }
-        if let Ty::Named {
-            name,
-            builtin,
-            args,
-        } = elem_ty
-        {
-            if builtin.is_none() {
-                if let Some(type_def) = self.type_defs.get(name) {
-                    if matches!(type_def.kind, TypeDefKind::Machine) {
-                        if !args.is_empty() {
-                            return "a generic machine instantiation has no \
-                                    per-instantiation layout (machines canonicalize to one \
-                                    bare-named declaration layout); only monomorphic \
-                                    machine values can ride the owned-element queue witness"
-                                .to_string();
-                        }
-                        // Monomorphic machine: valid as a channel/queue element
-                        // but not as a Vec element — there is no
-                        // `__hew_machine_*_inplace` Vec thunk synthesis path
-                        // today. Use a channel to pass machine snapshots.
-                        return "machine values cannot be `Vec` elements; \
-                                use a channel (`Sender<M>`/`Receiver<M>`) to \
-                                pass machine snapshots between actors"
-                            .to_string();
-                    }
-                    let is_record_or_enum = matches!(
-                        type_def.kind,
-                        TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                    );
-                    if is_record_or_enum
-                        && !self
-                            .record_enum_collection_fields_clonable(elem_ty, &mut HashSet::new())
-                    {
-                        return "it contains a `Vec`/`HashMap`/`HashSet` field whose \
-                                element type has no clone/drop thunk path for the \
-                                owned-element Vec runtime (a function/closure, machine, \
-                                opaque, or `Rc` leaf, or a mutually recursive type with \
-                                no container indirection)"
-                            .to_string();
-                    }
-                }
-            }
-        }
-        "it has no clone/drop thunk path for the owned-element Vec runtime".to_string()
-    }
-
-    /// #2647 — converge the MIR indirect-enum Vec-element reject at the checker
-    /// boundary. An `indirect enum` element takes the `Ptr` token in
-    /// [`classify_element`](crate::vec_authority::classify_element) (its `Vec`
-    /// buffer is one heap-boxed node pointer per slot, built by codegen's
-    /// `hew_vec_new_ptr` arm), so it never reaches the `Layout`-gated
-    /// admissibility check the record/enum arms consult — the checker admits it
-    /// today, then MIR rejects it with `Unsupported(NoReleaseProtocol)` because
-    /// the per-element node free is unwired. The two verdicts diverge: the
-    /// authoritative type-checker reports no error while the downstream MIR pass
-    /// fails closed.
-    ///
-    /// This surfaces the SAME release-protocol reason at the checker boundary
-    /// (where the element type is already known), matching MIR's reject for
-    /// EVERY indirect enum — scalar OR heap payload — because the indirect boxing
-    /// is a heap node the plain pointer-ABI buffer cannot release element by
-    /// element. It does NOT change the pointer-token ABI routing: `classify_element`
-    /// still tokens the element `Ptr`, so a pointer-backed element can never
-    /// select an owned Vec ABI family; this reject sits ABOVE that routing, not
-    /// in place of it.
-    ///
-    /// Returns `Some(reason)` for an indirect-enum element, `None` otherwise.
-    pub(super) fn indirect_enum_vec_element_reject_reason(&self, elem_ty: &Ty) -> Option<String> {
-        let Ty::Named {
-            name,
-            builtin: None,
-            ..
-        } = elem_ty
-        else {
-            return None;
-        };
-        let type_def = self.type_defs.get(name)?;
-        if type_def.is_indirect && matches!(type_def.kind, TypeDefKind::Enum) {
-            return Some(
-                "it is an indirect enum whose per-element release protocol is not yet wired, \
-                 so its heap nodes would leak at scope exit"
-                    .to_string(),
-            );
-        }
-        None
-    }
-
     /// Channel/stream element admission for the layout-witness queue path
     /// (`Sender<T>`/`Receiver<T>`/`Stream<T>` recv/send). An element is
     /// admissible when the codegen element witness can describe it:
@@ -6548,18 +5877,17 @@ impl Checker {
     /// - `string` / `bytes` — content-encoded queue envelopes;
     /// - Copy-eligible primitives and `BitCopy` records ([`primitive_copy_layout`]
     ///   resolves a fixed width) — Plain raw-representation envelopes;
-    /// - heap-owning record/enum/tuple value types the owned-element Vec
-    ///   thunk path admits ([`Self::vec_owned_element_admissible`] — the SAME
-    ///   authority codegen's witness synthesis delegates to, so the checker
-    ///   and the witness can never disagree about one element type);
+    /// - heap-owning value types the §1.1 class rule gives an ownership
+    ///   obligation ([`Checker::element_owns_heap`] — the same class the
+    ///   backend reads for the element's clone and destroy actions, so the
+    ///   checker and the witness cannot disagree about one element type);
     /// - monomorphic machine values — machines are tagged-union value types
     ///   whose state-variant layout is registered in `type_defs.variants`,
     ///   so the owned-element queue witness can describe them (with the same
     ///   no-unowned-container requirement as enum channel elements).
     ///   Generic machine instantiations are excluded (the substrate
     ///   canonicalizes to one bare-named layout; per-instantiation witnesses
-    ///   do not exist). Machine admission lives HERE, not in
-    ///   `vec_owned_element_admissible`, so `Vec<machine>` stays fail-closed.
+    ///   do not exist).
     ///
     /// Everything else fails closed: builtin container/handle nominals
     /// (`Vec`/`HashMap`/streams/channels/pids), closures, and any type
@@ -6594,56 +5922,48 @@ impl Checker {
                         }
                         // Monomorphic: apply the same no-unowned-container
                         // requirement as for enum channel elements.
-                        return !self.vec_element_contains_unowned_container(
+                        return !self.queue_element_holds_collection(
                             elem_ty,
                             &HashSet::new(),
                             &mut HashSet::new(),
                         );
                     }
                 }
-                crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
-                    .is_some()
-                    || self.queue_owned_element_admissible(elem_ty)
+                self.queue_element_describable(elem_ty)
             }
             // Builtin container/handle nominals (`Vec`/`HashMap`/`HashSet`/
             // `Rc`/handles/...) can never ride the element-layout queue
             // witness: their ownership lives in a runtime context the queue
             // cannot clone or drop. This stays in lockstep with
             // `queue_elem_rejection_reason`, which rejects every `builtin:
-            // Some(_)`. `vec_owned_element_admissible` now admits nested-
-            // container Vec ELEMENTS for copy-in push (#1722), but that is a
-            // Vec-storage property, not a queue property, and must not leak
-            // here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
+            // Some(_)`. A nested-container Vec ELEMENT is admitted for
+            // copy-in push, but that is a Vec-storage property, not a queue
+            // property, and must not leak here. Primitives (`i64`/`bool`/`char`/...) are dedicated `Ty`
             // variants (not `Ty::Named`), so they remain queue-admissible via
             // the `_` arm's `primitive_copy_layout` check.
+            //
+            // A callable owns a heap environment the envelope has no ingress
+            // for, which `queue_elem_rejection_reason` states in the same
+            // words; every other shape is admitted on its value class.
             Ty::Named {
                 builtin: Some(_), ..
-            } => false,
-            _ => {
-                crate::check::admissibility::primitive_copy_layout(elem_ty, &self.type_defs)
-                    .is_some()
-                    || self.queue_owned_element_admissible(elem_ty)
             }
+            | Ty::Function { .. }
+            | Ty::Closure { .. } => false,
+            _ => self.queue_element_describable(elem_ty),
         }
     }
 
-    /// Queue/channel-scoped owned-element admission. A record/enum ELEMENT rides
-    /// the element-layout queue witness only when the Vec-owned authority admits
-    /// it AND it holds no builtin-collection field: the mailbox envelope
-    /// deep-copies the element in but has no per-message recursive drop for a
-    /// `Vec`/`HashMap`/`HashSet` field, so admitting a collection-bearing record
-    /// through a channel leaks the field on every message. Vec STORAGE admits the
-    /// same shape for copy-in `.push` (the outer Vec's per-element `drop_fn` frees
-    /// it), but that is a Vec property, not a queue property — keep the channel
-    /// path fail-closed until the mailbox drop path recurses through collection
-    /// fields.
-    fn queue_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
-        self.vec_owned_element_admissible(elem_ty)
-            && !self.vec_element_contains_unowned_container(
-                elem_ty,
-                &HashSet::new(),
-                &mut HashSet::new(),
-            )
+    /// Can the element-layout queue witness describe this element?
+    ///
+    /// It can when the element has a value class at all — the class carries the
+    /// clone and destroy actions the envelope needs — and holds no builtin
+    /// collection. A type with no class (an abstract parameter among them) has
+    /// no witness either and stays fail-closed here; the collection rule is the
+    /// mailbox's own, stated on [`Self::queue_element_holds_collection`].
+    fn queue_element_describable(&self, elem_ty: &Ty) -> bool {
+        self.element_value_facts(elem_ty).is_ok()
+            && !self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new())
     }
 
     /// Explain why a channel/stream element type was rejected by
@@ -6662,349 +5982,28 @@ impl Checker {
         if matches!(elem_ty, Ty::Function { .. } | Ty::Closure { .. }) {
             return "function values cannot be queue elements".to_string();
         }
-        self.vec_element_rejection_reason(elem_ty)
-    }
-
-    pub(super) fn vec_owned_element_admissible(&self, elem_ty: &Ty) -> bool {
-        self.vec_owned_element_admissible_on_path(elem_ty, &mut HashSet::new())
-    }
-
-    /// [`Self::vec_owned_element_admissible`] carrying the record/enum names
-    /// already on the active walk. A nested element reached across a container
-    /// edge continues the SAME walk instead of restarting it, so a group that
-    /// recurses only through container indirection (`A` holds `Vec<B>`, `B`
-    /// holds `Vec<A>`) closes its name cycle and terminates.
-    fn vec_owned_element_admissible_on_path(
-        &self,
-        elem_ty: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> bool {
-        match elem_ty {
-            // A trait-object slot owns its heap-promoted concrete box. The
-            // descriptor is deliberately drop-only: push and consuming
-            // iteration move the two-word fat pointer, while clone-dependent
-            // surfaces remain refused.
-            Ty::TraitObject { .. } => true,
-            // Tuple element: a tuple with at least one owned (non-Copy) field
-            // routes through the synthesized `__hew_tuple_*_inplace` thunk. An
-            // all-Copy tuple is `Copy` and never reaches this admissibility
-            // check (it takes the BitCopy `_layout` path). Nested tuples recurse
-            // through the same authority; container and closure leaves still
-            // fail closed.
-            Ty::Tuple(elems) => {
-                // A tuple starts no nominal recursion walk of its own, so a
-                // container-bearing tuple field must prove its own path.
-                elems
-                    .iter()
-                    .all(|e| self.vec_tuple_owned_field_admissible(e))
-                    && !self.vec_element_contains_unowned_container(
-                        elem_ty,
-                        &HashSet::new(),
-                        &mut HashSet::new(),
-                    )
-            }
-            Ty::Named {
-                name,
-                builtin,
-                args,
-            } => {
-                // Nested collection elements (Vec<T> / HashMap / HashSet) route
-                // through the owned descriptor with COPY-IN, exactly like an
-                // owned record: each pushed collection is deep-cloned so the
-                // outer Vec is its sole owner, and released via the per-element
-                // drop_fn. A closure-pair `Vec<fn>` /
-                // `Vec<closure>` element keeps its existing pointer/closure-
-                // pairs ABI (separate lane, #1722 out-of-scope) — never copy-in.
-                // The owned-vs-managed clone selection is congruent by
-                // construction: codegen's `collection_elem_clone_drop_syms` and
-                // the inner Vec's own constructor both consult
-                // `resolved_ty_element_owns_heap_for_owned_vec`, so the clone
-                // primitive can never disagree with the inner Vec's ABI.
-                match builtin {
-                    Some(BuiltinType::HashMap | BuiltinType::HashSet) => return true,
-                    Some(BuiltinType::Vec) => {
-                        if args
-                            .first()
-                            .is_some_and(|e| matches!(e, Ty::Function { .. } | Ty::Closure { .. }))
-                        {
-                            return false;
-                        }
-                        return true;
-                    }
-                    // Sender is cloneable while Receiver is deliberately
-                    // drop-only. Both need descriptor-backed Vec storage;
-                    // copy/clone surfaces reject Receiver separately.
-                    Some(
-                        BuiltinType::Rc
-                        | BuiltinType::Weak
-                        | BuiltinType::Sender
-                        | BuiltinType::Receiver,
-                    ) => {
-                        return args.len() == 1;
-                    }
-                    // Other builtin nominals are not user records/enums and
-                    // have no owned-Vec thunk path.
-                    Some(_) => return false,
-                    // User-defined record/enum: fall through to the logic below.
-                    None => {}
-                }
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return false;
-                };
-                // Only record/struct/enum value types have synthesizable
-                // inplace thunks. Machine types are NOT admitted here —
-                // machine values are valid as CHANNEL/QUEUE elements (where
-                // `queue_elem_admissible` handles them directly), but
-                // `Vec<machine>` has no Vec-construction thunk path and must
-                // refuse at compile time with a named diagnostic. Admitting
-                // Machine here would let `Vec<SomeMachine>` compile and then
-                // panic at runtime; keeping it out preserves fail-closed
-                // parity with the base (614e0bed).
-                if !matches!(
-                    type_def.kind,
-                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                ) {
-                    return false;
-                }
-                // A record/enum transitively holding a `Vec`/`HashMap`/`HashSet`
-                // field is admissible when every such collection field is
-                // CLONABLE by the synthesized in-place thunk — each field's
-                // element type is a copy primitive, `string`/`bytes`, a
-                // recursion edge back to a record/enum already on this walk (the
-                // `enum R { A(Vec<R>); ... }` Redis-reply shape and its mutual
-                // twin), or a nested admissible owned element. The record/enum's
-                // `__hew_record_drop_inplace_<R>` / `__hew_enum_*_inplace_<E>`
-                // thunk recurses through each collection field via the
-                // owned-collection ABI (`hew_vec_{clone,free}_owned`,
-                // `hew_{hashmap,hashset}_{clone,free}_layout`); the copy-in
-                // `.push` deep-clone AND the scope-exit drop of the pushed source
-                // are proven by the owned-element leak oracles. A field holding
-                // an UNCLONABLE collection element (function/closure, machine,
-                // opaque, `Rc`) fails the per-arg clonability check and keeps the
-                // record fail-closed. The recursion escape is keyed on the
-                // CONTAINER edge only; a directly self-referential record with no
-                // container indirection still reaches `RecordCycle` in MIR
-                // (LESSONS `recursive-admission-needs-indirection-witness`).
-                self.record_enum_collection_fields_clonable(elem_ty, visiting)
-            }
-            _ => false,
+        if self.queue_element_holds_collection(elem_ty, &HashSet::new(), &mut HashSet::new()) {
+            return "it holds a `Vec`/`HashMap`/`HashSet` field, and the mailbox envelope \
+                    has no per-message release for one"
+                .to_string();
         }
+        self.element_admission_refusal(elem_ty).map_or_else(
+            || "it has no value class the queue witness can describe".to_string(),
+            |(_, refusal)| refusal,
+        )
     }
 
-    /// True when every builtin-collection field transitively reachable from a
-    /// record/enum owned element `ty` is CLONABLE by the synthesized in-place
-    /// thunk (see [`Self::vec_owned_element_admissible`]). `visiting` carries the
-    /// record/enum names on the active walk. It is the single authority for
-    /// termination, while the container-argument helpers below are the only
-    /// places allowed to treat a re-entry as an indirection witness: a
-    /// `Vec<R>` element or `HashMap<_, R>` value can close through the heap
-    /// buffer. A direct member, a `HashMap<R, _>` key, and a `HashSet<R>`
-    /// element remain inline and therefore reject on re-entry.
-    /// Non-collection fields (`string`/`bytes`/primitives) carry no container
-    /// and are trivially clonable; nested record/enum/tuple fields recurse.
-    fn record_enum_collection_fields_clonable(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> bool {
-        match ty {
-            Ty::Named {
-                name,
-                builtin,
-                args,
-            } => {
-                match builtin {
-                    Some(BuiltinType::Vec) if args.len() == 1 => {
-                        return self.vec_collection_arg_clonable(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashSet) if args.len() == 1 => {
-                        return self.record_enum_collection_fields_clonable(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashMap) if args.len() == 2 => {
-                        // A map's KEY participates in the inline key layout;
-                        // only its value is stored behind the heap buffer.
-                        return self.record_enum_collection_fields_clonable(&args[0], visiting)
-                            && self.vec_collection_arg_clonable(&args[1], visiting);
-                    }
-                    Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet) => {
-                        return false;
-                    }
-                    // Other builtins (Option/Result/Rc/handles) carry their own
-                    // ABI; recurse only through their type arguments.
-                    Some(_) => {
-                        return args
-                            .iter()
-                            .all(|a| self.record_enum_collection_fields_clonable(a, visiting));
-                    }
-                    None => {}
-                }
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    // An unresolved nominal will produce its own type error;
-                    // this structural proof cannot assume a clone/drop thunk.
-                    return false;
-                };
-                let visit_key = type_def.name.clone();
-                if !visiting.insert(visit_key.clone()) {
-                    // We reached this nominal through an inline member. A
-                    // descriptor-backed container must witness the re-entry
-                    // before this point; otherwise the layout is infinitely
-                    // sized and its clone/drop recursion is not admissible.
-                    return false;
-                }
-                let ok = type_def.fields.values().all(|field_ty| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.record_enum_collection_fields_clonable(&field_ty, visiting)
-                }) && type_def.variants.values().all(|variant| match variant {
-                    VariantDef::Unit => true,
-                    VariantDef::Tuple(tys) => tys.iter().all(|field_ty| {
-                        let field_ty = Self::instantiate_type_def_member(
-                            field_ty,
-                            &type_def.type_params,
-                            args,
-                        );
-                        self.record_enum_collection_fields_clonable(&field_ty, visiting)
-                    }),
-                    VariantDef::Struct(fields) => fields.iter().all(|(_, t)| {
-                        let field_ty =
-                            Self::instantiate_type_def_member(t, &type_def.type_params, args);
-                        self.record_enum_collection_fields_clonable(&field_ty, visiting)
-                    }),
-                });
-                visiting.remove(&visit_key);
-                ok
-            }
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|e| self.record_enum_collection_fields_clonable(e, visiting)),
-            Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.record_enum_collection_fields_clonable(inner, visiting)
-            }
-            // Primitives, `string`, `bytes`, function/closure surface types carry
-            // no builtin-collection field of their own — a function/closure as a
-            // record field is rejected upstream (`vec_element_contains_function`);
-            // here it holds no container to clone.
-            _ => true,
-        }
-    }
-
-    /// True when a builtin-collection field's type argument `a` is a value the
-    /// owned-collection clone/free ABI can deep-clone and release: a record/enum
-    /// already on the active walk (its own thunk recurses through the inner
-    /// collection), a copy primitive / `BitCopy` record, `string`/`bytes`, or a
-    /// nested admissible owned element (record/enum/tuple/nested collection). An
-    /// unclonable arg (function/closure, machine, opaque, `Rc`-bearing) makes the
-    /// enclosing collection field — and thus the record/enum element — fail
-    /// closed.
+    /// True when `ty` (or a transitive record/enum member) is — or holds a
+    /// field of — a builtin collection (`Vec`/`HashMap`/`HashSet`).
     ///
-    /// This is the container edge, so `visiting` is a per-nominal
-    /// container-indirection witness: only a cycle that closes ACROSS this heap
-    /// container is admitted. Nested elements continue the same walk, so a
-    /// mutually recursive group terminates instead of restarting the name set
-    /// on every hop.
-    fn vec_collection_arg_clonable(&self, a: &Ty, visiting: &mut HashSet<String>) -> bool {
-        let resolved = self.subst.resolve(a).materialize_literal_defaults();
-        if let Ty::Named {
-            name,
-            builtin: None,
-            ..
-        } = &resolved
-        {
-            let visit_key = self
-                .lookup_type_def(name)
-                .map_or_else(|| name.clone(), |type_def| type_def.name);
-            if visiting.contains(&visit_key) {
-                return true;
-            }
-        }
-        matches!(&resolved, Ty::String | Ty::Bytes)
-            || crate::check::admissibility::primitive_copy_layout(&resolved, &self.type_defs)
-                .is_some()
-            || self.vec_owned_element_admissible_on_path(&resolved, visiting)
-    }
-
-    fn vec_tuple_owned_field_admissible(&self, ty: &Ty) -> bool {
-        match ty {
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.vec_tuple_owned_field_admissible(elem)),
-            Ty::String | Ty::Bytes => true,
-            Ty::Named {
-                builtin: Some(BuiltinType::Rc | BuiltinType::Weak | BuiltinType::Sender),
-                args,
-                ..
-            } => args.len() == 1,
-            Ty::Named { builtin: None, .. } => {
-                crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some()
-                    || self.vec_owned_element_admissible(ty)
-            }
-            Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::Array(_, _)
-            | Ty::Slice(_)
-            | Ty::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-                ..
-            } => false,
-            _ => crate::check::admissibility::primitive_copy_layout(ty, &self.type_defs).is_some(),
-        }
-    }
-
-    fn vec_element_contains_function(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Function { .. } | Ty::Closure { .. } => true,
-            Ty::Tuple(elems) => elems
-                .iter()
-                .any(|elem| self.vec_element_contains_function(elem, visiting)),
-            Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.vec_element_contains_function(inner, visiting)
-            }
-            Ty::Named {
-                name,
-                builtin: None,
-                args,
-            } => {
-                if args
-                    .iter()
-                    .any(|arg| self.vec_element_contains_function(arg, visiting))
-                {
-                    return true;
-                }
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let result = self.type_defs.get(name).is_some_and(|td| {
-                    td.fields
-                        .values()
-                        .any(|fty| self.vec_element_contains_function(fty, visiting))
-                        || td.variants.values().any(|variant| match variant {
-                            VariantDef::Unit => false,
-                            VariantDef::Tuple(tys) => tys
-                                .iter()
-                                .any(|t| self.vec_element_contains_function(t, visiting)),
-                            VariantDef::Struct(fields) => fields
-                                .iter()
-                                .any(|(_, t)| self.vec_element_contains_function(t, visiting)),
-                        })
-                });
-                visiting.remove(name);
-                result
-            }
-            Ty::Named { args, .. } => args
-                .iter()
-                .any(|arg| self.vec_element_contains_function(arg, visiting)),
-            _ => false,
-        }
-    }
-
-    /// True when `ty` (or a transitive record/enum member) is — or contains a
-    /// field of — a builtin collection (`Vec`/`HashMap`/`HashSet`). Such a
-    /// member has no `__hew_*_inplace` thunk path, so an owned-Vec element that
-    /// transitively reaches one must stay fail-closed. The recursive enum's
-    /// own self-edge through a `Vec` (`Array(Vec<RedisReply>)`) is the one
-    /// admitted exception — here we only reject unowned-container fields, not
-    /// the self-recursive edge.
-    pub(super) fn vec_element_contains_unowned_container(
+    /// This is a MAILBOX rule, not a value-class one: the envelope deep-copies
+    /// an element in but has no per-message release that recurses through a
+    /// collection field, so a collection-bearing message would leak the field
+    /// on every send. Vec storage admits the same shape (the collection's own
+    /// destroy action releases it); the queue does not, until the mailbox
+    /// release path recurses. The recursive enum's own self-edge through a
+    /// `Vec` (`Array(Vec<RedisReply>)`) is the one admitted exception.
+    fn queue_element_holds_collection(
         &self,
         ty: &Ty,
         roots: &HashSet<String>,
@@ -7035,7 +6034,7 @@ impl Checker {
                     // ABI; recurse only through their type arguments.
                     return args
                         .iter()
-                        .any(|a| self.vec_element_contains_unowned_container(a, roots, visiting));
+                        .any(|a| self.queue_element_holds_collection(a, roots, visiting));
                 }
                 if !visiting.insert(name.clone()) {
                     // Self-recursive edge on a user type: the recursion through a
@@ -7044,26 +6043,27 @@ impl Checker {
                     return false;
                 }
                 let result = self.type_defs.get(name).is_some_and(|td| {
-                    td.fields.values().any(|fty| {
-                        self.vec_element_contains_unowned_container(fty, roots, visiting)
-                    }) || td.variants.values().any(|variant| match variant {
-                        VariantDef::Unit => false,
-                        VariantDef::Tuple(tys) => tys.iter().any(|t| {
-                            self.vec_element_contains_unowned_container(t, roots, visiting)
-                        }),
-                        VariantDef::Struct(fields) => fields.iter().any(|(_, t)| {
-                            self.vec_element_contains_unowned_container(t, roots, visiting)
-                        }),
-                    })
+                    td.fields
+                        .values()
+                        .any(|fty| self.queue_element_holds_collection(fty, roots, visiting))
+                        || td.variants.values().any(|variant| match variant {
+                            VariantDef::Unit => false,
+                            VariantDef::Tuple(tys) => tys
+                                .iter()
+                                .any(|t| self.queue_element_holds_collection(t, roots, visiting)),
+                            VariantDef::Struct(fields) => fields.iter().any(|(_, t)| {
+                                self.queue_element_holds_collection(t, roots, visiting)
+                            }),
+                        })
                 });
                 visiting.remove(name);
                 result
             }
             Ty::Tuple(elems) => elems
                 .iter()
-                .any(|e| self.vec_element_contains_unowned_container(e, roots, visiting)),
+                .any(|e| self.queue_element_holds_collection(e, roots, visiting)),
             Ty::Array(inner, _) | Ty::Slice(inner) => {
-                self.vec_element_contains_unowned_container(inner, roots, visiting)
+                self.queue_element_holds_collection(inner, roots, visiting)
             }
             _ => false,
         }
@@ -7092,10 +6092,18 @@ impl Checker {
                 let actual = self.synthesize(expr, arg_span);
                 let resolved = self.subst.resolve(&actual);
                 if Self::is_narrower_signed_int(&resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(arg_span, self.current_module_idx),
+                        Ty::I64,
+                    );
                     continue;
                 }
             }
             self.check_against(expr, arg_span, expected);
+            // A value with no copy operation enters the collection by
+            // transfer: the slot becomes its only owner, so a later use of the
+            // source binding is a use after the move.
+            self.record_callable_value_transfer(expr, arg_span);
         }
 
         let elem_ty = type_args
@@ -7107,7 +6115,7 @@ impl Checker {
 
     #[expect(
         clippy::too_many_lines,
-        reason = "Vec keeps the divergent contains/join/map/filter/fold arms and the structural-array guard inline; runtime-backed signatures delegate to the stdlib-source authority."
+        reason = "Vec keeps divergent contains/join/map/filter/fold arms inline; runtime-backed signatures delegate to the stdlib-source authority."
     )]
     pub(super) fn check_vec_method(
         &mut self,
@@ -7122,10 +6130,6 @@ impl Checker {
             .first()
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
-        let elem_ty_before = self.subst.resolve(&elem_ty);
-        let mut elem_ty_before_visiting = HashSet::new();
-        let elem_ty_before_has_structural_array = self
-            .vec_element_contains_structural_array(&elem_ty_before, &mut elem_ty_before_visiting);
         let _ = self.validate_vec_element_type(&elem_ty, span);
         let runtime_method_declared = self
             .lookup_builtin_vec_method_sig(type_args, method)
@@ -7145,52 +6149,23 @@ impl Checker {
             "into_iter" => {
                 self.check_arity(args, 0, "`Vec.into_iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
-                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                if !self.record_vec_iter_element_mode(&resolved_elem, span) {
                     return Ty::Error;
                 }
-                if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
-                    self.record_method_call_receiver_kind(
-                        span,
-                        MethodCallReceiverKind::PrimitiveTraitImpl {
-                            trait_name: "IntoIterator".to_string(),
-                            canonical_receiver: "Vec".to_string(),
-                        },
-                    );
-                    self.record_method_call_rewrite(
-                        span,
-                        MethodCallRewrite::BuiltinVecIntoIter {
-                            elem_ty: elem_resolved,
-                        },
-                    );
-                }
+                self.record_method_call_receiver_kind(
+                    span,
+                    MethodCallReceiverKind::PrimitiveTraitImpl {
+                        trait_name: "IntoIterator".to_string(),
+                        canonical_receiver: "Vec".to_string(),
+                    },
+                );
+                self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIntoIter);
                 Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "iter" => {
-                // `Vec<T>::iter()` yields the SAME `VecIter<T>` surface as
-                // `into_iter()` without consuming the receiver, leaving the
-                // source vec a live, independent owner. A `VecIter<T>` is a
-                // first-class value with no lifetime — it can coexist with the
-                // source, observe nothing of the source's later mutations, be
-                // bound to an outer scope, returned, or held across a suspension
-                // — so the cursor must NOT borrow the source's buffer. Hew's
-                // `Vec` is a single-owner heap handle (no buffer refcount); a
-                // shared handle would double-free when the source and cursor
-                // both drop, alias the source's later mutations, or dangle if the
-                // source's buffer is freed under the cursor. Instead the HIR
-                // rewrite gives the cursor an INDEPENDENT CLONE of the source for
-                // a place receiver (see `lower_builtin_vec_iter`): a
-                // deep/retaining `hew_vec_clone` snapshot the cursor solely owns
-                // and frees exactly once on its own drop. Per-element ownership is
-                // identical to `into_iter` — `VecIter::next` clones each item out
-                // on read (`hew_vec_get_clone`).
-                //
-                // Pre-record the clone projection at the call's start offset so
-                // the synthesised `recv.clone()` the rewrite emits resolves
-                // through the normal element-aware vec-clone authority (the same
-                // `record_resolved_vec_call("clone", …)` an explicit `v.clone()`
-                // uses, including per-monomorphisation re-resolution for an
-                // abstract element). Mirrors how `HashMap::into_iter` pre-records
-                // its `keys()`/`values()` projections.
+                // An ordinary value transfer creates the independent snapshot.
+                // Record the operation now and consume the finalized receiver
+                // type at the HIR boundary, after inference has completed.
                 self.check_arity(args, 0, "`Vec.iter`", span);
                 let resolved_elem = self.subst.resolve(&elem_ty);
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
@@ -7204,21 +6179,10 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                if !self.validate_vec_iter_element_clone_type(&resolved_elem, span) {
+                if !self.record_vec_iter_element_mode(&resolved_elem, span) {
                     return Ty::Error;
                 }
-                if let Ok(elem_resolved) = ResolvedTy::from_ty(&resolved_elem) {
-                    let clone_span = span.start..span.start;
-                    let vec_ty = self.make_vec_type(resolved_elem.clone(), &clone_span);
-                    self.record_type(&clone_span, &vec_ty);
-                    self.record_resolved_vec_call("clone", &resolved_elem, &clone_span);
-                    self.record_method_call_rewrite(
-                        span,
-                        MethodCallRewrite::BuiltinVecIter {
-                            elem_ty: elem_resolved,
-                        },
-                    );
-                }
+                self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIter);
                 Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
             }
             "get" if runtime_method_declared => {
@@ -7240,11 +6204,17 @@ impl Checker {
                     // Accept i64 or any narrower signed int (widened at the
                     // index site, identical to `[]`/`set`/`remove`); otherwise
                     // run the normal i64 coercion (literals, error wording).
-                    if !Self::is_narrower_signed_int(&resolved_idx) {
+                    if Self::is_narrower_signed_int(&resolved_idx) {
+                        self.numeric_operand_coercions
+                            .insert(SpanKey::in_module(sp, self.current_module_idx), Ty::I64);
+                    } else {
                         self.check_against(expr, sp, &Ty::I64);
                     }
                 }
                 let resolved_elem = self.subst.resolve(&elem_ty);
+                // A trait object stays refused: dispatching on a loaned `dyn`
+                // payload has no working lowering yet, so the consuming
+                // iterator remains the trait-object surface.
                 if matches!(resolved_elem, Ty::TraitObject { .. }) {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
@@ -7263,10 +6233,35 @@ impl Checker {
                         canonical_receiver: "Vec".to_string(),
                     },
                 );
-                // Records the `hew_vec_get_clone` resolved call through the
-                // shared Vec authority. Function/closure elements fail closed,
-                // so no resolved call is recorded.
+                // `get` copies the element out, so a concrete element with no
+                // copy operation refuses here exactly as it refuses at `v[i]`
+                // and at a range slice (#3395). An unbounded type parameter is
+                // not concrete: a generic body keeps the borrowed read every
+                // instantiation shares.
+                if !self.validate_vec_get_element_clone_type(&resolved_elem, span) {
+                    return Ty::Error;
+                }
+                // D432: an abstract element is read as a loan of the slot the
+                // vector still owns, so `Some` carries the loan and the owning
+                // removal stays the way to move an element out.
+                let Some(mode) = self.vec_iteration_element_mode(&resolved_elem, span) else {
+                    return Ty::Error;
+                };
+                // Records the resolved call through the shared Vec authority.
                 self.record_resolved_vec_call("get", &resolved_elem, span);
+                if mode == super::types::VecIterationMode::Borrow {
+                    let key = SpanKey::in_module(span, self.current_module_idx);
+                    self.borrowed_element_option_reads.insert(key);
+                    if let Some(call) = self
+                        .resolved_calls
+                        .get_mut(&SpanKey::in_module(span, self.current_module_idx))
+                    {
+                        call.method_target.symbol_name =
+                            crate::RuntimeCallFamily::Vector(crate::VecValueOp::GetBorrow)
+                                .c_symbol()
+                                .to_string();
+                    }
+                }
                 // `<Vec<T> as Index>::Output` is `T`, so the projected return
                 // is `Option<T>`.
                 Ty::option(resolved_elem)
@@ -7290,7 +6285,7 @@ impl Checker {
                     let eligibility =
                         crate::eq_eligibility::ty_is_eq_eligible(&resolved_elem, &self.type_defs);
                     let is_copy = self.vec_element_has_copy_layout(&resolved_elem);
-                    let is_owned_admissible = self.vec_owned_element_admissible(&resolved_elem);
+                    let is_owned_admissible = self.element_owns_heap(&resolved_elem);
                     if matches!(eligibility, crate::eq_eligibility::EqEligibility::Eligible)
                         && (is_copy || is_owned_admissible)
                     {
@@ -7352,6 +6347,10 @@ impl Checker {
                 self.check_arity(args, 1, "`Vec.map`", span);
                 let ret_ty = Ty::Var(TypeVar::fresh());
                 let expected_fn = Ty::Function {
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![elem_ty.clone()],
                     ret: Box::new(ret_ty.clone()),
                 };
@@ -7374,6 +6373,10 @@ impl Checker {
             "filter" => {
                 self.check_arity(args, 1, "`Vec.filter`", span);
                 let expected_fn = Ty::Function {
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![elem_ty.clone()],
                     ret: Box::new(Ty::Bool),
                 };
@@ -7407,6 +6410,10 @@ impl Checker {
                     Ty::Var(TypeVar::fresh())
                 };
                 let expected_fn = Ty::Function {
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![acc_ty.clone(), elem_ty.clone()],
                     ret: Box::new(acc_ty.clone()),
                 };
@@ -7435,6 +6442,10 @@ impl Checker {
                     Ty::Var(TypeVar::fresh())
                 };
                 let expected_fn = Ty::Function {
+                    capabilities: crate::CallableCapabilities {
+                        suspends: true,
+                        ..crate::CallableCapabilities::default()
+                    },
                     params: vec![acc_ty.clone(), elem_ty.clone()],
                     ret: Box::new(acc_ty.clone()),
                 };
@@ -7481,14 +6492,6 @@ impl Checker {
                 Ty::Error
             }
         };
-        let elem_ty_after = self.subst.resolve(&elem_ty);
-        let mut elem_ty_after_visiting = HashSet::new();
-        let elem_ty_after_has_structural_array =
-            self.vec_element_contains_structural_array(&elem_ty_after, &mut elem_ty_after_visiting);
-        if elem_ty_after_has_structural_array && !elem_ty_before_has_structural_array {
-            let _ = self.validate_vec_element_type(&elem_ty_after, span);
-            return Ty::Error;
-        }
         result
     }
 
@@ -7633,6 +6636,8 @@ impl Checker {
                     // Primitive trait-impl dispatch is a user-fn call; it never
                     // consumes the receiver as a handle release.
                     consumes_receiver: sig.consumes_receiver,
+                    requires_mutable_receiver: sig.requires_mutable_receiver,
+                    receiver_update: sig.receiver_update,
                     returns_receiver_identity: sig.returns_receiver_identity,
                 },
             );
@@ -7939,6 +6944,53 @@ impl Checker {
         Some(self.project_assoc_types(&applied.return_type))
     }
 
+    /// Mutable methods write back to the receiver's place. Record projections
+    /// share their root's mutability, just as they do for field assignment.
+    fn check_mutable_method_receiver(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        description: &str,
+        span: &Span,
+    ) {
+        let place = self.expr_place(&receiver.0);
+        let root = place.as_ref().map(|(root, _)| root.as_str());
+        if !root
+            .and_then(|root| self.env.lookup_ref(root))
+            .is_some_and(|binding| binding.is_mutable)
+        {
+            if let Some(error) =
+                root.and_then(|root| self.private_capture_mutation_error(root, span))
+            {
+                self.errors.push(error);
+                return;
+            }
+            let label =
+                root.map_or_else(|| "this expression".to_string(), |root| format!("`{root}`"));
+            let declaration = root
+                .and_then(|root| self.env.lookup_ref(root))
+                .and_then(|binding| binding.def_span.clone());
+            let error_index = self.errors.len();
+            self.report_error(
+                TypeErrorKind::MutabilityError,
+                span,
+                format!("{description} requires a mutable binding receiver; {label} is not declared with `var`"),
+            );
+            if let (Some(declaration), Some(error)) =
+                (declaration, self.errors.get_mut(error_index))
+            {
+                error.notes.push((
+                    declaration,
+                    "immutable binding declared here; use `var` to allow mutation".to_string(),
+                    error.source_module.clone(),
+                ));
+            }
+        } else if let Some((root, path)) = place {
+            self.env.discount_mutation_receiver_read(&root);
+            self.env.mark_written(&root);
+            self.reject_borrowed_parameter_mutation(&root, &path, span);
+        }
+    }
+
     pub(super) fn check_method_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -7947,7 +6999,9 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let result = self.check_method_call_inner(receiver, method, args, span);
+        let result = self.finish_actor_receive_call(receiver, args, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
+        self.check_method_callable_place(receiver, method, span);
         let runtime_rewrite_consumes_receiver = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::RewriteToFunction {
@@ -7958,23 +7012,70 @@ impl Checker {
         let builtin_option_result_consumes_receiver = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionUnwrap
+                method: OptionResultMethod::OptionExpect
                     | OptionResultMethod::OptionUnwrapOr
-                    | OptionResultMethod::ResultUnwrap
+                    | OptionResultMethod::ResultExpect
                     | OptionResultMethod::ResultUnwrapOr,
             })
         );
+        let runtime_rewrite_updates_receiver = matches!(
+            self.method_call_rewrites.get(&key),
+            Some(MethodCallRewrite::RewriteToFunction {
+                descriptor: Some(descriptor),
+                ..
+            }) if matches!(
+                descriptor.family().semantic_contract().map(|contract| contract.result),
+                Some(
+                    crate::runtime_call::RuntimeResultEffect::UpdatedReceiver(_)
+                        | crate::runtime_call::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                )
+            )
+        );
+        let collection_updates_receiver = self
+            .resolved_calls
+            .get(&key)
+            .and_then(|call| match call.target {
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::Vec(method)) => {
+                    crate::VecValueOp::from_method(method).map(crate::RuntimeCallFamily::Vector)
+                }
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::HashMap(method)) => {
+                    crate::runtime_call::MapValueOp::from_method(method)
+                        .map(crate::RuntimeCallFamily::Map)
+                }
+                CallTarget::RuntimeCollection(crate::MethodTargetFamily::HashSet(method)) => {
+                    crate::runtime_call::SetValueOp::from_method(method)
+                        .map(crate::RuntimeCallFamily::Set)
+                }
+                _ => None,
+            })
+            .is_some_and(|family| {
+                matches!(
+                    family.semantic_contract().map(|contract| contract.result),
+                    Some(
+                        crate::RuntimeResultEffect::UpdatedReceiver(_)
+                            | crate::RuntimeResultEffect::UpdatedReceiverAndValue(_)
+                    )
+                )
+            });
+        if runtime_rewrite_updates_receiver || collection_updates_receiver {
+            self.check_mutable_method_receiver(
+                receiver,
+                &format!("collection method `{method}`"),
+                span,
+            );
+        }
+
         if runtime_rewrite_consumes_receiver || builtin_option_result_consumes_receiver {
             self.method_call_consumes_receiver.insert(key);
             if let Expr::Identifier(name) = &receiver.0 {
                 // The typed consumption decision overrides a surface Copy
-                // derivation. In particular, LambdaActorHandle is represented
-                // by an empty stdlib nominal, but release still consumes its
-                // sole runtime handle and any later receiver use is invalid.
+                // derivation. In particular, a lambda-actor handle is an
+                // opaque wrapper, but release still consumes its sole runtime
+                // handle and any later receiver use is invalid.
                 self.env.mark_moved(name, receiver.1.clone());
             }
         }
-        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+
         result
     }
 
@@ -7997,302 +7098,8 @@ impl Checker {
             },
         )?;
         self.mark_resolved_nominal_owner_used(&head.canonical_type);
-        self.record_resolved_method_call_ownership(receiver, method, args, span, &result);
+
         Some(result)
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "method ownership joins every resolved dispatch family at one authority seam"
-    )]
-    fn record_resolved_method_call_ownership(
-        &mut self,
-        receiver: &Spanned<Expr>,
-        _method: &str,
-        args: &[CallArg],
-        span: &Span,
-        result_ty: &Ty,
-    ) {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-            ProducedValueOwnership as Ownership,
-        };
-
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        let resolved_result = self.subst.resolve(result_ty).materialize_literal_defaults();
-        let non_owning = self.ty_is_non_owning(&resolved_result);
-        let rewrite = self.method_call_rewrites.get(&key);
-        let dyn_call = self.dyn_trait_method_calls.get(&key);
-        let resolved_call = self.resolved_calls.get(&key);
-        let actor_call = self.actor_method_dispatch.get(&key);
-        let machine_call = self.machine_method_dispatch.get(&key);
-        let suspending_receiver = self
-            .suspending_io_receiver_nominals
-            .get(&key)
-            .map(String::as_str);
-        let is_suspending_io_delivery = (self.conn_await_reads.contains_key(&key)
-            && suspending_receiver == Some(STD_NET_CONNECTION))
-            || (self.listener_await_accepts.contains(&key)
-                && suspending_receiver == Some(STD_NET_LISTENER));
-        let runtime_family = match rewrite {
-            Some(MethodCallRewrite::RewriteToFunction {
-                descriptor: Some(descriptor),
-                ..
-            }) => Some(descriptor.family()),
-            _ => None,
-        };
-        let display_method = self.lang_items.display_method_identity();
-        let is_display_fmt = display_method.as_ref().is_some_and(|(_, display_method)| {
-            let target = dyn_call.map(|call| &call.target).or(match rewrite {
-                Some(MethodCallRewrite::StaticTraitDispatch { target, .. }) => Some(target),
-                _ => None,
-            });
-            target.is_some_and(|target| {
-                matches!(
-                    target,
-                    CallTarget::DynamicVtable { method, .. }
-                        | CallTarget::StaticTraitMethod { method, .. }
-                        if method == display_method
-                )
-            })
-        });
-
-        let result_ownership = if non_owning {
-            Ownership::NoOwner
-        } else if self.method_call_preserves_receiver_identity.contains(&key) {
-            Ownership::Borrowed
-        } else if matches!(
-            rewrite,
-            Some(
-                MethodCallRewrite::RewriteToFunction {
-                    returns_receiver_identity: true,
-                    ..
-                } | MethodCallRewrite::StaticTraitDispatch {
-                    returns_receiver_identity: true,
-                    ..
-                }
-            )
-        ) || dyn_call.is_some_and(|call| call.signature.returns_receiver_identity)
-        {
-            Ownership::ReceiverIdentity
-        } else if is_display_fmt && matches!(&resolved_result, Ty::String) {
-            Ownership::owned(Acquisition::Fresh)
-        } else if matches!(
-            rewrite,
-            Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionUnwrap
-                    | OptionResultMethod::OptionUnwrapOr
-                    | OptionResultMethod::ResultUnwrap
-                    | OptionResultMethod::ResultUnwrapOr,
-            })
-        ) {
-            Ownership::owned(Acquisition::MoveOut)
-        } else if matches!(
-            actor_call,
-            Some(ActorMethodKind::Ask(..) | ActorMethodKind::StreamProducer(..))
-        ) || matches!(
-            runtime_family,
-            Some(
-                crate::runtime_call::RuntimeCallFamily::ChannelRecvLayout
-                    | crate::runtime_call::RuntimeCallFamily::ChannelTryRecvLayout
-                    | crate::runtime_call::RuntimeCallFamily::StreamNextLayout
-                    | crate::runtime_call::RuntimeCallFamily::StreamTryNextLayout
-                    | crate::runtime_call::RuntimeCallFamily::DuplexRecv
-                    | crate::runtime_call::RuntimeCallFamily::DuplexTryRecv
-            )
-        ) || is_suspending_io_delivery
-        {
-            Ownership::owned(Acquisition::Delivery)
-        } else if let Some(call) = resolved_call {
-            call.method_target.family.result_ownership()
-        } else {
-            match rewrite {
-                Some(
-                    MethodCallRewrite::BuiltinVecIntoIter { .. }
-                    | MethodCallRewrite::BuiltinVecIter { .. }
-                    | MethodCallRewrite::BuiltinHashMapIntoIter { .. }
-                    | MethodCallRewrite::WireCodec { .. }
-                    | MethodCallRewrite::GenericWireCodec { .. },
-                ) => Ownership::owned(Acquisition::Fresh),
-                Some(
-                    MethodCallRewrite::BuiltinVecIterNext { .. }
-                    | MethodCallRewrite::RecordCloneInplace { .. },
-                ) => Ownership::owned(Acquisition::Clone),
-                Some(
-                    MethodCallRewrite::GeneratorNext { .. } | MethodCallRewrite::RemoteActorAsk,
-                ) => Ownership::owned(Acquisition::Delivery),
-                Some(MethodCallRewrite::RcIntrinsic { .. }) => {
-                    Ownership::owned(Acquisition::Retained)
-                }
-                _ => match machine_call {
-                    Some(MachineMethodKind::StateName { .. }) => {
-                        Ownership::owned(Acquisition::Fresh)
-                    }
-                    Some(MachineMethodKind::Step { .. } | MachineMethodKind::TakeEmits { .. })
-                    | None => Ownership::Unknown,
-                },
-            }
-        };
-
-        let signature = if let Some(call) = dyn_call {
-            Some((
-                format!("{}::{}", call.trait_name, call.method_name),
-                call.signature.clone(),
-            ))
-        } else {
-            match rewrite {
-                Some(MethodCallRewrite::RewriteToFunction {
-                    extern_identity: Some(identity),
-                    ..
-                }) => self
-                    .fn_sigs
-                    .get(&identity.signature_key)
-                    .cloned()
-                    .map(|sig| (identity.signature_key.clone(), sig)),
-                Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. }) => self
-                    .fn_sigs
-                    .get(c_symbol)
-                    .cloned()
-                    .map(|sig| (c_symbol.clone(), sig)),
-                Some(MethodCallRewrite::StaticTraitDispatch {
-                    declaring_trait,
-                    method_name,
-                    ..
-                }) => {
-                    let signature_key = format!("{declaring_trait}::{method_name}");
-                    self.fn_sigs
-                        .get(&signature_key)
-                        .cloned()
-                        .map(|sig| (signature_key, sig))
-                }
-                _ => None,
-            }
-        };
-        let arguments = if matches!(
-            rewrite,
-            Some(MethodCallRewrite::BuiltinOptionResult {
-                method: OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr,
-            })
-        ) {
-            vec![Boundary::Transfer; args.len()]
-        } else if let Some(family) = runtime_family {
-            args.iter()
-                .enumerate()
-                .map(|(source_index, _)| {
-                    match family.arg_consume_verdict(source_index.saturating_add(1)) {
-                        crate::runtime_call::ConsumeVerdict::ProvenBorrow => Boundary::Borrow,
-                        crate::runtime_call::ConsumeVerdict::ProvenConsume
-                        | crate::runtime_call::ConsumeVerdict::ConservativeConsume => {
-                            Boundary::Transfer
-                        }
-                    }
-                })
-                .collect()
-        } else if let Some((signature_key, signature)) = signature {
-            let modes = self
-                .fn_param_ownership
-                .get(&signature_key)
-                .cloned()
-                .unwrap_or_else(|| vec![Boundary::Unknown; signature.params.len()]);
-            args.iter()
-                .enumerate()
-                .map(|(source_index, arg)| {
-                    let formal_index = arg
-                        .name()
-                        .and_then(|name| {
-                            signature
-                                .param_names
-                                .iter()
-                                .position(|formal| formal == name)
-                        })
-                        .unwrap_or(source_index);
-                    modes
-                        .get(formal_index)
-                        .copied()
-                        .unwrap_or(Boundary::Unknown)
-                })
-                .collect()
-        } else if let Some(call) = resolved_call {
-            match call.method_target.family {
-                MethodTargetFamily::HashMap(HashMapMethod::Insert)
-                | MethodTargetFamily::HashSet(HashSetMethod::Insert)
-                | MethodTargetFamily::Vec(VecMethod::Push | VecMethod::Set | VecMethod::Append) => {
-                    vec![Boundary::Transfer; args.len()]
-                }
-                MethodTargetFamily::HashMap(_)
-                | MethodTargetFamily::HashSet(_)
-                | MethodTargetFamily::Vec(_) => vec![Boundary::Borrow; args.len()],
-            }
-        } else if actor_call.is_some() {
-            vec![Boundary::Transfer; args.len()]
-        } else {
-            args.iter()
-                .map(|arg| {
-                    let arg_ty = self
-                        .expr_types
-                        .get(&SpanKey::in_module(&arg.expr().1, self.current_module_idx))
-                        .map(|ty| self.subst.resolve(ty));
-                    if arg_ty.as_ref().is_some_and(|ty| self.ty_is_non_owning(ty)) {
-                        Boundary::Borrow
-                    } else {
-                        Boundary::Unknown
-                    }
-                })
-                .collect()
-        };
-
-        let recognized = rewrite.is_some()
-            || dyn_call.is_some()
-            || resolved_call.is_some()
-            || actor_call.is_some()
-            || machine_call.is_some()
-            || is_suspending_io_delivery;
-        let receiver_boundary = if matches!(result_ownership, Ownership::ReceiverIdentity) {
-            Some(Boundary::Transfer)
-        } else if !recognized {
-            Some(Boundary::Unknown)
-        } else if self.method_call_consumes_receiver.contains(&key)
-            || resolved_call.is_some_and(|call| call.method_target.consumes_receiver)
-            || dyn_call.is_some_and(|call| call.signature.consumes_receiver)
-            || matches!(
-                rewrite,
-                Some(
-                    MethodCallRewrite::RewriteToFunction {
-                        consumes_receiver: true,
-                        ..
-                    } | MethodCallRewrite::StaticTraitDispatch {
-                        consumes_receiver: true,
-                        ..
-                    }
-                )
-            )
-        {
-            Some(Boundary::Transfer)
-        } else {
-            Some(Boundary::Borrow)
-        };
-
-        self.produced_call_arities
-            .insert(key.clone(), (true, args.len()));
-        self.resolved_method_call_ownership.insert(
-            key,
-            PendingMethodCallOwnership {
-                fact: ProducedValueFact {
-                    ownership: result_ownership,
-                    receiver_span: matches!(result_ownership, Ownership::ReceiverIdentity)
-                        .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
-                    receiver_boundary,
-                    arguments,
-                },
-                extern_identity: rewrite.and_then(|rewrite| match rewrite {
-                    MethodCallRewrite::RewriteToFunction {
-                        extern_identity, ..
-                    } => extern_identity.clone(),
-                    _ => None,
-                }),
-                resolved_result_ty: resolved_result,
-            },
-        );
     }
 
     #[expect(
@@ -8542,17 +7349,6 @@ impl Checker {
                     ) {
                         return applied_sig.return_type;
                     }
-                    // Channel constructor: inject a shared type variable so
-                    // Sender<T> and Receiver<T> from the same `new` call are
-                    // linked through unification, while preserving the resolved
-                    // declaration's outer return shape.
-                    if canonical_owner == "std.channel" && method == "new" {
-                        let t = Ty::Var(TypeVar::fresh());
-                        return Self::instantiate_channel_constructor_return(
-                            &applied_sig.return_type,
-                            &t,
-                        );
-                    }
                     if let Some(op) = self.intrinsic_math_generic_op_for_signature(&key) {
                         self.record_method_call_rewrite(
                             span,
@@ -8612,13 +7408,6 @@ impl Checker {
                         },
                     );
                     self.record_direct_call_target(span, target);
-                    self.record_resolved_direct_call_ownership(
-                        &impl_key,
-                        &sig,
-                        args,
-                        &sig.return_type,
-                        span,
-                    );
                 }
                 // Wire codec static deserialize methods on a `#[wire]` struct or
                 // enum. `decode` is the binary CBOR path
@@ -8665,8 +7454,16 @@ impl Checker {
             }
         }
 
+        self.place_base_depth += 1;
         let receiver_ty = self.synthesize(&receiver.0, &receiver.1);
+        self.place_base_depth -= 1;
         let resolved = self.subst.resolve(&receiver_ty);
+        if let Some(result) =
+            self.check_actor_delivery_method(receiver, &resolved, method, args, span)
+        {
+            return result;
+        }
+
         // If the receiver is still an unresolved inference variable that was
         // created from a coercible integer-literal / const-integer range (both
         // bounds were literals or let-/const-bound integer literals), eagerly
@@ -8758,41 +7555,7 @@ impl Checker {
         self.reject_if_wasm_native_only_handle(&resolved, span);
         self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
         if let Ty::Named { name, .. } = &resolved {
-            // NEW-1: `await conn.read()` / `await conn.read_string()` is the
-            // non-blocking suspending read. Record the inner method-call span so
-            // HIR lowering emits `ConnAwaitRead` instead of the blocking method.
-            // Recognised ONLY directly under an `await` (the suspend point); a
-            // bare `conn.read()` stays the blocking FFI call (E8).
-            let is_conn_await_read = self.inside_await_expr
-                && name == "std.net.Connection"
-                && matches!(method, "read" | "read_string");
-            if is_conn_await_read {
-                let key = SpanKey::in_module(span, self.current_module_idx);
-                self.conn_await_reads
-                    .insert(key.clone(), method == "read_string");
-                self.suspending_io_receiver_nominals
-                    .insert(key, name.clone());
-            } else {
-                // NEW-2: `await listener.accept()` is the non-blocking suspending
-                // accept (the listener-readiness sibling of `await conn.read()`).
-                // Record the inner method-call span so HIR lowering emits
-                // `ListenerAwaitAccept` instead of the blocking `hew_tcp_accept`.
-                // Recognised ONLY directly under an `await`; a bare
-                // `listener.accept()` stays the blocking FFI call.
-                let is_listener_await_accept =
-                    self.inside_await_expr && name == "std.net.Listener" && method == "accept";
-                if is_listener_await_accept {
-                    let key = SpanKey::in_module(span, self.current_module_idx);
-                    self.listener_await_accepts.insert(key.clone());
-                    self.suspending_io_receiver_nominals
-                        .insert(key, name.clone());
-                } else {
-                    // The blocking-call warning is correct for a bare (non-awaited)
-                    // `conn.read()`; suppress it when the read is the non-blocking
-                    // suspending form (it no longer strands a worker).
-                    self.warn_if_blocking_handle_method(name, method, span);
-                }
-            }
+            self.warn_if_blocking_handle_method(name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
         // value enums. Collection clones keep their existing runtime rewrites,
@@ -8802,6 +7565,9 @@ impl Checker {
             && matches!(
                 &resolved,
                 Ty::Tuple(_)
+                    | Ty::Array(_, _)
+                    | Ty::Function { .. }
+                    | Ty::Closure { .. }
                     | Ty::Named {
                         builtin: Some(_),
                         ..
@@ -8811,6 +7577,9 @@ impl Checker {
             let is_structural_value = matches!(
                 &resolved,
                 Ty::Tuple(_)
+                    | Ty::Array(_, _)
+                    | Ty::Function { .. }
+                    | Ty::Closure { .. }
                     | Ty::Named {
                         builtin: Some(BuiltinType::Option | BuiltinType::Result),
                         ..
@@ -8875,15 +7644,6 @@ impl Checker {
                         );
                         true
                     }
-                    CloneCapabilityBlocker::UnbalancedSharedHandle { type_name, member } => {
-                        self.report_unbalanced_shared_handle_clone_error(
-                            &receiver_name,
-                            &type_name,
-                            &member,
-                            span,
-                        );
-                        true
-                    }
                     CloneCapabilityBlocker::Opaque { .. }
                     | CloneCapabilityBlocker::Missing { .. } => false,
                 };
@@ -8903,6 +7663,14 @@ impl Checker {
         }
 
         match (&resolved, method) {
+            (Ty::Array(_, _), "len") => {
+                self.check_arity(args, 0, "fixed array len", span);
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Len),
+                );
+                Ty::I64
+            }
             (Ty::CancellationToken, "is_cancelled") => {
                 self.check_arity(args, 0, "`CancellationToken.is_cancelled`", span);
                 self.record_method_call_rewrite(
@@ -8999,6 +7767,7 @@ impl Checker {
                     method,
                     args,
                     span,
+                    &receiver_ty,
                 ) {
                     return ret_ty;
                 }
@@ -9017,9 +7786,14 @@ impl Checker {
             // `#[extern_symbol]` annotations over the current Vec<i32>-backed
             // bytes ABI.
             (Ty::Bytes, _) => {
-                if let Some(ret_ty) =
-                    self.dispatch_monomorphic_extern_symbol_method("bytes", &[], method, args, span)
-                {
+                if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
+                    "bytes",
+                    &[],
+                    method,
+                    args,
+                    span,
+                    &Ty::Bytes,
+                ) {
                     return ret_ty;
                 }
                 self.check_primitive_receiver_method_fallback(
@@ -9039,6 +7813,7 @@ impl Checker {
                     method,
                     args,
                     span,
+                    &Ty::Duration,
                 ) {
                     return ret_ty;
                 }
@@ -9202,15 +7977,154 @@ impl Checker {
                     Ty::Error
                 }
             }
+            // `f64` bit/classification methods. `abs` reuses the existing
+            // `MathIntrinsic::AbsF64` family (the same `llvm.fabs` `math.abs`
+            // already calls); the rest are new `RuntimeCallFamily::FloatMethod`
+            // rows. Scoped to `f64`: `RuntimeValueKind` has no `F32` kind yet.
+            (resolved, method)
+                if resolved.materialize_literal_defaults() == Ty::F64
+                    && matches!(
+                        method,
+                        "to_bits"
+                            | "is_nan"
+                            | "is_finite"
+                            | "is_infinite"
+                            | "is_sign_negative"
+                            | "abs"
+                    ) =>
+            {
+                for arg in args {
+                    let (expr, sp) = arg.expr();
+                    self.synthesize(expr, sp);
+                }
+                self.check_arity(args, 0, &format!("`{method}`"), span);
+                let (family, ret_ty) = match method {
+                    "to_bits" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(FloatMethodOp::ToBits),
+                        Ty::U64,
+                    ),
+                    "is_nan" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(FloatMethodOp::IsNan),
+                        Ty::Bool,
+                    ),
+                    "is_finite" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(
+                            FloatMethodOp::IsFinite,
+                        ),
+                        Ty::Bool,
+                    ),
+                    "is_infinite" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(
+                            FloatMethodOp::IsInfinite,
+                        ),
+                        Ty::Bool,
+                    ),
+                    "is_sign_negative" => (
+                        crate::runtime_call::RuntimeCallFamily::FloatMethod(
+                            FloatMethodOp::IsSignNegative,
+                        ),
+                        Ty::Bool,
+                    ),
+                    "abs" => (
+                        crate::runtime_call::RuntimeCallFamily::MathIntrinsic(
+                            crate::runtime_call::MathIntrinsic::AbsF64,
+                        ),
+                        Ty::F64,
+                    ),
+                    _ => unreachable!("method matched the guard above"),
+                };
+                self.record_runtime_method_family_rewrite(span, family);
+                ret_ty
+            }
+            // Integer bit-manipulation methods: each lowers to one LLVM
+            // intrinsic (ctpop/ctlz/cttz/bswap/bitreverse/fshl/fshr) carried
+            // as `RuntimeCallFamily::IntMethod`, at every integer width Hew
+            // has. `int_method_width` only misses an untyped `IntLiteral`
+            // receiver (no concrete width yet to pick a row for); that case
+            // reports `UndefinedMethod` rather than silently guessing one.
+            (resolved, method)
+                if resolved.is_integer()
+                    && matches!(
+                        method,
+                        "count_ones"
+                            | "count_zeros"
+                            | "leading_zeros"
+                            | "trailing_zeros"
+                            | "swap_bytes"
+                            | "reverse_bits"
+                            | "rotate_left"
+                            | "rotate_right"
+                    ) =>
+            {
+                let Some(width) = int_method_width(resolved) else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{}`; bit-manipulation methods need a \
+                             concrete integer width",
+                            resolved.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                let op = match method {
+                    "count_ones" => IntBitOp::CountOnes,
+                    "count_zeros" => IntBitOp::CountZeros,
+                    "leading_zeros" => IntBitOp::LeadingZeros,
+                    "trailing_zeros" => IntBitOp::TrailingZeros,
+                    "swap_bytes" => IntBitOp::SwapBytes,
+                    "reverse_bits" => IntBitOp::ReverseBits,
+                    "rotate_left" => IntBitOp::RotateLeft,
+                    "rotate_right" => IntBitOp::RotateRight,
+                    _ => unreachable!("method matched the guard above"),
+                };
+                let is_rotate = matches!(op, IntBitOp::RotateLeft | IntBitOp::RotateRight);
+                self.check_arity(args, usize::from(is_rotate), &format!("`{method}`"), span);
+                if is_rotate {
+                    if let Some(arg) = args.first() {
+                        let (expr, sp) = arg.expr();
+                        self.check_against(expr, sp, &Ty::U32);
+                    }
+                } else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
+                    }
+                }
+                let ret_ty = match op {
+                    IntBitOp::CountOnes
+                    | IntBitOp::CountZeros
+                    | IntBitOp::LeadingZeros
+                    | IntBitOp::TrailingZeros => Ty::U32,
+                    IntBitOp::SwapBytes
+                    | IntBitOp::ReverseBits
+                    | IntBitOp::RotateLeft
+                    | IntBitOp::RotateRight => resolved.clone(),
+                };
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::runtime_call::RuntimeCallFamily::IntMethod(op, width),
+                );
+                ret_ty
+            }
             // Numeric opt-out arithmetic methods: .wrapping_*, .checked_*, .saturating_*
             // for every integer width. Floats are excluded (is_integer() ≠ is_numeric()).
             // Only add/sub/mul are in scope here; div/mod/shift are separate slices.
-            // Wrapping variants map to non-trapping MIR ops; checked variants return
-            // Option<W>; saturating variants clamp to MAX/MIN (codegen slice pending).
+            // Every one of these rewrites to `RuntimeCallFamily::IntArith` (D465):
+            // wrapping is a plain, non-trapping LLVM add/sub/mul; saturating add/sub
+            // is `llvm.{s,u}{add,sub}.sat`; saturating multiply is built from
+            // `llvm.{s,u}mul.with.overflow` plus a saturating select (no direct
+            // LLVM intrinsic exists for it); checked add/sub/mul is the matching
+            // `.with.overflow` intrinsic delivered as `Option<T>`.
             //
-            // Note: `.wrapping_as_<W>` and `.saturating_as_<W>` (width-conversion family)
-            // are handled by the arms above; those arms must appear first so that the
-            // `_as_` suffix does not reach this arm's op-name matcher.
+            // Note: `.wrapping_as_<W>` and `.saturating_as_<W>` (width-conversion
+            // family) are handled by the arms above; those arms must appear first so
+            // the `_as_` suffix does not reach this arm's op-name matcher.
             (resolved, method)
                 if resolved.is_integer()
                     && (method.starts_with("wrapping_")
@@ -9219,13 +8133,6 @@ impl Checker {
             {
                 let is_wrapping = method.starts_with("wrapping_");
                 let is_checked = method.starts_with("checked_");
-                let family = if is_wrapping {
-                    NumericMethodFamily::Wrapping
-                } else if is_checked {
-                    NumericMethodFamily::Checked
-                } else {
-                    NumericMethodFamily::Saturating
-                };
                 let op_name = if is_wrapping {
                     &method["wrapping_".len()..]
                 } else if is_checked {
@@ -9233,80 +8140,64 @@ impl Checker {
                 } else {
                     &method["saturating_".len()..]
                 };
-                match op_name {
-                    "add" | "sub" | "mul" => {
-                        self.check_arity(args, 1, &format!("`{method}`"), span);
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, resolved);
-                        }
-                        let op = match op_name {
-                            "add" => NumericMethodOp::Add,
-                            "sub" => NumericMethodOp::Sub,
-                            "mul" => NumericMethodOp::Mul,
-                            _ => unreachable!("op_name matched add/sub/mul above"),
-                        };
-                        if let (Some(signedness), Some(width)) = (
-                            Self::numeric_method_signedness(resolved),
-                            Self::numeric_method_width(resolved),
-                        ) {
-                            let result_ty = if is_checked {
-                                Ty::option(resolved.clone())
-                            } else {
-                                resolved.clone()
-                            };
-                            let prior = self.numeric_method_lowerings.insert(
-                                SpanKey::in_module(span, self.current_module_idx),
-                                NumericMethodLowering {
-                                    family,
-                                    op,
-                                    result_ty: result_ty.clone(),
-                                    operand_ty: resolved.clone(),
-                                    signedness,
-                                    width,
-                                },
-                            );
-                            debug_assert!(
-                                prior.is_none(),
-                                "duplicate numeric method lowering for span {:?}",
-                                SpanKey::in_module(span, self.current_module_idx)
-                            );
-                            result_ty
-                        } else if is_checked {
-                            Ty::option(resolved.clone())
-                        } else {
-                            resolved.clone()
-                        }
+                let kind = match (is_wrapping, is_checked, op_name) {
+                    (true, _, "add") => Some(IntArithKind::WrappingAdd),
+                    (true, _, "sub") => Some(IntArithKind::WrappingSub),
+                    (true, _, "mul") => Some(IntArithKind::WrappingMul),
+                    (false, false, "add") => Some(IntArithKind::SaturatingAdd),
+                    (false, false, "sub") => Some(IntArithKind::SaturatingSub),
+                    (false, false, "mul") => Some(IntArithKind::SaturatingMul),
+                    (false, true, "add") => Some(IntArithKind::CheckedAdd),
+                    (false, true, "sub") => Some(IntArithKind::CheckedSub),
+                    (false, true, "mul") => Some(IntArithKind::CheckedMul),
+                    _ => None,
+                };
+                let (Some(kind), Some(width)) = (kind, int_method_width(resolved)) else {
+                    for arg in args {
+                        let (expr, sp) = arg.expr();
+                        self.synthesize(expr, sp);
                     }
-                    _ => {
-                        for arg in args {
-                            let (expr, sp) = arg.expr();
-                            self.synthesize(expr, sp);
-                        }
-                        self.report_error(
-                            TypeErrorKind::UndefinedMethod,
-                            span,
-                            format!(
-                                "no method `{method}` on `{}`; only add, sub, mul are supported \
-                                 in this family",
-                                resolved.user_facing()
-                            ),
-                        );
-                        Ty::Error
-                    }
+                    let reason = if kind.is_none() {
+                        "only add, sub, mul are supported in this family".to_string()
+                    } else {
+                        "needs a concrete integer width".to_string()
+                    };
+                    self.report_error(
+                        TypeErrorKind::UndefinedMethod,
+                        span,
+                        format!(
+                            "no method `{method}` on `{}`; {reason}",
+                            resolved.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                };
+                self.check_arity(args, 1, &format!("`{method}`"), span);
+                if let Some(arg) = args.first() {
+                    let (expr, sp) = arg.expr();
+                    self.check_against(expr, sp, resolved);
+                }
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::runtime_call::RuntimeCallFamily::IntArith(kind, width),
+                );
+                if is_checked {
+                    Ty::option(resolved.clone())
+                } else {
+                    resolved.clone()
                 }
             }
             // Local actor-reference methods first check the concrete reference
             // type's own impl, then fall through to actor receive-fn dispatch.
             //
-            // `ChildRef<T>` and `LocalPid<T>` are distinct value representations;
+            // `ChildRef<T>` and an actor handle are distinct value representations;
             // their own methods are registered under their respective nominal
             // owners. Named receive handlers share the local dispatch path.
             (resolved, _) if resolved.as_local_actor_ref().is_some() => {
                 let actor_ref_builtin = if resolved.as_child_ref().is_some() {
                     crate::BuiltinType::ChildRef
                 } else {
-                    crate::BuiltinType::LocalPid
+                    crate::BuiltinType::ActorHandle
                 };
                 // A user handler named `send` is actor dispatch; otherwise
                 // `send` resolves through the reference type's own method.
@@ -9327,7 +8218,7 @@ impl Checker {
                 } else {
                     false
                 };
-                // A concrete `LocalPid<T>.send(msg)` with no user
+                // A concrete actor-handle `.send(msg)` call with no user
                 // `receive fn send` handler has no lowerable local-
                 // mailbox delivery path (#2367). Declaring `impl
                 // ActorMsg for T` records a message-envelope binding but
@@ -9369,7 +8260,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                // Try LocalPid's own methods first.
+                // Try the actor handle's own methods first.
                 if !has_user_send_handler {
                     if let Ty::Named {
                         args: receiver_args,
@@ -9408,12 +8299,14 @@ impl Checker {
                 // Fall through to actor receive-fn dispatch on the inner type.
                 let inner = resolved.as_local_actor_ref().unwrap();
                 if let Ty::Named {
-                    name: actor_name, ..
+                    name: actor_name,
+                    args: actor_type_args,
+                    ..
                 } = inner
                 {
-                    // An annotation-derived `LocalPid<Account>` carries the
-                    // bare inner name; resolve it to the registered actor
-                    // identity (current module's actor, root actor, or a
+                    // An annotation-derived `Account` actor-handle type carries
+                    // the actor's bare name directly; resolve it to the
+                    // registered actor identity (current module's actor, root actor, or a
                     // unique module export) before keying `fn_sigs`. Spawn-
                     // derived handles already carry the dotted identity.
                     let actor_identity = if self
@@ -9453,7 +8346,9 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    if let Some(sig) = self.fn_sigs.get(&method_key).cloned() {
+                    if let Some(sig) =
+                        self.lookup_named_method_sig(&actor_identity, actor_type_args, method)
+                    {
                         // Route through the one application authority rather
                         // than checking args against `sig.params` directly: a
                         // generic `receive fn keep<T>(..)` needs its type
@@ -9468,14 +8363,16 @@ impl Checker {
                             None,
                             args,
                             span,
-                            SignatureArgApplication::PositionalOnly {
-                                arity_context: format!("method `{method}`"),
+                            SignatureArgApplication::FunctionLike {
+                                param_names: &sig.param_names,
+                                accepts_kwargs: false,
+                                module_qualified: false,
                             },
                             true,
                             Some(GenericCallee::Method {
                                 type_name: &actor_identity,
                                 method,
-                                owner_type_args: &[],
+                                owner_type_args: actor_type_args,
                             }),
                         );
                         // Every argument crosses the mailbox boundary. This is
@@ -9489,24 +8386,6 @@ impl Checker {
                                 actor_name: actor_identity.clone(),
                             },
                         );
-                        // Ask-without-await guard: ask-shaped receive fn must be
-                        // awaited. Generator methods (`receive gen fn`) use `for
-                        // await` at the call site and are exempt from this guard.
-                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
-                        if !matches!(resolved_ret, Ty::Unit)
-                            && !self.receive_generator_methods.contains(&method_key)
-                            && !self.inside_await_expr
-                        {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!(
-                                    "actor ask `{actor_identity}.{method}` requires `await`; \
-                                     write `let v? = await ref.{method}(...)` \
-                                     or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
-                                ),
-                            );
-                        }
                         let call_ty = self.record_actor_method_dispatch(
                             span,
                             method_key,
@@ -9624,6 +8503,8 @@ impl Checker {
                                     // Fire-and-forget send; borrows the pid
                                     // handle, does not release it.
                                     consumes_receiver: false,
+                                    requires_mutable_receiver: false,
+                                    receiver_update: crate::ReceiverUpdate::Replace,
                                     returns_receiver_identity: false,
                                 },
                             );
@@ -9666,7 +8547,7 @@ impl Checker {
                 },
                 _,
             ) => self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span),
-            // LambdaPid<M, R>: lambda-actor handle.
+            // actor(M) -> R: lambda-actor handle.
             //
             // Methods: .send(msg) / .close()
             //
@@ -9679,7 +8560,7 @@ impl Checker {
             // separate `.recv()`.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::LambdaPid),
+                    builtin: Some(BuiltinType::ActorFn),
                     args: type_args,
                     ..
                 },
@@ -9718,7 +8599,7 @@ impl Checker {
             // .next() returns Option<yielded type>.
             (
                 Ty::Named {
-                    builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                    builtin: Some(BuiltinType::Generator),
                     args: type_args,
                     ..
                 },
@@ -10058,9 +8939,6 @@ impl Checker {
                         ) else {
                             return Ty::Error;
                         };
-                        if !self.inside_await_expr {
-                            self.warn_if_blocking_in_receive_fn("Receiver.recv", span);
-                        }
                         if matches!(resolved_inner, Ty::Var(_)) {
                             // No argument to unify against — the return-type
                             // constraint (e.g. `let v: int = rx.recv()`) is
@@ -10240,56 +9118,35 @@ impl Checker {
                     _ => self.lookup_named_method_sig(&canonical_receiver_name, type_args, method),
                 };
                 if let Some(sig) = sig {
-                    // Mutable-receiver enforcement (Q297 Stage 1): methods
-                    // declared with `var self` (or the named-receiver `var`
-                    // equivalent) require the call-site receiver to be a
-                    // `var`-bound binding. Without this gate, a caller could
-                    // dispatch through an immutable `let`-bound binding and
-                    // silently lose the contract that the trait declared a
-                    // mutable receiver. Mirrors the precedent on `.step()`
-                    // for machines (see further below in this arm).
                     if sig.requires_mutable_receiver {
-                        let receiver_binding_name = match &receiver.0 {
-                            Expr::Identifier(n) => Some(n.clone()),
-                            _ => None,
-                        };
-                        let receiver_is_mutable = receiver_binding_name
-                            .as_deref()
-                            .and_then(|n| self.env.lookup_ref(n))
-                            .is_some_and(|b| b.is_mutable);
-                        if !receiver_is_mutable {
-                            let receiver_label = if let Some(n) = &receiver_binding_name {
-                                format!("`{n}`")
-                            } else {
-                                "this expression".to_string()
-                            };
-                            self.report_error(
-                                TypeErrorKind::MutabilityError,
-                                span,
-                                format!(
-                                    "method `{method}` on `{name}` requires a mutable binding receiver; \
-                                     {receiver_label} is not declared with `var`",
-                                ),
-                            );
-                        } else if let Some(n) = &receiver_binding_name {
-                            // Mark the binding as written so the unused-mut
-                            // analysis does not flag `var it = …; it.next()`
-                            // as a never-reassigned mutable binding.
-                            self.env.mark_written(n);
-                            self.reject_private_param_mutable_receiver_call(
-                                n,
-                                &format!("method `{method}`"),
-                                span,
-                            );
-                        }
+                        self.check_mutable_method_receiver(
+                            receiver,
+                            &format!("method `{method}` on `{name}`"),
+                            span,
+                        );
                     }
+                    let is_actor_receive_dispatch = self
+                        .type_defs
+                        .get(name)
+                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        && self
+                            .actor_receive_methods
+                            .contains(&format!("{name}::{method}"));
                     let applied_sig = self.apply_instantiated_call_signature(
                         &sig,
                         None,
                         args,
                         span,
-                        SignatureArgApplication::PositionalOnly {
-                            arity_context: format!("method `{method}`"),
+                        if is_actor_receive_dispatch {
+                            SignatureArgApplication::FunctionLike {
+                                param_names: &sig.param_names,
+                                accepts_kwargs: false,
+                                module_qualified: false,
+                            }
+                        } else {
+                            SignatureArgApplication::PositionalOnly {
+                                arity_context: format!("method `{method}`"),
+                            }
                         },
                         true,
                         Some(GenericCallee::Method {
@@ -10305,7 +9162,7 @@ impl Checker {
                     // `fn_sigs` keyed `{Actor}::{method}`, but a value of bare
                     // actor type `W` is still an actor handle, not a struct: the
                     // call must cross the mailbox boundary exactly like the
-                    // `LocalPid<W>` arm above. Route it through
+                    // actor-handle arm above. Route it through
                     // the same send/ask dispatch machinery instead of falling
                     // through to the synchronous `W::method(self, ...)`
                     // `RewriteToFunction` path (which HIR cannot lower — there is
@@ -10314,13 +9171,6 @@ impl Checker {
                     // `methods {}` declared on the same actor (also keyed
                     // `{Actor}::{method}` in `fn_sigs`) are NOT in
                     // `actor_receive_methods`, so they stay on the direct path.
-                    let is_actor_receive_dispatch = self
-                        .type_defs
-                        .get(name)
-                        .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                        && self
-                            .actor_receive_methods
-                            .contains(&format!("{name}::{method}"));
                     if is_actor_receive_dispatch {
                         self.record_method_call_receiver_kind(
                             span,
@@ -10332,25 +9182,7 @@ impl Checker {
                         // per-arg alias-vs-copy decision so the fail-closed
                         // codegen consumer does not have to guess.
                         self.enforce_actor_method_send_args(args);
-                        // Ask-without-await guard: an ask-shaped receive fn
-                        // (non-unit return, non-generator) must be invoked under
-                        // `await`. Mirrors the `LocalPid` arm.
                         let method_key = format!("{name}::{method}");
-                        let resolved_ret = self.subst.resolve(&applied_sig.return_type);
-                        if !matches!(resolved_ret, Ty::Unit)
-                            && !self.receive_generator_methods.contains(&method_key)
-                            && !self.inside_await_expr
-                        {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!(
-                                    "actor ask `{name}.{method}` requires `await`; \
-                                     write `let v? = await ref.{method}(...)` \
-                                     or `match await ref.{method}(...) {{ .Ok(v) => ..., .Err(e) => ... }}`",
-                                ),
-                            );
-                        }
                         // Record the dispatch discriminator (Fire vs Ask). This
                         // also marks the span as already-rewritten below, so the
                         // synchronous `RewriteToFunction` path is skipped and the
@@ -10420,12 +9252,9 @@ impl Checker {
                                     // binding as written so the unused-mut analysis does
                                     // not flag `var lc = ...; lc.step(...)` as a
                                     // never-reassigned mutable binding.
+                                    self.env.discount_mutation_receiver_read(n);
                                     self.env.mark_written(n);
-                                    self.reject_private_param_mutable_receiver_call(
-                                        n,
-                                        "`.step()`",
-                                        span,
-                                    );
+                                    self.reject_borrowed_parameter_mutation(n, &[], span);
                                 }
                                 self.machine_method_dispatch.insert(
                                     SpanKey::in_module(span, self.current_module_idx),
@@ -10463,18 +9292,15 @@ impl Checker {
                     // specific double-close diagnostic. Discharging the
                     // obligation is a consequence of the move, never a
                     // substitute for it — close-then-use is use-after-move.
-                    // Three surfaces qualify:
-                    //   1. stdlib `impl Closable for T { fn close }` — the trait
-                    //      `close` flattens into T's inherent-method table; honour
-                    //      the `consumes_receiver` declared on the trait.
-                    //   2. a `#[resource]` type's inherent `fn close(self)` — the
+                    // Two surfaces qualify:
+                    //   1. a `#[resource]` type's inherent `fn close(consume self)` — the
                     //      implicit-drop dispatch target, which when called
                     //      explicitly also moves the receiver so the scope-exit
                     //      implicit drop is suppressed on the consumed path (no
                     //      double-close).
-                    //   3. any `fn m(consuming self)` inherent method — the
+                    //   2. any `fn m(consume self)` inherent method — the
                     //      terminal single-consume surface (a builder's
-                    //      `build(consuming self)`, a `#[linear]` type's consuming
+                    //      `build(consume self)`, a `#[linear]` type's consuming
                     //      method). The resolved sig carries the consume fact.
                     let consumes_receiver = sig.consumes_receiver
                         || self.named_type_method_consumes_receiver(name, method)
@@ -10574,6 +9400,7 @@ impl Checker {
                         method,
                         &sig,
                         span,
+                        &self.subst.resolve(&receiver_ty),
                     );
                     // W3.042 S2-S2: user-defined methods on named types (both
                     // inherent `impl Type { fn m(...) }` and trait `impl T for
@@ -10660,19 +9487,13 @@ impl Checker {
                         } else if matches!(*builtin, Some(BuiltinType::VecIter)) && method == "next"
                         {
                             if let Some(elem_ty) = type_args.first() {
-                                if !self.validate_vec_iter_element_clone_type(elem_ty, span) {
+                                if !self.record_vec_iter_element_mode(elem_ty, span) {
                                     return Ty::Error;
                                 }
-                                if let Ok(elem_resolved) =
-                                    ResolvedTy::from_ty(&self.subst.resolve(elem_ty))
-                                {
-                                    self.record_method_call_rewrite(
-                                        span,
-                                        MethodCallRewrite::BuiltinVecIterNext {
-                                            elem_ty: elem_resolved,
-                                        },
-                                    );
-                                }
+                                self.record_method_call_rewrite(
+                                    span,
+                                    MethodCallRewrite::BuiltinVecIterNext,
+                                );
                             }
                         } else if self.fn_sigs.contains_key(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
@@ -10777,10 +9598,12 @@ impl Checker {
                                     // `Consumed` and suppresses the duplicate
                                     // scope-exit implicit drop. The `consumes`
                                     // flag was computed above (resource close or
-                                    // a `Closable` trait method flattened onto
+                                    // a consuming trait method flattened onto
                                     // this type); other inherent/trait methods
                                     // are not consuming releases.
                                     consumes_receiver,
+                                    requires_mutable_receiver: sig.requires_mutable_receiver,
+                                    receiver_update: sig.receiver_update,
                                     returns_receiver_identity: sig.returns_receiver_identity,
                                 },
                             );
@@ -10850,49 +9673,12 @@ impl Checker {
                         trait_sig.return_type = trait_sig
                             .return_type
                             .substitute_named_param("Self", &self_ty);
-                        // W3.042 S2-S4: receiver-mutability gate for the
-                        // generic-bound StaticTraitDispatch arm. Mirrors the
-                        // (Ty::Named, _) direct-call gate above (Stage 1):
-                        // when the trait method is declared with `var self`
-                        // the call site must bind the receiver with `var`,
-                        // otherwise a mutating method would silently dispatch
-                        // through an immutable binding and lose the contract.
-                        // The substituted `trait_sig.requires_mutable_receiver`
-                        // is the checker-authoritative source — we do NOT
-                        // re-walk `trait_defs` here (LESSONS `checker-authority`).
                         if trait_sig.requires_mutable_receiver {
-                            let receiver_binding_name = match &receiver.0 {
-                                Expr::Identifier(n) => Some(n.clone()),
-                                _ => None,
-                            };
-                            let receiver_is_mutable = receiver_binding_name
-                                .as_deref()
-                                .and_then(|n| self.env.lookup_ref(n))
-                                .is_some_and(|b| b.is_mutable);
-                            if !receiver_is_mutable {
-                                let receiver_label = if let Some(n) = &receiver_binding_name {
-                                    format!("`{n}`")
-                                } else {
-                                    "this expression".to_string()
-                                };
-                                self.report_error(
-                                    TypeErrorKind::MutabilityError,
-                                    span,
-                                    format!(
-                                        "trait method `{declaring_trait}.{method}` \
-                                         (statically dispatched on type parameter `{name}`) \
-                                         requires a mutable binding receiver; \
-                                         {receiver_label} is not declared with `var`",
-                                    ),
-                                );
-                            } else if let Some(n) = &receiver_binding_name {
-                                self.env.mark_written(n);
-                                self.reject_private_param_mutable_receiver_call(
-                                    n,
-                                    &format!("trait method `{declaring_trait}.{method}`"),
-                                    span,
-                                );
-                            }
+                            self.check_mutable_method_receiver(
+                                receiver,
+                                &format!("trait method `{declaring_trait}.{method}` (statically dispatched on type parameter `{name}`)"),
+                                span,
+                            );
                         }
                         let applied_sig = self.apply_instantiated_call_signature(
                             &trait_sig,
@@ -11071,19 +9857,6 @@ impl Checker {
                                 );
                                 return Ty::Error;
                             }
-                            RecordCloneAdmissibility::UnbalancedSharedHandle {
-                                type_name,
-                                member,
-                            } => {
-                                let receiver_name = resolved.user_facing().to_string();
-                                self.report_unbalanced_shared_handle_clone_error(
-                                    &receiver_name,
-                                    &type_name,
-                                    &member,
-                                    span,
-                                );
-                                return Ty::Error;
-                            }
                             RecordCloneAdmissibility::GenericRecord => {
                                 self.report_error(
                                     TypeErrorKind::UndefinedMethod,
@@ -11132,11 +9905,30 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
+                // `unwrap` said nothing about why the value had to be there;
+                // point at the surfaces that do.
+                let suggestions = if method == "unwrap"
+                    && matches!(
+                        resolved,
+                        Ty::Named {
+                            builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                            ..
+                        }
+                    ) {
+                    vec![
+                        "expect(\"reason\") to state why the value must be there".to_string(),
+                        "`?` to propagate the failure to the caller".to_string(),
+                        "`??` to supply a default".to_string(),
+                        "`handle` to recover".to_string(),
+                    ]
+                } else {
+                    self.similar_methods(&resolved, method)
+                };
                 self.report_error_with_suggestions(
                     TypeErrorKind::UndefinedMethod,
                     span,
                     format!("no method `{method}` on `{}`", resolved.user_facing()),
-                    self.similar_methods(&resolved, method),
+                    suggestions,
                 );
                 Ty::Error
             }
@@ -11175,51 +9967,12 @@ impl Checker {
                         // re-derives it from the impl fn or by
                         // walking vtable entries (per Q-β resolution).
                         self.apply_trait_object_bound_substitutions(&mut sig, bound);
-                        // W3.042 S2-S4: receiver-mutability gate for the
-                        // Ty::TraitObject (dyn Trait) dispatch arm. Mirrors
-                        // the (Ty::Named, _) direct-call gate above (Stage 1)
-                        // and the StaticTraitDispatch gate. The substituted
-                        // `sig.requires_mutable_receiver` flag is the
-                        // checker-authoritative source (LESSONS
-                        // `checker-authority`); the flag survives
-                        // `apply_trait_object_bound_substitutions` per the
-                        // FnSig schema (W3.042 plan §3.6). Receiver shape
-                        // for dyn dispatch is always a Box<dyn Trait> bound
-                        // identifier — the same `Expr::Identifier` extraction
-                        // the other arms use applies here.
                         if sig.requires_mutable_receiver {
-                            let receiver_binding_name = match &receiver.0 {
-                                Expr::Identifier(n) => Some(n.clone()),
-                                _ => None,
-                            };
-                            let receiver_is_mutable = receiver_binding_name
-                                .as_deref()
-                                .and_then(|n| self.env.lookup_ref(n))
-                                .is_some_and(|b| b.is_mutable);
-                            if !receiver_is_mutable {
-                                let receiver_label = if let Some(n) = &receiver_binding_name {
-                                    format!("`{n}`")
-                                } else {
-                                    "this expression".to_string()
-                                };
-                                self.report_error(
-                                    TypeErrorKind::MutabilityError,
-                                    span,
-                                    format!(
-                                        "method `{method}` on `dyn {}` requires a \
-                                         mutable binding receiver; {receiver_label} is \
-                                         not declared with `var`",
-                                        bound.trait_name,
-                                    ),
-                                );
-                            } else if let Some(n) = &receiver_binding_name {
-                                self.env.mark_written(n);
-                                self.reject_private_param_mutable_receiver_call(
-                                    n,
-                                    &format!("method `{method}` on `dyn {}`", bound.trait_name),
-                                    span,
-                                );
-                            }
+                            self.check_mutable_method_receiver(
+                                receiver,
+                                &format!("method `{method}` on `dyn {}`", bound.trait_name),
+                                span,
+                            );
                         }
                         // Record the per-call-site vtable-slot resolution that
                         // HIR/MIR lowering will consume to emit
@@ -11228,46 +9981,39 @@ impl Checker {
                         // 0..3 are the fixed prefix triple
                         // (`drop_in_place`/`size_of`/`align_of`), trait methods
                         // start at slot 3 in trait-declaration order.
-                        let trait_lookup_key = self.trait_ref_lookup_key(&bound.trait_name);
-                        if let Some(trait_info) = self.trait_defs.get(&trait_lookup_key) {
-                            if let Some(method_idx) =
-                                trait_info.methods.iter().position(|m| m.name == method)
-                            {
-                                // Slot index is bounded by the trait's
-                                // method count, which Hew limits to
-                                // u32-sized vtables long before any
-                                // truncation risk. `try_from` keeps the
-                                // boundary explicit (LESSONS:
-                                // `boundary-fail-closed`).
-                                let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
-                                let target = self
-                                    .trait_method_call_target_ids(&bound.trait_name, method)
-                                    .map_or_else(
-                                        || CallTarget::Unsupported {
-                                            reason: format!(
-                                                "dynamic trait method `{}.{method}` has no registered declaration identity",
-                                                bound.trait_name
-                                            ),
-                                        },
-                                        |(declaring_trait, method)| {
-                                            CallTarget::DynamicVtable {
-                                                declaring_trait,
-                                                method,
-                                                slot,
-                                            }
-                                        },
-                                    );
-                                self.dyn_trait_method_calls.insert(
-                                    SpanKey::in_module(span, self.current_module_idx),
-                                    crate::check::types::DynMethodCall {
-                                        target,
-                                        trait_name: bound.trait_name.clone(),
-                                        method_name: method.to_string(),
-                                        slot,
-                                        signature: sig.clone(),
+                        // The slot comes from the one authority shared with
+                        // the coercion site, so a supertrait method such as
+                        // `Display::fmt` on `dyn Error` resolves to the slot
+                        // the vtable actually publishes.
+                        if let Some((slot, _, declaring_spelling)) =
+                            self.dyn_vtable_slot_for_method(&bound.trait_name, method)
+                        {
+                            let target = self
+                                .trait_method_call_target_ids(&declaring_spelling, method)
+                                .map_or_else(
+                                    || CallTarget::Unsupported {
+                                        reason: format!(
+                                            "dynamic trait method `{declaring_spelling}.{method}` has no registered declaration identity"
+                                        ),
+                                    },
+                                    |(declaring_trait, method)| {
+                                        CallTarget::DynamicVtable {
+                                            declaring_trait,
+                                            method,
+                                            slot,
+                                        }
                                     },
                                 );
-                            }
+                            self.dyn_trait_method_calls.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                crate::check::types::DynMethodCall {
+                                    target,
+                                    trait_name: bound.trait_name.clone(),
+                                    method_name: method.to_string(),
+                                    slot,
+                                    signature: sig.clone(),
+                                },
+                            );
                         }
                         if sig.consumes_receiver {
                             self.method_call_consumes_receiver
@@ -11581,6 +10327,18 @@ fn collection_dispatch_registry_impl() -> ImplRegistry {
                 },
             ),
             (
+                "is_empty".to_string(),
+                MethodTarget {
+                    // HIR composes semantic Len == 0 from this typed method.
+                    // There is no separate runtime entry point to invoke.
+                    symbol_name: String::new(),
+                    family: MethodTargetFamily::HashMap(HashMapMethod::IsEmpty),
+                    abi: RuntimeAbi::ByRef,
+                    call_hint: CallAbiHint::RuntimeShim,
+                    consumes_receiver: false,
+                },
+            ),
+            (
                 "keys".to_string(),
                 MethodTarget {
                     symbol_name: "hew_hashmap_keys_layout".to_string(),
@@ -11813,89 +10571,7 @@ mod tests {
     }
 
     #[test]
-    fn suspending_io_method_results_publish_delivery_ownership() {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-            ProducedValueOwnership as Ownership,
-        };
-
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let receiver = (Expr::Identifier("io".to_string()), 1..3);
-
-        let read_span = 10..20;
-        let read_key = SpanKey::in_module(&read_span, checker.current_module_idx);
-        checker.conn_await_reads.insert(read_key.clone(), true);
-        checker.suspending_io_receiver_nominals.insert(
-            read_key.clone(),
-            crate::stdlib::STD_NET_CONNECTION.to_string(),
-        );
-        checker.record_resolved_method_call_ownership(
-            &receiver,
-            "read_string",
-            &[],
-            &read_span,
-            &Ty::String,
-        );
-
-        let read = checker
-            .resolved_method_call_ownership
-            .get(&read_key)
-            .expect("suspending read ownership");
-        assert_eq!(read.fact.ownership, Ownership::owned(Acquisition::Delivery));
-        assert_eq!(read.fact.receiver_boundary, Some(Boundary::Borrow));
-
-        let accept_span = 30..40;
-        let accept_key = SpanKey::in_module(&accept_span, checker.current_module_idx);
-        checker.listener_await_accepts.insert(accept_key.clone());
-        checker.suspending_io_receiver_nominals.insert(
-            accept_key.clone(),
-            crate::stdlib::STD_NET_LISTENER.to_string(),
-        );
-        checker.record_resolved_method_call_ownership(
-            &receiver,
-            "accept",
-            &[],
-            &accept_span,
-            &Ty::Named {
-                name: crate::stdlib::STD_NET_CONNECTION.to_string(),
-                args: Vec::new(),
-                builtin: None,
-            },
-        );
-
-        let accept = checker
-            .resolved_method_call_ownership
-            .get(&accept_key)
-            .expect("suspending accept ownership");
-        assert_eq!(
-            accept.fact.ownership,
-            Ownership::owned(Acquisition::Delivery)
-        );
-        assert_eq!(accept.fact.receiver_boundary, Some(Boundary::Borrow));
-
-        let spoofed_span = 50..60;
-        let spoofed_key = SpanKey::in_module(&spoofed_span, checker.current_module_idx);
-        checker.conn_await_reads.insert(spoofed_key.clone(), true);
-        checker.suspending_io_receiver_nominals.insert(
-            spoofed_key.clone(),
-            crate::stdlib::STD_NET_LISTENER.to_string(),
-        );
-        checker.record_resolved_method_call_ownership(
-            &receiver,
-            "read_string",
-            &[],
-            &spoofed_span,
-            &Ty::String,
-        );
-        let spoofed = checker
-            .resolved_method_call_ownership
-            .get(&spoofed_key)
-            .expect("spoofed suspending read ownership");
-        assert_eq!(spoofed.fact.ownership, Ownership::Unknown);
-    }
-
-    #[test]
-    fn canonical_std_io_bytes_push_requires_provenance_and_checked_signature() {
+    fn canonical_std_io_runtime_methods_require_provenance_and_checked_signature() {
         let push_signature = FnSig {
             params: vec![Ty::U8],
             return_type: Ty::Unit,
@@ -11940,6 +10616,54 @@ mod tests {
             None,
             "the runtime ABI family is not admitted by symbol spelling and arity alone",
         );
+
+        let len_signature = FnSig {
+            params: vec![],
+            return_type: Ty::I64,
+            ..FnSig::default()
+        };
+        canonical.extern_method_origins.insert(
+            "string::len".to_string(),
+            (Some("std.string".to_string()), true),
+        );
+        canonical.extern_method_origins.insert(
+            "string::byte_len".to_string(),
+            (Some("std.string".to_string()), true),
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "string::byte_len",
+                "hew_string_byte_length",
+                &len_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::StringByteLen),
+        );
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "string::byte_len",
+                "hew_string_byte_length",
+                &len_signature,
+            ),
+            None,
+            "a user extern cannot select the byte-length runtime operation",
+        );
+        assert_eq!(
+            canonical.canonical_std_io_runtime_method_family(
+                "string::len",
+                "hew_string_length",
+                &len_signature,
+            ),
+            Some(crate::runtime_call::RuntimeCallFamily::StringLen),
+        );
+        assert_eq!(
+            lookalike.canonical_std_io_runtime_method_family(
+                "string::len",
+                "hew_string_length",
+                &len_signature,
+            ),
+            None,
+            "a user string len extern sharing the runtime spelling must remain untrusted",
+        );
     }
 
     #[test]
@@ -11953,7 +10677,7 @@ mod tests {
         checker
             .module_import_bindings
             .insert((None, 0, "files".to_string()), "std.fs".to_string());
-        checker.reject_wasm_native_only_module_function("files", "try_read", &span);
+        checker.reject_wasm_native_only_module_function("files", "read", &span);
         assert_eq!(checker.errors.len(), 1, "module alias must reject");
 
         // Use a fresh checker: the production de-duplication key intentionally
@@ -12226,7 +10950,7 @@ mod tests {
                 key_ty: Ty::Error,
                 val_ty: Ty::I64,
                 source_module: None,
-                is_abstract_key_param: false,
+                type_param_bounds: HashMap::new(),
             },
         );
 
@@ -12253,7 +10977,7 @@ mod tests {
                 key_ty: Ty::String,
                 val_ty: Ty::Var(TypeVar::fresh()),
                 source_module: None,
-                is_abstract_key_param: false,
+                type_param_bounds: HashMap::new(),
             },
         );
 
@@ -12270,10 +10994,10 @@ mod tests {
         );
     }
 
-    /// An abstract key parameter already admitted under its generic bounds has
-    /// no concrete layout fact until monomorphization substitutes K/V.
+    /// A bare key type parameter is checked against the bounds recorded at
+    /// the deferred site, not skipped: `K: Hash + Eq` must admit cleanly.
     #[test]
-    fn finalize_hashmap_admission_skips_abstract_key_param() {
+    fn finalize_hashmap_admission_admits_abstract_key_param_with_hash_eq_bounds() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let span = 60..70;
         checker.deferred_hashmap_admission.insert(
@@ -12283,7 +11007,10 @@ mod tests {
                 key_ty: Ty::normalize_named("K".to_string(), vec![]),
                 val_ty: Ty::normalize_named("V".to_string(), vec![]),
                 source_module: None,
-                is_abstract_key_param: true,
+                type_param_bounds: HashMap::from([
+                    ("K".into(), vec!["Hash".into(), "Eq".into()]),
+                    ("V".into(), vec![]),
+                ]),
             },
         );
 
@@ -12291,12 +11018,41 @@ mod tests {
 
         assert!(
             checker.errors.is_empty(),
-            "abstract HashMap key params are checked via declared bounds, not layout eligibility; got: {:?}",
+            "K: Hash + Eq must satisfy Map key admission via its declared bounds; got: {:?}",
             checker.errors
         );
+    }
+
+    /// Negative control: a bare key type parameter without a `Hash` bound
+    /// must still be refused, so admission decides from the recorded bounds
+    /// rather than skipping bare type parameters altogether.
+    #[test]
+    fn finalize_hashmap_admission_rejects_abstract_key_param_missing_hash_bound() {
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let span = 60..70;
+        checker.deferred_hashmap_admission.insert(
+            SpanKey::in_module(&span, 0),
+            DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: Ty::normalize_named("K".to_string(), vec![]),
+                val_ty: Ty::normalize_named("V".to_string(), vec![]),
+                source_module: None,
+                type_param_bounds: HashMap::from([
+                    ("K".into(), vec!["Eq".into()]),
+                    ("V".into(), vec![]),
+                ]),
+            },
+        );
+
+        checker.finalize_hashmap_admission();
+
         assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "abstract HashMap key params must not produce concrete layout facts"
+            checker
+                .errors
+                .iter()
+                .any(|e| e.kind == TypeErrorKind::BoundsNotSatisfied && e.message.contains("Hash")),
+            "K without a Hash bound must still be rejected as a Map key; got: {:?}",
+            checker.errors
         );
     }
 
@@ -12350,7 +11106,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
-                is_abstract_key_param: false,
+                type_param_bounds: HashMap::new(),
             },
         );
         checker.deferred_hashmap_admission.insert(
@@ -12360,7 +11116,7 @@ mod tests {
                 key_ty: Ty::Var(key_var),
                 val_ty: Ty::Var(val_var),
                 source_module: None,
-                is_abstract_key_param: false,
+                type_param_bounds: HashMap::new(),
             },
         );
 
@@ -12525,17 +11281,12 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_table_arity_skips_len_and_is_empty() {
-        // `len`/`is_empty` historically never called `check_arity`; the
-        // `Option<usize>` arity field must encode that asymmetry as `None`.
+    fn descriptor_table_preserves_existing_length_arities() {
         for kind in [CollectionKind::HashMap, CollectionKind::HashSet] {
             assert_eq!(arity_of(kind, "len"), None, "{kind:?}::len skips arity");
-            assert_eq!(
-                arity_of(kind, "is_empty"),
-                None,
-                "{kind:?}::is_empty skips arity"
-            );
         }
+        assert_eq!(arity_of(CollectionKind::HashSet, "is_empty"), None);
+        assert_eq!(arity_of(CollectionKind::HashMap, "is_empty"), Some(0));
     }
 
     #[test]

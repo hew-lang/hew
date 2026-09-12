@@ -4,8 +4,8 @@
 //!
 //! The typed `RewriteToFunction.descriptor` is reserved for closed-set builtin
 //! calls the checker resolves with first-class family knowledge. Open-set
-//! `#[extern_symbol]` symbols — stdlib `duration` / `instant` /
-//! `LambdaActorHandle` bindings as well as user-authored FFI on inherent impls
+//! `#[extern_symbol]` symbols — stdlib `duration` / `instant` bindings
+//! as well as user-authored FFI on inherent impls
 //! — are open-set *by mechanism*: their family is only recoverable by
 //! reverse-parsing the symbol string. So they carry `descriptor: None` and
 //! consumers fall back to the raw `c_symbol`.
@@ -22,8 +22,7 @@
 use crate::common;
 
 use hew_types::check::{MethodCallRewrite, SpanKey};
-use hew_types::error::TypeErrorKind;
-use hew_types::runtime_call::{ProducedArgumentBoundary, RuntimeCallFamily};
+use hew_types::runtime_call::RuntimeCallFamily;
 use hew_types::TypeCheckOutput;
 
 use common::{parse_and_typecheck_inline, typecheck};
@@ -65,15 +64,17 @@ fn function_rewrite_for(output: &TypeCheckOutput, symbol: &str) -> Option<(SpanK
 }
 
 #[test]
-fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
+fn canonical_stdlib_time_method_carries_its_typed_descriptor() {
     // `duration.hours()` is declared in stdlib via
-    // `#[extern_symbol(hew_duration_hours)]`, and `hew_duration_hours` IS a
-    // catalog entry (`RuntimeCallFamily::DurationHours`). The collision is the
-    // whole point: descriptor must still be `None`.
+    // `#[extern_symbol(hew_duration_hours)]` and is a canonical stdlib extern
+    // signature, so the checker resolves it to `RuntimeCallFamily::DurationHours`
+    // and records the typed descriptor the final path needs. The join is on the
+    // exact declaration identity, its trusted stdlib provenance and its checked
+    // signature — never on the symbol spelling, which the lookalike test below
+    // holds to account.
     assert!(
         RuntimeCallFamily::from_c_symbol("hew_duration_hours").is_some(),
-        "precondition: `hew_duration_hours` must be a RuntimeCallFamily catalog \
-         name for this collision test to be meaningful",
+        "precondition: `hew_duration_hours` must be a RuntimeCallFamily catalog name",
     );
 
     let output = typecheck(
@@ -92,12 +93,11 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
     );
 
     match descriptor_present_for(&output, "hew_duration_hours") {
-        Some(true) => panic!(
-            "checker-output-boundary violation: the #[extern_symbol] method \
-             `duration.hours()` was reclassified into a typed runtime descriptor \
-             because its symbol collides with RuntimeCallFamily::DurationHours",
+        Some(true) => { /* correct: the canonical stdlib method is typed */ }
+        Some(false) => panic!(
+            "`duration.hours()` lost its typed runtime descriptor; the final path \
+             refuses a stdlib extern with no runtime family",
         ),
-        Some(false) => { /* correct: open-set extern symbol carries no descriptor */ }
         None => panic!(
             "expected a RewriteToFunction recorded for `hew_duration_hours`; \
              rewrites: {:#?}",
@@ -114,14 +114,6 @@ fn stdlib_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
     assert!(
         !output.method_call_consumes_receiver.contains(&site),
         "non-consuming extern method must not enter the consume side table",
-    );
-    assert_eq!(
-        output
-            .produced_value_ownership
-            .get(&site)
-            .and_then(|fact| fact.receiver_boundary),
-        Some(ProducedArgumentBoundary::Borrow),
-        "non-consuming extern method must publish an exact borrow boundary",
     );
 }
 
@@ -170,87 +162,4 @@ fn user_extern_symbol_method_colliding_with_catalog_has_no_descriptor() {
             output.method_call_rewrites,
         ),
     }
-}
-
-#[test]
-fn extern_symbol_consuming_release_keeps_consume_mark_without_descriptor() {
-    // `LambdaActorHandle.release()` binds `#[extern_symbol(hew_lambda_actor_release)]`
-    // — a genuine consuming handle release AND a catalog name
-    // (`RuntimeCallFamily::LambdaActorRelease`). The descriptor must be `None`
-    // (open-set mechanism), but `consumes_receiver` MUST stay true: dropping the
-    // consume mark would let the handle's scope-exit drop fire on already-freed
-    // memory (double-free). This pins the deliberate asymmetry — descriptor is a
-    // forward-compat typed fact the checker cannot honestly assert for an extern
-    // symbol, while consume is a load-bearing ownership fact with no other source.
-    assert!(
-        RuntimeCallFamily::from_c_symbol("hew_lambda_actor_release").is_some(),
-        "precondition: `hew_lambda_actor_release` must be a catalog name",
-    );
-
-    let (_, output) = parse_and_typecheck_inline(
-        r"
-        import std.concurrency.lambda_actor;
-
-        fn exercise(handle: lambda_actor.LambdaActorHandle) {
-            handle.release();
-        }
-        ",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "LambdaActorHandle.release() should typecheck: {:#?}",
-        output.errors,
-    );
-
-    let release = function_rewrite_for(&output, "hew_lambda_actor_release");
-
-    match release {
-        Some((site, descriptor_present, consumes_receiver)) => {
-            assert!(
-                !descriptor_present,
-                "extern-symbol release must not carry a typed descriptor",
-            );
-            assert!(
-                consumes_receiver,
-                "extern-symbol consuming release MUST keep its consume mark \
-                 (else the handle double-frees at scope exit)",
-            );
-            assert!(
-                output.method_call_consumes_receiver.contains(&site),
-                "extern-symbol release must survive in the checker consume side table",
-            );
-            assert_eq!(
-                output
-                    .produced_value_ownership
-                    .get(&site)
-                    .and_then(|fact| fact.receiver_boundary),
-                Some(ProducedArgumentBoundary::Transfer),
-                "extern-symbol release must publish the exact transfer boundary",
-            );
-        }
-        None => panic!(
-            "expected a RewriteToFunction recorded for `hew_lambda_actor_release`; \
-             rewrites: {:#?}",
-            output.method_call_rewrites,
-        ),
-    }
-
-    let (_, reused_output) = parse_and_typecheck_inline(
-        r"
-        import std.concurrency.lambda_actor;
-
-        fn exercise(handle: lambda_actor.LambdaActorHandle) {
-            handle.release();
-            handle.release();
-        }
-        ",
-    );
-    assert!(
-        reused_output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
-        "a second use of the consuming extern receiver must fail as moved: {:#?}",
-        reused_output.errors,
-    );
 }

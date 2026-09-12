@@ -1,0 +1,44 @@
+// A record owning a `#[resource]` field runs the field's `close` exactly once
+// on every exit path: sync scope exit, a forked task's completion, and actor
+// shutdown.
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.id}");
+    }
+}
+
+type Holder {
+    ticket: Ticket,
+    label: string,
+}
+
+fn scope_exit() {
+    let holder = Holder { ticket: Ticket { id: 1 }, label: "scope" };
+    println(f"held {holder.ticket.id} {holder.label}");
+}
+
+fn worker() {
+    let holder = Holder { ticket: Ticket { id: 2 }, label: "task" };
+    println(f"worked {holder.label}");
+}
+
+actor Keeper {
+    var holder: Holder,
+    receive fn report() {
+        println(f"kept {holder.label}");
+    }
+}
+
+fn main() {
+    scope_exit();
+    scope { let t = fork worker(); await t; };
+    let keeper = spawn Keeper(holder: Holder { ticket: Ticket { id: 3 }, label: "actor" });
+    let _ = keeper.report();
+    sleep(50ms);
+    println("done");
+}

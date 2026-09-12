@@ -13,7 +13,7 @@
 //! with `type mismatch: expected selfqualtype.Meter, found Meter`.
 
 pub type Meter {
-    v: i64;
+    v: i64,
 }
 
 /// Return type spelled BARE in this module's frame.

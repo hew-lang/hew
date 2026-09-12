@@ -24,12 +24,6 @@ hew-mir = { path = "../hew-mir" }
 hew-codegen-rs = { path = "../hew-codegen-rs" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-# Pulls the runtime rlib into the hew binary so dlsym can resolve C-ABI symbols
-# at JIT session startup. The anchor module (generated at build time from
-# kStableJitHostSymbols) keeps all 653 symbols alive through LTO. The staticlib
-# half of hew-runtime is consumed by hew-lib for AOT programs; this dep only
-# uses the rlib half.
-hew-runtime = { path = "../hew-runtime" }
 hew-pkg = { path = "../hew-pkg" }
 clap.workspace = true
 clap_complete.workspace = true
@@ -53,7 +47,6 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
-fd-lock.workspace = true
 filetime = "0.2"
 hew-testutil = { path = "../hew-testutil" }
 object = "0.39"

@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp_write_backpressure"
+intent = "Accept fixture (IO-C1): TCP write-side backpressure surfaces as a typed `Result<(), WriteError>`."
+source = "../vertical-slice/accept/tcp_write_backpressure.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 42

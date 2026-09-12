@@ -1,0 +1,62 @@
+// Two channels selected in one loop. Source order takes the first ready arm, so
+// the loop drains the first channel then the second, and each close arrives as
+// its own `None`.
+import std.channel;
+
+fn main() {
+    let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) =
+        match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(error) => {
+                println(error);
+                return;
+            },
+        };
+    let (txb, rxb): (channel.Sender<string>, channel.Receiver<string>) =
+        match channel.new(4) {
+            .Ok(pair) => pair,
+            .Err(error) => {
+                println(error);
+                return;
+            },
+        };
+    txa.send("a1");
+    txb.send("b1");
+    txa.send("a2");
+    txb.send("b2");
+
+    var items = 0;
+    while items < 4 {
+        select {
+            v from rxa.recv() => match v {
+                .Some(item) => {
+                    println(f"a {item}");
+                    items = items + 1;
+                },
+                .None => println("a closed early"),
+            },
+            v from rxb.recv() => match v {
+                .Some(item) => {
+                    println(f"b {item}");
+                    items = items + 1;
+                },
+                .None => println("b closed early"),
+            },
+        }
+    }
+
+    // A closed channel is permanently ready, so under source order it would
+    // win every later round. Observe each close on its own receive instead.
+    txa.close();
+    txb.close();
+    match rxa.recv() {
+        .Some(item) => println(f"a {item}"),
+        .None => println("a closed"),
+    }
+    match rxb.recv() {
+        .Some(item) => println(f"b {item}"),
+        .None => println("b closed"),
+    }
+    rxa.close();
+    rxb.close();
+}

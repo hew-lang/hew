@@ -1,0 +1,16 @@
+fn main() {
+    let text = "é🙂\0雪".repeat(2);
+    assert(text.char_at(0).expect("Unicode scalar") == 'é');
+    assert(text.char_at(1).expect("Unicode scalar") == '🙂');
+    assert(text.char_at(2).expect("Unicode scalar") == '\0');
+    assert(text.char_at(3).expect("Unicode scalar") == '雪');
+    assert(text.char_at(7).expect("Unicode scalar") == '雪');
+    assert(text.char_at(-1).is_none());
+    assert(text.char_at(8).is_none());
+    assert(text.char_at(9223372036854775807).is_none());
+    assert("".char_at(0).is_none());
+    assert(text.find("雪").expect("scalar offset") == 3);
+    assert(text.find("absent").is_none());
+    assert(text.len() == 8);
+    println("character lookup preserves Unicode scalars and bounds");
+}

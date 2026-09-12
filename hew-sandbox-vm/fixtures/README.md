@@ -1,5 +1,10 @@
 # Sandbox VM golden fixtures
 
+The deferred metadata below describes this sandbox emitter and its fixture
+provenance. Its old task/actor wording is not the current Hew language grammar;
+ordinary calls wait, `fork` creates tasks, and `await` joins tasks. Preserve the
+machine-read provenance markers when updating the surrounding guidance.
+
 Each fixture directory contains:
 
 - `main.hew` — the learner-visible Hew source.

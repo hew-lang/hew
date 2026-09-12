@@ -1,0 +1,49 @@
+[[case]]
+id = "branch_join_double_close_after_join"
+intent = "Every rejoin path that closes an already-closed resource is reported once, with no cascade beyond them."
+source = "../vertical-slice/reject/branch_join_double_close_after_join.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 21
+column = 5
+message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 21
+column = 5
+message = "resource `held` cannot be closed more than once"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 28
+column = 9
+message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 28
+column = 9
+message = "resource `held` cannot be closed more than once"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 38
+column = 9
+message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 38
+column = 9
+message = "resource `held` cannot be closed more than once"

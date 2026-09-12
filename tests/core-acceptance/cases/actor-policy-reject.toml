@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-policy-reject"
+intent = "A rejecting completion retains its original owned request across binding, retry, compatible redirection and original-target termination. Embedded NUL payloads stay intact; abandoning a rejection releases it. Waiting completion, refusal reason rendering and mailbox submission remain controls."
+source = "cases/actor-policy-reject.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "submitted: accepted\nrejected: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n"
+exit = 0

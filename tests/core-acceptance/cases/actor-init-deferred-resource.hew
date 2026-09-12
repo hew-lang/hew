@@ -1,0 +1,21 @@
+import std.stream;
+
+actor Loader {
+    var label: string,
+    var input: Stream<string>,
+    init(path: string) {
+        label = path.to_upper();
+        input = match stream.from_file(path) {
+            .Ok(opened) => opened,
+            .Err(_) => panic("fixture open failed"),
+        };
+    }
+    receive fn describe() -> string { label }
+}
+
+fn main() {
+    let loader = spawn Loader(path: "resource-read.bin");
+    println(loader.describe().expect("describe"));
+    close(loader);
+    println("released");
+}

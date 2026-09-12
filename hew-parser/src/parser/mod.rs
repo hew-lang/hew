@@ -6,18 +6,19 @@
 // defined below via `self.`. The AST types and `Token` are re-exported
 // `pub(crate)` so each area submodule picks them up through `use super::*`.
 pub(crate) use crate::ast::{
-    ActorDecl, ActorInit, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block, CallArg,
-    ChildSpec, CompositeGroup, CompoundAssignOp, ConstDecl, ConstParam, ConstParamTy,
-    ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr, ExternBlock,
-    ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName, ImportSpec,
-    IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent, MachineState,
-    MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase, NominalPatternPayload,
-    OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
-    QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField, RecordKind,
-    ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart,
-    SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp,
-    VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate, WireFieldMeta, WireMetadata,
+    ActorDecl, ActorInit, ArrayElement, AssocTypeBinding, Attribute, AttributeArg, BinaryOp, Block,
+    CallArg, ChildSpec, CompositeGroup, CompoundAssignOp, ConditionItem, ConstDecl, ConstParam,
+    ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
+    ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImplTypeAlias, ImportDecl, ImportName,
+    ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal, MachineDecl, MachineEvent,
+    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField,
+    Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordField,
+    RecordKind, ResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span, Spanned, Stmt,
+    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
+    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
+    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
+    WireFieldMeta, WireMetadata,
 };
 pub(crate) use hew_lexer::Token;
 use serde::Serialize;
@@ -40,6 +41,7 @@ mod wire;
 // in `core` call them as bare names).
 pub(crate) use precedence::{
     infix_bp, prefix_bp, token_begins_clone_operand, token_to_binop, CLONE_PREFIX_BP,
+    CONDITION_OPERAND_BP,
 };
 
 // `break`'s statement-vs-expression terminator selector lives in `statements`
@@ -56,9 +58,6 @@ pub(crate) use attributes::AttrPosition;
 #[cfg(test)]
 mod tests;
 
-const EMBEDDED_NUL_STRING_MESSAGE: &str =
-    "embedded NUL (\\0) in string literal is not supported by the null-terminated string ABI";
-
 pub(crate) type ParsedTraitBoundArgs = (Option<Vec<Spanned<TypeExpr>>>, Vec<AssocTypeBinding>);
 pub(crate) type StructInitFields = (Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>);
 
@@ -72,48 +71,30 @@ pub(crate) enum TypeParseContext {
 ///
 /// Handles hex (`0x`), octal (`0o`), binary (`0b`) prefixes and underscore separators.
 /// Merges the old `parse_int_literal` + `detect_int_radix` to avoid scanning twice.
-pub(crate) fn parse_int_literal(s: &str) -> Result<(i64, IntRadix), std::num::ParseIntError> {
+///
+/// The value is the exact mathematical magnitude in an `i128` carrier (D421),
+/// so every Hew integer type -- including `u64::MAX` and `i64::MIN` -- is
+/// representable. Range admission belongs to the checker against the
+/// contextual type; the parser only rejects a magnitude beyond the carrier.
+pub(crate) fn parse_int_literal(s: &str) -> Result<(i128, IntRadix), std::num::ParseIntError> {
     let cleaned: String = s.chars().filter(|c| *c != '_').collect();
     if let Some(hex) = cleaned
         .strip_prefix("0x")
         .or_else(|| cleaned.strip_prefix("0X"))
     {
-        i64::from_str_radix(hex, 16).map(|v| (v, IntRadix::Hex))
+        i128::from_str_radix(hex, 16).map(|v| (v, IntRadix::Hex))
     } else if let Some(oct) = cleaned
         .strip_prefix("0o")
         .or_else(|| cleaned.strip_prefix("0O"))
     {
-        i64::from_str_radix(oct, 8).map(|v| (v, IntRadix::Octal))
+        i128::from_str_radix(oct, 8).map(|v| (v, IntRadix::Octal))
     } else if let Some(bin) = cleaned
         .strip_prefix("0b")
         .or_else(|| cleaned.strip_prefix("0B"))
     {
-        i64::from_str_radix(bin, 2).map(|v| (v, IntRadix::Binary))
+        i128::from_str_radix(bin, 2).map(|v| (v, IntRadix::Binary))
     } else {
-        cleaned.parse::<i64>().map(|v| (v, IntRadix::Decimal))
-    }
-}
-
-/// Parse the digits following a unary `-` as a single negated integer literal.
-///
-/// Delegates to [`parse_int_literal`] and negates the result for every
-/// magnitude that already fits a positive `i64`. Falls back to parsing
-/// `-<digits>` directly (decimal only) so `i64::MIN`/`isize::MIN`'s
-/// magnitude (`9223372036854775808`, one past `i64::MAX`) — which cannot be
-/// tokenized as a positive `i64` at all — still parses when written with its
-/// sign attached.
-pub(crate) fn parse_negated_int_literal(
-    s: &str,
-) -> Result<(i64, IntRadix), std::num::ParseIntError> {
-    match parse_int_literal(s) {
-        Ok((val, radix)) => Ok((-val, radix)),
-        Err(original_err) => {
-            let cleaned: String = s.chars().filter(|c| *c != '_').collect();
-            match format!("-{cleaned}").parse::<i64>() {
-                Ok(v) => Ok((v, IntRadix::Decimal)),
-                Err(_) => Err(original_err),
-            }
-        }
+        cleaned.parse::<i128>().map(|v| (v, IntRadix::Decimal))
     }
 }
 
@@ -393,14 +374,37 @@ pub(crate) fn unescape_string(s: &str) -> (String, Vec<(usize, &'static str)>) {
     (out, errors)
 }
 
-pub(crate) fn embedded_nul_string_error(span: Span) -> ParseError {
-    ParseError {
-        message: EMBEDDED_NUL_STRING_MESSAGE.to_string(),
-        span,
-        hint: None,
-        severity: Severity::Error,
-        kind: ParseDiagnosticKind::InvalidLiteral,
+/// Decode byte literals without UTF-8 re-encoding `\xHH` byte escapes.
+/// Ordinary text and Unicode escapes retain their UTF-8 encoding.
+pub(crate) fn unescape_bytes(s: &str) -> (Vec<u8>, Vec<(usize, &'static str)>) {
+    let mut out = Vec::with_capacity(s.len());
+    let mut errors = Vec::new();
+    let chars: Vec<_> = s.char_indices().collect();
+    let mut escaped = String::new();
+    let mut idx = 0;
+    while idx < chars.len() {
+        if chars[idx].1 == '\\' {
+            if let Some([(_, 'x'), (_, hi), (_, lo)]) = chars.get(idx + 1..idx + 4) {
+                if let (Some(hi), Some(lo)) = (hi.to_digit(16), lo.to_digit(16)) {
+                    out.push(u8::try_from(hi * 16 + lo).expect("two hex digits fit in a byte"));
+                    idx += 4;
+                    continue;
+                }
+            }
+            escaped.clear();
+            let (consumed, error) = push_unescaped_sequence(&chars, idx, &mut escaped, &[]);
+            if let Some(message) = error {
+                errors.push((chars[idx].0, message));
+            }
+            out.extend_from_slice(escaped.as_bytes());
+            idx += consumed;
+        } else {
+            let mut bytes = [0; 4];
+            out.extend_from_slice(chars[idx].1.encode_utf8(&mut bytes).as_bytes());
+            idx += 1;
+        }
     }
+    (out, errors)
 }
 
 /// Split an interpolated string (f-string or template literal) into literal
@@ -601,15 +605,6 @@ pub(crate) fn parse_string_parts(
         parts.push(StringPart::Literal(literal_buf));
     }
 
-    if parts
-        .iter()
-        .any(|part| matches!(part, StringPart::Literal(text) if text.contains('\0')))
-    {
-        errors.push(embedded_nul_string_error(
-            span_start..span_start + raw.len(),
-        ));
-    }
-
     parts
 }
 
@@ -686,10 +681,6 @@ pub struct Parser<'src> {
     /// True while parsing an impl-method parameter list that accepts bare
     /// `self` as sugar for a `Self` receiver parameter.
     pub(crate) allow_implicit_self_params: bool,
-    /// Number of enclosing `scope { ... }` expression bodies being parsed.
-    pub(crate) scope_expr_depth: usize,
-    /// Number of enclosing `fork { ... }` child-task block bodies being parsed.
-    pub(crate) fork_block_depth: usize,
     /// True while parsing an `if`/`while` condition or `match` scrutinee at the
     /// top level (outside any bracketing delimiter). In that position a bare
     /// identifier immediately followed by `{` must NOT be read as a struct
@@ -773,6 +764,12 @@ pub enum ParseDiagnosticKind {
     },
     /// Pipe-closure syntax is malformed or incomplete.
     ClosurePipeSyntax,
+    /// Retired `async fn` syntax; suspension is inferred from the body.
+    NoAsyncFn,
+    /// Retired `async gen fn` syntax; generators infer suspension too.
+    NoAsyncGen,
+    /// A record literal named more than one `..base`.
+    DuplicateRecordBase,
     /// Every other error not yet assigned a structured variant.
     Other,
 }
@@ -791,6 +788,9 @@ impl ParseDiagnosticKind {
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
             Self::ClosurePipeSyntax => "ClosurePipeSyntax",
+            Self::NoAsyncFn => "E_NO_ASYNC_FN",
+            Self::NoAsyncGen => "E_NO_ASYNC_GEN",
+            Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",
             Self::Other => "Other",
         }
     }

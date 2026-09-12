@@ -26,7 +26,7 @@ trait Shape {
     fn area(val: Self) -> i64;
 }
 
-type Circle { radius: i64; }
+type Circle { radius: i64, }
 impl Shape for Circle {
     fn area(c: Circle) -> i64 { c.radius * c.radius * 3 }
 }
@@ -110,12 +110,12 @@ trait Shape {
     fn area(val: Self) -> i64;
 }
 
-type Circle { radius: i64; }
+type Circle { radius: i64, }
 impl Shape for Circle {
     fn area(c: Circle) -> i64 { c.radius * c.radius * 3 }
 }
 
-type Square { side: i64; }
+type Square { side: i64, }
 impl Shape for Square {
     fn area(s: Square) -> i64 { s.side * s.side }
 }

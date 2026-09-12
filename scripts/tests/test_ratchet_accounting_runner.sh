@@ -14,7 +14,7 @@ cat >"${FAKE_MAKE}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$1" >>"${RATCHET_ACCOUNTING_TEST_LOG}"
-if [[ "$1" == "test" || "$1" == "test-doc-examples" ]]; then
+if [[ "$1" == "test" || "$1" == "core-acceptance" ]]; then
     exit 1
 fi
 EOF
@@ -30,14 +30,14 @@ if [[ "${status}" -ne 1 ]]; then
     exit 1
 fi
 
-expected=$'test\ntest-hew-ratchet\ntest-core-matrix\ntest-stdlib-ratchet\ntest-doc-examples\nfuzz-oracle\nhew-check-all'
+expected=$'test\ntest-hew-ratchet\ncore-acceptance\nhew-check-all'
 actual="$(cat "${LOG}")"
 if [[ "${actual}" != "${expected}" ]]; then
     echo "FAIL: runner skipped or reordered a family" >&2
     printf 'expected:\n%s\nactual:\n%s\n' "${expected}" "${actual}" >&2
     exit 1
 fi
-if [[ "${output}" != *"test-doc-examples: FAILED"* || "${output}" != *"hew-check-all: PASSED"* ]]; then
+if [[ "${output}" != *"core-acceptance: FAILED"* || "${output}" != *"hew-check-all: PASSED"* ]]; then
     echo "FAIL: runner did not retain later-family evidence" >&2
     exit 1
 fi

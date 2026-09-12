@@ -1,0 +1,11 @@
+// E_SIR_UNSUPPORTED: value coercion from I32 to I64 refused: `i32` has no
+// callable value contract. A `for` range whose bounds have mixed integer width.
+fn main() -> i64 {
+    var total = 0;
+    let lo: i32 = 2;
+    let hi: i64 = 6;
+    for i in lo..hi {
+        total = total + i;
+    }
+    total
+}

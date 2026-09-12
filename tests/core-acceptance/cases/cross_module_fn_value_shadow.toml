@@ -1,0 +1,13 @@
+[[case]]
+id = "cross_module_fn_value_shadow"
+intent = "A local binding that shadows an imported module name must resolve as a field access, not a fn-value BindingRef."
+source = "../vertical-slice/accept/cross_module_fn_value_shadow/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n"
+exit = 0

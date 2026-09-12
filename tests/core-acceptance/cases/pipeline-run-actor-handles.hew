@@ -1,0 +1,51 @@
+// A pub function in an imported module returns an actor handle by the actor's
+// own type, and the module's own non-pub actors are spawned behind it. Both
+// facts have to survive the checker-to-HIR handoff: the handle keeps the
+// actor's qualified declaration identity, and an imported actor reaches HIR
+// whether or not its declaration is pub.
+import std.pipeline;
+
+fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
+    PipelineItemI64 { value: value, label: label, crash_stage: false }
+}
+
+fn settled_count(source: pipeline.SourceI64, expected: i64) -> i64 {
+    var count = -1;
+    var polls = 0;
+    while count != expected && polls < 5000 {
+        match source.count() {
+            .Ok(value) => { count = value; },
+            .Err(_) => { count = -1; },
+        }
+        polls = polls + 1;
+        if count != expected {
+            sleep(1ms);
+        }
+    }
+    count
+}
+
+fn push(source: pipeline.SourceI64, value: i64, label: string) {
+    match source.push(item(value, label)) {
+        .Ok(true) => {},
+        .Ok(false) => panic("the pipeline refused an item"),
+        .Err(_) => panic("the pipeline source refused its call"),
+    }
+}
+
+fn main() {
+    // `run` is declared `-> SourceI64` in `std.pipeline`, so the handle carries
+    // that module's actor identity across the import boundary.
+    let source: pipeline.SourceI64 = pipeline.run(pipeline.from(3));
+    push(source, 3, "alpha");
+    push(source, 7, "beta");
+    println(settled_count(source, 2));
+    match source.sum() {
+        .Ok(value) => println(value),
+        .Err(_) => panic("the sink refused its call"),
+    }
+    match source.last_label() {
+        .Ok(value) => println(value),
+        .Err(_) => panic("the sink refused its call"),
+    }
+}

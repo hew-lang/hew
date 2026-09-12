@@ -13,17 +13,16 @@ fn fib(n: i32) -> i32 {
 }
 
 actor Worker {
-    let id: i32;
+    let id: i32,
     receive fn process(x: i32) {
 
         // Do some real computation to exercise the scheduler
-        let result = fib(x % 15);
-        let combined = result + id;
+        let _ = fib(x % 15) + id;
     }
 }
 
 actor Collector {
-    var count: i32;
+    var count: i32,
     receive fn tick() {
         count = count + 1;
     }
@@ -39,12 +38,12 @@ fn main() {
     for i in 0 .. 50 {
         let w = spawn Worker(id: i);
         for j in 0 .. 20 {
-            w.process(j);
+            let _ = w.process(j);
         }
-        collector.tick();
+        let _ = collector.tick();
     }
     // Give time for all messages to be processed
     sleep(500ms);
-    collector.report();
+    let _ = collector.report();
     println("PASS: scheduler handles 50 actors x 20 messages");
 }

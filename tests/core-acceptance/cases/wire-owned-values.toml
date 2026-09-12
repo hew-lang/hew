@@ -1,0 +1,11 @@
+[[case]]
+id = "wire-owned-values"
+intent = "Decode-only nested collections, byte keys and complete UTF-8 compose across CBOR, JSON and YAML."
+source = "../vertical-slice/accept/wire_owned_values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 42

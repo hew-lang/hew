@@ -1,6 +1,7 @@
-//! A `LambdaPid` stored in actor state owns a runtime strong-handle release.
-//! Compilation must route that state-drop through the runtime ABI declaration,
-//! and shutdown must complete without leaking the actor-state drop body.
+//! An anonymous actor's handle (`actor(M) -> R`) stored in actor state owns a
+//! runtime strong-handle release. Compilation must route that state-drop
+//! through the runtime ABI declaration, and shutdown must complete without
+//! leaking the actor-state drop body.
 
 mod support;
 
@@ -14,7 +15,7 @@ fn lambda_pid_actor_state_runs_and_tears_down() {
         &source,
         r#"
 actor Holder {
-    let pid: LambdaPid<i64, ()>;
+    let pid: actor(i64),
 
     receive fn ping() -> i64 {
         1
@@ -31,6 +32,6 @@ fn main() {
     .expect("write Hew source");
 
     let output = run_bounded_hew_run(&source, repo_root());
-    assert_success(&output, "LambdaPid actor-state drop must compile and run");
+    assert_success(&output, "actor-fn actor-state drop must compile and run");
     assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "ok");
 }

@@ -1,0 +1,23 @@
+// E_OWN_CONSUME_BORROWED inside a generic instance: `fn identity<T>(value: T) -> T`
+// returns its own parameter, and semantic lowering of the instance treats that
+// transfer as a consume through a borrowed parameter.
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"closing token id={self.id}");
+    }
+}
+
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn main() -> i64 {
+    let token = identity(Token { id: 99 });
+    token.close();
+    0
+}

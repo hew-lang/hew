@@ -30,7 +30,7 @@ fn check_and_lower(source: &str) -> hew_hir::LowerOutput {
 fn source_and_child_artifacts_carry_checker_declaration_ids() {
     let output = check_and_lower(
         r#"
-type Holder<T> { value: T; }
+type Holder<T> { value: T, }
 
 impl Holder<i64> {
     fn get(holder: Holder<i64>) -> i64 { holder.value }
@@ -51,11 +51,11 @@ supervisor App {
 }
 
 machine Toggle {
-    events { Flip; }
-    state Off;
-    state On;
-    on Flip: Off => .On;
-    on Flip: On => .Off;
+    events { Flip, }
+    state Off,
+    state On,
+    on Flip: Off => .On,
+    on Flip: On => .Off,
 }
 
 fn ordinary<T>(value: T) -> T { value }
@@ -105,21 +105,6 @@ fn ordinary<T>(value: T) -> T { value }
                 assert_eq!(
                     supervisor.bootstrap_declaration.full_path(),
                     "App::<bootstrap>"
-                );
-            }
-            HirItem::Machine(machine) if machine.name == "Toggle" => {
-                assert_eq!(machine.declaration.full_path(), "Toggle");
-                assert_eq!(
-                    machine.states[0].declaration.full_path(),
-                    "Toggle::state Off"
-                );
-                assert_eq!(
-                    machine.events[0].declaration.full_path(),
-                    "Toggle::event Flip"
-                );
-                assert_eq!(
-                    machine.transitions[0].declaration.full_path(),
-                    "Toggle::<transition#0>"
                 );
             }
             _ => {}

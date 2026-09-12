@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-one-structure"
+intent = "A machine written the one way runs: a body-less unit target, a field list with the target elided and carrying `..state`, an expression body for the computed `_` target and for the `{ state }` identity, `state` and `event` as the only implicit bindings, a guard, `reenter`, entry and exit hooks and a `default` stay."
+source = "cases/machine-one-structure.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "enter:ada\nexit:ada\nenter:ada\nLive\nexit:ada\nspent:ada\nSpent\nSpent\nIdle\nignored\nIdle\n"
+exit = 0

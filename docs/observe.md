@@ -1,4 +1,4 @@
-# Hew observability (`std::observe` and `hew-observe`)
+# Hew observability (`std.observe` and `hew-observe`)
 
 Hew's observability surface is runtime-owned and read-only from Hew code. Use it
 when you want to inspect memory, scheduler, actor, coroutine, reactor, and
@@ -9,7 +9,7 @@ the runtime or toolchain must be observable in the artifact's output, response,
 or telemetry — see the observable-honesty axiom in the
 [IR ladder reference](internal/ir-ladder.md#design-axioms).
 
-There are three primary metric APIs in `std::observe`:
+There are three primary metric APIs in `std.observe`:
 
 ```hew
 import std.observe;
@@ -37,7 +37,7 @@ value as `Option<i64>`.
 import std.observe;
 
 println(observe.read("heap.live_bytes").unwrap_or(0));
-println(observe.read("actors.turns_total").unwrap_or(0));
+println(observe.read("actors.turns_total") ?? 0);
 println(observe.read("does.not.exist")); // None
 ```
 
@@ -96,7 +96,7 @@ Save this as `observe_demo.hew`:
 import std.observe;
 
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -108,13 +108,13 @@ actor Counter {
 }
 
 let counter = spawn Counter(count: 0);
-counter.increment(1);
-counter.increment(2);
-let total = await counter.total();
-let _barrier = observe.barrier();
+counter.increment(1).expect("increment completes");
+counter.increment(2).expect("increment completes");
+let total = counter.total().expect("total query completes");
+let _barrier = observe.barrier().expect("barrier succeeds");
 
 println(total);
-println(observe.read("actors.turns_total").unwrap_or(0));
+println(observe.read("actors.turns_total") ?? 0);
 println(observe.series());
 observe.scrape()
 ```
@@ -148,7 +148,7 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 
 | Metric | Kind | Hot? | What it measures |
 | --- | --- | --- | --- |
-| `heap.live_bytes` | gauge | no | Current allocator live bytes. On WASM this currently reads `0`. |
+| `heap.live_bytes` | gauge | no | Live bytes held by every allocation Hew owns. On WASM this currently reads `0`. |
 | `heap.allocated_total` | counter | yes | Total bytes recorded by hot-tier heap allocation probes. |
 | `heap.freed_total` | counter | yes | Total bytes recorded by hot-tier heap free probes. |
 | `heap.allocations_total` | counter | yes | Number of heap allocations recorded by hot-tier probes. |
@@ -176,6 +176,27 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 | `reactor.registrations_live` | gauge | no | Live reactor registration count. |
 | `reactor.ready_events_total` | counter | no | Reactor ready-event count. |
 | `arena.resets_total` | counter | no | Arena reset count. |
+
+### What the heap counters cover
+
+The `heap.*` counters wrap the Rust global allocator, and every allocation Hew
+owns goes through it: collection storage, `bytes` and `string` buffers, the
+per-object headers, mailbox payloads, reply values, actor state wrappers and
+serialization buffers. The coverage is structural rather than instrumented -
+there is no separate accounting call a new allocation could forget to make.
+
+Two things are outside the counters:
+
+- Memory a native package allocates with its own allocator. The package owns
+  both ends of that allocation, so the runtime never sees it. The one
+  documented list of such boundaries is
+  [allocation boundaries](internal/allocation-boundaries.md).
+- Memory the process holds that is not a Hew allocation: the executable, thread
+  stacks, and whatever the C library keeps.
+
+A drop in `heap.live_bytes` says the allocator was told the memory is free. It
+does not say resident memory fell: the allocator usually keeps freed pages for
+the next request, so RSS follows later, or not at all.
 
 The labelled series are emitted by `observe.scrape()` when attribution data
 exists:
@@ -213,10 +234,10 @@ questions such as:
 Use this pattern in examples and tests that need deterministic scrape output:
 
 ```hew
-let actor = spawn Counter(count: 0);
-actor.increment(1);
-let value = await actor.total();
-let _barrier = observe.barrier();
+let counter = spawn Counter(count: 0);
+counter.increment(1).expect("increment completes");
+let value = counter.total().expect("total query completes");
+let _barrier = observe.barrier().expect("barrier succeeds");
 println(observe.scrape());
 ```
 
@@ -305,7 +326,7 @@ delegation fails; run `hew-observe` directly or build/install it alongside
 
 - **No custom application metrics.** Hew programs can read runtime-owned metrics,
   but cannot define counters, gauges, histograms, labels, spans, or traces
-  through `std::observe`.
+  through `std.observe`.
 - **Fragmented surfaces.** `observe.read`, `observe.scrape`, `/api/metrics`,
   `/api/actors`, and `/api/metrics/history` do not expose one identical schema.
   In particular, `/api/metrics` currently omits several fields that the runtime
@@ -315,7 +336,7 @@ delegation fails; run `hew-observe` directly or build/install it alongside
   `# TYPE`, but there is no API for descriptions, units, stability, or hot-tier
   requirements.
 - **No programmatic hot-tier check in Hew.** The runtime has an internal hot-tier
-  flag, but `std::observe` does not expose `hot_enabled()`.
+  flag, but `std.observe` does not expose `hot_enabled()`.
 - **`observe.barrier` is narrow.** It is present as a synchronization helper for
   attribution visibility, but it is not a custom metric or flush API.
 - **`hew observe` depends on a sibling binary.** The main `hew` CLI delegates to

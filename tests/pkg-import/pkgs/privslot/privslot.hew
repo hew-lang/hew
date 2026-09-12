@@ -13,12 +13,12 @@
 //! `Store::add$$string` body, keyed bare, with no naming-surface leak.
 
 type Slot<T> {
-    generation: i64;
-    value: T;
+    generation: i64,
+    value: T,
 }
 
 pub type Store<T> {
-    slots: Vec<Slot<T>>;
+    slots: Vec<Slot<T>>,
 }
 
 pub fn new<T>() -> Store<T> {
@@ -27,10 +27,12 @@ pub fn new<T>() -> Store<T> {
 
 impl<T> Store<T> {
     /// Push a value into a fresh private `Slot`, stamping its generation with
-    /// the pre-insertion length, and return the new length.
-    fn add(self, value: T) -> i64 {
-        self.slots.push(Slot { generation: self.slots.len(), value: value });
-        self.slots.len()
+    /// the pre-insertion length, and return the updated store.
+    fn add(self, value: T) -> Store<T> {
+        var updated = self;
+        let generation = updated.slots.len();
+        updated.slots.push(Slot { generation: generation, value: value });
+        updated
     }
 
     /// Read back the generation stamp of the slot at `i` — proves the private

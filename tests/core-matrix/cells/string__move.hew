@@ -1,5 +1,0 @@
-fn main() {
-    let x: string = "ab";
-    let y = x;
-    println(f"{y}");
-}

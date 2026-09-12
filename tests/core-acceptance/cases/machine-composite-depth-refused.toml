@@ -1,0 +1,13 @@
+[[case]]
+id = "machine-composite-depth-refused"
+intent = "A composite state nests one level: a substate that declares substates of its own is refused at the nested declaration."
+source = "cases/machine-composite-depth-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 11
+column = 13
+message = "a composite state nests one level; substate `Inner` of composite `Outer` may not declare substates of its own"

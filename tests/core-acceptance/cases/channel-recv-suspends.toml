@@ -1,0 +1,10 @@
+[[case]]
+id = "channel-recv-suspends"
+intent = "A forked producer parks on a full bounded channel while the consumer parks on the empty one: every owned string element crosses in order, the sender's close ends the drain, and a bytes element with an embedded NUL proves the envelope decode uses the element's own content length."
+source = "cases/channel-recv-suspends.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "item-0-payload\nitem-1-payload\nitem-2-payload\nitem-3-payload\nitem-4-payload\nitem-5-payload\nsent 6\ndrained 6\nbytes 4\n"
+exit = 0

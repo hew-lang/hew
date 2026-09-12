@@ -4,60 +4,20 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Raw/Checked/Elaborated MIR ladder for the Hew v0.5 compiler pipeline"
+description = "Verified physical MIR for the Hew compiler"
 repository = "https://github.com/hew-lang/hew"
 readme = "../README.md"
 keywords = ["hew", "compiler", "mir"]
 categories = ["compilers"]
 
-[features]
-# Exposes fixture-only callable identities to test builds. Production builds
-# leave this disabled, so `MirCallableKey::for_test` is absent from the API.
-test = ["hew-types/test"]
-
 [dependencies]
-hew-hir = { path = "../hew-hir" }
 hew-sir = { path = "../hew-sir" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
-serde.workspace = true
-siphasher = "1"
-
-[build-dependencies]
-hew-types = { path = "../hew-types" }
 
 [dev-dependencies]
-# Self dev-dependency so `hew-mir/tests/*` link a lib built with the
-# fixture-identity feature; production `cargo build` never enables it.
-#
-# APPROXIMATION — WHY: an integration test in `tests/` links the crate's own
-# rlib, so a `#[cfg(test)]` gate is invisible to it; a cargo feature is the only
-# switch that reaches both. WHEN this stops being good enough: cargo unifies
-# features per workspace build, so during `cargo test --workspace` EVERY crate
-# that depends on hew-mir also sees `MirCallableKey::for_test`. Release builds
-# and `cargo build` never enable it, so no shipped artifact carries the
-# constructor — but a test-build-only misuse in another crate would compile.
-# WHAT replaces it: move the fixture builders into a separate
-# `hew-mir-testkit` dev-only crate that owns the constructor, so no feature on
-# hew-mir itself is needed.
-hew-mir = { path = ".", features = ["test"] }
+hew-hir = { path = "../hew-hir" }
 hew-types = { path = "../hew-types", features = ["test"] }
-
-# Property-based testing for per-Return drop-plan live-set narrowing.
-# Dev-only — never linked into release builds. Scoped to non-wasm
-# targets because `proptest` transitively depends on `wait-timeout`,
-# which does not compile for `wasm32-wasip1` (matches the pattern
-# already established in hew-runtime/Cargo.toml). The property tests
-# that consume proptest are themselves native-only, so this scoping
-# costs no test coverage on wasm.
-[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-# Runtime layout authorities are used only by native parity tests.
-hew-runtime = { path = "../hew-runtime", default-features = false }
-proptest = "1"
-# Independent TOML parser for the FFI ownership-contract drift test
-# (tests/ffi_contract_drift.rs) — deliberately NOT the build script's
-# hand parser, so parser bugs cannot self-validate.
-toml.workspace = true
 
 [lints]
 workspace = true

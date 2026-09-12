@@ -14,7 +14,7 @@ fn lower(source: &str, target: TargetArch) -> hew_hir::LowerOutput {
 fn target_coroutine_unsupported_rejects_actor_decl() {
     let source = r"
         actor Counter {
-            var count: int = 0;
+            var count: int = 0,
             receive fn increment() { self.count += 1; }
         }
     ";
@@ -46,8 +46,8 @@ fn target_coroutine_unsupported_rejects_actor_decl() {
 fn target_coroutine_unsupported_rejects_supervisor_decl() {
     let source = r"
         supervisor Root {
-            strategy: one_for_one;
-            child worker: WorkerActor();
+            strategy: one_for_one,
+            child worker: WorkerActor(),
         }
         actor WorkerActor {
             receive fn work() {}
@@ -76,7 +76,7 @@ fn target_coroutine_unsupported_rejects_supervisor_decl() {
 #[test]
 fn target_coroutine_unsupported_accepts_pure_data_program() {
     let source = r"
-        pub type Point { x: int; y: int }
+        pub type Point { x: int, y: int }
         pub fn distance(p1: Point, p2: Point) -> int {
             let dx = p2.x - p1.x;
             let dy = p2.y - p1.y;
@@ -117,7 +117,7 @@ fn target_coroutine_unsupported_accepts_pure_data_program() {
 fn native_target_accepts_actors() {
     let source = r"
         actor Counter {
-            var count: int = 0;
+            var count: int = 0,
             receive fn increment() { self.count += 1; }
         }
     ";
@@ -134,7 +134,7 @@ fn native_target_accepts_actors() {
 fn aarch64_target_accepts_actors() {
     let source = r"
         actor Counter {
-            var count: int = 0;
+            var count: int = 0,
             receive fn increment() { self.count += 1; }
         }
     ";

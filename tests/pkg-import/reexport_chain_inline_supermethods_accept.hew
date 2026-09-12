@@ -1,25 +1,25 @@
-// Accept fixture: a TWO-HOP re-export chain. `Top` is imported from
-// `hew::reexchaina`, where `Top: Mid`, `Mid` is `reexmid.Mid` re-imported, and
-// `Mid: Base` where `Base` is `reexbase.Base` re-imported. The importer brings
-// only `Top` into scope and provides every inherited method inline (`base`,
-// `mid`) plus `Top`'s own `top`. Each super edge follows its declaring module's
-// import binding to the original owner across two re-export hops, so the whole
-// transitive method set is KNOWN and each inline method's signature is checked
-// against its origin (`reexbase.Base::base -> i64`, `reexmid.Mid::mid -> i64`).
-// Run e2e so every level dispatches.
+// Each level of a two-hop re-export chain uses its own explicit trait impl.
 import hew.reexchaina.{Top};
+import hew.reexmid.{Mid};
+import hew.reexbase.{Base};
 
 type W {
-    id: i64;
+    id: i64,
 }
 
-impl Top for W {
+impl Base for W {
     fn base(w: W) -> i64 {
         w.id
     }
+}
+
+impl Mid for W {
     fn mid(w: W) -> i64 {
         w.id + 10
     }
+}
+
+impl Top for W {
     fn top(w: W) -> i64 {
         w.id + 100
     }

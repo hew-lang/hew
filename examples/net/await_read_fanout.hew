@@ -1,30 +1,27 @@
-//! Worker-occupancy proof for non-blocking `await conn.read()` (NEW-1).
-//!
-//! N readers each connect on their own socket and `await` a read. Run with
-//! `HEW_WORKERS=1`: all N suspend concurrently on the single worker (each freed
-//! while it waits, resumed by the reactor when its socket is readable), so N
-//! concurrent awaits occupy fewer than N workers. A blocking `read` would strand
-//! the lone worker on reader-0 forever and deadlock the rest.
-//!
-//! Each reader binds its OWN payload — the value-routing edge: the reactor must
-//! deposit each socket's bytes into the right parked continuation, not cross
-//! them. A correct run prints `reader-i-got: payload-i` for every i.
+//! Multiple TCP readers using ordinary `conn.read()` calls.
+//! Each reader must run concurrently with the server that supplies its data;
+//! completion calls in the launch loop need review before running this demo.
+
+import std.encoding.utf8;
 
 import std.net;
 
 const READER_COUNT: i64 = 4;
 
 actor Reader {
-    let id: i64;
-    let port: string;
+    let id: i64,
+    let port: string,
 
     receive fn go(unused: i64) {
         sleep(150ms);
         let conn = match net.connect(f"127.0.0.1:{port}") {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
-        let body = await conn.read_string();
+        let body = utf8.decode(conn.read()) handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
         println(f"reader-{id}-got: {body}");
         let _ = conn.close();
     }
@@ -33,12 +30,12 @@ actor Reader {
 fn main() {
     let listener = match net.listen("127.0.0.1:18078") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     var i = 0;
     while i < READER_COUNT {
         let r = spawn Reader(id: i, port: "18078");
-        r.go(0);
+        let _ = r.go(0);
         i = i + 1;
     }
     var accepted = 0;

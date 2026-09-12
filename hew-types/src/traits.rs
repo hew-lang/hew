@@ -124,7 +124,7 @@ pub struct MethodSig {
     ///
     /// PR 1 (issue #1295) ships this field with the recognised set empty:
     /// no Hew surface syntax sets it today. PR 2 populates it for
-    /// `Closable::close`. No attribute syntax is exposed.
+    /// a consuming trait method. No attribute syntax is exposed.
     pub consumes_receiver: bool,
 }
 
@@ -212,6 +212,11 @@ pub struct TraitRegistry {
     /// Populated by `register_type_params`, called alongside `register_type` at
     /// every type / record / machine declaration site.
     type_params: HashMap<String, Vec<String>>,
+}
+
+struct MarkerDerivation<'a> {
+    visiting: HashSet<String>,
+    type_param_bound: &'a dyn Fn(&str, MarkerTrait) -> bool,
 }
 
 impl TraitRegistry {
@@ -344,82 +349,13 @@ impl TraitRegistry {
             && self.implements_marker(ty, MarkerTrait::Decode)
     }
 
-    /// Key/element shapes for which the wire decoder can reconstruct the same
-    /// runtime Hash+Eq identity used by ordinary HashMap/HashSet construction.
-    fn is_wire_hash_key(ty: &Ty) -> bool {
-        matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(ty),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::Complete
-        ) && matches!(
-            ty,
-            Ty::I32 | Ty::I64 | Ty::U32 | Ty::U64 | Ty::Bool | Ty::Char | Ty::String
-        )
-    }
-
-    /// Exact collection-element lane currently implemented by the CBOR Vec
-    /// codec. Nested collections and bytes lack a Vec ownership layout; an
-    /// Option element is admitted only when its payload is heap-free.
-    fn is_wire_vec_element(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Bool
-            | Ty::I8
-            | Ty::U8
-            | Ty::I16
-            | Ty::U16
-            | Ty::I32
-            | Ty::U32
-            | Ty::Char
-            | Ty::I64
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::Duration
-            | Ty::F32
-            | Ty::F64
-            | Ty::String
-            | Ty::Named { builtin: None, .. } => self.implements_serializable_inner(ty, visiting),
-            Ty::Named {
-                builtin: Some(BuiltinType::Option),
-                args,
-                ..
-            } => {
-                args.len() == 1
-                    && self.is_wire_heap_free(&args[0], &mut HashSet::new())
-                    && self.implements_serializable_inner(&args[0], visiting)
-            }
-            _ => false,
-        }
-    }
-
-    fn is_wire_heap_free(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
-        match ty {
-            Ty::Tuple(elems) => elems
-                .iter()
-                .all(|elem| self.is_wire_heap_free(elem, visiting)),
-            Ty::Array(elem, _) => self.is_wire_heap_free(elem, visiting),
-            Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } => {
-                if !visiting.insert(name.clone()) {
-                    return false;
-                }
-                let heap_free = self.serializable_members_any(name).is_some_and(|members| {
-                    members
-                        .iter()
-                        .all(|member| self.is_wire_heap_free(member, visiting))
-                });
-                visiting.remove(name);
-                heap_free
-            }
-            Ty::String
-            | Ty::Bytes
-            | Ty::Named {
-                builtin: Some(_), ..
-            } => false,
-            _ => true,
-        }
+    /// Wire reconstruction uses the ordinary selected Hash/Eq callbacks and
+    /// value cloning, so key admission follows those same capabilities.
+    fn is_wire_hash_key(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
+        self.implements_marker(ty, MarkerTrait::Hash)
+            && self.implements_marker(ty, MarkerTrait::Eq)
+            && self.implements_marker(ty, MarkerTrait::Clone)
+            && self.implements_serializable_inner(ty, visiting)
     }
 
     fn implements_serializable_inner(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
@@ -468,15 +404,16 @@ impl TraitRegistry {
                             .all(|arg| self.implements_serializable_inner(arg, visiting));
                     }
                     Some(BuiltinType::Vec) => {
-                        return args.len() == 1 && self.is_wire_vec_element(&args[0], visiting);
+                        return args.len() == 1
+                            && self.implements_serializable_inner(&args[0], visiting);
                     }
                     Some(BuiltinType::HashMap) => {
                         return args.len() == 2
-                            && Self::is_wire_hash_key(&args[0])
+                            && self.is_wire_hash_key(&args[0], visiting)
                             && self.implements_serializable_inner(&args[1], visiting);
                     }
                     Some(BuiltinType::HashSet) => {
-                        return args.len() == 1 && Self::is_wire_hash_key(&args[0]);
+                        return args.len() == 1 && self.is_wire_hash_key(&args[0], visiting);
                     }
                     _ => {}
                 }
@@ -650,11 +587,26 @@ impl TraitRegistry {
     /// Marker traits are derived automatically based on the structure of the type:
     /// - Primitives implement most marker traits
     /// - Composite types implement a trait if all their components do
-    /// - `ChildRef`/`LocalPid`/`RemotePid` are always `Send` and `Frozen`
+    /// - `ChildRef`/`ActorHandle`/`RemotePid` are always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
-        let mut visiting = HashSet::new();
+        self.implements_marker_with_bounds(ty, marker, &|_, _| false)
+    }
+
+    /// Derive a marker using the caller's proven bounds on abstract parameters.
+    /// The same structural walk checks concrete fields and nested arguments.
+    #[must_use]
+    pub(crate) fn implements_marker_with_bounds(
+        &self,
+        ty: &Ty,
+        marker: MarkerTrait,
+        type_param_bound: &dyn Fn(&str, MarkerTrait) -> bool,
+    ) -> bool {
+        let mut visiting = MarkerDerivation {
+            visiting: HashSet::new(),
+            type_param_bound,
+        };
         self.implements_marker_guarded(ty, marker, &mut visiting)
     }
 
@@ -679,8 +631,12 @@ impl TraitRegistry {
         &self,
         ty: &Ty,
         marker: MarkerTrait,
-        visiting: &mut HashSet<String>,
+        visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
+        if matches!(ty, Ty::Named { name, args, builtin: None } if args.is_empty() && (visiting.type_param_bound)(name, marker))
+        {
+            return true;
+        }
         if marker == MarkerTrait::Serializable {
             return self.is_serializable(ty);
         }
@@ -774,7 +730,7 @@ impl TraitRegistry {
             // Local actor references are immutable identities, not resources:
             // Send + Sync + Frozen + Copy + Clone + Debug.
             Ty::Named {
-                builtin: Some(BuiltinType::ChildRef | BuiltinType::LocalPid),
+                builtin: Some(BuiltinType::ChildRef | BuiltinType::ActorHandle),
                 ..
             } => matches!(
                 marker,
@@ -802,6 +758,24 @@ impl TraitRegistry {
                     | MarkerTrait::Display
                     | MarkerTrait::Debug
             ),
+
+            // A channel transfers its element between threads. The sender can
+            // be shared; the single consumer moves to one receiving thread.
+            Ty::Named {
+                builtin: Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)),
+                args,
+                ..
+            } if args.len() == 1 => match marker {
+                MarkerTrait::Send => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Sync if *kind == BuiltinType::Sender => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Clone => *kind == BuiltinType::Sender,
+                MarkerTrait::Resource | MarkerTrait::Debug => true,
+                _ => false,
+            },
 
             // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
             Ty::Named {
@@ -835,16 +809,14 @@ impl TraitRegistry {
                 _ => false,
             },
 
-            // LambdaPid<M, R>: the user-visible lambda-actor handle.
+            // actor(M) -> R: the user-visible lambda-actor handle.
             // Send/Sync iff BOTH M: Send AND R: Send (message and reply cross
             // the actor boundary).
-            // NOT Copy (move-only resource — last-handle drop stops the actor).
-            // NOT Clone (a lambda actor handle is not split or duplicated by
-            //   cloning; the runtime owns strong/weak ref discipline, §5.9).
-            // Resource: yes — dropping the last handle runs the stop-on-last-
-            //   handle-drop protocol (`hew_lambda_actor_release`).
+            // NOT Clone: a lambda actor handle is not split or duplicated by
+            //   cloning; `close(handle)` is how a program stops the actor.
+            // Resource: yes — the handle carries the actor's lifecycle.
             Ty::Named {
-                builtin: Some(BuiltinType::LambdaPid),
+                builtin: Some(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => match marker {
@@ -908,6 +880,19 @@ impl TraitRegistry {
                         return false;
                     }
                 }
+                // Canonical JSON/YAML values own boxed serde trees. Reads borrow
+                // the tree immutably; mutation requires exclusive access; cloning
+                // allocates an independent tree. This contract supplies Send/Sync
+                // and automatic destruction, independent of opaque handle rules.
+                if builtin.is_some_and(BuiltinType::is_encoding_value) {
+                    return matches!(
+                        marker,
+                        MarkerTrait::Send
+                            | MarkerTrait::Sync
+                            | MarkerTrait::Clone
+                            | MarkerTrait::Drop
+                    );
+                }
                 // Actors are always Send + Sync
                 if self.actors.contains(name)
                     && matches!(marker, MarkerTrait::Send | MarkerTrait::Sync)
@@ -956,7 +941,7 @@ impl TraitRegistry {
                 // All markers derive structurally from type arguments — same rule as
                 // `implements_serializable_inner` at line ~473 which already had this arm.
                 // Resource uses ANY (not all): if any type argument is a built-in resource
-                // handle (Duplex, LambdaPid, CancellationToken), the wrapper MAY hold one and
+                // handle (Duplex, ActorFn, CancellationToken), the wrapper MAY hold one and
                 // must be treated as a resource too. Note: user `#[resource]` types (e.g.
                 // `#[resource] type Conn { fd: i64 }`) return Resource=false from their own
                 // structural field derivation (fields like i64 are not Resource), so
@@ -986,7 +971,7 @@ impl TraitRegistry {
                 // obligation; the result is decided by the non-recursive
                 // members. (Direct infinite-size cycles are rejected by
                 // `cycle.rs`; this only keeps the derivation total.)
-                if !visiting.insert(name.clone()) {
+                if !visiting.visiting.insert(name.clone()) {
                     return true;
                 }
                 // Record types: value types declared with `record`. Markers are
@@ -1013,7 +998,7 @@ impl TraitRegistry {
                 } else {
                     false // Unknown type — conservatively fail
                 };
-                visiting.remove(name);
+                visiting.visiting.remove(name);
                 result
             }
 
@@ -1031,18 +1016,28 @@ impl TraitRegistry {
             )]
             Ty::Borrow { .. } => marker == MarkerTrait::Copy,
 
-            // Function types: always Send, Sync, Clone, Copy (function pointers)
-            Ty::Function { .. } => matches!(
-                marker,
-                MarkerTrait::Send | MarkerTrait::Sync | MarkerTrait::Clone | MarkerTrait::Copy
-            ),
-
-            // Closures: Send/Sync only if all captured types are Send/Sync
-            Ty::Closure { captures, .. } => match marker {
+            // An erased callable guarantees only its written capabilities.
+            // Cross-actor admission requires concrete capture evidence.
+            Ty::Function { capabilities, .. } => marker == MarkerTrait::Clone && capabilities.clone,
+            Ty::Closure {
+                capabilities,
+                captures,
+                ..
+            } => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => captures
                     .iter()
-                    .all(|c| self.implements_marker_guarded(c, marker, visiting)),
-                MarkerTrait::Clone => true,
+                    .all(|capture| self.implements_marker_guarded(capture, marker, visiting)),
+                MarkerTrait::Clone => {
+                    capabilities.clone
+                        && captures.iter().all(|capture| {
+                            self.implements_marker_guarded(capture, MarkerTrait::Copy, visiting)
+                                || self.implements_marker_guarded(
+                                    capture,
+                                    MarkerTrait::Clone,
+                                    visiting,
+                                )
+                        })
+                }
                 _ => false,
             },
 
@@ -1096,7 +1091,7 @@ impl TraitRegistry {
             // become user-accessible (v0.6+).
             Ty::Task(inner) => match marker {
                 MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker(inner, MarkerTrait::Send)
+                    self.implements_marker_guarded(inner, MarkerTrait::Send, visiting)
                 }
                 _ => false,
             },
@@ -1159,7 +1154,7 @@ impl TraitRegistry {
         fields: &[Ty],
         args: &[Ty],
         marker: MarkerTrait,
-        visiting: &mut HashSet<String>,
+        visiting: &mut MarkerDerivation<'_>,
     ) -> bool {
         // Concrete-field pass: check every field that is not a bare type-param
         // placeholder. For non-generic types all fields are concrete and this
@@ -1351,13 +1346,14 @@ mod tests {
     }
 
     #[test]
-    fn test_function_is_send() {
+    fn test_erased_function_does_not_guarantee_send() {
         let registry = TraitRegistry::new();
         let fn_ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         };
-        assert!(registry.is_send(&fn_ty));
+        assert!(!registry.is_send(&fn_ty));
     }
 
     #[test]
@@ -1388,10 +1384,11 @@ mod tests {
         assert!(!registry.is_serializable(&plain));
 
         let fn_ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
         };
-        assert!(registry.is_send(&fn_ty));
+        assert!(!registry.is_send(&fn_ty));
         assert!(!registry.is_serializable(&fn_ty));
 
         let bad = Ty::Named {
@@ -1404,6 +1401,7 @@ mod tests {
         registry.register_serializable_type(
             "Bad".to_string(),
             vec![Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: vec![Ty::I64],
                 ret: Box::new(Ty::I64),
             }],
@@ -1564,6 +1562,12 @@ mod tests {
     fn test_closure_with_send_captures_is_send() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32, Ty::String],
@@ -1580,6 +1584,12 @@ mod tests {
             is_mutable: false,
         };
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32, ptr],
@@ -1591,6 +1601,12 @@ mod tests {
     fn test_closure_not_copy() {
         let registry = TraitRegistry::new();
         let closure = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
+            capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
             params: vec![],
             ret: Box::new(Ty::Unit),
             captures: vec![Ty::I32],
@@ -1638,7 +1654,7 @@ mod tests {
     }
 
     #[test]
-    fn collection_serializable_admission_matches_wire_layout_lanes() {
+    fn collection_serializable_admission_composes_value_capabilities() {
         let mut registry = TraitRegistry::new();
         registry.register_type("Key".to_string(), vec![Ty::I64]);
         registry.register_record_type("Key".to_string());
@@ -1658,13 +1674,11 @@ mod tests {
             name: "HashSet".to_string(),
             args: vec![record_key],
         };
-        assert!(!registry.is_serializable(&record_map));
-        assert!(!registry.is_serializable(&record_set));
+        assert!(registry.is_serializable(&record_map));
+        assert!(registry.is_serializable(&record_set));
 
-        // `bytes` has a runtime Hash+Eq descriptor, but ordinary caller-key
-        // overwrite release cannot yet uphold its owned-key contract. Wire
-        // admission must not create a collection shape users cannot construct
-        // and mutate through the normal HashMap/HashSet surface.
+        // Managed byte keys use the same retain/release recipe as ordinary
+        // collection insertion, including duplicate insertion and overwrite.
         let bytes_map = Ty::Named {
             builtin: Some(BuiltinType::HashMap),
             name: "HashMap".to_string(),
@@ -1675,8 +1689,8 @@ mod tests {
             name: "HashSet".to_string(),
             args: vec![Ty::Bytes],
         };
-        assert!(!registry.is_serializable(&bytes_map));
-        assert!(!registry.is_serializable(&bytes_set));
+        assert!(registry.is_serializable(&bytes_map));
+        assert!(registry.is_serializable(&bytes_set));
 
         let vec_bytes = Ty::Named {
             builtin: Some(BuiltinType::Vec),
@@ -1692,8 +1706,8 @@ mod tests {
                 args: vec![Ty::I64],
             }],
         };
-        assert!(!registry.is_serializable(&vec_bytes));
-        assert!(!registry.is_serializable(&nested_vec));
+        assert!(registry.is_serializable(&vec_bytes));
+        assert!(registry.is_serializable(&nested_vec));
     }
 
     /// RI-01: the `TraitRegistry` is the single source of truth for the

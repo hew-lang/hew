@@ -1,6 +1,6 @@
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn sum(t: Tree) -> i64 {
@@ -22,7 +22,7 @@ actor TestSink {
 
 fn main() -> i64 {
     let sink = spawn TestSink;
-    sink.take(.Node(.Leaf(4), .Node(.Leaf(5), .Leaf(6))));
-    sink.tagged(10, .Node(.Leaf(1), .Leaf(2)));
+    let _ = sink.take(.Node(.Leaf(4), .Node(.Leaf(5), .Leaf(6))));
+    let _ = sink.tagged(10, .Node(.Leaf(1), .Leaf(2)));
     0
 }

@@ -1,0 +1,124 @@
+type Small {
+    a: i32,
+    b: i32,
+}
+
+type IntThree {
+    a: i32,
+    b: i32,
+    c: i32,
+}
+
+type Tiny {
+    a: u8,
+    b: u8,
+    c: u8,
+}
+
+type Packed {
+    a: i64,
+    b: i32,
+    c: i32,
+}
+
+type Big {
+    a: i64,
+    b: i64,
+    c: i64,
+}
+
+type Mixed {
+    value: f64,
+    tag: i32,
+}
+
+type Reversed {
+    tag: i32,
+    value: f64,
+}
+
+type FloatPair {
+    a: f32,
+    b: f32,
+}
+
+type FloatThree {
+    a: f32,
+    b: f32,
+    c: f32,
+}
+
+type Nested {
+    first: FloatPair,
+    second: FloatPair,
+}
+
+type Hfa {
+    a: f64,
+    b: f64,
+    c: f64,
+    d: f64,
+}
+
+extern "C" {
+    fn oracle_small() -> Small;
+    fn oracle_int_three() -> IntThree;
+    fn oracle_tiny() -> Tiny;
+    fn oracle_packed() -> Packed;
+    fn oracle_big(low: i32, high: i64) -> Big;
+    fn oracle_mixed() -> Mixed;
+    fn oracle_reversed() -> Reversed;
+    fn oracle_float_pair() -> FloatPair;
+    fn oracle_float_three() -> FloatThree;
+    fn oracle_nested() -> Nested;
+    fn oracle_hfa() -> Hfa;
+}
+
+fn main() {
+    let small = unsafe {
+        oracle_small()
+    };
+    assert(small.a == 1234 && small.b == 5678);
+    let three_ints = unsafe {
+        oracle_int_three()
+    };
+    assert(three_ints.a == 123 && three_ints.b == -456 && three_ints.c == 789);
+    let tiny = unsafe {
+        oracle_tiny()
+    };
+    assert(tiny.a == 7 && tiny.b == 128 && tiny.c == 255);
+    let packed = unsafe {
+        oracle_packed()
+    };
+    assert(packed.a == 9999999999 && packed.b == 444 && packed.c == 555);
+    let big = unsafe {
+        oracle_big(7, 5000000000)
+    };
+    assert(big.a == 5000000000 && big.b == 7 && big.c == 5000000007);
+    let mixed = unsafe {
+        oracle_mixed()
+    };
+    assert(mixed.value == 1.25 && mixed.tag == 71);
+    let reversed = unsafe {
+        oracle_reversed()
+    };
+    assert(reversed.tag == 73 && reversed.value == 2.5);
+    let pair = unsafe {
+        oracle_float_pair()
+    };
+    assert(pair.a == 1.25 && pair.b == 2.5);
+    let three = unsafe {
+        oracle_float_three()
+    };
+    assert(three.a == 1.25 && three.b == 2.5 && three.c == 3.75);
+    let nested = unsafe {
+        oracle_nested()
+    };
+    assert(nested.first.a == 1.25 && nested.first.b == 2.5);
+    assert(nested.second.a == 3.75 && nested.second.b == 4.5);
+    let hfa = unsafe {
+        oracle_hfa()
+    };
+    assert(hfa.a == 1.25 && hfa.b == 2.5 && hfa.c == 3.75 && hfa.d == 4.5);
+    println("C aggregate results preserve all fields");
+}

@@ -1,0 +1,12 @@
+[[case]]
+id = "actor-init-deferred-fault-after-all"
+intent = "An init fault after every deferred field is stored closes the opened file resource, releases the owned string and the spawn-supplied field, and frees the unpublished state."
+source = "cases/actor-init-deferred-fault-after-all.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): init failed after every field\n"
+exit = 1

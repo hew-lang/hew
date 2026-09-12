@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-single-evaluation"
+intent = "Iterable expressions are evaluated once for for-in and explicit cursor construction."
+source = "cases/vector-iteration-single-evaluation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "evaluated\nfirst\nsecond\nevaluated\nfirst\n"
+exit = 0
+stderr = ""

@@ -1,28 +1,27 @@
-// A captured fluent chain transfers one YAML mapping owner, while get_field
-// creates an independent deep owner that survives closing the root.
+// Selected values and captured copies survive their parent's lexical scope.
 import std.encoding.yaml;
 
 fn early_exit(flag: bool) {
-    let value = yaml.object();
-    value.with("n", yaml.from_int(11));
-    let child = value.get_field("n");
+    var value = yaml.object();
+    value.set("n", yaml.from_int(11)).expect("set succeeds");
+    let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     if flag {
         return;
     }
-    println(child.get_int());
+    println(child.get_int().expect("get_int succeeds"));
 }
 
 fn _panic_exit() {
-    let value = yaml.object();
-    value.with("n", yaml.from_int(12));
-    let _child = value.get_field("n");
+    var value = yaml.object();
+    value.set("n", yaml.from_int(12)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     panic("yaml value panic probe");
 }
 
 fn cancel_exit() {
-    let value = yaml.object();
-    value.with("n", yaml.from_int(13));
-    let _child = value.get_field("n");
+    var value = yaml.object();
+    value.set("n", yaml.from_int(13)).expect("set succeeds");
+    let _child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
     var i: i64 = 0;
     while i < 2 {
         i = i + 1;
@@ -38,14 +37,19 @@ actor YamlCancelDriver {
 }
 
 fn main() {
-    let value = yaml.object().with("n", yaml.from_int(9)).with_null("none");
-    let child = value.get_field("n");
-    value.close();
-    println(child.get_int());
+    let read = {
+        var value = yaml.object();
+        value.set("n", yaml.from_int(9)).expect("set succeeds");
+        value.set("none", yaml.null()).expect("set succeeds");
+        let child = value.get_field("n").expect("get_field succeeds").expect("get_field returns a value");
+        || child.get_int().expect("get_int succeeds")
+    };
+    println(read());
 
-    // An invalid parent still consumes the child transfer.
-    let invalid = yaml.parse("[");
-    invalid.with("child", yaml.from_int(1));
-    invalid.free();
+    // A parse failure returns an error without an owning value payload.
+    match yaml.parse("[") {
+        .Ok(_) => panic("malformed YAML unexpectedly parsed"),
+        .Err(_) => {},
+    }
     early_exit(true);
 }

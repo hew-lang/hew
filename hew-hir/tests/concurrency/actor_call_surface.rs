@@ -36,7 +36,7 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
 fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
     out.push(expr);
     match &expr.kind {
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             visit_expr(callee, out);
             for arg in args {
                 visit_expr(arg, out);
@@ -47,7 +47,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(arg, out);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -82,6 +83,7 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
+        | HirExprKind::Race { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => visit_block(block, out),
         HirExprKind::Yield { value, .. }
@@ -99,14 +101,10 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(operand, out);
         }
         HirExprKind::SubsumedValue { source, .. } => visit_expr(source, out),
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 visit_expr(elem, out);
             }
-        }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            visit_expr(receiver, out);
-            visit_expr(arg, out);
         }
         HirExprKind::RcIntrinsic {
             receiver, value, ..
@@ -138,6 +136,10 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             }
         }
         HirExprKind::FieldAccess { object, .. } => visit_expr(object, out),
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            visit_expr(scope, out);
+            visit_expr(handler, out);
+        }
         HirExprKind::ScopeDeadline { duration, body } => {
             visit_expr(duration, out);
             visit_block(body, out);
@@ -146,7 +148,8 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(body, out);
         }
         HirExprKind::TupleIndex { tuple, .. } => visit_expr(tuple, out),
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             visit_expr(container, out);
             visit_expr(index, out);
         }
@@ -165,29 +168,15 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             }
         }
         HirExprKind::CoerceToDynTrait { value, .. }
+        | HirExprKind::ArrayRepeat { value }
         | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. } => {
             visit_expr(value, out);
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, field_val) in fields {
-                visit_expr(field_val, out);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        }
-        | HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            visit_expr(receiver, out);
-            visit_expr(event, out);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. } => {
+        | HirExprKind::GeneratorNext { receiver, .. } => {
             visit_expr(receiver, out);
         }
         HirExprKind::MachineVariantCtor { payload, .. } => {
@@ -216,30 +205,9 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(&arm.body, out);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            visit_expr(scrutinee, out);
-            visit_block(body, out);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            visit_expr(scrutinee, out);
-            visit_block(body, out);
-            if let Some(eb) = else_body {
-                visit_block(eb, out);
-            }
-        }
         HirExprKind::Loop { body, .. } => visit_block(body, out),
         HirExprKind::RecordCloneCall { src, .. } => visit_expr(src, out),
-        HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
-        | HirExprKind::Select(_)
-        | HirExprKind::Join(_)
+        HirExprKind::Select(_)
         | HirExprKind::AwaitTask { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
@@ -258,20 +226,13 @@ fn visit_block<'a>(block: &'a hew_hir::HirBlock, out: &mut Vec<&'a HirExpr>) {
             HirStmtKind::Let(_, Some(expr))
             | HirStmtKind::Expr(expr)
             | HirStmtKind::Return(Some(expr)) => visit_expr(expr, out),
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Destructure { value, .. } => visit_expr(value, out),
+            HirStmtKind::Assign { target, value, .. } => {
                 visit_expr(target, out);
                 visit_expr(value, out);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => visit_expr(body, out),
-            HirStmtKind::LetElse {
-                scrutinee,
-                else_body,
-                ..
-            } => {
-                visit_expr(scrutinee, out);
-                visit_block(else_body, out);
-            }
         }
     }
     if let Some(tail) = &block.tail {
@@ -284,7 +245,7 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
     let output = lower_checked(
         r"
         actor Counter {
-            let count: i64;
+            let count: i64,
 
             receive fn increment(n: i64) {
             }
@@ -296,8 +257,8 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
 
         fn main() -> i64 {
             let c = spawn Counter(count: 0);
-            c.increment(10);
-            await c.print_total();
+            let _ = c.increment(10);
+            _ = c.print_total();
             return 0;
         }
         ",
@@ -328,12 +289,18 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
         "spawn Counter site should lower to HirExprKind::Spawn: {:#?}",
         main.body
     );
+    // The call is the send: there is no separate `send` keyword, so an
+    // ordinary call on an actor handle waits for completion like any other
+    // call. `c.increment(10)` lowers to `HirExprKind::ActorAsk` with a
+    // `Unit` reply type (the one-way view lives in `mailbox(target,
+    // on_full: ..)`, not in a distinct HIR node).
     assert!(
         exprs.iter().any(|expr| matches!(
             &expr.kind,
-            HirExprKind::ActorSend { method_id, .. } if method_id == "Counter::increment"
+            HirExprKind::ActorAsk { method_id, reply_ty: hew_types::ResolvedTy::Unit, .. }
+                if method_id == "Counter::increment"
         )),
-        "c.increment(10) should lower to HirExprKind::ActorSend: {:#?}",
+        "c.increment(10) should lower to HirExprKind::ActorAsk with a Unit reply: {:#?}",
         main.body
     );
     assert!(
@@ -341,19 +308,18 @@ fn actor_spawn_send_and_ask_lower_to_explicit_hir_surface() {
             &expr.kind,
             HirExprKind::ActorAsk { method_id, .. } if method_id == "Counter::print_total"
         )),
-        "await c.print_total() should lower to HirExprKind::ActorAsk: {:#?}",
+        "c.print_total() should lower to HirExprKind::ActorAsk: {:#?}",
         main.body
     );
 }
 
 #[test]
-fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
-    // The `await` keyword on an actor method call is required (R-ASK surface:
-    // bare call without `await` is rejected at the type-checker). The HIR node
-    // produced must be `HirExprKind::ActorAsk` carrying the handler's declared
-    // return type (the inner `i64`), not the wrapped `Result<i64, AskError>`.
-    // The `let v = await g.get()` binding stores the full `Result` value;
-    // the `ActorAsk` node itself records the inner reply type for codegen sizing.
+fn actor_ask_let_value_lowers_to_actor_ask_hir_node() {
+    // An actor ask is an ordinary call (U383): no `await`. The HIR node must be
+    // `HirExprKind::ActorAsk` carrying the handler's declared return type (the
+    // inner `i64`), not the wrapped `Result<i64, ActorError>`. The
+    // `let v = g.get()` binding stores the full `Result` value; the `ActorAsk`
+    // node itself records the inner reply type for codegen sizing.
     let output = lower_checked(
         r"
         actor Getter {
@@ -362,17 +328,17 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
             }
         }
 
-        fn main() -> Result<i64, AskError> {
+        fn request_value() {
             let g = spawn Getter;
-            let v = await g.get();
-            return v;
+            let v = g.get();
+            let _ = v;
         }
         ",
     );
 
     assert!(
         output.diagnostics.is_empty(),
-        "awaited actor ask let-value should lower without HIR diagnostics: {:?}",
+        "actor-ask let-value should lower without HIR diagnostics: {:?}",
         output.diagnostics
     );
 
@@ -381,26 +347,35 @@ fn await_actor_ask_let_value_lowers_to_actor_ask_hir_node() {
         .items
         .iter()
         .find_map(|item| match item {
-            HirItem::Function(func) if func.name == "main" => Some(func),
+            HirItem::Function(func) if func.name == "request_value" => Some(func),
             _ => None,
         })
-        .expect("main function should lower");
+        .expect("request_value function should lower");
 
     let HirStmtKind::Let(binding, Some(value)) = &main.body.statements[1].kind else {
         panic!(
-            "second statement should be `let v = await g.get()`; got {:#?}",
+            "second statement should be `let v = g.get()`; got {:#?}",
             main.body.statements[1]
         );
     };
     assert_eq!(binding.name, "v");
 
+    assert_eq!(value.ty, binding.ty);
+    assert!(matches!(
+        &value.ty,
+        hew_types::ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::Result),
+            args,
+            ..
+        } if args.len() == 2 && matches!(args[0], hew_types::ResolvedTy::I64)
+    ));
     let (method_id, reply_ty) = match &value.kind {
         HirExprKind::ActorAsk {
             method_id,
             reply_ty,
             ..
         } => (method_id.as_str(), reply_ty),
-        other => panic!("awaited actor ask should lower to HirExprKind::ActorAsk, got {other:#?}"),
+        other => panic!("an actor ask should lower to HirExprKind::ActorAsk, got {other:#?}"),
     };
 
     assert_eq!(

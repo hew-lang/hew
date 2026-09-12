@@ -17,7 +17,7 @@
 //! header sentinel at teardown.
 
 actor Echoer {
-    var last: string;
+    var last: string,
 
     receive fn note(label: string) {
         last = label;
@@ -30,9 +30,9 @@ actor Echoer {
 
 fn main() -> i64 {
     let e = spawn Echoer(last: "");
-    let s = string_concat("msg-", "payload");
-    e.note(s);
-    let c = match await e.count() {
+    let s = ("msg-" + "payload");
+    let _ = e.note(s);
+    let c = match e.count() {
         .Ok(v) => v,
         .Err(_e) => 0,
     };

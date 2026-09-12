@@ -26,7 +26,7 @@ fn normal_source(frames: usize) -> String {
         r#"import std.pipeline;
 
 fn main() -> i64 {
-    let source = pipeline.run(pipeline.from(__FRAMES__));
+    var source = pipeline.run(pipeline.from(__FRAMES__));
     var i: i64 = 0;
     while i < __FRAMES__ {
         let item: pipeline.PipelineItemI64 = PipelineItemI64 {
@@ -60,7 +60,7 @@ fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
 }
 
 fn main() -> i64 {
-    let source = pipeline.run(pipeline.from(0));
+    var source = pipeline.run(pipeline.from(0));
     let control = match await source.control_handle() {
         .Ok(value) => value,
         .Err(_) => { return 10; },
@@ -77,7 +77,7 @@ fn main() -> i64 {
     var i: i64 = 0;
     while i < __FRAMES__ {
         let outcome = select {
-            reply from source.push(item(i, f"cancel-owned-{i}")) => if reply { 1 } else { -1 },
+            reply from source.push(item(i, f"cancel-owned-{i}")) => if reply.expect("ask reply") { 1 } else { -1 },
             after 1ms => 0,
         };
         if outcome != 0 {
@@ -117,7 +117,7 @@ fn crash_source(frames: usize) -> String {
 fn main() -> i64 {
     var i: i64 = 0;
     while i < __FRAMES__ {
-        let source = pipeline.run(pipeline.from(1));
+        var source = pipeline.run(pipeline.from(1));
         let item: pipeline.PipelineItemI64 = PipelineItemI64 {
             value: i,
             label: f"crash-owned-{i}",
@@ -146,7 +146,7 @@ fn shutdown_drain_source(frames: usize) -> String {
         r#"import std.pipeline;
 
 fn main() -> i64 {
-    let source = pipeline.run(pipeline.from(__FRAMES__));
+    var source = pipeline.run(pipeline.from(__FRAMES__));
     var i: i64 = 0;
     while i < __FRAMES__ {
         let item: pipeline.PipelineItemI64 = PipelineItemI64 {

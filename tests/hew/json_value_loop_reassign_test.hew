@@ -1,5 +1,4 @@
-//! A resource-backed JSON array can be reassigned from its consuming builder
-//! result on every loop iteration.
+//! JSON values can be copied, mutated and reassigned on every loop iteration.
 
 import std.encoding.json;
 
@@ -8,26 +7,26 @@ import std.testing;
 fn rendered_count() -> string {
     var values = json.array();
     for n in 0 .. 3 {
-        values = values.push_int(n);
+        var next = values;
+        next.push(json.from_int(n)).expect("push succeeds");
+        // Mutating the copy must preserve the array being replaced.
+        testing.assert_eq(values.array_len().expect("array_len succeeds"), n);
+        values = next;
     }
-    let rendered = values.stringify();
-    values.close();
-    rendered
+    values.stringify().expect("stringify succeeds")
 }
 
 fn rendered_without_reassignment() -> string {
     let values = json.array();
-    let rendered = values.stringify();
-    values.close();
-    rendered
+    values.stringify().expect("stringify succeeds")
 }
 
 #[test]
-fn reassigns_json_resource_builder_in_loop() {
+fn reassigns_json_value_copy_in_loop() {
     testing.assert_eq_str(rendered_count(), "[0,1,2]");
 }
 
 #[test]
-fn nonreassigned_json_resource_builder_preserves_payload() {
+fn nonreassigned_json_value_preserves_payload() {
     testing.assert_eq_str(rendered_without_reassignment(), "[]");
 }

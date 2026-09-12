@@ -1,0 +1,38 @@
+fn consumed_before_branch(flag: bool) -> i64 {
+    let message = "consumed".to_upper();
+    let payload = message.to_bytes();
+    var callback: fn[once]() -> i64 = move || {
+        println(f"{message}:{payload.len()}");
+        payload.len()
+    };
+    callback();
+    if flag {
+        println("yes");
+    } else {
+        println("no");
+    }
+    0
+}
+
+fn selected_by_branch(flag: bool) -> i64 {
+    let message = "selected".to_upper();
+    let payload = message.to_bytes();
+    let callback: fn[once]() -> i64 = move || {
+        println(f"{message}:{payload.len()}");
+        payload.len()
+    };
+    let selected = if flag {
+        callback
+    } else {
+        callback
+    };
+    selected()
+}
+
+fn main() -> i64 {
+    println(consumed_before_branch(true));
+    println(consumed_before_branch(false));
+    println(selected_by_branch(true));
+    println(selected_by_branch(false));
+    0
+}

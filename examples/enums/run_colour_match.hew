@@ -7,9 +7,9 @@
 //
 // Companion to run_colour.hew (which exercises construction only).
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn describe(c: Colour) {

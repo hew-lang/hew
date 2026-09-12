@@ -1,0 +1,15 @@
+fn decorate(value: string) -> string { "file:" + value }
+
+pub machine Gate {
+    events { Open, }
+    emits { Changed { label: string }, }
+    state Closed { label: string },
+    state Opened { label: string },
+    on Open: Closed => Opened {
+        emit Changed { label: decorate(state.label) };
+        Opened { label: state.label }
+    }
+    default { state }
+}
+
+pub fn file_gate() -> Gate { .Closed { label: "left" } }

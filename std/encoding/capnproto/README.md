@@ -1,4 +1,4 @@
-# std::encoding::capnproto — stub (not implemented)
+# std.encoding.capnproto — stub (not implemented)
 
 **Status: NOT IMPLEMENTED.** This directory is a deliberate placeholder.
 No `Cargo.toml`, no `hew.toml`, no source files. The stub exists to make
@@ -20,9 +20,9 @@ Full rationale in
 
 - **Inter-process actor messaging:** you do not choose the format. The
   runtime's CBOR envelope handles it automatically.
-- **User-facing wire serialisation:** see [`std::encoding::json`](../json/),
-  [`std::encoding::msgpack`](../msgpack/), or
-  [`std::encoding::protobuf`](../protobuf/) depending on what the other
+- **User-facing wire serialisation:** see [`std.encoding.json`](../json/),
+  [`std.encoding.msgpack`](../msgpack/), or
+  [`std.encoding.protobuf`](../protobuf/) depending on what the other
   side speaks.
 
 ## Obsolescence markers

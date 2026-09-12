@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-types-scoped"
+intent = "A file import publishes every declaration kind into the importing file: two files import one helper and each sees its type and its constant, the helper names its own declarations, and the root reaches them only through the functions it imported."
+source = "fixtures/file-import-types-scoped/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "17/44\n"
+exit = 0

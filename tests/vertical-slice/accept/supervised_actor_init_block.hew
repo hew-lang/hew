@@ -20,12 +20,15 @@
 //   2. sup.w1 returned a Live handle (tag=0 from hew_supervisor_child_get).
 //   3. The init() dispatch ran and the actor replied correctly.
 actor Worker {
-    var value: i64;
-    init(value: i64) {
+    var value: i64,
+    init() {
 
-        // The init() block generates Worker__init in codegen.
-        // Supervisor sets value = 42 via HewChildSpec.init_state; the
-        // init dispatch fires the ActorHandler path on the fresh mailbox.
+        // The init() block generates Worker__init in codegen. It takes no
+        // parameters: the field `value` has no default and init never
+        // assigns it, so it is a plain spawn-supplied field, and the
+        // supervisor's `value = 42` in HewChildSpec.init_state targets it
+        // directly. The init dispatch still fires the ActorHandler path on
+        // the fresh mailbox.
     }
     receive fn get_value() -> i64 {
         value
@@ -33,16 +36,16 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(value: 42);
+    child w1: Worker(value: 42),
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let w = sup.w1;
-    match await w.get_value() {
+    match w.get_value() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

@@ -1,0 +1,30 @@
+import std.encoding.base64;
+
+fn byte_value(value: i64) -> u8 { value as u8 }
+
+fn make_bytes() -> bytes {
+    var result = bytes.new();
+    assert(result.len() == 0);
+    for i in 0..128 {
+        result.push(byte_value(i));
+    }
+    result
+}
+
+fn main() {
+    let values = make_bytes();
+    assert(values.len() == 128);
+    for i in 0..128 {
+        assert(values[i] == byte_value(i));
+    }
+
+    // Encoding appends results of nested calls and returns the completed value.
+    assert(base64.encode("Hello".to_bytes()) == "SGVsbG8=");
+    let original = "a\0b".to_bytes();
+    let encoded = base64.encode(original);
+    assert(encoded == "YQBi");
+    let decoded = base64.decode(encoded);
+    assert(decoded == original);
+    assert(original.len() == 3);
+    println("bytes constructor and encoding calls ok");
+}

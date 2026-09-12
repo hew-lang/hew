@@ -1,0 +1,66 @@
+type Key<T> {
+    label: T,
+    group: i64,
+}
+
+impl<T> Eq for Key<T> {
+    fn eq(self, other: Key<T>) -> bool {
+        self.group % 10 == other.group % 10
+    }
+}
+
+type Envelope {
+    key: Key<string>,
+    tags: Vec<string>,
+}
+
+fn contains<T: Eq>(values: Vec<T>, wanted: T) -> bool {
+    values.contains(wanted)
+}
+
+fn receiver() -> Vec<string> {
+    println("receiver");
+    ["agent:model".to_upper()]
+}
+
+fn needle() -> string {
+    println("needle");
+    "agent:model".to_upper()
+}
+
+fn main() {
+    let values: Vec<string> = ["agent:model".to_upper(), "é\0雪".repeat(1)];
+    let wanted = "agent:model".to_upper();
+    assert(contains(values.clone(), wanted));
+    assert(!contains(values, "repo:push".to_upper()));
+    assert(values.contains("é\0雪".repeat(1)));
+    assert(!values.contains("é\0雨".repeat(1)));
+    assert(values.len() == 2);
+    assert(values[0] == wanted);
+    assert(wanted == "AGENT:MODEL");
+    let empty: Vec<string> = [];
+    assert(!empty.contains(wanted));
+    assert(empty.is_empty());
+    assert(!values.is_empty());
+    assert(receiver().contains(needle()));
+    let original = Key { label: "original".to_upper(), group: 7 };
+    let different = Key { label: "different".to_upper(), group: 17 };
+    let keys = [original];
+    assert(keys.contains(different));
+    assert(!contains(keys, Key { label: "absent".to_upper(), group: 8 }));
+    assert(keys[0].label == "ORIGINAL");
+    assert(original.label == "ORIGINAL");
+    assert(different.label == "DIFFERENT");
+    let envelopes = [Envelope { key: original, tags: ["nested".to_upper()] }];
+    assert(envelopes.contains(Envelope { key: different, tags: ["NESTED".repeat(1)] }));
+    assert(!envelopes.contains(Envelope { key: different, tags: ["OTHER".repeat(1)] }));
+    assert([1, 2, 3].contains(2));
+    assert(![1, 2, 3].contains(4));
+    // Membership uses the selected total Eq capability, including float bits.
+    let nan = 0.0 / 0.0;
+    assert([nan].contains(nan));
+    assert(![0.0].contains(-0.0));
+    assert([0.0].contains(0.0));
+    assert(envelopes[0].tags[0] == "NESTED");
+    println("membership ok");
+}

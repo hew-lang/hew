@@ -8,7 +8,7 @@
 import std.iter;
 
 pub fn main() -> i64 {
-    let m: HashMap<i64, i64> = HashMap.new();
+    var m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);

@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-typed-pipes"
+intent = "Bounded native stream writes suspend and resume while String and bytes values, including NUL and empty items, retain their typed representation and ownership."
+source = "cases/stream-typed-pipes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "typed text and bytes, including empty items\n"
+exit = 0

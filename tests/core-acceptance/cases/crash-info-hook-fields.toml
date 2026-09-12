@@ -1,0 +1,11 @@
+[[case]]
+id = "crash-info-hook-fields"
+intent = "An `#[on(crash)]` hook written against the prelude spelling of `CrashInfo`, with no `import std.failure`, reads both of its fields: the trap code and the owned message cloned from the runtime's borrowed C string. Returning `Restart` from that hook brings the child back, so `await_restart` resolves the role Live and the replacement carries its declared init value."
+source = "cases/crash-info-hook-fields.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "212\nUserPanic\n"
+stderr = "hew: failure: UserPanic (212): crash hook payload\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
+exit = 42

@@ -1,0 +1,29 @@
+#[resource]
+type Token { label: string }
+
+impl Token {
+    fn close(consume self) { println(f"close {self.label}"); }
+}
+
+type Holder { token: Token }
+
+fn later(token: Token, divisor: i64) -> i64 {
+    let temporary = Token { label: "temporary".to_upper() };
+    println(f"later {token.label}");
+    token.label.len() / divisor
+}
+
+fn read(token: Token, length: i64) {
+    println("unexpected callee entry");
+    println(token.label);
+    println(length);
+}
+
+fn forward(token: Token, divisor: i64) {
+    read(token, later(token, divisor));
+}
+
+fn main() {
+    let held = Holder { token: Token { label: "field".to_upper() } };
+    forward(held.token, 0);
+}

@@ -1,4 +1,13 @@
-# Hew IR Ladder — Normative Internal Reference (v2, revision 7)
+# Hew IR Ladder — Historical Design Reference (v2, revision 7)
+
+> **Since D489.** An actor is the type of its handle: the builtin this document calls `LocalPid` is now `BuiltinType::ActorHandle`, carrying the actor's own name and type arguments rather than wrapping them, and `LambdaPid` is `BuiltinType::ActorFn`, written `actor(M) -> R` in source. The ownership and representation facts recorded below are unchanged.
+
+This is a historical design snapshot, not the current driver or gate contract.
+Native commands now consume verified ownership SIR through physical MIR. The
+alternate native body route, `sir-coverage` and `sir-parity` have been retired;
+`make core-acceptance` checks explicit native results at O0 and O2 instead.
+Remaining phase and command descriptions below document the earlier design,
+not evidence of implemented language support.
 
 This document is the contract for the final Hew IR ladder. It replaces
 `docs/internal/v05-ir-ladder.md` (deleted in P0; §9 lists every reference that
@@ -175,7 +184,7 @@ so the per-arm test can be written against a closed list.
 | --- | --- | --- | --- |
 | integers, floats, `Bool`, `Char`, `Unit`, `Never`, `Duration` | `BitCopy` | `Bits` | unchanged from `of_ty` |
 | `Named{builtin}` with marker `BitCopy`: `SupervisorPool`, `ChildRef`, `NodeId`, `Location`, `RemotePid`, `MonitorId`, `DownTarget`, `DownReason`, `DownNotification` | `BitCopy` | `Bits` | `NodeId`/`Location` are empty std records (`std/builtins.hew:26-31`); `DownNotification` is three BitCopy fields (`std/link_monitor.hew:90-94`) |
-| `Named{builtin: Instant \| Unit \| Duration \| Range \| Trap \| TimeoutError \| CrashAction \| CrashKind \| SendError \| AskError \| LookupError \| RecvError \| LinkError \| MonitorError \| CloseError}` | `BitCopy` | `Bits` | marker `None` today; scalars and std enums whose variants are unit or carry `BitCopy` payloads (`std/builtins.hew:49-188`, `std/failure.hew:52-111`, `std/link_monitor.hew:25`; `CloseError::Io(IoError)` with `IoError` payloads `i64`, `std/io/closable.hew:67`, `std/fs.hew:42-46`). **decision**: these get marker `BitCopy` at P1 so `marker()` and this table agree by construction; the per-variant test asserts the std declaration is all-`BitCopy`, and `builtin_marker_and_the_class_table_agree` refuses a `None` marker whose class is `BitCopy` so the next such row cannot land silently |
+| `Named{builtin: Instant \| Unit \| Duration \| Range \| Trap \| TimeoutError \| CrashAction \| CrashKind \| SendError \| AskError \| LookupError \| RecvError \| LinkError \| MonitorError \| CloseError}` | `BitCopy` | `Bits` | marker `None` today; scalars and std enums whose variants are unit or carry `BitCopy` payloads (`std/builtins.hew:49-188`, `std/failure.hew:52-111`, `std/link_monitor.hew:25`). **decision**: these get marker `BitCopy` at P1 so `marker()` and this table agree by construction; the per-variant test asserts the std declaration is all-`BitCopy`, and `builtin_marker_and_the_class_table_agree` refuses a `None` marker whose class is `BitCopy` so the next such row cannot land silently |
 | `Named{builtin: LocalPid \| HewActor}` | `BitCopy` | `Bits` | **decision, overrides `marker() = Resource`**: no `close_method()` row for `LocalPid` (`builtin_type.rs:394`), and codegen already treats them as non-owning (`ty_is_nonowning_pid_leaf`, `llvm.rs:25479`, `(Resource, drop_fn: None)` is a no-op). The marker becomes `BitCopy` at P5 with the legacy carrier that reads it (§9): flipping it at P1 routes a `Vec<LocalPid<_>>` element off its pointer ABI and moves an elaborated-MIR baseline, and `HewActor`/`BoxedActor` carry a close method a `BitCopy` builtin may not register. A pid never owns the actor |
 | `Named{builtin: BoxedActor}` | `AffineResource` | `None` | compiler-internal opaque carrier, marker `Resource`, `close_method() = Some("close")`, handle family `ActorRuntime` (`hew-hir/src/builtin_type_classes.rs:647-654`) but no runtime lifecycle descriptor (`state_clone.rs:1872-1880` fails closed). It never reaches a user program; P4 either names its release symbol in `runtime_symbols.rs` or deletes the variant |
 | `Named{builtin: Iterator}` | never a value type | — | `Iterator` is the std trait name (`std/builtins.hew:362`, arity 0); a `dyn Iterator` value is `ResolvedTy::TraitObject`. The table test asserts the arm is unreachable for values |
@@ -184,11 +193,12 @@ so the per-arm test can be written against a closed list.
 | `Named{builtin: VecIter \| HashMapIter}` | aggregate rule (the `Vec`/`HashMap` field's class) | as the field | synthetic records of the `for x in v` / `for (k, v) in m` desugar (`hew-hir/src/lower.rs:26504 lower_for_iter_desugar`; the `VecIter` item is the sentinel at lower.rs:557, `vec_iter_field_shape`); a collection field plus BitCopy cursor fields |
 | `Named{builtin: CrashInfo \| CrashNotification}` | aggregate rule | aggregate rule | `CrashInfo { code, message: string }` → `CowValue` (`std/failure.hew:33-36`); `CrashNotification { actor_id, kind }` → `BitCopy` (`std/failure.hew:83-92`) |
 | `String`, `Bytes` | `CowValue` | `Retain` (refcount +1; a string is immutable, a bytes mutator forks inside the runtime, §4.3) | |
-| `Tuple`, `Array` | aggregate rule | aggregate rule | **decision**: resolves the `is_copy` vs `of_ty` split |
+| `Tuple` | aggregate rule | aggregate rule | **decision**: resolves the `is_copy` vs `of_ty` split |
+| `Array` | element class joined with `CowValue` | `DeepCopy` for bit-copy elements; otherwise `FieldWise` or `None` as the element requires | Owns fixed-length element storage; native arrays use compact heap-backed recipes, preserving their exact `[T; N]` type and reverse element cleanup order |
 | user record / enum with no marker | aggregate rule | aggregate rule | **decision**: replaces `ValueClass::Unknown` (15 consumer sites, all `Strategy::UnknownBlocked` refusals); a user type is never unclassified. An `indirect` enum (`HirTypeDecl.is_indirect`, node.rs:1016-1040) keeps its payload class and its `clone` is `FieldWise`: `hew_copy$E` allocates a fresh box and copies the payload into it — the box carries no refcount, so a retain of the box does not exist (§5.2 item 2) |
-| `Named` with `#[resource]` marker; `Named{builtin}` with marker `Resource` and a `close_method()`: `Duplex`, `Sink`, `Stream`, `Sender`, `Receiver`, `HewDuplex`, `HewSendHalf`, `HewRecvHalf`, `SendHalf`, `RecvHalf`, `LambdaActorHandle`, `MonitorRef`, `CancellationToken` | `AffineResource` | `None` (`LambdaPid`: `Retain`, §5.4) | implicit destructor is the registered close/release symbol |
-| `Named{builtin: StreamPair}`, the regex `Pattern` handle | `AffineResource` | `None` | marker `None` in `builtin_type.rs`, but the std declarations carry `#[resource]` (`std/stream.hew:247-249` `#[resource] #[opaque] pub type StreamPair` with `close(consuming self)` → `hew_stream_pair_free`; `std/text/regex/regex.hew:28-29`), which `lookup_type_marker_for_ty` already reads |
-| `Named{builtin: Generator \| AsyncGenerator \| Rc \| Weak}` | `AffineResource` | generators `None`; `Rc`/`Weak` `Retain` | |
+| `Named` with `#[resource]` marker; `Named{builtin}` with marker `Resource` and a `close_method()`: `Duplex`, `Sink`, `Stream`, `Sender`, `Receiver`, `HewDuplex`, `HewSendHalf`, `HewRecvHalf`, `SendHalf`, `RecvHalf`, `MonitorRef`, `CancellationToken` | `AffineResource` | `None` (`LambdaPid`: `Retain`, §5.4) | implicit destructor is the registered close/release symbol |
+| `Named{builtin: StreamPair}`, the regex `Pattern` handle | `AffineResource` | `None` | marker `None` in `builtin_type.rs`, but the std declarations carry `#[resource]` (`std/stream.hew:247-249` `#[resource] #[opaque] pub type StreamPair` with `close(consume self)` → `hew_stream_pair_free`; `std/text/regex/regex.hew:28-29`), which `lookup_type_marker_for_ty` already reads |
+| `Named{builtin: Generator \| Rc \| Weak}` | `AffineResource` | generators `None`; `Rc`/`Weak` `Retain` | |
 | `Named{builtin: LambdaPid}` | `AffineResource` | `Retain` (`hew_lambda_actor_clone` mints a new handle) | a send of a `LambdaPid` is `Transfer` only (rule 5, §11 row 5): `repros/ladder/lambda_send_twice.hew` → `use of moved value \`w\`` on the second send |
 | `Function`, `TraitObject` (incl. `dyn Iterator`) | `PersistentShare` | `Retain` (`hew_arc_clone`) | §5.4: refcounted box, never forked; **design change** against `main` (§11 row 7). A bare named-fn value (`ResolvedRef::Item`, ids.rs:25) is a `{fn, env = null}` pair; `hew_arc_clone`/`hew_arc_drop` return/return-early on a null pointer (`arc.rs:157, 184`), so its `copy_value`/`destroy_value` are no-ops at run time and need no special case. A `dyn Trait` is flat: the concrete payload's class is known only at `CoerceToDynTrait`, never on the `TraitObject` type, so it is **not** joined into the class — see the §3 destroy-sinking restriction, which is `CowValue`-only for exactly this reason. Flatness is safe for the *class* and unsafe for the *send fact*, so the send fact is bought with a wall at the coercion: **[P1 decision] `CoerceToDynTrait` into a `dyn … + Send` requires the concrete to be `Send`**, `E_OWN_SEND_UNSUPPORTED` otherwise. Without it, `traits.rs:1072-1086` decides `Send` from the bound name alone (test `dyn_trait_plus_send_is_send`, traits.rs:1799-1825) while `coerce.rs:432-444` records a `DynCoercion` on object safety alone with no marker check (`grep -n 'MarkerTrait::Send\|implements_marker' hew-types/src/check/coerce.rs` is empty), so a `dyn Handler + Send` over a concrete holding an `Rc<T>` would be a `PersistentShare` with send fact true, get `Snapshot::Share` under rule 5, and let two actors race the non-atomic `hew_rc_*` count — the very argument §5.4 makes for closures and `LambdaPid`. The wall makes the type-level fact sound for every value of the type, because the coercion is the only producer of a `dyn` value. §11 row 37 |
 | `Closure` | **`PersistentShare` joined with the aggregate rule over the capture classes** | `Retain` (`hew_arc_clone` on the env) | **decision**: the env is a record and its captures are its fields (§1.3.5: every env owns its captures), so a closure capturing a `#[resource] Conn` or an `Rc<T>` is `AffineResource`, not `PersistentShare`. Consequences that a flat row got wrong: rule 5 gives it `Transfer` only, so a `move \|\| { conn.close() }` closure cannot be `Share`d into a second actor and raced (the same argument that rejected `Share` of a `LambdaPid`); §3 never sinks its release, so an `Rc` capture's `Weak.upgrade()` still flips at scope exit; a `Linear` capture is refused at the capture site regardless (§1.3.5). `clone` stays `Retain` in every case — retaining the env duplicates the handle, not the capture, exactly as `Rc<T>` does. A closure with a `BorrowMut` capture has send fact **false** (§1.3.5, rule 6c). §11 row 33 |
@@ -284,20 +294,30 @@ in.
 | `destroy_value %v` | `%v : Owned`, consumed | — | consumes the obligation; illegal on `Linear` except on an unwind edge (rule 6d) | scope exit of every live `Owned` binding **and every unnamed `Owned` temporary of the block** (§1.3.4: `Block`, `Scope`, early `Return`, `Break`, `Continue`, unwind, cancel); the `Owned` result of a statement-position `HirStmtKind::Expr`, `If`, `Match`, `Block` (§1.3.4); unused `destructure` parts; the `Owned` operand of `Break { value }` when the produced `Place` is discarded (node.rs:2584-2595); the old value of a mem2reg `Assign` to a non-escaping `var`; a loser reply of a `Select` (§1.5, performed by the runtime through registered glue, never a SIR op) |
 | `begin_borrow %v` / `end_borrow %b` | `%v : Owned` (not consumed) / `%b : Guaranteed` | `Guaranteed` / — | lexical scope; owner not consumed inside; an `end_borrow` on every exit of the region including `Return`/`Break`/`Continue` inside a borrowed `Match` arm | every `Call`/`ResolvedImplCall`/`CallDynMethod`/`CallTraitMethodStatic`/`VarSelfMethodCall`/`NumericMethod` argument and receiver whose header mode is `Borrow` (§4.2); `FieldAccess` base; `Match`/`IfLet`/`WhileLet`/`LetElse` scrutinee for the tag check, every `HirPayloadPredicate`, every `HirPayloadVariantPredicate` and the arm `guard` (§1.3.2); `Index`/`Slice` base; `Binary`/`Unary`/`IdentityCompare` operands of heap type; `RcIntrinsic{GetCopy, StrongCount, WeakCount, IsUnique, Downgrade, WeakUpgrade}` receiver; `CancellationTokenIsCancelled.receiver` (node.rs:2223, `hew_cancel_token_is_requested` borrows); `GeneratorNext` receiver; `WireCodec{Encode}` operand; `RemoteActorAsk.msg` (wire-encoded, read only); the `Borrow`-mode inputs of a `Suspend` (§1.5); the `StructInit.base` of a functional update whose base stays live; **`begin_borrow %p` on a `Place`** (state field, env field, extern-addressed `var`) for a non-mutating receiver or argument read — the region forbids every `store.*`/`load.take`/`end_lifetime` of `%p`, so the place stays `Init` across a trapping or suspending read call and needs no re-init |
 | `move %v` | `%v : Owned`, consumed | `Owned` (forwarding) | one obligation in, one out | `Return`; `Call` argument to a `Consume` header slot (§4.2); `let y = x` when `x` is `AffineResource` or `Linear` (main behaviour, §11 row 3); `push`/`insert` of an element into a collection (§5.3: move-in, never clone-in); `StructInit`/`TupleLiteral`/`MachineVariantCtor`/`EnumVariantCtor` field from a last use; `ActorSend`/`ActorAsk`/`Spawn`/`StreamSend`/select-ask/`Join` argument and `receive gen fn` `Yield` value with snapshot mode `Transfer` (rule 5); `SpawnedCall { bound: true }` argument (`fork t = f(s)`, node.rs:1724 — the checker already moves it, tests/handles.rs:117-127); `ForkBlock.captures` (all `Move`, node.rs:1747-1749) and `Closure`/`SpawnLambdaActor` captures with `ClosureCaptureMode::Move`; `Yield` value in a `gen fn`/`gen {}` body (intra-frame); a `receive gen fn`'s payload parameters into the generator env (§1.3.5: the pump takes the payload, so it owns them); `AwaitTask` and a select `TaskAwait` arm (`move %t` of the `Linear` task handle into the `Suspend`, §1.5); `RcIntrinsic{New}` payload and `RcIntrinsic{Set}` replacement (the runtime destroys the old payload, `hew_rc_set`, rc.rs:345); `CoerceToDynTrait.value` into the box (§5.4); `MachineEmit` payload into the emit queue (§5.8) |
-| `fork %v` | `%v : Owned`, consumed; class ∈ {`CowValue`, `AffineResource`, `Linear`} with a heap carrier | `Owned` (unique) | one in, one out; a `fork` on a `BitCopy`, `View` or `PersistentShare` value is `E_SIR_ICE` (nothing to make unique: the first two carry no obligation, the third is a share by definition and mutating through it is not on the surface, §5.4). **The class decides the realization, not the legality** [decision]: for a `CowValue` carrier the fork is `ensure_unique` (a no-op today under §5.5's shortcut, an arc refcount check when it retires); for an `AffineResource`/`Linear` carrier it is a register move — the value is unique *by class* (`let w = v` on a `Vec<Conn>` is a `move`, §11 row 3, so no second live handle exists) and there is nothing to copy. Revision 5's "exists only for `CowValue` … any other class is `E_SIR_ICE`" is **withdrawn**: it left `var v: Vec<Conn>; v.push(c)` — the shape §1.1's F-collections decision was rewritten to preserve, `repros/ladder/vec_resource_drop.hew` → `2`, `close 1`, `close 2` — with no admitted op sequence, since `push` is not a `VarSelfMethodCall` (`hew_vec_push_owned_move(v: *mut HewVec, data)` borrows the collection by pointer and has no dual return, vec.rs:2681) and the `VarSelfMethodCall` move-in/move-back escape below does not reach it | the **written-through operand** of an `Assign` through a projection of a `var` (`v[i] = …` forks the collection `v`; `p.name = …` forks nothing — an inline record is unique by construction and the assignment is `destroy_value` of the old field plus the store, §1.3.5); the receiver of a mutating collection call (`push`, `insert`, `set`, `pop`, `remove`, `clear`, …) and of a `bytes` mutator; the receiver of a `VarSelfMethodCall` (node.rs:2113-2136, `requires_mutable_receiver`, dual-return `(result, Self)`) **when it is `CowValue`** — for an `AffineResource`/`Linear` `VarSelfMethodCall` receiver (`var c: Conn; c.reset()`) the dual return makes the shape explicit and the receiver is `move`d in with the returned `Self` `move`d back into the binding, so no `fork` is emitted there either; `RecordCloneCall` result (`clone x` is `fork` of a `copy_value`, so the copy is unique now). A `string` is never forked: `std/string.hew` declares no `var self`/`consuming self` method (`grep -n 'var self\|mut self\|consuming self' std/string.hew` is empty) and every string operation returns a fresh value |
-| `destructure %agg` | `%agg : Owned`, consumed | one `Owned`/`None` per field | every `Owned` part consumed on every path | `Match` on an enum/record/tuple by value (payload binders), `LetElse`, `IfLet`, `WhileLet` when the scrutinee is a last use; a `let` destructuring pattern (`let Two { a, b } = t;`, `let (x, y) = pair;`) whose initializer is a last use — the only admitted way to consume one field of a local aggregate, since Hew has no partial move (`ir-ladder-worked-examples.md` W3, D345) — emitted **after** every predicate of the arm has passed (§1.3.2); a nested `HirPayloadVariantPredicate.bindings` set is a nested `destructure` of the payload part; `StructInit { base: Some(b) }` when `b` is a last use (un-overridden parts `move` into the new record, overridden parts `destroy_value`d); `MachineStep`'s event after the D287 desugar (§1.3.7) |
+| `fork %v` | `%v : Owned`, consumed; class ∈ {`CowValue`, `AffineResource`, `Linear`} with a heap carrier | `Owned` (unique) | one in, one out; a `fork` on a `BitCopy`, `View` or `PersistentShare` value is `E_SIR_ICE` (nothing to make unique: the first two carry no obligation, the third is a share by definition and mutating through it is not on the surface, §5.4). **The class decides the realization, not the legality** [decision]: for a `CowValue` carrier the fork is `ensure_unique` (a no-op today under §5.5's shortcut, an arc refcount check when it retires); for an `AffineResource`/`Linear` carrier it is a register move — the value is unique *by class* (`let w = v` on a `Vec<Conn>` is a `move`, §11 row 3, so no second live handle exists) and there is nothing to copy. Revision 5's "exists only for `CowValue` … any other class is `E_SIR_ICE`" is **withdrawn**: it left `var v: Vec<Conn>; v.push(c)` — the shape §1.1's F-collections decision was rewritten to preserve, `repros/ladder/vec_resource_drop.hew` → `2`, `close 1`, `close 2` — with no admitted op sequence, since `push` is not a `VarSelfMethodCall` (`hew_vec_push_owned_move(v: *mut HewVec, data)` borrows the collection by pointer and has no dual return, vec.rs:2681) and the `VarSelfMethodCall` move-in/move-back escape below does not reach it | the **written-through operand** of an `Assign` through a projection of a `var` (`v[i] = …` forks the collection `v`; `p.name = …` forks nothing — an inline record is unique by construction and the assignment is `destroy_value` of the old field plus the store, §1.3.5); the receiver of a mutating collection call (`push`, `insert`, `set`, `pop`, `remove`, `clear`, …) and of a `bytes` mutator; the receiver of a `VarSelfMethodCall` (node.rs:2113-2136, `requires_mutable_receiver`, dual-return `(result, Self)`) **when it is `CowValue`** — for an `AffineResource`/`Linear` `VarSelfMethodCall` receiver (`var c: Conn; c.reset()`) the dual return makes the shape explicit and the receiver is `move`d in with the returned `Self` `move`d back into the binding, so no `fork` is emitted there either; `RecordCloneCall` result (`clone x` is `fork` of a `copy_value`, so the copy is unique now). A `string` is never forked: `std/string.hew` declares no `var self`/`consume self` method (`grep -n 'var self\|mut self\|consume self' std/string.hew` is empty) and every string operation returns a fresh value |
+| `destructure %agg` | `%agg : Owned`, consumed | one `Owned`/`None` per field | every `Owned` part consumed on every path | `Match` on an enum/record/tuple by value (payload binders), `LetElse`, `IfLet`, `WhileLet` when the scrutinee is a last use; a `let` destructuring pattern (`let Two { a, b } = t;`, `let (x, y) = pair;`) whose initializer is a last use — whole-value transfer remains available alongside projected partial moves (`ir-ladder-worked-examples.md` W3) — emitted **after** every predicate of the arm has passed (§1.3.2); a nested `HirPayloadVariantPredicate.bindings` set is a nested `destructure` of the payload part; `StructInit { base: Some(b) }` when `b` is a last use (un-overridden parts `move` into the new record, overridden parts `destroy_value`d); `MachineStep`'s event after the D287 desugar (§1.3.7) |
 | `alloc_place T` | — | `Place` | definite-initialization tracked (rule 4) | a `var` whose address is taken by an extern `&`/`&mut` parameter — **an ordinary function-owned place, the same rule as any other escaping `var`; there is no third memory class** [decision, plan §6] (the only way a local escapes SSA — a `BorrowMut` capture does **not** make the outer `var` a place, §1.3.5; and no such producer exists on `main` today, so P1 delivers the op and rule 4's function-owned clause with no producer to exercise them — `sir-domain-matrix.md` D-NOPLACE, which owns the phase); actor state fields (one place per field, owned by the runtime object, §1.3.6); environment fields of a closure, lambda actor, spawn task or generator (owned by the env allocation); coroutine frame slots; the payload record of a dispatched message (§5.6) |
 | `load.copy %p` | `Place` (initialized) | `Owned` | retain out; place stays initialized; type has `clone ≠ None` | `BindingRef` of an actor state field (a binding the checker resolved to a state field: `HirActorDecl.state_fields`) in value position when the field is not the receiver of a mutating call; `BindingRef` of a captured binding inside a closure/lambda/generator body (env field read); `HirGenCaptureSource::ActorStateField` snapshot at generator construction; read of an extern-addressed `var` |
 | `load.take %p` | `Place` (initialized) | `Owned` | place becomes `Uninit`; a function-owned place is `Uninit` at every exit (taken or `end_lifetime`d); a runtime-owned `CowValue` place must be `Init` again at every exit (unwind and cancel included); a runtime-owned `AffineResource`/`Linear` place may stay `Uninit` — its taken bit records that (§1.3.6, rule 4) | consuming use of an extern-addressed `var`; **a mutating receiver call on a runtime-owned place** (`push` on a state-field `Vec`, a `bytes` mutator on a state field, `VarSelfMethodCall` on a state field): `load.take` → `fork` → call → `store.init` of the result back. This is one sequence for **every** class whose carrier the callee borrows by pointer: `hew_vec_push_owned_move(v: *mut HewVec, …)` (vec.rs:2681) takes the collection by pointer whether the element is a `string` or a `Conn`, so a `Vec<Conn>` state field's `push` takes exactly this path with the `fork` realized as a register move (§1.3 `fork` row). On the unwind and cancel edges of that call the forked value is still live and the edge op is `store.init %p, %forked` — never a fabricated default. Only where the callee **consumes** the receiver — an `AffineResource`/`Linear` `VarSelfMethodCall`, which moves it in and returns `Self` — is there no fork, and the edge then leaves the place `Uninit` with its taken bit set; `hew_drop$State` skips it (§1.3.6). An explicit `close` of a `#[resource]` state field (spec §3.7.8.4 Path 2) is the same `load.take` with no store-back; `GeneratorNext` result take |
 | `store.init %p, %v` | `Place` (uninitialized), `%v : Owned` consumed | — | place becomes initialized | first assignment / declaration; `Assign` to a `let` or `var` state field inside `init {}`; the store-back after a place receiver call; the `ActorInit` producer storing a spawn argument or `HirField.default` value into a state field (§1.3.1) |
-| `store.assign %p, %v` | `Place` (`Init`, or `Uninit`/`Maybe` when it carries a taken bit), `%v : Owned` consumed | — | old value destroyed, then stored — bit-guarded on a place with a taken bit, so re-initializing a closed resource field is this op and not `store.init` (§1.3.6); rule 6a on a `let`-rooted place | `Assign` to a `var` state field outside `init {}` (§1.3.6); `Assign` to a `BorrowMut`-captured binding inside a closure body (the env field, §1.3.5); `Assign` to an extern-addressed `var`; `self.field = v` in a machine transition after the D287 desugar (§1.3.7) |
+| `store.assign %p, %v` | `Place` (`Init`, or `Uninit`/`Maybe` when it carries a taken bit), `%v : Owned` consumed | — | old value destroyed, then stored — bit-guarded on a place with a taken bit, so re-initializing a closed resource field is this op and not `store.init` (§1.3.6); rule 6a on a `let`-rooted place | `Assign` to a `var` state field outside `init {}` (§1.3.6); `Assign` to a `BorrowMut`-captured binding inside a closure body (the env field, §1.3.5); `Assign` to an extern-addressed `var`; `state.field = v` in a machine transition after the D287 desugar (§1.3.7) |
 | `end_lifetime %p` | `Place` (initialized) | — | destroys the contents; place uninitialized | scope exit of an extern-addressed `var`; actor stop (`hew_drop$State`); env release (`hew_drop$Env` from the arc `drop_fn`, or the generator env thunk) |
 
 `BitCopy` values have no ownership ops; `View` values are `None`-kind and are
 only legal inside the borrow scope of their producer's argument (rule 3
 applies to the producing call's borrow, nothing more — §2.2).
 
-Non-escaping `var`s never get a place: HIR→SIR construction does mem2reg,
+Owned plain-record and tuple roots can have projected field places. These alias
+one SSA root rather than creating another aggregate owner. A complete field
+partition carries leaf availability in the existing lifetime flow: `load.take`
+transfers a field, `load.copy` copies an initialized field, `load.borrow` borrows
+it through the root, and `store.assign` conditionally cleans up and replaces it.
+Root cleanup visits only initialized leaves. Whole-value uses require all leaves;
+CFG root transfers preserve matching leaf states in parallel. Expanded ancestors
+must be plain and transparent; resource, linear and opaque fields remain whole
+leaves. See the current W3 worked example.
+
+Non-escaping whole `var` bindings stay in SSA: HIR→SIR construction does mem2reg,
 so `var v = a; if c { v = b }` is block arguments (`Assign` → `destroy_value`
 old + edge argument). The `Materialize` reasons in §4.2 are the only ways a
 value leaves SSA. A `HirStmtKind::Let(binding, None)` (`var x: T;`) has no
@@ -708,8 +728,8 @@ read of the `var` receiver, `destructure` of the event (moved in), a `match`
 whose arms are the transitions (guards under §1.3.2, entry/exit blocks
 inlined), and a store-back into the receiver; `MachineStateName` → a static
 string literal (§1.3.1); `MachineFieldAccess`/`MachineEventFieldAccess` →
-`FieldAccess` (`copy_value` inside the borrow of `self`/the event);
-`self.field = v` in a transition → `store.assign` through the machine value
+`FieldAccess` (`copy_value` inside the borrow of the state/the event);
+`state.field = v` in a transition → `store.assign` through the machine value
 (a `var`); `MachineEmit`/`MachineTakeEmits` → §5.8; `MachineVariantCtor` →
 `EnumVariantCtor`. The sentence "`MachineState` stays `Linear` so a step that
 forgets to store back is 6d" is **withdrawn**: `BuiltinType::MachineState` is
@@ -1004,9 +1024,9 @@ owned by the checker first and re-proved by the SIR verifier:
 | COW value walls (ownership.md) | assign to a `let` (reassignment, `v.field =`, `v[i] =`, a `let` state field outside `init {}`) | 6a | `E_OWN_MUTATE_LET` |
 | | `clone` a type with `clone == None` (incl. a capture or generator snapshot of such a type) | 6b | `E_OWN_CLONE_UNSUPPORTED` |
 | | send / capture-into-spawn / `receive gen fn` yield of a type whose send fact is false (incl. a `BorrowMut`-capturing closure), **and a `CoerceToDynTrait` into a `dyn … + Send` whose concrete is not `Send`** (§1.1, §11 row 37) | 6c | `E_OWN_SEND_UNSUPPORTED` |
-| move-checker family (spec §3.7.8, §3.7.8.1 item 4, §3.7.8.2) | use of any `Owned` binding after its consuming use — an `AffineResource`/`Linear`/`PersistentShare` rebind (`let h = g`), a `consume` argument, `consuming self`, `close`, a spawned-call argument, a `#[resource]`/`LambdaPid` send, a select `TaskAwait` arm, **or an explicit `move` of a `CowValue`** (`actor move \|x\| { v.len() }`, `repros/ladder/cap_move.hew`); a read of an `AffineResource` state field that may have been closed (§1.3.6) | 2, 4 | `E_OWN_USE_AFTER_CONSUME` |
+| move-checker family (spec §3.7.8, §3.7.8.1 item 4, §3.7.8.2) | use of any `Owned` binding after its consuming use — an `AffineResource`/`Linear`/`PersistentShare` rebind (`let h = g`), a `consume` argument, `consume self`, `close`, a spawned-call argument, a `#[resource]`/`LambdaPid` send, a select `TaskAwait` arm, **or an explicit `move` of a `CowValue`** (`actor move \|x\| { v.len() }`, `repros/ladder/cap_move.hew`); a read of an `AffineResource` state field that may have been closed (§1.3.6) | 2, 4 | `E_OWN_USE_AFTER_CONSUME` |
 | | a `Linear` value live at a normal exit, or at a cancel exit with no `defer` consumer (`Task<T>` exempt on cancel, §2.1 6d); a `Linear` value captured into a shared env (§1.3.5) | 6d | `E_OWN_MUST_CONSUME` |
-| | a consuming use (`Consume` slot, `close`, `consuming self`) of a `Borrow` parameter — `fn shutdown(c: Conn) { c.close() }` without `consume` (§4.2; §11 row 19, tightening) | 3 | `E_OWN_CONSUME_BORROWED` |
+| | a consuming use (`Consume` slot, `close`, `consume self`) of a `Borrow` parameter — `fn shutdown(c: Conn) { c.close() }` without `consume` (§4.2; §11 row 19, tightening) | 3 | `E_OWN_CONSUME_BORROWED` |
 | | a `#[linear]` actor state field (§1.3.6; spec §3.7.8.4 Path 3) [P4] | declaration | `E_OWN_LINEAR_STATE_FIELD` |
 | definite initialization | read of a declared-uninitialized `var` on some path | 4 | `E_OWN_UNINIT` |
 
@@ -1397,17 +1417,16 @@ the symbol comes from `header.symbol` looked up by key.
 - **`Place`** = `LocalId` + projections (`Field(i)`, `Index`, `Deref`,
   `EnumPayload(variant)`, `MachineTag`, `ActorState(field)`, `EnvField(i)`).
   `Place::Value` is forbidden. The current 12 special-cased handle places
-  (`DuplexHandle`, `SendHalf`, `RecvHalf`, `LambdaActorHandle`, `ActorHandle`,
+  (`DuplexHandle`, `SendHalf`, `RecvHalf`, `LambdaPid`, `ActorHandle`,
   `MachineTag`, …, `model.rs:4399`) become ordinary locals whose type carries
   the drop glue (§5).
 - **`Materialize { value, local, reason }`** with `reason ∈ { AddressTaken,
   ByRefAbi, CoroutineFrame, Capture, Transport, ExplicitStorage, TrapFrame
   }`. Layout is never a reason. Every SIR `alloc_place` is `ExplicitStorage`;
   resume-edge arguments are `CoroutineFrame`; envelope payloads are
-  `Transport` and are always a **malloc-compatible allocation**
-  (`hew_msg_envelope_new` doc, mailbox.rs:536-540: "`payload` must be a
-  malloc-compatible allocation"; the envelope frees it with `libc::free`,
-  cow_envelope.rs:114-118) — never stack or arena storage; `TrapFrame` is the
+  `Transport` and are always a **sized-block allocation**
+  (`hew_msg_envelope_new` doc, mailbox.rs:536-540; the envelope frees it with
+  `buf_free`, cow_envelope.rs:114-118) — never stack or arena storage; `TrapFrame` is the
   registry-target realization of values live across a trapping call (§4.7).
 - **Calling convention** per callable: `CallableHeader { key, symbol, conv:
   Default | TaskEntry | ActorHandler | ActorInit | ActorMethod | LifecycleHook
@@ -1420,7 +1439,7 @@ the symbol comes from `header.symbol` looked up by key.
   `RetMode ∈ { None, Fresh, Borrowed }`. The header is derived from the
   checker's registries, never from body lowering. A slot is `Consume`
   exactly when: the parameter is `consume`-declared (`HirBinding.is_consume`,
-  node.rs:1246); the receiver is `consuming self` (`std/net/net.hew:473`);
+  node.rs:1246); the receiver is `consume self` (`std/net/net.hew:473`);
   the callable is the `close` declaration of a `#[resource]` type
   (`LifecycleRegistry ResourceRecordLifecycle.close_declaration`), whose
   receiver or first parameter consumes in either spelling — `fn close(self)`
@@ -1469,8 +1488,9 @@ the symbol comes from `header.symbol` looked up by key.
   `Consume` (§5.6: one disposition, the handler takes the payload) — no header
   fact is derived from whether the body suspends; `LifecycleHook` params are
   `Borrow` (their payload is runtime-owned across the call, §5.6).
-- **Carriers**: the runtime representation per class — `string` = header-aware
-  `*mut c_char`; `bytes` = `BytesTriple` (a bytes mutator rewrites the whole
+- **Carriers**: the runtime representation per class — `string` = one managed
+  `*mut HewString` handle (byte length in the header, released with
+  `hew_string_drop`); `bytes` = `BytesTriple` (a bytes mutator rewrites the whole
   triple: `ensure_unique` returns a new buffer with `offset` reset to 0 and
   consumes one owner of the old, bytes.rs:181-205, 435-440); collections =
   `*mut HewVec` etc.; closures = `{fn, env}` pair with an `hew_arc_*` env
@@ -1631,7 +1651,7 @@ hew_abandon$<mangle_resolved_ty(T)>(slot: ptr) -> void          // only for a T 
 ```
 
 The ABI is the runtime's existing thunk contract, not a new one:
-`HewVecElemCloneThunk = fn(src, dst) -> i32` (`hew-cabi/src/vec.rs:156`;
+`HewValueCloneThunk = fn(src, dst) -> i32` (`hew-cabi/src/vec.rs:156`;
 `hew_vec_push_owned` aborts on a non-zero status, vec.rs:2650-2657;
 `hew_hashmap_clone_layout` likewise, hashmap.rs:985-987) and the in-place
 drop thunk `fn(slot)`. A `void` copy glue would leave the status register
@@ -1677,7 +1697,7 @@ three are not read as contradictory.
 
 **`hew-mir/src/runtime_symbols.rs` is the only symbol table** [decision, plan
 §6], and it carries both halves of a symbol's row: the spelling and its
-ownership. The FFI ownership TOML (`scripts/jit-symbol-classification.toml`) is
+ownership. The FFI ownership TOML (`scripts/runtime-export-classification.toml`) is
 the source text an author edits and is **generated into** `runtime_symbols.rs`
 [P1], the way `hew-types/build.rs:52` `generate_ffi_ownership_table` already
 generates `ffi_contracts::FFI_OWNERSHIP_CONTRACTS` from it (`:60-118`) — never
@@ -1772,15 +1792,23 @@ carry `clone_fn = None` (§5.3); no SIR op can ask for the missing symbol
 because 6b refused every `copy_value` of such a type, so a glue table lookup
 that misses is `E_MIR_ICE` at module assembly.
 
-### 5.3 Runtime element-glue protocol
+### 5.3 Runtime value-glue protocol
 
-The seam is `hew_arc_new(data, size, align, drop_fn: Option<unsafe extern "C"
-fn(*mut u8)>)` (`hew-runtime/src/arc.rs:102`) and the element descriptor
-`HewVecElemLayout { size, align, ownership_kind, clone_fn, drop_fn }`
-(`hew-cabi/src/vec.rs:207`; `HewTypeOwnershipKind::LayoutManaged` is documented
-"not implemented yet", vec.rs:21). [P2]:
+The canonical shared descriptor is
+`HewValueLayout { size, align, ownership_kind, clone_fn, drop_fn }` in
+`hew-cabi/src/value.rs`, with `HewValueCloneThunk` and `HewValueDropThunk`.
+Vectors store this descriptor inline; map keys add hash/equality callbacks
+beside the same value descriptor, and map values use it directly. The legacy
+thunk-less `HewTypeLayout` remains separate for `BitCopy` operations.
 
-- Every collection constructor takes an element descriptor whose `drop_fn =
+The descriptor supplies storage facts and semantic copy/drop callbacks, not a
+second ownership decision. Callers copy the complete representation before a
+clone thunk replaces owning fields; failure rolls back the partial clone.
+Drop glue releases nested owners without deallocating the caller's storage.
+`hew_arc_new(data, size, align, drop_fn)` remains a separate byte-copy creation
+ABI; it does not acquire semantic cloning merely by sharing these concepts.
+
+- Every collection constructor takes a value descriptor whose `drop_fn =
   hew_drop$T` (the §5.1 wrapper for leaves) and `clone_fn = hew_copy$T`
   **when `clone ≠ None`, else `None`** (a `Vec<Conn>` descriptor has a drop
   thunk and no clone thunk; a clone through such a descriptor aborts
@@ -1869,12 +1897,12 @@ double-insert fixture [P2].
 | `dyn Trait` (`TraitObject`, `Iterator`) | PersistentShare | Retain | `hew_arc_clone` on the box | `hew_arc_drop` (arc `drop_fn = hew_drop$<Concrete>`); the vtable's `drop_in_place` slot 0 is the same glue | never; a mutating method through `CallDynMethod` is not on the surface (`VarSelfMethodCall` requires a concrete `var` receiver) — if P3 finds the checker admits one, it is a wall `E_OWN_MUTATE_SHARED` decided then, not an ICE |
 | `LocalPid<A>`, `RemotePid`, `ChildRef`, `HewActor` | BitCopy | Bits | bits (non-owning pid; `marker()` flips to `BitCopy` at P1) | none | none |
 | `BoxedActor` (compiler-internal) | AffineResource | None | rejected (6b) | release symbol named at P4 or the variant deleted (§1.1) | none |
-| `LambdaPid`, `LambdaActorHandle` | AffineResource | Retain | `hew_lambda_actor_clone` (new handle into `dst`); a send is `Transfer` regardless (rule 5) | `hew_lambda_actor_release` | none |
-| `Generator`, `AsyncGenerator` | AffineResource | None | rejected (6b) | `hew_gen_coro_destroy` | none |
+| `LambdaPid` | AffineResource | Retain | `hew_lambda_actor_clone` (new handle into `dst`); a send is `Transfer` regardless (rule 5) | `hew_lambda_actor_release` | none |
+| `Generator` | AffineResource | None | rejected (6b) | `hew_gen_coro_destroy` | none |
 | `Rc<T>` / `Weak<T>` | AffineResource | Retain | `hew_rc_clone` / `hew_weak_clone_rc`; `hew_rc_new` receives `hew_drop$T` as its payload `drop_fn` (rc.rs:103-107) | `hew_rc_drop` / `hew_weak_drop_rc` | none |
 | `#[resource] T` (record) | AffineResource | None | rejected (6b) | user `close` (consumes) | none |
 | opaque `#[resource]` (std handles), `MonitorRef`, `CancellationToken` | AffineResource | None | rejected (6b) | `release_symbol` from `LifecycleRegistry` / `hew_cancel_token_release` | none |
-| `Duplex`, halves, `Sender`/`Receiver`, `Stream`/`Sink`, `StreamPair`, regex `Pattern` | AffineResource | None | rejected (6b) | `hew_duplex_close(_half)`, channel/stream close symbols, `hew_reply_channel_free`; `StreamPair`/`Pattern` via their declared `close(consuming self)` (`hew_stream_pair_free`, …) | none |
+| `Duplex`, halves, `Sender`/`Receiver`, `Stream`/`Sink`, `StreamPair`, regex `Pattern` | AffineResource | None | rejected (6b) | `hew_duplex_close(_half)`, channel/stream close symbols, `hew_reply_channel_free`; `StreamPair`/`Pattern` via their declared `close(consume self)` (`hew_stream_pair_free`, …) | none |
 | `#[linear] T` | Linear | None | rejected (6b) | rejected on a normal exit, and on a cancel exit with no `defer` consumer (6d); consumed by a declared consuming method; storage-only on unwind, and in the `abandon` glue role of an undispatched message or a never-started task env (§5.2 item 7) | none |
 | `ActorState`, `MachineState` (the reserved names) | never a value type | — | — | — | — |
 | `Task<T>` (bound handle only, §1.5) | Linear | None | rejected (6b) | rejected on a normal exit (6d); **legal and code-free on a cancel exit** (6d's `Task` exemption: the scope owns the task); consumed by `AwaitTask` or a select `TaskAwait` arm (`move` into the `Suspend`); the scope frees the task and its unconsumed result through `result_drop_fn` | none |
@@ -1930,7 +1958,7 @@ the row in the runtime symbol table.
 ### 5.6 Message payload protocol: envelope-only
 
 **[current]** The runtime has two delivery protocols: copy mode, where the node
-buffer is `libc::free`d with no payload drop and the handler owns the fields
+buffer is `buf_free`d with no payload drop and the handler owns the fields
 (`hew_msg_node_free`, mailbox.rs:1093-1113, `envelope.is_null()` arm), and
 envelope mode, where `hew_msg_envelope_release` runs the envelope's
 `drop_glue` on the payload after dispatch and the handler borrows
@@ -1958,7 +1986,7 @@ envelope-aware but called only from the copy-mode path (2081/2096) and 4515.
 
 [P4] **One protocol.** Every message is an envelope whose `drop_glue` is
 `hew_drop$<MsgRecord>` (the per-handler message record instance, §5.1),
-created by `PrepareEnvelope` (§4.2) into a malloc-compatible payload. The
+created by `PrepareEnvelope` (§4.2) into a sized-block payload. The
 envelope owns the payload from the send on: a `Share` argument was retained
 into it, a `DeepCopy` argument was copied into it, a `Transfer` argument was
 moved into it. A message that is never dispatched (coalesce replacement,
@@ -1970,7 +1998,7 @@ per-handler disposition field. The trampoline calls
 nulls `payload` and `drop_glue`, and **aborts if `refcount != 1`**); the
 `ActorHandler` shim's payload header slots are `Consume`; the shim
 `destructure`s the payload record into body-owned values and frees the buffer
-with `hew_msg_payload_free(ptr)` (`libc::free`); the body owns each field like
+with `hew_msg_payload_free(ptr)` (`buf_free`); the body owns each field like
 a local (`conn = Some(c)` is a `move` into `store.assign`; a field the body
 never uses is `destroy_value`d at the shim's exit; a field it keeps needs no
 `copy_value` at all). `release` runs `drop_fn` only when `payload` is non-null
@@ -1987,7 +2015,7 @@ and only afterwards parks the suspended continuation
 (`if !suspend_handle.is_null() { … park_suspended_activation(actor, suspend_handle) }`,
 scheduler.rs:3780-3788); `hew_msg_node_free`'s envelope arm calls
 `hew_msg_envelope_release` (mailbox.rs:1106-1110), whose final observer runs
-`drop_fn((*env).payload)` and then `libc::free((*env).payload)`
+`drop_fn((*env).payload)` and then `buf_free((*env).payload)`
 (cow_envelope.rs:113-121). A handler that parks and then reads a payload field
 after resume would therefore read freed memory. That is not a hypothetical
 shape: `tests/vertical-slice/accept/coalesce_owned_payload_leak.hew:13-17` is a
@@ -2328,7 +2356,7 @@ extern `Pointer` types keep today's Copy verdict (`ty.rs:1452-1459` lists
 
 ### 6.4 FFI / runtime ownership table (produced by another lane)
 
-Every C-ABI symbol has a row in `scripts/jit-symbol-classification.toml`,
+Every C-ABI symbol has a row in `scripts/runtime-export-classification.toml`,
 generated into `hew-mir/src/runtime_symbols.rs` — the one symbol table (§5.1) —
 and projected to `hew_types::ffi_contracts::ExternOwnershipContract { params:
 [Borrow | Consume | Retain], result: Fresh | Retained | Borrowed | None,
@@ -2537,12 +2565,12 @@ mechanism and it is observable.
   `--sir-lower`, so the leg being compared is the routing the compiler actually
   ships), **both legs under ASan with leak detection**, and a **reject corpus**
   comparing diagnostic codes. Concretely: for every runnable fixture in
-  `tests/vertical-slice/accept`, `examples/v05/checked-mir`,
+  `tests/vertical-slice/accept`, `tests/core-acceptance/cases`,
   `tests/core-matrix/cells`, and `tests/ownership-balance`, compile twice
   (default routing; `HEW_SIR_ROUTE=force-legacy`), both with
   `HEW_SANITIZE_ADDRESS=1` and `nm`-verified as `tests/ownership-balance/run.py:120-160`
   does; run both under `ASAN_OPTIONS=detect_leaks=1:halt_on_error=1`; diff
-  exit status and stdout byte-for-byte (`scripts/checked-mir-corpus.sh run`
+  exit status and stdout byte-for-byte (the core-acceptance `run` case
   transcript shape). **Reject corpus**: every fixture in
   `tests/vertical-slice/reject` is checked on both routes and the diagnostic
   code and primary span must agree after mapping the legacy codes to the
@@ -2602,7 +2630,6 @@ reaches 100 %.
 | Item | Location | Phase |
 | --- | --- | --- |
 | `docs/internal/v05-ir-ladder.md`; links in `docs/observe.md:10`, `docs/diagrams.md:17`; skills `hew-ecosystem-map`, `hew-ir-lowering-map`, `hew-supervision/reference.md:62` repointed | docs / `~/.claude/skills` mirror | P0 |
-| `tests/corpus/v05-value-model/*.ownership-plan.txt` (19, no consumer) and the old doc's §4 "Ownership Plan Report" | tests | P0 |
 | `SirMode`, `--sir-lower`, `SirModeArgs`, `WatchSirModeArgs`, `report_sir_lane`, `report_strict_sir_missing_body` (name-keyed zip, `main.rs:336-344`) | `hew-cli/src/{compile.rs:34, args.rs:48-65,759-773, main.rs:282-387,1596}` | P1 |
 | SIR→MIR bridge: `lower_entry_component`, `RawLowerer`, `VirtualRawLowerer`, `zero_drop_elaboration`, `verify_strict_sir_*`, symbol rejoin at sir.rs:804-817 | `hew-mir/src/sir.rs` (3674 lines) | P1 (replaced by `lower_from_sir`) |
 | three private scalar-domain predicates | `hew-sir/src/lower.rs:797-815`, `verify.rs:905-923`, `hew-mir/src/sir.rs:1252-1258` | P1 |
@@ -2634,7 +2661,7 @@ reaches 100 %.
 | `hew_mir::lower_hir_module_with_facts`, `Session::lower_hir_module` legacy arm, `HEW_SIR_ROUTE`, `Admission::Legacy` and its reason enum, the `callee-header-drift` seam | `hew-compile/src/lib.rs`, `hew-cli` | P5 |
 | legacy emitter: `llvm.rs` policy sites 16698, 26256, 26630, 26059, 22270-22740, 21990/22040, 26336, 3342-3420/36911, 6083-11141, 12908; name-keyed maps 37995-38008, 31683, 21610, 24776, 31277, 31718-31720; `validate_and_index_mir_stages` (37455); `suspend.rs` drop-plan consumers 312-321/3428/3478; `thunks.rs:433`; `codegen_record_layouts` (26380); mirrored table tests `is_owned_vec_element_matches_codegen_owned_vec_table` / `resolved_ty_element_owns_heap_for_owned_vec_matches_mir_table` | `hew-codegen-rs/src/{llvm.rs, suspend.rs, thunks.rs, llvm_tests.rs}` | P5 |
 | `E_MIR_CHECK` renderer arm, `DropPlanUndetermined`, `OwnedHandleAggregateExtractionUnsupported`, 281 MIR `NotYetImplemented` constructions | `hew-cli/src/diagnostic.rs:118-145`, `hew-mir` | P5 |
-| dump text pins of the legacy form: `examples/v05/checked-mir/golden/*.mir` + `MANIFEST.sha256`, `tests/mir-baselines/*.elab.mir`, `hew-cli/tests/funcupdate_mir_baselines.rs`; `--dump-mir elab` | tests, hew-cli | P5 (regenerated as raw/checked goldens of the one form) |
+| dump text pins of the legacy form: `tests/mir-baselines/*.elab.mir`, `hew-cli/tests/funcupdate_mir_baselines.rs`; `--dump-mir elab` | tests, hew-cli | P5 (regenerated as raw/checked goldens of the one form) |
 | `scripts/nextest-expected-failures.tsv` rows citing #3079/#3118/#2523/#3106/#3124, `hew-corpus-expected-failures.txt` ownership rows, `hew-orchestration/plans/ownership-seam-corpus/residue/` messages pinned to legacy wording | ledgers | P5 (each row deleted with evidence of the passing command) |
 | tests pinning deleted mechanisms: `hew-mir/src/lower/stale_owner_canonicalization_tests.rs`, `drop_plan/{replay_plan_tests, replay_plan_proptests, obligation_balance_validator}.rs`, hew-mir `tests/lowering_expr`, `tests/actor` fixtures built on `RawMirFunction`; `hew-codegen-rs/tests/support/mir_fixture.rs` | hew-mir, hew-codegen-rs | P5 (rewritten against `MirFunction` where the behaviour survives) |
 
@@ -2669,7 +2696,7 @@ leaf (§5.1, §5.2 item 7) [P4].
 
 Not deleted (kept as authorities): `hew-mir/src/runtime_symbols.rs` — **the one
 symbol table**, spelling and ownership row together (§5.1), with
-`scripts/jit-symbol-classification.toml` kept as the source text generated into
+`scripts/runtime-export-classification.toml` kept as the source text generated into
 it [P1] and `hew-types/src/ffi_contracts.rs` kept as the generator's other
 output; `callee_ownership_contract` and `CalleeOwnershipContract` inside that
 same file are **deleted** with the legacy lowerer [P5], because a spelling-keyed
@@ -2685,7 +2712,7 @@ deactivate/retire` and `hew_dispatch_state_cleanup_*` (§4.7 registry target);
 `fork_for_write`/`clone_alias` (next paragraph); `hew_reply_channel_*`;
 `coalesce_message_key`;
 `HirActorDecl.cycle_capable`; `tests/ownership-balance`, vertical-slice,
-core-matrix, checked-mir `.expected` transcripts (behavioural oracles, not
+core-matrix, core-acceptance `run` transcripts (behavioural oracles, not
 dump pins); `hew-sir/src/{analysis.rs, optimize.rs, dump.rs}`.
 
 ---
@@ -2730,7 +2757,7 @@ change no program.
 | 10 | `is` is reference identity on heap handles | ownership.md:204 "There is no pointer-equality operator." | spec line 5095 "`is` = reference identity on heap handles"; `IdentityCompare` node.rs:1415, 2026 | wording (stale source doc) |
 | 11 | Destroy sinking moves **only** a `CowValue` release: `AffineResource`/`Linear` are excluded by the element-joined class (`Vec<Conn>`, `Vec<Rc<T>>`, an `Rc`-capturing closure), and `PersistentShare` is excluded outright because a `dyn Trait`'s concrete payload is not part of its type | old draft §3 row with no restriction; revision 3's top-level-class restriction; revision 4's "`CowValue` or `PersistentShare`" | spec §3.7.3 "Cleanup runs at a predictable point (scope exit)", §3.7.5 `upgrade()` exactness, §3.7.6 side-effect restriction; `repros/ladder/weak_scope.hew` prints `alive`; `repros/ladder/vec_rc_weak.hew` prints `1`, `5`; `repros/ladder/dyn_rc.hew` (`dyn Show` over a record holding an `Rc`) prints `5`, `alive` | wording (preserves behaviour) |
 | 12 | A read-only place receiver is `begin_borrow %p` (the place stays `Init`); a mutating `CowValue` place receiver is `load.take` → `fork` → call → `store.init`, with `store.init %p, %forked` on unwind/cancel edges (the callee borrowed it) | `main`'s `ActorStateLoadMode::Borrowed` bare alias decided by a classifier (model.rs:6648-6656); revision 3's "the edge stores a fresh default/empty value" | §1.3 borrow/`load.take` rows; `hew_vec_push_owned_move(v: *mut HewVec, …)` borrows `v` (vec.rs:2663); rule 4's place classes | wording (same observable behaviour) |
-| 13 | Message delivery is envelope-only and every dispatched payload is **taken** by the handler — one disposition, no class split and no per-handler header field (§5.6) | `main`'s copy-mode nodes + `HewMessageDropFn`; revision 3's "handlers borrow" for every message; revision 5's own two-disposition split (borrowed for a `BitCopy`/`CowValue`/`PersistentShare` record) | §5.6; `cow_envelope.rs:106-118` (`drop_fn` only on a non-null payload); the dispatch order that kills the borrowed disposition — `hew_msg_node_free` at `scheduler.rs:3766` precedes `park_suspended_activation` at 3780-3788, so a suspending handler's borrowed field would be read after `libc::free` (cow_envelope.rs:113-121); shipped counterexample `tests/vertical-slice/accept/coalesce_owned_payload_leak.hew:13-17` | runtime protocol change; see row 24 for the one user-visible effect |
+| 13 | Message delivery is envelope-only and every dispatched payload is **taken** by the handler — one disposition, no class split and no per-handler header field (§5.6) | `main`'s copy-mode nodes + `HewMessageDropFn`; revision 3's "handlers borrow" for every message; revision 5's own two-disposition split (borrowed for a `BitCopy`/`CowValue`/`PersistentShare` record) | §5.6; `cow_envelope.rs:106-118` (`drop_fn` only on a non-null payload); the dispatch order that kills the borrowed disposition — `hew_msg_node_free` at `scheduler.rs:3766` precedes `park_suspended_activation` at 3780-3788, so a suspending handler's borrowed field would be read after `buf_free` (cow_envelope.rs:113-121); shipped counterexample `tests/vertical-slice/accept/coalesce_owned_payload_leak.hew:13-17` | runtime protocol change; see row 24 for the one user-visible effect |
 | 14 | `Task<T>` is freed by the scope; `AwaitTask` copies the result out; an unconsumed result is released through `result_drop_fn`; unbound spawns (`work();` in a scope, `fork {}`) mint no `Task` value | old draft §5.2 "tasks → `hew_task_free`"; revision 3's `Task<T>` row read as covering unbound spawns (which 6d would then reject) | task_scope.rs:619-627, 666-690, 776-786, 1322; dataflow.rs:1493 (`MustConsume` iterates `linear_bindings` only); `tests/vertical-slice/accept/{w2006_scope_spawn,fork_block_args_spawn}.hew` | wording (matches `main`) |
 | 15 | `LocalPid`/`HewActor` are `BitCopy`; the BitCopy scalars/enums of §1.1 get marker `BitCopy` | `builtin_type.rs:355` marker rows (`Resource` / `None`) | `ty_is_nonowning_pid_leaf` llvm.rs:25479; no `close_method()` | wording (matches `main` behaviour) |
 | 16 | `fork` is never emitted for a `string` and has no runtime realization for any current carrier (§4.3); `p.n = 1` on a record with a literal string field forks nothing | revision 3 §4.3/§5.4 "`hew_string_make_unique` [P1, exposes `cstring_ensure_unique`]", "record with heap fields: `Fork` per field" | cabi.rs:495-511 ("Unmanaged pointers must be filtered out by the caller"), string.rs:1264-1296 (`is_managed_cstring` guards); `std/string.hew` has no `var self` method | wording (a UB path removed before it existed) |

@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_let_field_assign"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_let_field_assign.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 8
+column = 9
+message = "cannot assign to immutable field `count`"

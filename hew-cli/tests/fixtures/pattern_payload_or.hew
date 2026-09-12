@@ -4,9 +4,9 @@
 // body. A third unit variant covers exhaustiveness.
 // Oracle: the bound message for each payload variant, "empty" for the unit.
 enum ParseError {
-    UnclosedBlock(string);
-    UnknownDirective(string);
-    Empty;
+    UnclosedBlock(string),
+    UnknownDirective(string),
+    Empty,
 }
 
 fn describe(e: ParseError) -> string {

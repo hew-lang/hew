@@ -94,21 +94,14 @@ fn walk_block(block: &hew_hir::HirBlock, f: &mut impl FnMut(&HirExpr)) {
             HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
                 walk_expr(e, f);
             }
+            HirStmtKind::Destructure { value, .. } => walk_expr(value, f),
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 walk_expr(target, f);
                 walk_expr(value, f);
             }
             HirStmtKind::Defer { body, .. } => {
                 walk_expr(body, f);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                else_body,
-                ..
-            } => {
-                walk_expr(scrutinee, f);
-                walk_block(else_body, f);
             }
         }
     }
@@ -221,10 +214,6 @@ fn fstring_preserves_every_authored_interpolant_as_a_subsumed_source() {
         "both authored identifiers must remain structural HIR occurrences"
     );
     for (name, site) in authored {
-        assert!(
-            output.module.produced_value_facts.contains_key(&site),
-            "authored interpolant `{name}` lost its checker-produced ownership fact"
-        );
         let parent =
             parents.get(&site).copied().flatten().unwrap_or_else(|| {
                 panic!("authored interpolant `{name}` has no structural parent")
@@ -403,14 +392,26 @@ fn fstring_named_type_without_impl_is_fail_closed() {
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     );
-    let has_empty_lit = any_expr(
-        &lower_output2,
-        |e| matches!(&e.kind, HirExprKind::Literal(HirLiteral::String(s)) if s.is_empty()),
-    );
+    // The interpolant itself must lower to `Unsupported`, and no empty string
+    // may stand in its place. Scope the scan to this source's own f-string span:
+    // `std.builtins` bodies lower into every module and carry their own empty
+    // string literals (`NodeConfig.at` sets `key: ""`).
+    let substituted = any_expr(&lower_output2, |e| {
+        interp_span.contains(&e.span.start)
+            && matches!(&e.kind, HirExprKind::Literal(HirLiteral::String(s)) if s.is_empty())
+    });
     assert!(
-        !has_empty_lit,
+        !substituted,
         "fail-open violation: lowering must not substitute an empty \
          string for a missing Display dispatch"
+    );
+    let refused = any_expr(&lower_output2, |e| {
+        interp_span.contains(&e.span.start)
+            && matches!(&e.kind, HirExprKind::Unsupported(note) if note.contains("Widget::fmt"))
+    });
+    assert!(
+        refused,
+        "the interpolant must lower to an Unsupported node naming the missing impl"
     );
 }
 

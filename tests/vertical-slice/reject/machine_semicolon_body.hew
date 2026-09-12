@@ -1,0 +1,19 @@
+// A machine member is separated by `,` like every other structural member, so
+// the legacy `;` body-less transition is a parse error with the fix-it that
+// names the separator, and the default arm has one spelling (D480).
+machine Toggle {
+    events { Flip }
+
+    state Off,
+    state On,
+
+    on Flip: Off => On;
+    on Flip: On => Off,
+    default;
+}
+
+fn main() {
+    var toggle: Toggle = .Off;
+    let _ = toggle.step(.Flip);
+    println(toggle.state_name());
+}

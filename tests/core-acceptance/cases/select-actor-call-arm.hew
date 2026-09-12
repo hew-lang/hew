@@ -1,0 +1,51 @@
+import std.channel;
+
+actor Worker {
+    receive fn combine(first: string, second: string) -> string { (first + " " + second).to_upper() }
+}
+
+fn wait_for_gate(consume gate: channel.Receiver<string>) -> string {
+    let value = gate.recv().expect("gate value");
+    gate.close();
+    value
+}
+
+fn receiver_source(consume receiver: channel.Receiver<string>) -> channel.Receiver<string> {
+    println("receiver evaluated once");
+    receiver
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let (release, gate): (channel.Sender<string>, channel.Receiver<string>) =
+        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) =
+        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    scope {
+        let task = fork wait_for_gate(gate);
+        select {
+            value from task => println(f"unexpected task {value}"),
+            value from worker.combine(second: "reply", first: "owned actor") => {
+                println(value.expect("actor reply"));
+                // This branch knows that the task lost and still owns its handle.
+                release.send("task still joinable");
+                println(await task);
+            },
+            value from rx.recv() => println(value.expect("unexpected channel")),
+        }
+        release.close();
+    }
+    // Losing observation did not consume or close the channel receiver.
+    tx.send("receiver still usable");
+    tx.close();
+    println(rx.recv().expect("channel value"));
+    rx.close();
+    let (tx2, rx2): (channel.Sender<string>, channel.Receiver<string>) =
+        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    tx2.send("prepared receiver");
+    tx2.close();
+    select {
+        value from receiver_source(rx2).recv() => println(value.expect("prepared value")),
+    }
+    close(worker);
+}

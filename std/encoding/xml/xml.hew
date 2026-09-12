@@ -9,7 +9,10 @@
 //! import std.encoding.xml;
 //!
 //! fn main() {
-//!     let root = xml.parse("<book><title>Hew Guide</title></book>");
+//!     let root = match xml.parse("<book><title>Hew Guide</title></book>") {
+//!         .Ok(node) => node,
+//!         .Err(reason) => panic(reason),
+//!     };
 //!     let title = root.get_child(0);
 //!     println(title.get_text());
 //!     title.close();
@@ -29,7 +32,7 @@ type NodeHandle {
 
 #[resource]
 pub type Node {
-    handle: NodeHandle;
+    handle: NodeHandle,
 }
 
 /// Methods available on an XML `Node`.
@@ -98,9 +101,9 @@ impl NodeMethods for Node {
 
 impl Node {
     /// Release this node early.
-    fn close(node: Node) {
+    fn close(consume self) {
         unsafe {
-            hew_xml_free(node.handle)
+            hew_xml_free(self.handle)
         };
     }
 }

@@ -1,0 +1,27 @@
+actor Worker {
+    receive fn value() -> i64 { 7 }
+
+    receive fn choose(target: Worker, timed: bool) -> i64 {
+        if timed {
+            select {
+                value from target.value() => value.expect("actor value"),
+                after 0ns => 9,
+            }
+        } else {
+            select {
+                value from target.value() => value.expect("actor value"),
+            }
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    // The runtime target aliases the running actor. A timer is a real escape
+    // from its pending request; the actor-only alternative is a proven cycle.
+    println(worker.choose(worker, true).expect("timer escape"));
+    match worker.choose(worker, false) {
+        .Err(ActorError.Trapped) => println("actor cycle rejected"),
+        _ => panic("actor-only cycle was not rejected"),
+    }
+}

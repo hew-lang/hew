@@ -1,0 +1,11 @@
+[[case]]
+id = "assertion-inequality-fault"
+intent = "A failed assert_ne over owned string temporaries reports both rendered values and releases them on the fault path."
+source = "cases/assertion-inequality-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\n"
+stderr = "hew: failure: UserPanic (212): assertion failed: left == right\n  left: SAME\n  right: SAME\n"
+exit = 1

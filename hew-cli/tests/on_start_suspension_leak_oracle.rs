@@ -51,12 +51,12 @@ fn suspending_on_start_source(count: usize) -> String {
         acc
     });
     format!(
-        "actor Slow {{\n\
-         \x20   var value: i64 = 0;\n\
+        "actor Slow {{ \n\
+         \x20   var value: i64 = 0, \n\
          \x20   #[on(start)] fn started() {{\n\
-         \x20       sleep(5ms);\n\
-         \x20       value = 1;\n\
-         \x20   }}\n\
+         \x20       sleep(5ms), \n\
+         \x20       value = 1, \n\
+         \x20 }}\n\
          \x20   receive fn get() -> i64 {{ value }}\n\
          }}\n\
          \n\

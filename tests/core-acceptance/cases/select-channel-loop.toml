@@ -1,0 +1,10 @@
+[[case]]
+id = "select-channel-loop"
+intent = "One select loop over two channels drains both queues in source order; the receivers survive every disarm and each sender's close then arrives as its own `None`."
+source = "cases/select-channel-loop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "a a1\na a2\nb b1\nb b2\na closed\nb closed\n"
+exit = 0

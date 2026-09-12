@@ -1,0 +1,13 @@
+[[case]]
+id = "example-language-array_indexing"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/language/array_indexing.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "len: 4\nxs[0]: 10\nxs[3]: 40\ntotal: 100\n"
+exit = 0

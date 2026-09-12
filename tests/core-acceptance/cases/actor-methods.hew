@@ -1,0 +1,37 @@
+import std.stream;
+
+actor Counter {
+    var count: i64 = 0,
+    var label: string = "count",
+    var journal: Stream<string>,
+    fn describe(prefix: string) -> string { prefix + " " + label }
+    fn tag() -> string { label }
+    fn bump(by: i64) -> i64 { count = count + by; count }
+    receive fn increment(by: i64) -> i64 {
+        let total = bump(by);
+        println(describe("total"));
+        println(tag());
+        total
+    }
+}
+
+fn open(path: string) -> Stream<string> {
+    match stream.from_file(path) {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+fn main() {
+    let counter = spawn Counter(journal: open("resource-read.bin"));
+    match counter.increment(2) {
+        .Ok(total) => println(total),
+        .Err(_) => panic("increment failed"),
+    }
+    match counter.increment(3) {
+        .Ok(total) => println(total),
+        .Err(_) => panic("increment failed"),
+    }
+    close(counter);
+    println("closed");
+}

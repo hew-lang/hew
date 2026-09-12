@@ -1,0 +1,26 @@
+fn make_callback(label: string) -> fn[once]() -> string {
+    let title = label.to_upper();
+    let payload = label.to_bytes();
+    move || f"{title}:{payload.len()}"
+}
+
+fn invoke(consume callback: fn[once]() -> string, value: i64) {
+    println(callback());
+    println(value);
+}
+
+fn run(enabled: bool, divisor: i64) {
+    let callback = make_callback("argument");
+    let sibling = ["caller".to_upper(), "retained".to_upper()];
+    while enabled {
+        invoke(callback, 10 / divisor);
+        break;
+    }
+    println(f"after argument:{sibling[0]}:{sibling.len()}");
+}
+
+fn main() -> i64 {
+    run(false, 0);
+    run(true, 0);
+    0
+}

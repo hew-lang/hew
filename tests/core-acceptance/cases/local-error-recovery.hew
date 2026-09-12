@@ -1,0 +1,22 @@
+fn recover(value: Result<string, string>) -> string {
+    value handle reason {
+        println(reason);
+        "fallback".to_upper()
+    }
+}
+
+fn early(value: Result<string, string>) -> string {
+    let text = value handle reason { return reason; };
+    text.to_upper()
+}
+
+fn main() -> i64 {
+    let accepted = Ok("kept".to_upper());
+    let rejected = Err("broken".to_upper());
+    println(recover(accepted));
+    println(recover(accepted));
+    println(recover(rejected));
+    println(early(rejected));
+    println(early(Ok("success")));
+    0
+}

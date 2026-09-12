@@ -1,0 +1,29 @@
+// Literal-only integer arithmetic adopts the width its context demands, all
+// the way down to its leaves. `dist[v] == 0 - 1` recorded the subtraction as
+// `i32` from the comparison while both literals defaulted to `i64`, and SIR
+// rejected the resulting checked-arithmetic terminator.
+
+fn main() {
+    var dist: Vec<i32> = Vec.new();
+    dist.push(0 - 1);
+    let v: i64 = 0;
+    if dist[v] == 0 - 1 {
+        println("eq");
+    }
+    // Nested literal arithmetic narrows through every level.
+    let small: i32 = 7;
+    if small == 1 + 2 * 3 {
+        println("nested eq");
+    }
+    // Negative control: the same shape that does not match still compares.
+    if small == 1 + 2 {
+        println("unreachable");
+    } else {
+        println("ne");
+    }
+    // The contextual width is the comparison's, not the literal default.
+    let wide: i64 = 4294967296;
+    if wide == 4294967295 + 1 {
+        println("wide eq");
+    }
+}

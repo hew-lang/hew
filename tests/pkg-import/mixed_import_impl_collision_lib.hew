@@ -8,7 +8,7 @@
 // bare-name dedup key (`"TestResult:TestResultMethods"`) collapsed both, silently
 // dropping the package-import impl; the provenance-based skip keeps both.
 type TestResult {
-    handle: i64;
+    handle: i64,
 }
 
 trait TestResultMethods {

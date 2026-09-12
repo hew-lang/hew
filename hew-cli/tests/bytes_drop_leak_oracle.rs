@@ -110,12 +110,12 @@ fn local_loop_source(frames: usize) -> String {
 /// buffer is released exactly once by the synthesised `state_drop`.
 fn overwrite_source(frames: usize) -> String {
     format!(
-        "actor ByteStore {{\n\
-         \x20   var buf: bytes;\n\
+        "actor ByteStore {{ \n\
+         \x20   var buf: bytes,\n\
          \n\
          \x20   receive fn store(packet: bytes) {{\n\
-         \x20       buf = packet;\n\
-         \x20   }}\n\
+         \x20       buf = packet, \n\
+         \x20 }}\n\
          \n\
          \x20   receive fn get_len() -> i64 {{\n\
          \x20       buf.len()\n\
@@ -162,7 +162,7 @@ fn container_element_read_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let values: Vec<((bytes, i64), bool)> = Vec.new();\n\
+         \x20       var values: Vec<((bytes, i64), bool)> = Vec.new();\n\
          \x20       let source = \"container-read\".to_bytes();\n\
          \x20       values.push(((source, 7), true));\n\
          \x20       let item = values[0];\n\

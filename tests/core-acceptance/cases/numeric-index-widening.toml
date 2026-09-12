@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-index-widening"
+intent = "Vector indexing and get/set/remove widen accepted signed indices to the runtime index width."
+source = "cases/numeric-index-widening.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "second\nchanged\nthird\n"
+exit = 0

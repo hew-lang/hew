@@ -1,0 +1,11 @@
+[[case]]
+id = "string-index-trap"
+intent = "A codepoint index past a string's length reports IndexOutOfBounds and releases the live owner without continuing."
+source = "cases/string-index-trap.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

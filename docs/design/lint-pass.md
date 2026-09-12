@@ -11,17 +11,18 @@ checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `must_use`, `sleep_loop_blocks_mailbox`,
 `text_direction_codepoint_in_comment`, `invisible_codepoint_in_comment`) and the
 two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
-they are now re-levelable and suppressible. M3 has landed too: a backward
-liveness dataflow pass in `hew-mir`, the `dead_store` MIR lint built on it, and
-the CLI plumbing that surfaces MIR-stage lints as level-controlled, suppressible
-warnings (see §10). M4 has landed too: comment-side Trojan-Source scanning over
-raw module source, with the text-direction tier denied by default and the broader
-invisible-codepoint tier warning by default (see §11). `clean_counter` has now landed too: a
-faint-variable (strong-liveness) pass in `hew-mir/src/faint.rs` plus
-counter-shape recovery through the checked-arith lowering, scoped to
-non-trapping (float) accumulation so removal is provably semantics-preserving
-(see §10; issue #2178). Editor/web surfacing of MIR lints is deferred to issue
-#2176.
+they are now re-levelable and suppressible. `var_param_mutation_lost` joined
+them from the checker's own scope-exit bookkeeping: a `var` parameter is the
+callee's own copy, so a write nothing goes on to read reaches nobody. M3 and its `clean_counter` follow-on
+landed on the legacy MIR and were removed with it: retiring the legacy native
+lowering pipeline deleted the liveness and faint-variable passes, and the
+physical MIR computes neither fact, so `dead_store` and `clean_counter` are no
+longer registry entries — the CLI refuses both names as unknown lints. The
+design below records what those passes did and what a physical-MIR replacement
+would have to provide. M4 has landed: comment-side
+Trojan-Source scanning over raw module source, with the text-direction tier
+denied by default and the broader invisible-codepoint tier warning by default
+(see §11).
 
 ## 1. Goal
 
@@ -222,15 +223,15 @@ the precise subset that is actually convertible.
     `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
     branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
     chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
-  - **`must_use`** — a discarded value carrying a write/send/ask error that must not be ignored:
-    `WriteError` / `SendError` / `AskError`, bare or as the error arm of a `Result<_, E>`.
-    *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
+  - **`must_use`** — a discarded value carrying a write error that must not be ignored:
+    `WriteError`, bare or as the error arm of a `Result<_, E>`, plus a discarded machine step
+    report. *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
     `match`/`if let` scrutinee, and `expr?` are all "used" and never flagged); the resolved type
-    must be exactly a must-use error or a `Result` over it, matched by canonical name so the
-    builtins `SendError` / `AskError` and the stdlib `WriteError` all qualify. Discarding any
-    fails open — a dropped backpressure/disconnect signal, an unnoticed undelivered send, or a
-    timed-out / mailbox-full / stopped-actor `ask` (`await actor.msg()`) mistaken for a reply.
-    Opt out with `let _ = …` or `// hew:allow(must_use)`.
+    must be exactly the stdlib `WriteError` or a `Result` over it, matched by canonical name.
+    Discarding one fails open — a dropped backpressure/disconnect signal. Opt out with
+    `let _ = …` or `// hew:allow(must_use)`. Send and ask outcomes are **not** a lint tier:
+    discarding one is `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
+    (HEW-SPEC-2026 §2.1.1, §5.6).
   - **`sleep_loop_blocks_mailbox`** — an actor `receive fn` contains a `loop`, `while true`,
     `while flag`, or `while !flag` whose body directly reaches `sleep` or `sleep_until`, has no
     reachable `break` for that loop, and does not assign the bare guard name inside the loop body.
@@ -248,7 +249,8 @@ the precise subset that is actually convertible.
     behaviour is unchanged (they still warn), but they are now re-levelable (`-A/-W/-D`) and
     suppressible (`// hew:allow`). The LSP keeps tagging migrated `dead_code` as
     `DiagnosticTag::UNNECESSARY`. Unused-import / unreachable-code were left un-migrated this pass.
-- **M3 — MIR liveness + dataflow lints. (Implemented in this change.)** A backward liveness
+- **M3 — MIR liveness + dataflow lints. (Implemented on the legacy MIR, removed
+  with it.)** A backward liveness
   dataflow pass in `hew-mir` plus the `dead_store` lint built on it, surfaced through the CLI.
   - **Liveness pass (`hew-mir/src/liveness.rs`).** A backward "may-be-live" analysis over
     `Place::Local(u32)`. It *reuses* the existing forward dataflow scaffolding rather than
@@ -326,10 +328,9 @@ the precise subset that is actually convertible.
     `// hew:allow(...)`, renders `Warn` as a warning / `Deny` as a build error / drops `Allow`, and is
     threaded into all four MIR-lowering seams. `hew compile` exposes no lint flags, so it surfaces at
     default levels. Surfacing is **CLI-only**; editor/web is issue #2176.
-  - **Tests.** Liveness unit + integration fixtures (`hew-mir/tests/liveness.rs`) pin the query API
-    and the over-approximation contract; `dead_store` positives and precision-guard negatives live
-    alongside them and in the CLI e2e suite (`hew-cli/tests/lint_pass_e2e.rs`), including the
-    `for i in 0..n` regression that must stay silent even under `-D dead_store`.
+  - **Tests.** Liveness unit + integration fixtures pinned the query API and the
+    over-approximation contract, with `dead_store` positives and precision-guard negatives beside
+    them and in the CLI e2e suite. All of them went with the passes; a replacement lands its own.
 - **M4 — comment-side Trojan-Source lints. (Implemented in this change.)** Two source-text checker
   lints scan comments (`//`, `///`, `//!`, `/* */`) for codepoints that can make source review lie
   about the bytes the compiler sees. See §11.

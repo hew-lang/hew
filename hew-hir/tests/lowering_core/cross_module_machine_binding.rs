@@ -24,13 +24,13 @@ fn build_cross_module_program() -> Program {
     let imported_src = r"
 pub machine Toggle {
     events {
-        Flip;
+        Flip,
     }
 
-    state Off;
-    state On;
-    on Flip: Off => On { On }
-    on Flip: On => Off { Off }
+    state Off,
+    state On,
+    on Flip: Off => On,
+    on Flip: On => Off,
 }
 ";
     let root_src = r"
@@ -149,86 +149,34 @@ fn cross_module_machine_ctor_resolves_to_machine_variant_ctor() {
         main_fn.body.statements
     );
 
-    // The imported `Toggle` machine itself must be re-emitted as
-    // `HirItem::Machine` so MIR's `machine_layout_names` set includes it.
-    let machine_present = output
+    // The imported machine's state enum must be re-emitted so MIR sees the
+    // layout the ctor above refers to.
+    let state_enum_present = output
         .module
         .items
         .iter()
-        .any(|item| matches!(item, HirItem::Machine(m) if m.name == "Toggle"));
+        .any(|item| matches!(item, HirItem::TypeDecl(decl) if decl.name == "Toggle"));
     assert!(
-        machine_present,
-        "expected imported `Toggle` machine re-emitted as `HirItem::Machine` \
-         so MIR's machine_layout_names includes it"
+        state_enum_present,
+        "expected the imported machine's state enum re-emitted as a `HirItem::TypeDecl`, \
+         got items: {:#?}",
+        output
+            .module
+            .items
+            .iter()
+            .map(item_name)
+            .collect::<Vec<_>>()
     );
-}
-
-#[test]
-fn imported_generic_machine_usage_discovers_a_concrete_layout() {
-    let imported_src = r"
-pub machine Lifecycle<T> {
-    events { Stop; }
-    state Created;
-    state Stopped;
-    on Stop: Created => Stopped { Stopped }
-    on Stop: Stopped => Stopped;
-}
-";
-    let root_src = r"
-import m;
-
-fn main() {
-    var lifecycle: m.Lifecycle<i64> = m.Lifecycle.Created;
-    lifecycle.step(m.LifecycleEvent.Stop);
-}
-";
-    let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
-    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
-    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
-    assert!(
-        output.module.machine_instantiations.iter().any(|entry| {
-            entry.key.origin_name == "m.Lifecycle"
-                && entry.key.type_args == vec![hew_types::ResolvedTy::I64]
-        }),
-        "expected imported generic lifecycle layout: {:#?}",
-        output.module.machine_instantiations
-    );
-    let main = output
-        .module
-        .items
-        .iter()
-        .find_map(|item| match item {
-            HirItem::Function(function) if function.name == "main" => Some(function),
-            _ => None,
-        })
-        .expect("root main must be lowered");
-    let HirStmtKind::Expr(step) = &main.body.statements[1].kind else {
-        panic!("expected lifecycle step expression")
-    };
-    let HirExprKind::MachineStep {
-        receiver, event, ..
-    } = &step.kind
-    else {
-        panic!("expected machine step, got {:#?}", step.kind)
-    };
-    assert!(matches!(
-        receiver.ty,
-        hew_types::ResolvedTy::Named { ref name, .. } if name == "m.Lifecycle"
-    ));
-    assert!(matches!(
-        event.ty,
-        hew_types::ResolvedTy::Named { ref name, .. } if name == "m.LifecycleEvent"
-    ));
 }
 
 #[test]
 fn private_imported_machine_retains_runtime_layout() {
     let imported_src = r"
 machine RunLifecycle {
-    events { Finish; }
-    state Running;
-    state Completed;
-    on Finish: Running => Completed { Completed }
+    events { Finish, }
+    state Running,
+    state Completed,
+    on Finish: Running => Completed,
     default { state }
 }
 
@@ -240,7 +188,7 @@ pub fn initial() -> RunLifecycle { RunLifecycle.Running }
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
     assert!(
         output.module.items.iter().any(
-            |item| matches!(item, HirItem::Machine(machine) if machine.name == "RunLifecycle")
+            |item| matches!(item, HirItem::TypeDecl(decl) if decl.name.ends_with("RunLifecycle"))
         ),
         "a private machine escaping through a public factory still needs its runtime layout"
     );
@@ -250,11 +198,11 @@ pub fn initial() -> RunLifecycle { RunLifecycle.Running }
 fn dotted_imported_constructor_uses_the_source_owner() {
     let imported_src = r"
 pub machine Toggle {
-    events { Flip; }
-    state Off;
-    state On;
-    on Flip: Off => On { On }
-    on Flip: On => Off { Off }
+    events { Flip, }
+    state Off,
+    state On,
+    on Flip: Off => On,
+    on Flip: On => Off,
 }
 ";
     let root_src = r"
@@ -294,11 +242,11 @@ fn main() { let _value = m.Toggle.Off; }
 fn module_qualified_pattern_uses_the_source_owner() {
     let imported_src = r"
 pub machine Toggle {
-    events { Flip; }
-    state Off;
-    state On;
-    on Flip: Off => On { On }
-    on Flip: On => Off { Off }
+    events { Flip, }
+    state Off,
+    state On,
+    on Flip: Off => On,
+    on Flip: On => Off,
 }
 
 pub fn initial() -> Toggle { Toggle.Off }
@@ -318,4 +266,13 @@ fn main() { let _tag = tag(m.initial()); }
     let program = support::checker_pipeline::program_with_imported_module(imported_src, root_src);
     let output = support::checker_pipeline::lower_through_checker_from_program(&program);
     assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
+}
+
+fn item_name(item: &HirItem) -> String {
+    match item {
+        HirItem::TypeDecl(decl) => format!("type {}", decl.name),
+        HirItem::Record(decl) => format!("record {}", decl.name),
+        HirItem::Function(function) => format!("fn {}", function.name),
+        other => format!("{other:?}"),
+    }
 }

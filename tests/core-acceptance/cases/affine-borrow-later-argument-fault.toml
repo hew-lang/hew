@@ -1,0 +1,11 @@
+[[case]]
+id = "affine-borrow-later-argument-fault"
+intent = "A fault in a later argument ends earlier resource loans before unwinding, preserves the fault and releases caller and argument resources exactly once."
+source = "cases/affine-borrow-later-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "later FIELD\nclose TEMPORARY\nclose FIELD\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

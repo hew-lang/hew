@@ -9,7 +9,7 @@
 // here, exactly as at an `extern` boundary.
 //
 // The receiver `self` is NOT flagged — it is not a concrete resource nominal,
-// and its disposition rides the method dispatch surface (`consuming self`), not
+// and its disposition rides the method dispatch surface (`consume self`), not
 // borrow-pass. Only the non-receiver `item: Handle` is rejected.
 //
 // Harness verb: hew check
@@ -23,7 +23,7 @@ type Handle {
 }
 
 impl Handle {
-    fn close(self) {
+    fn close(consume self) {
         unsafe {
             hew_handle_free(self);
         }

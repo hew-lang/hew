@@ -25,7 +25,7 @@ actor Counter {
     // After restart, the counter has fresh state (value=100 from init → 110)
 
     // ── Part 3: StrictPool with one_for_all ──
-    var value: i32 = 100;
+    var value: i32 = 100,
     init() {
         print("Counter started at ");
         println(value);
@@ -44,7 +44,7 @@ actor Counter {
 }
 
 actor Logger {
-    let level: i32 = 1;
+    let level: i32 = 1,
     init() {
         print("Logger level=");
         println(level);
@@ -57,20 +57,20 @@ actor Logger {
 }
 
 supervisor ServiceTree {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child counter: Counter;
-    child debug_log: Logger;
-    child error_log: Logger;
+    child counter: Counter,
+    child debug_log: Logger,
+    child error_log: Logger,
 }
 
 supervisor StrictPool {
-    strategy: one_for_all;
-    intensity: 3 within 30s;
+    strategy: one_for_all,
+    intensity: 3 within 30s,
 
-    child a: Counter;
-    child b: Counter;
+    child a: Counter,
+    child b: Counter,
 }
 
 fn main() {
@@ -81,29 +81,29 @@ fn main() {
     sleep(50ms);
     println("");
     let c = svc.counter;
-    c.tick();
+    let _ = c.tick();
     sleep(10ms);
     let dlog = svc.debug_log;
-    dlog.log();
+    let _ = dlog.log();
     sleep(10ms);
     let elog = svc.error_log;
-    elog.log();
+    let _ = elog.log();
     sleep(50ms);
     println("");
     println("--- Crash and Restart ---");
-    c.crash_me();
+    let _ = c.crash_me();
     sleep(200ms);
     let c2 = svc.counter;
-    c2.tick();
+    let _ = c2.tick();
     sleep(50ms);
     println("");
     println("--- StrictPool (one_for_all) ---");
     let sup = spawn StrictPool;
     sleep(50ms);
     let a = sup.a;
-    a.tick();
+    let _ = a.tick();
     sleep(10ms);
-    a.tick();
+    let _ = a.tick();
     sleep(50ms);
     println("");
     println("=== All supervisors running ===");

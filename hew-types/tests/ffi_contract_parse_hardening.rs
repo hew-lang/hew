@@ -130,6 +130,30 @@ fn transferred_non_resource_result_is_preserved_by_the_build_parser() {
 }
 
 #[test]
+fn owned_result_keeps_release_obligations_without_claiming_freshness() {
+    let source = VALID_SYNTHETIC_BYTES.replace("result = \"fresh\"", "result = \"owned\"");
+    let rows = parse_ownership_contracts(&source);
+    assert_eq!(rows["example_string_to_bytes"].result, "owned");
+    for invalid in [
+        source.replace("result-retention = \"transferred\"", ""),
+        source.replace(
+            "release-symbol = \"example_bytes_drop\"",
+            "release-symbol = \"\"",
+        ),
+        source.replace(
+            "discharge-depth = \"shallow\"",
+            "discharge-depth = \"none\"",
+        ),
+        source.replace(
+            "result-retention = \"transferred\"",
+            "result-retention = \"shared-refcount\"",
+        ),
+    ] {
+        assert!(std::panic::catch_unwind(|| parse_ownership_contracts(&invalid)).is_err());
+    }
+}
+
+#[test]
 #[should_panic(expected = "unknown result-retention")]
 fn malformed_non_resource_retention_fails_closed() {
     let _ = parse_ownership_contracts(&VALID_SYNTHETIC_BYTES.replace(

@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-hook-order"
+intent = "Same-state transitions skip hooks, while reentry and state changes preserve exit, body and entry order with staged owning payload updates."
+source = "cases/machine-hook-order.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "body:A\nexit:AT\nbody:ATX\nentry:ATXB\nexit:ATXBE\nbody:ATXBEX\nATXBEX\n"
+exit = 0

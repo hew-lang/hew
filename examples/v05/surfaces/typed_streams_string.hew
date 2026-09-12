@@ -1,39 +1,27 @@
-//! Status: runnable
-//! Description: Pipeline-style single-`await` drain of a `Stream<string>`
-//! pipe, including an empty `""` item to lock the empty-item invariant.
-//!
-//! Companion to `typed_streams.hew` (which drains a `Stream<bytes>` with
-//! single `await stream.recv()`). `Stream<string>.recv` resolves to the
-//! layout-witness runtime entry `hew_stream_next_layout` (one symbol for
-//! every describable element type). Each `await input.recv()`
-//! lowers to `Terminator::SuspendingStreamNext`;
-//! the resume edge pops the item via `hew_stream_pop_layout` and binds an
-//! `Option<string>`. EOF is the sole `None`; an empty item surfaces as
-//! `Some("")` and the loop continues — the empty-item drain here is the
-//! regression for that invariant.
-//!
-//! `Sink<string>.send` is now on the suspending-sink-send path too (every
-//! describable element suspends, not just `Sink<bytes>`): each
-//! `await sink.send(item)` writes a frame, suspending on a full ring
-//! (backpressure-aware). The `Sink`/`Stream` halves are locals in this handler.
+//! Drain a `Stream<string>` using ordinary `input.recv()` calls.
+//! The empty string is a valid item; only `None` marks EOF.
+//! `sink.send(item)` waits for capacity when the pipe is full.
 
 import std.stream;
 
 actor StringPipeline {
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8);
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         // Send three normal frames, one empty frame between them, then EOF.
-        await sink.send("frame-0");
-        await sink.send("");
-        await sink.send("frame-1");
-        await sink.send("frame-2");
+        sink.send("frame-0");
+        sink.send("");
+        sink.send("frame-1");
+        sink.send("frame-2");
         sink.close();
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.
         var received = 0;
         var done = false;
         while !done {
-            let item = await input.recv();
+            let item = input.recv();
             match item {
                 .Some(frame) => {
                     println(f"recv [{frame}]");
@@ -53,5 +41,5 @@ fn main() {
     // drains the mailbox to quiescence. A trailing print from `main` would be
     // ordered against the handler only by a sleep, which is not an edge.
     let p = spawn StringPipeline;
-    p.run(0);
+    let _ = p.run(0);
 }

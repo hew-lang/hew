@@ -1,4 +1,0 @@
-fn main() {
-    let x: bool = true;
-    println(f"v={x}");
-}

@@ -79,6 +79,7 @@ fn display_named_multiple_args() {
 #[test]
 fn display_function_no_params() {
     let ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::Unit),
     };
@@ -88,6 +89,7 @@ fn display_function_no_params() {
 #[test]
 fn display_function_multiple_params() {
     let ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::Bool, Ty::String],
         ret: Box::new(Ty::F64),
     };
@@ -98,6 +100,12 @@ fn display_function_multiple_params() {
 fn display_closure() {
     // Closure display is identical to Function display (captures are hidden)
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
@@ -353,9 +361,11 @@ fn canonical_lowering_name_round_trips_through_from_name() {
 
 #[test]
 fn actor_handle_accessor() {
-    // LocalPid<T> is the local actor handle.
-    let ty = Ty::local_pid(Ty::I32);
-    assert_eq!(ty.as_actor_handle(), Some(&Ty::I32));
+    // An actor handle carries the actor's own name and type args directly
+    // (D489: an actor is the type of its handle).
+    let ty = Ty::actor_handle("Counter", vec![]);
+    assert_eq!(ty.as_actor_handle(), Some(&ty));
+    assert_eq!(ty.actor_handle_identity(), Some(("Counter", &[][..])));
 
     // RemotePid<T> is a distinct remote handle — NOT a local actor handle.
     assert_eq!(Ty::remote_pid(Ty::Bool).as_actor_handle(), None);
@@ -395,23 +405,11 @@ fn accessor_wrong_arity_returns_none() {
     };
     assert_eq!(bad_gen.as_generator(), None);
 
-    // AsyncGenerator with wrong arity
-    let bad_async_gen = Ty::Named {
-        builtin: None,
-        name: "AsyncGenerator".to_string(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
-    assert_eq!(bad_async_gen.as_async_generator(), None);
-
-    // LocalPid with wrong arity — the accessor's arity guard rejects it even
-    // when the builtin discriminator is stamped.
-    let bad_pid = Ty::Named {
-        builtin: Some(hew_types::BuiltinType::LocalPid),
-        name: "LocalPid".to_string(),
-        args: vec![Ty::I32, Ty::Bool],
-    };
-    assert_eq!(bad_pid.as_local_pid(), None);
-    assert_eq!(bad_pid.as_actor_handle(), None);
+    // An actor handle has no fixed arity to guard: its args are the actor's
+    // own type parameters, whatever arity the actor declares, so
+    // `as_actor_handle` accepts any arg count once the builtin discriminator
+    // is stamped. The wrong-arity coverage above and below stays meaningful
+    // only for the builtins with a fixed arg count.
 
     // Stream/Sink with wrong arity
     let bad_stream = Ty::Named {
@@ -568,6 +566,12 @@ fn contains_var_in_closure() {
 
     // In params
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::I32),
         captures: vec![],
@@ -576,6 +580,12 @@ fn contains_var_in_closure() {
 
     // In ret
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Var(v)),
         captures: vec![],
@@ -584,6 +594,12 @@ fn contains_var_in_closure() {
 
     // In captures
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(Ty::I32),
         captures: vec![Ty::Var(v)],
@@ -592,6 +608,12 @@ fn contains_var_in_closure() {
 
     // Not present
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
@@ -672,6 +694,12 @@ fn substitute_in_array() {
 fn substitute_in_closure() {
     let v = TypeVar(6020);
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Var(v)),
         captures: vec![Ty::Var(v)],
@@ -680,6 +708,12 @@ fn substitute_in_closure() {
     assert_eq!(
         result,
         Ty::Closure {
+            identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0
+            }),
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::Bool],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::Bool],
@@ -745,6 +779,7 @@ fn substitute_in_trait_object() {
 fn substitute_in_function() {
     let v = TypeVar(6050);
     let ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v), Ty::I32],
         ret: Box::new(Ty::Var(v)),
     };
@@ -752,6 +787,7 @@ fn substitute_in_function() {
     assert_eq!(
         result,
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::Bool, Ty::I32],
             ret: Box::new(Ty::Bool),
         }
@@ -926,20 +962,24 @@ fn ty_equality_composites() {
 
     assert_eq!(
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         },
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         }
     );
     assert_ne!(
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Bool),
         },
         Ty::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::Bool),
         }
@@ -957,6 +997,12 @@ fn apply_subst_through_closure() {
     subst.insert(v, &Ty::F32).unwrap();
 
     let ty = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Var(v)),
         captures: vec![Ty::Var(v)],
@@ -964,6 +1010,12 @@ fn apply_subst_through_closure() {
     assert_eq!(
         ty.apply_subst(&subst),
         Ty::Closure {
+            identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0
+            }),
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![Ty::F32],
             ret: Box::new(Ty::F32),
             captures: vec![Ty::F32],

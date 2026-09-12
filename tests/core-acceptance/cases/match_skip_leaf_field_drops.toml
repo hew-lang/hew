@@ -1,0 +1,11 @@
+[[case]]
+id = "match_skip_leaf_field_drops"
+intent = "Skipped LEAF fields in a partial match destructure — the exact-drop-op matrix for leaf shapes."
+source = "cases/match_skip_leaf_field_drops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

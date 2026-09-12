@@ -31,7 +31,7 @@
 //! `e.to_json()` and `TypeName.from_json(text)` (a call on the type
 //! name itself, not `::`) round-trip a `#[wire]` type through JSON today.
 //! `HashMap` and `HashSet` may be fields of that wire type: string-keyed maps
-//! become JSON objects, other supported primitive-key maps become arrays of
+//! become JSON objects, other supported key types use arrays of
 //! `[key, value]` pairs (so key types are not stringified), and sets become
 //! deterministically ordered arrays. The same layouts round-trip through CBOR
 //! and YAML. Any bare `Serializable` value uses the same typed codec through
@@ -50,18 +50,17 @@
 //! (`docs/hew-language-guide.md`, `#[wire]` section) and
 //! `examples/playground/types/wire_types.hew`.
 //!
-//! **Current scope:** `#[wire]` round-trips reliably for a type declared and
-//! used within a single module. A `#[wire]` type imported into another
-//! module (`import src.env.{Env}; Env.from_json(...)`) does not yet
-//! round-trip — cross-module wire codec emission is a tracked gap, not
-//! intended behaviour. Keep `#[wire]` types same-module until that lands.
+//! Nested vectors, optional elements and owned keys use ordinary value copy
+//! and cleanup rules. Strings preserve embedded NUL bytes across all formats.
+//! `Option<Option<T>>` is rejected because the null encoding cannot distinguish
+//! `None` from `Some(None)`.
 //!
 //! This file also carries the substrate this doc comment used to describe:
 //! the legacy HBF byte-layout helpers (`encode_header`, `decode_header`,
 //! `validate_header`) were removed when the CBOR envelope substrate
-//! (`hew-runtime/src/envelope.rs`) became the sole internode encoding. The
-//! opaque `Value` contract for user-facing stdlib encoding modules lives in
-//! `value_trait.hew` and remains active.
+//! (`hew-runtime/src/envelope.rs`) became the sole internode encoding.
+//! JSON and YAML expose their own owning value APIs; no shared opaque-value
+//! trait is required by this wire codec surface.
 
 /// Encode any admitted `Serializable` value as binary CBOR.
 pub fn encode<T: Serializable>(value: T) -> bytes {

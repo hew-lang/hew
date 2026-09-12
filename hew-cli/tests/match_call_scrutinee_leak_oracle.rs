@@ -113,8 +113,8 @@ fn err_arm_loop_source(frames: usize) -> String {
 fn composite_payload_loop_source(frames: usize) -> String {
     format!(
         "type Row {{\n\
-         \x20   name: string;\n\
-         \x20   id: i64;\n\
+         \x20   name: string,\n\
+         \x20   id: i64,\n\
          }}\n\
          \n\
          fn f(n: i64) -> Result<Row, string> {{\n\

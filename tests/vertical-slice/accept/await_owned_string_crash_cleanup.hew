@@ -8,10 +8,10 @@ actor Fresh {
 }
 
 actor CrashAfterUse {
-    let fresh: LocalPid<Fresh>;
+    let fresh: Fresh,
 
     receive fn run(trigger: i64) -> i64 {
-        let text = match await fresh.text() {
+        let text = match fresh.text() {
             .Ok(value) => value,
             .Err(_) => "fallback",
         };
@@ -26,7 +26,7 @@ actor CrashAfterUse {
 fn main() {
     let fresh = spawn Fresh;
     let probe = spawn CrashAfterUse(fresh: fresh);
-    match await probe.run(1) {
+    match probe.run(1) {
         .Ok(value) => println(f"unexpected={value}"),
         .Err(_) => println("handled-crash"),
     }

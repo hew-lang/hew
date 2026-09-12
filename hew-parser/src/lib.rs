@@ -3,6 +3,7 @@
 pub mod ast;
 pub mod ast_eq;
 pub mod fmt;
+pub mod init_analysis;
 pub mod loop_analysis;
 pub mod module;
 pub mod parser;

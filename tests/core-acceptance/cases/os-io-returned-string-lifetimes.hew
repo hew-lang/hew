@@ -1,0 +1,58 @@
+import std.encoding.compress;
+
+import std.fs;
+
+import std.io;
+
+import std.net.dns;
+
+import std.os;
+
+import std.path;
+
+import std.process;
+
+// Keep the returned owners live across later wrappers and read them again
+// before scope exit. The safety suite instruments their final cleanup.
+fn exercise() {
+    let arg = os.args()[0];
+    let env = os.env("HEW_RETENTION_VALUE").expect("fixture environment");
+    let cwd = os.cwd();
+    let home = os.home_dir();
+    let host = os.hostname();
+    let temp = os.temp_dir();
+    let line = io.read_line();
+    let all = io.read_all();
+    let filename = path.combine(temp, f"hew-retention-{os.pid()}.txt");
+    fs.write(filename, "file-owner").expect("write fixture");
+    let direct_file = fs.read(filename).expect("read fixture");
+    let absolute = path.absolute(filename);
+    let matches = path.glob(filename).expect("glob fixture");
+    let entry = matches.try_get(0).expect("matching file");
+    matches.close();
+    fs.delete(filename).expect("remove fixture");
+    let dns_direct = dns.lookup_host("127.0.0.1").expect("numeric address");
+    let dns_timed = dns.lookup_host_timed("127.0.0.1", 1000);
+    let compressed_reason = match compress.gzip_decompress("not-a-gzip".to_bytes(), 1024) {
+        .Ok(_) => panic("invalid gzip admitted"),
+        .Err(reason) => reason,
+    };
+    let output = process.run("echo retained-output").expect("run child");
+    assert(!arg.is_empty());
+    assert(env == "environment-owner");
+    assert(!cwd.is_empty() && !home.is_empty() && !host.is_empty() && !temp.is_empty());
+    assert(line == "" && all == "");
+    assert(direct_file == "file-owner");
+    assert(entry == filename && !absolute.is_empty());
+    assert(!dns_direct.is_empty() && !dns_timed.is_empty());
+    assert(!compressed_reason.is_empty());
+    assert(output.stdout.trim() == "retained-output");
+    assert(output.stderr == "");
+}
+
+fn main() {
+    for _ in 0 .. 4 {
+        exercise();
+    }
+    println("returned strings survive subsequent calls");
+}

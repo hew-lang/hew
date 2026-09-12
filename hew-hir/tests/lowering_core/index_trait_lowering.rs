@@ -44,7 +44,7 @@ fn index_trait_user_impl_lowers_to_at_call() {
     let output = lower(
         r"
         type Grid {
-            bias: i32;
+            bias: i32,
         }
 
         impl Index for Grid {

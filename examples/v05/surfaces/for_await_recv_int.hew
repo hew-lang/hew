@@ -1,7 +1,7 @@
-//! Status: runnable (v0.5 for-await over Receiver<i64>)
-//! Description: Drains an integer channel receiver with `for await`.
+//! Status: runnable (v0.5 ordinary for over Receiver<i64>)
+//! Description: Drains an integer channel receiver with `for`.
 
-import std.channel.channel;
+import std.channel;
 
 actor DrainInts {
     receive fn run(unused: i64) {
@@ -13,7 +13,7 @@ actor DrainInts {
         tx.send(2);
         tx.send(3);
         tx.close();
-        for await item in rx {
+        for item in rx {
             println(item);
         }
     }
@@ -21,6 +21,6 @@ actor DrainInts {
 
 fn main() {
     let worker = spawn DrainInts;
-    worker.run(0);
+    let _ = worker.run(0);
     sleep(500ms);
 }

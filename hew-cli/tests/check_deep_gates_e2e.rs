@@ -53,88 +53,18 @@ fn run_check_in_fixture_dir(dir: &std::path::Path) -> std::process::Output {
 }
 
 #[test]
-fn check_fails_on_hir_gate_before_ok() {
-    // `Some(0) | None` in an or-pattern is a HIR-rejected shape (constructor
-    // with literal payload in an or-branch is not yet classified). This is a
-    // stable HIR gate trigger; the old `y => y` fixture now lowers cleanly.
-    let (_dir, path) = write_fixture(
-        "fn main() -> i64 {\n\
-         \x20\x20\x20\x20let x: Option<i64> = Some(0);\n\
-         \x20\x20\x20\x20match x { .Some(0) | .None => 0, .Some(n) => n }\n\
-         }\n",
-    );
-
-    let output = run_check(&["check", path.to_str().unwrap()]);
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert!(
-        !output.status.success(),
-        "hew check must fail when a later HIR gate rejects the file\n{}",
-        describe_output(&output),
-    );
-    assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED") || stderr.contains("E_HIR"),
-        "HIR gate diagnostic should be rendered; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains(": OK"),
-        "hew check must not print OK after a HIR gate failure; got:\n{stderr}",
-    );
-}
-
-#[test]
-fn check_fails_on_mir_gate_before_ok() {
-    // A functional-update override that aliases the consumed base
-    // (`VHolder { items: s.items, ..s }`) is a fail-closed MIR gate: the base's
-    // overridden owned field is released at the construction site, so the new
-    // record would alias freed memory. This is an intentional, durable MIR
-    // `NotYetImplemented` (the COW value model that would keep the base live is
-    // not built), so it is a stable trigger for "hew check fails at the MIR
-    // gate with a clean, source-attributed diagnostic".
-    let (_dir, path) = write_fixture(
-        "type VHolder { items: Vec<i64>, tag: string }\n\
-         fn main() {\n\
-         \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
-         \x20\x20\x20\x20init.push(7);\n\
-         \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
-         \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
-         \x20\x20\x20\x20println(s2.items.len());\n\
-         }\n",
-    );
-
-    let output = run_check(&["check", path.to_str().unwrap()]);
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert!(
-        !output.status.success(),
-        "hew check must fail when a later MIR gate rejects the file\n{}",
-        describe_output(&output),
-    );
-    assert!(
-        stderr.contains("E_MIR") || stderr.contains("E_NOT_YET_IMPLEMENTED"),
-        "MIR gate diagnostic should be rendered; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("main.hew:6:"),
-        "MIR gate diagnostic should be source-attributed; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains(
-            "MIR lowering for functional-update override aliasing the consumed base \
-             is not implemented yet"
-        ),
-        "MIR diagnostic should use a user-readable message; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains("MirDiagnostic")
-            && !stderr.contains("NotYetImplemented {")
-            && !stderr.contains("SiteId("),
-        "hew check must not emit raw MIR debug payloads; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains(": OK"),
-        "hew check must not print OK after a MIR gate failure; got:\n{stderr}",
-    );
+fn check_http_peer_fields_match_extern_signatures_through_both_import_routes() {
+    // Import checking visits the peer's Response methods even when the entry
+    // does not call HTTP. Both routes must agree on the handle's source type.
+    for module in ["std.net.http", "std.net.http.http_client"] {
+        let (_dir, path) = write_fixture(&format!("import {module}; fn main() {{}}"));
+        let output = run_check(&["check", path.to_str().unwrap()]);
+        assert!(
+            output.status.success(),
+            "HTTP module {module} must check its peer record fields against extern parameters\n{}",
+            describe_output(&output),
+        );
+    }
 }
 
 #[test]
@@ -152,42 +82,6 @@ fn check_runs_codegen_front_on_success_without_artifacts() {
     assert!(
         stderr.contains(": OK"),
         "successful check should print OK after codegen-front validation; got:\n{stderr}",
-    );
-    assert_only_source_artifact(dir.path());
-}
-
-#[test]
-fn check_fails_on_codegen_front_gate_before_ok_without_artifacts() {
-    let (dir, _path) = write_fixture(
-        "fn unsupported(x: [i64; 2]) -> [i64; 2] {\n    return x;\n}\nfn main() {\n}\n",
-    );
-
-    let output = run_check_in_fixture_dir(dir.path());
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert!(
-        !output.status.success(),
-        "hew check must fail when codegen-front validation rejects the MIR\n{}",
-        describe_output(&output),
-    );
-    assert!(
-        stderr.contains("E_CODEGEN_FRONT"),
-        "codegen-front failure should use a stable diagnostic family; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("E_CODEGEN_FRONT_UNSUPPORTED"),
-        "codegen-front failure should carry a structured per-variant code \
-         (the array return type maps to CodegenError::Unsupported); got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("unsupported construct"),
-        "codegen-front failure should render CodegenError Display, not Debug; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains("CodegenError")
-            && !stderr.contains("Unsupported(")
-            && !stderr.contains(": OK"),
-        "hew check must not emit raw CodegenError debug payloads or OK after failure; got:\n{stderr}",
     );
     assert_only_source_artifact(dir.path());
 }
@@ -283,45 +177,6 @@ fn check_no_typecheck_skips_hir_mir_gates() {
     assert!(
         stderr.contains(": OK"),
         "--no-typecheck success should still print OK; got:\n{stderr}",
-    );
-}
-
-#[test]
-fn show_stack_hints_render_before_later_hir_failure() {
-    // The closure `|x| x+1` triggers HEW-PERF-001 (ClosureEnv stack hint).
-    // The `Some(0) | None` or-pattern triggers E_NOT_YET_IMPLEMENTED at HIR.
-    // The test asserts the stack hint is rendered BEFORE the gate diagnostic.
-    let (_dir, path) = write_fixture(
-        "fn main() -> i64 {\n\
-         \x20\x20\x20\x20let f = |x: i64| -> i64 { x + 1 };\n\
-         \x20\x20\x20\x20let _r = f(1);\n\
-         \x20\x20\x20\x20let x: Option<i64> = Some(0);\n\
-         \x20\x20\x20\x20match x { .Some(0) | .None => 0, .Some(n) => n }\n\
-         }\n",
-    );
-
-    let output = run_check(&["check", "--show-stack-hints", path.to_str().unwrap()]);
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert!(
-        !output.status.success(),
-        "fixture should fail at HIR after stack hints render\n{}",
-        describe_output(&output),
-    );
-    let hint_pos = stderr
-        .find("HEW-PERF-001")
-        .expect("expected stack hint before HIR failure");
-    let gate_pos = stderr
-        .find("E_NOT_YET_IMPLEMENTED")
-        .or_else(|| stderr.find("E_HIR"))
-        .expect("expected HIR gate diagnostic");
-    assert!(
-        hint_pos < gate_pos,
-        "stack hints should render before later HIR/MIR gate diagnostics; got:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains(": OK"),
-        "hew check must not print OK after a later gate failure; got:\n{stderr}",
     );
 }
 

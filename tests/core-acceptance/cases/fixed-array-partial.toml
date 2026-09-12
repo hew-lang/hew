@@ -1,0 +1,11 @@
+[[case]]
+id = "fixed-array-partial"
+intent = "Failure during array element evaluation releases earlier staged elements and the failing call frame before construction publishes an array owner."
+source = "cases/fixed-array-partial.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 2\nclose 1\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

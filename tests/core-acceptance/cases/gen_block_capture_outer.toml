@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_block_capture_outer"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/gen_block_capture_outer.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "10\n11\n12\n"
+exit = 0

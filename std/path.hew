@@ -11,7 +11,10 @@
 //! fn main() {
 //!     let dir = path.dirname("/home/user/file.txt");
 //!     let ext = path.extension("photo.jpg");
-//!     let result = path.glob("*.hew");
+//!     let result = match path.glob("*.hew") {
+//!         .Ok(result) => result,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     for i in 0..result.len() {
 //!         println(result.get(i));
 //!     }
@@ -31,16 +34,16 @@ type GlobResultHandle {
 
 #[resource]
 pub type GlobResult {
-    handle: GlobResultHandle;
+    handle: GlobResultHandle,
 }
 
 /// Errors produced by `std.path` glob expansion and indexing.
 pub enum PathError {
     /// The glob walk did not complete — an unreadable directory, an
     /// allocation failure, or a platform with no implementation.
-    GlobFailed(string);
+    GlobFailed(string),
     /// A match index was negative or at/past the match count.
-    IndexOutOfRange(string);
+    IndexOutOfRange(string),
 }
 
 /// Print the human-readable detail carried by a `PathError`.
@@ -101,9 +104,9 @@ impl GlobResultMethods for GlobResult {
 
 impl GlobResult {
     /// Release this glob result early.
-    fn close(res: GlobResult) {
+    fn close(consume self) {
         unsafe {
-            hew_glob_free(res.handle)
+            hew_glob_free(self.handle)
         };
     }
 }
@@ -120,7 +123,10 @@ impl GlobResult {
 /// import std.path;
 ///
 /// fn main() {
-///     let files = path.glob("src/**/*.hew");
+///     let files = match path.glob("src/**/*.hew") {
+///         .Ok(files) => files,
+///         .Err(error) => panic(to_string(error)),
+///     };
 /// }
 /// ```
 /// Expand a glob pattern, reporting expansion failure separately from a
@@ -315,7 +321,7 @@ pub fn normalize(p: string) -> string {
     }
     let rooted = p.starts_with("/");
     let parts = p.split("/");
-    let stack: Vec<string> = Vec.new();
+    var stack: Vec<string> = Vec.new();
     for i in 0 .. parts.len() {
         let seg = parts[i];
         if seg == "" || seg == "." {

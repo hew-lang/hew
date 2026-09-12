@@ -1,0 +1,15 @@
+enum Delivery { Idle, SendNow(string, Vec<string>) }
+
+fn describe(value: Delivery) -> string {
+    match value {
+        .Idle => "idle",
+        .SendNow(text, rest) => text + f" {rest.len()}",
+    }
+}
+
+fn main() {
+    println(describe(Delivery.Idle));
+    var rest: Vec<string> = Vec.new();
+    rest.push("next");
+    println(describe(Delivery.SendNow("send", rest)));
+}

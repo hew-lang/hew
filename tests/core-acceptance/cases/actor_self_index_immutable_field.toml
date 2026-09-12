@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_self_index_immutable_field"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/actor_self_index_immutable_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 9
+column = 9
+message = "cannot assign to immutable field `items`"

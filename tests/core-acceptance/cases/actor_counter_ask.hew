@@ -1,0 +1,24 @@
+// MIR-corpus fixture: actor spawn, void and value-returning completion calls.
+//
+// Pins `hew_actor_spawn`, the send/tell dispatch, and the ask path
+// (`hew_actor_ask*` + reply-wait plumbing).
+actor Counter {
+    var count: i64 = 0,
+    receive fn increment(n: i64) {
+        count = count + n;
+    }
+    receive fn total() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let c = spawn Counter(count: 0);
+    let _ = c.increment(10);
+    let _ = c.increment(32);
+    let r = c.total();
+    match r {
+        .Ok(v) => println(v),
+        .Err(_) => println(-1),
+    }
+}

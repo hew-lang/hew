@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_arg_field_projection_sibling_use"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/actor_arg_field_projection_sibling_use.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "fd=7\ncount=3 name=held\n"
+exit = 0

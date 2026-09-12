@@ -26,6 +26,65 @@ pub(super) enum DottedTypeMemberUse<'a> {
 }
 
 impl Checker {
+    /// Resolve a contextual builtin constructor from its expected type identity.
+    /// Use the same member contract as an explicit Option/Result type head.
+    pub(super) fn dispatch_context_builtin_variant(
+        &mut self,
+        expected: &Ty,
+        context: &hew_parser::ast::ContextVariantExpr,
+        usage: &DottedTypeMemberUse<'_>,
+    ) -> Option<Ty> {
+        let Ty::Named {
+            name,
+            builtin: Some(builtin @ (crate::BuiltinType::Option | crate::BuiltinType::Result)),
+            ..
+        } = self.subst.resolve(expected)
+        else {
+            return None;
+        };
+        let span = match usage {
+            DottedTypeMemberUse::Reference { span } | DottedTypeMemberUse::Call { span, .. } => {
+                *span
+            }
+        };
+        let Some(variant) = builtin.enum_variant(&context.name) else {
+            self.report_error(
+                TypeErrorKind::PathMemberNotFound,
+                span,
+                format!(
+                    "E_PATH_MEMBER_NOT_FOUND: type `{name}` has no variant `{}`",
+                    context.name
+                ),
+            );
+            return Some(Ty::Error);
+        };
+        let call = matches!(usage, DottedTypeMemberUse::Call { .. });
+        if context.record.is_some() || call == variant.payload_type_args.is_empty() {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                span,
+                format!(
+                    "E_PATH_KIND_MISMATCH: variant `{name}.{}` does not use this constructor form",
+                    context.name
+                ),
+            );
+            return Some(Ty::Error);
+        }
+        let head = ResolvedDottedTypeHead {
+            canonical_type: name,
+            builtin: Some(builtin),
+            type_args: None,
+            span: span.clone(),
+        };
+        let actual = self
+            .dispatch_builtin_variant_member(&head, &context.name, usage)
+            .expect("validated builtin variant has a member contract");
+        self.expect_type(expected, &actual, span);
+        let actual = self.subst.resolve(&actual);
+        self.record_type(span, &actual);
+        Some(actual)
+    }
+
     /// Resolve a dotted expression head to the declaration identity selected
     /// by the checker. Value bindings win before this path, and every accepted
     /// module/type spelling comes from a declaration or builtin authority.
@@ -144,12 +203,27 @@ impl Checker {
                 let constructor = format!("{}::{member}", head.canonical_type);
                 Some(self.synthesize_identifier(&constructor, span))
             }
-            DottedTypeMemberUse::Call { args, span, .. }
-                if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) =>
-            {
+            DottedTypeMemberUse::Call {
+                args,
+                expected,
+                span,
+            } if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) => {
                 let constructor_name = format!("{}::{member}", head.canonical_type);
                 let constructor = (Expr::Identifier(constructor_name), head.span.clone());
-                let result = self.check_call(&constructor, head.type_args.as_deref(), args, span);
+                let result = expected
+                    .filter(|_| head.type_args.is_none())
+                    .and_then(|expected| {
+                        self.check_call_against_expected_constructor(
+                            &constructor,
+                            None,
+                            args,
+                            expected,
+                            span,
+                        )
+                    })
+                    .unwrap_or_else(|| {
+                        self.check_call(&constructor, head.type_args.as_deref(), args, span)
+                    });
                 self.record_method_call_receiver_kind(
                     span,
                     MethodCallReceiverKind::EnumConstructorPath {
@@ -174,13 +248,15 @@ impl Checker {
         let expected_arity = builtin.arity();
 
         let result = match usage {
-            DottedTypeMemberUse::Reference { span: _ } if variant.payload_arity == 0 => Ty::Named {
-                builtin: Some(builtin),
-                name: head.canonical_type.clone(),
-                args: (0..expected_arity)
-                    .map(|_| Ty::Var(TypeVar::fresh()))
-                    .collect(),
-            },
+            DottedTypeMemberUse::Reference { span: _ } if variant.payload_type_args.is_empty() => {
+                Ty::Named {
+                    builtin: Some(builtin),
+                    name: head.canonical_type.clone(),
+                    args: (0..expected_arity)
+                        .map(|_| Ty::Var(TypeVar::fresh()))
+                        .collect(),
+                }
+            }
             DottedTypeMemberUse::Reference { span } => {
                 self.synthesize_identifier(constructor, span)
             }

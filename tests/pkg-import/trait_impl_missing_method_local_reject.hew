@@ -10,11 +10,11 @@ import hew.multitrait.{ Proc as P, Tally as MTally, ProcErr as MErr };
 import hew.multitraitb;
 
 pub type Tally {
-    code: i64;
+    code: i64,
 }
 
 pub type ProcErr {
-    code: i64;
+    code: i64,
 }
 
 pub trait Proc {
@@ -23,7 +23,7 @@ pub trait Proc {
 }
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl Proc for W {

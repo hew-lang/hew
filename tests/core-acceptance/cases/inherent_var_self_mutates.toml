@@ -1,0 +1,13 @@
+[[case]]
+id = "inherent_var_self_mutates"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/inherent_var_self_mutates.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\n"
+exit = 0

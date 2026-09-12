@@ -1,5 +1,5 @@
 //! Status: runnable
-//! Description: Drains a `Stream<string>` with `for await` end-to-end,
+//! Description: Drains a `Stream<string>` with `for` end-to-end,
 //! including an empty `""` item to lock the empty-item invariant.
 //!
 //! `Stream<string>.recv` resolves to the layout-witness runtime entry
@@ -18,16 +18,19 @@
 import std.stream;
 
 actor DrainStrings {
-    let frames: i64;
+    let frames: i64,
     receive fn run(unused: i64) {
-        let (sink, input) = stream.pipe(8);
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
         // Send three normal frames, one empty frame between them, then EOF.
         sink.send("frame-0");
         sink.send("");
         sink.send("frame-1");
         sink.send("frame-2");
         sink.close();
-        for await item in input {
+        for item in input {
             println(f"recv [{item}]");
         }
         println("done");
@@ -36,6 +39,6 @@ actor DrainStrings {
 
 fn main() {
     let worker = spawn DrainStrings(frames: 4);
-    worker.run(0);
+    let _ = worker.run(0);
     sleep(500ms);
 }

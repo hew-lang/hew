@@ -1,0 +1,30 @@
+import std.stream;
+
+actor Keeper {
+    var journal: Stream<string>,
+    var count: i64 = 0,
+    #[on(start)]
+    fn started() { println("start"); count = 1; }
+    #[on(stop)]
+    fn stopping() { println("stop"); println(count); }
+    #[on(stop)]
+    fn stopping_again() { println("stop again"); }
+    receive fn bump() -> i64 { count = count + 1; count }
+}
+
+fn open(path: string) -> Stream<string> {
+    match stream.from_file(path) {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+fn main() {
+    let keeper = spawn Keeper(journal: open("resource-read.bin"));
+    match keeper.bump() {
+        .Ok(count) => println(count),
+        .Err(_) => panic("bump failed"),
+    }
+    close(keeper);
+    println("closed");
+}

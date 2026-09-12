@@ -107,7 +107,7 @@ const SLOPE_TOLERANCE: usize = 5;
 /// the final fall-through.
 fn colour_vec_loop_source(frames: usize) -> String {
     format!(
-        "enum Colour {{ Red; Green; Blue; }}\n\
+        "enum Colour {{ Red, Green, Blue, }}\n\
          \n\
          fn tag(c: Colour) -> i64 {{\n\
          \x20   match c {{\n\
@@ -121,7 +121,7 @@ fn colour_vec_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<Colour> = Vec.new();\n\
+         \x20       var v: Vec<Colour> = Vec.new();\n\
          \x20       v.push(Colour.Red);\n\
          \x20       v.push(Colour.Green);\n\
          \x20       total = total + v.len() + tag(v[0]);\n\
@@ -141,13 +141,13 @@ fn colour_vec_loop_source(frames: usize) -> String {
 /// proves the fix flips ONLY heap-free direct enums.
 fn payload_enum_vec_loop_source(frames: usize) -> String {
     format!(
-        "enum Shape {{ Dot; Label(string); }}\n\
+        "enum Shape {{ Dot, Label(string), }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<Shape> = Vec.new();\n\
+         \x20       var v: Vec<Shape> = Vec.new();\n\
          \x20       v.push(Shape.Label(\"heap-owning-per-iteration-payload\"));\n\
          \x20       v.push(Shape.Dot);\n\
          \x20       total = total + v.len();\n\
@@ -166,7 +166,7 @@ fn payload_enum_vec_loop_source(frames: usize) -> String {
 /// `[Green, Blue]` (tags 2 + 3 = 5); the consumed vec is `[Blue, Blue]`
 /// (tags 3 + 3 = 6); the sum is 11.
 const ESCAPE_SHAPES_SOURCE: &str = "\
-enum Colour { Red; Green; Blue; }\n\
+enum Colour { Red, Green, Blue, }\n\
 \n\
 fn tag(c: Colour) -> i64 {\n\
 \x20   match c {\n\
@@ -177,7 +177,7 @@ fn tag(c: Colour) -> i64 {\n\
 }\n\
 \n\
 fn make() -> Vec<Colour> {\n\
-\x20   let v: Vec<Colour> = Vec.new();\n\
+\x20   var v: Vec<Colour> = Vec.new();\n\
 \x20   v.push(Colour.Green);\n\
 \x20   v.push(Colour.Blue);\n\
 \x20   return v;\n\
@@ -190,7 +190,7 @@ fn total(xs: Vec<Colour>) -> i64 {\n\
 fn main() {\n\
 \x20   let made = make();\n\
 \x20   let a = tag(made[0]) + tag(made[1]);\n\
-\x20   let v: Vec<Colour> = Vec.new();\n\
+\x20   var v: Vec<Colour> = Vec.new();\n\
 \x20   v.push(Colour.Blue);\n\
 \x20   v.push(Colour.Blue);\n\
 \x20   let b = total(v);\n\

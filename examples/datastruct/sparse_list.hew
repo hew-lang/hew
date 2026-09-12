@@ -1,6 +1,10 @@
 // Sparse Array using sorted linked list of (index, value) pairs
 // Node layout: [idx, value, next] = 3 slots per node
 // Sorted by idx for efficient traversal
+//
+// A parameter is the callee's own copy, so every helper that writes the node
+// pool returns it and the caller reassigns. Helpers that also move the head
+// return a tuple.
 fn node_idx(n: Vec<i64>, i: i64) -> i64 {
     n[i * 3]
 }
@@ -13,37 +17,39 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 3 + 2]
 }
 
-fn set_val(n: Vec<i64>, i: i64, v: i64) {
+fn set_val(var n: Vec<i64>, i: i64, v: i64) -> Vec<i64> {
     n.set(i * 3 + 1, v);
+    n
 }
 
-fn set_next(n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     n.set(i * 3 + 2, nx);
+    n
 }
 
-fn alloc_node(n: Vec<i64>, idx: i64, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, idx: i64, val: i64) -> (Vec<i64>, i64) {
     let node = n.len() / 3;
     n.push(idx);
     n.push(val);
     n.push(-1);
-    node
+    (n, node)
 }
 
-// Set value at sparse index. Insert or update. Returns new head.
-fn sparse_set(n: Vec<i64>, head: i64, idx: i64, val: i64) -> i64 {
+// Set value at sparse index. Insert or update. Returns the pool and the head.
+fn sparse_set(var n: Vec<i64>, head: i64, idx: i64, val: i64) -> (Vec<i64>, i64) {
     if head == -1 {
         return alloc_node(n, idx, val);
     }
     // Update if idx matches head
     if node_idx(n, head) == idx {
-        set_val(n, head, val);
-        return head;
+        n = set_val(n, head, val);
+        return (n, head);
     }
     // Insert before head
     if idx < node_idx(n, head) {
-        let nd = alloc_node(n, idx, val);
-        set_next(n, nd, head);
-        return nd;
+        let (grown, nd) = alloc_node(n, idx, val);
+        n = set_next(grown, nd, head);
+        return (n, nd);
     }
     // Walk to find position
     var prev = head;
@@ -52,13 +58,13 @@ fn sparse_set(n: Vec<i64>, head: i64, idx: i64, val: i64) -> i64 {
     while curr != -1 {
         if done == 0 {
             if node_idx(n, curr) == idx {
-                set_val(n, curr, val);
+                n = set_val(n, curr, val);
                 done = 1;
             } else {
                 if idx < node_idx(n, curr) {
-                    let nd = alloc_node(n, idx, val);
-                    set_next(n, prev, nd);
-                    set_next(n, nd, curr);
+                    let (grown, nd) = alloc_node(n, idx, val);
+                    n = set_next(grown, prev, nd);
+                    n = set_next(n, nd, curr);
                     done = 1;
                 }
             }
@@ -71,10 +77,22 @@ fn sparse_set(n: Vec<i64>, head: i64, idx: i64, val: i64) -> i64 {
         }
     }
     if done == 0 {
-        let nd = alloc_node(n, idx, val);
-        set_next(n, prev, nd);
+        let (grown, nd) = alloc_node(n, idx, val);
+        n = set_next(grown, prev, nd);
     }
-    head
+    (n, head)
+}
+
+// Apply every (idx, value) pair in order; pairs holds idx, value at i*2, i*2+1.
+fn sparse_set_all(var n: Vec<i64>, head: i64, pairs: Vec<i64>) -> (Vec<i64>, i64) {
+    var curr_head = head;
+    let count = pairs.len() / 2;
+    for i in 0 .. count {
+        let (grown, new_head) = sparse_set(n, curr_head, pairs[i * 2], pairs[i * 2 + 1]);
+        n = grown;
+        curr_head = new_head;
+    }
+    (n, curr_head)
 }
 
 // Get value at sparse index. Returns default_val if not present.
@@ -93,13 +111,15 @@ fn sparse_get(n: Vec<i64>, head: i64, idx: i64, default_val: i64) -> i64 {
 }
 
 // Collect (idx, val) pairs into result vec as [idx0, val0, idx1, val1, ...]
-fn iterate(n: Vec<i64>, head: i64, result: Vec<i64>) {
+fn iterate(n: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     var curr = head;
     while curr != -1 {
         result.push(node_idx(n, curr));
         result.push(node_val(n, curr));
         curr = node_next(n, curr);
     }
+    result
 }
 
 // Count stored elements
@@ -127,11 +147,9 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_set_and_get() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = sparse_set(n, head, 100, 10);
-    head = sparse_set(n, head, 500, 50);
-    head = sparse_set(n, head, 1000, 99);
+    let pool: Vec<i64> = Vec.new();
+    let pairs: Vec<i64> = [100, 10, 500, 50, 1000, 99];
+    let (n, head) = sparse_set_all(pool, -1, pairs);
     let v1 = sparse_get(n, head, 100, 0);
     let v2 = sparse_get(n, head, 500, 0);
     let v3 = sparse_get(n, head, 1000, 0);
@@ -148,9 +166,8 @@ fn test_set_and_get() -> i64 {
 }
 
 fn test_get_missing() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = sparse_set(n, head, 10, 100);
+    let pool: Vec<i64> = Vec.new();
+    let (n, head) = sparse_set(pool, -1, 10, 100);
     let v = sparse_get(n, head, 5, -999);
     if v == -999 {
         println("PASS: get missing");
@@ -161,10 +178,9 @@ fn test_get_missing() -> i64 {
 }
 
 fn test_update() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = sparse_set(n, head, 42, 100);
-    head = sparse_set(n, head, 42, 200);
+    let pool: Vec<i64> = Vec.new();
+    let pairs: Vec<i64> = [42, 100, 42, 200];
+    let (n, head) = sparse_set_all(pool, -1, pairs);
     let v = sparse_get(n, head, 42, 0);
     if v == 200 {
         if sparse_len(n, head) == 1 {
@@ -177,15 +193,11 @@ fn test_update() -> i64 {
 }
 
 fn test_sorted_order() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = sparse_set(n, head, 1000, 1);
-    head = sparse_set(n, head, 10, 2);
-    head = sparse_set(n, head, 500, 3);
-    head = sparse_set(n, head, 50, 4);
-    let r: Vec<i64> = Vec.new();
-    iterate(n, head, r);
-    let e: Vec<i64> = Vec.new();
+    let pool: Vec<i64> = Vec.new();
+    let pairs: Vec<i64> = [1000, 1, 10, 2, 500, 3, 50, 4];
+    let (n, head) = sparse_set_all(pool, -1, pairs);
+    let r = iterate(n, head);
+    var e: Vec<i64> = Vec.new();
     e.push(10);
     e.push(2);
     e.push(50);
@@ -203,12 +215,10 @@ fn test_sorted_order() -> i64 {
 }
 
 fn test_sparse_pattern() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
+    let pool: Vec<i64> = Vec.new();
     // Only store at indices 0, 100, 10000
-    head = sparse_set(n, head, 0, 1);
-    head = sparse_set(n, head, 100, 2);
-    head = sparse_set(n, head, 10000, 3);
+    let pairs: Vec<i64> = [0, 1, 100, 2, 10000, 3];
+    let (n, head) = sparse_set_all(pool, -1, pairs);
     // Accessing gaps should return default
     let g1 = sparse_get(n, head, 1, 0);
     let g2 = sparse_get(n, head, 50, 0);
@@ -228,13 +238,10 @@ fn test_sparse_pattern() -> i64 {
 }
 
 fn test_iterate() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = sparse_set(n, head, 5, 50);
-    head = sparse_set(n, head, 2, 20);
-    head = sparse_set(n, head, 8, 80);
-    let r: Vec<i64> = Vec.new();
-    iterate(n, head, r);
+    let pool: Vec<i64> = Vec.new();
+    let pairs: Vec<i64> = [5, 50, 2, 20, 8, 80];
+    let (n, head) = sparse_set_all(pool, -1, pairs);
+    let r = iterate(n, head);
     // Should be sorted by index: (2,20), (5,50), (8,80)
     if r.len() == 6 {
         if r[0] == 2 {

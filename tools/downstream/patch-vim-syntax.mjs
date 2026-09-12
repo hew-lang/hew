@@ -12,7 +12,7 @@
  *
  * Supported categories:
  *   control_flow, declarations, actors, supervisor, wire, machine, other,
- *   logical, supervisor_config, reserved_unused, contextual, types
+ *   logical, supervisor_config, contextual, types
  *
  * Usage: node tools/downstream/patch-vim-syntax.mjs [HEW_VIM_PATH]
  *
@@ -85,7 +85,8 @@ const overflowKinds = Object.entries(contextual)
 // does more harm than the highlight is worth. `count` is the supervisor
 // pool-arity clause, and also a routine field name and the `.count()` method,
 // so highlighting it paints most of its real uses.
-const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count'];
+// Capture prefixes and callable qualifiers have dedicated structural patterns.
+const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count', 'capture', 'once', 'consume'];
 
 // Remaining contextual identifiers: soft keywords that are not reserved and
 // not overflow values (within, intensity, initial, repeated, infinity, ...).
@@ -101,15 +102,11 @@ const categoryMap = {
   control_flow: {
     group: 'hewControl',
     keywords: [...new Set([
-      ...kw.control_flow,
-      // Actor keywords that serve as control flow. `cooperate` is
-      // deliberately NOT here — syntax-data.json classifies it under
-      // reserved_unused (a compiler-internal safepoint token, not a source
-      // expression); it is supplied via the reserved_unused category
-      // (hewReserved group) instead. `await_restart` is not repeated here
-      // either — it is already emitted wholesale via kw.actors (actors
-      // category, hewActor group).
-      'select', 'join', 'yield', 'after', 'from', 'await',
+      ...kw.control_flow.filter(k => k !== 'for'),
+      // Actor keywords that serve as control flow. `for` is handled by a
+      // dedicated negative-lookahead match below so `for await` can remain
+      // visibly retired while ordinary `for` stays a control keyword.
+      'select', 'race', 'yield', 'after', 'from', 'await', 'await_restart',
       'scope',
     ])],
   },
@@ -121,12 +118,14 @@ const categoryMap = {
 
   actors: {
     group: 'hewActor',
-    keywords: [...kw.actors],
+    keywords: kw.actors.filter(k =>
+      !['supervisor', 'scope', 'select', 'race', 'after', 'await', 'await_restart']
+        .includes(k)),
   },
 
   supervisor: {
     group: 'hewSupervisor',
-    keywords: [...supervisorConfigFields],
+    keywords: ['supervisor', ...supervisorConfigFields],
   },
 
   wire: {
@@ -150,7 +149,7 @@ const categoryMap = {
     // Extra lines after the keyword line (not from syntax-data)
     extraLines: [
       'syn keyword hewNone        None',
-      'syn keyword hewSelf        this',
+      'syn keyword hewSelf        self',
       'syn keyword hewSelfType    Self',
     ],
   },
@@ -161,11 +160,6 @@ const categoryMap = {
       { words: supervisorConstants },
       { words: overflowKinds },
     ],
-  },
-
-  reserved_unused: {
-    group: 'hewReserved',
-    keywords: [...kw.reserved_unused],
   },
 
   // Contextual identifiers — special meaning in specific parser contexts but
@@ -311,7 +305,7 @@ function formatKeywordLine(prefix, words, maxWidth) {
 // intentionally NOT in all_keywords, so they are excluded from this check.
 
 const coveredKeywords = new Set([
-  ...categoryMap.control_flow.keywords,
+  ...categoryMap.control_flow.keywords, 'for',
   ...categoryMap.declarations.keywords,
   ...categoryMap.actors.keywords,
   ...categoryMap.supervisor.keywords,
@@ -319,7 +313,6 @@ const coveredKeywords = new Set([
   ...categoryMap.machine.keywords,
   ...categoryMap.other.keywords,
   ...categoryMap.logical.keywords,
-  ...categoryMap.reserved_unused.keywords,
   ...supervisorConstants,
 ]);
 
@@ -329,8 +322,9 @@ if (missingKeywords.length > 0) {
   console.warn(`   ${missingKeywords.join(', ')}`);
 }
 
+const intentionallyUnassignedKeywords = new Set(['from']);
 const extraKeywords = [...coveredKeywords].filter(
-  k => !syntaxData.all_keywords.includes(k));
+  k => !syntaxData.all_keywords.includes(k) && !intentionallyUnassignedKeywords.has(k));
 if (extraKeywords.length > 0) {
   console.warn('\u26a0 Keywords emitted but not in all_keywords:');
   console.warn(`   ${extraKeywords.join(', ')}`);

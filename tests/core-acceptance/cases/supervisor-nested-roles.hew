@@ -1,0 +1,45 @@
+actor Worker<T> {
+    var value: Option<T> = .None,
+    init(seed: T) { value = .Some(seed); }
+    receive fn put(next: T) { value = .Some(next); }
+    receive fn get() -> T { let snapshot = value; snapshot.expect("initialized worker") }
+    receive fn fail() { panic("restart nested child"); }
+}
+
+supervisor Inner<T>(seed: T) {
+    intensity: 1 within 60s,
+    child leaf: Worker<T>(seed: seed),
+}
+
+supervisor Outer<T>(seed: T) {
+    intensity: 3 within 60s,
+    child inner: Inner<T>(seed: seed),
+}
+
+supervisor Root<T>(seed: T) {
+    child outer: Outer<T>(seed: seed),
+}
+
+fn read_leaf(inner: ChildRef<Inner<string>>) -> string {
+    inner.leaf.get().expect("retained inner role")
+}
+
+fn main() {
+    let root = spawn Root(seed: "nested\0config".to_upper());
+    let inner = root.outer.inner;
+    let leaf = inner.leaf;
+    assert(read_leaf(inner) == "NESTED\0CONFIG");
+    leaf.put("changed".to_upper()).expect("modify first incarnation");
+    let _ = leaf.fail();
+    let _ = await_restart inner.leaf;
+    assert(leaf.get().expect("restarted leaf") == "NESTED\0CONFIG");
+    let _ = leaf.fail();
+    let _ = await_restart root.outer.inner;
+    assert(read_leaf(inner) == "NESTED\0CONFIG");
+    assert(leaf.get().expect("retained leaf after subtree replacement") == "NESTED\0CONFIG");
+    close(root);
+    closed(root);
+    assert(leaf.get().is_err());
+    assert(inner.leaf.get().is_err());
+    println("nested config and retained roles survive subtree replacement");
+}

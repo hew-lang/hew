@@ -1,0 +1,13 @@
+[[case]]
+id = "loop_breakable_not_never"
+intent = "Reject fixture: a loop with a reachable `break` is NOT Never-typed."
+source = "../vertical-slice/reject/loop_breakable_not_never.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 16
+column = 34
+message = "type mismatch: expected `i64`, found `()`"

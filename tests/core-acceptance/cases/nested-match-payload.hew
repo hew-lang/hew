@@ -1,0 +1,19 @@
+fn choose(value: Result<Option<string>, string>) -> string {
+    match value {
+        .Ok(.Some(text)) if text == "skip" => "skipped",
+        .Ok(.Some(text)) => text,
+        .Ok(.None) => "none",
+        .Err(reason) => reason,
+    }
+}
+
+fn main() -> i64 {
+    let original = Ok(Some("kept".to_upper()));
+    let first = choose(original);
+    let second = choose(original);
+    let absent = choose(Ok(None));
+    let error = choose(Err("broken".to_upper()));
+    let skipped = choose(Ok(Some("skip")));
+    println(f"{first}:{second}:{absent}:{error}:{skipped}");
+    0
+}

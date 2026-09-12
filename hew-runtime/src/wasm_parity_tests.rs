@@ -314,6 +314,7 @@ fn wasm_message_drop_count() -> usize {
 
 fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
     Box::new(HewActor {
+        dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
         sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
         id: 1,
         state: std::ptr::null_mut(),
@@ -357,6 +358,11 @@ fn stub_wasm_actor(mailbox: *mut c_void) -> Box<HewActor> {
         state_drop_consumed: AtomicBool::new(false),
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+        checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+        #[cfg(not(target_arch = "wasm32"))]
+        pending_external_trap_code: AtomicI32::new(0),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_completion: None,
     })
 }
 
@@ -505,7 +511,7 @@ unsafe extern "C" fn wasm_parity_drop_glue(_payload: *mut c_void) {
 fn alloc_bytes(bytes: &[u8]) -> *mut c_void {
     // SAFETY: standard malloc + memcpy.
     unsafe {
-        let buf = libc::malloc(bytes.len()); // ALLOCATOR-PAIRING: libc
+        let buf = crate::mem::buf_try_alloc(bytes.len()); // ALLOCATOR-PAIRING: GlobalAlloc
         assert!(!buf.is_null(), "alloc_bytes: OOM");
         libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
         buf
@@ -1653,10 +1659,17 @@ fn wasm_trap_exit_code_mapping_join_branch_failed_is_allowlisted_as_211() {
 }
 
 #[test]
+fn wasm_trap_exit_code_mapping_user_panic_is_allowlisted_as_212() {
+    assert_canonical_wasi_trap_exit(
+        crate::internal::types::HEW_TRAP_USER_PANIC,
+        crate::internal::types::ExitReason::UserPanic,
+    );
+}
+
+#[test]
 fn wasm_unknown_non_actor_trap_code_is_not_mapped_to_process_exit() {
-    // 211 (HEW_TRAP_JOIN_BRANCH_FAILED) is now a Hew-owned discriminator and is
-    // allowlisted; 212 takes its place as the first unused code.
-    for unknown in [-1, 1, 101, 199, 212, i32::MAX] {
+    // Keep unknown probes outside the assigned logical-fault discriminators.
+    for unknown in [-1, 1, 101, 199, i32::MAX] {
         assert_eq!(
             crate::internal::types::canonical_trap_wasi_exit_code(unknown),
             None,

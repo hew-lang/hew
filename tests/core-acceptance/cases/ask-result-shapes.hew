@@ -1,0 +1,29 @@
+// `ask` result shapes: a handler-to-actor call yields Result<T, ActorError<...>>
+// and `main` must be able to bind it, match it and forward it.
+actor Adder {
+    receive fn add(a: i64, b: i64) -> i64 { a + b }
+}
+
+actor Caller {
+    var peer: Adder,
+    receive fn run() -> i64 {
+        match peer.add(1, 2) {
+            .Ok(v) => { v }
+            .Err(e) => { let _ = e; -1 }
+        }
+    }
+}
+
+fn main() {
+    let adder = spawn Adder;
+    let caller = spawn Caller(peer: adder);
+    let direct: Result<i64, ActorError<Never, Never>> = adder.add(3, 4);
+    match direct {
+        .Ok(v) => { println(f"direct={v}"); }
+        .Err(e) => { let _ = e; println("direct err"); }
+    }
+    match caller.run() {
+        .Ok(v) => { println(f"caller={v}"); }
+        .Err(e) => { let _ = e; println("caller err"); }
+    }
+}

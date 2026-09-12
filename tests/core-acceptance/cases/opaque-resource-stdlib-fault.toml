@@ -1,0 +1,11 @@
+[[case]]
+id = "opaque-resource-stdlib-fault"
+intent = "A checked arithmetic fault releases caller and callee stream owners after process-result extraction."
+source = "cases/opaque-resource-stdlib-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

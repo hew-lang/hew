@@ -3,9 +3,11 @@
 A running log of breaking changes to Hew's compiler internals, runtime ABI,
 and standard library, by release.
 
-v0.6.0 is the surface freeze and working front door on the current lowerer,
-with the ownership-generation ICEs documented as fail-closed limits.
-v0.7.0 is the final ladder release, with the legacy lowerer deleted.
+The native compiler replacement and current language surface target v0.6.0.
+Use the [2026 specification](docs/specs/HEW-SPEC-2026.md) for current source
+syntax and semantics, and the [language guide](docs/hew-language-guide.md)
+for examples. The release-labelled entries below preserve migration history;
+old spellings and ABI layouts in them are not current programming guidance.
 
 ## Distributed identity and remote PIDs in v0.6.0-rc1
 

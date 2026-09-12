@@ -46,7 +46,7 @@ fn build_program_with_imported_module(imported_src: &str, root_src: &str) -> Pro
     for (item, _) in &mut root.program.items {
         if let Item::Import(import) = item {
             if import.path == ["m"] {
-                import.resolved_items = Some(imported_items.clone());
+                import.resolved_items = Some(imported_items.clone().into());
             }
         }
     }
@@ -274,7 +274,7 @@ fn root_local_free_function_shadows_import_with_mismatched_signature() {
         let program = build_program_with_imported_module(
             "pub fn foo() -> i64 { 99 }",
             &format!(
-                "{import}\nfn foo() -> string {{ \"local\" }}\nfn main() -> string {{ foo() }}"
+                "{import}\nfn foo() -> string {{ \"local\" }}\nfn sample() -> string {{ foo() }}"
             ),
         );
         let (output, tco) = lower_with_checker(&program);
@@ -286,7 +286,7 @@ fn root_local_free_function_shadows_import_with_mismatched_signature() {
             output.diagnostics
         );
         assert_eq!(
-            tail_call_callee_name(function_by_name(&output, "main")),
+            tail_call_callee_name(function_by_name(&output, "sample")),
             Some("foo")
         );
     }
@@ -467,4 +467,81 @@ pub fn entry(n: i64) -> i64 { secret(n) }
         "private helper must produce VisibilityViolationPrivate, not a generic error; errors: {:#?}",
         tco.errors
     );
+}
+
+#[test]
+fn generic_module_function_values_keep_the_selected_declaration() {
+    for root in [
+        "import m; fn main() { let f: fn(i64) -> i64 = m.id; f(4); }",
+        "import m as helpers; fn main() { let f = helpers.id<i64>; f(4); }",
+        "import m; fn main() { let f = m.id; f(4); }",
+    ] {
+        let program = build_program_with_imported_module("pub fn id<T>(x: T) -> T { x }", root);
+        let (output, checked) = lower_with_checker(&program);
+        assert!(checked.errors.is_empty(), "{root}: {:?}", checked.errors);
+        assert!(
+            output.diagnostics.is_empty(),
+            "{root}: {:?}",
+            output.diagnostics
+        );
+        assert!(
+            output
+                .module
+                .monomorphisations
+                .iter()
+                .any(|mono| mono.key.declaration.full_path() == "m.id"
+                    && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+            "{root}: {:?}",
+            output.module.monomorphisations
+        );
+    }
+}
+
+#[test]
+fn generic_function_value_keeps_an_imported_private_helper_reachable() {
+    let program = build_program_with_imported_module(
+        "fn id<T>(x: T) -> T { x } pub fn factory<T>() -> fn(T) -> T { id<T> }",
+        "import m; fn main() { let f = m.factory<i64>(); f(4); }",
+    );
+    let (output, checked) = lower_with_checker(&program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(
+        output
+            .module
+            .monomorphisations
+            .iter()
+            .any(|mono| mono.key.declaration.full_path() == "m.id"
+                && mono.key.type_args == vec![hew_types::ResolvedTy::I64]),
+        "{:?}",
+        output.module.monomorphisations
+    );
+}
+
+#[test]
+fn consuming_module_function_values_are_refused_before_hir() {
+    for root in [
+        "import m; fn main() { let erased = m.take; }",
+        "import m as helpers; fn main() { let erased = helpers.take<i64>; }",
+        "import m; fn main() { let erased: fn(i64) = m.take; }",
+    ] {
+        let program =
+            build_program_with_imported_module("pub fn take<T>(consume value: T) {}", root);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(
+            tco.errors.iter().any(|error| error
+                .message
+                .contains("callable types do not preserve parameter ownership modes")),
+            "{root}: {:?}",
+            tco.errors
+        );
+    }
+    let program = build_program_with_imported_module(
+        "pub fn take<T>(consume value: T) {}",
+        "import m; fn main() { m.take(4); }",
+    );
+    let (output, tco) = lower_with_checker(&program);
+    assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
 }

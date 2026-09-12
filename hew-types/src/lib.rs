@@ -4,6 +4,7 @@
 //! automatic marker trait derivation (Send, Frozen, Copy),
 //! and exhaustive pattern match checking.
 
+pub mod actor_delivery;
 pub mod actor_protocol;
 pub mod builtin_enums;
 pub mod builtin_names;
@@ -40,33 +41,37 @@ pub mod value_class;
 pub mod vec_authority;
 mod wasm_capabilities_generated;
 
+mod callable;
+pub use callable::{ClosureCaptureAccess, ClosureCaptureAcquisition, ClosureCaptureConsumption};
+
+pub use hew_parser::ast::{CallableCallMode, CallableCapabilities};
+
 pub use actor_protocol::{
     compute_default_msg_id, qualified_handler_name, ActorHandlerDescriptor, ActorHandlerSpec,
-    ActorProtocolCollision, ActorProtocolDescriptor,
+    ActorProtocolCollision, ActorProtocolDescriptor, ReceiveFailureDisplay,
 };
 pub use builtin_type::{
-    builtin_types, has_builtin_associated_item_identity, lookup_builtin_type,
-    lookup_source_owned_lifecycle_type, source_owned_lifecycle_owner, BuiltinType, BuiltinTypeInfo,
-    SourceOwnedLifecycleOwner, SOURCE_OWNED_LIFECYCLE_OWNERS,
+    builtin_types, canonical_source_owned_lifecycle_name, has_builtin_associated_item_identity,
+    lookup_builtin_type, lookup_source_owned_lifecycle_type, source_owned_lifecycle_owner,
+    BuiltinType, BuiltinTypeInfo, SourceOwnedLifecycleOwner, SOURCE_OWNED_LIFECYCLE_OWNERS,
 };
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,
-    AssignTargetKind, AssignTargetShape, Bound, CallAbiHint, CallTarget, CaptureModeOrigin,
-    Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureCaptureMode, ClosureEscapeFact,
-    ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding, DynCoercion, DynMethodCall,
-    DynVtableEntry, DynVtableKey, ExecutionContextReader, FnSig, HashMapMethod, HashSetMethod,
-    ImplDef, ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources, LookupError,
+    AssignTargetKind, AssignTargetShape, Bound, CallAbiHint, CallTarget, Checker, ChildKind,
+    ChildSlot, ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule,
+    DynAssocBinding, DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey,
+    EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType,
+    ExecutionContextReader, ExternMethodSignature, FnSig, HashMapMethod, HashSetMethod, ImplDef,
+    ImplId, ImplRegistry, LintId, LintLevel, LintLevels, LintSources, LookupError,
     MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,
-    MethodTargetFamily, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
-    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
-    ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, ResolvedCall, RuntimeAbi, SpanKey,
-    TryConversionKind, TryWidthCastLowering, TyPattern, TypeCheckOutput, UserComparisonDispatch,
-    VariantDef, VariantMatch, VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering,
-    WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable,
-    WireTextFormat,
+    MethodTargetFamily, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, OptionResultMethod,
+    PatternKind, PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern,
+    PlanField, PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate,
+    ResolvedCall, ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering,
+    TyPattern, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp,
+    VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{
@@ -80,34 +85,34 @@ pub use lang_items::{
     LangItem, LangItemBinding, LangItemRegistry, LANG_ITEM_DISPLAY, LANG_ITEM_DISPLAY_FMT,
 };
 pub use lowering_facts::{
-    assert_lowering_facts_consistent, hashmap_layout_key_fact,
-    hashmap_layout_key_layout_value_fact, hashset_layout_element_admissible, hashset_layout_fact,
-    CollectionMethodDispatch, DropKind, HashMapAbi, HashMapKeyType, HashMapLoweringFact,
-    HashMapLoweringFactError, HashMapLoweringFactState, HashMapValueType, HashSetAbi,
-    HashSetElementType, HashSetLoweringFact, HashSetLoweringFactError, LoweringFact,
-    LoweringFactConsistencyError, LoweringFactError, LoweringKind,
+    DropKind, HashSetAbi, HashSetElementType, LoweringFact, LoweringFactError, LoweringKind,
 };
 pub use mangle::mangle_resolved_ty;
 pub use resolved_ty::{
     default_impl_method_declaration, BoundaryError, NominalInstance, ResolvedTraitBound, ResolvedTy,
 };
 pub use runtime_call::{
-    AsyncSuspendKind, DescriptorError, MathIntrinsic, ProducedArgumentBoundary,
-    ProducedValueAcquisition, ProducedValueOwnership, RuntimeCallDescriptor, RuntimeCallFamily,
-    RuntimeDropDescriptor, StreamElementKind, VecGetElem, VecSliceElem,
+    vector_element_type, AsyncSuspendKind, DescriptorError, EncodingFormat, EncodingOp,
+    MathIntrinsic, RuntimeArgumentContract, RuntimeArgumentEffect, RuntimeCReturn,
+    RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor, RuntimeInstantiatedContract,
+    RuntimeLogicalFailure, RuntimeOpRow, RuntimePhysicalForm, RuntimeResultEffect,
+    RuntimeSemanticContract, RuntimeStaging, RuntimeValueKind, RuntimeVariantResultKind,
+    StreamElementKind, VecGetElem, VecSliceElem, VecValueOp,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{
     authority as stdlib_authority, AuthorityBinding, AuthorityDeclarationKind, AuthorityError,
     AuthorityErrorKind, AuthoritySource, DiagnosticItem, EnumVariantOrder, ExternAbiEntry,
     ExternAbiFact, ExternRuntimeCapability, ExternRuntimeCapabilityEntry, Intrinsic, OverloadGroup,
-    PreludeExport, PreludeExportKind, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY,
-    SUBSTRATE_SOURCES,
+    PreludeExport, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
 };
 pub use ty::{TraitObjectBound, Ty};
 pub use type_descriptor::TypeDescriptor;
 pub use type_facts::push_type_components;
-pub use type_facts::{CloneKind, SendFact, TypeFacts, TypeInstanceKey};
+pub use type_facts::{
+    CloneKind, SendFact, TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey,
+    ValueCapability, ValueMethodPlan, ValueMethodSelection,
+};
 pub use value_class::{ClassContext, ClassError, DeclarationMarker, DeclaredType, ValueClass};
 pub use vec_authority::VecElementToken;
 pub use wasm_capabilities_generated::{

@@ -1,4 +1,4 @@
-//! Tests verifying that `LocalPid<T>` / `RemotePid<T>` discriminators
+//! Tests verifying that the actor-handle / `RemotePid<T>` discriminators
 //! propagate through HIR lowering.
 //!
 //! These tests exercise the full type-checker → HIR lowering path so that
@@ -7,7 +7,6 @@
 
 use hew_hir::{lower_program, HirBlock, HirExpr, HirExprKind, HirItem, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::BuiltinType;
 use hew_types::{Checker, Ty};
 use std::path::Path;
 
@@ -27,11 +26,12 @@ fn expr_contains_remote_actor_ask(expr: &HirExpr) -> bool {
         | HirExprKind::Scope { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => block_contains_remote_actor_ask(block),
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             expr_contains_remote_actor_ask(callee)
                 || args.iter().any(expr_contains_remote_actor_ask)
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. } => {
@@ -70,17 +70,11 @@ fn block_contains_remote_actor_ask(block: &HirBlock) -> bool {
         HirStmtKind::Let(_, Some(expr))
         | HirStmtKind::Expr(expr)
         | HirStmtKind::Return(Some(expr)) => expr_contains_remote_actor_ask(expr),
-        HirStmtKind::Assign { target, value } => {
+        HirStmtKind::Destructure { value, .. } => expr_contains_remote_actor_ask(value),
+        HirStmtKind::Assign { target, value, .. } => {
             expr_contains_remote_actor_ask(target) || expr_contains_remote_actor_ask(value)
         }
         HirStmtKind::Defer { body, .. } => expr_contains_remote_actor_ask(body),
-        HirStmtKind::LetElse {
-            scrutinee,
-            else_body,
-            ..
-        } => {
-            expr_contains_remote_actor_ask(scrutinee) || block_contains_remote_actor_ask(else_body)
-        }
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => false,
     }) || block
         .tail
@@ -111,16 +105,17 @@ fn lower_with_types(source: &str) -> (hew_types::TypeCheckOutput, hew_hir::Lower
     (tc_output, lower_out)
 }
 
-// ── spawn produces LocalPid in expr_types ─────────────────────────────────────
+// ── spawn produces the actor's own handle type in expr_types ─────────────────
 
 #[test]
-fn spawn_expr_type_is_local_pid() {
-    // After type-checking, the `spawn` expression must be recorded as
-    // `LocalPid<Counter>`. This ensures that the checker's discriminator
-    // survives into the type-check output that HIR lowering consumes.
+fn spawn_expr_type_is_the_actor_handle() {
+    // After type-checking, the `spawn` expression must be recorded as the
+    // `Counter` actor handle (D489: an actor is the type of its handle).
+    // This ensures that the checker's discriminator survives into the
+    // type-check output that HIR lowering consumes.
     let source = r"
         actor Counter {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {
@@ -128,23 +123,25 @@ fn spawn_expr_type_is_local_pid() {
         }
     ";
     let (tc, _lower) = lower_with_types(source);
-    let has_local_pid = tc
+    let has_counter_handle = tc
         .expr_types
         .values()
-        .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "LocalPid"));
+        .any(|ty| ty.actor_handle_identity() == Some(("Counter", &[][..])));
     assert!(
-        has_local_pid,
-        "expr_types should contain at least one LocalPid<Counter> entry"
+        has_counter_handle,
+        "expr_types should contain at least one Counter actor-handle entry"
     );
-    // `LocalPid` is the spawn-return type; no stray `ActorRef`-named handle
-    // exists anywhere in the type table (the family is LocalPid/RemotePid).
+    // The spawn-return type is the actor's own name with the `ActorHandle`
+    // builtin discriminator; no stray `ActorRef`-named handle exists anywhere
+    // in the type table (the family is the actor handle / `RemotePid`).
     let has_stray_actor_ref = tc
         .expr_types
         .values()
         .any(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"));
     assert!(
         !has_stray_actor_ref,
-        "spawn must produce LocalPid; no `ActorRef`-named handle should appear: {:#?}",
+        "spawn must produce the actor's own handle type; no `ActorRef`-named \
+         handle should appear: {:#?}",
         tc.expr_types
             .values()
             .filter(|ty| matches!(ty, Ty::Named { name, .. } if name == "ActorRef"))
@@ -157,11 +154,11 @@ fn spawn_expr_type_is_local_pid() {
 #[test]
 fn hir_lower_actor_no_diagnostics() {
     // A simple actor declaration (no spawn expression in main) should lower
-    // without diagnostics. This verifies that the LocalPid changes in the
-    // checker don't break actor declaration lowering.
+    // without diagnostics. This verifies that the actor-handle rename (D489)
+    // in the checker doesn't break actor declaration lowering.
     let source = r"
         actor Bot {
-            let x: i32;
+            let x: i32,
             init() {}
             receive fn handle(msg: i32) {}
         }
@@ -181,7 +178,7 @@ fn hir_lower_actor_no_diagnostics() {
 fn hir_module_has_main() {
     let source = r"
         actor Foo {
-            let v: i32;
+            let v: i32,
             init() {}
         }
 
@@ -205,7 +202,7 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
         }
 
         actor Worker {
-            let id: i32;
+            let id: i32,
             init() {}
             receive fn run(job: Job) -> i64 { 21 }
         }
@@ -217,7 +214,7 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
 
         fn main() {
             let remote: RemotePid<Worker>;
-            let result: Result<i64, AskError> = remote.ask(Job { n: 9 }, 250);
+            let result: Result<i64, ActorError<Never>> = remote.ask(Job { n: 9 }, 250);
         }
     ";
     let (_tc, lower) = lower_with_types(source);
@@ -239,22 +236,19 @@ fn remote_pid_ask_lowers_to_hir_remote_actor_ask() {
         block_contains_remote_actor_ask(&main.body),
         "RemotePid.ask should lower to HirExprKind::RemoteActorAsk: {main:#?}"
     );
-    let has_result_ask_error_layout = lower.module.enum_layouts.iter().any(|layout| {
+    let has_result_actor_error_layout = lower.module.enum_layouts.iter().any(|layout| {
         layout.key.origin_name == "Result"
             && matches!(
                 layout.key.type_args.as_slice(),
                 [
                     hew_types::ResolvedTy::I64,
-                    hew_types::ResolvedTy::Named {
-                        builtin: Some(BuiltinType::AskError),
-                        ..
-                    }
-                ]
+                    hew_types::ResolvedTy::Named { name, .. }
+                ] if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE
             )
     });
     assert!(
-        has_result_ask_error_layout,
-        "RemotePid.ask should register Result<i64, AskError> layout: {:#?}",
+        has_result_actor_error_layout,
+        "RemotePid.ask should register Result<i64, ActorError<..>> layout: {:#?}",
         lower.module.enum_layouts
     );
 }

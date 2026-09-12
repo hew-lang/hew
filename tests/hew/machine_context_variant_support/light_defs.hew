@@ -1,34 +1,29 @@
 //! Support module for the cross-module contextual-variant coverage (#3149).
 //!
-//! Every transition body here returns the contextual dotted spelling (`.Off`,
-//! `.Named { … }`) rather than the fully-qualified `Light.Off`. Checking this
-//! file on its own always resolved those; the point of the fixture is that the
-//! bodies are checked while the file is an imported dependency of another entry
-//! point, which is when the machine's expected-type context used to be minted
-//! under a bare name the imported `type_defs` row no longer carried.
+//! Every transition here names its target in the head alone, so the machine's
+//! state constructors are minted from the transition's expected type. Checking
+//! this file on its own always resolved those; the point of the fixture is that
+//! the bodies are checked while the file is an imported dependency of another
+//! entry point, which is when the expected-type context used to be minted under
+//! a bare name the imported `type_defs` row no longer carried.
 //!
 //! `Named` gives one transition a struct-payload state, so the expected type
-//! also has to seed a struct-variant construction, not only a unit variant.
+//! also has to seed a struct-variant construction, not only a unit variant, and
+//! `initial()` keeps the contextual spelling on a plain fn tail.
 
 pub machine Light {
     events {
-        Toggle;
-        Label;
+        Toggle,
+        Label,
     }
 
-    state On;
-    state Off;
-    state Named { label: string; }
+    state On,
+    state Off,
+    state Named { label: string, },
 
-    on Toggle: On => Off {
-        .Off
-    }
-    on Toggle: Off => On {
-        .On
-    }
-    on Label: On => Named {
-        .Named { label: "lit".to_upper() }
-    }
+    on Toggle: On => Off,
+    on Toggle: Off => On,
+    on Label: On => Named { label: "lit".to_upper() }
 
     default { state }
 }

@@ -9,7 +9,8 @@
 //!
 //! Each evaluation builds a synthetic Hew program from accumulated session
 //! state (prior items and bindings) plus the new input, runs the in-process
-//! compile pipeline to produce a native binary, and captures its stdout output.
+//! compile pipeline to produce a native binary, executes it in a child process,
+//! and captures its stdout. WASI eval compiles a module and runs it with wasmtime.
 
 pub mod classify;
 pub mod repl;
@@ -62,15 +63,12 @@ pub enum EvalStatus {
 ///
 /// Returns `Ok(None)` when no target was supplied (native path).
 /// Returns `Ok(Some(spec))` for the exact supported WASI targets
-/// (`wasm32-wasi` and `wasm32-wasip1` both normalize to `wasm32-wasip1`),
-/// provided `--jit` is not also set (JIT is native-only).
+/// (`wasm32-wasi` and `wasm32-wasip1` both normalize to `wasm32-wasip1`).
 /// Returns `Err(message)` for non-WASM explicit targets **and** wasi-shaped
 /// triples that do not normalize to `wasm32-wasip1` (e.g.
-/// `wasm32-unknown-unknown-wasi`), and when `--jit` is combined with a
-/// `wasm32-*` target.
+/// `wasm32-unknown-unknown-wasi`).
 fn resolve_eval_target(
     triple: Option<&str>,
-    jit: Option<crate::args::JitMode>,
 ) -> Result<Option<crate::target::ExecutionTarget>, String> {
     let target = match triple {
         None => return Ok(None),
@@ -81,18 +79,6 @@ fn resolve_eval_target(
     // Other wasi-shaped triples like `wasm32-unknown-unknown-wasi` parse as
     // WASM but do not normalize to wasm32-wasip1 and must be rejected.
     if target.is_wasi() && target.normalized_triple() == "wasm32-wasip1" {
-        // Only `--jit=inprocess` is native-only: it asks for the in-process
-        // LLJIT path, which cannot target WASM. `--jit=auto` selects the
-        // best-available backend (AOT), which compiles WASM fine, so it is
-        // accepted here alongside `--jit=worker` and no `--jit`.
-        if matches!(jit, Some(crate::args::JitMode::Inprocess)) {
-            return Err(format!(
-                "`--jit=inprocess` is native-only and cannot be used with `--target {}`. \
-                 Omit `--jit` for AOT WASM eval, use `--jit=auto`/`--jit=worker` to keep the \
-                 AOT path, or omit `--target` for native eval.",
-                target.normalized_triple()
-            ));
-        }
         Ok(Some(target))
     } else {
         Err(format!(
@@ -106,8 +92,7 @@ fn resolve_eval_target(
 /// Run the `hew eval` subcommand.
 pub fn cmd_eval(args: &crate::args::EvalArgs) {
     let timeout = resolve_eval_timeout(&args.timeout);
-    let sir_mode = args.sir.mode();
-    let target_spec = resolve_eval_target(args.target.as_deref(), args.jit).unwrap_or_else(|e| {
+    let target_spec = resolve_eval_target(args.target.as_deref()).unwrap_or_else(|e| {
         eprintln!("Error: {e}");
         std::process::exit(1);
     });
@@ -117,11 +102,11 @@ pub fn cmd_eval(args: &crate::args::EvalArgs) {
     validate_eval_request(&request, args.json, target);
 
     if args.json {
-        emit_json_eval(&request, timeout, target, args.jit, sir_mode);
+        emit_json_eval(&request, timeout, target);
         return;
     }
 
-    execute_eval_request(&request, timeout, target, args.jit, sir_mode, args.quiet);
+    execute_eval_request(&request, timeout, target, args.quiet);
 }
 
 fn resolve_eval_timeout(raw: &str) -> std::time::Duration {
@@ -177,20 +162,10 @@ fn validate_eval_request(request: &EvalRequest, json: bool, target: Option<&str>
     }
 }
 
-fn emit_json_eval(
-    request: &EvalRequest,
-    timeout: std::time::Duration,
-    target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
-) {
+fn emit_json_eval(request: &EvalRequest, timeout: std::time::Duration, target: Option<&str>) {
     let result = match request {
-        EvalRequest::File(path) => {
-            capture_json_eval(|| repl::eval_file(path, timeout, target, jit, sir_mode))
-        }
-        EvalRequest::Expr(expr) => {
-            capture_json_eval(|| repl::eval_one(expr, timeout, target, jit, sir_mode))
-        }
+        EvalRequest::File(path) => capture_json_eval(|| repl::eval_file(path, timeout, target)),
+        EvalRequest::Expr(expr) => capture_json_eval(|| repl::eval_one(expr, timeout, target)),
         EvalRequest::Repl => unreachable!("validated before JSON evaluation"),
     };
 
@@ -216,19 +191,17 @@ fn execute_eval_request(
     request: &EvalRequest,
     timeout: std::time::Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
     quiet: bool,
 ) {
     match request {
         EvalRequest::File(path) => {
-            emit_eval_output(repl::eval_file(path, timeout, target, jit, sir_mode));
+            emit_eval_output(repl::eval_file(path, timeout, target));
         }
         EvalRequest::Expr(expr) => {
-            emit_eval_output(repl::eval_one(expr, timeout, target, jit, sir_mode));
+            emit_eval_output(repl::eval_one(expr, timeout, target));
         }
         EvalRequest::Repl => {
-            if let Err(e) = repl::run_interactive(timeout, target, jit, sir_mode, quiet) {
+            if let Err(e) = repl::run_interactive(timeout, target, quiet) {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -276,23 +249,19 @@ fn eval_result_to_json(
             // 1. Child wrote nothing to stderr and was signal-killed (pre-F1.3
             //    behaviour for arithmetic traps): synthesise a user-facing message
             //    into both `stderr` and `diagnostics`.
-            // 2. Child wrote a runtime-internal diagnostic to stderr AND was
-            //    killed by a signal (Unix F1.3 path) OR the stderr begins with
-            //    the "hew: trap in main context:" prefix (Windows F1.3 path —
-            //    no Unix signal is available, but the cause is named in stderr
-            //    and the NTSTATUS exit code maps via describe_runtime_failure).
-            //    Preserve the child's stderr but also synthesise a user-facing
+            // 2. Child wrote a diagnostic to stderr AND was killed by a signal:
+            //    preserve the child's stderr but also synthesise a user-facing
             //    description into `diagnostics` so the JSON contract's cause
-            //    field is never empty for runtime-trap programs on any platform.
-            // 3. Child exited with a non-zero code (e.g. `panic()` → exit 101)
-            //    and wrote its own stderr: preserve both, keep `diagnostics`
-            //    empty (the child's message IS the diagnostic).
+            //    field is never empty.
+            // 3. Child exited with a non-zero code (a logical trap or `panic()`
+            //    exits 1) and wrote its own stderr: preserve both, keep
+            //    `diagnostics` empty (the child's message IS the diagnostic).
             let (stderr, diagnostics) = if stderr.is_empty() {
                 let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
                 (synth.clone(), synth)
-            } else if signal.is_some() || repl::is_runtime_trap_stderr(&stderr) {
-                // Signal-killed (Unix) or runtime-trap stderr (Windows): synthesise
-                // the user-facing description for `diagnostics`.
+            } else if signal.is_some() {
+                // Signal-killed: synthesise the user-facing description for
+                // `diagnostics`.
                 let synth = format!("{}\n", repl::describe_runtime_failure(exit_code, signal));
                 (stderr, synth)
             } else {
@@ -349,16 +318,15 @@ fn exit_eval_error(error: repl::CliEvalError) -> ! {
 #[cfg(test)]
 mod target_validation_tests {
     use super::resolve_eval_target;
-    use crate::args::JitMode;
 
     #[test]
     fn no_target_is_native() {
-        assert!(resolve_eval_target(None, None).unwrap().is_none());
+        assert!(resolve_eval_target(None).unwrap().is_none());
     }
 
     #[test]
     fn wasm32_wasi_is_accepted() {
-        let spec = resolve_eval_target(Some("wasm32-wasi"), None)
+        let spec = resolve_eval_target(Some("wasm32-wasi"))
             .expect("wasm32-wasi should be accepted")
             .expect("should return Some");
         assert!(spec.is_wasi());
@@ -366,7 +334,7 @@ mod target_validation_tests {
 
     #[test]
     fn wasm32_wasip1_is_accepted() {
-        let spec = resolve_eval_target(Some("wasm32-wasip1"), None)
+        let spec = resolve_eval_target(Some("wasm32-wasip1"))
             .expect("wasm32-wasip1 should be accepted")
             .expect("should return Some");
         assert!(spec.is_wasi());
@@ -374,7 +342,7 @@ mod target_validation_tests {
 
     #[test]
     fn native_cross_target_is_rejected() {
-        let err = resolve_eval_target(Some("x86_64-unknown-linux-gnu"), None)
+        let err = resolve_eval_target(Some("x86_64-unknown-linux-gnu"))
             .expect_err("native cross-target should be rejected");
         assert!(
             err.contains("not supported"),
@@ -388,7 +356,7 @@ mod target_validation_tests {
 
     #[test]
     fn aarch64_apple_darwin_is_rejected() {
-        let err = resolve_eval_target(Some("aarch64-apple-darwin"), None)
+        let err = resolve_eval_target(Some("aarch64-apple-darwin"))
             .expect_err("native target should be rejected");
         assert!(
             err.contains("not supported"),
@@ -401,52 +369,11 @@ mod target_validation_tests {
         // wasm32-unknown-unknown-wasi parses as WASM (contains "wasi") but
         // does not normalize to wasm32-wasip1, so it must be rejected up front
         // rather than silently falling through to a broken eval path.
-        let err = resolve_eval_target(Some("wasm32-unknown-unknown-wasi"), None)
+        let err = resolve_eval_target(Some("wasm32-unknown-unknown-wasi"))
             .expect_err("unsupported wasi-like triple should be rejected");
         assert!(
             err.contains("not supported"),
             "expected 'not supported' in error: {err}"
         );
-    }
-
-    #[test]
-    fn wasm32_wasi_with_jit_is_rejected() {
-        let err = resolve_eval_target(Some("wasm32-wasi"), Some(JitMode::Inprocess))
-            .expect_err("--jit with wasm32-wasi should be rejected");
-        assert!(
-            err.contains("native-only"),
-            "expected 'native-only' in error: {err}"
-        );
-        assert!(err.contains("wasm32"), "expected 'wasm32' in error: {err}");
-    }
-
-    #[test]
-    fn wasm32_wasip1_with_jit_is_rejected() {
-        let err = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Inprocess))
-            .expect_err("--jit=inprocess with wasm32-wasip1 should be rejected");
-        assert!(
-            err.contains("native-only"),
-            "expected 'native-only' in error: {err}"
-        );
-        assert!(err.contains("wasm32"), "expected 'wasm32' in error: {err}");
-    }
-
-    #[test]
-    fn wasm32_wasip1_with_jit_auto_is_accepted() {
-        // `--jit=auto` selects the best-available backend (AOT), which is
-        // compatible with wasm32-wasip1; only `--jit=inprocess` (LLJIT) is
-        // native-only.
-        let target = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Auto))
-            .expect("--jit=auto with wasm32-wasip1 should be accepted");
-        assert!(target.is_some(), "expected Some(target) for wasm32-wasip1");
-    }
-
-    #[test]
-    fn wasm32_wasip1_with_jit_worker_is_accepted() {
-        // --jit=worker keeps the AOT+spawn path, which is compatible with
-        // wasm32-wasip1; only --jit=inprocess (LLJIT) is native-only.
-        let target = resolve_eval_target(Some("wasm32-wasip1"), Some(JitMode::Worker))
-            .expect("--jit=worker with wasm32-wasip1 should be accepted");
-        assert!(target.is_some(), "expected Some(target) for wasm32-wasip1");
     }
 }

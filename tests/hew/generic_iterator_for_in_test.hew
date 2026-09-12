@@ -10,8 +10,8 @@
 import std.testing;
 
 type Repeat<T> {
-    value: T;
-    remaining: i64;
+    value: T,
+    remaining: i64,
 }
 
 impl<T> Iterator for Repeat<T> {

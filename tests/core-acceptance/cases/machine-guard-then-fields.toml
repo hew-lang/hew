@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-guard-then-fields"
+suites = ["acceptance", "safety"]
+intent = "A machine guard ending in a bare identifier does not swallow the transition's fielded body as that identifier's own struct literal."
+source = "cases/machine-guard-then-fields.hew"
+timeout_seconds = 15
+
+[case.expected]
+stdout = "n=2\n"
+exit = 0

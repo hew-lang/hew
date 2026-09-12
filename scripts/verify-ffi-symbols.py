@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""Classify and validate the stable JIT host ABI exported by hew-runtime.
+"""Classify and validate runtime exports.
 
 Scans hew-runtime and hew-std Rust source files for #[no_mangle] extern "C"
 and extern "C-unwind" fn exports and validates the classifications in
-scripts/jit-symbol-classification.toml.
+scripts/runtime-export-classification.toml.
 
-Three-tier model:
+ABI classifications:
   stable         -- user-visible runtime surface; user `extern "rt"` blocks
-                    and JIT hosts.
-  codegen-stable -- compiler-emitted; JIT hosts must provide these alongside
+                    and native generated-code hosts.
+  non-declarable -- compiler-emitted and runtime-only; generated-code hosts provide these alongside
                     stable, but users cannot name them in `extern "rt"`.
-  internal       -- lifecycle/bootstrap; AOT-only, never JIT-reachable.
+  public-host    -- public C host API; excluded from source extern rt and generated code.
+  public-host-stdlib -- the corresponding C host API exported by hew-std.
 
 The codegen-coverage mode (--strict) is retained as a no-op for backward
 compatibility now that the C++ codegen subtree has been retired; the
@@ -19,15 +20,15 @@ checker and inkwell.
 
 Usage:
     python3 scripts/verify-ffi-symbols.py --classify stable --validate
-    python3 scripts/verify-ffi-symbols.py --classify stable         # print stable JIT symbols
-    python3 scripts/verify-ffi-symbols.py --classify codegen-stable # print codegen-stable symbols
-    python3 scripts/verify-ffi-symbols.py --classify internal       # print internal JIT symbols
+    python3 scripts/verify-ffi-symbols.py --classify stable         # print stable runtime symbols
+    python3 scripts/verify-ffi-symbols.py --classify non-declarable # print non-declarable symbols
     python3 scripts/verify-ffi-symbols.py --emit-cpp-header path    # generate stable-symbol header
 """
 
 from __future__ import annotations
 
 import argparse
+from itertools import combinations
 import re
 import sys
 import tomllib
@@ -40,10 +41,17 @@ from corpus_nonempty import check_nonempty  # noqa: E402
 
 RUNTIME_SRC = ROOT / "hew-runtime" / "src"
 STDLIB_SRC = ROOT / "hew-std" / "src"
-JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
-FFI_OWNERSHIP_RATCHET = ROOT / "scripts" / "ffi-ownership-ratchet.toml"
+RUNTIME_EXPORT_CLASSIFICATION = ROOT / "scripts" / "runtime-export-classification.toml"
 SOURCE_ENCODING = "utf-8"
-OWNERSHIP_RESULTS = {"fresh", "retained", "borrowed", "none"}
+CLASSIFICATION_CRATES = {
+    "stable": "runtime",
+    "stable-stdlib": "stdlib",
+    "non-declarable": "runtime",
+    "public-host": "runtime",
+    "public-host-stdlib": "stdlib",
+}
+PUBLIC_HOST_TIERS = {"public-host", "public-host-stdlib"}
+OWNERSHIP_RESULTS = {"fresh", "retained", "owned", "borrowed", "none"}
 PARAM_OWNERSHIP = {"borrow", "consume", "retain"}
 DISCHARGE_DEPTHS = {"shallow", "deep", "none"}
 # The RETENTION axis: whether the callee provably keeps no pointer into the
@@ -89,29 +97,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--classify",
-        choices=("stable", "codegen-stable", "internal"),
-        help="print the sorted JIT host ABI symbols for the requested class",
+        choices=tuple(CLASSIFICATION_CRATES),
+        help="print the sorted ABI symbols for the requested class",
     )
     parser.add_argument(
         "--validate",
         action="store_true",
-        help="fail if any hew-runtime export is missing from the JIT classification file",
-    )
-    parser.add_argument(
-        "--write-ownership-ratchet",
-        action="store_true",
-        help=(
-            "re-record the exact unclassified-ownership count in "
-            "scripts/ffi-ownership-ratchet.toml. Records a DECREASE (ABI surface "
-            "gaining ownership contracts); refuses an INCREASE, which is new "
-            "unclassified ABI surface and needs a deliberate decision"
-        ),
+        help="fail if any hew-runtime export is missing from the classification file",
     )
     parser.add_argument(
         "--emit-cpp-header",
         type=Path,
         metavar="PATH",
-        help="write a generated C++ header containing the stable JIT symbol list",
+        help="write a generated C++ header containing the stable runtime symbol list",
     )
     return parser.parse_args(argv)
 
@@ -331,56 +329,59 @@ def classify(name: str, runtime_exports: set[str]) -> str:
 
 
 def load_jit_symbol_classification() -> dict[str, set[str]]:
-    text = JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    document = tomllib.loads(
+        RUNTIME_EXPORT_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+    )
+    allowed_keys = set(CLASSIFICATION_CRATES) | {"ownership", "sys-lane-closure"}
+    unknown_keys = sorted(set(document) - allowed_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"{RUNTIME_EXPORT_CLASSIFICATION}: unknown classification list(s): "
+            + ", ".join(unknown_keys)
+        )
     classification: dict[str, set[str]] = {}
-    for key in ("stable", "stable-stdlib", "codegen-stable", "internal"):
-        match = re.search(rf"(?ms)^{re.escape(key)}\s*=\s*\[(.*?)^\]", text)
-        if match is None:
-            raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: missing {key} list")
-        symbols = re.findall(r'"([^"\n]+)"', match.group(1))
+    for key in CLASSIFICATION_CRATES:
+        if key not in document and key not in PUBLIC_HOST_TIERS:
+            raise ValueError(f"{RUNTIME_EXPORT_CLASSIFICATION}: missing {key} list")
+        symbols = document.get(key, [])
+        if not isinstance(symbols, list) or any(
+            not isinstance(symbol, str) for symbol in symbols
+        ):
+            raise ValueError(
+                f"{RUNTIME_EXPORT_CLASSIFICATION}: {key} must be a list of symbols"
+            )
         if len(symbols) != len(set(symbols)):
-            raise ValueError(f"{JIT_SYMBOL_CLASSIFICATION}: duplicate entries in {key}")
+            raise ValueError(
+                f"{RUNTIME_EXPORT_CLASSIFICATION}: duplicate entries in {key}"
+            )
         classification[key] = set(symbols)
     return classification
-
-
-def write_ownership_ratchet(count: int) -> None:
-    """Rewrite the exact count in place, leaving the header comment alone."""
-    lines = FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING).splitlines(
-        keepends=True
-    )
-    for index, line in enumerate(lines):
-        if line.startswith("unclassified"):
-            lines[index] = f"unclassified = {count}\n"
-            break
-    else:
-        raise SystemExit(f"{FFI_OWNERSHIP_RATCHET}: no `unclassified` assignment")
-    FFI_OWNERSHIP_RATCHET.write_text("".join(lines), encoding=SOURCE_ENCODING)
 
 
 def validate_ownership_contracts(
     classification: dict[str, set[str]],
     all_exports: set[str],
     fn_param_counts: dict[str, set[int]],
-    write_ratchet: bool = False,
 ) -> list[str]:
     errors: list[str] = []
     document = tomllib.loads(
-        JIT_SYMBOL_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
+        RUNTIME_EXPORT_CLASSIFICATION.read_text(encoding=SOURCE_ENCODING)
     )
     ownership = document.get("ownership")
     if not isinstance(ownership, dict):
-        return [f"{JIT_SYMBOL_CLASSIFICATION}: missing [ownership] table"]
+        return [f"{RUNTIME_EXPORT_CLASSIFICATION}: missing [ownership] table"]
     contracts = ownership.get("contracts")
     if not isinstance(contracts, list):
-        return [f"{JIT_SYMBOL_CLASSIFICATION}: ownership.contracts must be an array"]
+        return [
+            f"{RUNTIME_EXPORT_CLASSIFICATION}: ownership.contracts must be an array"
+        ]
 
     classified = set().union(*classification.values())
     contracted: set[str] = set()
     contract_by_symbol: dict[str, dict] = {}
     arity_checked = 0
     for index, contract in enumerate(contracts, start=1):
-        location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract #{index}"
+        location = f"{RUNTIME_EXPORT_CLASSIFICATION}: ownership contract #{index}"
         if not isinstance(contract, dict):
             errors.append(f"{location} must be a table")
             continue
@@ -389,7 +390,7 @@ def validate_ownership_contracts(
         if not isinstance(symbol, str) or not symbol:
             errors.append(f"{location} requires a non-empty symbol")
             continue
-        location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract for {symbol}"
+        location = f"{RUNTIME_EXPORT_CLASSIFICATION}: ownership contract for {symbol}"
         if symbol in contracted:
             errors.append(f"{location} is duplicated")
             continue
@@ -466,7 +467,7 @@ def validate_ownership_contracts(
                 errors.append(
                     f"{location} resource-result-type must be a qualified nominal"
                 )
-            if result not in {"fresh", "retained"}:
+            if result not in {"fresh", "retained", "owned"}:
                 errors.append(
                     f"{location} resource-result-type requires an owned result"
                 )
@@ -492,7 +493,7 @@ def validate_ownership_contracts(
             errors.append(
                 f"{location} discharge-depth must be one of {sorted(DISCHARGE_DEPTHS)}"
             )
-        elif result in {"fresh", "retained"}:
+        elif result in {"fresh", "retained", "owned"}:
             if not release_symbol:
                 errors.append(f"{location} owned result requires release-symbol")
             if discharge_depth == "none":
@@ -505,6 +506,8 @@ def validate_ownership_contracts(
                 'and discharge-depth = "none"'
             )
 
+        if result == "owned" and "result-retention" not in contract:
+            errors.append(f"{location} owned result requires explicit result-retention")
         if "result-retention" in contract:
             retention = contract.get("result-retention")
             if retention not in RESULT_RETENTIONS:
@@ -512,7 +515,7 @@ def validate_ownership_contracts(
                     f"{location} result-retention must be one of "
                     f"{sorted(RESULT_RETENTIONS)} when present"
                 )
-            elif result not in {"fresh", "retained"}:
+            elif result not in {"fresh", "retained", "owned"}:
                 errors.append(
                     f"{location} result-retention is meaningless without an "
                     "owned result"
@@ -552,7 +555,7 @@ def validate_ownership_contracts(
             continue
         release_symbol = contract.get("release-symbol")
         release = contract_by_symbol.get(release_symbol)
-        location = f"{JIT_SYMBOL_CLASSIFICATION}: ownership contract for {symbol}"
+        location = f"{RUNTIME_EXPORT_CLASSIFICATION}: ownership contract for {symbol}"
         if release is None:
             errors.append(
                 f"{location} resource-result-type names release-symbol "
@@ -598,40 +601,6 @@ def validate_ownership_contracts(
             file=sys.stderr,
         )
 
-    ratchet = tomllib.loads(FFI_OWNERSHIP_RATCHET.read_text(encoding=SOURCE_ENCODING))
-
-    expected_unclassified = ratchet.get("unclassified")
-    if not isinstance(expected_unclassified, int) or expected_unclassified < 0:
-        errors.append(f"{FFI_OWNERSHIP_RATCHET}: unclassified must be non-negative")
-    else:
-        actual_unclassified = len(classified - contracted)
-        if actual_unclassified == expected_unclassified:
-            pass
-        elif not write_ratchet:
-            errors.append(
-                f"unclassified ownership contracts: expected "
-                f"{expected_unclassified}, found {actual_unclassified}; "
-                f"re-record with `make ffi-ownership-ratchet-record`"
-            )
-        elif actual_unclassified > expected_unclassified:
-            # The regen half of the ratchet, and its one refusal. More
-            # unclassified symbols means ABI surface arrived without an
-            # ownership contract; writing the higher number down would record
-            # the gap instead of reporting it.
-            errors.append(
-                f"unclassified ownership contracts ROSE "
-                f"{expected_unclassified} -> {actual_unclassified}: new ABI "
-                f"surface has no ownership contract. A regen never records an "
-                f"increase — add the contracts, or raise the count by hand and "
-                f"say why in the commit"
-            )
-        else:
-            write_ownership_ratchet(actual_unclassified)
-            print(
-                f"ffi ownership ratchet: {expected_unclassified} -> "
-                f"{actual_unclassified} unclassified",
-                file=sys.stderr,
-            )
     return errors
 
 
@@ -639,60 +608,55 @@ def validate_jit_symbol_classification(
     runtime_exports: set[str],
     stdlib_exports: set[str],
     classification: dict[str, set[str]],
-    write_ratchet: bool = False,
 ) -> list[str]:
     errors: list[str] = []
-    stable = classification["stable"]
-    stable_stdlib = classification["stable-stdlib"]
-    codegen_stable = classification["codegen-stable"]
-    internal = classification["internal"]
-    # Pairwise overlap checks across all tiers.
-    for tier_a, set_a, tier_b, set_b in [
-        ("stable", stable, "stable-stdlib", stable_stdlib),
-        ("stable", stable, "codegen-stable", codegen_stable),
-        ("stable", stable, "internal", internal),
-        ("stable-stdlib", stable_stdlib, "codegen-stable", codegen_stable),
-        ("stable-stdlib", stable_stdlib, "internal", internal),
-        ("codegen-stable", codegen_stable, "internal", internal),
-    ]:
+    # Every ABI tier is disjoint, including the separately exposed C host API.
+    for (tier_a, set_a), (tier_b, set_b) in combinations(classification.items(), 2):
         overlap = sorted(set_a & set_b)
         if overlap:
             errors.append(
                 f"symbols classified in both {tier_a} and {tier_b}: "
                 + ", ".join(overlap)
-                + f" (update {JIT_SYMBOL_CLASSIFICATION})"
+                + f" (update {RUNTIME_EXPORT_CLASSIFICATION})"
             )
-    # `stable-stdlib` is intentionally NOT unioned into the runtime completeness
-    # check because those symbols come from hew-std rather than hew-runtime.
-    classified = stable | codegen_stable | internal
+    # Each classified symbol must exist in its declared exporting crate.
+    classified = set().union(
+        *(
+            classification[tier]
+            for tier, crate in CLASSIFICATION_CRATES.items()
+            if crate == "runtime"
+        )
+    )
     missing = sorted(runtime_exports - classified)
     extra = sorted(classified - runtime_exports)
     if missing:
         errors.append(
             f"unclassified runtime exports ({len(missing)}): "
             + ", ".join(missing)
-            + f" (update {JIT_SYMBOL_CLASSIFICATION})"
+            + f" (update {RUNTIME_EXPORT_CLASSIFICATION})"
         )
     if extra:
         errors.append(
             f"classification names not exported by hew-runtime ({len(extra)}): "
             + ", ".join(extra)
-            + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
+            + f" (remove from {RUNTIME_EXPORT_CLASSIFICATION})"
         )
-    missing_stdlib_exports = sorted(stable_stdlib - stdlib_exports)
-    if missing_stdlib_exports:
-        errors.append(
-            "stable-stdlib classification names not exported by hew-std "
-            f"({len(missing_stdlib_exports)}): "
-            + ", ".join(missing_stdlib_exports)
-            + f" (remove from {JIT_SYMBOL_CLASSIFICATION})"
-        )
+    for tier, crate in CLASSIFICATION_CRATES.items():
+        if crate != "stdlib":
+            continue
+        missing_stdlib_exports = sorted(classification[tier] - stdlib_exports)
+        if missing_stdlib_exports:
+            errors.append(
+                f"{tier} classification names not exported by hew-std "
+                f"({len(missing_stdlib_exports)}): "
+                + ", ".join(missing_stdlib_exports)
+                + f" (remove from {RUNTIME_EXPORT_CLASSIFICATION})"
+            )
     errors.extend(
         validate_ownership_contracts(
             classification,
             runtime_exports | stdlib_exports,
             _extract_fn_param_counts([RUNTIME_SRC, STDLIB_SRC]),
-            write_ratchet,
         )
     )
     return errors
@@ -728,7 +692,6 @@ def run_classification_mode(
             runtime_exports,
             stdlib_exports,
             classification,
-            args.write_ownership_ratchet,
         )
         if errors:
             for error in errors:
@@ -767,8 +730,6 @@ def run_coverage_mode(strict: bool) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    if args.write_ownership_ratchet and not args.validate:
-        raise SystemExit("--write-ownership-ratchet requires --validate")
     if args.classify is not None or args.validate or args.emit_cpp_header is not None:
         runtime_exports = extract_runtime_exports()
         stdlib_exports = extract_stdlib_exports()

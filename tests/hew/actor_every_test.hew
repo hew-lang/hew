@@ -13,7 +13,7 @@
 import std.testing;
 
 actor Pulse {
-    var count: i64 = 0;
+    var count: i64 = 0,
     #[every(50ms)]
     receive fn tick() {
         count += 1;
@@ -27,7 +27,7 @@ actor Pulse {
 fn periodic_handler_ticks_after_spawn() {
     let p = spawn Pulse(count: 0);
     sleep(500ms);
-    let r = await p.total();
+    let r = p.total();
     match r {
         .Ok(n) => testing.assert_true(n >= 3),
         .Err(_) => testing.assert_true(false),
@@ -43,8 +43,8 @@ fn two_instances_tick_independently() {
     sleep(250ms);
     let b = spawn Pulse(count: 0);
     sleep(250ms);
-    let ra = await a.total();
-    let rb = await b.total();
+    let ra = a.total();
+    let rb = b.total();
     match ra {
         .Ok(na) => match rb {
             .Ok(nb) => {

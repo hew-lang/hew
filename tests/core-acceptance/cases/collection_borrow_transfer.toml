@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_borrow_transfer"
+intent = "Pushing a borrowed collection element into a second collection transfers a value the source collection still owns: both collections would close it."
+source = "../vertical-slice/reject/collection_borrow_transfer.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 19
+column = 12

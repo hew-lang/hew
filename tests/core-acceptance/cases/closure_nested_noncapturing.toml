@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_nested_noncapturing"
+intent = "A non-capturing closure literal nested inside another closure's body."
+source = "../vertical-slice/accept/closure_nested_noncapturing.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "16\n"
+exit = 0

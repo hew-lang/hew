@@ -1,0 +1,104 @@
+trait Transform {
+    fn apply<U>(self, f: fn(i64) -> U) -> U;
+}
+
+type Holder {
+    value: i64,
+}
+
+impl Transform for Holder {
+    fn apply<U>(self, f: fn(i64) -> U) -> U {
+        f(self.value)
+    }
+}
+
+type Pair<L, R> {
+    left: L,
+    right: R,
+    value: i64,
+}
+
+// Impl parameters and method parameters come from separate authorities. The
+// receiver pattern reverses the former; the call site supplies the latter.
+impl<A, B> Transform for Pair<B, A> {
+    fn apply<U>(self, f: fn(i64) -> U) -> U {
+        f(self.value)
+    }
+}
+
+fn double(value: i64) -> i64 {
+    value * 2
+}
+
+fn render(value: i64) -> string {
+    f"value={value}"
+}
+
+fn apply_text(f: fn(i64) -> string) -> string {
+    f(21)
+}
+
+fn exercise<T: Transform>(item: T) {
+    assert(item.apply(double) == 42);
+    assert(item.apply(render) == "value=21");
+}
+
+// Keep the method argument abstract in HIR until the enclosing call is
+// instantiated. Its returned string remains owned by the final caller.
+fn forward<T: Transform, U>(item: T, f: fn(i64) -> U) -> U {
+    item.apply(f)
+}
+
+trait Recorder {
+    fn remember<U>(var self, consume value: U) -> U;
+
+    fn count(self) -> i64;
+}
+
+type Counter {
+    calls: i64,
+}
+
+impl Recorder for Counter {
+    fn remember<U>(var self, consume value: U) -> U {
+        self.calls += 1;
+        value
+    }
+    fn count(self) -> i64 {
+        self.calls
+    }
+}
+
+#[resource]
+type Mark {
+    label: string,
+}
+
+impl Mark {
+    fn close(consume self) {
+        println(self.label);
+    }
+}
+
+fn record_values<R: Recorder>(consume initial: R) {
+    var recorder = initial;
+    assert(recorder.remember(42) == 42);
+    let message = recorder.remember("owned".to_upper());
+    assert(message == "OWNED");
+    let mark = recorder.remember(Mark { label: "released" });
+    assert(mark.label == "released");
+    assert(recorder.count() == 3);
+}
+
+fn main() {
+    // The successful result is live before the temporary callable's cleanup,
+    // including any failure edge introduced by cooperative cleanup.
+    assert(apply_text(render) == "value=21");
+    exercise(Holder { value: 21 });
+    let pair = Pair { left: 7, right: "label".to_upper(), value: 21 };
+    exercise(pair);
+    assert(pair.right == "LABEL");
+    assert(forward(pair, render) == "value=21");
+    record_values(Counter { calls: 0 });
+    println("generic trait method values ok");
+}

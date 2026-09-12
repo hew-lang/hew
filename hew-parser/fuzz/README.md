@@ -28,11 +28,12 @@ Hydrate them from current v0.5 fixtures and parseable examples with:
 make fuzz-corpus
 ```
 
-`make fuzz-oracle` runs the fuzz-to-run completeness oracle over the tracked
-regression set: each candidate `.hew` file goes through parse → check, and if it
-is checker-valid it is compiled to a native binary and executed. Anything not
-provably clean — an NYI/codegen refusal, a build ICE, a signal, an abort, a
-timeout — fails unless it is registered in `tests/fuzz-oracle/expected-failures.txt`,
-and a registered entry that starts passing fails too. Add `FUZZ_ORACLE_FULL=1` to
-also sweep the raw cargo-fuzz corpus directories hydrated above; that sweep is
-nondeterministic, so it is not part of CI.
+`make fuzz-oracle` explicitly replays the raw corpus through checking, native
+compilation and execution. Invalid source is expected; compiler crashes,
+runtime signals, timeouts and output floods are reported for investigation.
+Set `FUZZ_CORPUS_DIR=/path/to/inputs` to replay another corpus. Each execution
+has a timeout and output cap, and timeout cleanup terminates its process group.
+
+Stable regression programs belong to `tests/core-acceptance/cases/`, where
+observable output, exit status and cleanup are checked at O0 and O2. Raw replay
+has no expected-failure ledger and is not a default CI gate.

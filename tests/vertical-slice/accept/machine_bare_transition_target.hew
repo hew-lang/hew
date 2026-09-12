@@ -1,4 +1,4 @@
-// Accept fixture: a body-less transition (`on E: Src => Tgt;`) whose target
+// Accept fixture: a body-less transition (`on E: Src => Tgt,`) whose target
 // is a bare (non-`.`-prefixed) state name resolves against the machine's own
 // `state` declarations and runs cleanly end to end. Regression for #3264 —
 // the desugared body (`Expr::Identifier(Tgt)` checked against the machine's
@@ -11,13 +11,13 @@
 
 machine Light {
     events {
-        Go;
+        Go,
     }
 
-    state Idle;
-    state Running;
+    state Idle,
+    state Running,
 
-    on Go: Idle => Running;
+    on Go: Idle => Running,
 
     default { state }
 }

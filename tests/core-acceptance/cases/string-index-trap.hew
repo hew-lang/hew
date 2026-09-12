@@ -1,0 +1,9 @@
+// An out-of-range codepoint index traps IndexOutOfBounds and releases the
+// live owner before the process exits; nothing after the index runs.
+fn main() -> i64 {
+    let live_owner = "trap-cleanup".to_upper();
+    let value = "Aé中🙂";
+    value[10];
+    println(live_owner);
+    0
+}

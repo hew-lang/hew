@@ -1,0 +1,241 @@
+//! File operations submitted to the runtime's existing blocking pool.
+//!
+//! Submission never waits for the syscall. The queued job owns copied inputs
+//! and an operation reference even if its coroutine is cancelled immediately.
+
+use std::ffi::c_void;
+use std::sync::Arc;
+
+use hew_cabi::string::{string_as_str, HewString};
+
+use super::{HewAsyncIo, IoFailure, IoProducer, IoValue};
+use crate::blocking_pool::{hew_blocking_pool_submit, shared_blocking_pool_opt, HewBlockingPool};
+use crate::bytes::BytesTriple;
+use crate::wake::HewWaker;
+
+enum FileRequest {
+    Read(String),
+    Write(String, Vec<u8>),
+    StreamRead(*mut crate::stream::HewStream),
+    SinkWrite(*mut crate::stream::HewSink, Vec<u8>),
+}
+
+// SAFETY: file inputs are owned. A stream or sink submission lends its heap
+// handle exclusively until the caller observes IoProducer quiescence; no job
+// points into a generated coroutine frame.
+unsafe impl Send for FileRequest {}
+
+impl FileRequest {
+    fn run(self) -> Result<IoValue, IoFailure> {
+        match self {
+            Self::StreamRead(stream) => {
+                // SAFETY: the producer lease keeps the caller's exclusive loan live.
+                unsafe { crate::stream::native::read_content(stream) }.map(IoValue::StreamItem)
+            }
+            Self::SinkWrite(sink, data) => {
+                // SAFETY: the producer lease keeps the caller's exclusive loan live.
+                unsafe { crate::stream::native::write_content(sink, &data) }?;
+                Ok(IoValue::Count(
+                    i64::try_from(data.len()).expect("stream item size"),
+                ))
+            }
+
+            Self::Read(path) => std::fs::read(path)
+                .map(IoValue::Bytes)
+                .map_err(|error| IoFailure::from_io("read file", &error)),
+            Self::Write(path, data) => {
+                std::fs::write(path, &data)
+                    .map_err(|error| IoFailure::from_io("write file", &error))?;
+                // All inputs originate from the u32-sized Hew bytes carrier.
+                Ok(IoValue::Count(
+                    i64::try_from(data.len()).expect("Hew bytes length"),
+                ))
+            }
+        }
+    }
+}
+
+struct FileJob {
+    request: FileRequest,
+    operation: IoProducer,
+}
+
+unsafe extern "C" fn run_file_job(context: *mut c_void) {
+    // SAFETY: a successful submit transfers this unique Box to one pool callback.
+    let FileJob { operation, request } = *unsafe { Box::from_raw(context.cast::<FileJob>()) };
+    if !operation.is_pending() {
+        drop(request);
+        return;
+    }
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| request.run()))
+        .unwrap_or_else(|_| {
+            Err(IoFailure::from_io(
+                "file operation worker panicked",
+                &std::io::Error::other("worker panicked"),
+            ))
+        });
+    operation.complete(result);
+}
+
+unsafe fn submit(
+    pool: Option<*mut HewBlockingPool>,
+    waker: *const HewWaker,
+    request: Result<FileRequest, IoFailure>,
+) -> *const HewAsyncIo {
+    // SAFETY: the start entrypoint lends the waker for this call.
+    let operation = unsafe { HewAsyncIo::new(waker) };
+    match (pool, request) {
+        (_, Err(error)) => operation.complete(Err(error)),
+        (None, Ok(_)) => operation.complete(Err(IoFailure::invalid(
+            "asynchronous file I/O requires an installed runtime",
+        ))),
+        (Some(pool), Ok(request)) => {
+            let job = Box::into_raw(Box::new(FileJob {
+                operation: IoProducer::new(Arc::clone(&operation)),
+                request,
+            }));
+            // SAFETY: pool is installed for this call; the job is owned until
+            // its sole callback runs. Runtime shutdown joins submitted work.
+            let status = unsafe { hew_blocking_pool_submit(pool, run_file_job, job.cast()) };
+            if status != 0 {
+                // SAFETY: failed admission did not transfer the job to a worker.
+                drop(unsafe { Box::from_raw(job) });
+                operation.complete(Err(IoFailure::invalid("file I/O pool is stopped")));
+            }
+        }
+    }
+    Arc::into_raw(operation)
+}
+
+unsafe fn owned_path(path: *const HewString) -> Result<String, IoFailure> {
+    // SAFETY: a start operation borrows a live managed path (null means empty).
+    let path = unsafe { string_as_str(path) };
+    if path.is_empty() || path.as_bytes().contains(&0) {
+        return Err(IoFailure::invalid("file path is empty or contains NUL"));
+    }
+    Ok(path.to_owned())
+}
+
+/// Start a whole-file byte read without blocking the calling worker.
+///
+/// The path is copied before return. Use `hew_async_io_take_bytes` on readiness
+/// and `hew_async_io_free` on every terminal or abandon edge. A null waker is
+/// allowed for a caller that polls; it does not make this call blocking.
+///
+/// # Safety
+/// `path` is a live borrowed managed string; `waker` is null or a borrowed valid
+/// `HewWaker`. The current runtime must outlive submission into its pool.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_file_read(
+    path: *const HewString,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: both borrowed arguments are valid for this call.
+    unsafe {
+        submit(
+            shared_blocking_pool_opt(),
+            waker,
+            owned_path(path).map(FileRequest::Read),
+        )
+    }
+}
+
+/// Start an overwrite of a whole file, owning copies of path and contents.
+///
+/// # Safety
+/// Both strings are borrowed managed handles (null content means empty), and
+/// `waker` is null or a live borrowed descriptor retained by submission.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_file_write_string(
+    path: *const HewString,
+    content: *const HewString,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the inputs are live borrowed strings for this call. Copy before
+    // submission, so the worker keeps no reference to caller-owned storage.
+    let request = unsafe { owned_path(path) }.map(|path| {
+        // SAFETY: the caller lends content through this immediate copy.
+        let bytes = unsafe { string_as_str(content) }.as_bytes().to_vec();
+        FileRequest::Write(path, bytes)
+    });
+    // SAFETY: the request owns its inputs and submission retains the waker.
+    unsafe { submit(shared_blocking_pool_opt(), waker, request) }
+}
+
+/// Start an overwrite of a whole file, owning copies of path and contents.
+/// The successful result is the byte count. Cancellation before the job starts
+/// prevents the write; cancellation during an OS write does not roll it back.
+///
+/// # Safety
+/// `path` is a live borrowed Hew string. `data` is null or a live borrowed
+/// bytes carrier whose nonempty region is readable. `waker` is null or a valid borrowed
+/// descriptor, and the current runtime outlives submission.
+#[no_mangle]
+pub unsafe extern "C" fn hew_async_file_write(
+    path: *const HewString,
+    data: *const BytesTriple,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: path is borrowed for this call and copied before queue admission.
+    let request = unsafe { owned_path(path) }.and_then(|path| {
+        // SAFETY: a non-null carrier is borrowed for the immediate input copy.
+        let data = unsafe { data.as_ref() }
+            .ok_or_else(|| IoFailure::invalid("file contents carrier is null"))?;
+        if data.len != 0 && data.ptr.is_null() {
+            return Err(IoFailure::invalid(
+                "nonempty file contents have a null buffer",
+            ));
+        }
+        let bytes = if data.len == 0 {
+            Vec::new()
+        } else {
+            // SAFETY: the caller guarantees the carrier region is readable.
+            unsafe {
+                std::slice::from_raw_parts(data.ptr.add(data.offset as usize), data.len as usize)
+                    .to_vec()
+            }
+        };
+        Ok(FileRequest::Write(path, bytes))
+    });
+    // SAFETY: the owned request has no borrowed inputs; waker is lent by caller.
+    unsafe { submit(shared_blocking_pool_opt(), waker, request) }
+}
+
+/// Submit a content-backed read while retaining the caller's exclusive heap
+/// handle loan through producer quiescence.
+///
+/// # Safety
+/// `stream` remains live and untouched until the operation's cleanup status is
+/// ready. `waker` is a borrowed live descriptor.
+pub(crate) unsafe fn start_stream_read(
+    stream: *mut crate::stream::HewStream,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the caller keeps the borrowed heap handle live through quiescence.
+    unsafe {
+        submit(
+            shared_blocking_pool_opt(),
+            waker,
+            Ok(FileRequest::StreamRead(stream)),
+        )
+    }
+}
+
+/// Submit owned content while retaining the sink loan through quiescence.
+///
+/// # Safety
+/// `sink` remains live and untouched until cleanup is ready. `waker` is borrowed.
+pub(crate) unsafe fn start_sink_write(
+    sink: *mut crate::stream::HewSink,
+    data: Vec<u8>,
+    waker: *const HewWaker,
+) -> *const HewAsyncIo {
+    // SAFETY: the job owns data and the caller retains the exclusive heap loan.
+    unsafe {
+        submit(
+            shared_blocking_pool_opt(),
+            waker,
+            Ok(FileRequest::SinkWrite(sink, data)),
+        )
+    }
+}

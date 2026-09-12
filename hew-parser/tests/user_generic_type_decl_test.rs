@@ -69,7 +69,7 @@ fn parses_pub_type_box_t_field_uses_type_param() {
 
 #[test]
 fn parses_pub_type_pair_ab_has_two_type_params() {
-    let td = parse_one_type_decl("pub type Pair<A, B> { first: A; second: B }");
+    let td = parse_one_type_decl("pub type Pair<A, B> { first: A, second: B }");
     assert_eq!(td.name, "Pair");
     assert_eq!(td.kind, TypeDeclKind::Struct);
     let params = td.type_params.expect("expected type_params");
@@ -80,7 +80,7 @@ fn parses_pub_type_pair_ab_has_two_type_params() {
 
 #[test]
 fn parses_pub_type_pair_ab_has_two_fields() {
-    let td = parse_one_type_decl("pub type Pair<A, B> { first: A; second: B }");
+    let td = parse_one_type_decl("pub type Pair<A, B> { first: A, second: B }");
     assert_eq!(td.body.len(), 2);
 }
 
@@ -88,8 +88,8 @@ fn parses_pub_type_pair_ab_has_two_fields() {
 
 #[test]
 fn parses_pub_enum_result_te_has_two_type_params() {
-    // Hew enum variants are separated by semicolons
-    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T); Err(E) }");
+    // Hew enum variants are separated by commas.
+    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T), Err(E) }");
     assert_eq!(td.name, "Result");
     assert_eq!(td.kind, TypeDeclKind::Enum);
     let params = td.type_params.expect("expected type_params");
@@ -100,7 +100,7 @@ fn parses_pub_enum_result_te_has_two_type_params() {
 
 #[test]
 fn parses_pub_enum_result_te_has_two_tuple_variants() {
-    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T); Err(E) }");
+    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T), Err(E) }");
     assert_eq!(td.body.len(), 2);
     // Both variants must be Variant items
     for item in &td.body {
@@ -113,7 +113,7 @@ fn parses_pub_enum_result_te_has_two_tuple_variants() {
 
 #[test]
 fn parses_pub_enum_result_te_ok_variant_has_t_payload() {
-    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T); Err(E) }");
+    let td = parse_one_type_decl("pub enum Result<T, E> { Ok(T), Err(E) }");
     let hew_parser::ast::TypeBodyItem::Variant(ok_variant) = &td.body[0] else {
         panic!("expected Variant");
     };
@@ -141,7 +141,7 @@ fn parses_pub_type_bounded_param_preserves_bound() {
 
 #[test]
 fn parses_pub_type_without_params_has_none_type_params() {
-    let td = parse_one_type_decl("pub type Point { x: int; y: int }");
+    let td = parse_one_type_decl("pub type Point { x: int, y: int }");
     assert_eq!(td.name, "Point");
     assert!(
         td.type_params.is_none(),

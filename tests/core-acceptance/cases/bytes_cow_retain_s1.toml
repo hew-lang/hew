@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_cow_retain_s1"
+intent = "A240 retain-on-share Stage S1: compiled ownership probe for every bytes co-owner mint plus mutation-triggered copy-on-write."
+source = "../vertical-slice/accept/bytes_cow_retain_s1.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

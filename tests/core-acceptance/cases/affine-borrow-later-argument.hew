@@ -1,0 +1,33 @@
+#[resource]
+type Token { label: string }
+
+impl Token {
+    fn close(consume self) { println(f"close {self.label}"); }
+}
+
+type Holder { token: Token }
+
+fn later(token: Token) -> i64 {
+    println(f"later {token.label}");
+    token.label.len()
+}
+
+fn read(token: Token, length: i64) {
+    println(f"read {token.label} {length}");
+}
+
+fn forward(token: Token) {
+    read(token, later(token));
+    println(f"forward {token.label}");
+}
+
+fn main() {
+    read(Token { label: "fresh".to_upper() }, 5);
+    let token = Token { label: "root".to_upper() };
+    read(token, later(token));
+    forward(token);
+    println(f"after {token.label}");
+    let held = Holder { token: Token { label: "field".to_upper() } };
+    read(held.token, later(held.token));
+    println(f"after {held.token.label}");
+}

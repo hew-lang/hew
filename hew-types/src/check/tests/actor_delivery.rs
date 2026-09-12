@@ -1,0 +1,683 @@
+use super::check_source;
+use crate::actor_delivery::{ActorDeliveryCall, SendPolicy};
+use crate::check::effects::SuspensionEffect;
+
+/// A call through a mailbox view submits. A rejected submission hands the whole
+/// message back, and the two moves left on it — `.to(other)` and `.retry()` —
+/// resubmit it.
+#[test]
+fn mailbox_calls_submit_and_rejections_can_be_resubmitted() {
+    let source = r#"actor Worker { receive fn process(value: string) {} }
+        fn main() {
+            let worker = mailbox(spawn Worker(), on_full: .Reject);
+            let backup = spawn Worker();
+            match worker.process("work") {
+                .Ok(delivery) => {},
+                .Err(rejected) => { let _ = rejected.message.to(backup); }
+            }
+            match worker.process("again") {
+                .Ok(delivery) => {},
+                .Err(rejected) => { let _ = rejected.message.retry(); }
+            }
+        }"#;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    // Two calls submit; `.retry()` submits a third time; `.to(backup)`
+    // readdresses and submits in one step.
+    assert_eq!(
+        output
+            .actor_delivery_calls
+            .values()
+            .filter(|call| matches!(
+                call,
+                ActorDeliveryCall::Submit {
+                    policy: SendPolicy::Reject
+                } | ActorDeliveryCall::Readdress {
+                    policy: SendPolicy::Reject,
+                    ..
+                }
+            ))
+            .count(),
+        2
+    );
+    assert!(output
+        .suspension_effects
+        .calls
+        .values()
+        .all(|effect| *effect == SuspensionEffect::Never));
+}
+
+/// `.Wait` is the only suspending submission policy, and the effect comes from
+/// the view's type, not from the handler being called (A399).
+#[test]
+fn actor_delivery_wait_policy_only_suspends_submission() {
+    let source = r"actor Worker { receive fn process(value: i64) {} }
+        fn main() {
+            let worker = spawn Worker();
+            let quick = mailbox(worker, on_full: .Reject);
+            let sender = mailbox(worker, on_full: .Wait);
+            let _ = quick.process(1);
+            let _ = sender.process(42);
+        }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let submissions: Vec<_> = output
+        .suspension_effects
+        .calls
+        .iter()
+        .filter(|(_, effect)| **effect == SuspensionEffect::MaySuspend)
+        .collect();
+    assert_eq!(submissions.len(), 1, "{:?}", output.suspension_effects);
+    assert_eq!(
+        &source[submissions[0].0.start..submissions[0].0.end],
+        "sender.process(42)"
+    );
+}
+
+/// A returned message is affine, addressed to one protocol, and opaque.
+#[test]
+fn actor_delivery_rejects_reuse_and_incompatible_destination() {
+    for (body, diagnostic) in [
+        ("let _ = m.retry(); let _ = m.retry();", "moved"),
+        ("let other = spawn Other(); let _ = m.to(other);", "type"),
+        ("let x = m.payload;", "sealed"),
+        ("m.retry();", "e_send_result_dropped"),
+    ] {
+        let source = format!(
+            "actor Worker {{ receive fn process(value: i64) {{}} }} \
+             actor Other {{ receive fn process(value: i64) {{}} }} \
+             fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
+             match worker.process(1) {{ \
+                 .Ok(_) => {{}}, \
+                 .Err(rejected) => {{ let m = rejected.message; {body} }} \
+             }} }}"
+        );
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.to_lowercase().contains(diagnostic)),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+/// A statement-position send or ask drops its typed delivery outcome, which is
+/// how a delivery failure gets lost by accident (HEW-SPEC-2026 §2.1.1, §5.6).
+/// Every way of using the outcome keeps the program legal; only the bare
+/// statement is refused.
+#[test]
+fn statement_position_delivery_outcomes_are_refused() {
+    const ACTOR: &str = "actor Doubler { receive fn tell(n: i64) {} \
+         receive fn process(n: i64) -> i64 { n * 2 } }";
+
+    for (body, error) in [
+        ("mailbox(d, on_full: .Reject).tell(1);", "SendFailure"),
+        ("d.tell(1);", "ActorError"),
+        ("d.process(5);", "ActorError"),
+        // A call on a lambda actor's handle is the completion call, so its
+        // dropped outcome is the same envelope a named actor's call drops.
+        (
+            "let log = actor |n: i64| { let _ = n; }; log(5);",
+            "ActorError",
+        ),
+    ] {
+        let source = format!("{ACTOR} fn main() {{ let d = spawn Doubler; {body} }}");
+        let output = check_source(&source);
+        let hit = output
+            .errors
+            .iter()
+            .find(|e| e.kind == crate::error::TypeErrorKind::SendResultDropped)
+            .unwrap_or_else(|| panic!("{body} must be E_SEND_RESULT_DROPPED: {:?}", output.errors));
+        assert!(
+            hit.message.contains("E_SEND_RESULT_DROPPED") && hit.message.contains(error),
+            "{body}: {}",
+            hit.message
+        );
+        assert!(
+            hit.suggestions
+                .iter()
+                .any(|s| s.contains("let _ = <expr>;")),
+            "{body} needs the explicit-discard fix-it: {:?}",
+            hit.suggestions
+        );
+    }
+}
+
+#[test]
+fn handled_delivery_outcomes_are_accepted() {
+    const ACTOR: &str = "actor Doubler { receive fn tell(n: i64) {} \
+         receive fn process(n: i64) -> i64 { n * 2 } }";
+
+    for body in [
+        "_ = d.tell(1);",
+        "let _ = d.tell(1);",
+        "let r = d.tell(1); let _ = r;",
+        "d.tell(1) handle failure { };",
+        "match d.tell(1) { .Ok(_) => {}, .Err(_) => {} }",
+        "_ = d.process(5);",
+        "match d.process(5) { .Ok(_) => {}, .Err(_) => {} }",
+        "let _ = mailbox(d, on_full: .Reject).tell(1);",
+    ] {
+        let source = format!("{ACTOR} fn main() {{ let d = spawn Doubler; {body} }}");
+        let output = check_source(&source);
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == crate::error::TypeErrorKind::SendResultDropped),
+            "{body} uses its outcome and must be accepted: {:?}",
+            output.errors
+        );
+    }
+}
+
+/// A tail delivery outcome is the block's value, and `?` propagates it; neither
+/// is a discard.
+#[test]
+fn used_delivery_outcomes_outside_statement_position_are_accepted() {
+    const ACTOR: &str = "actor Doubler { receive fn tell(n: i64) {} \
+         receive fn process(n: i64) -> i64 { n * 2 } }";
+
+    for signature_and_body in [
+        "fn main() -> Result<i64, AskError> { let d = spawn Doubler; d.process(5) }",
+        "fn main() -> Result<(), AskError> { let d = spawn Doubler; \
+         let _ = d.process(5)?; Ok(()) }",
+    ] {
+        let source = format!("{ACTOR} {signature_and_body}");
+        let output = check_source(&source);
+        assert!(
+            !output
+                .errors
+                .iter()
+                .any(|e| e.kind == crate::error::TypeErrorKind::SendResultDropped),
+            "{signature_and_body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn actor_delivery_sealing_does_not_capture_user_record_names() {
+    let output = check_source("type Message { payload: i64 } type ActorMailbox { target: i64 } fn main() { let message = Message { payload: 7 }; let sender = ActorMailbox { target: message.payload }; let x = sender.target; }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn actor_delivery_seals_message_destructuring_and_construction() {
+    for body in [
+        "let { payload, .. } = m;",
+        "let forged = Message { target: worker, message_id: 999, payload: (1,) };",
+    ] {
+        let source = format!(
+            "actor Worker {{ receive fn process(value: i64) {{}} }} \
+             fn main() {{ let worker = mailbox(spawn Worker(), on_full: .Reject); \
+             match worker.process(1) {{ \
+                 .Ok(_) => {{}}, \
+                 .Err(rejected) => {{ let m = rejected.message; {body} }} \
+             }} }}"
+        );
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("sealed")),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn actor_delivery_named_arguments_preserve_protocol_order() {
+    let output = check_source(
+        r#"actor Worker { receive fn process(number: i64, text: string) {} }
+        fn main() { let worker = spawn Worker(); let _ = worker.process(text: "work", number: 7); }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let dispatch = output
+        .actor_method_dispatch
+        .values()
+        .next()
+        .expect("message constructor");
+    assert!(
+        matches!(dispatch, crate::ActorMethodKind::Ask { argument_order, .. } if argument_order == &[1, 0])
+    );
+    let output = check_source("actor Worker { receive fn process(first: i64, second: i64) {} } fn main() { let worker = spawn Worker(); let _ = worker.process(first: 1, first: 2); }");
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("exactly once")),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn actor_delivery_failure_reason_matches_annotated_error_values() {
+    let output = check_source("actor Worker { receive fn process() {} } fn reason(error: SendError) -> SendError { error } fn main() { let worker = mailbox(spawn Worker(), on_full: .Reject); match worker.process() { .Ok(_) => {}, .Err(failure) => { let same = reason(failure.reason); } } }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        output.type_defs["std.builtins.SendFailure"].fields["reason"],
+        crate::Ty::send_error()
+    );
+}
+
+/// A call on the handle waits for the handler, so a void handler's call has the
+/// unit completion result, not a delivery outcome.
+#[test]
+fn a_call_on_a_handle_completes_with_a_unit_result() {
+    let source = "actor Worker { receive fn work(n: i64) {} } \
+         fn main() { let w = spawn Worker(); let _ = w.work(1); }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .actor_method_dispatch
+        .values()
+        .any(|dispatch| matches!(dispatch, crate::ActorMethodKind::Ask { reply_ty, .. } if *reply_ty == crate::Ty::Unit)));
+    let start = source.find("w.work(1)").expect("call site");
+    let call = output
+        .expr_types
+        .get(&crate::check::SpanKey::in_module(
+            &(start..start + "w.work(1)".len()),
+            0,
+        ))
+        .expect("completion call type");
+    let (success, failure) = call.as_result().expect("completion result");
+    assert_eq!(success, &crate::Ty::Unit, "{call:?}");
+    // The handler declares no `fails`, so the error can never be `Failed`: the
+    // failure and rejection parameters are both the uninhabited `Never`.
+    let crate::Ty::Named { name, args, .. } = failure else {
+        panic!("completion error is not nominal: {failure:?}");
+    };
+    assert_eq!(name, crate::actor_delivery::ACTOR_ERROR_TYPE);
+    assert_eq!(
+        args.as_slice(),
+        [crate::Ty::never_type(), crate::Ty::never_type()],
+        "{failure:?}"
+    );
+}
+
+/// A mailbox view only submits, so a value-returning handler has no reply to
+/// give through it; the diagnostic names `fork` for the concurrent call.
+#[test]
+fn a_value_returning_handler_through_a_mailbox_view_names_fork() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.total(); }",
+    );
+    let message = output
+        .errors
+        .iter()
+        .map(|error| error.message.clone())
+        .find(|message| message.contains("mailbox view"))
+        .unwrap_or_else(|| panic!("expected the mailbox-view refusal: {:?}", output.errors));
+    assert!(message.contains("fork target.total(..)"), "{message}");
+}
+
+/// A `fails` handler that owes no value may be submitted one way: its declared
+/// error has no caller and becomes the actor's own fault instead.
+#[test]
+fn a_unit_fails_handler_submits_through_a_mailbox_view() {
+    let output = check_source(
+        "actor Worker { receive fn note(n: i64) -> () fails string {            if n < 0 { return error \"negative\"; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a unit `fails` handler submits through a view: {:?}",
+        output.errors
+    );
+}
+
+/// The fault a one-way submission raises carries the error's own text, so a
+/// failure type with no way to render is refused at the submission.
+#[test]
+fn a_fails_handler_with_no_display_is_refused_through_a_mailbox_view() {
+    let output = check_source(
+        "type Opaque { code: i64 }          actor Worker { receive fn note(n: i64) -> () fails Opaque {            if n < 0 { return error Opaque { code: n }; } } }          fn main() { let w = mailbox(spawn Worker(), on_full: .Reject); let _ = w.note(1); }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("no `impl Display` body")),
+        "expected the un-renderable failure refusal: {:?}",
+        output.errors
+    );
+}
+
+/// `Never` has no values, so an infallible handler's completion envelope needs
+/// no `Failed` arm.
+#[test]
+fn an_infallible_completion_envelope_needs_no_failed_arm() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = spawn Worker(); \
+           match w.total() { \
+             .Ok(n) => {}, \
+             .Err(e) => match e { \
+               ActorError.Rejected(_) => {}, \
+               ActorError.Trapped => {}, \
+               ActorError.Dead => {}, \
+               ActorError.Timeout => {}, \
+               ActorError.NodeNotRunning => {}, \
+               ActorError.RoutingFailed => {}, \
+               ActorError.EncodeFailed => {}, \
+               ActorError.ConnectionDropped => {}, \
+               ActorError.Partition => {}, \
+             }, \
+           } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+/// The negative control: a `fails` handler's envelope carries an inhabited
+/// error, so omitting `Failed` is still a non-exhaustive match.
+#[test]
+fn a_fails_completion_envelope_still_requires_its_failed_arm() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 fails string { 1 } } \
+         fn main() { let w = spawn Worker(); \
+           match w.total() { \
+             .Ok(n) => {}, \
+             .Err(e) => match e { \
+               ActorError.Rejected(_) => {}, \
+               ActorError.Trapped => {}, \
+               ActorError.Dead => {}, \
+               ActorError.Timeout => {}, \
+               ActorError.NodeNotRunning => {}, \
+               ActorError.RoutingFailed => {}, \
+               ActorError.EncodeFailed => {}, \
+               ActorError.ConnectionDropped => {}, \
+               ActorError.Partition => {}, \
+             }, \
+           } }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("missing Failed")),
+        "{:?}",
+        output.errors
+    );
+}
+
+/// Two handlers that complete-call each other deadlock: each waits for the
+/// other to finish. The diagnostic names the ring.
+#[test]
+fn static_completion_call_cycles_are_refused_and_name_the_path() {
+    let output = check_source(
+        "actor Beta { var alpha: Alpha, \
+           receive fn pong(n: i64) -> i64 { \
+             match alpha.ping(n) { .Ok(v) => v, .Err(_) => 0 } } } \
+         actor Alpha { var beta: Beta, \
+           receive fn ping(n: i64) -> i64 { \
+             match beta.pong(n) { .Ok(v) => v, .Err(_) => 0 } } } \
+         fn main() {}",
+    );
+    let message = output
+        .errors
+        .iter()
+        .map(|error| error.message.clone())
+        .find(|message| message.contains("completion calls form a cycle"))
+        .unwrap_or_else(|| panic!("expected the cycle refusal: {:?}", output.errors));
+    assert!(message.contains("Alpha.ping"), "{message}");
+    assert!(message.contains("Beta.pong"), "{message}");
+}
+
+/// The negative control: a one-way chain of completion calls is not a cycle.
+#[test]
+fn a_completion_call_chain_without_a_cycle_is_accepted() {
+    let output = check_source(
+        "actor Sink { var n: i64 = 0, receive fn take(v: i64) -> i64 { n = n + v; n } } \
+         actor Source { var sink: Sink, \
+           receive fn run(v: i64) -> i64 { \
+             match sink.take(v) { .Ok(t) => t, .Err(_) => 0 } } } \
+         fn main() { let s = spawn Sink(); let src = spawn Source(sink: s); \
+           match src.run(3) { .Ok(_) => {}, .Err(_) => {} } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn self_completion_is_refused_inside_receive_and_private_method_bodies() {
+    for body in [
+        "receive fn run() { let _ = self.done(); }",
+        "receive fn run() { helper(); } fn helper() { let _ = self.done(); }",
+    ] {
+        let output = check_source(&format!(
+            "actor Worker {{ {body} receive fn done() {{}} }} fn main() {{}}"
+        ));
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("a completion call to self waits for the actor turn")),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn self_mailbox_submission_and_calls_to_another_instance_remain_valid() {
+    let output = check_source(
+        "actor Worker { \
+           receive fn run(other: Worker) { \
+             let _ = mailbox(self, on_full: .Reject).done(); let _ = other.done(); \
+           } \
+           receive fn done() {} \
+         } fn main() {}",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn self_call_prepared_by_select_keeps_its_timeout_escape() {
+    let output = check_source(
+        "actor Worker { \
+           receive fn run() { \
+             select { reply from self.done() => {}, after 1ms => {} } \
+           } \
+           receive fn done() {} \
+         } fn main() {}",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+/// `policy(..)` is the completion view: its calls wait for the handler exactly
+/// as a bare-handle call does, and the view only chooses the call's admission.
+#[test]
+fn a_policy_view_completes_and_carries_its_admission_policy() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = policy(spawn Worker(), on_full: .Reject); \
+           match w.total() { .Ok(_) => {}, .Err(_) => {} } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .actor_method_dispatch
+        .values()
+        .any(|dispatch| matches!(
+            dispatch,
+            crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Reject
+        )));
+    // The call completes with the handler's own reply, not a delivery outcome.
+    let completion = output
+        .expr_types
+        .values()
+        .filter_map(|ty| ty.as_result())
+        .find(|(success, _)| **success == crate::Ty::I64)
+        .expect("completion call type");
+    let crate::Ty::Named { args, .. } = completion.1 else {
+        panic!("completion envelope")
+    };
+    assert_eq!(args[0], crate::Ty::never_type());
+    assert!(crate::actor_delivery::message_parts(&args[1]).is_some());
+}
+
+#[test]
+fn stored_completion_request_preserves_reply_and_rejects_incompatible_redirect() {
+    for destination in ["Good", "WrongParameters", "WrongName", "WrongReply"] {
+        let source = format!(
+            r#"
+            actor Worker {{ receive fn echo(value: string) -> string {{ value }} }}
+            actor Good {{ receive fn echo(value: string) -> string {{ value }} }}
+            actor WrongParameters {{ receive fn echo(value: i64) -> string {{ "wrong" }} }}
+            actor WrongName {{ receive fn other(value: string) -> string {{ value }} }}
+            actor WrongReply {{ receive fn echo(value: string) -> i64 {{ 0 }} }}
+            fn main() {{
+                let worker = policy(spawn Worker(), on_full: .Reject);
+                let result = worker.echo("owned");
+                match result {{
+                    .Err(ActorError.Rejected(failure)) => {{
+                        let reply = failure.message.to(spawn {destination}());
+                        match reply {{ .Ok(text) => println(text), .Err(_) => {{}} }}
+                    }},
+                    _ => {{}},
+                }}
+            }}
+        "#
+        );
+        let output = check_source(&source);
+        if destination == "Good" {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Worker::echo")
+                        && error.message.contains(&format!("{destination}::echo"))),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn completion_recovery_consumes_the_stored_rejection() {
+    for repeats in [false, true] {
+        let again = if repeats {
+            "let _ = failure.retry();"
+        } else {
+            ""
+        };
+        let output = check_source(&format!(
+            r#"
+            actor Worker {{ receive fn echo(value: string) -> string {{ value }} }}
+            fn main() {{
+                let worker = policy(spawn Worker(), on_full: .Reject);
+                let result = worker.echo("owned");
+                match result {{
+                    .Err(ActorError.Rejected(failure)) => {{
+                        let _ = failure.retry();
+                        {again}
+                    }},
+                    _ => {{}},
+                }}
+            }}
+        "#
+        ));
+        if repeats {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("moved")),
+                "{:?}",
+                output.errors
+            );
+        } else {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        }
+    }
+}
+
+#[test]
+fn sealed_request_keeps_the_declared_callable_protocol_after_coercion() {
+    for destination in ["Compatible", "Narrower"] {
+        let source = format!(
+            r"
+            fn pure() -> i64 {{ 1 }}
+            actor Original {{
+                receive fn invoke(operation: fn[suspends]() -> i64) -> i64 {{ operation() }}
+            }}
+            actor Compatible {{
+                receive fn invoke(operation: fn[suspends]() -> i64) -> i64 {{ operation() }}
+            }}
+            actor Narrower {{
+                receive fn invoke(operation: fn() -> i64) -> i64 {{ operation() }}
+            }}
+            fn main() {{
+                let original = policy(spawn Original(), on_full: .Reject);
+                let result = original.invoke(pure);
+                match result {{
+                    .Err(ActorError.Rejected(failure)) => {{
+                        let _ = failure.message.to(spawn {destination}());
+                    }},
+                    _ => {{}},
+                }}
+            }}
+        "
+        );
+        let output = check_source(&source);
+        if destination == "Compatible" {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Original::invoke")
+                        && error.message.contains("Narrower::invoke")),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+/// A bare handle completes under `.Wait`: a full mailbox parks the caller
+/// rather than refusing the call.
+#[test]
+fn a_bare_handle_completion_waits_for_admission() {
+    let output = check_source(
+        "actor Worker { receive fn total() -> i64 { 1 } } \
+         fn main() { let w = spawn Worker(); match w.total() { .Ok(_) => {}, .Err(_) => {} } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .actor_method_dispatch
+        .values()
+        .any(|dispatch| matches!(
+            dispatch,
+            crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Wait
+        )));
+}
+
+/// A completion view admits only the two policies a waiting call can honour:
+/// it cannot discard or displace the request it is waiting for.
+#[test]
+fn a_policy_view_refuses_the_discarding_policies() {
+    for option in [".DropNewest", ".ReplaceLatest"] {
+        let output = check_source(&format!(
+            "actor Worker {{ mailbox 1, receive fn total() -> i64 {{ 1 }} }} \
+             fn main() {{ let w = policy(spawn Worker(), on_full: {option}); \
+               match w.total() {{ .Ok(_) => {{}}, .Err(_) => {{}} }} }}"
+        ));
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("completion view admits")),
+            "{option}: {:?}",
+            output.errors
+        );
+    }
+}

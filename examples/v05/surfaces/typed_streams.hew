@@ -1,38 +1,27 @@
-//! Status: runnable (suspending typed streams over await; owned-handle actor state)
-//! Description: Typed streams — a `Stream<bytes>` half owned in actor state, drained with `await stream.recv()`.
-//!
-//! A `Stream<bytes>` half MOVES INTO a consumer actor's state and the actor
-//! drains it with the suspending `await stream.recv()` terminator: each recv
-//! suspends until a frame is ready and yields the next `Option<bytes>`
-//! (`Some(frame)` until EOF, then `None`). The actor's teardown closes the
-//! held half exactly once — the compiler proves the handle is freed once
-//! (`hew_stream_close`), never double-freed.
-//!
-//! The `Sink<bytes>` half stays a LOCAL in `main`, which sends frames (each
-//! `sink.send(item)` writes a frame, suspending on a full ring —
-//! backpressure-aware for a context-carrying caller) and then `close()`s it to
-//! deliver EOF to the parked consumer. Closing a half you own as a LOCAL is how
-//! you signal EOF; a half held in actor state is closed only by the actor's
-//! teardown (explicitly closing a state-held handle is refused fail-closed,
-//! because the teardown drop already owns that close).
-//!
-//! The canonical method names are `recv()` / `send()` (not `next()` / `write()`).
-//! Frames are built from text with the public `string.to_bytes()` surface — no
-//! raw extern, no `unsafe`.
+//! A consumer actor drains a `Stream<bytes>` with `input.recv()`.
+//! The producer calls `sink.send(item)` and closes the sink to signal EOF.
+//! Empty frames are values; only `None` marks EOF. Run producer and consumer
+//! concurrently when either can wait for the other.
+
+import std.encoding.utf8;
 
 import std.stream;
 
 actor Drainer {
-    let input: stream.Stream<bytes>;
+    let input: stream.Stream<bytes>,
     receive fn run() {
 
         // Consumer: each recv suspends until a frame is ready; None == EOF.
         var received = 0;
         var done = false;
         while !done {
-            match await input.recv() {
+            match input.recv() {
                 .Some(frame) => {
-                    println(f"recv {frame.to_string()}");
+                    let decoded_frame = utf8.decode(frame) handle error {
+                        println(f"invalid UTF-8: {error}");
+                        return;
+                    };
+                    println(f"recv {decoded_frame}");
                     received = received + 1;
                 },
                 .None => {
@@ -45,17 +34,24 @@ actor Drainer {
 }
 
 fn main() {
-    let (sink, input) = stream.bytes_pipe(8);
+    let (sink, input) = match stream.bytes_pipe(8) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
     // The Stream half moves into the actor's state; the Sink half stays local.
     let d = spawn Drainer(input: input);
-    d.run();
-
+    // `fork` starts the completion call concurrently: an ordinary call here
+    // would wait for the handler to finish before this function's next
+    // statement runs, and the handler cannot finish until the producer below
+    // sends frames — an ordinary call would deadlock the two sides.
+    fork d.run();
     // Producer side: drive the local sink, then close it to signal EOF.
     for i in 0 .. 3 {
         sink.send(f"frame-{i}".to_bytes());
     }
     sink.close();
-    // Every printed line comes from the handler; runtime shutdown drains it to
-    // quiescence after `main` returns. A trailing print here would be ordered
-    // against the handler only by a sleep, which is not an edge.
+    // Every printed line comes from the handler; runtime shutdown drains the
+    // forked call to quiescence after `main` returns. A trailing print here
+    // would be ordered against the handler only by a sleep, which is not an
+    // edge.
 }

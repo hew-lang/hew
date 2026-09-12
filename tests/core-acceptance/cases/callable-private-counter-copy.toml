@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-private-counter-copy"
+intent = "Cloning a private mutable counter snapshots its current state into an independent environment while preserving the source binding."
+source = "cases/callable-private-counter-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "41\n42\n43\n42\n43\n44\n40\n"
+exit = 0

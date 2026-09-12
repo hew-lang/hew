@@ -1,0 +1,51 @@
+// An infallible handler's completion call is `Result<R, ActorError<Never>>`.
+// `Never` has no values, so `Failed(_)` can never arrive and the match needs no
+// arm for it. The `fails` handler below is the control: its envelope carries an
+// inhabited `E`, so its match still spells `Failed`.
+actor Counter {
+    var n: i64 = 0,
+
+    receive fn bump(by: i64) -> i64 { n = n + by; n }
+
+    receive fn divide(by: i64) -> i64 fails string {
+        if by == 0 {
+            return error "divide by zero";
+        }
+        n / by
+    }
+}
+
+fn main() {
+    let counter = spawn Counter();
+    match counter.bump(4) {
+        .Ok(v) => println(v),
+        .Err(e) => match e {
+            ActorError.Rejected(_) => println("rejected"),
+            ActorError.Trapped => println("trapped"),
+            ActorError.Dead => println("dead"),
+            ActorError.Timeout => println("timeout"),
+            ActorError.NodeNotRunning => println("node not running"),
+            ActorError.RoutingFailed => println("routing failed"),
+            ActorError.EncodeFailed => println("encode failed"),
+            ActorError.ConnectionDropped => println("connection dropped"),
+            ActorError.Partition => println("partition"),
+        },
+    }
+    match counter.divide(0) {
+        .Ok(v) => println(v),
+        .Err(e) => match e {
+            ActorError.Rejected(_) => println("rejected"),
+            ActorError.Failed(reason) => println(reason),
+            ActorError.Trapped => println("trapped"),
+            ActorError.Dead => println("dead"),
+            ActorError.Timeout => println("timeout"),
+            ActorError.NodeNotRunning => println("node not running"),
+            ActorError.RoutingFailed => println("routing failed"),
+            ActorError.EncodeFailed => println("encode failed"),
+            ActorError.ConnectionDropped => println("connection dropped"),
+            ActorError.Partition => println("partition"),
+        },
+    }
+    close(counter);
+    println("closed");
+}

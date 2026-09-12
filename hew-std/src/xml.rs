@@ -1,13 +1,12 @@
 //! Hew `std::encoding::xml` — XML parsing and serialization.
 //!
 //! Provides XML parsing, serialization, and node access for compiled Hew
-//! programs. All returned strings are allocated with `libc::malloc` and
-//! NUL-terminated. All returned [`HewXmlNode`] pointers are heap-allocated
+//! programs. Text inputs borrow managed [`HewString`] handles and text
+//! results transfer an independent managed owner. Null is the canonical
+//! empty string. All returned [`HewXmlNode`] pointers are heap-allocated
 //! via `Box` and must be freed with [`hew_xml_free`].
-use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::cell::RefCell;
-use std::ffi::CStr;
-use std::os::raw::c_char;
 
 const MAX_XML_DEPTH: usize = 256;
 
@@ -383,18 +382,11 @@ fn collect_text(node: &XmlNodeKind, buf: &mut String) {
 ///
 /// # Safety
 ///
-/// `xml_str` must be a valid NUL-terminated C string.
+/// `xml_str` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_xml_parse(xml_str: *const c_char) -> *mut HewXmlNode {
-    if xml_str.is_null() {
-        set_xml_last_error("xml: invalid input: null pointer");
-        return std::ptr::null_mut();
-    }
-    // SAFETY: xml_str is a valid NUL-terminated C string per caller contract.
-    let Ok(s) = unsafe { CStr::from_ptr(xml_str) }.to_str() else {
-        set_xml_last_error("xml: invalid input: input was not valid UTF-8");
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_xml_parse(xml_str: *const HewString) -> *mut HewXmlNode {
+    // SAFETY: xml_str is a live managed string handle per caller contract.
+    let s = unsafe { string_as_str(xml_str) };
     match parse_xml(s) {
         Ok(tree) => {
             clear_xml_last_error();
@@ -409,90 +401,86 @@ pub unsafe extern "C" fn hew_xml_parse(xml_str: *const c_char) -> *mut HewXmlNod
 
 /// Return this actor's last XML parse error.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with [`hew_xml_string_free`]. Returns null when no XML error has been
-/// recorded.
+/// Returns an owned managed string. Release it with `hew_string_drop`.
+/// Returns canonical empty (null) when no XML error has been recorded.
 #[no_mangle]
-pub extern "C" fn hew_xml_last_error() -> *mut c_char {
+pub extern "C" fn hew_xml_last_error() -> *mut HewString {
     match clone_xml_last_error() {
-        Some(message) => str_to_malloc(&message),
+        Some(message) => string_from_str(&message),
         None => std::ptr::null_mut(),
     }
 }
 
 /// Serialize a [`HewXmlNode`] tree back to an XML string.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must free
-/// it with [`hew_xml_string_free`]. Returns null on error.
+/// Returns an owned managed string. Release it with `hew_string_drop`.
+/// Returns null on error.
 ///
 /// # Safety
 ///
 /// `node` must be a valid pointer to a [`HewXmlNode`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_xml_to_string(node: *const HewXmlNode) -> *mut c_char {
+pub unsafe extern "C" fn hew_xml_to_string(node: *const HewXmlNode) -> *mut HewString {
     if node.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: node is a valid HewXmlNode pointer per caller contract.
     let n = unsafe { &*node };
-    let s = serialize_xml(&n.inner);
-    str_to_malloc(&s)
+    string_from_str(&serialize_xml(&n.inner))
 }
 
 /// Get the tag name of an XML element node.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. Returns an empty
-/// string for text nodes. The caller must free it with [`hew_xml_string_free`].
+/// Returns an owned managed string. Release it with `hew_string_drop`.
+/// Returns canonical empty (null) for text nodes or a null `node`.
 ///
 /// # Safety
 ///
 /// `node` must be a valid pointer to a [`HewXmlNode`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_xml_get_tag(node: *const HewXmlNode) -> *mut c_char {
+pub unsafe extern "C" fn hew_xml_get_tag(node: *const HewXmlNode) -> *mut HewString {
     if node.is_null() {
-        return str_to_malloc("");
+        return std::ptr::null_mut();
     }
     // SAFETY: node is a valid HewXmlNode pointer per caller contract.
     let n = unsafe { &*node };
     match &n.inner {
-        XmlNodeKind::Element { tag, .. } => str_to_malloc(tag),
-        XmlNodeKind::Text(_) => str_to_malloc(""),
+        XmlNodeKind::Element { tag, .. } => string_from_str(tag),
+        XmlNodeKind::Text(_) => std::ptr::null_mut(),
     }
 }
 
 /// Get an attribute value by name from an XML element node.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// attribute value if found, or an empty string if the attribute is not
-/// present or the node is a text node. The caller must free the result
-/// with [`hew_xml_string_free`].
+/// Returns an owned managed string containing the attribute value if found.
+/// Returns canonical empty (null) if the attribute is not present, the node
+/// is a text node, or `node` is null. Release a non-null result with
+/// `hew_string_drop`.
 ///
 /// # Safety
 ///
 /// `node` must be a valid pointer to a [`HewXmlNode`], or null.
-/// `name` must be a valid NUL-terminated C string.
+/// `name` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_xml_get_attribute(
     node: *const HewXmlNode,
-    name: *const c_char,
-) -> *mut c_char {
-    if node.is_null() || name.is_null() {
-        return str_to_malloc("");
+    name: *const HewString,
+) -> *mut HewString {
+    if node.is_null() {
+        return std::ptr::null_mut();
     }
-    // SAFETY: name is a valid NUL-terminated C string per caller contract.
-    let Ok(attr_name) = unsafe { CStr::from_ptr(name) }.to_str() else {
-        return str_to_malloc("");
-    };
+    // SAFETY: name is null (canonical empty) or a live managed string handle.
+    let attr_name = unsafe { string_as_str(name) };
     // SAFETY: node is a valid HewXmlNode pointer per caller contract.
     let n = unsafe { &*node };
     if let XmlNodeKind::Element { attributes, .. } = &n.inner {
         for (k, v) in attributes {
             if k == attr_name {
-                return str_to_malloc(v);
+                return string_from_str(v);
             }
         }
     }
-    str_to_malloc("")
+    std::ptr::null_mut()
 }
 
 /// Get the number of child nodes of an XML element.
@@ -553,22 +541,21 @@ pub unsafe extern "C" fn hew_xml_get_child(node: *const HewXmlNode, index: i32) 
 /// For element nodes, this recursively collects all text node content.
 /// For text nodes, returns the text directly.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string. The caller must
-/// free it with [`hew_xml_string_free`].
+/// Returns an owned managed string. Release it with `hew_string_drop`.
 ///
 /// # Safety
 ///
 /// `node` must be a valid pointer to a [`HewXmlNode`], or null.
 #[no_mangle]
-pub unsafe extern "C" fn hew_xml_get_text(node: *const HewXmlNode) -> *mut c_char {
+pub unsafe extern "C" fn hew_xml_get_text(node: *const HewXmlNode) -> *mut HewString {
     if node.is_null() {
-        return str_to_malloc("");
+        return std::ptr::null_mut();
     }
     // SAFETY: node is a valid HewXmlNode pointer per caller contract.
     let n = unsafe { &*node };
     let mut buf = String::new();
     collect_text(&n.inner, &mut buf);
-    str_to_malloc(&buf)
+    string_from_str(&buf)
 }
 
 /// Return whether a node is an element (1) or text (0).
@@ -607,22 +594,6 @@ pub unsafe extern "C" fn hew_xml_free(node: *mut HewXmlNode) {
     drop(unsafe { Box::from_raw(node) });
 }
 
-/// Free a C string previously returned by `hew_xml_to_string`,
-/// `hew_xml_get_tag`, `hew_xml_get_attribute`, or `hew_xml_get_text`.
-///
-/// # Safety
-///
-/// `s` must be a pointer previously returned by a `hew_xml_*` string function,
-/// and must not have been freed already.
-#[no_mangle]
-pub unsafe extern "C" fn hew_xml_string_free(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: s was allocated with libc::malloc and has not been freed.
-    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (test frees str_to_malloc output)
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -630,98 +601,85 @@ pub unsafe extern "C" fn hew_xml_string_free(s: *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
 
     /// Establish that an XML string export transfers one independently
     /// releasable owner to its caller.
     ///
-    /// Two simultaneously-live calls must return distinct allocations (R1),
-    /// each allocation must already be unique at handoff (R2), and releasing
-    /// both must leave the source node usable for a third equivalent call
-    /// (R3). Together these are the executable authority for the
-    /// `result-retention = "transferred"` rows on the four XML string
-    /// producers.
+    /// Two simultaneously-live calls must return distinct owners (R1), each
+    /// stays readable while its sibling is released (R2), and the producer
+    /// keeps working after both are released (R3). Together these are the
+    /// executable authority for the `result-retention = "transferred"` rows
+    /// on the four XML string producers.
     fn assert_string_result_is_transferred(
         symbol: &str,
         expected: &str,
-        call: impl Fn() -> *mut c_char,
+        call: impl Fn() -> *mut HewString,
     ) {
         let first = call();
         let second = call();
-        assert!(
-            !first.is_null() && !second.is_null(),
-            "{symbol}: expected two live results"
-        );
         assert_ne!(
             first, second,
-            "{symbol}: two live results share an address, so the export retained \
+            "{symbol}: two live results share an allocation, so the export retained \
              or re-borrowed its result"
         );
 
-        for (label, ptr) in [("first", first), ("second", second)] {
-            // SAFETY: each pointer is a live header-aware string returned by
-            // one of the XML exports under test.
-            let unique = unsafe { hew_cabi::cabi::cstring_ensure_unique(ptr) };
-            assert_eq!(
-                unique, ptr,
-                "{symbol}: the {label} result was not solely owned at handoff"
-            );
-            // SAFETY: `ptr` remains live because the uniqueness probe returned
-            // it unchanged.
-            let actual = unsafe { CStr::from_ptr(ptr) }
-                .to_str()
-                .expect("XML is UTF-8");
-            assert_eq!(actual, expected);
-        }
-
-        // SAFETY: R2 established that each result is a distinct sole owner.
+        // SAFETY: both results are live owners held by this test.
         unsafe {
-            hew_xml_string_free(first);
-            hew_xml_string_free(second);
+            assert_eq!(string_as_str(first), expected, "{symbol}: first result");
+            assert_eq!(string_as_str(second), expected, "{symbol}: second result");
+            string_release(first);
+            // R2: releasing one owner must not disturb the other.
+            assert_eq!(
+                string_as_str(second),
+                expected,
+                "{symbol}: after first release"
+            );
+            string_release(second);
         }
 
         let third = call();
-        assert!(
-            !third.is_null(),
-            "{symbol}: source did not survive releases"
-        );
-        // SAFETY: `third` is a live result from the same XML export.
-        let actual = unsafe { CStr::from_ptr(third) }
-            .to_str()
-            .expect("XML is UTF-8");
-        assert_eq!(
-            actual, expected,
-            "{symbol}: releasing earlier results changed the source"
-        );
-        // SAFETY: `third` is the export's fresh sole-owner result.
-        unsafe { hew_xml_string_free(third) };
+        // SAFETY: `third` is a fresh live owner.
+        unsafe {
+            assert_eq!(
+                string_as_str(third),
+                expected,
+                "{symbol}: releasing earlier results changed the source"
+            );
+            string_release(third);
+        }
     }
 
     /// Helper: parse an XML string and return the owned pointer.
     fn parse(xml: &str) -> *mut HewXmlNode {
-        let c = CString::new(xml).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
+        let c = ManagedString::new(xml);
+        // SAFETY: c is a live managed string handle.
         unsafe { hew_xml_parse(c.as_ptr()) }
     }
 
-    /// Helper: read a C string pointer and free it.
-    unsafe fn read_and_free_cstr(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
-        unsafe { hew_xml_string_free(ptr) };
+    /// Helper: read a managed string result and release it. Canonical empty
+    /// (null) reads as `""`, matching a text export's own null-is-empty
+    /// contract.
+    unsafe fn read_and_free_string(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is null (canonical empty) or a live managed owner.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr is null or an owned managed result.
+        unsafe { string_release(ptr) };
         s
     }
 
-    unsafe fn read_and_free_optional_cstr(ptr: *mut c_char) -> Option<String> {
+    /// Helper: read an optional managed string result and release it. Unlike
+    /// [`read_and_free_string`], null distinctly means "no error recorded"
+    /// here rather than an empty message.
+    unsafe fn read_and_free_optional_string(ptr: *mut HewString) -> Option<String> {
         if ptr.is_null() {
             return None;
         }
-        // SAFETY: ptr is a valid NUL-terminated C string from malloc.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated with malloc.
-        unsafe { hew_xml_string_free(ptr) };
+        // SAFETY: ptr is a live managed owner.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr is an owned managed result.
+        unsafe { string_release(ptr) };
         Some(s)
     }
 
@@ -733,9 +691,9 @@ mod tests {
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
             assert_eq!(hew_xml_is_element(node), 1);
-            let tag = read_and_free_cstr(hew_xml_get_tag(node));
+            let tag = read_and_free_string(hew_xml_get_tag(node));
             assert_eq!(tag, "greeting");
-            let text = read_and_free_cstr(hew_xml_get_text(node));
+            let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "Hello");
             hew_xml_free(node);
         }
@@ -748,17 +706,17 @@ mod tests {
 
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let id_key = CString::new("id").unwrap();
+            let id_key = ManagedString::new("id");
             let id_val = hew_xml_get_attribute(node, id_key.as_ptr());
-            assert_eq!(read_and_free_cstr(id_val), "42");
+            assert_eq!(read_and_free_string(id_val), "42");
 
-            let colour_key = CString::new("colour").unwrap();
+            let colour_key = ManagedString::new("colour");
             let colour_val = hew_xml_get_attribute(node, colour_key.as_ptr());
-            assert_eq!(read_and_free_cstr(colour_val), "red");
+            assert_eq!(read_and_free_string(colour_val), "red");
 
-            let missing_key = CString::new("missing").unwrap();
+            let missing_key = ManagedString::new("missing");
             let missing_val = hew_xml_get_attribute(node, missing_key.as_ptr());
-            assert_eq!(read_and_free_cstr(missing_val), "");
+            assert_eq!(read_and_free_string(missing_val), "");
 
             hew_xml_free(node);
         }
@@ -768,7 +726,7 @@ mod tests {
     fn string_results_are_transferred_to_the_caller() {
         let node = parse(r#"<item id="42">hello</item>"#);
         assert!(!node.is_null());
-        let id = CString::new("id").unwrap();
+        let id = ManagedString::new("id");
 
         // SAFETY: `node` is live for the duration of every call and `id` is a
         // valid NUL-terminated attribute name.
@@ -809,15 +767,15 @@ mod tests {
 
             let child0 = hew_xml_get_child(node, 0);
             assert!(!child0.is_null());
-            let tag0 = read_and_free_cstr(hew_xml_get_tag(child0));
+            let tag0 = read_and_free_string(hew_xml_get_tag(child0));
             assert_eq!(tag0, "a");
-            let text0 = read_and_free_cstr(hew_xml_get_text(child0));
+            let text0 = read_and_free_string(hew_xml_get_text(child0));
             assert_eq!(text0, "1");
             hew_xml_free(child0);
 
             let child2 = hew_xml_get_child(node, 2);
             assert!(!child2.is_null());
-            let tag2 = read_and_free_cstr(hew_xml_get_tag(child2));
+            let tag2 = read_and_free_string(hew_xml_get_tag(child2));
             assert_eq!(tag2, "c");
             hew_xml_free(child2);
 
@@ -836,7 +794,7 @@ mod tests {
 
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let text = read_and_free_cstr(hew_xml_get_text(node));
+            let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "Hello world!");
             hew_xml_free(node);
         }
@@ -850,7 +808,7 @@ mod tests {
 
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let serialized = read_and_free_cstr(hew_xml_to_string(node));
+            let serialized = read_and_free_string(hew_xml_to_string(node));
             assert_eq!(serialized, xml);
             hew_xml_free(node);
         }
@@ -867,15 +825,15 @@ mod tests {
             assert_eq!(hew_xml_children_count(node), 2);
 
             let br = hew_xml_get_child(node, 0);
-            let tag = read_and_free_cstr(hew_xml_get_tag(br));
+            let tag = read_and_free_string(hew_xml_get_tag(br));
             assert_eq!(tag, "br");
             assert_eq!(hew_xml_children_count(br), 0);
             hew_xml_free(br);
 
             let img = hew_xml_get_child(node, 1);
-            let src_key = CString::new("src").unwrap();
+            let src_key = ManagedString::new("src");
             let src_val = hew_xml_get_attribute(img, src_key.as_ptr());
-            assert_eq!(read_and_free_cstr(src_val), "a.png");
+            assert_eq!(read_and_free_string(src_val), "a.png");
             hew_xml_free(img);
 
             hew_xml_free(node);
@@ -886,16 +844,16 @@ mod tests {
     fn parse_invalid_returns_null() {
         let node = parse("<unclosed>");
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(last_error, Some("xml: parse error".to_string()));
 
-        // SAFETY: null pointer is safe for hew_xml_parse.
+        // SAFETY: null is the canonical empty document.
         unsafe {
             assert!(hew_xml_parse(std::ptr::null()).is_null());
             assert_eq!(
-                read_and_free_optional_cstr(hew_xml_last_error()),
-                Some("xml: invalid input: null pointer".to_string())
+                read_and_free_optional_string(hew_xml_last_error()),
+                Some("xml: document has no root element".to_string())
             );
         }
     }
@@ -908,10 +866,10 @@ mod tests {
             assert_eq!(hew_xml_children_count(std::ptr::null()), 0);
             assert!(hew_xml_get_child(std::ptr::null(), 0).is_null());
 
-            let text = read_and_free_cstr(hew_xml_get_text(std::ptr::null()));
+            let text = read_and_free_string(hew_xml_get_text(std::ptr::null()));
             assert_eq!(text, "");
 
-            let tag = read_and_free_cstr(hew_xml_get_tag(std::ptr::null()));
+            let tag = read_and_free_string(hew_xml_get_tag(std::ptr::null()));
             assert_eq!(tag, "");
         }
     }
@@ -924,11 +882,11 @@ mod tests {
 
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let text = read_and_free_cstr(hew_xml_get_text(node));
+            let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "<hello> & world");
 
             // Roundtrip preserves escaping
-            let serialized = read_and_free_cstr(hew_xml_to_string(node));
+            let serialized = read_and_free_string(hew_xml_to_string(node));
             assert_eq!(serialized, "<data>&lt;hello&gt; &amp; world</data>");
 
             hew_xml_free(node);
@@ -942,7 +900,7 @@ mod tests {
 
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let tag = read_and_free_cstr(hew_xml_get_tag(node));
+            let tag = read_and_free_string(hew_xml_get_tag(node));
             assert_eq!(tag, "root");
             assert_eq!(hew_xml_children_count(node), 0);
             hew_xml_free(node);
@@ -957,9 +915,9 @@ mod tests {
 
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let text = read_and_free_cstr(hew_xml_get_text(node));
+            let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "ok");
-            assert!(read_and_free_optional_cstr(hew_xml_last_error()).is_none());
+            assert!(read_and_free_optional_string(hew_xml_last_error()).is_none());
             hew_xml_free(node);
         }
     }
@@ -972,8 +930,8 @@ mod tests {
 
         let node = parse(&xml);
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: maximum nesting depth (256) exceeded".to_string())
@@ -989,8 +947,8 @@ mod tests {
         let xml = r#"<!DOCTYPE foo [<!ENTITY lol "LOL">]><root>&lol;</root>"#;
         let node = parse(xml);
         assert!(node.is_null(), "an unexpanded entity must not parse");
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: `&lol;` is not a known entity reference".to_string())
@@ -1004,7 +962,7 @@ mod tests {
         assert!(!node.is_null());
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let text = read_and_free_cstr(hew_xml_get_text(node));
+            let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "a < b & c > d \"e\" 'f'");
             hew_xml_free(node);
         }
@@ -1014,10 +972,10 @@ mod tests {
     fn attribute_entities_are_decoded_before_exposure() {
         let node = parse(r#"<root label="a &lt; b &amp; &quot;q&quot;"/>"#);
         assert!(!node.is_null());
-        let name = c"label";
+        let name = ManagedString::new("label");
         // SAFETY: node and attribute name are valid.
         unsafe {
-            let value = read_and_free_cstr(hew_xml_get_attribute(node, name.as_ptr()));
+            let value = read_and_free_string(hew_xml_get_attribute(node, name.as_ptr()));
             assert_eq!(value, "a < b & \"q\"");
             hew_xml_free(node);
         }
@@ -1028,7 +986,7 @@ mod tests {
         let node = parse(r#"<root label="&notDeclared;"/>"#);
         assert!(node.is_null());
         // SAFETY: accessor returns null or a valid allocated string.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: element `root` has a malformed attribute".to_owned())
@@ -1041,7 +999,7 @@ mod tests {
         assert!(!node.is_null());
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            let text = read_and_free_cstr(hew_xml_get_text(node));
+            let text = read_and_free_string(hew_xml_get_text(node));
             assert_eq!(text, "Hi");
             hew_xml_free(node);
         }
@@ -1053,8 +1011,8 @@ mod tests {
         // document never had, and serializes back as `<>`.
         let node = parse("<a/><b/>");
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: document has more than one root element".to_string())
@@ -1067,7 +1025,7 @@ mod tests {
             let node = parse(xml);
             assert!(node.is_null(), "{xml:?} must not parse");
             // SAFETY: accessor returns null or a valid allocated string.
-            let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+            let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
             assert_eq!(
                 last_error,
                 Some("xml: non-whitespace text is not allowed outside the root element".to_owned())
@@ -1087,8 +1045,8 @@ mod tests {
     fn a_close_tag_that_does_not_match_its_open_tag_is_refused() {
         let node = parse("<a><b></c></a>");
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: ill-formed document: expected `</b>`, but `</c>` was found".to_string())
@@ -1099,8 +1057,8 @@ mod tests {
     fn a_close_tag_with_no_open_tag_is_refused() {
         let node = parse("<a/></b>");
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some(
@@ -1116,8 +1074,8 @@ mod tests {
         // to carry the attribute the document tried to give it.
         let node = parse("<a b>text</a>");
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: element `a` has a malformed attribute".to_string())
@@ -1128,8 +1086,8 @@ mod tests {
     fn a_text_only_document_has_no_root_element() {
         let node = parse("just text");
         assert!(node.is_null());
-        // SAFETY: hew_xml_last_error returns a malloc-allocated error string or null.
-        let last_error = unsafe { read_and_free_optional_cstr(hew_xml_last_error()) };
+        // SAFETY: hew_xml_last_error returns an owned managed string or null.
+        let last_error = unsafe { read_and_free_optional_string(hew_xml_last_error()) };
         assert_eq!(
             last_error,
             Some("xml: document has no root element".to_string())
@@ -1143,9 +1101,10 @@ mod tests {
         assert!(!node.is_null());
         // SAFETY: node is a valid HewXmlNode from parse.
         unsafe {
-            assert_eq!(read_and_free_cstr(hew_xml_get_tag(node)), "root");
+            assert_eq!(read_and_free_string(hew_xml_get_tag(node)), "root");
+            let attr_name = ManagedString::new("a");
             assert_eq!(
-                read_and_free_cstr(hew_xml_get_attribute(node, c"a".as_ptr())),
+                read_and_free_string(hew_xml_get_attribute(node, attr_name.as_ptr())),
                 "1"
             );
             assert_eq!(hew_xml_children_count(node), 1);
@@ -1164,12 +1123,14 @@ mod tests {
 
     #[test]
     fn get_attribute_null_node_returns_empty() {
-        let key = CString::new("id").unwrap();
+        let key = ManagedString::new("id");
         // SAFETY: testing null-safety of hew_xml_get_attribute.
         unsafe {
             let val = hew_xml_get_attribute(std::ptr::null(), key.as_ptr());
-            assert!(!val.is_null());
-            let result = read_and_free_cstr(val);
+            // A null node has no attributes: the canonical-empty null result,
+            // not a distinct non-null empty allocation.
+            assert!(val.is_null());
+            let result = read_and_free_string(val);
             assert_eq!(result, "");
         }
     }

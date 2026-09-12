@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn definition_finds_machine_type() {
-        let source = "machine TrafficLight { state Green; state Red; }";
+        let source = "machine TrafficLight { state Green, state Red, }";
         let pr = parse(source);
         let result = find_definition(source, &pr, "TrafficLight");
         assert!(
@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn definition_machine_name_not_confused_with_state() {
-        let source = "machine TrafficLight { state Green; state Red; }";
+        let source = "machine TrafficLight { state Green, state Red, }";
         let pr = parse(source);
         // State names are not top-level items; only the machine name resolves.
         let result = find_definition(source, &pr, "Green");
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn definition_type_method_uses_decl_span() {
-        let source = "type Counter { value: i32 fn foo(value: i32) -> i32 { value } }";
+        let source = "type Counter { value: i32 ,fn foo(value: i32) -> i32 { value } }";
         let pr = parse(source);
         let result = find_definition(source, &pr, "foo").expect("should find type method");
         let method_start = source.rfind("fn foo").expect("method should exist") + 3;
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn definition_finds_struct_field_from_field_access() {
         let source =
-            "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
+            "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; p.x }";
         let pr = parse(source);
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn definition_finds_struct_field_declaration() {
-        let source = "type Point { x: i32; y: i32 }";
+        let source = "type Point { x: i32, y: i32 }";
         let pr = parse(source);
         let result = find_definition(source, &pr, "x").expect("should find field declaration");
         let expected_start = source
@@ -535,7 +535,7 @@ mod tests {
         // Actor fields are top-level names inside the actor; find_definition must
         // resolve them so that detect_conflicts can produce ShadowsTopLevel when a
         // rename target collides with a field name.
-        let source = "actor Counter { count: i64; receive fn inc() {} }";
+        let source = "actor Counter { count: i64, receive fn inc() {} }";
         let pr = parse(source);
         let result = find_definition(source, &pr, "count").expect("should find actor field");
         assert_eq!(&source[result.start..result.end], "count");

@@ -1,0 +1,10 @@
+[[case]]
+id = "duration-constructors"
+intent = "The `duration` constructors (`from_nanos`/`from_micros`/`from_millis`/`from_secs`) are declared statics on a builtin type: the checker publishes their implementation declaration as a direct call target and their arithmetic bodies run on the final path."
+source = "cases/duration-constructors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "250\n250000\n3\n3000\n1500\n1\n2000000\n2\n1\ntrue\n"
+exit = 0

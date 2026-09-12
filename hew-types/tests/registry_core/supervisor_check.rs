@@ -13,18 +13,18 @@ fn multi_child_with_wired_to_accepted() {
         actor Broadcaster {}
         actor WorkerPool {}
         actor ConnectionAcceptor {
-            init(workers: LocalPid<WorkerPool>, broadcaster: LocalPid<Broadcaster>) {}
+            init(workers: WorkerPool, broadcaster: Broadcaster) {}
         }
         actor MessageCache {}
 
         supervisor ChatApp {
-            strategy: one_for_one
-            intensity: 5 within 60s
+            strategy: one_for_one,
+            intensity: 5 within 60s,
 
-            child db: DbSupervisor
-            child broadcaster: Broadcaster
-            child worker_pool: WorkerPool
-            child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster }
+            child db: DbSupervisor,
+            child broadcaster: Broadcaster,
+            child worker_pool: WorkerPool,
+            child acceptor: ConnectionAcceptor wired_to: { workers: worker_pool, broadcaster: broadcaster },
             child cache: MessageCache restart: transient
         }
 
@@ -50,8 +50,8 @@ fn simple_one_for_one_with_pool_accepted() {
         actor Worker {}
 
         supervisor WorkerPool {
-            strategy: simple_one_for_one
-            intensity: 10 within 60s
+            strategy: simple_one_for_one,
+            intensity: 10 within 60s,
 
             pool worker: Worker count: 3
         }
@@ -84,8 +84,8 @@ fn await_restart_on_static_child_accepted() {
         }
 
         supervisor App {
-            strategy: one_for_one
-            intensity: 3 within 60s
+            strategy: one_for_one,
+            intensity: 3 within 60s,
 
             child w: Worker
         }
@@ -107,11 +107,10 @@ fn await_restart_on_static_child_accepted() {
     );
 }
 
-/// `await_restart` on a POOL member is rejected: a pool member has no per-slot
-/// restart signal (the `restart_notify` is per-supervisor, and pool dynamics
-/// recover via the pool path, not a static child slot).
+/// `await_restart` on a WHOLE pool is rejected: a pool names many slots, so it
+/// has no single restart signal. The diagnostic points at the member form.
 #[test]
-fn await_restart_on_pool_member_rejected() {
+fn await_restart_on_whole_pool_rejected() {
     let output = typecheck(
         r"
         actor Worker {
@@ -119,8 +118,8 @@ fn await_restart_on_pool_member_rejected() {
         }
 
         supervisor Pool {
-            strategy: simple_one_for_one
-            intensity: 10 within 60s
+            strategy: simple_one_for_one,
+            intensity: 10 within 60s,
 
             pool worker: Worker count: 3
         }
@@ -131,14 +130,49 @@ fn await_restart_on_pool_member_rejected() {
         }
         ",
     );
-    let rejected = output.errors.iter().any(|e| {
-        e.message.contains("await_restart") && e.message.contains("static supervised child")
-    });
+    let rejected = output
+        .errors
+        .iter()
+        .any(|e| e.message.contains("await_restart") && e.message.contains("sup.pool[i]"));
     assert!(
         rejected,
-        "`await_restart` on a pool member must be rejected with a static-child diagnostic; \
+        "`await_restart` on a whole pool must be rejected and name the member form; \
          got: {:#?}",
         output.errors
+    );
+}
+
+/// `await_restart sup.pool[i]` on ONE pool member type-checks: each member
+/// occupies its own supervised slot, so it has its own restart signal.
+#[test]
+fn await_restart_on_pool_member_accepted() {
+    let output = typecheck(
+        r"
+        actor Worker {
+            receive fn ping() {}
+        }
+
+        supervisor Pool {
+            strategy: simple_one_for_one,
+            intensity: 10 within 60s,
+
+            pool worker: Worker count: 3
+        }
+
+        fn main() {
+            let sup = spawn Pool;
+            let _w: ChildRef<Worker> = await_restart sup.worker[0];
+        }
+        ",
+    );
+    let relevant: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|e| e.message.contains("await_restart"))
+        .collect();
+    assert!(
+        relevant.is_empty(),
+        "`await_restart sup.worker[0]` must type-check cleanly: {relevant:#?}"
     );
 }
 
@@ -172,12 +206,12 @@ fn wired_to_unknown_sibling_rejected() {
     let output = typecheck(
         r"
         actor ConnectionAcceptor {
-            init(workers: LocalPid<WorkerPool>) {}
+            init(workers: WorkerPool) {}
         }
         actor WorkerPool {}
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
             child acceptor: ConnectionAcceptor wired_to: { workers: nonexistent_sibling }
         }
@@ -205,13 +239,13 @@ fn wired_to_type_mismatch_rejected() {
         actor DbPool {}
         actor WorkerPool {}
         actor ConnectionAcceptor {
-            init(workers: LocalPid<WorkerPool>) {}
+            init(workers: WorkerPool) {}
         }
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child db_pool: DbPool
+            child db_pool: DbPool,
             child acceptor: ConnectionAcceptor wired_to: { workers: db_pool }
         }
 
@@ -236,16 +270,16 @@ fn wired_to_cycle_rejected() {
     let output = typecheck(
         r"
         actor ActorA {
-            init(dep: LocalPid<ActorB>) {}
+            init(dep: ActorB) {}
         }
         actor ActorB {
-            init(dep: LocalPid<ActorA>) {}
+            init(dep: ActorA) {}
         }
 
         supervisor CycleApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child a: ActorA wired_to: { dep: b }
+            child a: ActorA wired_to: { dep: b },
             child b: ActorB wired_to: { dep: a }
         }
 
@@ -273,9 +307,9 @@ fn simple_one_for_one_with_child_decl_rejected() {
         actor Helper {}
 
         supervisor BadPool {
-            strategy: simple_one_for_one
+            strategy: simple_one_for_one,
 
-            child helper: Helper
+            child helper: Helper,
             pool worker: Worker count: 3
         }
 
@@ -302,7 +336,7 @@ fn one_for_one_with_pool_decl_rejected() {
         actor Worker {}
 
         supervisor StaticApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
             pool worker: Worker count: 3
         }
@@ -330,9 +364,9 @@ fn duplicate_child_name_rejected() {
         actor Worker {}
 
         supervisor DupApp {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child worker: Worker
+            child worker: Worker,
             child worker: Worker
         }
 
@@ -357,11 +391,11 @@ fn wired_to_self_reference_rejected() {
     let output = typecheck(
         r"
         actor LoopActor {
-            init(dep: LocalPid<LoopActor>) {}
+            init(dep: LoopActor) {}
         }
 
         supervisor SelfLoop {
-            strategy: one_for_one
+            strategy: one_for_one,
 
             child looper: LoopActor wired_to: { dep: looper }
         }
@@ -382,7 +416,7 @@ fn wired_to_self_reference_rejected() {
 // ── Accept: wired_to sibling that has no init block ───────────────────────────
 
 /// Wiring to a sibling with no `init` block is valid when the dependent actor's
-/// init param type matches `LocalPid<SiblingType>`. The sibling having no `init`
+/// init param type matches `SiblingType`. The sibling having no `init`
 /// is irrelevant — only the dependent's `init` params are checked.
 #[test]
 fn wired_to_no_init_sibling_accepted() {
@@ -390,13 +424,13 @@ fn wired_to_no_init_sibling_accepted() {
         r"
         actor NoInit {}
         actor Consumer {
-            init(dep: LocalPid<NoInit>) {}
+            init(dep: NoInit) {}
         }
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child no_init: NoInit
+            child no_init: NoInit,
             child consumer: Consumer wired_to: { dep: no_init }
         }
 
@@ -410,7 +444,7 @@ fn wired_to_no_init_sibling_accepted() {
         .collect();
     assert!(
         supervisor_errors.is_empty(),
-        "wired_to a no-init sibling with a matching LocalPid param should be valid: {supervisor_errors:#?}"
+        "wired_to a no-init sibling with a matching actor-handle param should be valid: {supervisor_errors:#?}"
     );
 }
 
@@ -426,9 +460,9 @@ fn wired_to_dependent_has_no_init_rejected() {
         actor NoInitConsumer {}
 
         supervisor App {
-            strategy: one_for_one
+            strategy: one_for_one,
 
-            child helper: Helper
+            child helper: Helper,
             child consumer: NoInitConsumer wired_to: { dep: helper }
         }
 

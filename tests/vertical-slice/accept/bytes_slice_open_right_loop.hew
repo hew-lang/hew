@@ -1,13 +1,15 @@
-extern "C" {
-    fn hew_bytes_from_str(s: string) -> bytes;
-}
+import std.encoding.utf8;
 
 fn main() -> i64 {
-    let b: bytes = unsafe { hew_bytes_from_str("abcd") };
+    let b: bytes = "abcd".to_bytes();
     var total = 0;
-    for i in 0..4 {
+    for i in 0 .. 4 {
         let tail: bytes = b[i..];
-        println(tail.to_string());
+        let decoded_tail = utf8.decode(tail) handle error {
+            println(f"invalid UTF-8: {error}");
+            return 1;
+        };
+        println(decoded_tail);
         total += tail.len();
     }
     total

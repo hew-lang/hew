@@ -1,0 +1,10 @@
+[[case]]
+id = "node-config-atomic-lifecycle"
+intent = "NodeConfig.at reaches its source-owned builtin body, Node.start applies one complete configuration transaction, and invalid or failed configurations leave the next start clean."
+source = "cases/node-config-atomic-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

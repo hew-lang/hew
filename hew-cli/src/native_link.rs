@@ -14,8 +14,9 @@
 //! automatically because `build_native` invokes cargo against the package's own
 //! manifest directory.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use hew_parser::ast::{Item, Program, Spanned};
 
@@ -25,24 +26,30 @@ use hew_parser::ast::{Item, Program, Spanned};
 /// which skips directories with no `[native]` section.
 pub fn collect_import_pkg_dirs(program: &Program) -> Vec<PathBuf> {
     let mut dirs = BTreeSet::new();
-    collect_items(&program.items, &mut dirs);
-    dirs.into_iter().collect()
-}
-
-fn collect_items(items: &[Spanned<Item>], dirs: &mut BTreeSet<PathBuf>) {
-    for (item, _span) in items {
-        let Item::Import(decl) = item else { continue };
-        for src in &decl.resolved_source_paths {
-            if let Some(parent) = src.parent() {
-                if parent.join("hew.toml").is_file() {
-                    dirs.insert(parent.to_path_buf());
+    // Shared imports retain one immutable body per module, so the walk is
+    // bounded by that body's identity. Recursing per import edge instead
+    // expands a module once per path that reaches it, and a diamond import
+    // graph then costs one filesystem probe per path rather than per module.
+    let mut seen: HashSet<*const Vec<Spanned<Item>>> = HashSet::new();
+    let mut queue: Vec<&[Spanned<Item>]> = vec![program.items.as_slice()];
+    while let Some(items) = queue.pop() {
+        for (item, _span) in items {
+            let Item::Import(decl) = item else { continue };
+            for src in &decl.resolved_source_paths {
+                if let Some(parent) = src.parent() {
+                    if parent.join("hew.toml").is_file() {
+                        dirs.insert(parent.to_path_buf());
+                    }
+                }
+            }
+            if let Some(resolved) = &decl.resolved_items {
+                if seen.insert(Arc::as_ptr(resolved)) {
+                    queue.push(resolved.as_slice());
                 }
             }
         }
-        if let Some(resolved) = &decl.resolved_items {
-            collect_items(resolved, dirs);
-        }
     }
+    dirs.into_iter().collect()
 }
 
 /// Build (on demand) and return the staticlib paths for every package in `dirs`

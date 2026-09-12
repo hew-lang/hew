@@ -4,22 +4,22 @@
 // of the consumed place.
 #[linear]
 type Ticket {
-    id: i64;
+    id: i64,
 }
 
 impl Ticket {
-    fn close(consuming self) {}
-    fn redeem(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn redeem(consume self) -> i64 {
         self.id
     }
 }
 
 type Inner {
-    ticket: Ticket;
+    ticket: Ticket,
 }
 
 type Outer {
-    inner: Inner;
+    inner: Inner,
 }
 
 actor Gate {
@@ -31,6 +31,6 @@ actor Gate {
 fn main() -> i64 {
     let gate = spawn Gate;
     let outer = Outer { inner: Inner { ticket: Ticket { id: 1 } } };
-    let _ = await gate.accept(outer.inner.ticket);
+    let _ = gate.accept(outer.inner.ticket);
     return outer.inner.ticket.redeem();
 }

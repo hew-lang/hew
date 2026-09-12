@@ -5,27 +5,23 @@ import std.string;
 
 machine JobState {
     events {
-        Start;
-        Finish;
+        Start,
+        Finish,
     }
 
-    state Idle;
-    state Running;
-    state Complete;
+    state Idle,
+    state Running,
+    state Complete,
 
-    on Start: Idle => Running {
-        .Running
-    }
-    on Finish: Running => Complete {
-        .Complete
-    }
+    on Start: Idle => Running,
+    on Finish: Running => Complete,
     default {
         state
     }
 }
 
 actor Ledger {
-    var total: i64 = 0;
+    var total: i64 = 0,
 
     receive fn add(amount: i64) {
         total = total + amount;
@@ -53,18 +49,18 @@ fn classify(value: string, fallback: string) -> string {
 
 fn main() {
     var state = Idle;
-    state.step(.Start);
+    let _ = state.step(.Start);
 
     let ledger = spawn Ledger(total: 0);
     let label = classify("alpha", "fallback");
-    ledger.add(label.len());
+    let _ = ledger.add(label.len());
     match string.to_int("7") {
-        .Ok(amount) => ledger.add(amount),
+        .Ok(amount) => { let _ = ledger.add(amount); },
         .Err(_) => {},
     }
-    match await ledger.read() {
+    match ledger.read() {
         .Ok(total) => println(total),
         .Err(_) => println(0),
     }
-    state.step(.Finish);
+    let _ = state.step(.Finish);
 }

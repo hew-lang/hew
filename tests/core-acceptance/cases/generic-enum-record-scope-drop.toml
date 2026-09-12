@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-enum-record-scope-drop"
+intent = "a generic record holding an inline owned enum (Choice<string>) releases exactly once on every store-overwrite exit (256 iterations) and on the untouched scope-exit path, under generated-code and runtime ASan/LSan; the retired MIR text-dump pins for the out-of-line clone/drop thunks have no physical-path equivalent (drops are inlined into aggregate.drop blocks), so this is the replacement oracle."
+source = "cases/generic-enum-record-scope-drop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "0\n"
+exit = 0

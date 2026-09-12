@@ -1,0 +1,13 @@
+[[case]]
+id = "iter_lazy_wrappers"
+intent = "Stage-2 lazy iterator wrappers: end-to-end type-check fixture."
+source = "../vertical-slice/accept/iter_lazy_wrappers.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 4

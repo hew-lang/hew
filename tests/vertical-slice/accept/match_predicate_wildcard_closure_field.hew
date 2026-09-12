@@ -1,0 +1,19 @@
+//! Accept: a literal-predicate record arm wildcards a closure-typed field.
+//!
+//! The selected arm destructures the record, so the unbound closure field is an
+//! ordinary owned result released through the arm's cleanup set.
+//!
+//! Observable contract: prints the selected arm's result.
+
+type Holder { tag: i64, label: string, op: fn(i64) -> i64 }
+
+fn main() -> i64 {
+    let k = 3;
+    let value = Holder { tag: 0, label: "l" + "abel", op: |x| x * k };
+    let result = match value {
+        Holder { tag: 0, label, op: _ } => label.len(),
+        Holder { tag: _, label: _, op: _ } => 2,
+    };
+    println(result);
+    0
+}

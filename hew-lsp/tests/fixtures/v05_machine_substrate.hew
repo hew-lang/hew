@@ -3,7 +3,7 @@ trait Resource {
 }
 
 type FileHandle {
-    fd: i64;
+    fd: i64,
 }
 
 impl Resource for FileHandle {
@@ -14,33 +14,27 @@ impl Resource for FileHandle {
 
 machine Lifecycle<T: Resource> {
     events {
-        Start { handle: T; }
-        Stop;
-        Started;
+        Start { handle: T, }
+        ,Stop,
+        Started,
     }
 
-    state Idle;
-    state Active { handle: T; }
+    emits {
+        Started,
+    }
+
+    state Idle,
+    state Active { handle: T, },
 
     on Start: Idle => Active {
         emit Started {};
         Active { handle: event.handle }
     }
-    on Stop: Active => Idle {
-        .Idle
-    }
-    on Stop: Idle => Idle reenter {
-        .Idle
-    }
-    on Start: Active => Active reenter {
-        Active { handle: event.handle }
-    }
-    on Started: Idle => Idle reenter {
-        .Idle
-    }
-    on Started: Active => Active reenter {
-        Active { handle: state.handle }
-    }
+    on Stop: Active => Idle,
+    on Stop: Idle => Idle reenter,
+    on Start: Active => Active reenter { handle: event.handle }
+    on Started: Idle => Idle reenter,
+    on Started: Active => Active reenter { handle: state.handle }
 }
 
 fn machine_substrate_probe() -> string {

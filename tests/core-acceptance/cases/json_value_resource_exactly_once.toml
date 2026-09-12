@@ -1,0 +1,13 @@
+[[case]]
+id = "json_value_resource_exactly_once"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/json_value_resource_exactly_once.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n2\n"
+exit = 0

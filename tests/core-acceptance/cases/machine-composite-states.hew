@@ -1,0 +1,97 @@
+// A depth-1 composite state groups three substates. Entering the group by
+// name lands on its `initial` substate; the group's own rule applies from
+// every substate; a substate rule declared after the block beats it; and the
+// composite's hooks bracket the substates' own — parent entry before child
+// entry, child exit before parent exit — with no composite hook on a move
+// that stays inside the group.
+
+machine Session {
+    events {
+        Open,
+        Authed,
+        Drain,
+        Close,
+    }
+
+    emits {
+        Trace { text: string },
+    }
+
+    state Closed,
+    state Kicked,
+
+    state Live {
+        entry {
+            emit Trace { text: "Live.entry" };
+        }
+        exit {
+            emit Trace { text: "Live.exit" };
+        }
+
+        initial state Authing {
+            entry {
+                emit Trace { text: "Authing.entry" };
+            }
+            exit {
+                emit Trace { text: "Authing.exit" };
+            }
+        },
+        state Active {
+            entry {
+                emit Trace { text: "Active.entry" };
+            }
+            exit {
+                emit Trace { text: "Active.exit" };
+            }
+        },
+        state Draining {
+            entry {
+                emit Trace { text: "Draining.entry" };
+            }
+            exit {
+                emit Trace { text: "Draining.exit" };
+            }
+        },
+
+        on Close: _ => Closed,
+    },
+
+    on Open: Closed => Live,
+    on Authed: Authing => Active,
+    on Drain: Active => Draining,
+
+    on Close: Draining => Kicked,
+
+    default { state }
+}
+
+fn show(report: SessionStep) {
+    for output in report.outputs {
+        match output {
+            .Trace { text } => println(text),
+        }
+    }
+}
+
+fn main() {
+    var session: Session = .Closed;
+    println(session.state_name());
+
+    show(session.step(.Open));
+    println(session.state_name());
+    show(session.step(.Close));
+    println(session.state_name());
+
+    show(session.step(.Open));
+    show(session.step(.Authed));
+    println(session.state_name());
+    show(session.step(.Close));
+    println(session.state_name());
+
+    show(session.step(.Open));
+    show(session.step(.Authed));
+    show(session.step(.Drain));
+    println(session.state_name());
+    show(session.step(.Close));
+    println(session.state_name());
+}

@@ -11,8 +11,8 @@ fn struct_variant_init_infers_type_args() {
     let output = typecheck(
         r"
         enum Event<T> {
-            Move { x: T, y: T };
-            Click;
+            Move { x: T, y: T },
+            Click,
         }
 
         fn main() {
@@ -35,8 +35,8 @@ fn struct_variant_init_mismatched_field_type_is_an_error() {
     let output = typecheck(
         r"
         enum Event<T> {
-            Move { x: T, y: T };
-            Click;
+            Move { x: T, y: T },
+            Click,
         }
 
         fn main() {
@@ -60,8 +60,8 @@ fn struct_variant_pattern_binds_concrete_field_types() {
     let output = typecheck(
         r"
         enum Wrapper<T> {
-            Pair { first: T, second: T };
-            Empty;
+            Pair { first: T, second: T },
+            Empty,
         }
 
         fn add(w: Wrapper<i64>) -> i64 {
@@ -85,8 +85,8 @@ fn struct_variant_pattern_wrong_field_use_is_an_error() {
     let output = typecheck(
         r"
         enum Wrapper<T> {
-            Pair { first: T, second: T };
-            Empty;
+            Pair { first: T, second: T },
+            Empty,
         }
 
         fn broken(w: Wrapper<i64>) -> bool {
@@ -110,8 +110,8 @@ fn struct_variant_init_unqualified_infers_type_args() {
     let output = typecheck(
         r"
         enum Shape<T> {
-            Rect { width: T, height: T };
-            Circle;
+            Rect { width: T, height: T },
+            Circle,
         }
 
         fn main() {
@@ -141,7 +141,7 @@ fn struct_variant_init_nested_generic_field_with_expected_type() {
         type Box<T> { value: T }
 
         enum Wrap<T> {
-            Boxed { inner: Box<T> };
+            Boxed { inner: Box<T> },
         }
 
         fn main() {
@@ -166,8 +166,8 @@ fn variant_constructors_preserve_type_args() {
     let output = typecheck(
         r"
         enum Maybe<T> {
-            Just(T);
-            Nothing;
+            Just(T),
+            Nothing,
         }
 
         impl Maybe<i64> {
@@ -202,8 +202,8 @@ fn tuple_variant_pattern_binds_concrete_payload_for_bound_resolution() {
     let output = typecheck(
         r"
         pub enum Either<A, B> {
-            Left(A);
-            Right(B);
+            Left(A),
+            Right(B),
         }
 
         fn main() -> i64 {
@@ -233,8 +233,8 @@ fn generic_fn_type_param_bound_satisfies_display_via_enum_payload() {
     let output = typecheck(
         r#"
         pub enum Foo<T: Display> {
-            Item(T);
-            Nothing;
+            Item(T),
+            Nothing,
         }
 
         fn show<T: Display>(f: Foo<T>) {

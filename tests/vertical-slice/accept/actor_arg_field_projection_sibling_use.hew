@@ -5,20 +5,20 @@
 // either miss the transfer or reject the siblings.
 #[resource]
 type Socket {
-    fd: i64;
+    fd: i64,
 }
 
 impl Socket {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
         self.fd
     }
 }
 
 type Holder {
-    sock: Socket;
-    count: i64;
-    name: string;
+    sock: Socket,
+    count: i64,
+    name: string,
 }
 
 actor TestSink {
@@ -30,7 +30,7 @@ actor TestSink {
 fn main() {
     let sink = spawn TestSink;
     let holder = Holder { sock: Socket { fd: 7 }, count: 3, name: "held" };
-    match await sink.take(holder.sock) {
+    match sink.take(holder.sock) {
         .Ok(fd) => println(f"fd={fd}"),
         .Err(_) => println("take failed"),
     }

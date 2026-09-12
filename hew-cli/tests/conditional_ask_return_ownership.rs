@@ -19,11 +19,11 @@ actor Recipient {
 }
 
 actor Forwarder {
-    let recipient: LocalPid<Recipient>;
+    let recipient: Recipient,
 
     receive fn forward(data: bytes, flag: bool) -> bytes {
         if flag {
-            let _ = await recipient.take(data);
+            let _ = recipient.take(data);
         }
         data
     }
@@ -33,16 +33,18 @@ fn main() -> i64 {
     let recipient = spawn Recipient;
     let forwarder = spawn Forwarder(recipient: recipient);
 
-    let false_len = match await forwarder.forward("false-path".to_bytes(), false) {
-        .Ok(data) => data.len() as i64,
-        .Err(_) => -100,
+    let false_ok = match forwarder.forward("false-path".to_bytes(), false) {
+        .Ok(data) => data == "false-path".to_bytes(),
+        .Err(_) => false,
     };
-    let true_len = match await forwarder.forward("true-path".to_bytes(), true) {
-        .Ok(data) => data.len() as i64,
-        .Err(_) => -100,
+    let true_ok = match forwarder.forward("true-path".to_bytes(), true) {
+        .Ok(data) => data == "true-path".to_bytes(),
+        .Err(_) => false,
     };
 
-    if false_len == 10 && true_len == 9 { 0 } else { 1 }
+    close(forwarder);
+    close(recipient);
+    if false_ok && true_ok { 0 } else { 1 }
 }
 "#;
 

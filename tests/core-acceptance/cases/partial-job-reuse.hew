@@ -1,0 +1,41 @@
+type Job {
+    run: fn[once]() -> string,
+    label: string,
+    payload: bytes,
+}
+
+fn make_job(label: string) -> Job {
+    let message = f"run:{label}".to_upper();
+    Job { run: move || message, label: label.to_upper(), payload: label.to_bytes() }
+}
+
+fn maybe_run(consume job: Job, enabled: bool) {
+    if enabled {
+        println(job.run());
+    }
+    println(job.label);
+    println(job.payload.len());
+}
+
+fn finish(consume job: Job) {
+    println(job.run());
+    println(job.label);
+    println(job.payload.len());
+}
+
+fn main() -> i64 {
+    maybe_run(make_job("active"), true);
+    maybe_run(make_job("idle"), false);
+    var job = make_job("reused");
+    println(job.run());
+    job.run = make_job("replacement").run;
+    finish(job);
+    var repeated = make_job("cycle");
+    for round in 0 .. 3 {
+        println(repeated.run());
+        let next = f"run:cycle {round}".to_upper();
+        repeated.run = move || next;
+    }
+    finish(repeated);
+    0
+}

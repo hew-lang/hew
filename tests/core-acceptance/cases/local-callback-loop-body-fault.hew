@@ -1,0 +1,21 @@
+fn run(enabled: bool, divisor: i64) {
+    let title = "body".to_upper();
+    let payload = title.to_bytes();
+    let sibling = ["caller".to_upper(), "retained".to_upper()];
+    let callback: fn[once]() -> i64 = move || {
+        println(f"entered:{title}:{payload.len()}");
+        let local = ["callback".to_upper(), "local".to_upper()];
+        local.len() / divisor
+    };
+    while enabled {
+        println(callback());
+        break;
+    }
+    println(f"after body:{sibling[0]}:{sibling.len()}");
+}
+
+fn main() -> i64 {
+    run(false, 0);
+    run(true, 0);
+    0
+}

@@ -1,0 +1,11 @@
+[[case]]
+id = "fixed-array-large"
+intent = "A repeated array and its independent copy exceed ordinary native stacks while generated storage and element glue remain constant-sized."
+source = "cases/fixed-array-large.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "large array\n"
+stderr = ""
+exit = 0

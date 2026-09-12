@@ -25,6 +25,7 @@ use crate::scheduler::NoWorkerSchedulerForTest;
 /// Build a minimal `HewActor` with sensible defaults.
 pub(crate) fn stub_actor() -> HewActor {
     HewActor {
+        dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
         sched_link_next: AtomicPtr::new(ptr::null_mut()),
         id: 1,
         state: ptr::null_mut(),
@@ -68,6 +69,11 @@ pub(crate) fn stub_actor() -> HewActor {
         state_drop_consumed: AtomicBool::new(false),
         state_drop_borrowed: AtomicBool::new(false),
         parked_ask_channel: AtomicPtr::new(ptr::null_mut()),
+        checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+        #[cfg(not(target_arch = "wasm32"))]
+        pending_external_trap_code: AtomicI32::new(0),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_completion: None,
     }
 }
 

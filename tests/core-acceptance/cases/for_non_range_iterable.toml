@@ -1,0 +1,13 @@
+[[case]]
+id = "for_non_range_iterable"
+intent = "Reject fixture: for_non_range_iterable — `for x in int_expr` over a non-iterable."
+source = "../vertical-slice/reject/for_non_range_iterable.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 15
+column = 14
+message = "type is not iterable"

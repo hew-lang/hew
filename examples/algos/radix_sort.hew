@@ -1,5 +1,7 @@
 // Radix Sort - LSD (least significant digit), base 10, non-negative integers
-fn radix_sort(v: Vec<i64>) {
+// A parameter is the callee's own copy, so the sorted vector travels back
+// through the return value.
+fn radix_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n >= 2 {
         // Find max to know number of digits
@@ -14,11 +16,11 @@ fn radix_sort(v: Vec<i64>) {
         // Process each digit position
         var exp = 1;
         while max_val / exp > 0 {
-            let output: Vec<i64> = Vec.new();
+            var output: Vec<i64> = Vec.new();
             for i in 0 .. n {
                 output.push(0);
             }
-            let count: Vec<i64> = Vec.new();
+            var count: Vec<i64> = Vec.new();
             for i in 0 .. 10 {
                 count.push(0);
             }
@@ -51,6 +53,7 @@ fn radix_sort(v: Vec<i64>) {
             exp = exp * 10;
         }
     }
+    v
 }
 
 fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -68,7 +71,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
 }
 
 fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(a);
     v.push(b);
     v.push(c);
@@ -77,8 +80,8 @@ fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
     v
 }
 
-fn run_test(name: string, input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    radix_sort(input);
+fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
+    input = radix_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {
         println(f"Test {name} ... PASS");
@@ -100,13 +103,13 @@ fn main() {
 
     // Multi-digit numbers
     total = total + 1;
-    let multi: Vec<i64> = Vec.new();
+    var multi: Vec<i64> = Vec.new();
     multi.push(170);
     multi.push(45);
     multi.push(75);
     multi.push(90);
     multi.push(802);
-    let exp_multi: Vec<i64> = Vec.new();
+    var exp_multi: Vec<i64> = Vec.new();
     exp_multi.push(45);
     exp_multi.push(75);
     exp_multi.push(90);
@@ -114,9 +117,9 @@ fn main() {
     exp_multi.push(802);
     passed = passed + run_test("multi_digit", multi, exp_multi);
     total = total + 1;
-    let single: Vec<i64> = Vec.new();
+    var single: Vec<i64> = Vec.new();
     single.push(42);
-    let exp_single: Vec<i64> = Vec.new();
+    var exp_single: Vec<i64> = Vec.new();
     exp_single.push(42);
     passed = passed + run_test("single", single, exp_single);
     total = total + 1;

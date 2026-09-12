@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern-let-else"
+intent = "`let PATTERN = expr else { … };` binds an owned payload for the rest of the enclosing block and runs the diverging block when the pattern does not match, through `return`, `break` and `continue`. Covers an or-pattern, a record (enum struct-variant) pattern, a tuple with a refutable element whose other, owned field is released unleaked on both the bind and diverge paths, and a multi-binding pattern that moves an affine stream payload alongside a plain owned field."
+source = "cases/pattern-let-else.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "port 8080\nerror name is not a number\nerror absent missing\nscan 4\nskip 18\ncached 0\nfresh 1\nstale\nrole 1=worker 1\nanonymous\nzero:kept 0\nmissing\ntag:known file: héllo 🌲\nmissing\nconfirmed missing\npresent\n"
+exit = 0

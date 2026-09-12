@@ -1,0 +1,10 @@
+import std.encoding.utf8;
+
+fn main() -> i64 {
+    let invalid = utf8.Utf8Error { valid_up_to: 2, error_len: Some(1) };
+    let incomplete = utf8.Utf8Error { valid_up_to: 4, error_len: None };
+    println(invalid.fmt());
+    println(incomplete.fmt());
+    println(invalid.fmt());
+    0
+}

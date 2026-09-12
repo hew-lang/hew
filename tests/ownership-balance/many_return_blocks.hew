@@ -1,7 +1,7 @@
 import std.string;
 
 type Admission { label: string, ordinal: i64 }
-enum AdmissionError { Rejected(string); }
+enum AdmissionError { Rejected(string), }
 
 fn admit(n: i64) -> Result<Admission, AdmissionError> {
     if n >= 0 {

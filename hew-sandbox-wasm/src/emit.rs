@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use hew_parser::ast::{
-    ActorDecl, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ElseBlock, Expr, FnDecl,
-    Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned, Stmt, TypeBodyItem,
-    TypeDeclKind, VariantKind,
+    ActorDecl, ArrayElement, BinaryOp, Block as AstBlock, CallArg, CompoundAssignOp, ConditionItem,
+    ElseBlock, Expr, FnDecl, Item, Literal, MatchArm, Pattern, Program, ReceiveFnDecl, Spanned,
+    Stmt, TypeBodyItem, TypeDeclKind, VariantKind,
 };
 use hew_types::check::{SpanKey, TypeDefKind, VariantDef};
 use hew_types::{BuiltinType, Ty};
@@ -364,7 +364,7 @@ impl<'a> PackageEmitter<'a> {
                             parameters: Vec::new(),
                         });
                 }
-                TypeDefKind::Actor | TypeDefKind::Machine => {}
+                TypeDefKind::Actor | TypeDefKind::Supervisor | TypeDefKind::Machine => {}
             }
         }
 
@@ -903,7 +903,7 @@ impl<'a> PackageEmitter<'a> {
                     vec![element_id],
                 )
             }
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
+            Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 let mut ids: Vec<_> = params
                     .iter()
                     .map(|param| self.type_id_for_ty(param))
@@ -1557,12 +1557,17 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 self.lower_stmt_match(scrutinee, arms, span)?;
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.lower_stmt_if_let(pattern, expr, body, else_body.as_ref(), span)?;
+                // The admission profile refuses a `let` chain, so a condition
+                // that reaches here carries exactly one `let` operand.
+                if let [ConditionItem::Let { pattern, expr }] = conditions.as_slice() {
+                    self.lower_stmt_if_let(pattern, expr, body, else_body.as_deref(), span)?;
+                } else {
+                    self.emit_unsupported(Some(span));
+                }
             }
             Stmt::Defer(_) => {
                 self.emit_unsupported(Some(span));
@@ -1587,16 +1592,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Stmt::For {
                 label,
-                is_await,
                 pattern,
                 iterable,
                 body,
             } => {
-                if *is_await {
-                    self.emit_unsupported(Some(span));
-                } else {
-                    self.emit_for_range(label.clone(), pattern, iterable, body, span)?;
-                }
+                self.emit_for_range(label.clone(), pattern, iterable, body, span)?;
             }
             Stmt::While {
                 label,
@@ -1636,11 +1636,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
-                self.emit_while_let(label.clone(), pattern, expr, body, span)?;
+                if let [ConditionItem::Let { pattern, expr }] = conditions.as_slice() {
+                    self.emit_while_let(label.clone(), pattern, expr, body, span)?;
+                } else {
+                    self.emit_unsupported(Some(span));
+                }
             }
             Stmt::Break { label, value: None } => {
                 if let Some(exit_id) = self.resolve_loop_exit(label.as_deref()) {
@@ -1852,6 +1855,19 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             }
             Expr::Binary { left, op, right } => self.lower_binary(left, *op, right, span.clone()),
             Expr::Unary { op, operand } => {
+                // Fold `-<int literal>` into one constant. `i64::MIN` cannot be
+                // built as `i64.neg` of any positive `i64`, and admission has
+                // already proven the negated value fits.
+                if *op == hew_parser::ast::UnaryOp::Negate {
+                    if let Expr::Literal(inner @ Literal::Integer { .. }) = &operand.0 {
+                        let folded = const_literal(&Expr::Unary {
+                            op: *op,
+                            operand: Box::new((Expr::Literal(inner.clone()), operand.1.clone())),
+                        })
+                        .expect("negating an integer literal yields a literal");
+                        return Ok(self.lower_literal(&folded, span.clone()));
+                    }
+                }
                 let value = self.lower_expr(operand)?;
                 if *op == hew_parser::ast::UnaryOp::Negate {
                     let ty = self.ty_for_expr(expr);
@@ -1934,8 +1950,8 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 }
                 let object_ty = self.ty_for_expr(object);
                 // `supervisor.childName` resolves a running child actor handle.
-                // The supervisor handle is a `LocalPid<SupervisorName>`, so we
-                // detect it by the pid's type argument.
+                // We detect the supervisor handle by its type's first argument
+                // (see `supervisor_handle_arg`).
                 if self.supervisor_handle_arg(&object_ty).is_some() {
                     let supervisor_local = self.lower_expr(object)?;
                     let child_ty = self.ty_for_expr(expr);
@@ -1987,15 +2003,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     Some(span.clone()),
                     None,
                 );
-                for item in items {
-                    let item_local = self.lower_expr(item)?;
-                    self.emit_instruction(
-                        "vector.push",
-                        None,
-                        vec![Operand::local(dst.clone()), Operand::local(item_local)],
-                        Some(item.1.clone()),
-                        None,
-                    );
+                for element in items {
+                    match element {
+                        ArrayElement::Value(item) => {
+                            let item_local = self.lower_expr(item)?;
+                            self.emit_instruction(
+                                "vector.push",
+                                None,
+                                vec![Operand::local(dst.clone()), Operand::local(item_local)],
+                                Some(item.1.clone()),
+                                None,
+                            );
+                        }
+                        ArrayElement::Spread(operand) => {
+                            self.lower_array_spread(&dst, operand, &element_ty)?;
+                        }
+                    }
                 }
                 Ok(dst)
             }
@@ -2219,18 +2242,28 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             // value-position if-let runs at parity with native `hew run`,
             // mirroring the value-position `Expr::If` / `Expr::Match` lowering.
             Expr::IfLet {
-                pattern,
-                expr: scrutinee,
+                conditions,
                 body,
                 else_body,
-            } => self.lower_expr_if_let(
-                expr,
-                pattern,
-                scrutinee,
-                body,
-                else_body.as_ref(),
-                span.clone(),
-            ),
+            } => {
+                if let [ConditionItem::Let {
+                    pattern,
+                    expr: scrutinee,
+                }] = conditions.as_slice()
+                {
+                    self.lower_expr_if_let(
+                        expr,
+                        pattern,
+                        scrutinee,
+                        body,
+                        else_body.as_deref(),
+                        span.clone(),
+                    )
+                } else {
+                    self.emit_unsupported(Some(span.clone()));
+                    Ok(self.emit_const_unit(Some(span.clone())))
+                }
+            }
             Expr::Clone(operand) => {
                 // `clone expr` produces an independent deep copy of the value.
                 // The sandbox VM's `local.set` always calls `cloneValue` (a deep
@@ -2288,12 +2321,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
-            | Expr::Timeout { .. }
+            | Expr::Race(_)
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
-            | Expr::This
+            | Expr::ReturnError(_)
+            | Expr::Coalesce { .. }
+            | Expr::Handle { .. }
             | Expr::QualifiedAssoc(_)
             | Expr::Range { .. }
             | Expr::ByteStringLiteral(_)
@@ -2308,6 +2342,135 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             Expr::Cast { expr: operand, .. } => self.lower_cast(operand, span.clone()),
             Expr::PostfixTry(operand) => self.lower_postfix_try(operand, span.clone()),
         }
+    }
+
+    /// `..operand` inside a bracket literal: walk the operand by index and push
+    /// each element onto the literal's vector, mirroring the native desugar in
+    /// `hew-hir`'s `lower_array_spread` so both paths build the same sequence.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the spread lowering builds a four-block counted loop whose read and push order must remain visible in one place"
+    )]
+    fn lower_array_spread(
+        &mut self,
+        vector_local: &str,
+        operand: &Spanned<Expr>,
+        element_ty: &Ty,
+    ) -> Result<(), CompileError> {
+        let span = operand.1.clone();
+        let source_local = self.lower_expr(operand)?;
+        let length_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "vector.len",
+            Some(length_local.clone()),
+            vec![Operand::local(source_local.clone())],
+            Some(span.clone()),
+            None,
+        );
+        let index_local = self.declare_local(None, &Ty::I64, true, Some(span.clone()));
+        let zero_local = self.lower_literal(
+            &Literal::Integer {
+                value: 0,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(zero_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+
+        let span_ref = self.package.spans.span_ref(&span);
+        let (header_idx, header_id) = self.new_block("array_spread_header", span_ref.clone());
+        let (body_idx, body_id) = self.new_block("array_spread_body", span_ref.clone());
+        let (continue_idx, continue_id) = self.new_block("array_spread_continue", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("array_spread_exit", span_ref.clone());
+
+        self.terminate(Terminator::br(
+            header_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+        self.switch_to(header_idx);
+        let condition_local = self.temp_local(&Ty::Bool, Some(span.clone()));
+        self.emit_instruction(
+            "cmp.lt",
+            Some(condition_local.clone()),
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(length_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br_if(
+            Operand::local(condition_local),
+            body_id,
+            exit_id.clone(),
+            Vec::new(),
+            span_ref.clone(),
+        ));
+
+        self.switch_to(body_idx);
+        let element_local = self.temp_local(element_ty, Some(span.clone()));
+        self.emit_instruction(
+            "vector.index",
+            Some(element_local.clone()),
+            vec![
+                Operand::local(source_local),
+                Operand::local(index_local.clone()),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "vector.push",
+            None,
+            vec![
+                Operand::local(vector_local.to_string()),
+                Operand::local(element_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.terminate(Terminator::br(continue_id, Vec::new(), span_ref.clone()));
+
+        self.switch_to(continue_idx);
+        let one_local = self.lower_literal(
+            &Literal::Integer {
+                value: 1,
+                radix: hew_parser::ast::IntRadix::Decimal,
+            },
+            span.clone(),
+        );
+        let next_local = self.temp_local(&Ty::I64, Some(span.clone()));
+        self.emit_instruction(
+            "i64.checked_add",
+            Some(next_local.clone()),
+            vec![
+                Operand::local(index_local.clone()),
+                Operand::local(one_local),
+            ],
+            Some(span.clone()),
+            None,
+        );
+        self.emit_instruction(
+            "local.set",
+            None,
+            vec![Operand::local(index_local), Operand::local(next_local)],
+            Some(span),
+            None,
+        );
+        self.terminate(Terminator::br(header_id, Vec::new(), span_ref));
+
+        self.switch_to(exit_idx);
+        Ok(())
     }
 
     #[expect(
@@ -2726,10 +2889,13 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         match literal {
             Literal::Integer { value, .. } => {
                 let dst = self.temp_local(&Ty::I64, Some(span.clone()));
+                // Admission runs before emission and rejects every integer
+                // literal outside `i64`.
+                let value = i64::try_from(*value).expect("admission rejects literals outside i64");
                 self.emit_instruction(
                     "const.i64",
                     Some(dst.clone()),
-                    vec![i64_literal_operand(*value)],
+                    vec![i64_literal_operand(value)],
                     Some(span),
                     None,
                 );
@@ -3246,9 +3412,34 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             self.emit_unsupported(Some(span.clone()));
             return Ok(self.emit_const_unit(Some(span)));
         };
+        self.lower_actor_ask(receiver, method, args, span)
+    }
 
+    /// An actor's own name, or a supervisor child slot of that actor.
+    fn is_actor_handle(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Named { name, args, .. } if name == "ChildRef" => args
+                .first()
+                .is_some_and(|inner| self.is_actor_handle(inner)),
+            Ty::Named { name, .. } => self.package.actor_field_order.contains_key(name),
+            _ => false,
+        }
+    }
+
+    /// A call on an actor handle is the ask: the handler runs in the actor
+    /// and the caller suspends for its reply.
+    fn lower_actor_ask(
+        &mut self,
+        receiver: &Spanned<Expr>,
+        method: &str,
+        args: &[CallArg],
+        span: std::ops::Range<usize>,
+    ) -> Result<String, CompileError> {
         let actor_local = self.lower_expr(receiver)?;
-        let mut operands = vec![Operand::local(actor_local), Operand::symbol(method.clone())];
+        let mut operands = vec![
+            Operand::local(actor_local),
+            Operand::symbol(method.to_owned()),
+        ];
         for arg in args {
             operands.push(Operand::local(self.lower_expr(arg.expr())?));
         }
@@ -3417,6 +3608,11 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                     return self.lower_machine_method(receiver, method, args, span);
                 }
             }
+        }
+
+        let receiver_ty = self.ty_for_expr(receiver);
+        if self.is_actor_handle(&receiver_ty) {
+            return self.lower_actor_ask(receiver, method, args, span);
         }
 
         let receiver_local = self.lower_expr(receiver)?;
@@ -3613,28 +3809,22 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
                 );
                 Ok(dst)
             }
-            "unwrap" => {
+            "expect" => {
                 let receiver_ty = self.ty_for_expr(receiver);
-                let is_option = matches!(
+                let is_option_or_result = matches!(
                     receiver_ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Option),
+                        builtin: Some(BuiltinType::Option | BuiltinType::Result),
                         ..
                     }
                 );
-                let is_result = matches!(
-                    receiver_ty,
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Result),
-                        ..
-                    }
-                );
-                if !is_option && !is_result {
+                let Some(reason_arg) = args.first().filter(|_| is_option_or_result) else {
                     self.emit_unsupported(Some(span.clone()));
                     return Ok(self.emit_const_unit(Some(span)));
-                }
+                };
                 self.package.ensure_option_result_layout(&receiver_ty);
-                Ok(self.lower_option_result_unwrap(receiver_local, is_option, span))
+                let reason_local = self.lower_expr(reason_arg.expr())?;
+                Ok(self.lower_option_result_expect(receiver_local, reason_local, span))
             }
             "unwrap_or" => {
                 let receiver_ty = self.ty_for_expr(receiver);
@@ -3689,22 +3879,23 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
-    /// Lower `opt.unwrap()` / `res.unwrap()` for Option and Result.
+    /// Lower `opt.expect(reason)` / `res.expect(reason)` for Option and Result.
     ///
     /// Emits an enum-tag check: tag == 0 (Some/Ok) → extract and return
-    /// payload[0]; tag != 0 (None/Err) → panic.
-    fn lower_option_result_unwrap(
+    /// payload[0]; tag != 0 (None/Err) → panic with the native message,
+    /// `expect failed: <reason>`.
+    fn lower_option_result_expect(
         &mut self,
         receiver_local: String,
-        is_option: bool,
+        reason_local: String,
         span: std::ops::Range<usize>,
     ) -> String {
         let result_ty = self.ty_for_span(&span);
         let result_local = self.declare_local(None, &result_ty, true, Some(span.clone()));
         let span_ref = self.package.spans.span_ref(&span);
-        let (some_idx, some_id) = self.new_block("unwrap_some", span_ref.clone());
-        let (panic_idx, panic_id) = self.new_block("unwrap_panic", span_ref.clone());
-        let (exit_idx, exit_id) = self.new_block("unwrap_exit", span_ref.clone());
+        let (some_idx, some_id) = self.new_block("expect_some", span_ref.clone());
+        let (panic_idx, panic_id) = self.new_block("expect_panic", span_ref.clone());
+        let (exit_idx, exit_id) = self.new_block("expect_exit", span_ref.clone());
 
         let tag_local = self.temp_local(&Ty::I64, Some(span.clone()));
         self.emit_instruction(
@@ -3762,12 +3953,18 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
         // None/Err branch: panic
         self.switch_to(panic_idx);
-        let msg_text = if is_option {
-            "unwrap called on None"
-        } else {
-            "unwrap called on Err"
-        };
-        let msg_local = self.lower_literal(&Literal::String(msg_text.to_string()), span.clone());
+        let prefix_local = self.lower_literal(
+            &Literal::String("expect failed: ".to_string()),
+            span.clone(),
+        );
+        let msg_local = self.temp_local(&Ty::String, Some(span.clone()));
+        self.emit_instruction(
+            "string.concat",
+            Some(msg_local.clone()),
+            vec![Operand::local(prefix_local), Operand::local(reason_local)],
+            Some(span.clone()),
+            None,
+        );
         self.emit_instruction(
             "panic",
             None,
@@ -4260,7 +4457,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             if let Some(tag) = self.pattern_tag(pattern, scrutinee_ty) {
                 let tag_const = self.lower_literal(
                     &Literal::Integer {
-                        value: i64::try_from(tag).unwrap_or(0),
+                        value: i128::try_from(tag).unwrap_or(0),
                         radix: hew_parser::ast::IntRadix::Decimal,
                     },
                     pattern.1.clone(),
@@ -4374,14 +4571,14 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         }
     }
 
-    /// If `ty` is a pid handle whose type argument names a declared supervisor
-    /// (e.g. `LocalPid<WorkerPool>`), return that supervisor's name.
+    /// If `ty` names a declared supervisor (e.g. `WorkerPool`), return that
+    /// supervisor's name. A supervisor is the type of its handle, and a
+    /// `ChildRef` names it through its role parameter.
     fn supervisor_handle_arg(&self, ty: &Ty) -> Option<String> {
-        if let Ty::Named { args, .. } = ty {
-            if let Some(Ty::Named { name, .. }) = args.first() {
-                if self.package.supervisor_names.contains(name) {
-                    return Some(name.clone());
-                }
+        let named = ty.as_local_actor_ref().unwrap_or(ty);
+        if let Ty::Named { name, .. } = named {
+            if self.package.supervisor_names.contains(name) {
+                return Some(name.clone());
             }
         }
         None
@@ -4771,7 +4968,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         pattern: &Spanned<Pattern>,
         expr: &Spanned<Expr>,
         body: &AstBlock,
-        else_body: Option<&AstBlock>,
+        else_body: Option<&Spanned<Expr>>,
         span: std::ops::Range<usize>,
     ) -> Result<(), CompileError> {
         let scrutinee_ty = self.ty_for_expr(expr);
@@ -4800,7 +4997,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or(0, |(tag, _)| tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
-                value: i64::try_from(expected_tag).unwrap_or(0),
+                value: i128::try_from(expected_tag).unwrap_or(0),
                 radix: hew_parser::ast::IntRadix::Decimal,
             },
             span.clone(),
@@ -4835,7 +5032,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
 
             self.switch_to(else_idx);
             let saved_else = self.bindings.clone();
-            self.lower_block(else_body)?;
+            self.lower_expr(else_body)?;
             self.bindings = saved_else;
             if !self.current_is_terminated() {
                 self.terminate(Terminator::br(exit_id, Vec::new(), None));
@@ -4875,7 +5072,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         pattern: &Spanned<Pattern>,
         scrutinee_expr: &Spanned<Expr>,
         body: &AstBlock,
-        else_body: Option<&AstBlock>,
+        else_body: Option<&Spanned<Expr>>,
         span: std::ops::Range<usize>,
     ) -> Result<String, CompileError> {
         let scrutinee_ty = self.ty_for_expr(scrutinee_expr);
@@ -4916,7 +5113,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or(0, |(tag, _)| tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
-                value: i64::try_from(expected_tag).unwrap_or(0),
+                value: i128::try_from(expected_tag).unwrap_or(0),
                 radix: hew_parser::ast::IntRadix::Decimal,
             },
             span.clone(),
@@ -4963,9 +5160,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
         // Else arm: lower the else body, join its value.
         self.switch_to(else_idx);
         let saved_else = self.bindings.clone();
-        let else_val = self
-            .lower_block(else_body)?
-            .unwrap_or_else(|| self.emit_const_unit(Some(span.clone())));
+        let else_val = self.lower_expr(else_body)?;
         if !self.current_is_terminated() {
             self.emit_instruction(
                 "local.set",
@@ -5029,7 +5224,7 @@ impl<'pkg, 'src> FunctionEmitter<'pkg, 'src> {
             .map_or(0, |(_, tag, _)| *tag);
         let expected_local = self.lower_literal(
             &Literal::Integer {
-                value: i64::try_from(expected_tag).unwrap_or(0),
+                value: i128::try_from(expected_tag).unwrap_or(0),
                 radix: hew_parser::ast::IntRadix::Decimal,
             },
             span.clone(),
@@ -5209,9 +5404,11 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
             Ty::normalize_named(name.clone(), args)
         }
         hew_parser::ast::TypeExpr::Option(inner) => Ty::option(ty_from_type_expr(&inner.0)),
-        hew_parser::ast::TypeExpr::Result { ok, err } => {
-            Ty::result(ty_from_type_expr(&ok.0), ty_from_type_expr(&err.0))
-        }
+        hew_parser::ast::TypeExpr::Result { ok, err }
+        | hew_parser::ast::TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => Ty::result(ty_from_type_expr(&ok.0), ty_from_type_expr(&err.0)),
         hew_parser::ast::TypeExpr::Tuple(items) => {
             Ty::Tuple(items.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect())
         }
@@ -5220,12 +5417,26 @@ fn ty_from_type_expr(ty: &hew_parser::ast::TypeExpr) -> Ty {
         }
         hew_parser::ast::TypeExpr::Slice(inner) => Ty::Slice(Box::new(ty_from_type_expr(&inner.0))),
         hew_parser::ast::TypeExpr::Function {
+            capabilities,
             params,
             return_type,
         } => Ty::Function {
+            capabilities: *capabilities,
             params: params.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect(),
             ret: Box::new(ty_from_type_expr(&return_type.0)),
         },
+        hew_parser::ast::TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let resolved: Vec<Ty> = params.iter().map(|(ty, _)| ty_from_type_expr(ty)).collect();
+            let msg = match resolved.len() {
+                0 => Ty::Unit,
+                1 => resolved.into_iter().next().unwrap_or(Ty::Error),
+                _ => Ty::Tuple(resolved),
+            };
+            Ty::actor_fn(msg, ty_from_type_expr(&return_type.0))
+        }
         hew_parser::ast::TypeExpr::Pointer {
             is_mutable,
             pointee,
@@ -5383,13 +5594,13 @@ fn i64_requires_string_encoding(value: i64) -> bool {
 /// supervisor child's initial state. Returns `None` for non-literal initializers
 /// (which the educational profile does not yet admit in child specs).
 fn literal_json(expr: &Expr) -> Option<Value> {
-    match expr {
-        Expr::Literal(Literal::Integer { value, .. }) => Some(supervisor_i64_literal(*value)),
-        Expr::Literal(Literal::Float(value)) => Some(Value::from(*value)),
-        Expr::Literal(Literal::String(value)) => Some(Value::from(value.clone())),
-        Expr::Literal(Literal::Bool(value)) => Some(Value::from(*value)),
-        Expr::Literal(Literal::Char(value)) => Some(Value::from(value.to_string())),
-        _ => None,
+    match const_literal(expr)? {
+        Literal::Integer { value, .. } => Some(supervisor_i64_literal(i64::try_from(value).ok()?)),
+        Literal::Float(value) => Some(Value::from(value)),
+        Literal::String(value) => Some(Value::from(value)),
+        Literal::Bool(value) => Some(Value::from(value)),
+        Literal::Char(value) => Some(Value::from(value.to_string())),
+        Literal::Duration(_) => None,
     }
 }
 

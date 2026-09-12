@@ -1,0 +1,11 @@
+[[case]]
+id = "exit-status-crash-exit-zero"
+intent = "`exit(0)` after an unsupervised actor crash still reports the fault: exit 1."
+source = "cases/exit-status-crash-exit-zero.hew"
+suites = ["acceptance"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "chose 0\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
+exit = 1

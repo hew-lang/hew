@@ -13,9 +13,9 @@ remain consistent with these definitions.
 
 ## Files
 
-| File | Covers |
-|------|--------|
-| `envelope.cddl` | Control frames and data envelope frames (CBOR wire layer, v1) — the transport CONTAINER |
+| File             | Covers                                                                                                         |
+| ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| `envelope.cddl`  | Control frames and data envelope frames (CBOR wire layer, v1) — the transport CONTAINER                        |
 | `wire-body.cddl` | The per-`#[wire]`-type CBOR body carried inside an envelope frame's `payload` (`bstr`) slot — the message BODY |
 
 > W2 will add `handshake.cddl` once the CBOR handshake codec lands.
@@ -24,7 +24,7 @@ remain consistent with these definitions.
 
 `envelope.cddl` describes the frame map and treats `payload` (key 6) as an
 opaque `bstr`. `wire-body.cddl` describes the bytes INSIDE that `bstr`: the
-tagged-CBOR body the codegen serializer emits for each message type (a struct as
+tagged-CBOR body the codegen serializer emits for each message type (a record as
 an `@N`-keyed map, an enum as a unit tag or a single-entry map-of-one). The
 conformance test `hew-runtime/tests/wire_body_cddl_conformance.rs` validates
 emitted bytes against `wire-body.cddl` so the schema stays an enforced contract.

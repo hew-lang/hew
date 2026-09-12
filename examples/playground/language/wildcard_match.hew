@@ -2,10 +2,10 @@
 //! @description Enum dispatch with a catch-all wildcard arm
 
 enum Signal {
-    Go;
-    Stop;
-    Wait;
-    Unknown;
+    Go,
+    Stop,
+    Wait,
+    Unknown,
 }
 
 fn describe(s: Signal) -> string {

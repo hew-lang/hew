@@ -1,0 +1,74 @@
+// The ask caller registers the reply payload's destructor when it builds the
+// operation, so an owning reply is destroyed exactly once whether the caller
+// takes it or gives up first. The consumed leg frees the payload through the
+// caller; the abandoned leg - the reply is deposited after the deadline has
+// already passed - frees it through the registered destructor when the channel
+// is torn down.
+indirect enum Tree {
+    Leaf(i64),
+    Node(Tree, Tree),
+}
+
+fn total(t: Tree) -> i64 {
+    match t {
+        .Leaf(n) => n,
+        .Node(l, r) => total(l) + total(r),
+    }
+}
+
+actor Builder {
+    receive fn build(depth: i64) -> Tree {
+        if depth <= 0 {
+            Tree.Leaf(1)
+        } else {
+            Tree.Node(Tree.Leaf(depth), Tree.Leaf(depth))
+        }
+    }
+}
+
+actor Caller {
+    var builder: Builder,
+    receive fn walk(depth: i64) -> i64 {
+        match builder.build(depth) {
+            .Ok(tree) => { total(tree) }
+            .Err(e) => { let _ = e; -1 }
+        }
+    }
+}
+
+actor Slow {
+    receive fn echo(message: string) -> string {
+        sleep(30ms);
+        message.to_upper()
+    }
+}
+
+fn main() {
+    let builder = spawn Builder;
+    let caller = spawn Caller(builder: builder);
+    var sum = 0;
+    for depth in 0..8 {
+        match caller.walk(depth) {
+            .Ok(walked) => { sum = sum + walked; }
+            .Err(e) => { let _ = e; sum = -1; }
+        }
+    }
+    println(f"sum={sum}");
+
+    // The reply lands after the caller has given up: the payload is deposited
+    // into a channel nobody reads, and its registered destructor frees it.
+    let slow = spawn Slow;
+    for i in 0..4 {
+        let outcome = scope within 1ms {
+            match slow.echo("abandoned") {
+                .Ok(value) => value,
+                .Err(_) => "unexpected-error",
+            }
+        } handle failure {
+            match failure { .Deadline { message } => "timed-out", .Fault { message } => "unexpected-fault", }
+        };
+        println(outcome);
+    }
+    sleep(100ms);
+    println("done");
+}

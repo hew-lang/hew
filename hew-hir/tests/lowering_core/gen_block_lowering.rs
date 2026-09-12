@@ -423,7 +423,7 @@ fn receive_gen_fn_state_field_capture_passes_verify() {
     let output = typecheck_and_lower(
         r"
         actor Ticker {
-            var base: i64;
+            var base: i64,
             init(b: i64) { base = b; }
             receive gen fn stream(n: i64) -> i64 {
                 var i = 0;

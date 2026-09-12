@@ -59,11 +59,11 @@ fn stdlib_docs_invariants() {
         "Variants section missing from std::encoding::json HTML",
     );
 
-    // Trait method docstrings render in stdlib docs. `ValueMethods::stringify`
-    // keeps the JSON-facing docstring while extending the shared canonical
-    // Value contract; verify the docstring reaches the rendered HTML.
+    // Trait method docstrings render in stdlib docs. `ValueMethods::get_float`
+    // carries its docstring inside the trait body; verify it reaches the
+    // rendered HTML, which nothing outside the trait declaration supplies.
     assert!(
-        json.contains("Serialize the value back to a JSON string."),
+        json.contains("Read a float without coercing an integer to a float."),
         "trait method docstring missing from std::encoding::json HTML",
     );
 }

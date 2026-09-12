@@ -1,0 +1,3 @@
+import probe.lib;
+
+pub fn through() -> string { lib.describe() + "/mid" }

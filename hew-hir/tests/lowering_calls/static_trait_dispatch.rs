@@ -82,7 +82,7 @@ fn multi_module_program(root_src: &str, modules: &[(&str, &str)]) -> Program {
         if let Item::Import(import) = item {
             let full_path = import.path.join("::");
             if let Some(items) = source_items.get(&full_path) {
-                import.resolved_items = Some(items.clone());
+                import.resolved_items = Some(items.clone().into());
             }
         }
     }
@@ -159,7 +159,7 @@ import right.paint.{Render as RightRender, Box as RightBox, identity as right_id
 
 fn use_left<T: LeftRender>(value: T) -> string { value.render() }
 fn use_right<T: RightRender>(value: T) -> string { value.render() }
-fn main() -> string {
+fn sample() -> string {
     let a = LeftBox<i64> { value: 1 };
     let b = RightBox<bool> { value: true };
     let left_direct = left_identity();
@@ -175,7 +175,7 @@ fn main() -> string {
 pub trait Render {
     fn render(value: Self) -> string;
 }
-pub type Box<T> { value: T; }
+pub type Box<T> { value: T, }
 pub fn identity() -> string { "left-direct" }
 impl<T> Render for Box<T> {
     fn render(value: Box<T>) -> string { "left-generic" }
@@ -191,7 +191,7 @@ impl Render for Box<i64> {
 pub trait Render {
     fn render(value: Self) -> string;
 }
-pub type Box<T> { value: T; }
+pub type Box<T> { value: T, }
 pub fn identity() -> string { "right-direct" }
 impl<T> Render for Box<T> {
     fn render(value: Box<T>) -> string { "right-generic" }
@@ -262,7 +262,7 @@ impl Render for Box<string> {
         let HirItem::Function(function) = item else {
             continue;
         };
-        if function.name == "main" {
+        if function.name == "sample" {
             walk_block_calls(&function.body, &mut main_targets);
         }
     }
@@ -375,7 +375,7 @@ fn v1_basic_static_trait_dispatch_emits_call_trait_method_static() {
 trait Show {
     fn show(val: Self) -> string;
 }
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 impl Show for Point {
     fn show(p: Point) -> string { "Point" }
 }
@@ -409,7 +409,7 @@ fn v2_missing_impl_reports_undefined_method() {
 trait Show {
     fn show(val: Self) -> string;
 }
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn display<T: Show>(item: T) -> string {
     item.nonexistent()
 }
@@ -433,7 +433,7 @@ trait Show {
 trait Size {
     fn size(val: Self) -> i64;
 }
-type Box { w: i64; h: i64; }
+type Box { w: i64, h: i64, }
 impl Show for Box {
     fn show(b: Box) -> string { "Box" }
 }
@@ -471,7 +471,7 @@ trait Base {
 trait Extended: Base {
     fn extra(val: Self) -> i64;
 }
-type Widget { label: string; }
+type Widget { label: string, }
 impl Base for Widget {
     fn name(w: Widget) -> string { w.label }
 }
@@ -515,7 +515,7 @@ trait A: Root {
 trait B: Root {
     fn b_only(val: Self) -> i64;
 }
-type Thing { v: i64; }
+type Thing { v: i64, }
 impl Root for Thing {
     fn id(t: Thing) -> i64 { t.v }
 }
@@ -592,7 +592,7 @@ trait A {
 trait B: A {
     fn describe(val: Self) -> string;
 }
-type Thing { x: i64; }
+type Thing { x: i64, }
 impl A for Thing {
     fn describe(t: Thing) -> string { "A" }
 }
@@ -620,7 +620,7 @@ fn v7_return_type_flows_through() {
 trait Length {
     fn len(val: Self) -> i64;
 }
-type List { count: i64; }
+type List { count: i64, }
 impl Length for List {
     fn len(l: List) -> i64 { l.count }
 }
@@ -654,7 +654,7 @@ fn v8_trait_method_with_multiple_args() {
 trait Adder {
     fn add(val: Self, x: i64, y: i64) -> i64;
 }
-type Calc { base: i64; }
+type Calc { base: i64, }
 impl Adder for Calc {
     fn add(c: Calc, x: i64, y: i64) -> i64 { c.base + x + y }
 }
@@ -682,7 +682,7 @@ fn v9_self_substitution_in_return_type() {
 trait Clone {
     fn clone(val: Self) -> Self;
 }
-type Token { id: i64; }
+type Token { id: i64, }
 impl Clone for Token {
     fn clone(t: Token) -> Token { Token { id: t.id } }
 }
@@ -734,7 +734,7 @@ trait Printable {
 trait Formattable: Printable {
     fn format(val: Self) -> string;
 }
-type Doc { content: string; }
+type Doc { content: string, }
 impl Printable for Doc {
     fn print_str(d: Doc) -> string { d.content }
 }
@@ -774,7 +774,7 @@ fn v7b_generic_impl_preserves_impl_level_type_params() {
 trait Show {
     fn show(val: Self) -> string;
 }
-type Wrapper<U> { inner: U; }
+type Wrapper<U> { inner: U, }
 impl<U> Show for Wrapper<U> {
     fn show(w: Wrapper<U>) -> string { "wrapped" }
 }
@@ -820,7 +820,7 @@ fn v15_static_dispatch_monomorphization_keeps_canonical_owner_and_typed_args() {
 trait Show {
     fn show(val: Self) -> string;
 }
-type Wrapper<U> { inner: U; }
+type Wrapper<U> { inner: U, }
 impl<U> Show for Wrapper<U> {
     fn show(w: Wrapper<U>) -> string { "wrapped" }
 }

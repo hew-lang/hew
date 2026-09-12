@@ -4,8 +4,8 @@
 // spellings share one binding per field, so mixing them in a body is not a
 // mode the checker has to choose between.
 actor Tally {
-    var hits: i64;
-    var misses: i64;
+    var hits: i64,
+    var misses: i64,
 
     init(seed: i64) {
         self.hits = seed;
@@ -33,10 +33,10 @@ actor Tally {
 
 fn main() -> i64 {
     let tally = spawn Tally(seed: 1);
-    tally.record(true);
-    tally.record(true);
-    tally.record(false);
-    match await tally.total() {
+    let _ = tally.record(true);
+    let _ = tally.record(true);
+    let _ = tally.record(false);
+    match tally.total() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

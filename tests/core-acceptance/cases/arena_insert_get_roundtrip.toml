@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_insert_get_roundtrip"
+intent = "Arena<T>: three distinct inserts round-trip to their exact values."
+source = "../vertical-slice/accept/arena_insert_get_roundtrip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "zero\none\ntwo\ntrue\ntrue\n"
+exit = 0

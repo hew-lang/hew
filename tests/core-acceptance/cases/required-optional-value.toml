@@ -1,0 +1,10 @@
+[[case]]
+id = "required-optional-value"
+intent = "Required optional binding and owning if-value joins preserve the source and clean up both presence and absence paths."
+source = "cases/required-optional-value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "PRESENT:present:MISSING\n"
+exit = 0

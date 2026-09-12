@@ -247,7 +247,7 @@ impl Parser<'_> {
                 continue;
             }
 
-            // Parse field: name: Type [@N] [modifiers] [,|;]
+            // Parse field: name: Type [@N] [modifiers] [,]
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
             let ty = self.parse_type()?;
@@ -281,10 +281,7 @@ impl Parser<'_> {
                 parsed_field.modifiers.since,
             ));
 
-            // Accept comma or semicolon as separator
-            if !self.eat(&Token::Comma) {
-                self.eat(&Token::Semicolon);
-            }
+            self.expect_structural_separator();
         }
         self.expect(&Token::RightBrace)?;
 
@@ -351,6 +348,7 @@ impl Parser<'_> {
         });
 
         Some(TypeDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             visibility,
             kind: TypeDeclKind::Struct,
             name,

@@ -25,7 +25,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
-        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(
             BuiltinType::Option
@@ -36,11 +35,11 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::VecIter
             | BuiltinType::HashMapIter
             | BuiltinType::Task
+            | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
             | BuiltinType::StreamPair
             | BuiltinType::Generator
-            | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
             | BuiltinType::Weak
@@ -55,8 +54,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaActorHandle
-            | BuiltinType::LambdaPid
+            | BuiltinType::ActorHandle
+            | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
@@ -66,7 +65,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::DownReason
             | BuiltinType::DownNotification
             | BuiltinType::SendError
-            | BuiltinType::AskError
+            | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
@@ -78,7 +77,9 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError,
+            | BuiltinType::TimeoutError
+            | BuiltinType::JsonValue
+            | BuiltinType::YamlValue,
         )
         | None => None,
     }
@@ -128,6 +129,18 @@ pub(crate) enum HashSetLoweringTypeKey {
     I64,
     U64,
     String,
+}
+
+/// A callable body, independent of its linker spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum EffectBody {
+    Declaration(crate::DefId),
+    /// Deferred execution of a named generator, separate from its creator.
+    Generator(crate::DefId),
+    /// Deferred execution of a generator block.
+    GeneratorBlock(crate::check::SpanKey),
+    /// Also identifies the lifted body of a fork block.
+    Closure(crate::check::SpanKey),
 }
 
 /// The internal representation of a type in Hew.
@@ -206,20 +219,29 @@ pub enum Ty {
 
     /// Function type: `fn(T1, T2) -> R`
     Function {
+        /// Invocation and duplication guarantees of this callable value.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<Ty>,
         /// Return type
         ret: Box<Ty>,
     },
 
-    /// Closure type: like Function but with captured variable types for Send checking
+    /// The concrete type of one closure literal or of a named function used
+    /// as a value. Its body decides whether a call suspends and its captures
+    /// decide whether the value crosses a task boundary; a written `fn` type
+    /// erases both.
     Closure {
+        /// Invocation and duplication guarantees of this concrete closure.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<Ty>,
         /// Return type
         ret: Box<Ty>,
         /// Types of captured variables from the enclosing scope
         captures: Vec<Ty>,
+        /// The body whose checked effect every call through this type inherits.
+        identity: EffectBody,
     },
 
     /// Pointer types (FFI)
@@ -624,6 +646,33 @@ impl Ty {
                 elem.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 write!(f, "]")
             }
+            // An anonymous actor's handle has no nominal: it reads like the
+            // `fn` type it mirrors.
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorFn),
+                args,
+                ..
+            } if args.len() == 2 => {
+                write!(f, "actor(")?;
+                match &args[0] {
+                    Ty::Unit => {}
+                    Ty::Tuple(items) => {
+                        for (i, item) in items.iter().enumerate() {
+                            if i > 0 {
+                                write!(f, ", ")?;
+                            }
+                            item.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                        }
+                    }
+                    single => single.fmt_with_numeric_names(f, i64_name, f64_name)?,
+                }
+                write!(f, ")")?;
+                if !matches!(args[1], Ty::Unit) {
+                    write!(f, " -> ")?;
+                    args[1].fmt_with_numeric_names(f, i64_name, f64_name)?;
+                }
+                Ok(())
+            }
             Ty::Named { name, args, .. } => {
                 write!(f, "{name}")?;
                 if !args.is_empty() {
@@ -638,8 +687,18 @@ impl Ty {
                 }
                 Ok(())
             }
-            Ty::Function { params, ret } | Ty::Closure { params, ret, .. } => {
-                write!(f, "fn(")?;
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            }
+            | Ty::Closure {
+                capabilities,
+                params,
+                ret,
+                ..
+            } => {
+                write!(f, "fn{capabilities}(")?;
                 for (i, param) in params.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;
@@ -829,13 +888,14 @@ impl Ty {
             Ty::Tuple(elems) => elems.iter().any(Ty::has_inference_var),
             Ty::Array(elem, _) | Ty::Slice(elem) => elem.has_inference_var(),
             Ty::Named { args, .. } => args.iter().any(Ty::has_inference_var),
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 params.iter().any(Ty::has_inference_var) || ret.has_inference_var()
             }
             Ty::Closure {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 params.iter().any(Ty::has_inference_var)
                     || ret.has_inference_var()
@@ -887,10 +947,32 @@ impl Ty {
         Self::builtin_named(BuiltinType::ChildRef, vec![inner])
     }
 
-    /// Construct `LocalPid<inner>` — actor pid in this process, returned by `spawn`.
+    /// Construct the handle type of actor `name` with its own type arguments.
+    ///
+    /// An actor is the type of its handle (D489): `spawn Orders(...)` has type
+    /// `Orders`, and `Orders` written in a field, parameter, return or element
+    /// position is this type. The actor's declaration name and type arguments
+    /// ride the `Named` carrier, so every consumer that reads a nominal's name
+    /// reads the actor's own identity.
     #[must_use]
-    pub fn local_pid(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::LocalPid, vec![inner])
+    pub fn actor_handle(name: impl Into<String>, args: Vec<Ty>) -> Ty {
+        Ty::Named {
+            name: name.into(),
+            args,
+            builtin: Some(BuiltinType::ActorHandle),
+        }
+    }
+
+    /// The handle type of an actor whose identity is already a `Ty::Named`.
+    ///
+    /// Anything else yields `Ty::Error`, so a caller that lost the actor
+    /// identity fails closed instead of minting a handle over a wrong carrier.
+    #[must_use]
+    pub fn actor_handle_of(actor: &Ty) -> Ty {
+        match actor {
+            Ty::Named { name, args, .. } => Ty::actor_handle(name.clone(), args.clone()),
+            _ => Ty::Error,
+        }
     }
 
     /// Construct `SupervisorPool<supervisor, child>`.
@@ -964,7 +1046,7 @@ impl Ty {
         }
     }
 
-    /// Construct `LambdaPid<M, R>` — the user-visible lambda-actor handle.
+    /// Construct `actor(M) -> R` — the anonymous-actor handle type.
     ///
     /// `M` is the message type (single param, a `Tuple` for multi-param, or
     /// `Unit` for a zero-arg actor); `R` is the reply type (`Unit` for a
@@ -973,16 +1055,16 @@ impl Ty {
     /// actor boundary). A PID-like handle, distinct from the `Duplex` channel
     /// substrate: it has no `.recv()` / `.send_half()` / `.recv_half()` surface.
     #[must_use]
-    pub fn lambda_pid(msg: Ty, reply: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::LambdaPid, vec![msg, reply])
+    pub fn actor_fn(msg: Ty, reply: Ty) -> Ty {
+        Self::builtin_named(BuiltinType::ActorFn, vec![msg, reply])
     }
 
-    /// Extract `(M, R)` from `LambdaPid<M, R>`, or `None` if not a `LambdaPid`.
+    /// Extract `(M, R)` from `actor(M) -> R`, or `None` if this is not one.
     #[must_use]
-    pub fn as_lambda_pid(&self) -> Option<(&Ty, &Ty)> {
+    pub fn as_actor_fn(&self) -> Option<(&Ty, &Ty)> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::LambdaPid),
+                builtin: Some(BuiltinType::ActorFn),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
@@ -1001,15 +1083,29 @@ impl Ty {
             .expect("generated builtin enum catalog must contain SendError")
     }
 
-    /// Construct `AskError` — error type for ask-shaped lambda-actor calls.
-    ///
-    /// # Panics
-    ///
-    /// Panics if the generated stdlib enum catalog is inconsistent.
+    /// Construct `ActorError<E>` — the error of every completion call on an
+    /// actor handle. `error` is the handler's declared `fails` type and
+    /// `message` the call's sealed message type; both are `Never` when the
+    /// call cannot produce that variant.
     #[must_use]
-    pub fn ask_error() -> Ty {
-        crate::builtin_enums::monomorphic_builtin_enum_ty("AskError")
-            .expect("generated builtin enum catalog must contain AskError")
+    pub fn actor_error(error: Ty) -> Ty {
+        Self::actor_error_with_request(error, Self::never_type())
+    }
+
+    /// Construct the completion envelope with its inferred sealed request.
+    #[must_use]
+    pub fn actor_error_with_request(error: Ty, request: Ty) -> Ty {
+        crate::actor_delivery::nominal(
+            crate::actor_delivery::ACTOR_ERROR_TYPE,
+            vec![error, request],
+        )
+    }
+
+    /// Construct `Never` — the uninhabited stdlib enum that stands in for an
+    /// `ActorError` parameter a call site can never produce.
+    #[must_use]
+    pub fn never_type() -> Ty {
+        crate::actor_delivery::nominal(crate::actor_delivery::NEVER_TYPE, Vec::new())
     }
 
     /// Construct `TimeoutError` — the error arm of `await rx.recv() | after d`
@@ -1061,11 +1157,16 @@ impl Ty {
     /// Construct `MonitorRef` — handle returned by `monitor(handle)`.
     ///
     /// The struct is declared in `std/link_monitor.hew` and registered via
-    /// `register_builtin_monitor_ref_surface`. At the checker layer this is a
-    /// named-type marker, consistent with how `SendError`/`AskError` are encoded.
+    /// `register_builtin_monitor_ref_surface`. Keep the source declaration
+    /// identity here: a bare `MonitorRef` could be a user type and cannot
+    /// select the runtime lifecycle.
     #[must_use]
     pub fn monitor_ref() -> Ty {
-        Self::builtin_named(BuiltinType::MonitorRef, vec![])
+        Ty::Named {
+            builtin: Some(BuiltinType::MonitorRef),
+            name: "std.link_monitor.MonitorRef".to_string(),
+            args: vec![],
+        }
     }
 
     /// Return the fixed bit-width of this integer type, or `None` for
@@ -1088,11 +1189,8 @@ impl Ty {
 
     /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
     ///
-    /// Distinct from the process-resource `CloseError` registered by the
-    /// `Closable` trait (`registration.rs`); this variant names the duplex
-    /// close-failure (double-close / already-closed) at the type-checker
-    /// surface.  The two share a name by design; slice 6 (stdlib) will
-    /// unify them under a single `CloseError` enum.
+    /// This names the duplex close-failure (double-close / already-closed) at
+    /// the type-checker surface.
     #[must_use]
     pub fn duplex_close_error() -> Ty {
         Self::builtin_named(BuiltinType::CloseError, vec![])
@@ -1118,12 +1216,6 @@ impl Ty {
     #[must_use]
     pub fn generator(yields: Ty, returns: Ty) -> Ty {
         Self::builtin_named(BuiltinType::Generator, vec![yields, returns])
-    }
-
-    /// Construct `AsyncGenerator<yields>`.
-    #[must_use]
-    pub fn async_generator(yields: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::AsyncGenerator, vec![yields])
     }
 
     /// Construct `Range<inner>`.
@@ -1185,15 +1277,44 @@ impl Ty {
         }
     }
 
-    /// If this is `LocalPid<T>`, return `Some(&T)`.
+    /// If this is a declared actor's handle type, return it.
+    ///
+    /// The handle IS the actor type, so the returned `Ty` carries the actor's
+    /// own name and type arguments; a consumer that needs the identity reads
+    /// them off the `Named` carrier.
     #[must_use]
-    pub fn as_local_pid(&self) -> Option<&Ty> {
+    pub fn as_actor_handle(&self) -> Option<&Ty> {
         match self {
             Ty::Named {
-                builtin: Some(BuiltinType::LocalPid),
-                args,
+                builtin: Some(BuiltinType::ActorHandle),
                 ..
-            } if args.len() == 1 => Some(&args[0]),
+            } => Some(self),
+            _ => None,
+        }
+    }
+
+    /// The bare nominal carrier of an actor handle: the same name and type
+    /// arguments with no handle discriminator. A `ChildRef<A>` and a supervisor
+    /// child template name their actor this way.
+    #[must_use]
+    pub fn actor_handle_nominal(&self) -> Option<Ty> {
+        let (name, args) = self.actor_handle_identity()?;
+        Some(Ty::Named {
+            name: name.to_string(),
+            args: args.to_vec(),
+            builtin: None,
+        })
+    }
+
+    /// The declaration name and type arguments of an actor handle.
+    #[must_use]
+    pub fn actor_handle_identity(&self) -> Option<(&str, &[Ty])> {
+        match self {
+            Ty::Named {
+                builtin: Some(BuiltinType::ActorHandle),
+                name,
+                args,
+            } => Some((name.as_str(), args.as_slice())),
             _ => None,
         }
     }
@@ -1211,33 +1332,31 @@ impl Ty {
         }
     }
 
-    /// If this is a local actor reference (`ChildRef<T>` or `LocalPid<T>`),
-    /// return the referenced actor type.
+    /// If this names a local actor — a declared actor's handle, or a
+    /// `ChildRef<T>` role reference — return the actor's nominal carrier.
+    ///
+    /// `RemotePid<T>` is intentionally excluded: it is a distinct type that
+    /// does not participate in the local supervisor graph.
     #[must_use]
     pub fn as_local_actor_ref(&self) -> Option<&Ty> {
-        self.as_child_ref().or_else(|| self.as_local_pid())
+        self.as_child_ref().or_else(|| self.as_actor_handle())
     }
 
-    /// If this is a local actor handle (`LocalPid<T>`), return `Some(&T)`.
+    /// Whether this type addresses a local actor for a lifecycle boundary.
     ///
-    /// `LocalPid<T>` is the spawn-return type and the single-argument carrier
-    /// of the `ActorDispatchLocal` role. `RemotePid<T>` is intentionally
-    /// excluded — it is a distinct type that does not participate in the local
-    /// supervisor graph.
+    /// An anonymous actor's handle carries its message and reply rather than an
+    /// actor nominal it has none of, so it is not an `as_local_actor_ref`, but
+    /// it addresses an actor the same way and closes the same way.
     #[must_use]
-    pub fn as_actor_handle(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(builtin),
-                args,
-                ..
-            } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::ActorDispatchLocal)
-                && args.len() == 1 =>
-            {
-                Some(&args[0])
-            }
-            _ => None,
-        }
+    pub fn addresses_local_actor(&self) -> bool {
+        self.as_local_actor_ref().is_some()
+            || matches!(
+                self,
+                Ty::Named {
+                    builtin: Some(BuiltinType::ActorFn),
+                    ..
+                }
+            )
     }
 
     fn as_single_arg_builtin_named(&self, kind: BuiltinNamedType) -> Option<&Ty> {
@@ -1272,19 +1391,6 @@ impl Ty {
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
-            _ => None,
-        }
-    }
-
-    /// If this is `AsyncGenerator<Y>`, return `Some(&Y)`.
-    #[must_use]
-    pub fn as_async_generator(&self) -> Option<&Ty> {
-        match self {
-            Ty::Named {
-                builtin: Some(BuiltinType::AsyncGenerator),
-                args,
-                ..
-            } if args.len() == 1 => Some(&args[0]),
             _ => None,
         }
     }
@@ -1370,7 +1476,7 @@ impl Ty {
         match self {
             Ty::IntLiteral => Ty::I64,
             Ty::FloatLiteral => Ty::F64,
-            _ => self.map_children(&|child| child.materialize_literal_defaults()),
+            _ => self.map_children(&mut |child| child.materialize_literal_defaults()),
         }
     }
 
@@ -1447,6 +1553,13 @@ impl Ty {
             || matches!(self, Ty::Bool | Ty::Char | Ty::Unit | Ty::Duration)
     }
 
+    /// Whether this value type contains a callable guarantee that erasure must preserve.
+    #[must_use]
+    pub fn contains_callable(&self) -> bool {
+        matches!(self, Self::Function { .. } | Self::Closure { .. })
+            || self.any_child(&Self::contains_callable)
+    }
+
     /// Check if this type contains a specific type variable (occurs check).
     #[must_use]
     pub fn contains_var(&self, v: TypeVar) -> bool {
@@ -1464,7 +1577,7 @@ impl Ty {
                 return replacement.clone();
             }
         }
-        self.map_children(&|child| child.substitute(var, replacement))
+        self.map_children(&mut |child| child.substitute(var, replacement))
     }
 
     /// Apply a full substitution to this type.
@@ -1477,99 +1590,18 @@ impl Ty {
         if subst.mappings().is_empty() {
             return self.clone();
         }
-        match self {
-            Ty::Var(v) => match subst.lookup(*v) {
-                Some(resolved) => {
-                    if !visited.insert(*v) {
-                        return Ty::Error;
-                    }
-                    let resolved = resolved.apply_subst_inner(subst, visited);
-                    visited.remove(v);
-                    resolved
-                }
-                None => self.clone(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|elem| elem.apply_subst_inner(subst, visited))
-                    .collect(),
-            ),
-            Ty::Array(elem, size) => {
-                Ty::Array(Box::new(elem.apply_subst_inner(subst, visited)), *size)
+        if let Ty::Var(var) = self {
+            let Some(resolved) = subst.lookup(*var) else {
+                return self.clone();
+            };
+            if !visited.insert(*var) {
+                return Ty::Error;
             }
-            Ty::Slice(elem) => Ty::Slice(Box::new(elem.apply_subst_inner(subst, visited))),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|arg| arg.apply_subst_inner(subst, visited))
-                    .collect(),
-            },
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|param| param.apply_subst_inner(subst, visited))
-                    .collect(),
-                ret: Box::new(ret.apply_subst_inner(subst, visited)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|param| param.apply_subst_inner(subst, visited))
-                    .collect(),
-                ret: Box::new(ret.apply_subst_inner(subst, visited)),
-                captures: captures
-                    .iter()
-                    .map(|capture| capture.apply_subst_inner(subst, visited))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.apply_subst_inner(subst, visited)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| arg.apply_subst_inner(subst, visited))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), ty.apply_subst_inner(subst, visited)))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            Ty::Task(inner) => Ty::Task(Box::new(inner.apply_subst_inner(subst, visited))),
-            Ty::AssocType {
-                base,
-                trait_name,
-                assoc_name,
-            } => Ty::AssocType {
-                base: Box::new(base.apply_subst_inner(subst, visited)),
-                trait_name: trait_name.clone(),
-                assoc_name: assoc_name.clone(),
-            },
-            _ => self.clone(),
+            let result = resolved.apply_subst_inner(subst, visited);
+            visited.remove(var);
+            return result;
         }
+        self.map_children(&mut |child| child.apply_subst_inner(subst, visited))
     }
 
     /// Public counterpart to `map_children`: apply `f` to each child type
@@ -1578,14 +1610,14 @@ impl Ty {
     /// recursion without re-implementing every variant.
     #[must_use]
     pub fn map_children_pub(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
-        self.map_children(f)
+        self.map_children(&mut |child| f(child))
     }
 
     /// Apply a function to each child type, reconstructing the composite.
     /// Leaf types (primitives, Var, Error) return `self.clone()`.
-    fn map_children(&self, f: &impl Fn(&Ty) -> Ty) -> Ty {
+    fn map_children(&self, f: &mut impl FnMut(&Ty) -> Ty) -> Ty {
         match self {
-            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(f).collect()),
+            Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(&mut *f).collect()),
             Ty::Array(elem, size) => Ty::Array(Box::new(f(elem)), *size),
             Ty::Slice(elem) => Ty::Slice(Box::new(f(elem))),
             Ty::Named {
@@ -1595,20 +1627,29 @@ impl Ty {
             } => Ty::Named {
                 name: name.clone(),
                 builtin: *builtin,
-                args: args.iter().map(f).collect(),
+                args: args.iter().map(&mut *f).collect(),
             },
-            Ty::Function { params, ret } => Ty::Function {
-                params: params.iter().map(f).collect(),
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
+                params: params.iter().map(&mut *f).collect(),
                 ret: Box::new(f(ret)),
             },
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
+                identity,
             } => Ty::Closure {
-                params: params.iter().map(f).collect(),
+                capabilities: *capabilities,
+                params: params.iter().map(&mut *f).collect(),
                 ret: Box::new(f(ret)),
-                captures: captures.iter().map(f).collect(),
+                captures: captures.iter().map(&mut *f).collect(),
+                identity: identity.clone(),
             },
             Ty::Pointer {
                 is_mutable,
@@ -1625,7 +1666,7 @@ impl Ty {
                     .iter()
                     .map(|bound| TraitObjectBound {
                         trait_name: bound.trait_name.clone(),
-                        args: bound.args.iter().map(f).collect(),
+                        args: bound.args.iter().map(&mut *f).collect(),
                         assoc_bindings: bound
                             .assoc_bindings
                             .iter()
@@ -1654,11 +1695,12 @@ impl Ty {
             Ty::Tuple(elems) => elems.iter().any(f),
             Ty::Array(elem, _) | Ty::Slice(elem) => f(elem),
             Ty::Named { args, .. } => args.iter().any(f),
-            Ty::Function { params, ret } => params.iter().any(f) || f(ret),
+            Ty::Function { params, ret, .. } => params.iter().any(f) || f(ret),
             Ty::Closure {
                 params,
                 ret,
                 captures,
+                ..
             } => params.iter().any(f) || f(ret) || captures.iter().any(f),
             Ty::Pointer { pointee, .. } | Ty::Borrow { pointee } => f(pointee),
             Ty::TraitObject { traits } => traits.iter().any(|bound| {
@@ -1674,110 +1716,10 @@ impl Ty {
     /// Used to resolve generic fields/methods on instantiated types.
     #[must_use]
     pub fn substitute_named_param(&self, param_name: &str, replacement: &Ty) -> Ty {
-        match self {
-            Ty::Named { name, args, .. } if args.is_empty() && name == param_name => {
-                replacement.clone()
-            }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|a| a.substitute_named_param(param_name, replacement))
-                    .collect(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| e.substitute_named_param(param_name, replacement))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => Ty::Array(
-                Box::new(inner.substitute_named_param(param_name, replacement)),
-                *n,
-            ),
-            Ty::Slice(inner) => Ty::Slice(Box::new(
-                inner.substitute_named_param(param_name, replacement),
-            )),
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_param(param_name, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_param(param_name, replacement)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_param(param_name, replacement))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_param(param_name, replacement)),
-                captures: captures
-                    .iter()
-                    .map(|c| c.substitute_named_param(param_name, replacement))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
-            },
-            Ty::Borrow { pointee } => Ty::Borrow {
-                pointee: Box::new(pointee.substitute_named_param(param_name, replacement)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| arg.substitute_named_param(param_name, replacement))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| {
-                                (
-                                    name.clone(),
-                                    ty.substitute_named_param(param_name, replacement),
-                                )
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            // Task<T> is compiler-internal; T itself may reference a named param
-            // in a generic context (e.g. inside a function body that is generic
-            // over T), so we recurse into the inner type.
-            Ty::Task(inner) => Ty::Task(Box::new(
-                inner.substitute_named_param(param_name, replacement),
-            )),
-            // AssocType { base: T, trait, name }: when `T` is the type param
-            // being substituted, recurse into `base` so a later projection-
-            // collapse pass can resolve the assoc binding from the impl.
-            Ty::AssocType {
-                base,
-                trait_name,
-                assoc_name,
-            } => Ty::AssocType {
-                base: Box::new(base.substitute_named_param(param_name, replacement)),
-                trait_name: trait_name.clone(),
-                assoc_name: assoc_name.clone(),
-            },
-            _ => self.clone(),
+        if matches!(self, Ty::Named { name, args, .. } if args.is_empty() && name == param_name) {
+            return replacement.clone();
         }
+        self.map_children(&mut |child| child.substitute_named_param(param_name, replacement))
     }
 
     /// Substitute all named type parameters simultaneously in a single structural
@@ -1791,100 +1733,15 @@ impl Ty {
     /// the replacement). Composites recurse structurally.
     #[must_use]
     pub fn substitute_named_params_parallel(&self, map: &HashMap<String, Ty>) -> Ty {
-        match self {
-            Ty::Named { name, args, .. } if args.is_empty() => {
-                if let Some(replacement) = map.get(name.as_str()) {
-                    replacement.clone()
-                } else {
-                    self.clone()
-                }
+        if let Ty::Named { name, args, .. } = self {
+            if args.is_empty() {
+                return map
+                    .get(name.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| self.clone());
             }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => Ty::Named {
-                name: name.clone(),
-                builtin: *builtin,
-                args: args
-                    .iter()
-                    .map(|a| a.substitute_named_params_parallel(map))
-                    .collect(),
-            },
-            Ty::Tuple(elems) => Ty::Tuple(
-                elems
-                    .iter()
-                    .map(|e| e.substitute_named_params_parallel(map))
-                    .collect(),
-            ),
-            Ty::Array(inner, n) => {
-                Ty::Array(Box::new(inner.substitute_named_params_parallel(map)), *n)
-            }
-            Ty::Slice(inner) => Ty::Slice(Box::new(inner.substitute_named_params_parallel(map))),
-            Ty::Function { params, ret } => Ty::Function {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_params_parallel(map))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_params_parallel(map)),
-            },
-            Ty::Closure {
-                params,
-                ret,
-                captures,
-            } => Ty::Closure {
-                params: params
-                    .iter()
-                    .map(|p| p.substitute_named_params_parallel(map))
-                    .collect(),
-                ret: Box::new(ret.substitute_named_params_parallel(map)),
-                captures: captures
-                    .iter()
-                    .map(|c| c.substitute_named_params_parallel(map))
-                    .collect(),
-            },
-            Ty::Pointer {
-                is_mutable,
-                pointee,
-            } => Ty::Pointer {
-                is_mutable: *is_mutable,
-                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
-            },
-            Ty::Borrow { pointee } => Ty::Borrow {
-                pointee: Box::new(pointee.substitute_named_params_parallel(map)),
-            },
-            Ty::TraitObject { traits } => Ty::TraitObject {
-                traits: traits
-                    .iter()
-                    .map(|bound| TraitObjectBound {
-                        trait_name: bound.trait_name.clone(),
-                        args: bound
-                            .args
-                            .iter()
-                            .map(|arg| arg.substitute_named_params_parallel(map))
-                            .collect(),
-                        assoc_bindings: bound
-                            .assoc_bindings
-                            .iter()
-                            .map(|(name, ty)| {
-                                (name.clone(), ty.substitute_named_params_parallel(map))
-                            })
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            Ty::Task(inner) => Ty::Task(Box::new(inner.substitute_named_params_parallel(map))),
-            Ty::AssocType {
-                base,
-                trait_name,
-                assoc_name,
-            } => Ty::AssocType {
-                base: Box::new(base.substitute_named_params_parallel(map)),
-                trait_name: trait_name.clone(),
-                assoc_name: assoc_name.clone(),
-            },
-            _ => self.clone(),
         }
+        self.map_children(&mut |child| child.substitute_named_params_parallel(map))
     }
 }
 
@@ -1900,13 +1757,57 @@ impl fmt::Display for Ty {
 
 impl fmt::Display for UserFacingTy<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.materialize_literal_defaults().fmt(f)
+        source_spelling(&self.0.materialize_literal_defaults()).fmt(f)
+    }
+}
+
+/// Rewrite a type into the spelling a programmer writes, for diagnostics only.
+///
+/// The `std.builtins` declarations are prelude-published, so their owner is
+/// never written in source and printing it makes a diagnostic unusable as the
+/// impl signature it asks for. `ActorError` additionally means
+/// `ActorError<Never>` when written bare, so an uninhabited error argument is
+/// elided rather than shown as `ActorError<Never>`.
+fn source_spelling(ty: &Ty) -> Ty {
+    let Ty::Named {
+        name,
+        args,
+        builtin,
+    } = ty
+    else {
+        return ty.clone();
+    };
+    let mut args: Vec<Ty> = args.iter().map(source_spelling).collect();
+    if name == crate::actor_delivery::ACTOR_ERROR_TYPE
+        && matches!(args.as_slice(), [Ty::Named { name, .. }] if name == "Never")
+    {
+        args.clear();
+    }
+    Ty::Named {
+        name: name
+            .strip_prefix("std.builtins.")
+            .unwrap_or(name)
+            .to_string(),
+        args,
+        builtin: *builtin,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn monitor_ref_preserves_its_source_declaration_identity() {
+        assert_eq!(
+            Ty::monitor_ref(),
+            Ty::Named {
+                builtin: Some(BuiltinType::MonitorRef),
+                name: "std.link_monitor.MonitorRef".to_string(),
+                args: vec![],
+            }
+        );
+    }
 
     #[test]
     fn reserved_type_names_cover_every_bare_compiler_type_fragment() {
@@ -1986,6 +1887,7 @@ mod tests {
     #[test]
     fn test_substitute_named_param() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Named {
                 builtin: None,
                 name: "T".to_string(),
@@ -2006,6 +1908,7 @@ mod tests {
         assert_eq!(
             substituted,
             Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: vec![Ty::String],
                 ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::I32])),
             }
@@ -2080,6 +1983,7 @@ mod tests {
     fn test_has_inference_var() {
         let inferred = Ty::Var(TypeVar::fresh());
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Tuple(vec![Ty::String, inferred.clone()])),
         };
@@ -2096,6 +2000,7 @@ mod tests {
             format!(
                 "{}",
                 Ty::Function {
+                    capabilities: crate::CallableCapabilities::default(),
                     params: vec![Ty::I32, Ty::Bool],
                     ret: Box::new(Ty::String),
                 }
@@ -2136,6 +2041,7 @@ mod tests {
     #[test]
     fn test_user_facing_display_formats_nested_types() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![
                 Ty::Named {
                     builtin: None,
@@ -2305,6 +2211,7 @@ mod tests {
     fn test_contains_var_in_function() {
         let v = TypeVar::fresh();
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Var(v)),
         };

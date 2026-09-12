@@ -1,0 +1,25 @@
+enum Inner {
+    Text(string),
+    Empty,
+}
+
+enum Outer {
+    Full(Inner),
+    Empty,
+}
+
+fn main() {
+    var opt = Outer.Full(Inner.Text(f"nested"));
+    match opt {
+        .Full(inner) => {
+            opt = Outer.Empty;
+            match inner {
+                .Text(s) => {
+                    println(s);
+                },
+                .Empty => {},
+            }
+        },
+        .Empty => {},
+    }
+}

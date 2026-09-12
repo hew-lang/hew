@@ -395,7 +395,7 @@ const ACTOR_STATE_SOURCE: &str = r#"
 type Config { label: string }
 
 actor Reader {
-    var name: string;
+    var name: string,
     receive gen fn stream() -> i64 {
         yield name.len();
         yield name.len() + 1;
@@ -403,9 +403,9 @@ actor Reader {
 }
 
 supervisor App(config: Config) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child reader: Reader(name: config.label);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child reader: Reader(name: config.label),
 }
 
 fn main() {
@@ -415,7 +415,7 @@ fn main() {
     var seen: i64 = 0;
     var i: i64 = 0;
     while i < __FRAMES__ {
-        for await value in reader.stream() {
+        for value in reader.stream() {
             if value <= 0 { panic("actor state value"); }
             seen = seen + 1;
         }
@@ -443,7 +443,7 @@ fn main() {
     var total: i64 = 0;
     var frame: i64 = 0;
     while frame < __FRAMES__ {
-        for await value in streamer.emit("streamlabel".to_upper(), 3) {
+        for value in streamer.emit("streamlabel".to_upper(), 3) {
             total = total + value;
         }
         frame = frame + 1;
@@ -463,12 +463,12 @@ type Payload {
 }
 
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 actor Streamer {
-    var state: string;
+    var state: string,
     receive gen fn emit(payload: Payload, tree: Tree, n: i64) -> i64 {
         var i: i64 = 0;
         if n > 0 {
@@ -513,7 +513,7 @@ fn main() {
             pair: ("tuple-param".to_upper(), frame),
         };
         let tree = Node(Leaf(frame), Leaf(frame + 1));
-        for await value in streamer.emit(payload, tree, 3) {
+        for value in streamer.emit(payload, tree, 3) {
             total = total + value;
         }
         let cancelled = Payload {
@@ -522,7 +522,7 @@ fn main() {
             pair: ("tuple-param".to_upper(), frame),
         };
         let cancelled_tree = Node(Leaf(frame), Leaf(frame + 1));
-        for await value in streamer.endless(cancelled, cancelled_tree) {
+        for value in streamer.endless(cancelled, cancelled_tree) {
             total = total + value;
             break;
         }
@@ -542,12 +542,12 @@ type Payload {
 }
 
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 actor Streamer {
-    var state: string;
+    var state: string,
     receive gen fn endless(payload: Payload, tree: Tree) -> i64 {
         yield payload.label.len() + payload.data.len()
             + payload.pair.0.len() + state.len();
@@ -567,9 +567,9 @@ actor Streamer {
 type AppConfig { label: string }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child streamer: Streamer(state: config.label);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child streamer: Streamer(state: config.label),
 }
 
 fn main() {

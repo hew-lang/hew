@@ -1,0 +1,24 @@
+type Packet { payload: bytes, label: string }
+impl Hash for Packet { fn hash(self) -> i64 { self.payload.len() } }
+fn main() -> i64 {
+    let original = "A\0B".to_bytes();
+    let independent = "A\0B".to_bytes();
+    var longer = original;
+    longer.push(67);
+    let matching = "A\0B".to_bytes();
+    println(original == independent);
+    println(original != longer);
+    println(original == matching);
+    let first = Packet { payload: original, label: "label".to_upper() };
+    let second = Packet { payload: matching, label: "label".to_upper() };
+    println(first == second);
+    let left: (Vec<bytes>, Option<bytes>) = ([original], Some(independent));
+    let right: (Vec<bytes>, Option<bytes>) = ([matching], Some(original));
+    println(left == right);
+    let absent: (Vec<bytes>, Option<bytes>) = ([original], None);
+    println(left != absent);
+    var values: HashMap<Packet, string> = HashMap.new();
+    values.insert(first, "stored".to_upper());
+    println(values[second]);
+    0
+}

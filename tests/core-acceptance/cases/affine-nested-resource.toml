@@ -1,0 +1,12 @@
+[[case]]
+id = "affine-nested-resource"
+intent = "Nested enum candidates holding a file stream fail a literal and a guard, then the fallback arm still reads and closes the stream, while literal and guard selections release it once."
+source = "cases/affine-nested-resource.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "READ:known file: héllo 🌲\nskipped\nclosed early\nmissing\nBROKEN\nreleased\n"
+stderr = ""
+exit = 0

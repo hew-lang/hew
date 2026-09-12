@@ -2,8 +2,8 @@
 // Maybe::None must lower through HIR EnumLayoutRegistry → MIR → codegen
 // and the default arm must match, exiting 99.
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn main() -> i64 {

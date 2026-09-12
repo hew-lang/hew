@@ -128,7 +128,7 @@ fn reassigned_param_loop_source(frames: usize) -> String {
 /// assignment escaping the loop (formerly `ObligationUnderReleased`).
 const YIELD_SHARE_SOURCE: &str = "\
 fn keep_expensive(totals: HashMap<string, i64>) -> i64 {\n\
-\x20   let kept: HashMap<string, i64> = HashMap.new();\n\
+\x20   var kept: HashMap<string, i64> = HashMap.new();\n\
 \x20   for category in totals.keys() {\n\
 \x20   \x20   let cents = totals.get(category).unwrap_or(0);\n\
 \x20   \x20   if cents > 500 {\n\
@@ -154,7 +154,7 @@ fn best_category(totals: HashMap<string, i64>) -> string {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let totals: HashMap<string, i64> = HashMap.new();\n\
+\x20   var totals: HashMap<string, i64> = HashMap.new();\n\
 \x20   totals.insert(\"groceries\" + \"-heap\", 1200);\n\
 \x20   totals.insert(\"transit\" + \"-heap\", 400);\n\
 \x20   totals.insert(\"rent\" + \"-heap\", 90000);\n\
@@ -168,7 +168,7 @@ const YIELD_SHARE_EXPECTED: &str = "2|rent-heap|3";
 fn yield_share_loop_source(frames: usize) -> String {
     format!(
         "fn keep_expensive(totals: HashMap<string, i64>) -> i64 {{\n\
-         \x20   let kept: HashMap<string, i64> = HashMap.new();\n\
+         \x20   var kept: HashMap<string, i64> = HashMap.new();\n\
          \x20   for category in totals.keys() {{\n\
          \x20   \x20   let cents = totals.get(category).unwrap_or(0);\n\
          \x20   \x20   if cents > 500 {{\n\
@@ -192,7 +192,7 @@ fn yield_share_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let totals: HashMap<string, i64> = HashMap.new();\n\
+         \x20   var totals: HashMap<string, i64> = HashMap.new();\n\
          \x20   totals.insert(\"groceries\" + \"-heap\", 1200);\n\
          \x20   totals.insert(\"transit\" + \"-heap\", 400);\n\
          \x20   totals.insert(\"rent\" + \"-heap\", 90000);\n\

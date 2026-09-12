@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-role-lifecycle"
+intent = "Nested ChildRef close waits for the selected incarnation's cleanup; permanent children restart while transient and temporary normal exits remain stopped, and retained descendant roles follow replacement."
+source = "cases/supervisor-role-lifecycle.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "OWNED CHILD STOPPED\nOWNED CHILD STOPPED\nOWNED CHILD STOPPED\nOWNED CHILD STOPPED\nOWNED CHILD STOPPED\nnested role lifecycle observes one incarnation\n"
+stderr = ""
+exit = 0

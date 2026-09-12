@@ -1,4 +1,4 @@
-enum Colour { Red; Green; Blue; }
+enum Colour { Red, Green, Blue, }
 
 fn tag(c: Colour) -> i64 {
     match c {
@@ -9,7 +9,7 @@ fn tag(c: Colour) -> i64 {
 }
 
 fn main() {
-    let colours: Vec<Colour> = Vec.new();
+    var colours: Vec<Colour> = Vec.new();
     colours.push(Colour.Red);
     colours.push(Colour.Green);
     colours.push(Colour.Blue);

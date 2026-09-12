@@ -1,10 +1,15 @@
 # Hew Standard Library
 
+JSON and YAML expose owning values with automatic cleanup, independent copies,
+checked accessors and ordinary mutable receivers. Their format-specific APIs
+preserve exact integer access and return typed parse, access and encode errors.
+TOML currently retains its independent resource API.
+
 The Hew standard library provides core types, data structures, networking, encoding, and utilities.
 
 This file is the canonical index of shipped stdlib modules in this repository. Module links below go to the public `.hew` surface that Hew programs import.
 
-For the curated language-only playground snippets, start with [`../examples/playground/manifest.json`](../examples/playground/manifest.json) and [`../examples/README.md`](../examples/README.md). Use this README when you need the canonical index of shipped `std::*` modules.
+For the curated language-only playground snippets, start with [`../examples/playground/manifest.json`](../examples/playground/manifest.json) and [`../examples/README.md`](../examples/README.md). Use this README when you need the canonical index of shipped `std.*` modules.
 
 ## Builtins — auto-imported, plain function calls
 
@@ -24,19 +29,46 @@ import std.fs;
 import std.encoding.json;
 
 fn main() {
-    let raw = fs.read("data.json");
-    println(json.parse(raw));
+    let raw = fs.read("data.json").expect("read succeeds");
+    println(json.parse(raw).expect("parse succeeds"));
 }
 ```
 
+## Calls, tasks, and cleanup
+
+Calls wait for their results, including actor handlers returning unit. Use
+`fork` to start concurrent work; `await` takes `Task<T>` or `Vec<Task<T>>` and
+returns `T` or `Vec<T>`. Channel and stream calls wait directly, and streams
+are drained with ordinary `for` loops.
+
+A `scope` produces its body value after child tasks and cleanup finish.
+`scope within duration { ... } handle failure { ... }` provides deadline
+recovery. Ordinary application `Err` values stay values; structured faults
+and cancellation govern scope failure.
+
+Actor `close(actor)` requests a cooperative stop and waits for terminal
+cleanup; `closed(actor)` observes it. `mailbox` is the submission view and
+`policy` selects completion-call admission. Supervisor lifecycle forms and
+typed request recovery in `ActorError` remain implementation gaps; see
+[builtins](builtins.hew).
+
+Resource cleanup uses `close(consume self)` returning unit, automatically at
+scope exit or explicitly for early release. Handle any separate fallible
+finish or flush operation first, where the type provides one. Explicit
+`exit(code)` skips cleanup; returning from `main` allows orderly cleanup.
+
+Unbounded generic `Vec<T>` indexing and iteration borrow elements. Use
+`into_iter()` for owned items; the current implementation may still clone
+cloneable elements. Iterator adapters consume the iterator they wrap.
+
 ## Quick wayfinding
 
-- **CLI, files, and OS** — [`std::io`](io.hew), [`std::fs`](fs.hew), [`std::path`](path.hew), [`std::os`](os.hew), [`std::process`](process.hew)
-- **Collections and scans** — [`std::vec`](vec.hew), [`std::arena`](arena.hew), [`std::deque`](deque.hew), [`std::iter`](iter.hew), [`std::sort`](sort/sort.hew)
-- **Streams and coordination** — [`std::stream`](stream.hew), [`std::channel::channel`](channel/channel.hew), [`std::semaphore`](semaphore.hew), [`std::concurrency`](concurrency/concurrency.hew)
-- **Data formats and wire protocols** — [`std::encoding::json`](encoding/json/json.hew), [`std::encoding::yaml`](encoding/yaml/yaml.hew), [`std::encoding::toml`](encoding/toml/toml.hew), [`std::encoding::csv`](encoding/csv/csv.hew), [`std::encoding::xml`](encoding/xml/xml.hew), [`std::encoding::wire::value_trait`](encoding/wire/value_trait.hew)
-- **Networking** — [`std::net`](net/net.hew), [`std::net::http`](net/http/http.hew), [`std::net::dns`](net/dns/dns.hew), [`std::net::tls`](net/tls/tls.hew), [`std::net::quic`](net/quic/quic.hew), [`std::net::url`](net/url/url.hew)
-- **Testing, perf, and observability** — [`std::testing`](testing/testing.hew), [`std::bench`](bench/bench.hew), [`std::observe`](observe.hew)
+- **CLI, files, and OS** — [`std.io`](io.hew), [`std.fs`](fs.hew), [`std.path`](path.hew), [`std.os`](os.hew), [`std.process`](process.hew)
+- **Collections and scans** — [`std.vec`](vec.hew), [`std.arena`](arena.hew), [`std.deque`](deque.hew), [`std.iter`](iter.hew), [`std.sort`](sort/sort.hew)
+- **Streams and coordination** — [`std.stream`](stream.hew), [`std.channel`](channel/channel.hew), [`std.semaphore`](semaphore.hew), [`std.concurrency`](concurrency/concurrency.hew)
+- **Data formats and wire protocols** — [`std.encoding.json`](encoding/json/json.hew), [`std.encoding.yaml`](encoding/yaml/yaml.hew), [`std.encoding.toml`](encoding/toml/toml.hew), [`std.encoding.csv`](encoding/csv/csv.hew), [`std.encoding.xml`](encoding/xml/xml.hew)
+- **Networking** — [`std.net`](net/net.hew), [`std.net.http`](net/http/http.hew), [`std.net.dns`](net/dns/dns.hew), [`std.net.tls`](net/tls/tls.hew), [`std.net.quic`](net/quic/quic.hew), [`std.net.url`](net/url/url.hew)
+- **Testing, perf, and observability** — [`std.testing`](testing/testing.hew), [`std.bench`](bench/bench.hew), [`std.observe`](observe.hew)
 
 ## Shipped module index
 
@@ -44,113 +76,111 @@ Every shipped module under `std/` should appear here.
 
 ### Core and formatting
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`builtins`](builtins.hew) | _(auto-imported)_ | `println`, `print`, `sleep`, `exit`, and `panic` |
-| [`string`](string.hew) | `std::string` | String conversion and manipulation utilities |
-| [`fmt`](fmt/fmt.hew) | `std::fmt` | Number formatting, padding, and repetition helpers |
-| [`option`](option.hew) | `std::option` | Helper functions for common `Option<T>` patterns |
-| [`result`](result.hew) | `std::result` | Helper functions for common `Result<T, E>` patterns |
-| [`math`](math/math.hew) | `std::math` | Integer helpers, float ops, and common constants |
-| [`failure`](failure.hew) | `std::failure` | Crash-hook payloads and lifecycle failure actions |
+| Module                     | Import            | Use for                                             |
+| -------------------------- | ----------------- | --------------------------------------------------- |
+| [`builtins`](builtins.hew) | _(auto-imported)_ | `println`, `print`, `sleep`, `exit`, and `panic`    |
+| [`string`](string.hew)     | `std.string`      | String conversion and manipulation utilities        |
+| [`fmt`](fmt/fmt.hew)       | `std.fmt`         | Number formatting, padding, and repetition helpers  |
+| [`option`](option.hew)     | `std.option`      | Helper functions for common `Option<T>` patterns    |
+| [`result`](result.hew)     | `std.result`      | Helper functions for common `Result<T, E>` patterns |
+| [`math`](math/math.hew)    | `std.math`        | Integer helpers, float ops, and common constants    |
+| [`failure`](failure.hew)   | `std.failure`     | Crash-hook payloads and lifecycle failure actions   |
 
 ### Files, OS, and processes
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`io`](io.hew) | `std::io` | stdin, stdout, and stderr helpers |
-| [`closable`](io/closable.hew) | `std::io::closable` | Explicit early release for IO and protocol handles |
-| [`scanner`](io/scanner.hew) | `std::io::scanner` | Line and word scanning over strings, stdin, and files |
-| [`fs`](fs.hew) | `std::fs` | File system operations |
-| [`path`](path.hew) | `std::path` | File path and glob utilities |
-| [`os`](os.hew) | `std::os` | Operating system interfaces |
-| [`process`](process.hew) | `std::process` | Process execution |
+| Module                      | Import           | Use for                                               |
+| --------------------------- | ---------------- | ----------------------------------------------------- |
+| [`io`](io.hew)              | `std.io`         | stdin, stdout, and stderr helpers                     |
+| [`scanner`](io/scanner.hew) | `std.io.scanner` | Line and word scanning over strings, stdin, and files |
+| [`fs`](fs.hew)              | `std.fs`         | File system operations                                |
+| [`path`](path.hew)          | `std.path`       | File path and glob utilities                          |
+| [`os`](os.hew)              | `std.os`         | Operating system interfaces                           |
+| [`process`](process.hew)    | `std.process`    | Process execution                                     |
 
 ### Collections, iteration, and concurrency
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`vec`](vec.hew) | `std::vec` | Utility helpers for `Vec<T>` |
-| [`arena`](arena.hew) | `std::arena` | Single-owner generational slotmap with stable value keys |
-| [`deque`](deque.hew) | `std::deque` | Double-ended queue operations |
-| [`iter`](iter.hew) | `std::iter` | Map/filter/fold-style helpers for `Vec<T>` |
-| [`sort`](sort/sort.hew) | `std::sort` | Sorting and reversing vector helpers |
-| [`stream`](stream.hew) | `std::stream` | Typed `Stream<T>`/`Sink<T>` pipes and file streams |
-| [`channel`](channel/channel.hew) | `std::channel::channel` | Bounded MPSC channels |
-| [`semaphore`](semaphore.hew) | `std::semaphore` | Counting semaphore for concurrency control |
-| [`concurrency`](concurrency/concurrency.hew) | `std::concurrency` | Structured concurrency support types such as `ScopeError<E>` |
-| [`lifecycle`](concurrency/lifecycle.hew) | `std::concurrency::lifecycle` | Generic resource-service lifecycle state machine |
-| [`link_monitor`](link_monitor.hew) | `std::link_monitor` | Actor monitor handles and partition policies |
-| [`toggle`](machines/toggle.hew) | `std::machines::toggle` | Minimal reusable two-state machine |
+| Module                                       | Import                      | Use for                                                  |
+| -------------------------------------------- | --------------------------- | -------------------------------------------------------- |
+| [`vec`](vec.hew)                             | `std.vec`                   | Utility helpers for `Vec<T>`                             |
+| [`arena`](arena.hew)                         | `std.arena`                 | Single-owner generational slotmap with stable value keys |
+| [`deque`](deque.hew)                         | `std.deque`                 | Double-ended queue operations                            |
+| [`iter`](iter.hew)                           | `std.iter`                  | Map/filter/fold-style helpers for `Vec<T>`               |
+| [`sort`](sort/sort.hew)                      | `std.sort`                  | Sorting and reversing vector helpers                     |
+| [`stream`](stream.hew)                       | `std.stream`                | Typed `Stream<T>`/`Sink<T>` pipes and file streams       |
+| [`channel`](channel/channel.hew)             | `std.channel`               | Bounded MPSC channels                                    |
+| [`semaphore`](semaphore.hew)                 | `std.semaphore`             | Counting semaphore for concurrency control               |
+| [`concurrency`](concurrency/concurrency.hew) | `std.concurrency`           | Scope guidance and legacy error aggregation record       |
+| [`lifecycle`](concurrency/lifecycle.hew)     | `std.concurrency.lifecycle` | Generic resource-service lifecycle state machine         |
+| [`link_monitor`](link_monitor.hew)           | `std.link_monitor`          | Actor monitor handles and partition policies             |
+| [`toggle`](machines/toggle.hew)              | `std.machines.toggle`       | Minimal reusable two-state machine                       |
 
 ### Encoding and wire formats
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`base64`](encoding/base64/base64.hew) | `std::encoding::base64` | Base64 encoding and decoding |
-| [`binary`](encoding/binary/binary.hew) | `std::encoding::binary` | Fixed-width integer encoding in either byte order |
-| [`compress`](encoding/compress/compress.hew) | `std::encoding::compress` | Compression and decompression |
-| [`csv`](encoding/csv/csv.hew) | `std::encoding::csv` | CSV parsing |
-| [`hex`](encoding/hex/hex.hew) | `std::encoding::hex` | Hexadecimal encoding and decoding |
-| [`json`](encoding/json/json.hew) | `std::encoding::json` | JSON parsing and manipulation |
-| [`markdown`](encoding/markdown/markdown.hew) | `std::encoding::markdown` | Markdown to HTML conversion |
-| [`msgpack`](encoding/msgpack/msgpack.hew) | `std::encoding::msgpack` | MessagePack serialization |
-| [`protobuf`](encoding/protobuf/protobuf.hew) | `std::encoding::protobuf` | Protocol Buffers message construction |
-| [`toml`](encoding/toml/toml.hew) | `std::encoding::toml` | TOML parsing and generation |
-| [`value_trait`](encoding/wire/value_trait.hew) | `std::encoding::wire::value_trait` | Shared opaque-value contract for encoding modules |
-| [`xml`](encoding/xml/xml.hew) | `std::encoding::xml` | XML parsing and manipulation |
-| [`yaml`](encoding/yaml/yaml.hew) | `std::encoding::yaml` | YAML parsing and generation |
+| Module                                       | Import                  | Use for                                           |
+| -------------------------------------------- | ----------------------- | ------------------------------------------------- |
+| [`base64`](encoding/base64/base64.hew)       | `std.encoding.base64`   | Base64 encoding and decoding                      |
+| [`binary`](encoding/binary/binary.hew)       | `std.encoding.binary`   | Fixed-width integer encoding in either byte order |
+| [`compress`](encoding/compress/compress.hew) | `std.encoding.compress` | Compression and decompression                     |
+| [`csv`](encoding/csv/csv.hew)                | `std.encoding.csv`      | CSV parsing                                       |
+| [`hex`](encoding/hex/hex.hew)                | `std.encoding.hex`      | Hexadecimal encoding and decoding                 |
+| [`json`](encoding/json/json.hew)             | `std.encoding.json`     | JSON parsing and manipulation                     |
+| [`markdown`](encoding/markdown/markdown.hew) | `std.encoding.markdown` | Markdown to HTML conversion                       |
+| [`msgpack`](encoding/msgpack/msgpack.hew)    | `std.encoding.msgpack`  | MessagePack serialization                         |
+| [`protobuf`](encoding/protobuf/protobuf.hew) | `std.encoding.protobuf` | Protocol Buffers message construction             |
+| [`toml`](encoding/toml/toml.hew)             | `std.encoding.toml`     | TOML parsing and generation                       |
+| [`xml`](encoding/xml/xml.hew)                | `std.encoding.xml`      | XML parsing and manipulation                      |
+| [`yaml`](encoding/yaml/yaml.hew)             | `std.encoding.yaml`     | YAML parsing and generation                       |
 
 ### Crypto
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`crypto`](crypto/crypto/crypto.hew) | `std::crypto::crypto` | Cryptographic hashing and utilities |
-| [`encrypt`](crypto/encrypt/encrypt.hew) | `std::crypto::encrypt` | Symmetric encryption and decryption |
-| [`jwt`](crypto/jwt/jwt.hew) | `std::crypto::jwt` | JSON Web Token encoding and validation |
-| [`password`](crypto/password/password.hew) | `std::crypto::password` | Password hashing and verification |
-| [`sign`](crypto/sign/sign.hew) | `std::crypto::sign` | Ed25519 key generation, signing, and verification |
+| Module                                     | Import                | Use for                                           |
+| ------------------------------------------ | --------------------- | ------------------------------------------------- |
+| [`crypto`](crypto/crypto/crypto.hew)       | `std.crypto.crypto`   | Cryptographic hashing and utilities               |
+| [`encrypt`](crypto/encrypt/encrypt.hew)    | `std.crypto.encrypt`  | Symmetric encryption and decryption               |
+| [`jwt`](crypto/jwt/jwt.hew)                | `std.crypto.jwt`      | JSON Web Token encoding and validation            |
+| [`password`](crypto/password/password.hew) | `std.crypto.password` | Password hashing and verification                 |
+| [`sign`](crypto/sign/sign.hew)             | `std.crypto.sign`     | Ed25519 key generation, signing, and verification |
 
 ### Networking
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`net`](net/net.hew) | `std::net` | TCP listeners and connections |
-| [`dns`](net/dns/dns.hew) | `std::net::dns` | DNS hostname resolution |
-| [`http`](net/http/http.hew) | `std::net::http` | HTTP server and request/response handling |
-| [`http_async_client`](net/http/http_async_client.hew) | `std::net::http::http_async_client` | Suspending HTTP/1.1 client codec for actor handlers |
-| [`http_async_server`](net/http/http_async_server.hew) | `std::net::http::http_async_server` | Suspending HTTP/1.1 server codec for actor handlers |
-| [`http_client`](net/http/http_client.hew) | `std::net::http::http_client` | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |
-| [`ipnet`](net/ipnet/ipnet.hew) | `std::net::ipnet` | IP address and CIDR utilities |
-| [`mime`](net/mime/mime.hew) | `std::net::mime` | MIME type detection |
-| [`quic`](net/quic/quic.hew) | `std::net::quic` | QUIC transport for internode messaging |
-| [`smtp`](net/smtp/smtp.hew) | `std::net::smtp` | SMTP client for sending email |
-| [`tls`](net/tls/tls.hew) | `std::net::tls` | TLS client connections |
-| [`url`](net/url/url.hew) | `std::net::url` | URL parsing |
-| [`websocket`](net/websocket/websocket.hew) | `std::net::websocket` | WebSocket client and server support |
+| Module                                                | Import                           | Use for                                                                    |
+| ----------------------------------------------------- | -------------------------------- | -------------------------------------------------------------------------- |
+| [`net`](net/net.hew)                                  | `std.net`                        | TCP listeners and connections                                              |
+| [`dns`](net/dns/dns.hew)                              | `std.net.dns`                    | DNS hostname resolution                                                    |
+| [`http`](net/http/http.hew)                           | `std.net.http`                   | HTTP server and request/response handling                                  |
+| [`http_async_client`](net/http/http_async_client.hew) | `std.net.http.http_async_client` | Suspending HTTP/1.1 client codec for actor handlers                        |
+| [`http_async_server`](net/http/http_async_server.hew) | `std.net.http.http_async_server` | Suspending HTTP/1.1 server codec for actor handlers                        |
+| [`http_client`](net/http/http_client.hew)             | `std.net.http.http_client`       | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |
+| [`ipnet`](net/ipnet/ipnet.hew)                        | `std.net.ipnet`                  | IP address and CIDR utilities                                              |
+| [`mime`](net/mime/mime.hew)                           | `std.net.mime`                   | MIME type detection                                                        |
+| [`quic`](net/quic/quic.hew)                           | `std.net.quic`                   | QUIC transport for internode messaging                                     |
+| [`smtp`](net/smtp/smtp.hew)                           | `std.net.smtp`                   | SMTP client for sending email                                              |
+| [`tls`](net/tls/tls.hew)                              | `std.net.tls`                    | TLS client connections                                                     |
+| [`url`](net/url/url.hew)                              | `std.net.url`                    | URL parsing                                                                |
+| [`websocket`](net/websocket/websocket.hew)            | `std.net.websocket`              | WebSocket client and server support                                        |
 
 ### Text, time, and utilities
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`regex`](text/regex/regex.hew) | `std::text::regex` | Regular expression matching |
-| [`semver`](text/semver/semver.hew) | `std::text::semver` | Semantic version parsing and comparison |
-| [`template`](text/template/template.hew) | `std::text::template` | Go-style text template parsing and rendering |
-| [`unicode`](text/unicode/unicode.hew) | `std::text::unicode` | Unicode classification and UTF-8 codepoint helpers |
-| [`datetime`](time/datetime/datetime.hew) | `std::time::datetime` | Date and time operations |
-| [`cron`](time/cron/cron.hew) | `std::time::cron` | Cron expression parsing and scheduling |
-| [`log`](misc/log/log.hew) | `std::misc::log` | Structured logging |
-| [`uuid`](misc/uuid/uuid.hew) | `std::misc::uuid` | UUID generation and validation |
-| [`random`](random/random.hew) | `std::random` | Seedable random numbers, shuffling, and sampling |
+| Module                                   | Import              | Use for                                            |
+| ---------------------------------------- | ------------------- | -------------------------------------------------- |
+| [`regex`](text/regex/regex.hew)          | `std.text.regex`    | Regular expression matching                        |
+| [`semver`](text/semver/semver.hew)       | `std.text.semver`   | Semantic version parsing and comparison            |
+| [`template`](text/template/template.hew) | `std.text.template` | Go-style text template parsing and rendering       |
+| [`unicode`](text/unicode/unicode.hew)    | `std.text.unicode`  | Unicode classification and UTF-8 codepoint helpers |
+| [`datetime`](time/datetime/datetime.hew) | `std.time.datetime` | Date and time operations                           |
+| [`cron`](time/cron/cron.hew)             | `std.time.cron`     | Cron expression parsing and scheduling             |
+| [`log`](misc/log/log.hew)                | `std.misc.log`      | Structured logging                                 |
+| [`uuid`](misc/uuid/uuid.hew)             | `std.misc.uuid`     | UUID generation and validation                     |
+| [`random`](random/random.hew)            | `std.random`        | Seedable random numbers, shuffling, and sampling   |
 
 ### Testing and benchmarking
 
-| Module | Import | Use for |
-| --- | --- | --- |
-| [`testing`](testing/testing.hew) | `std::testing` | Assertion helpers for Hew tests |
-| [`bench`](bench/bench.hew) | `std::bench` | Benchmark harness for measuring function performance |
-| [`observe`](observe.hew) | `std::observe` | Runtime-owned observability reads, series discovery, and scrape text |
-| [`metrics`](metrics/metrics.hew) | `std::metrics` | Application counters, gauges, and histograms |
+| Module                           | Import        | Use for                                                              |
+| -------------------------------- | ------------- | -------------------------------------------------------------------- |
+| [`testing`](testing/testing.hew) | `std.testing` | Assertion helpers for Hew tests                                      |
+| [`bench`](bench/bench.hew)       | `std.bench`   | Benchmark harness for measuring function performance                 |
+| [`observe`](observe.hew)         | `std.observe` | Runtime-owned observability reads, series discovery, and scrape text |
+| [`metrics`](metrics/metrics.hew) | `std.metrics` | Application counters, gauges, and histograms                         |
 
 ## Architecture
 
@@ -163,7 +193,7 @@ Each stdlib module includes:
 Implementation strategy varies by module:
 
 - Some modules are implemented entirely in Hew, with the Rust crate retained only as a build placeholder
-- Some modules, such as `std::math`, expose a Hew surface that codegen lowers directly to compiler intrinsics / Rust backend LLVM lowering, again leaving the Rust crate as a placeholder
+- Some modules, such as `std.math`, expose a Hew surface that codegen lowers directly to compiler intrinsics / Rust backend LLVM lowering, again leaving the Rust crate as a placeholder
 - Modules that need native capabilities still use their Rust crates for the final linked implementation
 
 The compiler resolves `import std.*` paths against the `HEW_STD` directory and links any corresponding native static libraries required by the build graph at compile time, whether they provide runtime FFI symbols or act only as placeholders.

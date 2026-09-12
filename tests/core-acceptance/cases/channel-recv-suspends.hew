@@ -1,0 +1,40 @@
+import std.channel;
+
+/// Fills a capacity-2 channel with six owned strings, so the producer parks on
+/// capacity while the consumer parks on the empty queue.
+fn feed(consume tx: channel.Sender<string>, count: i64) -> i64 {
+    for index in 0..count {
+        tx.send(f"item-{index}-payload");
+    }
+    tx.close();
+    count
+}
+
+fn main() {
+    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let producer = fork feed(tx, 6);
+    var drained = 0;
+    for item in rx {
+        println(item);
+        drained = drained + 1;
+    }
+    println(f"sent {await producer}");
+    println(f"drained {drained}");
+
+    // A bytes element with an embedded NUL: the envelope decode carries the
+    // element's own content length, so nothing stops at the terminator.
+    let (btx, brx): (channel.Sender<bytes>, channel.Receiver<bytes>) = match channel.new(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    btx.send(b"a\x00bc");
+    btx.close();
+    match brx.recv() {
+        .Some(payload) => println(f"bytes {payload.len()}"),
+        .None => println("bytes closed"),
+    }
+    brx.close();
+}

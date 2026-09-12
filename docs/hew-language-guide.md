@@ -1,6 +1,23 @@
 # Hew Language Guide
 
-A reference for writing correct idiomatic Hew. Every example below was executed against `target/debug/hew` and ran clean.
+A guide to the native language surface. Examples describe the current contracts;
+implementation gaps are identified where relevant. This document is not a record
+of execution on every target. See the [language specification](specs/HEW-SPEC-2026.md)
+for the full contract.
+
+An actor gets its own handle by writing `self`, so it can hand another actor a way to call back:
+
+<!-- doctest: skip -->
+
+```hew
+actor Worker {
+    var registry: Registry,
+    receive fn enrol() {
+        let _ = registry.take(self);   // `self` is this worker, of type `Worker`
+    }
+    receive fn done() { println("called back"); }
+}
+```
 
 ## Toolchain quick-start
 
@@ -44,8 +61,8 @@ for the documented resolver precedence.
 ## Core idioms
 
 - Primitive types are lowercase: `i64`, `string`, `f64`, `bool`, `char` — never `Int`, `String`, `Float`.
-- Integer literals default to `i64`, float literals to `f64`. Annotate only for narrower widths.
-- Interpolate `Display` values with `f"x={x}"`; use `f"x={x:?}"` for structural debugging.
+- Integer literals default to `i64`, float literals to `f64`. Contextual types select the integer range, including the full `u64` range; there is no bigint source type.
+- Interpolate `Display` values with `f"x={x}"`. Structural debug rendering is a future idea, not a current formatting contract.
 - Convert numbers with `as`: `x as i64`, `pi as i32`. It is the only conversion mechanism.
 - Never mix integer widths in one expression; cast the narrower operand up first: `x as i64 + 1`.
 - **`var` for mutable bindings, `let` for immutable.** Hew does not have `let mut` — use `var` whenever you need to reassign a name, assign through a place (`p.x`, `v[0]`, `m["k"]`, `t.0`), or call a method that mutates its receiver. Collections are values, so `var v: Vec<i64> = Vec.new(); v.push(1)` is the mutating form and `let v` refuses it. Handles are the exception by category, not by syntax: `let d = deque.new(); d.push_back(1)` is fine because `d` names a resource rather than holding a value.
@@ -54,14 +71,14 @@ for the documented resolver precedence.
 - Read collection elements with `v[i]` (returns `T`, traps on out-of-bounds) or `.get(i)` (returns `Option<T>`, never traps) — both universal across element types.
 - `Vec<string>` supports `v[i]` (returns a fresh owned `string`; the Vec stays usable), `.get(i)`, range-slices, and for-in. Both accessors work for `Vec<enum>` too.
 - Build maps/sets with `Type.new()` + `.insert()`; bind with `var`, since `.insert()` mutates the receiver.
-- Look up `HashMap`/`Option`/`Result` with `match`, not subscript or `.unwrap()`.
-- **Enum variants use `;` separators; record fields also use `;` in type definitions but `,` in construction literals.** These are different — `type T { a: i64; b: i64; }` defines, `T { a: 1, b: 2 }` constructs.
-- Declare records with `type Name { field: T; }` (semicolons); enum variants are `;`-separated.
-- Access actor state by bare field name inside handlers — no prefix. Inside an actor body `self` is the actor's own handle (`LocalPid<Self>`), not a field prefix.
-- Fire-and-forget actor sends have no return type and no `await`: `ref.method(arg);`.
-- Ask (request-reply) is `await ref.method(arg)` and returns `Result<R, AskError>` — match `Ok`/`Err`.
+- Use `.get` for optional collection reads and `match`, `??`, `?` or expression-local `handle` as appropriate. Use `expect(reason)` for a deliberate invariant assertion.
+- Commas separate record fields and enum variants in declarations and values. Semicolons terminate executable statements and bodyless function declarations.
+- Declare records with `type Name { field: T, }` and enums with `enum Choice { First, Second, }`.
+- Inside an actor body, `self` as a value is its handle, of type `Self`, which is the actor itself; `self.field` accesses state, and bare field names also work. `this` is not a keyword.
+- Every actor call waits for completion, including a void handler. Use `mailbox(target, on_full: ...)` for submission-only delivery; handle its outcome.
+- Ask (request-reply) is `ref.method(arg)` and returns `Result<R, ActorError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
-- Within a fn or actor there is no borrow checker: pass values freely, mutations to Vec/HashMap persist in the caller.
+- Ordinary data has value semantics. Mutating one value does not silently mutate another; borrowing and consuming uses are checked, including collection-element loans.
 - Last expression of a block (no trailing semicolon) is its value; a trailing `;` makes it unit.
 - Lean on the safe stdlib trio: `std.string`, `std.math`, `std.iter`. Do not import `std.option`/`std.result`.
 - Negate a bool with `!`: `!x` is `true` when `x` is `false`.
@@ -113,14 +130,9 @@ fn main() {
 }
 ```
 
-Always prefix interpolated strings with `f`. Arbitrary expressions are allowed
-inside `{}`. Plain `{value}` requires `Display`; `{value:?}` explicitly requests
-structural debugging for records, tuples, `Option`, `Result`, `Vec`, and
-`HashMap`, including nested combinations. An explicit `Display` implementation
-still wins, including one attached to a named type alias. The distinct `:?`
-spelling is deliberate: ordinary interpolation remains the intentional
-user-facing contract and never exposes internal aggregate structure by accident.
-Structural rendering borrows the value and has no ownership effect.
+Prefix interpolated strings with `f`. Expressions inside braces use Display;
+use an explicit Display implementation to choose the user-facing text.
+Structural inspection is not a promised alternative formatting API.
 
 ### Numeric conversion via `as`
 
@@ -259,7 +271,7 @@ fn main() {
 ```hew
 fn main() {
     var total: i64 = 0;
-    let items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new();
     items.push("a");
     items.push("b");
     for s in items { total += s.len() as i64; }
@@ -314,7 +326,7 @@ Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` sti
 ### match on enum variants binding payloads
 
 ```hew
-enum Event { Number(i64); Text(string); Empty; }
+enum Event { Number(i64), Text(string), Empty, }
 fn describe(e: Event) -> string {
     match e {
         .Number(n) if n > 100 => "big number",
@@ -325,22 +337,22 @@ fn describe(e: Event) -> string {
 }
 ```
 
-Variant arms bind their payload positionally. Construct values with dotted variant names (`.Number(5)`, `.Empty`). Enum variants are declared `;`-separated.
+Variant arms bind their payload positionally. Construct values with dotted variant names (`.Number(5)`, `.Empty`). Enum variants are separated by commas.
 
 ### match exhaustiveness is enforced
 
 ```hew
-enum Colour { Red; Green; Blue; }
+enum Colour { Red, Green, Blue, }
 // match c { .Red => 1, .Green => 2 }  // compile error: non-exhaustive match: missing Blue
 fn code(c: Colour) -> i64 { match c { .Red => 1, .Green => 2, .Blue => 3 } }
 ```
 
-Omit `_` when matching a closed enum so the compiler forces every variant. A missing variant is a hard error naming it.
+Omit `_` when matching a closed enum so the compiler forces every variant. A missing variant is a hard error naming it. The same rule covers tuple and record scrutinees (D464): a match that does not cover every combination of a slot's constructors, literals, wildcards and bindings is a compile error naming the missing case, never a runtime fallthrough.
 
-### full-field struct pattern
+### Full-field record pattern
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn sum(p: Point) -> i64 {
     match p {
         Point { x, y } => x + y,
@@ -348,7 +360,7 @@ fn sum(p: Point) -> i64 {
 }
 ```
 
-Destructure a struct by naming every field. There is no `{ .. }` rest pattern; bind fields you do not need to a throwaway name.
+Destructure a record by naming every field, or write `Point { x, .. }` to bind the fields you name and ignore the rest. The dots are the same dots that spread a value into a literal — one idea, read on the pattern side.
 
 ### ranges in for-loops
 
@@ -429,12 +441,50 @@ fn main() {
 
 ```hew
 fn main() {
-    let some: Option<i64> = Some(42);
+    let some: Option<i64> = .Some(42);
     if let .Some(v) = some { println(v); } else { println(-1); }
 }
 ```
 
-Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you want the unwrapped-or-default as an expression result.
+Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you want the unwrapped-or-default as an expression result. Every pattern `match` accepts works here and in `while let`: unit variants, records, tuples, literals, or-patterns and nested patterns.
+
+### Chained conditions
+
+A condition joins `let` patterns and boolean tests with `&&`. Each `let` binds its names for the tests to its right and for the block; nothing it binds is visible in the `else` arm, and the condition stops at the first operand that fails.
+
+```hew
+fn main() {
+    let first: Option<i64> = .Some(20);
+    let second: Result<string, string> = .Ok("ready");
+    if let .Some(n) = first && n > 10 && let .Ok(text) = second {
+        println(f"{n}: {text}");
+    } else {
+        println("not ready");
+    }
+}
+```
+
+`||` cannot join a `let` pattern — write the alternatives as separate arms, or match on the value.
+
+### let … else
+
+A `let` with a refutable pattern takes an `else` block for the no-match path. The block must diverge, so the bindings are live for the rest of the enclosing block:
+
+```hew
+import std.string;
+
+fn port(raw: Option<string>) -> Result<i64, string> {
+    let .Some(text) = raw else {
+        return .Err("port missing");
+    };
+    let .Ok(value) = string.to_int(text) else {
+        return .Err("port is not a number");
+    };
+    .Ok(value)
+}
+```
+
+A refutable pattern in a plain `let` without `else` is `E_REFUTABLE_LET`; an `else` block that can fall through is `E_LET_ELSE_FALLTHROUGH`.
 
 ## Collections — Vec
 
@@ -442,7 +492,7 @@ Use `if let .Some(v) = opt` for a one-armed destructure; prefer `match` when you
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -456,9 +506,9 @@ Annotate the binding type so the element type is inferred. `.len()` returns `i64
 ### v[i] — trapping element accessor
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
-    let v: Vec<Point> = Vec.new();
+    var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let p = v[1];
@@ -468,26 +518,28 @@ fn main() {
 
 ```hew
 fn main() {
-    let names: Vec<string> = Vec.new();
+    var names: Vec<string> = Vec.new();
     names.push("ada");
     names.push("alan");
-    let who = names[1];        // fresh owned string (a clone)
+    let who = names[1];        // owned string read; names retains its element
     println(who);              // alan
     println(names[0]);         // ada — names is still usable
 }
 ```
 
-`v[i]` returns the element value `T` directly and works for every element type
-— scalars, strings, records, tuples, and enums. It **traps** (aborts) on an
-out-of-bounds index, so reach for it when the index is known valid (e.g. `i <
-v.len()` already holds). A `Vec<string>` index returns a fresh owned `string`
-(an element clone, not a move-out), so the Vec stays fully usable afterward.
+`v[i]` traps on an out-of-bounds index. For supported cloneable elements,
+it reads an owned value without moving the element out; a concrete
+`Vec<string>` read leaves the vector usable and may copy or share storage.
+Clone-free elements are borrowed instead. In a generic body with unbounded
+`T`, indexing borrows at every instantiation, even when instantiated with a
+cloneable type. A borrowed read cannot consume the element; use `into_iter()`
+when ownership is needed. This does not promise admission for every type.
 
 ### .get(i) — safe Option accessor
 
 ```hew
 fn main() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("a");
     v.push("b");
     match v.get(0) {
@@ -506,7 +558,7 @@ the trapping read). Use `.get(i)` whenever the index may be invalid.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30); v.push(40);
     let s = v[1..3];
     println(s.len());    // 2
@@ -523,7 +575,7 @@ longer required for that.)
 
 ```hew
 fn main() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     for s in v {
@@ -533,14 +585,17 @@ fn main() {
 ```
 
 Prefer for-in for read-only traversal of any element type, including
-`Vec<enum>`.
+`Vec<enum>`. for-in iterates a snapshot taken when the loop starts (D474), so
+mutating `v` in the loop body — push, remove, reassign an index — is defined,
+not undefined behaviour: the loop keeps reading its own copy and never
+observes the mutation.
 
 ### Index-loop with v[i] or .get(i)
 
 ```hew
-enum Colour { Red; Green; Blue; }
+enum Colour { Red, Green, Blue, }
 fn main() {
-    let v: Vec<Colour> = Vec.new();
+    var v: Vec<Colour> = Vec.new();
     v.push(Colour.Red);
     v.push(Colour.Blue);
     let c = v[1];
@@ -561,7 +616,7 @@ v.len()` before a `for i in 0 .. n` loop.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     let last = v.pop();   // i64 — the removed element, returned directly
@@ -577,7 +632,7 @@ check `.len()` before `.pop()`), or use `.get(i)` for the non-trapping read.
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     v.set(1, 99);
     println(v[0]);   // 10
@@ -592,12 +647,12 @@ fn main() {
 
 ```hew
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1); v.push(2); v.push(3);
     println(v.contains(2));   // true
     println(v.contains(9));   // false
 
-    let v2: Vec<i64> = Vec.new();
+    var v2: Vec<i64> = Vec.new();
     v2.push(4); v2.push(5);
     v.append(v2);             // v is now [1, 2, 3, 4, 5]
     println(v.len());         // 5
@@ -607,18 +662,18 @@ fn main() {
 }
 ```
 
-`.contains(x)` returns `bool` — works for scalars, strings, and records. `.append(v2)` appends every element of `v2` to `v` in order. `.clear()` empties the Vec without freeing it (you can push again afterward).
+`.contains(x)` returns `bool` — works for scalars, strings, and records. `.append(v2)` appends every element of `v2` to `v` in order; to build a new `Vec` instead of growing one in place, spread the sources into a literal ("Spread in literals"). `.clear()` empties the Vec without freeing it (you can push again afterward).
 
 ### Vec<Vec<T>> — nested Vecs
 
 ```hew
 fn main() {
-    let matrix: Vec<Vec<i64>> = Vec.new();
+    var matrix: Vec<Vec<i64>> = Vec.new();
 
-    let row0: Vec<i64> = Vec.new();
+    var row0: Vec<i64> = Vec.new();
     row0.push(1); row0.push(2); row0.push(3);
 
-    let row1: Vec<i64> = Vec.new();
+    var row1: Vec<i64> = Vec.new();
     row1.push(4); row1.push(5); row1.push(6);
 
     matrix.push(row0);
@@ -645,13 +700,13 @@ fn main() {
 }
 ```
 
-Use `var` — `.insert` mutates the receiver, and a mutating method needs a `var` binding. The annotation is required for inference. `.insert` returns unit and overwrites on duplicate key.
+Use `var` — `.insert` mutates the receiver, and a mutating method needs a `var` binding. The element types may be inferred from later use; annotate when that use does not determine them. `.insert` returns unit and overwrites on duplicate key.
 
 ### Look up a key (returns Option)
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     match m.get("alice") {
         .Some(v) => println(f"alice={v}"),
@@ -660,13 +715,13 @@ fn main() {
 }
 ```
 
-`m.get(k)` returns `Option<V>`; consume it with `match`. Maps have no subscript — always use `.get`.
+`m.get(k)` returns an optional value. For clone-free values it is a borrowed read: the map must remain live and cannot be mutated while that loan is in use. Use `.get` when absence is expected; indexing traps on a missing key.
 
 ### Membership, remove, length
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 1);
     m.insert("bob", 2);
     let has_alice = m.contains_key("alice");   // true
@@ -683,22 +738,22 @@ fn main() {
 ### Supported HashMap value types
 
 ```hew
-type User { name: string; score: i64; }
+type User { name: string, score: i64, }
 
 fn main() {
     // Scalar values
-    let flags: HashMap<string, bool> = HashMap.new();
+    var flags: HashMap<string, bool> = HashMap.new();
     flags.insert("debug", true);
-    let ratios: HashMap<string, f64> = HashMap.new();
+    var ratios: HashMap<string, f64> = HashMap.new();
     ratios.insert("pi", 3.14);
 
     // User-defined records work as values
-    let users: HashMap<string, User> = HashMap.new();
+    var users: HashMap<string, User> = HashMap.new();
     users.insert("alice", User { name: "Alice", score: 100 });
 
     // Vec<T> also works as a value
-    let tags: HashMap<string, Vec<string>> = HashMap.new();
-    let v: Vec<string> = Vec.new();
+    var tags: HashMap<string, Vec<string>> = HashMap.new();
+    var v: Vec<string> = Vec.new();
     v.push("admin");
     tags.insert("alice", v);
 }
@@ -716,7 +771,7 @@ Note what indexing returns: `m[k]` yields the bare value `V` and traps with
 
 ```hew
 fn main() {
-    let scores: HashMap<string, i64> = HashMap.new();
+    var scores: HashMap<string, i64> = HashMap.new();
     scores.insert("alice", 10);
     scores.insert("bob", 20);
 
@@ -739,7 +794,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alice", 10);
     m.insert("bob", 20);
     m.insert("carol", 30);
@@ -762,7 +817,7 @@ fn main() {
 
 ```hew
 fn main() {
-    let s: HashSet<i64> = HashSet.new();
+    var s: HashSet<i64> = HashSet.new();
     s.insert(1);
     s.insert(2);
     s.insert(2);                 // dedups
@@ -788,6 +843,30 @@ fn main() { println(add(2, 3)); println(square(5)); }   // 5, 25
 ```
 
 Prefer the bare trailing expression (no semicolon) as the return value; reserve explicit `return expr;` for early exits. A trailing semicolon turns the last expression into unit.
+
+### A `var` parameter is the callee's own copy
+
+```hew
+fn grown(buf: bytes, val: i64) -> bytes {
+    var out = buf;
+    out.push(val as u8);
+    out
+}
+fn push_here(var buf: bytes, val: i64) { buf.push(val as u8); }
+fn main() {
+    var packet = bytes.new();
+    push_here(packet, 7);
+    println(packet.len());              // 0: the callee grew its own copy
+    packet = grown(packet, 7);
+    println(packet.len());              // 1
+}
+```
+
+Values are passed by value. `var` on a parameter lets the callee mutate its
+copy; the caller's binding never changes. To hand a grown collection back,
+return it and reassign at the call site. The same rule covers `Vec`, `string`,
+`HashMap` and records. Only handles — actors, channels, resources — share
+identity across a call.
 
 ### Unit return and bare early return
 
@@ -831,7 +910,10 @@ fn main() -> i32 {
         println("usage: prog <arg>");
         return 1;
     }
-    println(f"arg: {arguments.get(1)}");
+    match arguments.get(1) {
+        .Some(argument) => println(f"arg: {argument}"),
+        .None => return 1,
+    }
     0
 }
 ```
@@ -850,20 +932,26 @@ fn main() {
 | `fn main() -> i64` | same — return the code value                                   |
 | `fn main()` (unit) | call `exit(N)` explicitly; the function itself can only exit 0 |
 
-Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero) all exit non-zero via the runtime trap handler and do not need an explicit return.
+Shell pipelines and `&&` chains read the exit code — write `main() -> i32` for any program that signals failure to the caller. `assert(false)`, `panic(...)`, and traps (div-by-zero, an out-of-range index) are faults under the same rule: each writes one line to stderr — `hew: failure: DivideByZero (202)`, or the panic text after the kind — and exits 1. The number in that line names the failure; it is not the exit code.
 
-### Mutation through a parameter persists
+### Return the collection a helper builds
 
 ```hew
-fn fill(v: Vec<i64>) { v.push(1); v.push(2); v.push(3); }
+fn filled() -> Vec<i64> {
+    var values: Vec<i64> = Vec.new();
+    values.push(1);
+    values.push(2);
+    values.push(3);
+    values
+}
 fn main() {
-    let xs: Vec<i64> = Vec.new();
-    fill(xs);
-    println(xs.len());   // 3
+    let values = filled();
+    println(values.len());
 }
 ```
 
-To have a helper build a collection, pass it and mutate in place — the caller observes the result. A call borrows, so the caller's binding stays valid either way; the binding mode governs assignment through the name and calls to `var self` methods on it, not what a callee does with a collection it borrowed.
+Return a value when a helper builds a collection. An ordinary borrowed
+parameter does not grant permission to mutate the caller's binding.
 
 ### Reuse a passed value without clone (intra-actor)
 
@@ -875,42 +963,42 @@ fn total(v: Vec<i64>) -> i64 {
     sum
 }
 fn main() {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(10); xs.push(20);
     println(total(xs));
-    println(total(xs));   // still valid; no move within a fn/actor
+    println(total(xs));   // total borrows xs, so it remains usable
 }
 ```
 
-Inside a single actor and in free functions, ordinary function calls do not move
-their arguments, so you can keep using those values afterward. Ownership-sink
-operations still move managed values: for example, `HashSet.insert(x)` and
-`HashMap.insert(k, v)` take ownership of managed string keys/elements/values. If
-you need to keep using the original after such an insert, pass `clone x` (or
-`x.clone()`) into the collection.
+An ordinary borrowed argument stays usable after the call. A parameter marked
+`consume` transfers ownership. Clone-free collection elements move on owning
+ingress and borrow on read; do not generalize that rule into requiring a manual
+clone for every string insertion. Follow the operation's declared contract.
 
 ### .clone() produces an independent copy
 
 ```hew
 fn main() {
-    let a: Vec<i64> = Vec.new();
+    var a: Vec<i64> = Vec.new();
     a.push(1); a.push(2);
-    let b = a.clone();
+    var b = a.clone();
     b.push(99);
     println(a.len());   // 2
     println(b.len());   // 3
 }
 ```
 
-Use `.clone()` only when you need a second independent copy — e.g. keeping the original after an ownership-sink like `HashSet.insert(x)`. Actor sends do not need it: the sender's binding stays valid after a send.
+Use an explicit clone when the operation requires a second owned copy and the
+type supports it. Ordinary data passed to an actor preserves value semantics;
+a resource transfer has a different, consuming contract.
 
 ### clone x — the canonical duplication prefix
 
 ```hew
 fn main() {
-    let a: Vec<i64> = Vec.new();
+    var a: Vec<i64> = Vec.new();
     a.push(1); a.push(2);
-    let b = clone a;    // independent copy — same effect as `a.clone()`
+    var b = clone a;    // independent copy — same effect as `a.clone()`
     b.push(99);
     println(a.len());   // 2
     println(b.len());   // 3
@@ -937,7 +1025,8 @@ reference type. Writing `&x` is rejected with a diagnostic pointing you at
 
 `Rc<T>` gives multiple bindings ownership of one payload inside a single
 actor. Construct it with `Rc.new(value)` and create another strong owner with
-`.clone()`. Both handles are affine: assigning one without cloning moves it.
+`.clone()`. Rebinding a handle retains the allocation the way rebinding a
+string retains its buffer, so both names stay live and both release.
 Neither `Rc<T>` nor `Weak<T>` can be sent to another actor.
 
 ```hew
@@ -951,7 +1040,10 @@ fn main() {
 ```
 
 `.get()` requires a `Copy` payload. `.set(value)` works for supported aggregate
-payloads and replaces the whole shared value, consuming the replacement.
+payloads and replaces the whole shared value; the displaced payload is released,
+and a replacement with a copy recipe leaves the caller's own binding valid.
+A `#[resource]` payload is supported and releases through its own `close` when
+the last strong owner goes; a `#[linear]` payload is refused.
 
 Use `Weak<T>` for graph back-edges so the graph does not form a strong cycle:
 
@@ -986,10 +1078,10 @@ deref/borrow access to the payload, and cross-actor transfer are not supported.
 > for local graph back-edges, as above, or redesign the structure as a tree or
 > DAG.
 
-### Struct value param and returning a struct
+### Record parameters and return values
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn translate(p: Point, dx: i64, dy: i64) -> Point {
     Point { x: p.x + dx, y: p.y + dy }
 }
@@ -1001,22 +1093,22 @@ fn main() {
 }
 ```
 
-For transformations, construct and return a fresh struct literal. Struct fields are immutable by default — produce a new struct rather than mutating.
+For transformations, return a new record value or mutate a `var` binding. Immutability belongs to the binding.
 
 ### Snapshot-on-send: the sender keeps its value
 
 ```hew
-actor Sink { let id: i64; receive fn take(data: string) -> i64 { data.len() } }
+actor Sink { let id: i64, receive fn take(data: string) -> i64 { data.len() } }
 fn main() {
     let s = spawn Sink(id: 0);
     let msg: string = "hello";
-    let n = await s.take(msg);         // receiver gets a snapshot of msg
+    let n = s.take(msg);         // receiver gets a snapshot of msg
     match n { .Ok(len) => println(len), .Err(_) => println("ask failed") }
     println(msg.len());   // 5 — msg still valid after the send
 }
 ```
 
-Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `await actor.method(...)` on a request-reply fn returns `Result<R, AskError>` — match it.
+Passing a value into an actor's `receive fn` sends the receiver a logical snapshot: the receiver observes an independent value, and the sender's binding stays valid. Reuse after send — including sending the same value to many actors in a loop — is ordinary code with no `clone` ceremony. Types that cannot cross an actor boundary (such as `Rc<T>` and `Weak<T>`) are still rejected with a compile-time diagnostic. `actor.method(...)` on a request-reply fn returns `Result<R, ActorError>` — match it.
 
 ### Strings and scalars are freely reusable
 
@@ -1040,7 +1132,7 @@ Pass strings and scalars without ceremony and keep using them. Concatenation wit
 ### Record declaration, construction, field access
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
     let p = Point { x: 3, y: 4 };
     println(p.x);
@@ -1048,12 +1140,13 @@ fn main() {
 }
 ```
 
-Struct fields use bare `name: T;` with semicolon terminators and no `let`/`var` prefix (that prefix is for actor fields only). Fields are immutable under `let`.
+Record fields use `name: T,` with commas and no `let`/`var` prefix. A `let`
+binding is immutable; a `var` binding permits field updates.
 
-### Mutable struct via var binding
+### Mutable record via var binding
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
     var p = Point { x: 1, y: 2 };
     p.x = 10;
@@ -1063,11 +1156,55 @@ fn main() {
 
 Bind with `var` to reassign fields; `let` is immutable. Immutability is on the binding, not the type.
 
-### Nested struct fields
+### Spread in literals
 
 ```hew
-type Point { x: i64; y: i64; }
-type Line { start: Point; end: Point; }
+type Point { x: i64, y: i64, label: string, }
+
+fn main() {
+    let low: Vec<i64> = [1, 2];
+    let high: Vec<i64> = [8, 9];
+    let all = [..low, 5, ..high];
+    println(all.len());       // 5
+
+    let origin = Point { x: 0, y: 0, label: "origin" };
+    let shifted = Point { ..origin, x: 3 };
+    println(shifted.x);       // 3
+    println(shifted.label);   // origin
+    println(origin.x);        // 0 — the base is still usable
+}
+```
+
+`..expr` inside a literal splices a value. In a bracket literal each spread operand is a `Vec` of the element type and its elements land where they are written, so `[..low, 5, ..high]` is `[1, 2, 5, 8, 9]`. In a record literal `..base` supplies every field the literal does not name; a named field wins over the base, and a literal takes one base. Write the base first — the value reads in the order it is built.
+
+Spreading reads the operand, it does not consume it: `low` and `origin` are still usable afterwards. When the base is a temporary, a field it owns and the literal does not name is transferred rather than copied, so a `#[resource]` field is closed exactly once.
+
+A transition's field list is a record literal's field list, so it takes the same spread — which is how a transition writes only the field that changes:
+
+```hew
+machine Till {
+    events { Sale, }
+    state Empty,
+    state Filled { count: i64, label: string, },
+    on Sale: Empty => Filled { count: 1, label: "open" }
+    on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
+    default { state }
+}
+fn main() {
+    var till = Till.Empty;
+    let _ = till.step(.Sale);
+    let _ = till.step(.Sale);
+    println(till.state_name());   // Filled
+}
+```
+
+Spread is pure, so it is admitted inside a transition body.
+
+### Nested record fields
+
+```hew
+type Point { x: i64, y: i64, }
+type Line { start: Point, end: Point, }
 fn main() {
     let l = Line { start: Point { x: 0, y: 0 }, end: Point { x: 3, y: 4 } };
     println(l.start.x);
@@ -1077,35 +1214,27 @@ fn main() {
 
 Compose records by nesting; access depth-chains directly. Every field must be supplied — there is no partial/default fill.
 
-### Separator syntax: `;` in definitions, `,` in construction
+### Structural separators
 
-> **Syntax callout — this trips up almost everyone:**
->
-> | Context                      | Separator                                      |
-> | ---------------------------- | ---------------------------------------------- |
-> | `type` field definitions     | `;` (semicolon) — idiomatic; `,` also accepted |
-> | `enum` variant separators    | `;` (semicolon) — required; `,` is an error    |
-> | Record construction literals | `,` (comma) — required; `;` is an error        |
->
-> ```hew
-> // Definition — semicolons throughout (idiomatic)
-> type Point { x: i64; y: i64; }
-> enum Color { Red; Green; Blue; }
->
-> // Construction — commas (required)
-> let p = Point { x: 1, y: 2 };
-> let c = .Red;
-> ```
->
-> The compiler error for a semicolon in a construction literal is "expected `}`, found `;`". Enum variants reject commas with "use `;` instead of `,` to separate variants". Type field definitions accept both separators, but `;` is the idiomatic style.
+Use commas for record fields, enum variants and actor state fields. Executable
+statements and bodyless function declarations end with semicolons.
 
-### Enum with unit, tuple, and struct variants
+```hew
+type Point { x: i64, y: i64, }
+enum Colour { Red, Green, Blue, }
+
+fn main() {
+    let point = Point { x: 1, y: 2 };
+}
+```
+
+### Enum with unit, tuple, and record variants
 
 ```hew
 enum Shape {
-    Empty;
-    Circle(f64);
-    Rect { w: f64; h: f64 }
+    Empty,
+    Circle(f64),
+    Rect { w: f64, h: f64 }
 }
 fn area(s: Shape) -> f64 {
     match s {
@@ -1120,14 +1249,14 @@ fn main() {
 }
 ```
 
-Mix unit, tuple, and struct variants in one enum. Enum variants are separated by `;`. Struct-variant fields use `;` separators; the variant pattern uses `{ w, h }` shorthand. Construct variants with dotted names such as `Shape.Rect { w: 3.0, h: 4.0 }`.
+Mix unit, tuple, and record variants in one enum. Commas separate variants and record-variant fields; the variant pattern uses `{ w, h }` shorthand. Construct variants with dotted names such as `Shape.Rect { w: 3.0, h: 4.0 }`.
 
 ### Pattern destructuring in match
 
 ```hew
 enum Cmd {
-    Move(i64, i64);
-    Stop;
+    Move(i64, i64),
+    Stop,
     Speak { text: string }
 }
 fn describe(c: Cmd) -> string {
@@ -1145,7 +1274,7 @@ Combine literal patterns for special cases above general binding patterns — or
 ### Qualified variant construction
 
 ```hew
-indirect enum Expr { Lit(i64); Add(Expr, Expr); }
+indirect enum Expr { Lit(i64), Add(Expr, Expr), }
 fn eval(e: Expr) -> i64 {
     match e {
         .Lit(n) => n,
@@ -1166,9 +1295,9 @@ The bare spelling — a variant name with neither the dot nor the type qualifier
 
 ```hew
 indirect enum Expr {
-    Lit(i64);
-    Add(Expr, Expr);
-    Neg(Expr);
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
 }
 fn eval(e: Expr) -> i64 {
     match e {
@@ -1189,8 +1318,8 @@ Prefix the enum keyword with `indirect` for self-referential variants (AST/tree 
 
 ```hew
 enum MyOpt<T> {
-    Has(T);
-    Empty;
+    Has(T),
+    Empty,
 }
 fn main() {
     let a: MyOpt<i64> = .Has(42);
@@ -1206,17 +1335,17 @@ Parameterize an enum with `<T>` for container-like sum types; annotate the bindi
 ### Struct or enum as a receive fn message parameter
 
 ```hew
-type Record { key: i64; val: i64; }
+type Record { key: i64, val: i64, }
 actor Sink {
-    var last: i64;
+    var last: i64,
     init() { last = 0; }
     receive fn put(r: Record) { last = r.val; }
     receive fn get() -> i64 { last }
 }
 fn main() {
     let s = spawn Sink();
-    s.put(Record { key: 1, val: 99 });
-    let r = await s.get();
+    let _ = s.put(Record { key: 1, val: 99 });
+    let r = s.get();
     match r { .Ok(v) => println(v), .Err(_) => println("err") }
 }
 ```
@@ -1226,9 +1355,9 @@ Structs and enums cross the actor boundary as message payloads — pass them as 
 ### Block-bodied match arms
 
 ```hew
-enum Op { Inc(i64); Reset; }
+enum Op { Inc(i64), Reset, }
 actor Acc {
-    var total: i64;
+    var total: i64,
     init() { total = 0; }
     receive fn apply(op: Op) {
         match op {
@@ -1252,164 +1381,210 @@ When a match arm runs statements (e.g. an assignment), wrap the body in `{ ... }
 
 ```hew
 actor Bank {
-    var balance: i64 = 0;
+    var balance: i64 = 0,
     receive fn deposit(amt: i64) { balance = balance + amt; }
     receive fn balance_of() -> i64 { balance }
 }
 fn main() {
     let acct = spawn Bank(balance: 100);
-    acct.deposit(50);
-    let r = await acct.balance_of();
+    let _ = acct.deposit(50);
+    let r = acct.balance_of();
     match r { .Ok(v) => println(f"balance={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
-Use `var` for fields a handler mutates (give a default), `let` for fields set once at spawn. `spawn` must pass every field by name.
+Use `var` for fields a handler mutates (give a default), `let` for fields set once at spawn. `spawn` passes by name every field that has no default and is not assigned in `init`.
+
+### Fields initialized by init
+
+```hew
+actor Worker {
+    var label: string,
+    let count: i64,
+    init(name: string, size: i64) {
+        label = name.to_upper();
+        count = size + 1;
+    }
+    receive fn label() -> string { label }
+}
+fn main() {
+    let worker = spawn Worker(name: "ready", size: 6);
+    println(worker.label().expect("label"));
+    close(worker);
+}
+```
+
+A field without a default that `init` assigns belongs to `init`: `spawn` cannot name it, and `init` must assign it on every path before it finishes. Read it, or call an actor method, only after every such field is assigned, and initialize it in every arm of a branch or before the branch, never inside a loop body. A later assignment in `init` replaces the value. If `init` faults part way, what it stored is released along with the spawn's own arguments; no handler sees partial state.
 
 ### Bare field access (read and write)
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment(n: i64) { count = count + n; }
     receive fn total() -> i64 { count }
 }
 ```
 
-Reference and assign state fields by bare name — there is no field prefix. State persists across invocations. Keep handler param names distinct from field names (shadowing is an error). Inside an actor body, `self` is the actor's own handle of type `LocalPid<Self>`: send it to another actor, store it in a field, or call `self.stop()` to stop the actor. It is read-only and it is never a way to reach a field.
+Reference and assign state fields by bare name — there is no field prefix. State persists across invocations. Keep handler param names distinct from field names (shadowing is an error). Inside an actor body, `self` as a value is the actor's own handle, of type `Self`, which is the actor itself; `self.field` accesses its state.
 
-### spawn returns LocalPid<ActorType>
+### An actor is the type of its handle
 
 ```hew
 actor Greeter {
-    let name: i64;
+    let name: i64,
     receive fn greet() -> i64 { name }
 }
 fn main() {
-    let g: LocalPid<Greeter> = spawn Greeter(name: 5);
-    let r = await g.greet();
+    let g: Greeter = spawn Greeter(name: 5);
+    let r = g.greet();
     match r { .Ok(v) => println(f"name={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
-The handle type is `LocalPid<T>` (the actor type itself). Let it infer, or annotate when storing the handle in a field. Each `receive fn` takes zero or one argument — bundle multiple values into a struct.
+`spawn Greeter(...)` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
 
-### Fire-and-forget send
+`fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_SEND_RESULT_DROPPED`.
+
+### Calling a handler that returns nothing
 
 ```hew
 actor Logger {
-    var n: i64 = 0;
+    var n: i64 = 0,
     receive fn log(msg: i64) { println(f"log: {msg}"); n = n + 1; }
     receive fn ping() { println("pong"); }
 }
 fn main() {
     let lg = spawn Logger(n: 0);
-    lg.log(7);    // no await; type ()
-    lg.ping();
+    let _ = lg.log(7);    // waits until the handler has finished
+    let _ = lg.ping();
 }
 ```
 
-Call a return-less `receive fn` directly with no `await` — the checker derives fire-and-forget from the absent return type. The call has type `()`; do not bind or interpolate it.
+A call on an actor handle waits, whether or not the handler returns a value: `lg.log(7)` has type `Result<(), ActorError>` and comes back only once the handler's turn is over, so the log line is written before the next statement runs. `?` propagates a failure, `match` or `handle` inspects it, and `let _ =` discards it on purpose. Dropping it as a bare statement is `E_SEND_RESULT_DROPPED`, because an ignored failure loses work silently.
 
-### Ask / request-reply via await
+### Submitting without waiting
+
+```hew
+actor Logger {
+    var n: i64 = 0,
+    receive fn log(msg: i64) { println(f"log: {msg}"); n = n + 1; }
+}
+fn main() {
+    let lg = spawn Logger(n: 0);
+    let inbox = mailbox(lg, on_full: .Reject);
+    let _ = inbox.log(7);    // accepted, not processed
+}
+```
+
+`mailbox(target, on_full: ...)` is a one-way view: its calls return a delivery
+outcome after submission, without waiting for the handler to finish. A
+value-returning handler is refused on this view; use `fork target.m(..)` for a
+concurrent completion call. If a submitted `fails` handler returns an error,
+the actor faults with that error's Display text and its supervisor decides.
+
+`policy(target, on_full: ...)` is the other view: its calls still complete — the handler result wrapped in `Result<R, ActorError<E, Req>>`, with `Req` inferred for rejected requests — and the policy chooses only what happens when the destination mailbox is full. `.Wait` is what a bare handle does. `.Reject` refuses instead of parking and reports `ActorError.Rejected(failure)`. Read `failure.reason` for the refusal reason. The owned request remains in `failure.message`: `.retry()` consumes it and resubmits to the original actor; `.to(other)` consumes it and resubmits to a compatible handler. Both wait for completion. Dropping the request releases its payload. Only a rejection is safely retryable. `policy` completes, `mailbox` submits.
+
+Use a mailbox view when submission must not wait for handler completion.
+Admission may still wait under `.Wait`. A callback into an actor whose handler
+is waiting needs submission semantics to avoid a completion-call cycle.
+
+### Ask / request-reply
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment(n: i64) { count = count + n; }
     receive fn total() -> i64 { count }
 }
 fn main() {
     let c = spawn Counter(count: 0);
-    c.increment(10); c.increment(20); c.increment(12);
-    let r = await c.total();
+    let _ = c.increment(10); let _ = c.increment(20); let _ = c.increment(12);
+    let r = c.total();
     match r { .Ok(v) => println(f"total={v}"), .Err(_) => println("ask failed") }
 }
 ```
 
-Write request-reply as `await ref.method(args)` and match `Ok`/`Err`. The reply value is the trailing expression of the `receive fn`. Ask always yields `Result<R, AskError>`, never bare `R`.
+Write request-reply as `ref.method(args)` and match `Ok`/`Err` — the call waits on its own, with no `await`. The reply value is the trailing expression of the `receive fn`. A call yields `Result<R, ActorError<E>>`, where `E` is the declared handler error
+(or `Never`), rather than bare `R`. To run an ask concurrently, `fork` it and `await` the task.
 
-### await position rules
+### What `await` waits for
 
-`await` can appear in three contexts:
+`await task` consumes a `Task<T>` and yields `T`. `await tasks` consumes a
+`Vec<Task<T>>` and yields `Vec<T>` in vector order. If `T` is a `Result`,
+that result remains an ordinary value. Other waiting operations are calls:
 
-**1. Statement position in any fn or receive fn** — the most common case, and it always works:
+| You want                          | You write                            |
+| --------------------------------- | ------------------------------------ |
+| a reply from an actor             | `pid.method(args)`                   |
+| that reply concurrently           | `let t = fork pid.method(args);` then `await t` |
+| an actor to stop, and to wait     | `close(pid)`                         |
+| an actor to stop, without waiting | `fork close(pid)`                    |
+| to wait for a stop someone else asked for | `closed(pid)`                |
+| each item of another actor's stream | `for x in pid.stream()`            |
+
+Do not put `await` on an actor call, actor handle or generator operation.
+Use it on the task created by `fork`.
+
+A scope is a value-producing expression that owns its child tasks. Plain calls
+inside it remain ordinary calls; only `fork` starts concurrent work. Scope exit
+waits for child cleanup before returning its value.
 
 ```hew
-actor Src { receive fn val() -> i64 { 42 } }
-actor Consumer {
-    var src: LocalPid<Src>;
-    receive fn run(unused: i64) -> i64 {
-        // await as a statement, inside a receive fn — always valid
-        let r = await src.val();
-        match r { .Ok(v) => v, .Err(_) => -1 }
-    }
-}
+fn left() -> i64 { 20 }
+fn right() -> i64 { 22 }
 fn main() {
-    let s = spawn Src();
-    let c = spawn Consumer(src: s);
-    let r = await c.run(0);
-    match r { .Ok(v) => println(f"v={v}"), .Err(_) => println("err") }
+    let total = scope {
+        let a = fork left();
+        let b = fork right();
+        (await a) + (await b)
+    };
+    println(total);
 }
 ```
 
-**2. `scope{}` body for concurrent tasks** — use `scope{}` with `fork` for structured concurrency. `await` suspensions inside a `scope{}` do not block its sibling forks:
-
-<!-- doctest: skip -->
-
-```hew
-scope {
-    fork { result_a = work_a(); };
-    fork { result_b = work_b(); };
-}
-// Both forks have joined here
-```
-
-**3. `await` as a value in non-statement positions is rejected** — `await` cannot be used as a function argument, binary operand, or let-binding right-hand side nested inside a larger expression. Bind the awaited result to a `let` first:
-
-<!-- doctest: skip -->
-
-```hew
-// Wrong: await as function argument
-// println(await actor.method());   // compile error
-
-// Right: bind first
-let r = await actor.method();
-match r { .Ok(v) => println(v), .Err(_) => println("err") }
-```
-
-Note that `.send()` is accepted as an actor method name and compiles correctly — there is no compiler-level restriction on it.
+An ordinary `Err` is a value, not a scope fault. A child fault or cancellation
+uses structured cleanup; `scope within d { ... } handle failure { ... }`
+can recover only after that cleanup. Parent cancellation continues outward.
 
 ### Ask try-sugar in a Result-returning fn
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() -> i64 { count = count + 1; count }
 }
-fn run() -> Result<i64, AskError> {
+fn run() -> i64 fails string {
     let c = spawn Counter(count: 0);
-    let v? = await c.bump();
-    let w? = await c.bump();
-    Ok(v + w)
+    match c.bump() {
+        .Ok(v) => match c.bump() {
+            .Ok(w) => v + w,
+            .Err(_) => { return error "call failed"; },
+        },
+        .Err(_) => { return error "call failed"; },
+    }
 }
 fn main() { match run() { .Ok(t) => println(f"total={t}"), .Err(_) => println("failed") } }
 ```
 
-Inside a fn returning `Result<_, AskError>`, use `let v? = await ...` to unwrap the Ok and auto-propagate Err. The `?` goes on the binding, not the expression.
+A completion call returns `Result<R, ActorError<E>>` in this build. Match or
+recover the envelope, or propagate it with `?` when the enclosing error type
+allows that propagation. There is one propagation spelling: `?` goes on the
+expression, so a forked call propagates as `(await task)?`. See the pending
+request-recovery contract above before writing explicit envelope types.
 
 ### Lifecycle hooks #[on(start)] and #[on(stop)]
 
 ```hew
 actor Boot {
-    var ready: i64 = 0;
+    var ready: i64 = 0,
     #[on(start)] fn boot() { ready = 99; println("started"); }
     #[on(stop)] fn done() { println("stopped"); }
     receive fn status() -> i64 { ready }
 }
 fn main() {
     let b = spawn Boot(ready: 0);
-    let r = await b.status();
+    let r = b.status();
     match r { .Ok(v) => println(f"ready={v}"), .Err(_) => println("ask failed") }
 }
 ```
@@ -1426,7 +1601,7 @@ the actor handle instead.
 ```hew
 actor FileWriter {
     // Stand-in for the private descriptor of a file or socket.
-    var descriptor: i64 = -1;
+    var descriptor: i64 = -1,
 
     #[on(start)]
     fn open() {
@@ -1446,7 +1621,7 @@ actor FileWriter {
 
 fn main() {
     let writer = spawn FileWriter(descriptor: -1);
-    writer.write("service started");
+    let _ = writer.write("service started");
 }
 ```
 
@@ -1461,14 +1636,14 @@ open, use, and close the real resource.
 import std.failure.{ CrashInfo, CrashAction };
 
 actor Risky {
-    var n: i64 = 0;
+    var n: i64 = 0,
     #[on(start)] fn boot() { n = 1; }
     #[on(crash)] fn on_fail(info: CrashInfo) -> CrashAction { panic("crash observed") }
     receive fn value() -> i64 { n }
 }
 fn main() {
     let r = spawn Risky(n: 0);
-    let v = await r.value();
+    let v = r.value();
     match v { .Ok(x) => println(f"n={x}"), .Err(_) => println("failed") }
 }
 ```
@@ -1480,12 +1655,12 @@ Declare `#[on(crash)]` as `fn name(info: CrashInfo) -> CrashAction` and satisfy 
 ```hew
 fn double(x: i64) -> i64 { x * 2 }
 actor Calc {
-    var acc: i64 = 0;
+    var acc: i64 = 0,
     receive fn apply(n: i64) -> i64 { acc = acc + double(n); acc }
 }
 fn main() {
     let calc = spawn Calc(acc: 0);
-    let r = await calc.apply(5);
+    let r = calc.apply(5);
     match r { .Ok(v) => println(f"acc={v}"), .Err(_) => println("ask failed") }
 }
 ```
@@ -1498,7 +1673,7 @@ A plain `fn` in an actor body is an actor method: a helper over that actor's own
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn next() -> i64 { count + 1 }
     receive fn increment() { count = next(); }
 }
@@ -1510,25 +1685,77 @@ An actor method has no mailbox slot, so it is unreachable from outside the actor
 
 ```hew
 actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(n: i64) -> i64 { n * id }
 }
 actor Manager {
-    var worker: LocalPid<Worker>;
+    var worker: Worker,
     receive fn dispatch(n: i64) -> i64 {
-        let r = await worker.work(n);
+        let r = worker.work(n);
         match r { .Ok(v) => v, .Err(_) => -1 }
     }
 }
 fn main() {
     let w = spawn Worker(id: 3);
     let m = spawn Manager(worker: w);
-    let r = await m.dispatch(7);
+    let r = m.dispatch(7);
     match r { .Ok(v) => println(f"result={v}"), .Err(_) => println("failed") }
 }
 ```
 
-Spawn the dependency first, pass its `LocalPid<Dep>` into the dependent actor's spawn, store it in a field, and `await dep.method(...)` from a handler. Awaiting another actor yields `Result<R, AskError>` like any ask.
+Spawn the dependency first, pass it into the dependent actor's spawn, store it in a field typed with the dependency's own name, and call `dep.method(...)` from a handler. Asking another actor yields `Result<R, ActorError>` like any ask.
+
+### Lambda actors — `actor |params| { .. }`
+
+An `actor |params| { .. }` expression declares an actor with no source name.
+Its captures become the actor's state, its body becomes its one handler, and
+it evaluates to an `actor(Msg) -> Reply` handle, which mirrors an `fn` type.
+
+```hew
+fn main() {
+    let factor = 3;
+    let scale = actor |n: i64| -> i64 {
+        return n * factor;
+    };
+    match scale(7) {
+        .Ok(v) => println(v),
+        .Err(_) => println("the call failed"),
+    }
+    close(scale);
+}
+```
+
+Calling the handle is the completion call: it waits for the handler and yields
+`Result<R, ActorError>`, exactly as a call on a named actor's pid does. A
+multi-parameter lambda is called with one argument per parameter.
+
+An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
+`Vec` and call it where it is stored; a handle read out of a collection is
+borrowed, and the call addresses the actor through the borrow without taking
+it. `close(handle)` stops the actor and waits for its terminal cleanup, and
+`closed(handle)` observes a stop someone else requested.
+
+Both delivery views apply to a lambda handle. `mailbox(handle, on_full: ..)`
+submits one way, so it accepts only a lambda that owes its caller nothing; a
+lambda that returns a value is refused there, and the handle itself is how you
+wait for the reply. `policy(handle, on_full: ..)` completes like the handle and
+chooses only how a full mailbox is answered.
+
+```hew
+fn main() {
+    let log = actor |line: string| {
+        println(line);
+    };
+    let inbox = mailbox(log, on_full: .Reject);
+    let _ = inbox("queued");
+    close(log);
+}
+```
+
+A lambda that captures its own handle is refused (`E_RECURSIVE_LAMBDA_ACTOR`):
+the handle and the state seat it would live in own each other. Declare a named
+actor when a handler needs to reach its own actor — inside a named actor's
+body, `self` is that handle.
 
 ### Avoid reference cycles in actor state
 
@@ -1541,10 +1768,10 @@ their state then leak.
 The leak is silent: there is no compiler diagnostic and no runtime warning.
 Break the ownership cycle by storing a stable actor id and looking up a strong
 handle only when it is needed. For named local actors, store the non-owning
-`LocalPid<T>` shown above instead of a strong handle. Keep ownership flowing in
+actor handle shown above instead of a strong handle. Keep ownership flowing in
 one direction when neither form is available.
 
-Cycle collection is post-0.6.0 work (ORCA-style collection is the candidate).
+Do not rely on a future cycle collector to reclaim an ownership cycle.
 
 ### Timers and scheduling — sleep and sleep_until
 
@@ -1554,7 +1781,8 @@ until the next deadline and never spins when no timers are armed.
 
 **`sleep(d: duration)`** — suspend for a duration. Inside an actor handler
 the actor suspends cooperatively and the worker is freed for other actors;
-in `fn main` or a free function the calling thread blocks.
+ordinary helper calls inherit their execution context. There is no actor-only
+await spelling for timers.
 
 ```hew
 actor Ticker {
@@ -1570,8 +1798,8 @@ actor Ticker {
 
 fn main() {
     let t = spawn Ticker;
-    t.run(3);
-    sleep(100ms);
+    let _ = t.run(3);
+    close(t);
     // tick 0
     // tick 1
     // tick 2
@@ -1590,6 +1818,30 @@ fn main() {
     sleep_until(deadline);    // waits only the remaining time
     let elapsed = t0.elapsed();
     println(elapsed.millis() >= 45);   // true
+}
+```
+
+A handler that waits on a deadline releases its worker, so sibling actors
+keep running while the timer is armed. Two workers napping for the same
+interval finish in about one interval, not two:
+
+```hew
+actor Sleeper {
+    receive fn nap() -> i64 {
+        sleep_until(instant.now() + 300ms);
+        1
+    }
+}
+
+fn main() {
+    let a = spawn Sleeper();
+    let b = spawn Sleeper();
+    let start = instant.now();
+    let first = fork a.nap();
+    let second = fork b.nap();
+    let _ = await first;
+    let _ = await second;
+    println(start.elapsed().millis() < 500);   // true, not the 600 ms two naps would take
 }
 ```
 
@@ -1615,7 +1867,7 @@ handlers can run between ticks.
 
 ```hew
 actor Pulse {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
     #[every(50ms)]
     receive fn tick() {
@@ -1630,7 +1882,7 @@ actor Pulse {
 fn main() {
     let p = spawn Pulse(count: 0);
     sleep(250ms);
-    let r = await p.total();
+    let r = p.total();
     match r {
         .Ok(n) => println(f"ticks={n}"),
         .Err(_) => println("ask failed"),
@@ -1657,8 +1909,8 @@ the loop exits. Use a periodic receive handler and a flag instead:
 
 ```hew
 actor Worker {
-    var running: bool = true;
-    var ticks: i64 = 0;
+    var running: bool = true,
+    var ticks: i64 = 0,
 
     #[every(25ms)]
     receive fn tick() {
@@ -1680,9 +1932,9 @@ actor Worker {
 fn main() {
     let worker = spawn Worker(running: true, ticks: 0);
     sleep(150ms);
-    worker.halt();
+    let _ = worker.halt();
     sleep(150ms);
-    let r = await worker.total();
+    let r = worker.total();
     match r {
         .Ok(n) => println(f"ticks={n}"),
         .Err(_) => println("ask failed"),
@@ -1705,66 +1957,58 @@ whose fix-it is to rename the handler or to call `self.stop()`. The shipped
 compiler still exposes the older free-function `stop(actor)` builtin
 (hew-lang/hew#3193).
 
-### Accepting connections and reading in a receive handler: use `await`
+### Accepting connections and reading in a handler
 
-`net.Listener.accept()` and `net.Connection.read()` are blocking calls — the
-plain, non-`await` form parks the whole scheduler worker thread until a
-connection or data arrives, which is why `hew check` warns
-(`BlockingCallInReceiveFn`) whenever either appears inside a receive handler.
-Inside a receive handler, use the suspending `await` form instead:
+`listener.accept()` and `conn.read()` are plain suspending calls. They park the
+calling coroutine on the reactor while other actors can run; adding `await`
+is not a switch from blocking I/O to coroutine I/O. Use the declared return
+type to handle failures, and `fork` when the operation should run concurrently.
 
-```hew
-import std.net;
-
-actor Server {
-    let addr: string;
-
-    receive fn serve() {
-        let listener = net.listen(addr);
-        loop {
-            let conn = await listener.accept();
-            let _data = await conn.read();
-            // ...
-        }
-    }
-}
-```
-
-`await listener.accept()` and `await conn.read()` park the actor on the
-runtime's reactor rather than blocking the worker thread, so other actors keep
-being scheduled while this one waits. A `main()`-body blocking accept (outside
-any receive handler, as in `std/net/net.hew`'s own example) is a different,
-unflagged pattern — the lint only fires inside a receive handler, where the
-scheduler-thread cost applies.
+See [the network module](../std/net/net.hew) for the current operations and
+[the suspension contract](specs/HEW-SPEC-2026.md#40-suspension-normative).
 
 ## State machines
 
-### Machine declaration: events, states, transitions, step(), state_name()
+### Declaring a machine: events, states, transitions
+
+A machine holds one state from a closed set and evaluates typed events against
+transition rules. The body is a comma-separated list of members: the `events`
+header, the `state` declarations, the `on` rules, and an optional `default`.
 
 ```hew
 machine Counter {
-    events { Inc; Reset; }
-    state Zero;
-    state NonZero { value: i64; }
-    on Inc: Zero => NonZero { Counter.NonZero { value: 1 } }
-    on Inc: NonZero => NonZero reenter { Counter.NonZero { value: self.value + 1 } }
-    on Reset: NonZero => Zero { Counter.Zero }
+    events { Inc, Reset }
+
+    state Zero,
+    state NonZero { value: i64 },
+
+    on Inc: Zero => NonZero { value: 1 }
+    on Inc: NonZero => NonZero reenter { value: state.value + 1 }
+    on Reset: NonZero => Zero,
+
     default { state }
 }
+
 fn main() {
-    var c = Counter.Zero;
-    c.step(.Inc); c.step(.Inc); c.step(.Inc);
-    println(c.state_name());            // NonZero
-    match c {
+    var counter: Counter = .Zero;
+    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc);
+    println(counter.state_name());            // NonZero
+    match counter {
         .Zero => println("is zero"),
-        .NonZero { value } => println(f"value={value}"),  // value=3
+        .NonZero { value } => println(f"value={value}"),   // value=3
     }
-    c.step(.Reset);
-    println(c.state_name());            // Zero
+    let _ = counter.step(.Reset);
+    println(counter.state_name());            // Zero
 }
 ```
 
-A machine is a value type. State constructors use a machine-qualified dotted form both inside and outside transition bodies (`Counter.NonZero { value: 1 }`, `Counter.Zero`); contextual event arguments use `.Variant` (`step(.Inc)`). Event constructors use the event-type qualifier outside contextual positions (`CounterEvent.Inc`). This behaviour keeps state-constructor resolution explicit. `step()` mutates in place — the receiver must be a `var`. End with `default { state }` to make uncovered cells a no-op stay. Every (state, event) cell must be covered or it is a compile error.
+A machine is a value type, so `step()` mutates in place and its receiver must
+be a `var`. `step()` returns a must-use report, so bind it (`let report = ...`)
+or discard it deliberately (`let _ = ...`). Every `(state, event)` cell must be
+covered or it is a compile error; `default { state }` makes the uncovered ones
+a no-op stay.
 
 > **Why `default` is a blanket catch-all, and what that costs you.** Without
 > `default`, every `(state, event)` pair not covered by an explicit `on`
@@ -1783,148 +2027,351 @@ A machine is a value type. State constructors use a machine-qualified dotted for
 > transitions in a machine should be hard errors and others should be
 > silent no-ops, the only current option is to omit `default` and write out
 > every cell explicitly, including the no-op ones (`on Bump: Dead => Dead
-reenter { state }`), so the compiler forces you to make each one a
-> deliberate decision.
+reenter,`), so the compiler forces you to make each one a deliberate
+> decision.
 
-### Transition heads: the source is a pattern, the target is an expression
+### Transition heads: the source is a pattern, the target is a state name
 
-`on Event: Source => Target` reads symmetrically, but the two sides are different
-grammatical things and they take different spellings.
+`on Event: Source => Target` reads symmetrically, but the two sides are
+different grammatical things.
 
 The **source** is a pattern matched against the machine's current state. It is
-never evaluated, has no expected type, and is the one pattern position exempt from
-`E_BARE_VARIANT_PATTERN`. Write it bare (`Off`), as a qualified path into a
-composite (`Connected.Active`, which resolves to the leaf `Active`), or as the
+never evaluated and has no expected type. Write it bare (`Off`) or as the
 wildcard `_`. A leading `.` is rejected there:
 
 ```
-on Toggle: .Off => .On;
+on Toggle: .Off => .On,
            ^ error: a machine transition source state is a pattern and cannot be
              written with a leading `.`
 ```
 
-The **target** is an expression checked against the machine's state enum, so it
-takes the contextual form: `=> .On`, `=> .Faulted { code: event.code }`. The bare
-form still parses, but since v0.6.0 it is rejected with `E_BARE_VARIANT_EXPR` and
-a fix-it that inserts the dot — the same rule every other
-enum-in-expected-type position follows. Run `hew fmt --migrate` to apply the
-fix-its across a legacy source. A `_` target (paired with a body that
-computes the next state) is a wildcard rather than a variant, so it takes no dot.
+The **target** is a state name in the machine's own namespace, resolved against
+its `state` declarations. It is not an enum variant, so it takes no dot:
 
 ```hew
 machine Switch {
-    events { Toggle; }
-    state Off;
-    state On;
-    on Toggle: Off => .On;
-    on Toggle: On => .Off;
+    events { Toggle }
+
+    state Off,
+    state On,
+
+    on Toggle: Off => On,
+    on Toggle: On => Off,
 }
-```
 
-The formatter re-emits whichever target spelling you wrote; it never adds or
-removes the dot.
-
-### State field holding a Vec
-
-```hew
-machine Log {
-    events { Append { item: i64; } Clear; }
-    state Empty;
-    state Filled { items: Vec<i64>; }
-    on Append(item): Empty => Filled {
-        let v: Vec<i64> = Vec.new(); v.push(item); Filled { items: v }
-    }
-    on Append(item): Filled => Filled reenter {
-        let v = self.items; v.push(item); Filled { items: v }
-    }
-    on Clear: Filled => Empty { Log.Empty }
-    default { state }
-}
 fn main() {
-    var log = Empty;
-    log.step(Append { item: 10 });
-    log.step(Append { item: 20 });
-    match log {
-        .Empty => println("empty"),
-        .Filled { items } => {
-            println(f"count={items.len()}");   // count=2
-            println(f"first={items[0]}");  // first=10
-        },
-    }
+    var switch: Switch = .Off;
+    let _ = switch.step(.Toggle);
+    println(switch.state_name());   // On
 }
 ```
 
-Read the prior vec out of `self.items`, push, and rebuild the variant. Access elements with `v[i]` and `.len()`.
+Outside the machine — constructing a value, matching one — a state *is* an enum
+variant and takes the usual contextual dot: `var switch: Switch = .Off;`,
+`.NonZero { value } => ...`.
+
+### Transition bodies: `state` and `event`
+
+A rule head already says which state the transition produces, so the body says
+only what the head cannot. Two names are bound inside it: `state` is the source
+state's fields, `event` is the incoming payload. `self` is the receiver of an
+actor or a method and is not bound here; writing it is refused with
+`E_MACHINE_SELF`.
+
+There are three body forms:
+
+- A **unit target takes no body**: `on Reset: NonZero => Zero,`.
+- A **fielded target takes the field list**, with the target elided:
+  `on Inc: Zero => NonZero { value: 1 }`. The braces hold field initializers,
+  nothing else.
+- An **expression body** computes the state value. Use it when the rule also
+  emits outputs, when the target is the wildcard `_`, or for the identity
+  `{ state }` that keeps a fielded state unchanged.
+
+Repeating the target inside its own body — `=> NonZero { NonZero { value: 1 } }`,
+`=> Zero { .Zero }`, `=> Zero { Counter.Zero }` — is refused with
+`E_MACHINE_REDUNDANT_TARGET`.
 
 ### Event payload access
 
 ```hew
 machine Acc {
-    events { Add { n: i64; } }
-    state Seed;
-    state Total { sum: i64; }
-    on Add: Seed => Total { Total { sum: event.n } }
-    on Add: Total => Total reenter { Total { sum: self.sum + event.n } }
+    events { Add { n: i64 } }
+
+    state Seed,
+    state Total { sum: i64 },
+
+    on Add(n): Seed => Total { sum: n }
+    on Add: Total => Total reenter { sum: state.sum + event.n }
 }
-fn make_add(n: i64) -> AccEvent { AccEvent.Add { n: n } }
+
+fn make_add(n: i64) -> AccEvent {
+    AccEvent.Add { n: n }
+}
+
 fn main() {
-    var a = Seed;
-    a.step(make_add(5));
-    a.step(make_add(7));
-    match a {
+    var acc: Acc = .Seed;
+    let _ = acc.step(make_add(5));
+    let _ = acc.step(make_add(7));
+    match acc {
         .Seed => println("seed"),
         .Total { sum } => println(f"sum={sum}"),   // sum=12
     }
 }
 ```
 
-Prefer the head binding `on Add(n): ...` so payload names are declared at the rule site; `event.n` is the equivalent fallback. `self.field` reads the source state; `event.field` reads the event payload. The compiler generates a companion enum `{MachineName}Event` you can name in signatures and construct with `MachineEvent.Variant`.
+The head binding `on Add(n): ...` names the payload fields at the rule site;
+`event.n` is the equivalent spelling without it. The compiler generates a
+companion enum `{MachineName}Event` you can name in signatures and construct
+with `AccEvent.Add { n: 1 }`.
+
+### State field holding a Vec
+
+A state field can own a heap value. Read the previous one out of `state`, work
+on it, and produce the new state:
+
+```hew
+machine Log {
+    events { Append { item: i64 }, Clear }
+
+    state Empty,
+    state Filled { items: Vec<i64> },
+
+    on Append(item): Empty => Filled { items: [item] }
+    on Append(item): Filled => Filled reenter {
+        var next = state.items;
+        next.push(item);
+        Filled { items: next }
+    }
+    on Clear: Filled => Empty,
+
+    default { state }
+}
+
+fn main() {
+    var log: Log = .Empty;
+    let _ = log.step(.Append { item: 10 });
+    let _ = log.step(.Append { item: 20 });
+    match log {
+        .Empty => println("empty"),
+        .Filled { items } => {
+            println(f"count={items.len()}");   // count=2
+            println(f"first={items[0]}");      // first=10
+        },
+    }
+}
+```
+
+### Emitting outputs
+
+An `emits` header declares a typed output vocabulary, separate from the inputs.
+`emit` appends a value to the report's `outputs`; the surrounding application
+interprets them and does the actual work, since a transition body is pure.
+
+```hew
+machine Meter {
+    events { Reading { value: i64 } }
+    emits { Alarm { value: i64 } }
+
+    state Watching { peak: i64 },
+
+    on Reading: Watching => Watching when event.value > state.peak {
+        emit Alarm { value: event.value };
+        Watching { peak: event.value }
+    }
+    on Reading: Watching => Watching { state }
+}
+
+fn main() {
+    var meter: Meter = .Watching { peak: 0 };
+    let report = meter.step(.Reading { value: 7 });
+    for output in report.outputs {
+        match output {
+            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+        }
+    }
+    let quiet = meter.step(.Reading { value: 3 });
+    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+}
+```
+
+A state may also declare `entry` and `exit` hooks, which see the same `state`
+and `event` bindings and may emit. A transition that changes state runs exit,
+body, then entry; a fixed same-state rule runs only its body unless it says
+`reenter`.
 
 ### Wildcard transitions and if-expression bodies
 
 ```hew
 machine Conn {
-    events { Start; Bump; Kill; }
-    state Idle;
-    state Live { hits: i64; }
-    state Dead;
-    on Start: Idle => Live { Live { hits: 0 } }
-    on Bump: Live => Live reenter {
-        if self.hits + 1 >= 3 { Conn.Dead } else { Live { hits: self.hits + 1 } }
+    events { Start, Bump, Kill }
+
+    state Idle,
+    state Live { hits: i64 },
+    state Dead,
+
+    on Start: Idle => Live { hits: 0 }
+    on Bump: Live => _ {
+        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
     }
-    on Kill: _ => Dead { Conn.Dead }
-    on Start: _ => _ { state }
-    on Bump: _ => _ { state }
+    on Kill: _ => Dead,
+
+    default { state }
 }
+
 fn main() {
-    var c = Idle;
-    c.step(.Start); c.step(.Bump); c.step(.Bump); c.step(.Bump);
-    println(c.state_name());   // Dead
+    var conn: Conn = .Idle;
+    let _ = conn.step(.Start);
+    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Live
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Dead
 }
 ```
 
-`on E: _ => _ { state }` is the canonical "ignore this event everywhere it isn't explicitly handled". A wildcard-target body may return any variant, so an `if` returning different states is legal there and in a `reenter` body. An explicit cell rule always wins over a wildcard.
+`_` in the source position matches any state, and `_` in the target position
+lets the body choose, so an `if` returning different states is legal there. An
+explicit cell rule always wins over a wildcard.
 
-### Driving a machine through a free-function parameter
+### Driving a machine from a function or an actor
 
 ```hew
 machine Door {
-    events { Open; Close; }
-    state Shut;
-    state Ajar { angle: i64; }
-    on Open: Shut => Ajar { Ajar { angle: 90 } }
-    on Close: Ajar => Shut { Door.Shut }
+    events { Open, Close }
+
+    state Shut,
+    state Ajar { angle: i64 },
+
+    on Open: Shut => Ajar { angle: 90 }
+    on Close: Ajar => Shut,
+
     default { state }
 }
-fn drive(d: Door) -> string {
-    var local = d;
-    local.step(.Open);
+
+fn drive(door: Door) -> string {
+    var local = door;
+    let _ = local.step(.Open);
     local.state_name()
 }
-fn main() { println(drive(.Shut)); }   // Ajar
+
+actor Porter {
+    var door: Door = .Shut,
+
+    receive fn accept(event: DoorEvent) {
+        let _report = door.step(event);
+        println(door.state_name());
+    }
+}
+
+fn main() {
+    println(drive(.Shut));            // Ajar
+    let porter = spawn Porter();
+    let _ = porter.accept(.Open);     // Ajar
+}
 ```
 
-Pass machines by value into and out of free functions and mutate a local `var`. A machine also works as an actor state field — `var d: Door = Shut;` in an actor body, with `d.step(Open)` inside a `receive fn`, compiles and runs (the field rides the enum clone/drop substrate). What does not work is a machine inside a plain record: `.step()` requires a `var`-bound receiver, and a record field is not one, so `r.d.step(Open)` is rejected with `` `.step()` requires a mutable binding receiver; this expression is not declared with `var` ``. Copy the field into a local `var`, step it, and write it back.
+Pass machines by value into and out of free functions and mutate a local `var`.
+A machine also works as an actor state field. What does not work is a machine
+inside a plain record: `.step()` requires a `var`-bound receiver and a record
+field is not one, so `r.d.step(.Open)` is rejected with `` `.step()` requires a
+mutable binding receiver; this expression is not declared with `var` ``. Copy
+the field into a local `var`, step it, and write it back.
+
+### Grouping states: composite states
+
+A `state` block that declares substates is a composite state. It groups them
+under one name, holds the rules and hooks they share, and nests exactly one
+level. Exactly one substate is marked `initial`: that is where a transition
+targeting the group by name lands.
+
+```hew
+machine Session {
+    events { Open, Authed, Close }
+
+    emits { Trace { text: string } }
+
+    state Closed,
+    state Kicked,
+
+    state Live {
+        entry {
+            emit Trace { text: "live" };
+        }
+        exit {
+            emit Trace { text: "done" };
+        }
+
+        initial state Authing,
+        state Active,
+
+        on Close: _ => Closed,
+    },
+
+    on Open: Closed => Live,
+    on Authed: Authing => Active,
+    on Close: Active => Kicked,
+
+    default { state }
+}
+
+fn main() {
+    var session: Session = .Closed;
+    let _ = session.step(.Open);
+    println(session.state_name());    // Authing
+    let _ = session.step(.Authed);
+    println(session.state_name());    // Active
+    let _ = session.step(.Close);
+    println(session.state_name());    // Kicked
+}
+```
+
+`on Close: _ => Closed` inside the block is the group's rule: it applies from
+every substate, so adding a fourth substate inherits it. `on Close: Active =>
+Kicked` outside the block is `Active`'s own rule and beats the group's — the
+position in the file does not matter, only which state the rule names.
+
+The composite's hooks bracket the substates' own. Entering the group runs
+`Live.entry` before the substate's `entry`; leaving it runs the substate's
+`exit` before `Live.exit`. Moving between two substates of the same group runs
+neither, because the group was never left.
+
+The composite is a grouping, not a live state: `state_name()` always reports a
+substate, and the machine flattens before it is checked. `hew machine diagram`
+draws the flat machine; its `--format json` output keeps the grouping in a
+`composites` array.
+
+### Fixed numbers in a machine: const parameters
+
+A machine can declare `usize` const parameters. They name a fixed value of the
+declaration, readable in guards, transition bodies and hooks.
+
+```hew
+machine Retry<const MAX: usize = 3> {
+    events { Fail, Reset }
+
+    state Trying { attempts: usize },
+    state Exhausted,
+
+    on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+    on Fail: Trying => Exhausted,
+    on Reset: Trying => Trying { attempts: 0 }
+    on Reset: Exhausted => Trying { attempts: 0 }
+    on Fail: Exhausted => Exhausted reenter,
+}
+
+fn main() {
+    var retry: Retry = .Trying { attempts: 0 };
+    for _ in 0..3 {
+        let _ = retry.step(.Fail);
+    }
+    println(retry.state_name());      // Exhausted
+}
+```
+
+The default is the value. A machine type annotation has no place to write a
+const argument yet, so a const parameter without a default is refused where it
+is declared, and rebinding the name inside a machine body is refused too.
 
 ## Generics
 
@@ -1932,7 +2379,7 @@ Pass machines by value into and out of free functions and mutate a local `var`. 
 
 ```hew
 trait Named { fn name(self) -> string; }
-type User { name: string; }
+type User { name: string, }
 impl Named for User { fn name(self) -> string { self.name } }
 fn announce<T: Named>(item: T) { println(item.name()); }
 fn main() { announce(User { name: "Bob" }); }   // Bob
@@ -1945,7 +2392,7 @@ Declare the impl as `impl Trait for Type`, bound the parameter `<T: Trait>`, and
 ```hew
 trait HasName { fn name(self) -> string; }
 trait HasScore { fn score(self) -> i64; }
-type Player { name: string; score: i64; }
+type Player { name: string, score: i64, }
 impl HasName for Player { fn name(self) -> string { self.name } }
 impl HasScore for Player { fn score(self) -> i64 { self.score } }
 fn report<T: HasName + HasScore>(item: T) {
@@ -1968,7 +2415,7 @@ Unbounded `<T>` works when you only move/return the value. To call any method or
 ### Generic free function over a generic record
 
 ```hew
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 fn fst<A, B>(p: Pair<A, B>) -> A { p.first }
 fn main() { let p = Pair { first: 100, second: 2.5 }; println(fst(p)); }   // 100
 ```
@@ -1978,7 +2425,7 @@ Read fields of a generic record inside a generic free function — prefer a free
 ### Generic record type with all-bitcopy fields
 
 ```hew
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 fn main() {
     let p = Pair { first: 10, second: 3.5 };
     println(p.first);
@@ -1991,7 +2438,7 @@ Use generic records as lightweight bitcopy containers over scalar types (`i64`, 
 ### Generic record type with an owned field
 
 ```hew
-type Pair<A, B> { first: A; second: B; }
+type Pair<A, B> { first: A, second: B, }
 fn make() -> Pair<i64, string> { Pair { first: 1, second: "owned" } }
 fn main() {
     let p = make();
@@ -2000,14 +2447,19 @@ fn main() {
 }
 ```
 
-A generic record instantiation may carry owned fields (`string`, `Vec<T>`, nested records). Each instantiation (`Pair<i64, string>`, `Pair<string, Vec<i64>>`) drops and clones its owned fields per concrete instantiation — pass it by value, return it, store it. A field whose substituted type has no clone helper (an `#[opaque]` handle) fails closed at compile time, so write a concrete record for those.
+Generic records derive ownership and cleanup from their substituted field
+types. Owned fields need not be cloneable: a supported resource or opaque field
+does not require replacing the generic record with a concrete declaration.
+Copying still requires the relevant clone capability; borrowing, transferring
+and cleanup follow the instantiated record's ownership contract. This is not a
+promise that every opaque type or use site is supported.
 
 ### Generic function over Vec<T>
 
 ```hew
 fn count<T>(items: Vec<T>) -> i64 { items.len() }
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10); v.push(20); v.push(30);
     println(count(v));   // 3
 }
@@ -2018,9 +2470,9 @@ Accept `Vec<T>` in a generic function and use `.len()`/`v[i]`.
 ### Vec of a concrete enum (including string payload)
 
 ```hew
-enum Shape { Circle(f64); Named(string); }
+enum Shape { Circle(f64), Named(string), }
 fn main() {
-    let v: Vec<Shape> = Vec.new();
+    var v: Vec<Shape> = Vec.new();
     v.push(Shape.Circle(1.5));
     v.push(Shape.Named("square"));
     println(v.len());   // 2
@@ -2032,9 +2484,9 @@ A monomorphic enum, even one carrying a string payload, is a valid Vec element. 
 ### Vec of a concrete record
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 fn main() {
-    let v: Vec<Point> = Vec.new();
+    var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     let got = v[1];
@@ -2054,7 +2506,7 @@ fn make_vec<T>() -> Vec<T> {
     Vec.new()
 }
 fn main() {
-    let v = make_vec<i64>();
+    var v = make_vec<i64>();
     v.push(10);
     v.push(20);
     println(v.len());   // 2
@@ -2064,7 +2516,7 @@ fn main() {
 **An explicit type argument is one way to pin a generic constructor's type argument, not the only one.** The checker also resolves `T` from the **expected return type** at the call site — a `let` binding's declared type, a function's declared return type, or an argument position — without an explicit type argument:
 
 ```hew
-type Stack<T> { items: Vec<T>; }
+type Stack<T> { items: Vec<T>, }
 
 fn new_empty<T>() -> Stack<T> { Stack { items: Vec.new() } }
 
@@ -2092,9 +2544,10 @@ Methods on a generic record need the impl itself to carry the type parameter —
 type Stack<T> { items: Vec<T> }
 
 impl<T> Stack<T> {
-    fn push_item(self, v: T) -> Stack<T> {
-        self.items.push(v);
-        self
+    fn push_item(consume self, consume v: T) -> Stack<T> {
+        var items = self.items;
+        items.push(v);
+        Stack { items: items }
     }
     fn len(self) -> i64 {
         self.items.len()
@@ -2113,7 +2566,9 @@ fn main() {
 }
 ```
 
-Construct the empty generic record through the constructor function `new_stack`, either with an explicit type argument (`new_stack<i64>()`) or a `let` type annotation (`let s: Stack<i64> = new_stack();`). Both resolve `T` from the call site and lower identically. A bare `Stack { items: Vec.new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` mutates the `items` field in place and returns the receiver — this is the pattern to use for a generic record with an owned heap field; extracting the field into a local, pushing, and reconstructing a new `Stack { items: ... }` value is a known crash today (the generic-record drop plan double-releases the extracted field).
+Construct the empty generic record through the constructor function `new_stack`, either with an explicit type argument (`new_stack<i64>()`) or a `let` type annotation (`let s: Stack<i64> = new_stack();`). Both resolve `T` from the call site and lower identically. A bare `Stack { items: Vec.new() }` construction with no surrounding annotation is still ambiguous and needs one. `push_item` consumes the old stack and the new element, takes its items into a
+mutable local, and returns the rebuilt stack. The old stack is no longer usable;
+`len` only borrows it.
 
 ### Monomorphic functions as values (cross-module)
 
@@ -2169,7 +2624,7 @@ currently supported)``. From the current module it is rejected earlier, as a
 interpolation:
 
 ```hew
-type Celsius { degrees: f64; }
+type Celsius { degrees: f64, }
 
 impl Display for Celsius {
     fn fmt(self) -> string {
@@ -2278,7 +2733,7 @@ fn main() {
 }
 ```
 
-For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use `.unwrap()`/`.unwrap_or()` method form.
+For unwrap_or/is_ok/is_err on Result, write a tiny `match` helper inline. This is the reliable path — do not import `std.result`/`std.option`, and do not use the `.unwrap_or()` method form.
 
 ### Option .is_some() / .is_none()
 
@@ -2332,13 +2787,15 @@ For a fallible operation with no meaningful success value, `Result<(), E>` and `
 
 `?` is exact. The error type of the operand has to be the error type of the enclosing function — there is no `From`, no `#[from]`, and no conversion the compiler inserts on your behalf, so two concrete error enums never flow into one another by accident.
 
-A function that calls into several modules names `dyn Error` as its error type instead:
+A function that calls into several modules can use `dyn Error`. Convert each
+concrete error at an explicit failure return; `?` does not implicitly erase a
+concrete error into `dyn Error`:
 
 ```hew
 import std.fs;
 
 enum PortError {
-    NotANumber(string);
+    NotANumber(string),
 }
 
 impl Display for PortError {
@@ -2353,14 +2810,17 @@ fn parse_port(text: string) -> Result<i64, PortError> {
     Err(PortError.NotANumber(text))
 }
 
-fn load_port(path: string) -> Result<i64, dyn Error> {
-    let text = fs.read(path)?;        // IoError coerces into dyn Error
-    let port = parse_port(text)?;     // PortError coerces into the same
-    Ok(port)
+fn load_port(path: string) -> i64 fails dyn Error {
+    let text = fs.read(path) handle problem {
+        return error problem;
+    };
+    parse_port(text) handle problem {
+        return error problem;
+    }
 }
 ```
 
-`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.unwrap()` or `.expect(msg)`.
+`Error` is a prelude trait whose supertrait is `Display`, so every std error type prints itself and a `dyn Error` prints through the supertrait: `f"{e}"` works on the erased value. Where you want a concrete error type instead of the trait object, convert explicitly with `.map_err(f)` on a `Result` or `.ok_or(e)` on an `Option`. Crash on the spot with `.expect(reason)`, the one deliberate invariant assertion; `unwrap()` is not a method in Hew.
 
 `fn main() -> Result<(), E>` needs `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr and exits 1.
 
@@ -2397,7 +2857,9 @@ fn main() {
 }
 ```
 
-Read elements with `parts[i]` (or `.get(i)` for an `Option`) and iterate by index — the index read clones the element and leaves `parts` usable. (`for p in parts` also works but consumes the Vec, so use the indexed loop when you need `parts` again afterward.)
+Read elements with `parts[i]`, or `.get(i)` when absence is expected. String
+elements can be copied out while the vector remains usable. For clone-free
+elements, reads and ordinary iteration borrow; `into_iter()` takes ownership.
 
 ### .trim()
 
@@ -2461,8 +2923,8 @@ import std.string;
 fn main() {
     println(string.from_int(42));            // 42
     let n = match string.to_int("42") {
-        .Some(v) => v,
-        .None => 0,
+        .Ok(v) => v,
+        .Err(_) => 0,
     };
     println(f"n={n}");                        // 42
     println(string.pad_left("7", 3, "0"));   // 007
@@ -2472,7 +2934,8 @@ fn main() {
 }
 ```
 
-Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` returns `Option<i64>` (`None` on parse failure) — consume it with `match` or `.unwrap_or(default)`; `join(Vec<string>, sep)` for assembly; `pad_left`/`pad_right` for fixed width. Use `string.to_int`/`try_to_float` for a `Result` when you need the failure reason.
+Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` and `to_float` return Results: match, propagate or recover the error.
+`string.join(Vec<string>, sep)` assembles text; it is unrelated to task joining.
 
 ### Concatenation, char round-trip, escapes
 
@@ -2491,7 +2954,7 @@ fn main() {
 }
 ```
 
-Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the byte at that offset, or `None` when out of bounds; consume it with `match`. Cast a `char` to its codepoint with `as i64`, then `string.from_char` renders it back. Strings are immutable — concatenation produces new strings.
+Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the Unicode scalar at that codepoint offset, or `None` when out of bounds; consume it with `match`. Cast a `char` to its codepoint with `as i64`, then `string.from_char` renders it back. Strings are immutable — concatenation produces new strings.
 
 ## Traits and stdlib
 
@@ -2532,7 +2995,7 @@ A trait method can carry a default body (`fn shout(self) -> string { self.greet(
 ### Display trait (fmt) for f-string interpolation
 
 ```hew
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 impl Display for Point {
     fn fmt(self) -> string {
         f"({self.x}, {self.y})"
@@ -2666,10 +3129,33 @@ fn main() {
     println(math.abs(-5.0));       // 5
     println(math.max(3.0, 7.0));   // 7
     println(math.min(3.0, 7.0));   // 3
+    println(math.hypot(3.0, 4.0)); // 5
+    println(math.fma(2.0, 3.0, 1.0)); // 7
 }
 ```
 
-`abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
+`abs`/`min`/`max` are generic over Num (work on `i64` and `f64`); `sqrt`/`pow`/`floor`/`ceil`/`round`/`trunc` take `f64`. Use `math.pi()`/`math.e()` (functions, not bare constants).
+
+The trigonometric, hyperbolic, exponential and rounding family also takes `f64`: `tan`, `asin`, `acos`, `atan`, `atan2(y, x)`, `sinh`, `cosh`, `tanh`, `exp2`, `log2`, `log10`, `log1p`, `expm1`, `cbrt`, `hypot(x, y)`, `fma(a, b, c)`, `copysign(x, y)`, `powi(x, n)` (integer exponent `n: i32`), and `from_bits(bits: u64)` (the inverse of `.to_bits()`; spelled as a module function because a bare type name such as `f64` cannot be used as a call receiver). Each lowers to the matching LLVM intrinsic where one exists, or to the C library implementation otherwise (`log1p`, `expm1`, `cbrt`, `hypot`).
+
+Integer types (`i8`..`i64`, `isize`, `u8`..`u64`, `usize`) support bit-manipulation and overflow-policy methods directly, without importing `std.math`:
+
+```hew
+fn main() {
+    let n: i32 = 0b1011;
+    println(n.count_ones());        // 3
+    println(n.leading_zeros());     // 28
+    println(n.rotate_left(4));      // 176
+
+    let max: i32 = 2147483647;
+    println(max.wrapping_add(1));   // -2147483648 (wraps)
+    println(max.saturating_add(1)); // 2147483647 (clamps)
+}
+```
+
+`count_ones`, `count_zeros`, `leading_zeros`, `trailing_zeros`, `swap_bytes`, `reverse_bits`, `rotate_left(n)` and `rotate_right(n)` are implemented at every integer width: `i8`, `i16`, `i32`, `i64`, `isize`, `u8`, `u16`, `u32`, `u64` and `usize`. `swap_bytes` on `i8`/`u8` is the identity (a one-byte value has no other byte to swap with). `wrapping_add`/`sub`/`mul`, `saturating_add`/`sub`/`mul` and `checked_add`/`sub`/`mul` are implemented at every width too; `checked_add`/`sub`/`mul` return `Option<T>` and `saturating_mul` is built from an overflow-checked multiply plus a saturating select (no native saturating-multiply instruction exists).
+
+`f64` also has classification and bit methods: `to_bits() -> u64`, `is_nan()`, `is_finite()`, `is_infinite()`, `is_sign_negative()`, and `abs()` (equivalent to `math.abs`). `math.from_bits(bits)` is the inverse of `.to_bits()`.
 
 ### std.iter — lazy iterator combinators
 
@@ -2685,33 +3171,38 @@ fn main() {
 
 `std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
-When the receiver is a `Vec` field in actor state, `into_iter()` DRAINS the field: the iteration consumes every element and the field is left a valid empty vec. A later message may push new elements into it or iterate it again (yielding nothing). This is the only iteration form for `Vec<dyn Trait>` fields — trait objects cannot be cloned, so there is no non-consuming snapshot to hand out.
+A `for` loop or index read borrows clone-free elements. In a generic body with
+unbounded `T`, the same borrowing rule holds at every instantiation. Use
+`into_iter()` to take ownership of elements, or an explicit clone with `T: Clone`.
+Do not assume reads of cloneable elements are clone-free. Iterator adapters
+consume the iterator they wrap; the source collection and its iterator have
+distinct ownership obligations.
 
 ### std.sort — sorting vectors
 
 ```hew
 import std.sort;
 fn main() {
-    let nums: Vec<i64> = Vec.new();
+    var nums: Vec<i64> = Vec.new();
     nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
-    let sorted   = sort.sort(nums);            // returns new Vec — original unchanged
-    let reversed = sort.reverse(sorted);
+    let sorted   = sort.sort_ints(nums);            // returns new Vec — original unchanged
+    let reversed = sort.reverse_ints(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
 
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("banana"); words.push("apple"); words.push("cherry");
-    let sw = sort.sort(words);
+    let sw = sort.sort_strings(words);
     println(sw[0]);        // apple
 
-    let floats: Vec<f64> = Vec.new();
+    var floats: Vec<f64> = Vec.new();
     floats.push(3.14); floats.push(1.41); floats.push(2.72);
-    let sf = sort.sort(floats);
+    let sf = sort.sort_floats(floats);
     println(sf[0]);        // 1.41
 }
 ```
 
-`sort<T: Ord>` returns a new sorted Vec (ascending) and `reverse<T>` returns a new reversed one; the original is never modified. One generic function covers every element type — the `sort_ints` / `sort_strings` / `sort_floats` family it replaces is listed in [the v0.6.0 migration note](migrations/v0.6.0.md). Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+`sort_ints`, `sort_strings` and `sort_floats` each return a new sorted Vec (ascending); `reverse_ints`, `reverse_strings` and `reverse_floats` each return a new reversed one. The original Vec is never modified. There is no generic `sort<T>`/`reverse<T>` yet — [the v0.6.0 migration note](migrations/v0.6.0.md) names one as the eventual replacement for this monomorphic family, but it is not implemented on this build. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
 
 ### std.random — pseudo-random number generation
 
@@ -2729,6 +3220,31 @@ fn main() {
 
 Backed by a CPython-compatible MT19937 Mersenne Twister — the same seed produces the same sequence as CPython's `random` module. Call `seed(n)` first for reproducible output; without a seed, the state is initialised from OS entropy. `randint(lo, hi)` returns in the half-open range `[lo, hi)`.
 
+The functions above share one implicit generator per thread. `random.Rng` is a plain value instead, so a caller can hold several independent streams at once:
+
+```hew
+import std.random;
+fn main() {
+    let rng = random.Rng.new(42);
+    println(rng.next_u64());
+    println(rng.next_f64());     // f64 in [0.0, 1.0)
+    println(rng.range(1, 7));    // i64 in [1, 7)
+
+    var hand: Vec<i64> = [1, 2, 3, 4, 5];
+    rng.shuffle(hand);
+}
+```
+
+`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
+
+```hew
+import std.random;
+fn main() {
+    let key = random.crypto_bytes(32);  // bytes, always freshly drawn
+    let token = random.crypto_u64();
+}
+```
+
 ### std.time.datetime — timestamps and date arithmetic
 
 ```hew
@@ -2736,7 +3252,10 @@ import std.time.datetime;
 fn main() {
     let now = datetime.now_ms();             // i64 epoch milliseconds
     println(datetime.to_iso8601(now));       // 2026-06-23T18:42:22Z
-    println(datetime.format(now, "%Y-%m-%d")); // 2026-06-23
+    match datetime.format(now, "%Y-%m-%d") {
+        .Ok(text) => println(text),
+        .Err(error) => println(f"format error: {error}"),
+    }
 
     println(datetime.year(now));    // 2026
     println(datetime.month(now));   // 6
@@ -2791,135 +3310,41 @@ fn main() {
 
 `std.string`, `std.math`, `std.iter` import together cleanly — the safe stdlib trio to lean on. An unused import warns but still compiles.
 
-### std.encoding.json — parsing and building JSON
+### std.encoding.json — parsing and values
+
+JSON values use automatic value cleanup. There is no manual `free()` step.
+Parsing, encoding and typed access return errors explicitly; a missing field
+is distinct from accessing a field on a non-object.
 
 ```hew
 import std.encoding.json;
 
 fn main() {
-    // Parse a JSON string
-    let val = json.parse("{\"name\": \"Hew\", \"version\": 2}");
-
-    // Read fields
-    let name_v = val.get_field("name");
-    println(name_v.get_string());       // Hew
-    name_v.free();
-
-    let ver_v = val.get_field("version");
-    println(ver_v.get_int());           // 2
-    ver_v.free();
-    val.free();
+    let document = json.parse("{\"name\": \"Hew\"}") handle error {
+        println(f"invalid JSON: {error}");
+        return;
+    };
+    let field = document.get_field("name") handle error {
+        println(f"field access failed: {error}");
+        return;
+    };
+    let name = field else {
+        println("name is absent");
+        return;
+    };
+    let text = name.get_string() handle error {
+        println(f"name is not text: {error}");
+        return;
+    };
+    println(text);
 }
 ```
 
-```hew
-import std.encoding.json;
-
-fn main() {
-    // Build a JSON object
-    let obj = json.object()
-        .with_string("host", "localhost")
-        .with_int("port", 8080)
-        .with_bool("debug", true);
-    println(obj.stringify());   // {"debug":true,"host":"localhost","port":8080} (key order may vary)
-    obj.free();
-}
-```
-
-**`type_of()` constants** — `type_of()` returns an `i32` tag:
-
-| Value | Type          |
-| ----- | ------------- |
-| 0     | null          |
-| 1     | bool          |
-| 2     | i64 (integer) |
-| 3     | f64 (float)   |
-| 4     | string        |
-| 5     | array         |
-| 6     | object        |
-
-```hew
-import std.encoding.json;
-
-fn main() {
-    let s = json.string_value("hello");
-    println(s.type_of());   // 4
-    s.free();
-}
-```
-
-**Fallible parsing with `try_parse`** returns `Result<Value, ParseError>`. Match on the module-qualified `ParseError.Invalid(msg)` pattern to recover the native parser's message, or match `.Err(_)` to ignore it:
-
-```hew
-import std.encoding.json;
-
-fn main() {
-    match json.parse("{\"ok\": true}") {
-        .Ok(v) => {
-            println("parsed ok");
-            v.free();
-        },
-        .Err(ParseError.Invalid(msg)) => println(f"parse failed: {msg}"),
-    }
-    match json.parse("not valid json {") {
-        .Ok(v) => { v.free(); },
-        .Err(ParseError.Invalid(msg)) => println(f"bad json rejected: {msg}"),
-    }
-}
-```
-
-**Memory management:** every `Value` (from `parse`, `get_field`, `array_get`, `from_*`, `object()`, `array()`) must be freed with `.free()` before it goes out of scope. Omitting `.free()` is a resource leak. Values returned by `get_field` and `array_get` are heap-allocated clones — free them independently of the parent.
-
-**Naming the `Value` type** — a plain `import std.encoding.json;` publishes the `json` module alias (`json.parse(...)`, `json.Value` as a qualified type) but does not put the bare `Value` name in scope. Use `Value` unqualified in a function signature (a parameter or return type) by importing it alongside the module in one combined import:
-
-```hew
-import std.encoding.json.{self, Value};
-```
-
-`self` keeps the `json.parse(...)` / `json.object()` module-call style; `Value` lets you write `fn foo(v: Value) -> ...` instead of `fn foo(v: json.Value) -> ...`. Omitting the named import and using bare `Value` in a signature fails with `type Value is not in scope`.
-
-**Nested config with required fields** — `get_field` on a missing key returns a value whose `type_of()` is `-1` (distinct from `0`, the tag for an explicit JSON `null`). Use that to fail closed on a required field instead of silently reading garbage:
-
-```hew
-import std.encoding.json.{self, Value};
-
-fn require_string(config: Value, key: string) -> string {
-    let field = config.get_field(key);
-    if field.type_of() == -1 {
-        panic(f"missing required field: {key}");
-    }
-    let s = field.get_string();
-    field.free();
-    return s;
-}
-
-fn require_int(config: Value, key: string) -> i64 {
-    let field = config.get_field(key);
-    if field.type_of() == -1 {
-        panic(f"missing required field: {key}");
-    }
-    let n = field.get_int();
-    field.free();
-    return n;
-}
-
-fn main() {
-    let raw = "{\"server\": {\"host\": \"localhost\", \"port\": 8080}}";
-    let config = json.parse(raw);
-    let server = config.get_field("server");
-
-    let host = require_string(server, "host");
-    let port = require_int(server, "port");
-    println(f"{host}:{port}");   // localhost:8080
-
-    server.free();
-    config.free();
-}
-```
-
-A config missing `port` traps with `missing required field: port` instead of returning a zero value.
-
-## Modules and imports
+`json.parse` returns `Result<Value, ParseError>`; `get_field` returns
+`Result<Option<Value>, AccessError>`. `stringify` returns
+`Result<string, EncodeError>`. Use `json.Value` in an explicit type annotation,
+or import `Value` by name. See the [JSON module](../std/encoding/json/json.hew)
+for constructors and collection operations.
 
 ### Importing your own modules
 
@@ -2964,6 +3389,14 @@ The remaining restriction is on the _binding_, not the path — a bare
 and writing `machine.Thing` is then a parse error
 (``unexpected `.` in block``). The same is true of `actor`. Use the
 selective (`.{Name}`) form for a keyword-named module, or reach it via the quoted string-path import form above. Wildcard imports are retired.
+
+**Directory-form modules.** A directory whose entry file's stem matches
+the directory name (`greeting/greeting.hew`) is one module spanning every
+`.hew` file in that directory — its peer files see each other's
+declarations without any imports between them. A peer file has no import
+identity of its own; reach its declarations through the directory module
+(`import greeting;`), not the peer file directly. Imports between
+modules, directory-form or single-file, must not form a cycle.
 
 ### `pub const` — module-level constants
 
@@ -3029,13 +3462,13 @@ type participate — integers, `bool`, `char`, `string`, `duration`, nested
 records/enums, and **floating-point** fields (`f64`/`f32`, see below).
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
 enum Color {
-    Red;
-    Green;
-    Blue;
-    Custom(i64);
+    Red,
+    Green,
+    Blue,
+    Custom(i64),
 }
 
 fn main() {
@@ -3064,31 +3497,31 @@ fn main() {
 so records and enums with payloads work transparently:
 
 ```hew
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
-enum Tag { A; B(i64); }
+enum Tag { A, B(i64), }
 
 fn main() {
     // Primitive and string elements
-    let nums: Vec<i64> = Vec.new();
+    var nums: Vec<i64> = Vec.new();
     nums.push(10); nums.push(20); nums.push(30);
     println(nums.contains(20));   // true
     println(nums.contains(99));   // false
 
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("hello"); words.push("world");
     println(words.contains("hello"));   // true
     println(words.contains("bye"));     // false
 
     // Record elements
-    let pts: Vec<Point> = Vec.new();
+    var pts: Vec<Point> = Vec.new();
     pts.push(Point { x: 1, y: 2 });
     pts.push(Point { x: 3, y: 4 });
     println(pts.contains(Point { x: 1, y: 2 }));   // true
     println(pts.contains(Point { x: 5, y: 6 }));   // false
 
     // Payload enum elements
-    let tags: Vec<Tag> = Vec.new();
+    var tags: Vec<Tag> = Vec.new();
     tags.push(Tag.A);
     tags.push(Tag.B(7));
     println(tags.contains(Tag.A));      // true
@@ -3138,17 +3571,19 @@ itself in a `HashMap`/`HashSet` lookup, and dedup over records works correctly.
 The hash of a float field is computed from the same bit pattern, so `==`
 implies an equal hash and a float-bearing `record` is a sound `HashMap` key.
 
-> **Sharp edge:** `Vec<f64>` and bare scalar `==` on `f64` remain IEEE.
-> `[nan].contains(nan)` is `false` (scalar IEEE `==`, NaN ≠ NaN), while
-> `HashSet<f64>` (which stores `f64` as a structural position) treats two
-> identical NaN bit-patterns as equal. The reflexive/bitwise guarantee does
-> not extend to `Vec<f64>.contains` or direct `f64 == f64` expressions.
+> **Every container agrees (D476):** `Vec<f64>.contains`, `HashSet<f64>`
+> membership and `HashMap<f64, V>` keys all compare by bit pattern, the same
+> rule as a float-bearing record field. `[nan].contains(nan)` is `true`
+> (reflexive bitwise equality), even though the bare scalar expression
+> `nan == nan` is `false` (IEEE). A per-container exception would create a
+> second equality authority, so only a bare `f64 == f64`/`f32 == f32`
+> expression keeps IEEE semantics.
 
 ```hew
 type Coord { x: f64, y: f64 }
 
 fn main() {
-    let m: HashMap<Coord, i64> = HashMap.new();
+    var m: HashMap<Coord, i64> = HashMap.new();
     m.insert(Coord { x: 1.5, y: 2.5 }, 42);
     let v = m.get(Coord { x: 1.5, y: 2.5 });
     match v {
@@ -3171,7 +3606,7 @@ refcounted heap handles:
 <!-- doctest: skip -->
 
 ```hew
-type Packet { data: bytes; }
+type Packet { data: bytes, }
 // Packet { data: bytes } == Packet { data: bytes }
 // ^^^ rejected: `==` on record type `Packet` is not supported because a
 //     field or payload contains layout-managed/non-Copy data `bytes`
@@ -3237,13 +3672,18 @@ type Feature {
 }
 
 fn main() {
-    let features: HashMap<string, Feature> = HashMap.new();
+    var features: HashMap<string, Feature> = HashMap.new();
     features.insert("preview", Feature { enabled: true });
 
     let json = wire.to_json(features);
-    let parsed = wire.from_json<HashMap<string, Feature>>(json);
+    let parsed = wire.from_json<HashMap<string, Feature>>(json) handle error {
+        println(f"decode failed: {error}");
+        return;
+    };
+    println(parsed.len());
     let cbor = wire.encode(features);
     let decoded = wire.decode<HashMap<string, Feature>>(cbor);
+    println(decoded.len());
 }
 ```
 
@@ -3297,8 +3737,8 @@ fn main() {
 
 Both attributes are affine — the compiler enforces a single live binding per
 value via the move checker — but they differ in what happens at scope exit.
-A `#[resource]` type auto-closes (discarding the `Result`) unless closed
-early; a `#[linear]` type has **no** implicit drop at all — leaving one
+A `#[resource]` type auto-closes through `close(consume self)` returning unit
+unless closed early; a `#[linear]` type has **no** implicit drop at all — leaving one
 unconsumed at scope exit is a compile error. Neither supports a
 user-defined `impl Drop`.
 
@@ -3319,51 +3759,39 @@ pub type FileHandle {
 }
 ```
 
-An `#[opaque]` type body must be empty — it declares a handle with no
-fields, produced only via FFI. There is no struct-literal constructor;
-values come only from a foreign function. Most opaque types require an
-explicit `.close()`/`.free()` call since there is no implicit drop
-(HEW-SPEC-2026.md §3.10.7). Over twenty stdlib types use this pattern,
-including `Deque`, `json.Value`, `csv.Reader`, and `net.Connection`.
+An `#[opaque]` declaration exposes an external handle without fields or a
+record-literal constructor. Use its declared ownership and release contract;
+opacity does not make a handle freely copyable or remove cleanup obligations.
+A resource's close method consumes its receiver and returns unit. Fallible
+completion is a separate operation whose result the caller handles.
 
-`std/deque.hew`'s `#[opaque]\npub type Deque { }` plus its sibling `trait
-DequeMethods` / `impl DequeMethods for Deque` is the canonical shape to
-copy for a new opaque type.
+Supported local actor boundaries may transfer owned resources. Remote messages
+need serializable data, not process-local handles. Consult the particular
+module's declaration instead of assuming every opaque type has the same copy,
+release or actor-admission behaviour.
 
-An opaque handle is a **handle**, not a value: a second binding is a second
-name for the same resource, methods act through it whether the binding is `let`
-or `var`, and `is` compares two names for identity. It may live inside an
-actor — an opaque handle (or the `#[resource]` wrapper around one) may be an
-actor's init field, moved in at `spawn` and closed by the actor's drop glue at
-stop, and may be a `receive fn` parameter on a local send, where the send
-consumes it and a later use of the sender's binding is `E_USE_AFTER_SEND`.
-That is how one actor owns one connection and serves many requests over it.
-Sending a handle to a remote actor stays refused: a remote payload must be
-CBOR-serializable (`E_OPAQUE_MESSAGE_PAYLOAD`).
-
-Today the local case is refused too, under `E_LIMIT_OPAQUE_ACTOR`: an opaque
-type in a `receive fn` parameter or an actor init field gets the wire rule's
-message applied to a send that never serializes. Until that lifts, open the
-handle inside the handler.
-
-### Typed streams — `await sink.send(x)` / `await stream.recv()`
+### Typed streams — `sink.send(x)` / `stream.recv()`
 
 ```hew
 import std.stream;
+import std.encoding.utf8;
 
 actor Echo {
-    let n: i64;
+    let n: i64,
     receive fn run(unused: i64) {
-        let (sink, input) = stream.bytes_pipe(4);
+        let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
         for i in 0..n {
-            await sink.send(f"x{i}".to_bytes());
+            sink.send(f"x{i}".to_bytes());
         }
         sink.close();
         var done = false;
         while !done {
-            let item = await input.recv();
+            let item = input.recv();
             match item {
-                .Some(b) => println(b.to_string()),  // x0, x1
+                .Some(b) => match utf8.decode(b) {
+                    .Ok(text) => println(text), // x0, x1
+                    .Err(error) => println(f"invalid text: {error}"),
+                },
                 .None => { done = true; },
             }
         }
@@ -3372,16 +3800,19 @@ actor Echo {
 
 fn main() {
     let e = spawn Echo(n: 2);
-    e.run(0);
-    sleep(300ms);
+    match e.run(0) {
+        .Ok(_) => {},
+        .Err(error) => println(f"stream operation failed: {error}"),
+    }
+    close(e);
 }
 ```
 
-`await sink.send(x)` and `await stream.recv()` suspend the calling coroutine
+`sink.send(x)` and `stream.recv()` suspend the calling coroutine
 instead of OS-parking a worker, so a stream stage frees its worker while waiting.
 Only `Stream<bytes>` / `Sink<bytes>` suspend (the canonical element type), and the
 canonical method names are `recv()` / `send()` — not `next()` / `write()`. `recv()`
-yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `await sink.send`
+yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `sink.send`
 is statement-position only. Build the pipe with the public
 `std.stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
 turn text into a frame with the public `string.to_bytes()` surface. Keep both
@@ -3389,46 +3820,20 @@ ends in one handler: moving an owned `Stream`/`Sink` into actor state is not
 yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
 [`examples/v05/surfaces/typed_streams.hew`](../examples/v05/surfaces/typed_streams.hew).
 
-### Channels — `channel.new`, `await rx.recv()`, and select arms
+### Channels — bounded delivery
 
-```hew
-import std.channel.channel;
+`channel.new(capacity)` constructs sender and receiver halves. `rx.recv()`
+waits for an item and yields `Option<T>`; `None` means the channel is closed.
+A full `tx.send(value)` parks the coroutine until it can proceed. The halves
+have automatic cleanup; explicit `.close()` ends the corresponding half early.
 
-actor Inbox {
-    receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);
-        tx.send("ready");
-        tx.close();
-
-        match await rx.recv() {
-            .Some(msg) => println(msg),   // ready
-            .None => println("closed"),
-        }
-
-        select {
-            again from rx.recv() => {
-                match again {
-                    .Some(msg) => println(msg),
-                    .None => println("closed"),
-                }
-            },
-            after 1s => println("timeout"),
-        };
-
-        rx.close();
-    }
-}
-```
-
-Use `channel.new(capacity)` to build a bounded MPSC channel. `Sender<T>` is
-cloneable, and both channel handles are closed automatically at scope exit;
-call `.close()` only when you need to end production or reception before then.
-`await rx.recv()` returns `Option<T>`: `Some(value)` for a received item and
-`None` when the channel is closed. `rx.try_recv()` never suspends and returns
-`None` for both empty and closed. In `select`, write the sealed channel arm as
-`pat from rx.recv()` and match the bound `Option<T>`. Full examples:
-[`examples/channel/await_recv_actor.hew`](../examples/channel/await_recv_actor.hew)
-and [`examples/channel/select_recv.hew`](../examples/channel/select_recv.hew).
+The native path supports send/receive suspension, non-parking `try_recv`,
+and channel halves stored in records and vectors. Channel-receive selection
+registers alongside tasks and timers: write `value from rx.recv() => ...`,
+without `await` in its source. Actor-call and stream selection remain separate
+implementation gaps; a parsed arm alone does not establish native support. See the
+[channel module](../std/channel/channel.hew) for declarations and the
+[selection contract](specs/HEW-SPEC-2026.md#411-select) for intended behaviour.
 
 ### Regex captures — `capture` / `find_all` / `find_all_submatch`
 
@@ -3468,13 +3873,16 @@ exit; call `close()` to release it early. Full example:
 import std.text.template;
 
 fn main() {
-    let ctx = template.new_ctx();
-    template.ctx_set_str(ctx, "name", "Hew");
-    let xs: Vec<string> = Vec.new();
+    var ctx = template.new_ctx();
+    ctx.set_str("name", "Hew");
+    var xs: Vec<string> = Vec.new();
     xs.push("a");
     xs.push("b");
-    template.ctx_set_list(ctx, "xs", xs);
-    let t = template.parse("hi {{.name}}:{{range .xs}} {{.}}{{end}}");
+    ctx.set_list("xs", xs);
+    let t = template.parse("hi {{.name}}:{{range .xs}} {{.}}{{end}}") handle error {
+        println(f"template parse failed: {error}");
+        return;
+    };
     match template.render_try(t, ctx) {
         .Ok(s) => println(s),   // hi Hew: a b
         .Err(_) => println("error"),
@@ -3482,8 +3890,8 @@ fn main() {
 }
 ```
 
-Build a flat `Ctx` with `new_ctx()` then `ctx_set_str` / `ctx_set_int` /
-`ctx_set_bool` (scalars) and `ctx_set_list` (a `Vec<string>`). `parse` compiles a
+Build a flat `Ctx` with `new_ctx()` in a `var` binding, then call its
+`set_str`, `set_int`, `set_bool` or `set_list` methods. `parse` compiles a
 Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditional,
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
 the free function `template.render_template(t, ctx)` (panics on error) or
@@ -3549,14 +3957,14 @@ current token with `text(sc)` only when `has_next(sc)` is true. Use
 scanner plus `Option<string>`. Full example:
 [`examples/v05/surfaces/scanner_tokens.hew`](../examples/v05/surfaces/scanner_tokens.hew).
 
-### HTTP over `await` — async client + server
+### Suspending HTTP — async client + server
 
-The flagship networking surface is an `await`-suspended HTTP/1.1 client and
+The flagship networking surface is a suspending HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
 `std.net.http.http_async_client` / `http_async_server`. A server handler
-`await`s a connection, drives an `await conn.read_string()` loop until the
-request is buffered, then replies; a client writes a request and `await`s the
-response. Every `await` suspends the handler (not the worker), so one worker can
+accepts a connection, drives a `conn.read_string()` loop until the
+request is buffered, then replies; a client writes a request and reads the
+response. Each call suspends the handler (not the worker), so one worker can
 serve and fetch on the same thread. The request/response codecs are pure and
 runnable in isolation:
 
@@ -3582,45 +3990,44 @@ supervisor-restart clone gate. Full client+server program (two routes):
 [`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)
 (run with `HEW_WORKERS=1` to see the single-worker serve+fetch proof).
 
-### Deadline forms — `await conn.read_string() | after d` and `await ln.accept() | after d`
+### Deadline forms — `scope within d`, a `select` timer arm, and socket timeouts
 
-The `| after duration` timeout combinator works with the two blocking network
-operations, converting a plain suspend into a timed suspend that returns
-`Result` on expiry:
+There is no timeout combinator. A read or an accept is a plain suspending
+call, and a deadline over it comes from one of three places:
 
-| Suspend form                          | Return type                       |
-| ------------------------------------- | --------------------------------- |
-| `await conn.read_string()`            | `string`                          |
-| `await conn.read_string() \| after d` | `Result<string, IoError>`         |
-| `await conn.read()`                   | `bytes`                           |
-| `await conn.read() \| after d`        | `Result<bytes, IoError>`          |
-| `await ln.accept()`                   | `net.Connection`                  |
-| `await ln.accept() \| after d`        | `Result<net.Connection, IoError>` |
+| Deadline                             | Bounds                                    |
+| ------------------------------------ | ----------------------------------------- |
+| `scope within d { .. } handle failure { .. }` | every child started in the block   |
+| `after d => ..` inside `select { }`  | the wait for the first of several sources |
+| `conn.set_read_timeout(ms)` / `set_write_timeout(ms)` | that socket's own operations |
 
-If explicit runtime shutdown begins while a deadline-form read or accept is
-already parked, it resumes as `Err(NetError.Cancelled(0))`. Its own deadline
-still reports `Err(NetError.TimedOut(_))`. Plain forms have no `Result` error
-surface and retain their existing fail-closed empty/invalid value behaviour.
+If explicit runtime shutdown begins while a read or accept is already parked,
+it resumes as `Err(NetError.Cancelled(0))`. A socket timeout reports
+`Err(NetError.TimedOut(_))`.
 
-Use inside a `scope` body to bound how long a handler waits for a peer:
-
-<!-- doctest: skip -->
+A deadline starts cancellation; it does not skip child or resource cleanup.
+Use a value-producing scope and recover its structured failure after cleanup:
 
 ```hew
-scope {
-    fork {
-        match await conn.read_string() | after 5s {
-            .Ok(data) => conn.write_string(data),
-            .Err(_)   => conn.close(),
-        }
-    }
+fn work() -> i64 { sleep(10ms); 42 }
+fn main() {
+    let result = scope within 1s {
+        let task = fork work();
+        await task
+    } handle failure {
+        println("work did not complete");
+        0
+    };
+    println(result);
 }
 ```
 
-The deadline form requires `await` — `conn.read_string() | after d` without
-`await` is a type error (checker expressions.rs:1778-1800).
+An operation's ordinary `Err` stays a value to handle at the call. Explicit
+`exit(code)` flushes standard streams and terminates without scope cleanup.
+An unrecovered fault prints its typed diagnostic and exits 1; an explicit
+non-zero program exit status is preserved.
 
-### Remote ask suspension — `RemotePid<T>.ask` from an actor handler
+### Remote ask suspension — a remote `.ask` from an actor handler
 
 ```hew
 actor Echo {
@@ -3649,13 +4056,22 @@ actor Client {
 }
 ```
 
-`RemotePid<T>` names an actor discovered through the node registry. From an
-actor handler, `peer.ask(msg, timeout_ms)` lowers to the cross-node suspending
-remote-ask path and returns `Result<T.Reply, AskError>` on resume; match
-`Ok`/`Err` instead of assuming a reply. A same-node lookup can still return a
-`RemotePid<T>`, but the local-mailbox bridge for the remote-ask path is scoped
-to fail closed as `AskError.RoutingFailed`; use a `LocalPid<T>` direct actor
-call when both actors are intentionally local. Full example:
+An actor handle names an actor wherever it lives; a lookup through the node registry
+returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
+lowers to the cross-node suspending remote-ask path and returns
+`Result<T.Reply, ActorError>` on resume; match `Ok`/`Err` instead of assuming a
+reply. A same-node lookup can still return a handle that routes through the
+remote path, and the local-mailbox bridge for that path is scoped to fail
+closed as `ActorError.RoutingFailed`; use a direct actor call when both actors
+are intentionally local.
+
+> **Not yet in this build.** A local handle is the actor's own type
+> (HEW-SPEC-2026 §2.1.1), but a handle obtained from a node lookup is still
+> written `RemotePid<A>`: a remote handle has its own runtime representation,
+> so unifying it under the actor's own type waits on the location-aware
+> delivery path. That is why the example above writes `RemotePid<Echo>`.
+
+Full example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
 
@@ -3734,7 +4150,7 @@ authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
-higher session. `RemotePid<T>` carries the complete `Location`:
+higher session. A remote handle carries the complete `Location`:
 
 ```text
 { node: NodeId, slot: u64, incarnation: u32 }
@@ -3747,7 +4163,7 @@ if the replacement process reuses the same actor slot.
 
 Registry names are discovery aliases. Repointing a name affects future
 `Node.lookup` calls but does not rewrite or revoke a previously issued
-`RemotePid`.
+handle.
 
 The registry knows what it holds. `Node.register(name, pid)` returns
 `Result<(), RegisterError>` and records the actor's declaration identity beside
@@ -3794,7 +4210,7 @@ fn main() {
     let stream = tls.connect("example.com", 443);
     let req = "GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n";
     let payload = req.to_bytes();
-    let sent = tls.write(stream, payload);
+    let sent = tls.write(stream, payload).expect("write succeeds");
     println(f"sent {sent}/{payload.len()} bytes");
     // match tls.read(stream, 256) { .Ok(data) => ..., .Err(_) => ... }
     tls.close(stream);
@@ -3824,19 +4240,18 @@ Full example: [`examples/net/tls_client.hew`](../examples/net/tls_client.hew).
 import std.process;
 
 fn main() {
-    let out = process.run("echo shell-form");
-    println(out.trim());
+    let out = process.run("echo shell-form").expect("run succeeds");
+    println(out.stdout.trim());
 
-    let args: Vec<string> = Vec.new();
+    var args: Vec<string> = Vec.new();
     args.push("no-shell-form");
-    let result = process.run_argv("echo", args);
+    let result = process.run_argv("echo", args).expect("run_argv succeeds");
     println(result.stdout.trim());
 }
 ```
 
 `process.run(command: string)` hands `command` to the system shell (`sh -c`
-on POSIX) and returns captured stdout as a `string`; it panics on launch
-failure (`process.run` returns a `Result` instead). Because it goes
+on POSIX) and returns `Result<CommandOutput, ProcessError>`. Because it goes
 through a shell, `command` is subject to shell quoting, globbing, and
 injection the same way a hand-built shell string always is — building
 `command` by concatenating untrusted input is a shell-injection bug in Hew
@@ -3893,16 +4308,17 @@ test` — no warning, no error, it's simply never found. If a suite's pass
 ### Assertions: `assert`, `assert_eq`, `assert_ne`
 
 `assert(condition: bool)` panics when `condition` is `false`. `assert_eq(a,
-b)` and `assert_ne(a, b)` panic with a diff of the two values on failure —
-prefer them over `assert(a == b)` for the readable failure message. Both take
-`dyn Display` values, so a value has to be able to print itself to be compared
-this way — the same constraint `std.testing`'s generic `assert_eq<T: Eq +
-Display>` carries. `Option` and `Result` gain `Display` at v0.7.0, and until
-then a test compares one by matching on it:
+b)` and `assert_ne(a, b)` compare with the same equality `==` uses and panic
+with both values on failure — prefer them over `assert(a == b)` for the
+readable failure message. Both operands share one type `T: Eq + Display`, so a
+value has to be comparable and able to print itself. `Option` and `Result` gain
+`Display` at v0.7.0, and until then a test compares one by matching on it:
 
 ```
 ---- wrong_expectation_fails ----
-assertion failed: assert_eq(4, 5)
+assertion failed: left != right
+  left: 4
+  right: 5
 ```
 
 These are the same panic-based builtins used everywhere else in Hew

@@ -1674,6 +1674,7 @@ mod tests {
             line_offsets: compute_line_offsets(source),
             parse_result: hew_parser::parse(source),
             type_output: None,
+            dependency_uris: None,
             diagnostics_by_uri: HashMap::new(),
         }
     }

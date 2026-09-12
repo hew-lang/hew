@@ -15,9 +15,9 @@
 
 // Service actor — responds to health checks. Can be made unhealthy.
 actor Service {
-    let name: string;
-    var healthy: i64; // 1 = healthy, 0 = unhealthy
-    var requests: i64;
+    let name: string,
+    var healthy: i64, // 1 = healthy, 0 = unhealthy
+    var requests: i64,
     receive fn health_check() -> i64 {
         if healthy == 0 {
             0
@@ -39,11 +39,11 @@ actor Service {
 
 // Health monitor — checks registered services and reports status.
 actor HealthMonitor {
-    let svc_names: Vec<string>;
-    let svc_refs: Vec<LocalPid<Service>>;
-    let svc_status: Vec<i64>; // 1=healthy, 0=unhealthy per service
-    var check_count: i64;
-    receive fn register(name: string, svc: LocalPid<Service>) {
+    var svc_names: Vec<string>,
+    var svc_refs: Vec<Service>,
+    var svc_status: Vec<i64>, // 1=healthy, 0=unhealthy per service
+    var check_count: i64,
+    receive fn register(name: string, svc: Service) {
         svc_names.push(name);
         svc_refs.push(svc);
         svc_status.push(1);
@@ -62,7 +62,10 @@ actor HealthMonitor {
             // Use select with a 500ms timeout — an explicit unhealthy
             // response or a missing response both mark it unhealthy.
             let result = select {
-                r from svc.health_check() => r,
+                r from svc.health_check() => match r {
+                    .Ok(value) => value,
+                    .Err(_) => -1,
+                },
                 after 500ms => -1,
             };
             let svc_name = match svc_names.get(i) {
@@ -114,57 +117,57 @@ fn main() {
     let cache = spawn Service(name: "cache", healthy: 1, requests: 0);
     // Create monitor
     let empty_names: Vec<string> = Vec.new();
-    let empty_refs: Vec<LocalPid<Service>> = Vec.new();
+    let empty_refs: Vec<Service> = Vec.new();
     let empty_status: Vec<i64> = Vec.new();
     let monitor = spawn HealthMonitor(svc_names: empty_names, svc_refs: empty_refs, svc_status: empty_status, check_count: 0);
     // Register services
-    monitor.register("auth", auth);
-    monitor.register("api", api);
-    monitor.register("cache", cache);
+    let _ = monitor.register("auth", auth);
+    let _ = monitor.register("api", api);
+    let _ = monitor.register("cache", cache);
     sleep(30ms);
 
     // ── All healthy ──
     println("--- All services healthy ---");
-    monitor.check_all();
+    let _ = monitor.check_all();
     sleep(30ms);
-    match await monitor.report() {
+    match monitor.report() {
         .Ok(_) => {},
         .Err(_) => panic("[monitor] initial report ask failed"),
     }
     // ── Normal traffic ──
     println("");
     println("--- Normal traffic ---");
-    match await auth.handle(1) {
+    match auth.handle(1) {
         .Ok(_) => {},
         .Err(_) => panic("[health] auth request 1 ask failed"),
     }
-    match await api.handle(2) {
+    match api.handle(2) {
         .Ok(_) => {},
         .Err(_) => panic("[health] api request 2 ask failed"),
     }
-    match await cache.handle(3) {
+    match cache.handle(3) {
         .Ok(_) => {},
         .Err(_) => panic("[health] cache request 3 ask failed"),
     }
     // ── Make cache unhealthy ──
     println("");
     println("--- Cache goes down ---");
-    cache.set_unhealthy();
+    let _ = cache.set_unhealthy();
     sleep(30ms);
-    monitor.check_all();
+    let _ = monitor.check_all();
     sleep(600ms);
-    match await monitor.report() {
+    match monitor.report() {
         .Ok(_) => {},
         .Err(_) => panic("[monitor] degraded report ask failed"),
     }
     // ── Remaining services still serve traffic ──
     println("");
     println("--- Healthy services still operational ---");
-    match await auth.handle(4) {
+    match auth.handle(4) {
         .Ok(_) => {},
         .Err(_) => panic("[health] auth request 4 ask failed"),
     }
-    match await api.handle(5) {
+    match api.handle(5) {
         .Ok(_) => {},
         .Err(_) => panic("[health] api request 5 ask failed"),
     }

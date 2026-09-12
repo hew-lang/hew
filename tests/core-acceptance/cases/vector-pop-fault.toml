@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-pop-fault"
+intent = "Removing from an empty vector releases the transferred receiver and enclosing owners without reading an uninitialized element."
+source = "cases/vector-pop-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

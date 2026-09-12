@@ -1,0 +1,10 @@
+[[case]]
+id = "node-id"
+intent = "Node.id lowers through its ownership-SIR contract and physical carrier, reporting `None` before a stable identity is loaded and `Some` on every read after a start, alongside the hex credential its export publishes."
+source = "cases/node-id.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

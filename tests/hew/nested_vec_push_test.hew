@@ -17,8 +17,8 @@ import std.testing;
 // accumulator is cleared and refilled. Pre-fix `cur.clear()` emptied row 0.
 #[test]
 fn test_vec_vec_string_reuse_keeps_each_row() {
-    let rows: Vec<Vec<string>> = Vec.new();
-    let cur: Vec<string> = Vec.new();
+    var rows: Vec<Vec<string>> = Vec.new();
+    var cur: Vec<string> = Vec.new();
     cur.push("alpha");
     cur.push("beta");
     rows.push(cur);
@@ -39,8 +39,8 @@ fn test_vec_vec_string_reuse_keeps_each_row() {
 // later mutation of the source leaves both stored rows intact.
 #[test]
 fn test_vec_vec_string_push_same_source_twice_is_independent() {
-    let rows: Vec<Vec<string>> = Vec.new();
-    let cur: Vec<string> = Vec.new();
+    var rows: Vec<Vec<string>> = Vec.new();
+    var cur: Vec<string> = Vec.new();
     cur.push("one");
     rows.push(cur);
     rows.push(cur);
@@ -60,8 +60,8 @@ fn test_vec_vec_string_push_same_source_twice_is_independent() {
 // map: the push copied the map in, it did not alias the source handle.
 #[test]
 fn test_vec_hashmap_push_is_copy_in() {
-    let rows: Vec<HashMap<string, i64>> = Vec.new();
-    let m: HashMap<string, i64> = HashMap.new();
+    var rows: Vec<HashMap<string, i64>> = Vec.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alpha", 1);
     rows.push(m);
     m.insert("beta", 2);
@@ -78,8 +78,8 @@ fn test_vec_hashmap_push_is_copy_in() {
 // Same copy-in property for set values.
 #[test]
 fn test_vec_hashset_push_is_copy_in() {
-    let rows: Vec<HashSet<string>> = Vec.new();
-    let s: HashSet<string> = HashSet.new();
+    var rows: Vec<HashSet<string>> = Vec.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("alpha");
     rows.push(s);
     s.insert("beta");
@@ -93,9 +93,9 @@ fn test_vec_hashset_push_is_copy_in() {
 // ── Vec<Vec<Vec<string>>>: deeper nesting still owns each level ─────────────
 #[test]
 fn test_vec_vec_vec_string_deep_nesting() {
-    let outer: Vec<Vec<Vec<string>>> = Vec.new();
-    let mid: Vec<Vec<string>> = Vec.new();
-    let inner: Vec<string> = Vec.new();
+    var outer: Vec<Vec<Vec<string>>> = Vec.new();
+    var mid: Vec<Vec<string>> = Vec.new();
+    var inner: Vec<string> = Vec.new();
     inner.push("alpha");
     inner.push("beta");
     mid.push(inner);

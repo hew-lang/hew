@@ -1,0 +1,86 @@
+fn empty<T>() -> Option<T> { .None }
+
+actor Latest<T> {
+    var value: Option<T> = empty(),
+    var changes: i64 = 0,
+
+    init(seed: T) { value = .Some(seed); }
+
+    #[on(start)]
+    fn started() { changes = 100; }
+
+    #[on(stop)]
+    fn stopped() { value = .None; }
+
+    fn remember(next: T) {
+        value = .Some(next);
+        changes = changes + 1;
+    }
+
+    receive fn put(next: T) { remember(next); }
+    receive fn get() -> Option<T> { value }
+    receive fn count() -> i64 { changes }
+    receive fn identity() -> Latest<T> { self }
+    receive gen fn repeat(count: i64) -> T {
+        let snapshot = value;
+        let item = snapshot.expect("set before repeat");
+        for index in 0..count { yield item; }
+    }
+}
+
+type Packet { label: string, data: bytes, history: Vec<string> }
+
+impl Display for Packet {
+    fn fmt(packet: Packet) -> string { packet.label }
+}
+
+fn render<T: Display>(item: T) -> string { f"<{item}>" }
+
+actor Printer<T: Display> {
+    let item: T,
+    receive fn show() -> string { f"<{item}>" }
+}
+
+fn main() {
+    let numbers = spawn Latest<i64>(seed: 1);
+    let names = spawn Latest<string>(seed: "initial".to_upper());
+    numbers.put(41).expect("put number");
+    let name = "owned\0name".to_upper();
+    names.put(name).expect("put name");
+    assert(name == "OWNED\0NAME");
+    let alias = numbers.identity().expect("number identity");
+    alias.put(42).expect("put through the same instance");
+    assert(numbers.get().expect("get number").expect("set") == 42);
+    assert(names.get().expect("get name").expect("set") == "OWNED\0NAME");
+    assert(numbers.count().expect("number changes") == 102);
+    assert(names.count().expect("name changes") == 101);
+
+    let records = spawn Latest(seed: Packet {
+        label: "packet".to_upper(), data: "data\0bytes".to_bytes(), history: ["history".to_upper()],
+    });
+    var seen = 0;
+    for packet in records.repeat(3) {
+        assert(packet.label == "PACKET");
+        assert(packet.data == "data\0bytes".to_bytes());
+        assert(packet.history[0] == "HISTORY");
+        seen = seen + 1;
+    }
+    assert(seen == 3);
+    let numeric_printer = spawn Printer(item: 42);
+    let text_printer = spawn Printer(item: "rendered".to_upper());
+    assert(numeric_printer.show().expect("numeric display") == "<42>");
+    assert(text_printer.show().expect("text display") == "<RENDERED>");
+    let record_printer = spawn Printer(item: Packet {
+        label: "record".to_upper(), data: "payload".to_bytes(), history: [],
+    });
+    assert(record_printer.show().expect("record display") == "<RECORD>");
+    assert(render(7 as i8) == "<7>");
+    assert(render(true) == "<true>");
+    close(record_printer);
+    close(numeric_printer);
+    close(text_printer);
+    close(records);
+    close(names);
+    close(numbers);
+    println("distinct generic actors and owned replies");
+}

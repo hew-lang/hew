@@ -1,0 +1,18 @@
+import std.encoding.yaml;
+
+fn consume_value(consume value: yaml.Value, later: i64) {
+    println(value.stringify().expect("stringify succeeds"));
+    println(later);
+}
+
+fn run(divisor: i64) {
+    let sibling = yaml.parse("[\"retained\", {\"child\": [1, 2, 3]}]").expect("parse succeeds");
+    let transferred = yaml.parse("{\"owned\": [\"nested\", 42]}").expect("parse succeeds");
+    println(sibling.array_len().expect("array_len succeeds"));
+    consume_value(transferred, 10 / divisor);
+}
+
+fn main() -> i64 {
+    run(0);
+    0
+}

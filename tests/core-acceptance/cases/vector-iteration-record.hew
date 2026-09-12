@@ -1,0 +1,21 @@
+type Item<T> {
+    value: T,
+    sibling: string,
+}
+
+fn main() -> i64 {
+    var source = [Item { value: ["nested"], sibling: "left" }];
+    let saved = source;
+    var retained = "initial";
+    for item in source {
+        source.clear();
+        var changed = item;
+        changed.sibling = "right";
+        changed.value = ["changed"];
+        retained = item.sibling;
+        println(changed.value[0]);
+    }
+    println(retained);
+    println(saved[0].value[0]);
+    0
+}

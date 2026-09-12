@@ -1,0 +1,10 @@
+[[case]]
+id = "sir-conditional-record-binding"
+intent = "A record cloned out of a Vec index and bound inside a conditional block whose body may return: the block releases its temporary on the fall-through edge, so the exit join sees one set of live owners. Controls compare the field without binding it, bind the same record in a loop body, and bind at function scope behind an early return."
+source = "cases/sir-conditional-record-binding.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "matched b\nno match\nno match\nmatched unbound\nmatched loop b\nmatched flat b\n"
+exit = 0

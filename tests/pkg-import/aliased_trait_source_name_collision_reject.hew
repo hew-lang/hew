@@ -24,7 +24,7 @@ import hew.srccollidea.{ Source as A };
 import hew.srccollideb;
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl A for W {

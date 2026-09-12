@@ -1,0 +1,43 @@
+// `actor |msg| { .. }` is an actor declaration without a source name: its
+// captures are its state, its body is its one receive handler, and its
+// `actor(M) -> R` handle addresses it exactly as a pid addresses a named
+// actor. A call on the handle is the completion call, so it waits for the
+// handler and yields the same envelope a named actor's call does.
+type Job {
+    name: string,
+    run: actor(i64) -> i64,
+}
+
+fn main() {
+    // The captured environment becomes the actor's state, so the handler
+    // reads it on every turn rather than re-reading the spawning frame.
+    let factor = 4;
+    let offset = 1;
+    let scale = actor |n: i64| -> i64 {
+        return n * factor + offset;
+    };
+    match scale(5) {
+        .Ok(v) => println(v),
+        .Err(_) => panic("the completion call failed"),
+    }
+    // The handler ran once per call against the same state.
+    match scale(10) {
+        .Ok(v) => println(v),
+        .Err(_) => panic("the second completion call failed"),
+    }
+    close(scale);
+
+    // A lambda handle is an ordinary value: it lives in a record field and is
+    // read back out to be called and closed, and it is released once.
+    let job = Job {
+        name: "doubler",
+        run: actor |n: i64| -> i64 { n * 2 },
+    };
+    let handle = job.run;
+    match handle(21) {
+        .Ok(v) => println(f"{job.name} {v}"),
+        .Err(_) => panic("the stored handle refused its call"),
+    }
+    close(handle);
+    println("closed");
+}

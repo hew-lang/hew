@@ -1,0 +1,25 @@
+type Holder {
+    next: fn[var, clone]() -> i64,
+}
+
+fn main() -> i64 {
+    let count = 0;
+    var holder = Holder {
+        next: capture(var count) || {
+            count += 1;
+            count
+        },
+    };
+    println(holder.next());
+    var copied = holder;
+    var cloned = Holder { next: clone holder.next };
+    println(holder.next());
+    println(holder.next());
+    println(copied.next());
+    println(cloned.next());
+    println(copied.next());
+    println(holder.next());
+    println(cloned.next());
+    println(count);
+    0
+}

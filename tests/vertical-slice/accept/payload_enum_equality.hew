@@ -1,6 +1,6 @@
 enum Shape {
-    Circle(i64);
-    Empty;
+    Circle(i64),
+    Empty,
 }
 
 fn main() {

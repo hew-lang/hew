@@ -37,7 +37,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, CallArg, ElseBlock, Expr, MatchArm, ReceiveFnDecl, SelectArm, Span, Stmt, StringPart,
+    condition_exprs, Block, CallArg, ElseBlock, Expr, MatchArm, ReceiveFnDecl, SelectArm, Span,
+    Stmt, StringPart,
 };
 
 use crate::error::{Severity, TypeError, TypeErrorKind};
@@ -83,10 +84,6 @@ pub enum LintId {
     /// A function that is defined but never reached from any entry point.
     /// (Migrated from an ad-hoc whole-program dead-code warning.)
     DeadCode,
-    /// A value assigned to a local is never read on any path before the local
-    /// is overwritten or goes out of scope — the store is dead. Emitted by the
-    /// MIR-stage liveness pass (`hew-mir`), not the HIR checker sweep.
-    DeadStore,
     /// A discarded value carries a write/send/ask error that must not be
     /// ignored — `WriteError` / `SendError` / `AskError`, bare or as the error
     /// arm of a `Result`. A statement-position discard fails open (a dropped
@@ -108,18 +105,10 @@ pub enum LintId {
     /// A comment contains an invisible/default-ignorable Unicode codepoint that
     /// can hide text or create visually indistinguishable source.
     InvisibleCodepointInComment,
-    /// A loop-carried counter / accumulator whose value is never read after the
-    /// loop exits — the counting is dead work and the local can be removed.
-    ///
-    /// Emitted by the MIR-stage faint-variable (strong-liveness) pass in
-    /// `hew-mir`, not the HIR checker sweep. The lint is deliberately narrow:
-    /// it fires only when the accumulate step is **non-trapping**, so deleting
-    /// the counter is provably semantics-preserving. Hew's default integer
-    /// arithmetic lowers to `IntArithChecked` whose overflow flag branches to a
-    /// `Trap`, which makes an integer counter *strongly* live (its value
-    /// decides whether the program traps) — those are excluded. See
-    /// `docs/design/lint-pass.md` §10 and issue #2178.
-    CleanCounter,
+    /// A by-value `var` parameter is mutated and nothing reads the result: the
+    /// parameter is the callee's own copy, so the write reaches neither the
+    /// caller nor the rest of the body.
+    VarParamMutationLost,
 }
 
 impl LintId {
@@ -135,13 +124,12 @@ impl LintId {
         LintId::NeedlessBool,
         LintId::CloneOnCopy,
         LintId::DeadCode,
-        LintId::DeadStore,
         LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
         LintId::ActorHandleBuiltinShadow,
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
-        LintId::CleanCounter,
+        LintId::VarParamMutationLost,
     ];
 
     /// The stable, lowercase string name for this lint.
@@ -159,13 +147,12 @@ impl LintId {
             LintId::NeedlessBool => "needless_bool",
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
-            LintId::DeadStore => "dead_store",
             LintId::MustUse => "must_use",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
             LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
-            LintId::CleanCounter => "clean_counter",
+            LintId::VarParamMutationLost => "var_param_mutation_lost",
         }
     }
 
@@ -190,12 +177,11 @@ impl LintId {
             | LintId::NeedlessBool
             | LintId::CloneOnCopy
             | LintId::DeadCode
-            | LintId::DeadStore
             | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
             | LintId::ActorHandleBuiltinShadow
             | LintId::InvisibleCodepointInComment
-            | LintId::CleanCounter => LintLevel::Warn,
+            | LintId::VarParamMutationLost => LintLevel::Warn,
             LintId::TextDirectionCodepointInComment => LintLevel::Deny,
         }
     }
@@ -320,42 +306,9 @@ pub(super) struct LintCtx<'a> {
     /// install sources (e.g. internal callers of `check_program`), in which
     /// case suppression is simply skipped.
     pub source: Option<&'a str>,
-    /// Type parameters in scope for the body being linted, mapped to their
-    /// declared bound names. Empty for a non-generic body. A lint that
-    /// suggests a rewrite must prove the rewrite compiles at *every*
-    /// monomorphisation, which is a question about the bounds, not about the
-    /// unsubstituted parameter.
-    pub type_params: HashMap<String, Vec<String>>,
 }
 
-/// Collect declared type parameters and their bound names into the map
-/// [`LintCtx::type_params`] carries. Called with the enclosing item's
-/// parameters and then extended with the body's own.
-///
-/// Only inline bounds (`<T: Clone>`) are read; a `where T: Clone` predicate
-/// leaves the parameter looking unbounded here. WHY: the lint layer has no
-/// where-clause resolution, and reading one wrong would be worse than reading
-/// none — an unbounded parameter withholds a suggestion rather than emitting an
-/// uncompilable one. WHEN-OBSOLETE: when a lint must fire on a
-/// where-clause-bounded template. WHAT: fold [`hew_parser::ast::WhereClause`]
-/// predicates whose subject is a bare parameter name into the same map.
-pub(super) fn collect_type_params(
-    declared: Option<&Vec<hew_parser::ast::TypeParam>>,
-    into: &mut HashMap<String, Vec<String>>,
-) {
-    for param in declared.into_iter().flatten() {
-        into.insert(
-            param.name.clone(),
-            param
-                .bounds
-                .iter()
-                .map(|bound| bound.name.clone())
-                .collect(),
-        );
-    }
-}
-
-impl<'a> LintCtx<'a> {
+impl LintCtx<'_> {
     /// The fully-resolved checker type recorded for the expression at `span`.
     ///
     /// Returns `None` when no type was recorded for the span — lints treat a
@@ -363,31 +316,6 @@ impl<'a> LintCtx<'a> {
     fn resolved_type_at(&self, span: &Span) -> Option<Ty> {
         let key = SpanKey::in_module(span, self.module_idx);
         self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))
-    }
-
-    /// Whether a direct `for value in collection` rewrite has executable
-    /// iterator semantics for this collection's element type.
-    fn supports_direct_vec_iteration(&self, ty: &Ty) -> bool {
-        self.checker
-            .supports_direct_vec_iteration(ty, &self.type_params)
-    }
-
-    /// This context with `declared` added to the in-scope type parameters.
-    pub(super) fn with_type_params(
-        &self,
-        declared: Option<&Vec<hew_parser::ast::TypeParam>>,
-    ) -> LintCtx<'a> {
-        let mut type_params = self.type_params.clone();
-        collect_type_params(declared, &mut type_params);
-        LintCtx {
-            checker: self.checker,
-            subst: self.subst,
-            expr_types: self.expr_types,
-            module_idx: self.module_idx,
-            source_module: self.source_module,
-            source: self.source,
-            type_params,
-        }
     }
 
     /// Emit one lint diagnostic, honouring suppression and the configured
@@ -443,9 +371,9 @@ impl<'a> LintCtx<'a> {
 /// and, for item-bodied constructs reached through only comments, the
 /// item-level form. `all` matches every lint.
 ///
-/// Exposed beyond the checker so MIR-stage lints surfaced through the CLI
-/// (`dead_store`) resolve `// hew:allow(...)` directives through the same path
-/// as the HIR sweep instead of re-implementing it.
+/// Exposed beyond the checker so a lint surfaced outside the HIR sweep resolves
+/// `// hew:allow(...)` directives through this path instead of re-implementing
+/// it.
 #[must_use]
 pub fn directive_suppresses(source: &str, span_start: usize, id: LintId) -> bool {
     let lines: Vec<&str> = source.lines().collect();
@@ -569,7 +497,7 @@ pub(super) fn lint_receive_fn_definition(
 
 fn shadowed_actor_handle_builtin(name: &str) -> Option<&'static str> {
     match name {
-        "send" => Some("`LocalPid<T>.send` / `RemotePid<T>.send`"),
+        "send" => Some("an actor handle's `.send` / `RemotePid<T>.send`"),
         "ask" => Some("`RemotePid<T>.ask`"),
         _ => None,
     }
@@ -670,15 +598,16 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            walk_expr(&expr.0, &expr.1, visitor);
+            for expr in condition_exprs(conditions) {
+                walk_expr(&expr.0, &expr.1, visitor);
+            }
             walk_block(body, visitor);
             if let Some(eb) = else_body {
-                walk_block(eb, visitor);
+                walk_expr(&eb.0, &eb.1, visitor);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -698,8 +627,12 @@ fn walk_stmt<V: NodeVisitor>(stmt: &Stmt, span: &Span, visitor: &mut V) {
             walk_expr(&condition.0, &condition.1, visitor);
             walk_block(body, visitor);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            walk_expr(&expr.0, &expr.1, visitor);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                walk_expr(&expr.0, &expr.1, visitor);
+            }
             walk_block(body, visitor);
         }
         Stmt::Break { value, .. } | Stmt::Return(value) => {
@@ -752,7 +685,6 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -782,20 +714,33 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
                 walk_expr(&base.0, &base.1, visitor);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             walk_expr(&left.0, &left.1, visitor);
             walk_expr(&right.0, &right.1, visitor);
         }
         Expr::Unary { operand, .. } => walk_expr(&operand.0, &operand.1, visitor),
-        Expr::Clone(inner)
+        Expr::ReturnError(inner)
+        | Expr::Clone(inner)
         | Expr::Await(inner)
         | Expr::AwaitRestart(inner)
         | Expr::PostfixTry(inner)
         | Expr::Cast { expr: inner, .. }
         | Expr::FieldAccess { object: inner, .. } => walk_expr(&inner.0, &inner.1, visitor),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             for item in items {
                 walk_expr(&item.0, &item.1, visitor);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                let operand = element.expr();
+                walk_expr(&operand.0, &operand.1, visitor);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -825,15 +770,16 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            walk_expr(&expr.0, &expr.1, visitor);
+            for expr in condition_exprs(conditions) {
+                walk_expr(&expr.0, &expr.1, visitor);
+            }
             walk_block(body, visitor);
             if let Some(eb) = else_body {
-                walk_block(eb, visitor);
+                walk_expr(&eb.0, &eb.1, visitor);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -887,10 +833,6 @@ fn walk_expr<V: NodeVisitor>(expr: &Expr, span: &Span, visitor: &mut V) {
                 walk_expr(&timeout.duration.0, &timeout.duration.1, visitor);
                 walk_expr(&timeout.body.0, &timeout.body.1, visitor);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            walk_expr(&expr.0, &expr.1, visitor);
-            walk_expr(&duration.0, &duration.1, visitor);
         }
         Expr::Yield(value) | Expr::Return(value) => {
             if let Some(v) = value {

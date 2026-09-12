@@ -54,23 +54,25 @@ const grammar = JSON.parse(readFileSync(templatePath, 'utf8'));
 const kw = syntaxData.keywords;
 const types = syntaxData.types;
 
+// kw.supervisor_config mixes the structural field keywords (`child`,
+// `restart`, `strategy`) with the restart-strategy value constants
+// (`permanent`, `one_for_one`, ...). Split it here so both scopes stay
+// derived from syntax-data.json instead of a hand-typed list: a retired
+// word (e.g. `budget`) disappears on its own when it drops out of
+// supervisor_config, and a contextual identifier (e.g. `pool`, which was
+// never in supervisor_config) can't be hand-added to the wrong scope.
+const SUPERVISOR_STRUCTURAL_KEYWORDS = new Set(['child', 'restart', 'strategy']);
+const supervisorStrategyValues = kw.supervisor_config
+  .filter(k => !SUPERVISOR_STRUCTURAL_KEYWORDS.has(k));
+
 // -- Keyword group mapping -------------------------------------------------
 // Maps TextMate scope names to keyword arrays derived from syntax-data.json.
 
 const keywordGroups = {
   'keyword.control.hew': [...new Set([
     ...kw.control_flow,
-    // Actor keywords that serve as control flow. `cooperate` is deliberately
-    // NOT here — syntax-data.json classifies it under reserved_unused (a
-    // compiler-internal safepoint token, not a source expression). It is not
-    // emitted by any keywordGroups entry at all: vscode-hew's template
-    // classifies every reserved_unused word under invalid.removed.hew (a
-    // scope this generator does not own or manage), and an explicit vitest
-    // guard (tests/grammar-structure.test.ts, "marks rejected keywords as
-    // invalid.removed.hew, not keyword.reserved.hew") asserts no separate
-    // keyword.reserved.hew scope exists. See the coverage-check exclusion
-    // below for the same reasoning.
-    'select', 'join', 'after', 'from', 'await', 'await_restart', 'scope',
+    // Actor keywords that serve as control flow.
+    'select', 'race', 'after', 'from', 'await', 'await_restart', 'scope',
   ])],
 
   // `mut` is deliberately excluded from kw.declarations here even though
@@ -85,18 +87,15 @@ const keywordGroups = {
   'keyword.declaration.hew': kw.declarations.filter(k => k !== 'mut'),
 
   'keyword.actor.hew': [
-    'actor', 'fork', 'init', 'move', 'receive', 'spawn', 'this',
+    'actor', 'fork', 'init', 'move', 'receive', 'spawn',
   ],
 
   'keyword.supervisor.hew': [
-    'supervisor', 'child', 'restart', 'budget', 'strategy',
+    'supervisor',
+    ...kw.supervisor_config.filter(k => SUPERVISOR_STRUCTURAL_KEYWORDS.has(k)),
   ],
 
-  'constant.language.strategy.hew': [
-    'permanent', 'transient', 'temporary',
-    'one_for_one', 'one_for_all', 'rest_for_one', 'simple_one_for_one',
-    'pool', 'brutal_kill',
-  ],
+  'constant.language.strategy.hew': [...supervisorStrategyValues],
 
   'keyword.wire.hew': [...kw.wire],
 
@@ -107,14 +106,6 @@ const keywordGroups = {
   ],
 
   'constant.language.boolean.hew': ['true', 'false'],
-
-  // NOTE: no keyword.reserved.hew entry here. reserved_unused words
-  // (cooperate/try/catch/race/foreign) are deliberately NOT assigned a
-  // scope by this generator — vscode-hew's template already classifies
-  // them under invalid.removed.hew, a scope this generator does not own,
-  // and a vitest guard asserts a separate keyword.reserved.hew scope must
-  // not exist (see the keyword.control.hew comment above). Adding this
-  // entry back reintroduces a redundant, test-failing pattern.
 };
 
 // -- Type group mapping ----------------------------------------------------
@@ -169,7 +160,8 @@ const ATTRIBUTE_ONLY_CONTEXTUAL = ['resource', 'linear', 'opaque', 'wire'];
 // `.count()` method, so a fallback match paints most of its real uses.
 // Same exclusion reason as ATTRIBUTE_ONLY_CONTEXTUAL, different cause: these
 // need the clause position, not an attribute, to be a keyword at all.
-const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count'];
+// Capture prefixes and callable qualifiers have dedicated structural patterns.
+const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count', 'capture', 'once'];
 
 const contextualNames = Object.keys(syntaxData.contextual_identifiers)
   .filter(name => name !== 'self' && name !== 'description'
@@ -222,6 +214,9 @@ function updatePatterns(patterns, path) {
 updatePatterns(grammar.patterns, 'patterns');
 
 for (const [key, value] of Object.entries(grammar.repository)) {
+  // Retired spellings are deliberately highlighted by hand and must not be
+  // replaced by generated keyword patterns.
+  if (key === 'retired-syntax') continue;
   if (value.patterns) {
     updatePatterns(value.patterns, `repository.${key}`);
   }
@@ -310,13 +305,11 @@ for (const keywords of Object.values(keywordGroups)) {
   for (const k of keywords) coveredKeywords.add(k);
 }
 
-// Deliberately unassigned by any keywordGroups entry (see the comments at
-// their exclusion sites above) \u2014 not coverage gaps, so exclude them from the
-// "missing" report: kw.reserved_unused is classified under
-// invalid.removed.hew (a scope outside this generator's ownership), and
-// `mut` is operator-context-only, already scoped correctly by the dedicated
-// meta.type.pointer.raw.hew rule.
-const intentionallyUnassigned = new Set([...kw.reserved_unused, 'mut']);
+// Deliberately unassigned by any keywordGroups entry (see the comment at its
+// exclusion site above) \u2014 not a coverage gap, so exclude it from the
+// "missing" report: `mut` is operator-context-only, already scoped correctly
+// by the dedicated meta.type.pointer.raw.hew rule.
+const intentionallyUnassigned = new Set(['mut']);
 
 const missing = syntaxData.all_keywords
   .filter(k => !coveredKeywords.has(k) && !intentionallyUnassigned.has(k));
@@ -325,7 +318,9 @@ if (missing.length > 0) {
   console.log(`   ${missing.join(', ')}\n`);
 }
 
-const extras = [...coveredKeywords].filter(k => !syntaxData.all_keywords.includes(k));
+const intentionallyUnassignedKeywords = new Set(['from']);
+const extras = [...coveredKeywords].filter(k =>
+  !syntaxData.all_keywords.includes(k) && !intentionallyUnassignedKeywords.has(k));
 if (extras.length > 0) {
   console.log(`\u26a0 Keywords in grammar scopes but not in all_keywords:`);
   console.log(`   ${extras.join(', ')}\n`);

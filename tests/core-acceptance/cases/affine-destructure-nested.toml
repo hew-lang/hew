@@ -1,0 +1,9 @@
+[[case]]
+id = "affine-destructure-nested"
+intent = "Nested record and tuple patterns transfer only named affine leaves; inner and outer siblings remain readable and temporary wildcards close once."
+source = "cases/affine-destructure-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "close RECORD\nINNER\nOUTER\nclose TUPLE\nINNER\nOUTER\nINNER\nclose TEMPORARY\n"
+exit = 0

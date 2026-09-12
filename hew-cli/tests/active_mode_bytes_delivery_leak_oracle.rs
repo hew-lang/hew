@@ -43,7 +43,7 @@ fn allocate_loopback_port() -> u16 {
         .port()
 }
 
-/// The handler does NOT hold the connection: `attach(consuming self, ..)`
+/// The handler does NOT hold the connection: `attach(consume self, ..)`
 /// transfers it to the reactor, which is then its sole owner and closes it.
 /// Giving `ProbeSink` a `Connection` field as well would spawn-transfer the same
 /// connection into actor state and close it a second time on `on_close` — the
@@ -54,10 +54,10 @@ fn server_source(port: u16, deliveries: usize) -> String {
     format!(
         "import std.net.{{Connection, ConnectionHandler}};\n\
          \n\
-         actor ProbeSink {{\n\
+         actor ProbeSink {{ \n\
          \x20   receive fn on_data(data: bytes) {{\n\
-         \x20       println(\"DATA\");\n\
-         \x20   }}\n\
+         \x20       println(\"DATA\"), \n\
+         \x20 }}\n\
          \x20   receive fn on_close() {{}}\n\
          }}\n\
          \n\
@@ -67,7 +67,7 @@ fn server_source(port: u16, deliveries: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let listener = net.listen(\"127.0.0.1:{port}\");\n\
+         \x20   let listener = match net.listen(\"127.0.0.1:{port}\") {{ .Ok(value) => value, .Err(_) => panic(\"network setup failed\"), }};\n\
          \x20   var accepted: i64 = 0;\n\
          \x20   while accepted < {deliveries} {{\n\
          \x20       let conn = listener.accept();\n\
@@ -182,7 +182,7 @@ actor ProbeSink {
     receive fn take(data: bytes) { println("FORWARDED"); }
 }
 actor Router {
-    let sink: LocalPid<ProbeSink>;
+    let sink: ProbeSink,
     receive fn route(data: bytes, forward: bool) {
         if forward {
             sink.take(data);

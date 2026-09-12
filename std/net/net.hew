@@ -6,10 +6,10 @@
 //!
 //! # Error Handling
 //!
-//! `net.NetError` is the stable user-facing error enum for all network
-//! failures — TCP, TLS, QUIC, HTTP, WebSocket, and DNS.  Use the `try_*`
-//! wrappers with `Result<T, net.NetError>` and the `?` operator for
-//! structured error propagation:
+//! `listen` and `connect` return `Result` with `net.NetError`. Connection
+//! writes return `Result<(), WriteError>`, while `read_string()` reports UTF-8
+//! validation through `utf8.Utf8Error`. Other protocol modules have their own
+//! result types; check their signatures when handling errors:
 //!
 //! ```
 //! import std.net;
@@ -38,7 +38,7 @@
 //! import std.net;
 //!
 //! fn main() {
-//!     let listener = net.listen(":9000");
+//!     let listener = match net.listen(":9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
 //!     let conn = listener.accept();
 //!     let data = conn.read();
 //!     // write() returns Result<(), WriteError>; an Err signals downstream
@@ -49,6 +49,8 @@
 //! ```
 
 import std.string;
+
+import std.encoding.utf8;
 
 import std.stream;
 
@@ -63,29 +65,44 @@ import std.stream;
 /// For file-system errors see `fs.IoError`.
 pub enum NetError {
     /// The remote host actively refused the connection (ECONNREFUSED).
-    ConnectionRefused(i64);
+    ConnectionRefused(i64),
     /// The local address is already in use (EADDRINUSE).
-    AddressInUse(i64);
+    AddressInUse(i64),
     /// The address or hostname could not be resolved (EADDRNOTAVAIL).
-    AddressNotAvailable(i64);
+    AddressNotAvailable(i64),
     /// The connection attempt or I/O operation timed out (ETIMEDOUT).
-    TimedOut(i64);
+    TimedOut(i64),
     /// Operation was cancelled (e.g., a deadline expired before the I/O
     /// could complete).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the OS deadline expired;
     /// `Cancelled` means the operation was abandoned for another reason
     /// (e.g. the blocking pool was shut down mid-call).
-    Cancelled(i64);
+    Cancelled(i64),
     /// An argument was rejected before it reached the operating system.
     ///
     /// Carries the rejection detail rather than an errno: no syscall was
     /// made, so there is no platform error code to report. Produced by the
     /// endpoint and duration validation below, which run before every native
     /// call whose C ABI narrows an `i64` to an `i32`.
-    InvalidArgument(string);
+    InvalidArgument(string),
     /// Any other network-level failure.
-    Other(i64);
+    Other(i64),
+}
+
+/// A text read failed during network I/O or UTF-8 validation.
+pub enum ReadStringError {
+    Network(NetError),
+    InvalidUtf8(utf8.Utf8Error),
+}
+
+impl Display for ReadStringError {
+    fn fmt(err: ReadStringError) -> string {
+        match err {
+            ReadStringError.Network(error) => to_string(error),
+            ReadStringError.InvalidUtf8(error) => to_string(error),
+        }
+    }
 }
 
 /// Failure to transfer a TCP connection into active mode.
@@ -94,7 +111,7 @@ pub enum NetError {
 /// receives no connection back and must not attempt a second close.
 pub enum AttachError {
     /// The runtime refused the active-mode registration.
-    Refused;
+    Refused,
 }
 
 impl Display for AttachError {
@@ -212,8 +229,8 @@ pub fn port_arg(context: string, port: i64) -> Result<i64, NetError> {
 /// `host` never carries the IPv6 bracket form: `[::1]:9000` yields host
 /// `::1`, which is what the resolver expects.
 pub type Endpoint {
-    host: string;
-    port: i64;
+    host: string,
+    port: i64,
 }
 
 /// Longest address string the endpoint grammar accepts.
@@ -355,13 +372,13 @@ pub enum WriteError {
     /// a frame boundary (i.e., no bytes were sent before the timeout fired).
     /// The i64 payload is the raw OS errno (EAGAIN/EWOULDBLOCK on Unix,
     /// WSAETIMEDOUT on Windows; 0 if none was recorded).
-    BackpressureExceeded(i64);
+    BackpressureExceeded(i64),
     /// The peer reset or closed the connection, or the local end was shut
     /// down (ECONNRESET, EPIPE, ENOTCONN). The connection is no longer
     /// usable for writes. The i64 payload is the raw OS errno.
-    Disconnected(i64);
+    Disconnected(i64),
     /// Any other write-side failure. The i64 payload is the raw OS errno.
-    Other(i64);
+    Other(i64),
 }
 
 /// Map an OS errno integer to a structured `WriteError` variant.
@@ -456,7 +473,7 @@ pub type Connection {
 // ── Listener methods ──────────────────────────────────────────────────
 /// Methods available on a TCP `Listener`.
 trait ListenerMethods {
-    /// Block until a client connects and return the new `Connection`.
+    /// Wait until a client connects and return the new `Connection`.
     fn accept(self) -> Connection;
 
     /// Return the port selected for this listener, including an ephemeral port
@@ -466,7 +483,7 @@ trait ListenerMethods {
 }
 
 impl ListenerMethods for Listener {
-    /// Block until a client connects and return the new `Connection`.
+    /// Wait until a client connects and return the new `Connection`.
     fn accept(ln: Listener) -> Connection {
         unsafe {
             hew_tcp_accept(ln)
@@ -484,7 +501,7 @@ impl ListenerMethods for Listener {
 // authority; the trait above remains intentionally borrowing-only.
 impl Listener {
     /// Close the listener and release the listening socket.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_tcp_listener_close(self)
         };
@@ -509,13 +526,16 @@ trait ConnectionMethods {
 
     /// Read a UTF-8 string from the connection.
     ///
-    /// Convenience wrapper that reads bytes and converts to string.
-    fn read_string(self) -> string;
+    /// Validates one returned byte buffer. Invalid or incomplete UTF-8 is
+    /// an error; use raw reads and retain partial bytes for streaming text.
+    /// An empty buffer still follows `read`'s EOF/disconnect convention.
+    fn read_string(self) -> Result<string, utf8.Utf8Error>;
 
     /// Read a UTF-8 string from the connection, separating EOF from failure.
     ///
-    /// `Ok("")` is an orderly EOF; `Err(NetError)` is a read failure.
-    fn try_read_string(self) -> Result<string, NetError>;
+    /// `Ok("")` is an orderly EOF. Errors distinguish network I/O from
+    /// invalid or incomplete UTF-8 in the returned byte buffer.
+    fn try_read_string(self) -> Result<string, ReadStringError>;
 
     /// Write raw bytes to the connection.
     ///
@@ -558,7 +578,7 @@ trait ConnectionMethods {
 /// Trait for actors that handle a TCP connection in active mode.
 ///
 /// Implement this on an actor (declare matching `receive fn on_data(bytes)` /
-/// `receive fn on_close()`) and call `conn.attach(this)` to have the runtime
+/// `receive fn on_close()`) and call `conn.attach(self)` to have the runtime
 /// deliver socket data as actor messages. The actor never calls `read`: the
 /// runtime owns the entire connection after the consuming attach and closes it
 /// on terminal readiness or actor teardown. No `Connection` remains available
@@ -572,8 +592,8 @@ trait ConnectionMethods {
 ///
 /// Declared `pub` so the type checker can recognise that a concrete actor's
 /// `receive fn`s structurally satisfy this handler trait at the
-/// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion site (the
-/// `conn.attach(this)` surface).
+/// Actor-handle narrowing `Actor` → `ConnectionHandler` coercion site (the
+/// `conn.attach(self)` surface).
 ///
 /// # Example
 ///
@@ -590,8 +610,8 @@ trait ConnectionMethods {
 /// }
 ///
 /// fn main() {
-///     let conn = net.connect("localhost:9000");
-///     let handler: LocalPid<InboundLogger> = spawn InboundLogger;
+///     let conn = match net.connect("localhost:9000") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+///     let handler: InboundLogger = spawn InboundLogger;
 ///     match conn.attach(handler) {
 ///         .Ok(()) => {},
 ///         .Err(net.AttachError.Refused) => println("attach refused"),
@@ -629,21 +649,19 @@ impl ConnectionMethods for Connection {
             }
         }
     }
-    /// Read a UTF-8 string from the connection.
-    fn read_string(conn: Connection) -> string {
-        unsafe {
-            hew_bytes_to_string(unsafe {
-                hew_tcp_read(conn)
-            })
-        }
+    /// Read and validate one UTF-8 byte buffer from the connection.
+    fn read_string(conn: Connection) -> Result<string, utf8.Utf8Error> {
+        let data = conn.read();
+        utf8.decode(data)
     }
-    /// Read a UTF-8 string, reporting a read failure separately from EOF.
-    fn try_read_string(conn: Connection) -> Result<string, NetError> {
+    /// Read UTF-8, preserving both transport and validation failures.
+    fn try_read_string(conn: Connection) -> Result<string, ReadStringError> {
         match conn.try_read() {
-            .Ok(data) => Ok(unsafe {
-                hew_bytes_to_string(data)
-            }),
-            .Err(err) => Err(err),
+            .Ok(data) => match utf8.decode(data) {
+                .Ok(text) => Ok(text),
+                .Err(error) => Err(ReadStringError.InvalidUtf8(error)),
+            },
+            .Err(error) => Err(ReadStringError.Network(error)),
         }
     }
     /// Write raw bytes to the connection.
@@ -654,10 +672,9 @@ impl ConnectionMethods for Connection {
     }
     /// Write a UTF-8 string to the connection.
     fn write_string(conn: Connection, data: string) -> Result<(), WriteError> {
+        let payload = data.to_bytes();
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, unsafe {
-                hew_string_to_bytes(data)
-            })
+            hew_tcp_write(conn, payload)
         })
     }
     /// Set the read timeout in milliseconds.
@@ -682,10 +699,9 @@ impl ConnectionMethods for Connection {
     }
     /// Send a UTF-8 string to the connection (alias for `write_string`).
     fn send_string(conn: Connection, data: string) -> Result<(), WriteError> {
+        let payload = data.to_bytes();
         write_result_from_status(unsafe {
-            hew_tcp_write(conn, unsafe {
-                hew_string_to_bytes(data)
-            })
+            hew_tcp_write(conn, payload)
         })
     }
 }
@@ -696,7 +712,7 @@ impl ConnectionMethods for Connection {
 // cancellation, and suspended-frame exits.
 impl Connection {
     /// Close the connection and release resources.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_tcp_close(self)
         };
@@ -708,11 +724,11 @@ impl Connection {
     /// refusal the runtime closes the consumed connection before returning
     /// `Err(AttachError.Refused)`. Every call site is rewritten to
     /// `hew_tcp_attach_local` by the checker/codegen.
-    fn attach(consuming self, handler: LocalPid<ConnectionHandler>) -> Result<(), AttachError> {
+    fn attach(consume self, handler: ConnectionHandler) -> Result<(), AttachError> {
         Err(AttachError.Refused)
     }
     /// Consume the connection and produce a `(Stream<bytes>, Sink<bytes>)` pair.
-    fn into_stream_sink(consuming self) -> (Stream<bytes>, stream.Sink<bytes>) {
+    fn into_stream_sink(consume self) -> (Stream<bytes>, stream.Sink<bytes>) {
         unsafe {
             let pair = hew_tcp_stream_from_conn(self);
             let s = hew_stream_pair_stream_bytes(pair);
@@ -876,8 +892,6 @@ extern "C" {
     // none is declared (mirrors `hew_remote_pid_send`, whose real symbol
     // `hew_actor_send_by_id` is interned in codegen rather than declared in Hew).
     fn hew_tcp_detach(conn: Connection);
-    fn hew_bytes_to_string(data: bytes) -> string;
-    fn hew_string_to_bytes(s: string) -> bytes;
     fn hew_tcp_listener_close(consume listener: Listener) -> i32;
     fn hew_tcp_close(consume conn: Connection) -> i32;
     fn hew_tcp_set_read_timeout(conn: Connection, ms: i32) -> i32;

@@ -1,0 +1,11 @@
+[[case]]
+id = "local-callback-loop-argument-fault"
+intent = "A callback transferred before a later argument faults is released without invocation; the skipped-loop path and heap-owning caller siblings also clean up."
+source = "cases/local-callback-loop-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "after argument:CALLER:2\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

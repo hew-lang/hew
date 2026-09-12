@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_while_println"
+intent = "Scope { while { println } }: previously failed with TaskSpawnSignatureUnsupported and TaskSpawnCalleeUnsupported because scope_depth leaked into nested control-flow bodies via lower_block not resetting scope_depth."
+source = "../vertical-slice/accept/scope_while_println.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "tick\ntick\ntick\n"
+exit = 0

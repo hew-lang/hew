@@ -1,0 +1,22 @@
+type Pair {
+    a: fn[once, clone](i64) -> i64,
+    b: fn() -> string,
+}
+
+fn argument(divisor: i64) -> i64 {
+    let text = "argument owner".to_upper();
+    text.len() / divisor
+}
+
+fn main() -> i64 {
+    let first = "callback owner".to_upper();
+    let second = "sibling owner".to_upper();
+    let value = Pair { a: move |divisor: i64| -> i64 {
+        println("callback entered");
+        first.len() + divisor
+    }, b: move || second };
+    let Pair { a, b } = value;
+    let result = a(argument(0));
+    println(b());
+    result
+}

@@ -1,0 +1,21 @@
+fn make_reader() -> fn[clone]() -> string {
+    let text = "nested owned".to_upper();
+    let inner: fn[clone]() -> string = move || text;
+    move || inner()
+}
+
+fn escaped_copy() -> fn[clone]() -> string {
+    let original = make_reader();
+    let duplicate = clone original;
+    println(original());
+    duplicate
+}
+
+fn main() -> i64 {
+    let reader = escaped_copy();
+    println(reader());
+    let duplicate = clone reader;
+    println(duplicate());
+    println(reader());
+    0
+}

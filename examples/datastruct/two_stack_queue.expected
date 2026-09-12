@@ -1,0 +1,9 @@
+PASS: new queue is empty
+PASS: enqueue 3 size=3
+PASS: peek returns first
+PASS: dequeue FIFO order
+PASS: empty after dequeue all
+PASS: interleaved ops FIFO
+PASS: 50 elements FIFO
+7/7 tests passed
+ALL PASS

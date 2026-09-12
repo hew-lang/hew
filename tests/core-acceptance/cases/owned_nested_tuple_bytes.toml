@@ -1,0 +1,13 @@
+[[case]]
+id = "owned_nested_tuple_bytes"
+intent = "An owned nested tuple of bytes keeps every element decodable after the tuple is moved."
+source = "../vertical-slice/accept/owned_nested_tuple_bytes.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2:ab:11:true:cd:12:false\n"
+exit = 0

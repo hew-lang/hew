@@ -1,0 +1,13 @@
+[[case]]
+id = "imported_fn_local_shadow"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/imported_fn_local_shadow/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1\nlocal\n"
+exit = 0

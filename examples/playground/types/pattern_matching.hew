@@ -2,9 +2,9 @@
 //! @description Match expressions with enums
 
 enum Shape {
-    Circle(i64);
-    Rectangle(i64, i64);
-    Triangle(i64, i64);
+    Circle(i64),
+    Rectangle(i64, i64),
+    Triangle(i64, i64),
 }
 
 fn area(shape: Shape) -> i64 {

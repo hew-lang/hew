@@ -1,0 +1,13 @@
+[[case]]
+id = "regex_find_no_match_empty_string"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/regex_find_no_match_empty_string.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hit_eq=true\nmiss_len=0\nmiss_eq_empty=true\nmiss_neq_hit=true\n"
+exit = 0

@@ -9,8 +9,14 @@
 //! import std.crypto.encrypt;
 //!
 //! fn main() {
-//!     let key = crypto.random_bytes(32);
-//!     let ciphertext = encrypt.seal(key, "hello world");
+//!     let key = match crypto.random_bytes(32) {
+//!         .Ok(key) => key,
+//!         .Err(reason) => panic(reason),
+//!     };
+//!     let ciphertext = match encrypt.seal(key, "hello world") {
+//!         .Ok(ciphertext) => ciphertext,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     match encrypt.open(key, ciphertext) {
 //!         .Ok(plaintext) => println(plaintext),
 //!         .Err(err) => println(err),
@@ -23,19 +29,19 @@ import std.encoding.base64;
 /// Structured errors returned by `open`.
 pub enum CryptoError {
     /// No error was observed.
-    None;
+    None,
     /// The key input was not a valid AES-256 key.
-    InvalidKey;
+    InvalidKey,
     /// The ciphertext was too short to contain a nonce and GCM tag.
-    ShortCiphertext;
+    ShortCiphertext,
     /// AES-GCM authentication failed.
-    AuthFailed;
+    AuthFailed,
     /// The decrypted plaintext was not valid UTF-8.
-    InvalidUtf8;
+    InvalidUtf8,
     /// Native string allocation failed.
-    AllocationFailure;
+    AllocationFailure,
     /// The system entropy source could not produce a nonce.
-    EntropyFailure;
+    EntropyFailure,
 }
 
 fn crypto_error_from_i32(code: i32) -> CryptoError { // INTERNAL-ABI: C ABI error tag is i32 repr(C)

@@ -1,0 +1,13 @@
+[[case]]
+id = "print_borrowed_carrier_param"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/print_borrowed_carrier_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "AB\nAB\nAB!\nAB\nAB\nAB\nAB\nAB\nAB\n2\nAB\nalpha\nbeta\n2\n1\ntrue\n3\nxyz\n"
+exit = 0

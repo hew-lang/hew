@@ -1,0 +1,10 @@
+[[case]]
+id = "record-vector-slice"
+intent = "Slicing a vector of records preserves its element layout and yields the selected record."
+source = "cases/record-vector-slice.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n"
+exit = 0

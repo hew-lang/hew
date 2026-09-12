@@ -1,0 +1,13 @@
+[[case]]
+id = "platform_sized_match_literal"
+intent = "Regression: integer literal match predicates must admit platform-sized scrutinees through HIR verification, MIR strategy selection, MIR constant lowering, and native execution."
+source = "../vertical-slice/accept/platform_sized_match_literal.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "platform-sized literal match total=43\n"
+exit = 43

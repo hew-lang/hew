@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-pop-actor-state"
+intent = "Popping an actor's `bytes` state field shrinks the state, reports absence on an empty buffer, stays reusable afterwards, and leaves the seeding buffer intact."
+source = "cases/bytes-pop-actor-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "actor bytes pop passed\n"
+stderr = ""
+exit = 0

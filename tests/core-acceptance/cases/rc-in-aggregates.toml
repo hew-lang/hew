@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-in-aggregates"
+intent = "A shared handle held in a record, a tuple, a vector and a map value retains on ingress and releases with its owner: cloning the aggregate retains again, and the payload's close runs only after every aggregate is gone. Descriptor-backed payloads cover the other direction, where the allocation's own release re-enters the release walker and a replacement displaces a live one."
+source = "cases/rc-in-aggregates.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "record strong=3\nrecord clone strong=4 name=first\nafter record strong=1\ntuple strong=3 label=tag\ntuple clone strong=4\nafter tuple strong=1\nvector len=3 strong=5\nmap len=2 strong=7\nafter collections strong=1\nmanaged strong=2\nreplaced strong=1\nroot about to release\nclose 7\n"
+exit = 0

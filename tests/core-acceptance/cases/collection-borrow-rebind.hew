@@ -1,0 +1,21 @@
+// Replacing a borrowed element binding acquires a new local owner.
+// The vector keeps its original resource and closes it once.
+#[resource]
+type Tok {
+    id: i64,
+}
+
+impl Tok {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    var v: Vec<Tok> = Vec.new();
+    v.push(Tok { id: 1 });
+    var e = v[0];
+    e = Tok { id: 2 };
+    let i = e.id;
+    println(f"got {i}");
+}

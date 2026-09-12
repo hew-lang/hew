@@ -1,0 +1,14 @@
+[[case]]
+id = "std_panic_wrapper_url_parse_invalid"
+intent = "`url.parse` on an invalid URL reports a typed UserPanic naming the input, and the process exits 1."
+source = "../vertical-slice/accept/std_panic_wrapper_url_parse_invalid.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): url.parse: invalid URL: x\n"
+exit = 1

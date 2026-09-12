@@ -13,12 +13,12 @@
 // Fan-out is just a loop calling receive handlers. No locks, no
 // channel management, no select{} boilerplate.
 //
-// Pattern: fire-and-forget publish + actor-to-actor routing.
+// Pattern: completion-call publish + actor-to-actor routing.
 
 // Subscriber actor — receives messages on topics it cares about.
 actor Subscriber {
-    let name: string;
-    var received: i64;
+    let name: string,
+    var received: i64,
     receive fn on_message(topic: string, payload: string) {
         received = received + 1;
         println(f"  [{name}] #{received} topic={topic}: {payload}");
@@ -34,12 +34,12 @@ actor Subscriber {
 // Parallel arrays: sub_topics[i] corresponds to sub_actors[i].
 // A subscriber can register for multiple topics (one entry per topic).
 actor Broker {
-    let sub_topics: Vec<string>;
-    let sub_actors: Vec<LocalPid<Subscriber>>;
-    var published: i64;
+    var sub_topics: Vec<string>,
+    var sub_actors: Vec<Subscriber>,
+    var published: i64,
 
     // Register a subscriber for a topic.
-    receive fn subscribe(topic: string, subscriber: LocalPid<Subscriber>) {
+    receive fn subscribe(topic: string, subscriber: Subscriber) {
         sub_topics.push(topic);
         sub_actors.push(subscriber);
         println(f"[broker] subscription added: topic={topic}");
@@ -52,7 +52,7 @@ actor Broker {
         for i in 0 .. sub_topics.len() {
             if sub_topics[i] == topic {
                 let target = sub_actors[i];
-                target.on_message(sub_topics[i], payload);
+                let _ = target.on_message(sub_topics[i], payload);
                 delivered = delivered + 1;
             }
         }
@@ -70,7 +70,7 @@ fn main() {
 
     // Create broker
     let empty_topics: Vec<string> = Vec.new();
-    let empty_actors: Vec<LocalPid<Subscriber>> = Vec.new();
+    let empty_actors: Vec<Subscriber> = Vec.new();
     let broker = spawn Broker(sub_topics: empty_topics, sub_actors: empty_actors, published: 0);
     // Create subscribers
     let alice = spawn Subscriber(name: "alice", received: 0);
@@ -78,12 +78,12 @@ fn main() {
     let carol = spawn Subscriber(name: "carol", received: 0);
     // ── Register subscriptions ──
     println("--- Registering subscriptions ---");
-    broker.subscribe("orders", alice);
-    broker.subscribe("orders", bob);
-    broker.subscribe("metrics", bob);
-    broker.subscribe("metrics", carol);
-    broker.subscribe("alerts", alice);
-    broker.subscribe("alerts", carol);
+    let _ = broker.subscribe("orders", alice);
+    let _ = broker.subscribe("orders", bob);
+    let _ = broker.subscribe("metrics", bob);
+    let _ = broker.subscribe("metrics", carol);
+    let _ = broker.subscribe("alerts", alice);
+    let _ = broker.subscribe("alerts", carol);
     sleep(30ms);
 
     // ── Publish messages ──
@@ -91,30 +91,30 @@ fn main() {
     println("--- Publishing messages ---");
 
     // Orders — alice and bob receive
-    broker.publish("orders", "order #1001 created");
+    let _ = broker.publish("orders", "order #1001 created");
     sleep(20ms);
-    broker.publish("orders", "order #1002 shipped");
+    let _ = broker.publish("orders", "order #1002 shipped");
     sleep(20ms);
 
     // Metrics — bob and carol receive
-    broker.publish("metrics", "cpu=42% mem=68%");
+    let _ = broker.publish("metrics", "cpu=42% mem=68%");
     sleep(20ms);
 
     // Alerts — alice and carol receive
-    broker.publish("alerts", "disk usage above 90%");
+    let _ = broker.publish("alerts", "disk usage above 90%");
     sleep(20ms);
 
     // Unknown topic — no subscribers, zero deliveries
-    broker.publish("unknown", "this goes nowhere");
+    let _ = broker.publish("unknown", "this goes nowhere");
     sleep(50ms);
 
     // ── Collect stats ──
     println("");
     println("--- Stats ---");
-    let _ = await broker.stats();
-    let _ = await alice.count();
-    let _ = await bob.count();
-    let _ = await carol.count();
+    let _ = broker.stats();
+    let _ = alice.count();
+    let _ = bob.count();
+    let _ = carol.count();
     println("");
     println("Pub/sub complete. No channels, no mutexes, no select loops.");
     println("The broker actor serialises all routing — data-race free.");

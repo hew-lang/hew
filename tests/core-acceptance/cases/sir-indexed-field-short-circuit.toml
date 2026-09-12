@@ -1,0 +1,10 @@
+[[case]]
+id = "sir-indexed-field-short-circuit"
+intent = "An owned string field read from an indexed element in the left operand of `&&`, with a second index on the right: the right operand releases its temporary on its own edge, and the short-circuit edge never reads that element. Controls swap the operands, use `||`, and bind the element once before either operand."
+source = "cases/sir-indexed-field-short-circuit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "true\nfalse\nfalse\nfalse\ntrue\ntrue\ntrue\ntrue\n"
+exit = 0

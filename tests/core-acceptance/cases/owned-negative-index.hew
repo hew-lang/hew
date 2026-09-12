@@ -1,0 +1,8 @@
+// A failed index must clean up both owners before reporting the logical fault.
+fn main() -> i64 {
+    let live_owner = "negative-cleanup".to_upper();
+    let value = "A".to_bytes();
+    value[-1];
+    println(live_owner);
+    0
+}

@@ -1,0 +1,21 @@
+import nominal_import_payload.payload;
+
+type Delivery {
+    local: string,
+}
+
+fn local_delivery() -> Delivery {
+    Delivery { local: "local" }
+}
+
+fn main() {
+    let _local = local_delivery();
+    match payload.next() {
+        .Message(delivery) => {
+            println(delivery.payload);
+        }
+        .Missing => {
+            assert(false);
+        }
+    }
+}

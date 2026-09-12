@@ -3,10 +3,10 @@
 // is the trapping `at` half of the `Index<Idx>` model for `bytes`: `b[i]` traps
 // on OOB while `b.get(i)` returns `None`. bytes routes `b[i]` through the
 // `hew_bytes_index` runtime getter, which uses the runtime bounds trap. In main
-// context there is no actor recovery frame, so the helper aborts with exit 134;
+// context there is no actor recovery frame, so the helper exits 1 with its typed stderr line;
 // run.sh asserts that code.
 fn main() -> i64 {
-    let b: bytes = bytes.new();
+    var b: bytes = bytes.new();
     b.push(10);
     b.push(20);
     b.push(30);

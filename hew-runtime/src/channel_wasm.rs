@@ -22,7 +22,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::rc::Rc;
 
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 use crate::channel_common::{
     decode_elem_envelope, drop_elem_envelope, elem_layout_witness, encode_elem_envelope,
@@ -70,7 +70,7 @@ struct ChannelInner {
     receiver_closed: bool,
     /// Witness for layout-managed envelopes. The final inner-state drop uses
     /// it to release every queued deep value exactly once.
-    elem_layout: Option<HewVecElemLayout>,
+    elem_layout: Option<HewValueLayout>,
 }
 
 impl Drop for ChannelInner {
@@ -322,7 +322,7 @@ impl Clone for WasmChannelSender {
 fn try_send_bytes(
     sender: &HewWasmChannelSender,
     bytes: Vec<u8>,
-    layout: Option<&HewVecElemLayout>,
+    layout: Option<&HewValueLayout>,
     api_name: &str,
 ) -> Result<(), TrySendError> {
     if let Some(layout) = layout.filter(|l| l.ownership_kind == HewTypeOwnershipKind::LayoutManaged)
@@ -368,7 +368,7 @@ fn try_send_bytes(
 fn send_bytes(
     sender: &HewWasmChannelSender,
     bytes: Vec<u8>,
-    layout: Option<&HewVecElemLayout>,
+    layout: Option<&HewValueLayout>,
     api_name: &str,
 ) {
     match try_send_bytes(sender, bytes, layout, api_name) {
@@ -395,13 +395,13 @@ fn send_bytes(
 /// # Safety
 ///
 /// `sender` must be a valid pointer. `data` must point to one live element of
-/// the witness's type. `layout` must point to a valid `HewVecElemLayout` for
+/// the witness's type. `layout` must point to a valid `HewValueLayout` for
 /// the duration of the call (in practice a codegen static).
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_channel_send_layout(
     sender: *mut HewWasmChannelSender,
     data: *const c_void,
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
 ) {
     cabi_guard!(sender.is_null() || data.is_null());
     // SAFETY: caller guarantees the witness pointee lives for the call.
@@ -461,12 +461,12 @@ impl Drop for WasmChannelReceiver {
 ///
 /// `receiver` must be a valid pointer. `out` must point to one writable
 /// element slot of the witness's type. `layout` must point to a valid
-/// `HewVecElemLayout` for the duration of the call.
+/// `HewValueLayout` for the duration of the call.
 #[cfg_attr(target_arch = "wasm32", no_mangle)]
 pub unsafe extern "C" fn hew_channel_try_recv_layout(
     receiver: *mut HewWasmChannelReceiver,
     out: *mut c_void,
-    layout: *const HewVecElemLayout,
+    layout: *const HewValueLayout,
 ) -> i32 {
     cabi_guard!(receiver.is_null() || out.is_null(), 0);
     // SAFETY: caller guarantees the witness pointee lives for the call.
@@ -538,10 +538,13 @@ fn active_handle_count() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{c_char, CStr};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::{string_as_str, string_release, HewString};
+    use std::ffi::CStr;
 
-    fn plain_layout(size: usize, align: usize) -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn plain_layout(size: usize, align: usize) -> HewValueLayout {
+        HewValueLayout {
+            visit_close: None,
             size,
             align,
             ownership_kind: HewTypeOwnershipKind::Plain,
@@ -550,10 +553,11 @@ mod tests {
         }
     }
 
-    fn string_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
-            size: size_of::<*const c_char>(),
-            align: align_of::<*const c_char>(),
+    fn string_layout() -> HewValueLayout {
+        HewValueLayout {
+            visit_close: None,
+            size: size_of::<*const HewString>(),
+            align: align_of::<*const HewString>(),
             ownership_kind: HewTypeOwnershipKind::String,
             clone_fn: None,
             drop_fn: None,
@@ -574,7 +578,7 @@ mod tests {
         // SAFETY: as above.
         let dst = unsafe { &mut *dst.cast::<WasmOwnedElem>() };
         // SAFETY: allocation is released by wasm_owned_drop.
-        let heap = unsafe { libc::malloc(8).cast::<u8>() };
+        let heap = crate::mem::buf_try_alloc(8).cast::<u8>(); // ALLOCATOR-PAIRING: GlobalAlloc
         if !src.heap.is_null() {
             // SAFETY: source and destination buffers are both 8 bytes.
             unsafe { ptr::copy_nonoverlapping(src.heap, heap, 8) };
@@ -588,14 +592,15 @@ mod tests {
         let elem = unsafe { &mut *slot.cast::<WasmOwnedElem>() };
         if !elem.heap.is_null() {
             // SAFETY: heap was allocated by wasm_owned_clone.
-            unsafe { libc::free(elem.heap.cast()) };
+            unsafe { crate::mem::buf_free(elem.heap.cast()) };
             elem.heap = ptr::null_mut();
         }
         WASM_OWNED_DROPS.fetch_add(1, Ordering::SeqCst);
     }
 
-    fn wasm_owned_layout() -> HewVecElemLayout {
-        HewVecElemLayout {
+    fn wasm_owned_layout() -> HewValueLayout {
+        HewValueLayout {
+            visit_close: None,
             size: size_of::<WasmOwnedElem>(),
             align: align_of::<WasmOwnedElem>(),
             ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -973,10 +978,10 @@ mod tests {
             let tx = hew_channel_pair_sender(pair);
             let layout = wasm_owned_layout();
             for tag in 0..2u64 {
-                let heap = libc::malloc(8).cast::<u8>();
+                let heap = crate::mem::buf_try_alloc(8).cast::<u8>();
                 let value = WasmOwnedElem { tag, heap };
                 hew_channel_send_layout(tx, std::ptr::addr_of!(value).cast(), &raw const layout);
-                libc::free(value.heap.cast());
+                crate::mem::buf_free(value.heap.cast());
             }
             hew_channel_sender_close(tx);
             hew_channel_pair_free(pair);
@@ -1003,14 +1008,14 @@ mod tests {
             // SAFETY: allocation is copied into the returned envelope by the
             // witness clone and released immediately afterward.
             unsafe {
-                let heap = libc::malloc(8).cast::<u8>();
+                let heap = crate::mem::buf_try_alloc(8).cast::<u8>();
                 let value = WasmOwnedElem { tag, heap };
                 let envelope = encode_elem_envelope(
                     std::ptr::addr_of!(value).cast(),
                     &layout,
                     "wasm owned error-path test",
                 );
-                libc::free(value.heap.cast());
+                crate::mem::buf_free(value.heap.cast());
                 envelope
             }
         };
@@ -1061,7 +1066,8 @@ mod tests {
             let string_witness = string_layout();
             let plain_witness = plain_layout(8, 8);
 
-            let first: *const c_char = c"first".as_ptr();
+            let first_owner = ManagedString::new("first");
+            let first = first_owner.as_ptr();
             hew_channel_send_layout(
                 tx,
                 std::ptr::addr_of!(first).cast(),
@@ -1074,15 +1080,15 @@ mod tests {
                 &raw const plain_witness,
             );
 
-            let mut msg: *mut c_char = ptr::null_mut();
+            let mut msg: *mut HewString = ptr::null_mut();
             let rc = hew_channel_try_recv_layout(
                 rx,
                 std::ptr::addr_of_mut!(msg).cast(),
                 &raw const string_witness,
             );
             assert_eq!(rc, 1);
-            assert_eq!(CStr::from_ptr(msg).to_str().unwrap(), "first");
-            crate::cabi::free_cstring(msg); // CSTRING-FREE: str-open (test frees layout recv string output; header-aware)
+            assert_eq!(string_as_str(msg), "first");
+            string_release(msg);
 
             let mut value: i64 = -1;
             let rc = hew_channel_try_recv_layout(
@@ -1136,7 +1142,8 @@ mod tests {
             // Enqueue a 4-byte text envelope, then decode with an 8-byte
             // Plain witness — the width mismatch must bind no value.
             let string_witness = string_layout();
-            let tiny: *const c_char = c"tiny".as_ptr();
+            let tiny_owner = ManagedString::new("tiny");
+            let tiny = tiny_owner.as_ptr();
             hew_channel_send_layout(
                 tx,
                 std::ptr::addr_of!(tiny).cast(),

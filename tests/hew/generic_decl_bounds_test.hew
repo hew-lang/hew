@@ -3,7 +3,7 @@
 import std.testing;
 
 type Box<T: Display> {
-    value: T;
+    value: T,
 }
 
 #[test]

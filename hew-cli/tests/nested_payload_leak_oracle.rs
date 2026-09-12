@@ -87,8 +87,8 @@ const SLOPE_TOLERANCE: usize = 8;
 /// covered.
 fn nested_match_source(iters: usize) -> String {
     format!(
-        "enum ParseError {{ Invalid(string); }}\n\
-         enum Tri {{ A(string); B(string); C(string); }}\n\
+        "enum ParseError {{ Invalid(string), }}\n\
+         enum Tri {{ A(string), B(string), C(string), }}\n\
          fn make(n: i64) -> Result<i64, ParseError> {{\n\
          \x20   if n == 0 {{ Ok(1) }} else {{ Err(ParseError.Invalid(\"bad-input\".to_upper())) }}\n\
          }}\n\

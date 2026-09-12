@@ -1,6 +1,10 @@
 // Circular Singly Linked List using Vec<i64> with index-based pointers
 // Node layout: nodes[i*2] = value, nodes[i*2+1] = next
 // Last node's next points back to head
+//
+// A parameter is the callee's own copy, so every helper that writes into the
+// node pool returns it and the caller reassigns. Helpers that also report a
+// head or a new node index return a tuple.
 fn node_val(n: Vec<i64>, i: i64) -> i64 {
     n[i * 2]
 }
@@ -9,62 +13,46 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 2 + 1]
 }
 
-fn set_next(n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     n.set(i * 2 + 1, nx);
+    n
 }
 
-fn alloc_node(n: Vec<i64>, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let idx = n.len() / 2;
     n.push(val);
     n.push(idx);
-    idx
+    (n, idx)
 }
 
-// Insert into circular list, returns head
-fn _insert(n: Vec<i64>, head: i64, val: i64) -> i64 {
-    let nd = alloc_node(n, val);
+// Insert at tail (value appears at end of traversal); returns pool and head.
+fn insert_tail(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
+    let (grown, nd) = alloc_node(n, val);
+    n = grown;
     if head == -1 {
-        set_next(n, nd, nd);
-        return nd;
-    }
-    // Find tail (node whose next == head)
-    var tail = head;
-    while node_next(n, tail) != head {
-        tail = node_next(n, tail);
-    }
-    set_next(n, tail, nd);
-    set_next(n, nd, head);
-    head
-}
-
-// Insert at tail (value appears at end of traversal)
-fn insert_tail(n: Vec<i64>, head: i64, val: i64) -> i64 {
-    let nd = alloc_node(n, val);
-    if head == -1 {
-        set_next(n, nd, nd);
-        return nd;
+        n = set_next(n, nd, nd);
+        return (n, nd);
     }
     var tail = head;
     while node_next(n, tail) != head {
         tail = node_next(n, tail);
     }
-    set_next(n, tail, nd);
-    set_next(n, nd, head);
-    head
+    n = set_next(n, tail, nd);
+    n = set_next(n, nd, head);
+    (n, head)
 }
 
-// Delete first occurrence, returns new head
-fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
+// Delete first occurrence; returns pool and the new head.
+fn delete_val(var n: Vec<i64>, head: i64, val: i64) -> (Vec<i64>, i64) {
     if head == -1 {
-        return -1;
+        return (n, -1);
     }
     // Single element
     if node_next(n, head) == head {
         if node_val(n, head) == val {
-            return -1;
-        } else {
-            return head;
+            return (n, -1);
         }
+        return (n, head);
     }
     // Find tail
     var tail = head;
@@ -74,27 +62,28 @@ fn delete_val(n: Vec<i64>, head: i64, val: i64) -> i64 {
     // Delete head?
     if node_val(n, head) == val {
         let new_head = node_next(n, head);
-        set_next(n, tail, new_head);
-        return new_head;
+        n = set_next(n, tail, new_head);
+        return (n, new_head);
     }
     // Delete non-head
     var prev = head;
     var curr = node_next(n, head);
     while curr != head {
         if node_val(n, curr) == val {
-            set_next(n, prev, node_next(n, curr));
-            return head;
+            n = set_next(n, prev, node_next(n, curr));
+            return (n, head);
         }
         prev = curr;
         curr = node_next(n, curr);
     }
-    head
+    (n, head)
 }
 
 // Traverse circular list, collect values (one full loop)
-fn traverse(n: Vec<i64>, head: i64, result: Vec<i64>) {
+fn traverse(n: Vec<i64>, head: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     if head == -1 {
-        return;
+        return result;
     }
     result.push(node_val(n, head));
     var curr = node_next(n, head);
@@ -102,6 +91,7 @@ fn traverse(n: Vec<i64>, head: i64, result: Vec<i64>) {
         result.push(node_val(n, curr));
         curr = node_next(n, curr);
     }
+    result
 }
 
 // Count elements
@@ -130,19 +120,23 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
     1
 }
 
+// Build a circular list holding vals in order; returns the pool and the head.
+fn build_list(vals: Vec<i64>) -> (Vec<i64>, i64) {
+    var n: Vec<i64> = Vec.new();
+    var head = -1;
+    for val in vals {
+        let (grown, new_head) = insert_tail(n, head, val);
+        n = grown;
+        head = new_head;
+    }
+    (n, head)
+}
+
 // --- Tests ---
 fn test_insert_and_traverse() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_tail(n, head, 10);
-    head = insert_tail(n, head, 20);
-    head = insert_tail(n, head, 30);
-    let r: Vec<i64> = Vec.new();
-    traverse(n, head, r);
-    let e: Vec<i64> = Vec.new();
-    e.push(10);
-    e.push(20);
-    e.push(30);
+    let (n, head) = build_list([10, 20, 30]);
+    let r = traverse(n, head);
+    let e: Vec<i64> = [10, 20, 30];
     if vecs_equal(r, e) == 1 {
         println("PASS: insert and traverse");
         return 1;
@@ -152,11 +146,7 @@ fn test_insert_and_traverse() -> i64 {
 }
 
 fn test_circular_property() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_tail(n, head, 1);
-    head = insert_tail(n, head, 2);
-    head = insert_tail(n, head, 3);
+    let (n, head) = build_list([1, 2, 3]);
     // Walk 2 full cycles and check we see values repeated
     var curr = head;
     var sum = 0;
@@ -176,17 +166,10 @@ fn test_circular_property() -> i64 {
 }
 
 fn test_delete_middle() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_tail(n, head, 10);
-    head = insert_tail(n, head, 20);
-    head = insert_tail(n, head, 30);
-    head = delete_val(n, head, 20);
-    let r: Vec<i64> = Vec.new();
-    traverse(n, head, r);
-    let e: Vec<i64> = Vec.new();
-    e.push(10);
-    e.push(30);
+    let (built, built_head) = build_list([10, 20, 30]);
+    let (n, head) = delete_val(built, built_head, 20);
+    let r = traverse(n, head);
+    let e: Vec<i64> = [10, 30];
     if vecs_equal(r, e) == 1 {
         println("PASS: delete middle");
         return 1;
@@ -196,17 +179,10 @@ fn test_delete_middle() -> i64 {
 }
 
 fn test_delete_head() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_tail(n, head, 10);
-    head = insert_tail(n, head, 20);
-    head = insert_tail(n, head, 30);
-    head = delete_val(n, head, 10);
-    let r: Vec<i64> = Vec.new();
-    traverse(n, head, r);
-    let e: Vec<i64> = Vec.new();
-    e.push(20);
-    e.push(30);
+    let (built, built_head) = build_list([10, 20, 30]);
+    let (n, head) = delete_val(built, built_head, 10);
+    let r = traverse(n, head);
+    let e: Vec<i64> = [20, 30];
     if vecs_equal(r, e) == 1 {
         // Verify still circular
         if node_next(n, node_next(n, head)) == head {
@@ -219,13 +195,11 @@ fn test_delete_head() -> i64 {
 }
 
 fn test_single_element() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    head = insert_tail(n, head, 42);
+    let (n, head) = build_list([42]);
     if list_len(n, head) == 1 {
         if node_next(n, head) == head {
-            head = delete_val(n, head, 42);
-            if head == -1 {
+            let (_emptied, new_head) = delete_val(n, head, 42);
+            if new_head == -1 {
                 println("PASS: single element");
                 return 1;
             }
@@ -236,16 +210,12 @@ fn test_single_element() -> i64 {
 }
 
 fn test_length() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    var head = -1;
-    if list_len(n, head) != 0 {
+    let empty: Vec<i64> = Vec.new();
+    if list_len(empty, -1) != 0 {
         println("FAIL: length");
         return 0;
     }
-    head = insert_tail(n, head, 1);
-    head = insert_tail(n, head, 2);
-    head = insert_tail(n, head, 3);
-    head = insert_tail(n, head, 4);
+    let (n, head) = build_list([1, 2, 3, 4]);
     if list_len(n, head) == 4 {
         println("PASS: length");
         return 1;

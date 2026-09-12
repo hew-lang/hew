@@ -1,0 +1,9 @@
+=== Min-Heap ===
+PASS: min-heap peek returns minimum
+PASS: extract_min returns sorted order
+PASS: heap property maintained
+PASS: single element heap
+PASS: duplicates handled
+
+5/5 tests passed
+PASS

@@ -102,11 +102,10 @@ pub(crate) fn quarantine_panic_payload(mut payload: Box<dyn std::any::Any + Send
 /// Extract a diagnostic string, then release the owned payload through the
 /// runtime's containment authority.
 //
-// KEEP(wasm32): six call sites across `lambda_actor.rs`, `timer_periodic.rs`,
-// `task_scope.rs` and `blocking_pool.rs`, plus `report_join_panic` in this
-// file. All five of those are declared `#[cfg(not(target_arch = "wasm32"))]`
-// while `pub mod util` is unconditional, so wasm32 is the only build with no
-// caller. The behaviour is load-bearing: a background-thread panic becomes a
+// KEEP(wasm32): call sites across `timer_periodic.rs`, `task_scope.rs` and
+// `blocking_pool.rs`, plus `report_join_panic` in this file. All of those are
+// declared `#[cfg(not(target_arch = "wasm32"))]` while `pub mod util` is
+// unconditional, so wasm32 is the only build with no caller. The behaviour is load-bearing: a background-thread panic becomes a
 // diagnostic and the payload is released through `quarantine_panic_payload`,
 // which contains a hostile `Drop` rather than letting a second unwind escape
 // the runtime boundary.

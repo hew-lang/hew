@@ -1,0 +1,13 @@
+[[case]]
+id = "string_slice_multibyte"
+intent = "A codepoint slice over multi-byte UTF-8 yields one rune, and `len()` reports its two bytes."
+source = "../vertical-slice/accept/string_slice_multibyte.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 2

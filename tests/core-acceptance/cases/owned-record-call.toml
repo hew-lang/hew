@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-record-call"
+intent = "An ordinary record argument survives the call and an owned returned record provides independently mutable field copies."
+source = "cases/owned-record-call.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CORE/CORE/66\n"
+exit = 0

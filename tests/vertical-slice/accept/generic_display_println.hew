@@ -4,7 +4,7 @@
 // concrete `Display::fmt` impl per monomorphisation — primitive, string, and
 // user-defined receivers all flow through the same static-trait-dispatch
 // spine.
-type Color { r: i64; g: i64; b: i64; }
+type Color { r: i64, g: i64, b: i64, }
 
 impl Display for Color {
     fn fmt(c: Color) -> string { "Color" }

@@ -11,7 +11,7 @@ import std.testing;
 
 #[test]
 fn test_bytes_get_some_and_oob_none() {
-    let b: bytes = bytes.new();
+    var b: bytes = bytes.new();
     b.push(10);
     b.push(20);
     b.push(30);
@@ -35,7 +35,7 @@ fn test_bytes_get_some_and_oob_none() {
 
 #[test]
 fn test_bytes_get_does_not_consume_receiver() {
-    let b: bytes = bytes.new();
+    var b: bytes = bytes.new();
     b.push(7);
     b.push(8);
 

@@ -1,0 +1,13 @@
+PASS: 2 is prime
+PASS: 3 is prime
+PASS: 17 is prime
+PASS: 97 is prime
+PASS: 7919 is prime
+PASS: 0 is not prime
+PASS: 1 is not prime
+PASS: 4 is not prime
+PASS: 15 is not prime
+PASS: 100 is not prime
+---
+Passed: 10 / 10
+ALL PASS

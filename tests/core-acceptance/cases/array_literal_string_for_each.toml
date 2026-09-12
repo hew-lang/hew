@@ -1,0 +1,13 @@
+[[case]]
+id = "array_literal_string_for_each"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/array_literal_string_for_each.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "red\ngreen\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "example-language-compound_assign"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/language/compound_assign.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "15\n12\n24\n8\n2\n1.5\n1.25\n5\n2.5\n"
+exit = 0

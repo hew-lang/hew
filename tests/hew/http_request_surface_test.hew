@@ -28,7 +28,7 @@ fn test_request_string_surface_is_importable_from_http_client() {
 
 #[test]
 fn test_request_with_header_pairs() {
-    let headers: Vec<(string, string)> = Vec.new();
+    var headers: Vec<(string, string)> = Vec.new();
     headers.push(("Accept", "application/json"));
     headers.push(("X-Custom-Header", "hew-test"));
     http_client.set_timeout(250);

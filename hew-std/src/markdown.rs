@@ -1,10 +1,9 @@
 //! Hew runtime: Markdown to HTML conversion.
 //!
 //! Provides Markdown-to-HTML rendering for compiled Hew programs using
-//! [`pulldown_cmark`]. Returned strings are header-aware Hew strings and are
-//! NUL-terminated.
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
-use std::ffi::c_char;
+//! [`pulldown_cmark`]. Returned strings are managed strings; release them
+//! with `hew_string_drop`. Null is the canonical empty string.
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 use pulldown_cmark::{html, CowStr, Event, Options, Parser, Tag, TagEnd};
 
@@ -169,23 +168,20 @@ where
 
 /// Convert a Markdown string to HTML.
 ///
-/// Returns a header-aware, NUL-terminated Hew string containing the rendered
-/// HTML. The caller must release it with `hew_string_drop`.
-/// Returns null on error.
+/// Returns one owned managed string containing the rendered HTML. Release it
+/// with `hew_string_drop`. Returns null on error or empty input.
 ///
 /// # Safety
 ///
-/// `md` must be a valid NUL-terminated C string.
+/// `md` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char {
-    // SAFETY: md is a valid NUL-terminated C string per caller contract.
-    let Some(md_str) = (unsafe { cstr_to_str(md) }) else {
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_markdown_to_html(md: *const HewString) -> *mut HewString {
+    // SAFETY: md borrows a live managed string or canonical empty.
+    let md_str = unsafe { string_as_str(md) };
     let parser = Parser::new_ext(md_str, Options::all());
     let mut html_output = String::new();
     html::push_html(&mut html_output, parser);
-    str_to_malloc(&html_output)
+    string_from_str(&html_output)
 }
 
 /// Convert a Markdown string to sanitized HTML.
@@ -194,23 +190,21 @@ pub unsafe extern "C" fn hew_markdown_to_html(md: *const c_char) -> *mut c_char 
 /// is dropped and link/image destinations are held to an explicit URL scheme
 /// policy. Markdown-generated structure — headings, emphasis, lists, code,
 /// tables, allowed links — is preserved exactly.
-/// Returns a header-aware, NUL-terminated Hew string. The caller must release
-/// it with `hew_string_drop`. Returns null on error.
+/// Returns one owned managed string. Release it with `hew_string_drop`.
+/// Returns null on error or empty input.
 ///
 /// # Safety
 ///
-/// `md` must be a valid NUL-terminated C string.
+/// `md` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_markdown_to_html_safe(md: *const c_char) -> *mut c_char {
-    // SAFETY: md is a valid NUL-terminated C string per caller contract.
-    let Some(md_str) = (unsafe { cstr_to_str(md) }) else {
-        return std::ptr::null_mut();
-    };
+pub unsafe extern "C" fn hew_markdown_to_html_safe(md: *const HewString) -> *mut HewString {
+    // SAFETY: md borrows a live managed string or canonical empty.
+    let md_str = unsafe { string_as_str(md) };
     let parser = Parser::new_ext(md_str, Options::all());
     let events = sanitize_events(parser);
     let mut html_output = String::new();
     html::push_html(&mut html_output, events.into_iter());
-    str_to_malloc(&html_output)
+    string_from_str(&html_output)
 }
 
 // ---------------------------------------------------------------------------
@@ -220,19 +214,26 @@ pub unsafe extern "C" fn hew_markdown_to_html_safe(md: *const c_char) -> *mut c_
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
 
-    /// Helper: convert markdown, read the result, and free it.
-    unsafe fn md_to_html(md: &str) -> String {
-        let c = CString::new(md).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
-        let ptr = unsafe { hew_markdown_to_html(c.as_ptr()) };
+    /// Helper: read an owned managed string result and release it.
+    unsafe fn read_and_release(ptr: *mut HewString) -> String {
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid header-aware NUL-terminated Hew string.
-        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
-        // SAFETY: ptr was allocated by the header-aware string allocator.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc html)
+        // SAFETY: ptr is the live owner returned by the producer.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: this test holds the only owner of `ptr`.
+        unsafe { string_release(ptr) };
         s
+    }
+
+    /// Helper: convert markdown, read the result, and release it.
+    unsafe fn md_to_html(md: &str) -> String {
+        let managed = ManagedString::new(md);
+        // SAFETY: managed owns a live managed string for this call.
+        let ptr = unsafe { hew_markdown_to_html(managed.as_ptr()) };
+        // SAFETY: ptr is the owned managed result.
+        unsafe { read_and_release(ptr) }
     }
 
     #[test]
@@ -270,30 +271,20 @@ mod tests {
         assert!(html.contains("Hew"), "expected link text in: {html}");
     }
 
-    /// Helper: convert markdown in sanitized mode, read the result, and free it.
+    /// Helper: convert markdown in sanitized mode, read the result, and release it.
     unsafe fn md_to_html_safe(md: &str) -> String {
-        let c = CString::new(md).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
-        let ptr = unsafe { hew_markdown_to_html_safe(c.as_ptr()) };
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid header-aware NUL-terminated Hew string.
-        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
-        // SAFETY: ptr was allocated by the header-aware string allocator.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
-        s
+        let managed = ManagedString::new(md);
+        // SAFETY: managed owns a live managed string for this call.
+        let ptr = unsafe { hew_markdown_to_html_safe(managed.as_ptr()) };
+        // SAFETY: ptr is the owned managed result.
+        unsafe { read_and_release(ptr) }
     }
 
     #[test]
     fn safe_strips_raw_html() {
         let md = "Hello <script>alert('xss')</script> world";
-        let c = CString::new(md).unwrap();
-        // SAFETY: c is a valid NUL-terminated C string.
-        let ptr = unsafe { hew_markdown_to_html_safe(c.as_ptr()) };
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid header-aware NUL-terminated Hew string.
-        let s = unsafe { cstr_to_str(ptr) }.unwrap().to_owned();
-        // SAFETY: ptr was allocated by the header-aware string allocator.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (test str_to_malloc)
+        // SAFETY: test helper uses valid pointers.
+        let s = unsafe { md_to_html_safe(md) };
         assert!(!s.contains("<script>"), "raw HTML should be stripped: {s}");
         assert!(s.contains("Hello"), "text should be preserved: {s}");
     }

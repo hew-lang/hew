@@ -1,0 +1,72 @@
+enum Source {
+    Cli(string, string),
+    Env(string),
+}
+
+enum Config {
+    Absent,
+    Configured(string, Source),
+}
+
+fn describe(source: Source) -> string {
+    match source {
+        Source.Cli(name, _) => "cli:" + name,
+        Source.Env(name) => "env:" + name,
+    }
+}
+
+fn is_env(source: Source) -> bool {
+    match source {
+        Source.Env(_) => true,
+        Source.Cli(_, _) => false,
+    }
+}
+
+fn render(config: Config) -> string {
+    match config {
+        Config.Absent => "absent",
+        Config.Configured(url, source) => url + "/" + describe(source),
+    }
+}
+
+// An arm that binds the whole scrutinee and moves it into a constructor: the
+// arm rebuilds the value the variant switch took apart.
+fn build(url: string, credential: Source) -> Result<Config, string> {
+    match credential {
+        Source.Cli(_, _) => Err("cli is refused"),
+        source => Ok(Config.Configured(url, source)),
+    }
+}
+
+// A guard on the binding arm: when it fails the rebuilt value is taken apart
+// again so the next candidate still reads live payloads.
+fn classify(credential: Source) -> string {
+    match credential {
+        source if is_env(source) => "env " + describe(source),
+        source => "other " + describe(source),
+    }
+}
+
+// Control: every variant named, no whole-scrutinee binding.
+fn build_named(url: string, credential: Source) -> Result<Config, string> {
+    match credential {
+        Source.Cli(_, _) => Err("cli is refused"),
+        Source.Env(name) => Ok(Config.Configured(url, Source.Env(name))),
+    }
+}
+
+fn report(outcome: Result<Config, string>) {
+    match outcome {
+        .Ok(config) => println(render(config)),
+        .Err(message) => println(message),
+    }
+}
+
+fn main() {
+    report(build("u", Source.Env("E")));
+    report(build("u", Source.Cli("c", "d")));
+    report(build_named("u", Source.Env("E")));
+    println(classify(Source.Env("E")));
+    println(classify(Source.Cli("c", "d")));
+    println(render(Config.Absent));
+}

@@ -5,15 +5,18 @@
     reason = "FFI ownership test keeps the invariants next to each operation"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueCloneThunk,
-    HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueCloneThunk, HewValueDropThunk,
+    HewValueLayout,
 };
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
+use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
     hew_hashmap_entries_layout, hew_hashmap_free_layout, hew_hashmap_insert_layout,
     hew_hashmap_new_with_layout,
@@ -76,12 +79,33 @@ unsafe extern "C" fn drop_pair(blob: *mut c_void) {
     drop_value((value as *mut OwnedValue).cast());
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    unsafe { (*key.cast::<i64>()).cast_unsigned() }
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = { unsafe { (*key.cast::<i64>()).cast_unsigned() } };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) }
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = { unsafe { i32::from(*lhs.cast::<i64>() == *rhs.cast::<i64>()) } };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 #[test]
@@ -93,21 +117,27 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
     HEAP_FREES.store(0, Ordering::SeqCst);
 
     let key_layout = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
-    let value_layout = HewMapValueLayout {
+    let value_layout = HewValueLayout {
+        visit_close: None,
         size: size_of::<OwnedValue>(),
         align: align_of::<OwnedValue>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(drop_value as HewMapValueDropThunk),
-        clone_fn: Some(clone_value as HewMapValueCloneThunk),
+        drop_fn: Some(drop_value as HewValueDropThunk),
+        clone_fn: Some(clone_value as HewValueCloneThunk),
     };
-    let pair_layout = HewVecElemLayout {
+    let pair_layout = HewValueLayout {
+        visit_close: None,
         size: size_of::<Pair>(),
         align: align_of::<Pair>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
@@ -119,7 +149,15 @@ fn owned_entries_allocations_are_freed_exactly_once_after_map_drop() {
         let map = hew_hashmap_new_with_layout(&raw const key_layout, &raw const value_layout);
         for key in [11_i64, 22_i64] {
             let source = allocate(key.cast_unsigned());
-            hew_hashmap_insert_layout(map, (&raw const key).cast(), (&raw const source).cast());
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    map,
+                    (&raw const key).cast(),
+                    (&raw const source).cast(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
 
         let entries = hew_hashmap_entries_layout(

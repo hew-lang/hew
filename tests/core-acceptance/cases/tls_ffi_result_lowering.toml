@@ -1,0 +1,13 @@
+[[case]]
+id = "tls_ffi_result_lowering"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/tls_ffi_result_lowering.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "write=-1\ntry_write=-2\nread=-3\n"
+exit = 0

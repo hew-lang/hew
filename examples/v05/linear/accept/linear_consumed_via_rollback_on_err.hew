@@ -13,11 +13,11 @@
 // Move-checker lattice: Consumed ⊓ Consumed = Consumed → accept.
 #[linear]
 type Txn {
-    id: i64;
+    id: i64,
 }
 
 impl Txn {
-    fn commit(consuming self) -> i64 {
+    fn commit(consume self) -> i64 {
         0
     }
 }

@@ -1,0 +1,18 @@
+// Every non-consuming read of a `Vec` element goes through one admission
+// decision: `get`, `[]` and a range slice all copy the element out, so an
+// element with no copy operation refuses at all three. An owning removal is
+// how the endpoint leaves the vector.
+import std.channel;
+
+fn main() {
+    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    tx.close();
+    var receivers: Vec<channel.Receiver<i64>> = Vec.new();
+    receivers.push(rx);
+    let _got = receivers.get(0);
+    let _indexed = receivers[0];
+    let _sliced = receivers[0..1];
+}

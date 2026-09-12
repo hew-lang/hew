@@ -1,0 +1,10 @@
+[[case]]
+id = "defer-exits"
+intent = "Lexical LIFO cleanup observes final mutable values across saved returns, nested scopes, continue and break."
+source = "cases/defer-exits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "5\n4\n1\ninner\n2\n3\n3\n10\n"
+exit = 0

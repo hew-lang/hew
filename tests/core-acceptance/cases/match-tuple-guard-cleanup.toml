@@ -1,0 +1,11 @@
+[[case]]
+id = "match-tuple-guard-cleanup"
+intent = "A tuple pattern binds an owned string and then fails its guard. The failing candidate releases what it bound and leaves the tuple whole, so the string literal arm and the final binding arm after it read the same value intact. A guard that allocates its own temporary releases it on both the selected and the failing path. The repetition loop turns a missed or double release into a leak or abort signal."
+source = "cases/match-tuple-guard-cleanup.hew"
+suites = ["acceptance", "safety"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "zero/0\nname9/big\nname3/small\nname1/1\n1234567/wide\nchurn 165000\n"
+exit = 0

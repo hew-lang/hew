@@ -15,13 +15,14 @@ import std.testing;
 // test observe the channel directly, the same way an unrelated caller
 // elsewhere in the program would.
 extern "C" {
+    fn hew_stream_has_error() -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32;
 }
 
 fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
-        fs.delete(file_path);
+        let _ = fs.delete(file_path);
     }
 }
 
@@ -37,6 +38,34 @@ fn test_try_read_missing_returns_not_found() {
             _ => panic("expected IoError::NotFound"),
         },
     }
+}
+
+#[test]
+#[serial]
+fn test_read_distinguishes_empty_unicode_and_invalid_utf8() {
+    let file_path = "tests/hew/_fs_stream_text_outcomes.txt";
+    cleanup_file(file_path);
+    fs.write(file_path, "").expect("write succeeds");
+    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "");
+    fs.write(file_path, "é\0中🙂").expect("write succeeds");
+    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "é\0中🙂");
+    fs.write_bytes(file_path, b"A\xffB").expect("write_bytes succeeds");
+    match fs.read(file_path) {
+        .Ok(_) => panic("invalid UTF-8 must be a read failure"),
+        .Err(error) => match error {
+            fs.IoError.Other(raw) => testing.assert_eq(raw, 0),
+            _ => panic("encoding failure must not invent an OS error"),
+        },
+    }
+    // The checked wrapper consumes all error metadata, including errors without errno.
+    unsafe {
+        testing.assert_true(!hew_stream_has_error());
+        testing.assert_eq(hew_stream_last_errno() as i64, 0);
+        testing.assert_eq_str(hew_stream_last_error(), "");
+    }
+    fs.write(file_path, "recovered").expect("write succeeds");
+    testing.assert_eq_str(fs.read(file_path).expect("read succeeds"), "recovered");
+    cleanup_file(file_path);
 }
 
 #[test]
@@ -265,7 +294,7 @@ fn test_try_write_and_try_read_bytes_binary_roundtrip() {
 #[test]
 fn test_try_list_dir_handles_success_and_missing_paths() {
     match fs.list_dir("tests/hew") {
-        .Ok(entries) => testing.assert_true(entries.len() > 0),
+        .Ok(entries) => testing.assert_true(!entries.is_empty()),
         .Err(_) => panic("expected tests/hew listing to succeed"),
     }
     match fs.list_dir("tests/hew/_fs_stream_missing_dir") {

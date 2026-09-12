@@ -18,7 +18,7 @@
 //! fn main() {
 //!     let store: arena.Arena<string> = arena.new();
 //!     let key = store.insert("hello");
-//!     println(store.get(key).unwrap());   // hello
+//!     println(store.get(key).expect("get succeeds"));   // hello
 //!     store.remove(key);
 //!     println(store.get(key).is_none());  // true
 //! }
@@ -34,17 +34,17 @@
 /// identity prevents an independently-constructed same-typed arena from
 /// accepting an issued key.
 pub type Key<T> {
-    arena_id: i64;
-    index: i64;
-    generation: i64;
+    arena_id: i64,
+    index: i64,
+    generation: i64,
 }
 
 // A slot in the backing store. `value: None` marks the slot free. Every
 // `insert` mints a fresh arena-local generation, so slot reuse cannot recreate
 // an issued `Key`.
 type Slot<T> {
-    generation: i64;
-    value: Option<T>;
+    generation: i64,
+    value: Option<T>,
 }
 
 // An Arena owns mutable identity state and must not fork. A no-op affine
@@ -56,11 +56,11 @@ type Slot<T> {
 // directly. WHAT: `#[noclone]` or equivalent, applied straight to `Arena<T>`.
 #[resource]
 type ArenaCloneGuard {
-    marker: i64;
+    marker: i64,
 }
 
 impl ArenaCloneGuard {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 /// A generational-index slotmap with O(1) slot bookkeeping.
@@ -70,11 +70,11 @@ impl ArenaCloneGuard {
 /// is non-cloneable because forking its identity state could issue ambiguous
 /// keys.
 pub type Arena<T> {
-    clone_guard: ArenaCloneGuard;
-    arena_id: i64;
-    generation_counter: Vec<i64>;
-    slots: Vec<Slot<T>>;
-    free: Vec<i64>;
+    clone_guard: ArenaCloneGuard,
+    arena_id: i64,
+    generation_counter: Vec<i64>,
+    slots: Vec<Slot<T>>,
+    free: Vec<i64>,
 }
 
 /// Create a new, empty arena.
@@ -88,7 +88,7 @@ pub fn new<T>() -> Arena<T> {
     if arena_id == 0 {
         panic("arena.new: arena identity space exhausted");
     }
-    let slots: Vec<Slot<T>> = Vec.new();
+    var slots: Vec<Slot<T>> = Vec.new();
     let free: Vec<i64> = Vec.new();
     let generation_counter: Vec<i64> = [1];
     let clone_guard = ArenaCloneGuard { marker: 0 };
@@ -100,7 +100,7 @@ impl<T> Arena<T> {
     ///
     /// Reuses a freed slot when one is available; otherwise appends a new slot.
     /// Every insertion receives a fresh monotonic generation. O(1).
-    fn insert(self, value: T) -> Key<T> {
+    fn insert(var self, consume value: T) -> Key<T> {
         let generation = self.generation_counter[0];
         if generation == 9223372036854775807 {
             panic("arena.insert: key generation space exhausted");
@@ -142,7 +142,7 @@ impl<T> Arena<T> {
     /// insertion mints a fresh generation. On a stale, already-removed, or
     /// out-of-range key: returns `None`. Double-remove is idempotent — the
     /// second call returns `None`.
-    fn remove(self, key: Key<T>) -> Option<T> {
+    fn remove(var self, key: Key<T>) -> Option<T> {
         if key.arena_id != self.arena_id {
             return None;
         }

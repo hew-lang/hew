@@ -7,7 +7,7 @@ type ResourceToken {
 }
 
 impl ResourceToken {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 #[linear]
@@ -16,7 +16,7 @@ type LinearTicket {
 }
 
 impl LinearTicket {
-    fn redeem(consuming self) -> i64 {
+    fn redeem(consume self) -> i64 {
         self.id
     }
 }

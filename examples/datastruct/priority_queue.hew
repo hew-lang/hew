@@ -1,7 +1,10 @@
 // Priority Queue - using sorted insertion into Vec<i64>
 // Smallest element is at the end (easy to pop)
 // Insert maintains descending order so extract_min is O(1) pop
-fn pq_insert(pq: Vec<i64>, val: i64) {
+//
+// A parameter is the callee's own copy, so insert and extract hand the queue
+// back and the caller reassigns; extract also reports the value it removed.
+fn pq_insert(var pq: Vec<i64>, val: i64) -> Vec<i64> {
     // Insert val maintaining descending order (largest first, smallest last)
     pq.push(val);
     var i = pq.len() - 1;
@@ -23,10 +26,20 @@ fn pq_insert(pq: Vec<i64>, val: i64) {
     if done == 0 {
         pq.set(0, val);
     }
+    pq
 }
 
-fn pq_extract_min(pq: Vec<i64>) -> i64 {
-    pq.pop()
+// Insert every value in order.
+fn pq_insert_all(var pq: Vec<i64>, values: Vec<i64>) -> Vec<i64> {
+    for value in values {
+        pq = pq_insert(pq, value);
+    }
+    pq
+}
+
+fn pq_extract_min(var pq: Vec<i64>) -> (Vec<i64>, i64) {
+    let val = pq.pop();
+    (pq, val)
 }
 
 fn pq_peek_min(pq: Vec<i64>) -> i64 {
@@ -38,7 +51,7 @@ fn pq_size(pq: Vec<i64>) -> i64 {
 }
 
 fn pq_is_empty(pq: Vec<i64>) -> i64 {
-    if pq.len() == 0 {
+    if pq_size(pq) == 0 {
         1
     } else {
         0
@@ -57,7 +70,7 @@ fn run_test(name: string, passed: i64) -> i64 {
 fn main() {
     var total = 0;
     var passed = 0;
-    let pq: Vec<i64> = Vec.new();
+    var pq: Vec<i64> = Vec.new();
     // Test 1: empty
     total = total + 1;
     let r1 = if pq_is_empty(pq) == 1 {
@@ -69,9 +82,8 @@ fn main() {
 
     // Test 2: insert and peek min
     total = total + 1;
-    pq_insert(pq, 30);
-    pq_insert(pq, 10);
-    pq_insert(pq, 20);
+    let first: Vec<i64> = [30, 10, 20];
+    pq = pq_insert_all(pq, first);
     let r2 = if pq_peek_min(pq) == 10 {
         1
     } else {
@@ -81,7 +93,8 @@ fn main() {
 
     // Test 3: extract min returns smallest
     total = total + 1;
-    let m1 = pq_extract_min(pq);
+    let (after_m1, m1) = pq_extract_min(pq);
+    pq = after_m1;
     let r3 = if m1 == 10 {
         1
     } else {
@@ -91,7 +104,8 @@ fn main() {
 
     // Test 4: next min is 20
     total = total + 1;
-    let m2 = pq_extract_min(pq);
+    let (after_m2, m2) = pq_extract_min(pq);
+    pq = after_m2;
     let r4 = if m2 == 20 {
         1
     } else {
@@ -101,7 +115,8 @@ fn main() {
 
     // Test 5: last is 30
     total = total + 1;
-    let m3 = pq_extract_min(pq);
+    let (after_m3, m3) = pq_extract_min(pq);
+    pq = after_m3;
     let r5 = if m3 == 30 {
         1
     } else {
@@ -111,12 +126,12 @@ fn main() {
 
     // Test 6: insert duplicates
     total = total + 1;
-    pq_insert(pq, 5);
-    pq_insert(pq, 5);
-    pq_insert(pq, 3);
-    let d1 = pq_extract_min(pq);
-    let d2 = pq_extract_min(pq);
-    let d3 = pq_extract_min(pq);
+    let dups: Vec<i64> = [5, 5, 3];
+    pq = pq_insert_all(pq, dups);
+    let (after_d1, d1) = pq_extract_min(pq);
+    let (after_d2, d2) = pq_extract_min(after_d1);
+    let (after_d3, d3) = pq_extract_min(after_d2);
+    pq = after_d3;
     var r6 = 0;
     if d1 == 3 {
         if d2 == 5 {
@@ -129,16 +144,14 @@ fn main() {
 
     // Test 7: ascending insert order
     total = total + 1;
-    let pq2: Vec<i64> = Vec.new();
-    pq_insert(pq2, 1);
-    pq_insert(pq2, 2);
-    pq_insert(pq2, 3);
-    pq_insert(pq2, 4);
-    pq_insert(pq2, 5);
+    var pq2: Vec<i64> = Vec.new();
+    let ascending: Vec<i64> = [1, 2, 3, 4, 5];
+    pq2 = pq_insert_all(pq2, ascending);
     var r7 = 1;
     var prev_val = 0;
     for i in 0 .. 5 {
-        let v = pq_extract_min(pq2);
+        let (drained, v) = pq_extract_min(pq2);
+        pq2 = drained;
         if v < prev_val {
             r7 = 0;
         }
@@ -148,14 +161,12 @@ fn main() {
 
     // Test 8: descending insert order
     total = total + 1;
-    let pq3: Vec<i64> = Vec.new();
-    pq_insert(pq3, 50);
-    pq_insert(pq3, 40);
-    pq_insert(pq3, 30);
-    pq_insert(pq3, 20);
-    pq_insert(pq3, 10);
-    let e1 = pq_extract_min(pq3);
-    let e2 = pq_extract_min(pq3);
+    var pq3: Vec<i64> = Vec.new();
+    let descending: Vec<i64> = [50, 40, 30, 20, 10];
+    pq3 = pq_insert_all(pq3, descending);
+    let (after_e1, e1) = pq_extract_min(pq3);
+    let (after_e2, e2) = pq_extract_min(after_e1);
+    pq3 = after_e2;
     var r8 = 0;
     if e1 == 10 {
         if e2 == 20 {

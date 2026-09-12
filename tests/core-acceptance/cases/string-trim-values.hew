@@ -1,0 +1,32 @@
+import std.string;
+
+type Text { value: string }
+
+fn retained() -> string {
+    let owner = "\u{2003}\tDéjà\0vu\n\u{3000}".to_upper();
+    owner.trim()
+}
+
+fn main() -> i32 {
+    let trimmed = retained();
+    if trimmed != "DÉJÀ\0VU" { return 1; }
+    if trimmed.len() != 7 { return 2; }
+
+    var owner = Text { value: " \tkeep\0middle \n".to_upper() };
+    let original = owner;
+    let selected = owner.value.trim();
+    owner.value = "replaced".to_upper();
+    if selected != "KEEP\0MIDDLE" { return 3; }
+    if original.value != " \tKEEP\0MIDDLE \n" { return 4; }
+    if owner.value != "REPLACED" { return 5; }
+
+    let captured = {
+        let text = "\u{A0} kept \u{2003}".to_upper();
+        || string.trim(text)
+    };
+    if captured() != "KEPT" || captured() != "KEPT" { return 6; }
+    if "".trim() != "" || " \t\n\u{2003}".trim() != "" { return 7; }
+    if "\0 lead ".trim() != "\0 lead" { return 8; }
+    if " tail\0".trim() != "tail\0" { return 9; }
+    0
+}

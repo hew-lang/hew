@@ -92,10 +92,12 @@ enum Coverage {
         /// The expected `Diagnostic::kind` the profile emits for this construct.
         diagnostic_kind: &'static str,
     },
-    /// The parser rejects this surface before the sandbox profile sees an AST.
-    RejectedByParser {
-        /// The expected stable parser diagnostic code.
-        diagnostic_code: &'static str,
+    /// Parsing or type checking rejects this surface before profile admission.
+    RejectedBeforeProfile {
+        /// The front-end phase responsible for rejection.
+        phase: &'static str,
+        /// A distinguishing substring of the parser diagnostic.
+        diagnostic_message: &'static str,
     },
 }
 
@@ -139,12 +141,12 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "enum unit-variant construction + dispatch",
-        probe: "enum Op { Double; }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { .Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
+        probe: "enum Op { Double, }\nfn apply(op: Op, x: i64) -> i64 {\n    match op { .Double => x * 2 }\n}\nfn main() {\n    println(f\"{apply(.Double, 5)}\");\n}\n",
         coverage: Coverage::Parity("function_composition"),
     },
     Construct {
         id: "match with constructor-payload patterns",
-        probe: "enum Box { Has(i64); Empty; }\nfn unwrap(b: Box) -> i64 {\n    match b { .Has(x) => x, .Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
+        probe: "enum Box { Has(i64), Empty, }\nfn unwrap(b: Box) -> i64 {\n    match b { .Has(x) => x, .Empty => 0 }\n}\nfn main() {\n    println(unwrap(.Has(7)));\n}\n",
         coverage: Coverage::Parity("pattern_matching"),
     },
     Construct {
@@ -154,7 +156,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "record StructInit + field access",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let p = Point { x: 3, y: 4 };\n    println(p.x);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let p = Point { x: 3, y: 4 };\n    println(p.x);\n}\n",
         coverage: Coverage::Parity("record_types"),
     },
     Construct {
@@ -164,7 +166,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "actor spawn + receive + mutable state",
-        probe: "actor Counter {\n    var count: i64;\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match await c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
+        probe: "actor Counter {\n    var count: i64,\n    receive fn bump(n: i64) -> i64 { count = count + n; count }\n}\nfn main() {\n    let c = spawn Counter(count: 0);\n    println(match c.bump(3) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("counter_actor"),
     },
     Construct {
@@ -177,8 +179,8 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
-        id: "actor ask via await + Ok/Err reply match",
-        probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match await e.echo(9) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
+        id: "actor call + Ok/Err reply match",
+        probe: "actor Echo {\n    receive fn echo(n: i64) -> i64 { n }\n}\nfn main() {\n    let e = spawn Echo;\n    println(match e.echo(9) { .Ok(v) => v, .Err(_e) => 0 - 1 });\n}\n",
         coverage: Coverage::Parity("actor_pipeline"),
     },
     Construct {
@@ -186,12 +188,12 @@ const CONSTRUCTS: &[Construct] = &[
         // Probed only at parity-name level; the real supervisor case lives in
         // parity.rs (a minimal inline supervisor needs more scaffolding than a
         // probe warrants). The exit-0 cross-check uses the simpler actor probe.
-        probe: "actor W {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {\n    let w = spawn W;\n    println(match await w.ping() { .Ok(v) => v, .Err(_e) => 0 });\n}\n",
+        probe: "actor W {\n    receive fn ping() -> i64 { 1 }\n}\nfn main() {\n    let w = spawn W;\n    println(match w.ping() { .Ok(v) => v, .Err(_e) => 0 });\n}\n",
         coverage: Coverage::Parity("supervisor"),
     },
     Construct {
         id: "machine new/step/state_name",
-        probe: "machine Light {\n    events { Next; }\n    state Red;\n    state Green;\n    on Next: Red => .Green;\n    on Next: Green => .Red;\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
+        probe: "machine Light {\n    events { Next, }\n    state Red,\n    state Green,\n    on Next: Red => .Green,\n    on Next: Green => .Red,\n}\nfn main() {\n    let m = Light.Red;\n    println(m.state_name());\n}\n",
         coverage: Coverage::Parity("traffic_light"),
     },
     Construct {
@@ -251,7 +253,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "match with wildcard arm",
-        probe: "enum C { A; B; }\nfn name(c: C) -> string {\n    match c { .A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
+        probe: "enum C { A, B, }\nfn name(c: C) -> string {\n    match c { .A => \"a\", _ => \"other\" }\n}\nfn main() {\n    println(name(.B));\n}\n",
         coverage: Coverage::Parity("wildcard_match"),
     },
     Construct {
@@ -293,17 +295,17 @@ const CONSTRUCTS: &[Construct] = &[
         // scrutinee is a separate, still-NotYetRunnable construct (`enum.tag`
         // dispatch traps on a non-enum value), so this probe isolates the
         // statement-position lowering #1901 made runnable.
-        probe: "enum Color { Red; Green; }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        .Red => println(\"stop\"),\n        .Green => println(\"go\"),\n    }\n    return;\n}\n",
+        probe: "enum Color { Red, Green, }\nfn main() {\n    let c: Color = .Green;\n    match c {\n        .Red => println(\"stop\"),\n        .Green => println(\"go\"),\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_match"),
     },
     Construct {
         id: "match arm guard (guarded enum arm)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn f(l: L) -> i64 {\n    match l { .Hi(n) if n > 50 => 2, .Hi(_) => 1, .Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
+        probe: "enum L { Hi(i64), Lo(i64), }\nfn f(l: L) -> i64 {\n    match l { .Hi(n) if n > 50 => 2, .Hi(_) => 1, .Lo(_) => 0 }\n}\nfn main() { println(f(.Hi(99))); }\n",
         coverage: Coverage::Parity("match_guard_parity"),
     },
     Construct {
         id: "match arm guard (non-last guarded catch-all)",
-        probe: "enum L { Hi(i64); Lo(i64); }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { .Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
+        probe: "enum L { Hi(i64), Lo(i64), }\nfn never() -> bool { 1 == 2 }\nfn main() {\n    let l: L = .Lo(7);\n    match l { .Hi(n) if n > 50 => println(\"high\"), _ if never() => println(\"never\"), _ => println(\"fallback\") }\n    return;\n}\n",
         coverage: Coverage::Parity("match_guard_catch_all_fallthrough"),
     },
     Construct {
@@ -312,7 +314,7 @@ const CONSTRUCTS: &[Construct] = &[
         // effects. The pattern is a constructor-with-binding (the runnable form
         // the stmt_if_let case proves); a unit-variant `if let` binds no payload
         // and exercises a different path. Pinned to the stmt_if_let case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let .Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
+        probe: "enum Wrapped { Value(i64), Empty, }\nfn main() {\n    let w: Wrapped = .Value(7);\n    if let .Value(n) = w {\n        println(f\"value {n}\");\n    }\n    return;\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
 
@@ -387,7 +389,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "struct functional-update (`R { x: v, ..base }`)",
-        probe: "type P { x: i64; y: i64; }\nfn main() {\n    let a = P { x: 1, y: 2 };\n    let b = P { x: 9, ..a };\n    println(b.y);\n}\n",
+        probe: "type P { x: i64, y: i64, }\nfn main() {\n    let a = P { x: 1, y: 2 };\n    let b = P { x: 9, ..a };\n    println(b.y);\n}\n",
         coverage: Coverage::Parity("struct_functional_update"),
     },
     Construct {
@@ -423,7 +425,7 @@ const CONSTRUCTS: &[Construct] = &[
         // { y }`) is the separate "value-position if-let" construct below, which
         // joins the arm values on a result local. This row covers only the
         // discarded-result / no-else form.
-        probe: "enum Box { Has(i64); Empty; }\nfn describe(b: Box) {\n    if let .Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
+        probe: "enum Box { Has(i64), Empty, }\nfn describe(b: Box) {\n    if let .Has(x) = b {\n        println(f\"has {x}\");\n    } else {\n        println(\"empty\");\n    }\n}\nfn main() {\n    describe(.Has(9));\n    describe(.Empty);\n}\n",
         coverage: Coverage::Parity("stmt_if_let"),
     },
     Construct {
@@ -435,7 +437,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Expr::If`. Before #1901's follow-up this silently yielded unit
         // regardless of the matched value (a G1-class silent-wrong hole); it now
         // runs at parity. Pinned to the if_let_value case.
-        probe: "enum Wrapped { Value(i64); Empty; }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let .Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
+        probe: "enum Wrapped { Value(i64), Empty, }\nfn pick(w: Wrapped) -> i64 {\n    let v = if let .Value(n) = w { n } else { 0 };\n    v\n}\nfn main() {\n    println(pick(.Value(7)));\n    println(pick(.Empty));\n}\n",
         coverage: Coverage::Parity("if_let_value"),
     },
     Construct {
@@ -447,7 +449,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `{ type, tag, payload: [] }` JSON; same-tag variants compare equal,
         // different-tag variants compare unequal. Admitted by the checker in
         // #1987 and pinned to the fieldless_enum_eq parity case.
-        probe: "enum Colour { Red; Green; Blue; }\nfn check(c: Colour) {\n    if c == Colour.Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour.Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour.Red);\n    check(Colour.Blue);\n}\n",
+        probe: "enum Colour { Red, Green, Blue, }\nfn check(c: Colour) {\n    if c == Colour.Red { println(\"red\"); } else { println(\"other\"); }\n    if c != Colour.Blue { println(\"not-blue\"); } else { println(\"blue\"); }\n}\nfn main() {\n    check(Colour.Red);\n    check(Colour.Blue);\n}\n",
         coverage: Coverage::Parity("fieldless_enum_eq"),
     },
     Construct {
@@ -459,7 +461,7 @@ const CONSTRUCTS: &[Construct] = &[
         // serialises `{ type, fields: [...] }` to a canonical JSON string,
         // giving structural field-by-field equality that mirrors native Hew.
         // Pinned to the record_equality parity case.
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let a = Point { x: 1, y: 2 };\n    let b = Point { x: 1, y: 2 };\n    let c = Point { x: 3, y: 4 };\n    println(a == b);\n    println(a == c);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let a = Point { x: 1, y: 2 };\n    let b = Point { x: 1, y: 2 };\n    let c = Point { x: 3, y: 4 };\n    println(a == b);\n    println(a == c);\n}\n",
         coverage: Coverage::Parity("record_equality"),
     },
     Construct {
@@ -471,7 +473,7 @@ const CONSTRUCTS: &[Construct] = &[
         // variants compare equal and any difference compares unequal — matching
         // native structural equality semantics. Subsumed by the record_equality
         // parity case which exercises both records and payload enums.
-        probe: "enum Shape { Circle(i64); Square(i64); }\nfn main() {\n    let s1 = Shape.Circle(5);\n    let s2 = Shape.Circle(5);\n    let s3 = Shape.Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
+        probe: "enum Shape { Circle(i64), Square(i64), }\nfn main() {\n    let s1 = Shape.Circle(5);\n    let s2 = Shape.Circle(5);\n    let s3 = Shape.Square(5);\n    println(s1 == s2);\n    println(s1 == s3);\n}\n",
         coverage: Coverage::Parity("record_equality"),
     },
     Construct {
@@ -496,17 +498,17 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "struct pattern in match arm",
-        probe: "type Point { x: i64; y: i64; }\nfn sum(p: Point) -> i64 {\n    match p { Point { x: a, y: b } => a + b }\n}\nfn main() {\n    println(sum(Point { x: 3, y: 4 }));\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn sum(p: Point) -> i64 {\n    match p { Point { x: a, y: b } => a + b }\n}\nfn main() {\n    println(sum(Point { x: 3, y: 4 }));\n}\n",
         coverage: Coverage::Parity("struct_pattern_match"),
     },
     Construct {
         id: "struct destructure in let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a);\n    println(b);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let Point { x: a, y: b } = Point { x: 8, y: 13 };\n    println(a);\n    println(b);\n}\n",
         coverage: Coverage::Parity("struct_destructure_let"),
     },
     Construct {
         id: "record shorthand destructure in let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let rec = Point { x: 21, y: 34 };\n    let { x, y } = rec;\n    println(x);\n    println(y);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let rec = Point { x: 21, y: 34 };\n    let { x, y } = rec;\n    println(x);\n    println(y);\n}\n",
         coverage: Coverage::Parity("record_shorthand_destructure_let"),
     },
     Construct {
@@ -522,22 +524,29 @@ const CONSTRUCTS: &[Construct] = &[
         },
     },
     Construct {
+        id: "fallible function success return",
+        probe: "fn value() -> i64 fails string { 7 } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+        coverage: Coverage::RejectedByProfile {
+            diagnostic_kind: "reserved_runtime_feature",
+        },
+    },
+    Construct {
         id: "struct pattern in statement if-let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 5, y: 8 };\n    if let Point { x: a, y: b } = point {\n        println(a + b);\n    }\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let point = Point { x: 5, y: 8 };\n    if let Point { x: a, y: b } = point {\n        println(a + b);\n    }\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
     },
     Construct {
         id: "struct pattern in value if-let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 21, y: 34 };\n    let sum = if let Point { x: a, y: b } = point { a + b } else { 0 };\n    println(sum);\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let point = Point { x: 21, y: 34 };\n    let sum = if let Point { x: a, y: b } = point { a + b } else { 0 };\n    println(sum);\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
     },
     Construct {
         id: "struct pattern in while-let",
-        probe: "type Point { x: i64; y: i64; }\nfn main() {\n    let point = Point { x: 3, y: 4 };\n    while let Point { x: a, y: b } = point {\n        println(a + b);\n        break;\n    }\n}\n",
+        probe: "type Point { x: i64, y: i64, }\nfn main() {\n    let point = Point { x: 3, y: 4 };\n    while let Point { x: a, y: b } = point {\n        println(a + b);\n        break;\n    }\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
@@ -622,21 +631,16 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "break-with-value",
         probe: "fn main() {\n    var i = 0;\n    loop {\n        i = i + 1;\n        break i;\n    }\n    println(i);\n}\n",
-        coverage: Coverage::RejectedByParser {
-            diagnostic_code: "E_BREAK_VALUE",
+        coverage: Coverage::RejectedBeforeProfile {
+            phase: "parse",
+            diagnostic_message: "E_BREAK_VALUE",
         },
     },
     Construct {
         id: "closure / lambda value",
-        // The profile rejects `Expr::Lambda { .. }` structurally, before walking
-        // the body — so EVERY closure form is fail-closed-rejected for sandbox
-        // export, including the capturing / nested / type-parameterised /
-        // write-back forms the C7 lane newly admits on native. The probe
-        // captures an outer `var` and reassigns it (the most permissive native
-        // form, #1') to pin that even a mutable capture produces no bytecode:
-        // the sandbox stays strictly more conservative than native, never the
-        // reverse (`native-wasm-parity`).
-        probe: "fn main() {\n    var total = 0;\n    let acc = |n: i64| { total = total + n; total };\n    println(acc(2));\n}\n",
+        // A valid private mutable capture reaches the sandbox's structural
+        // lambda rejection instead of failing native capture checking first.
+        probe: "fn main() {\n    let total = 0;\n    var acc = capture(var total) |n: i64| { total = total + n; total };\n    println(acc(2));\n}\n",
         coverage: Coverage::RejectedByProfile {
             diagnostic_kind: "reserved_runtime_feature",
         },
@@ -654,9 +658,10 @@ const CONSTRUCTS: &[Construct] = &[
         id: "identity comparison (`is`)",
         // Value-shaped operands are rejected by the checker before the sandbox
         // profile sees the identity-comparison expression.
-        probe: "type Point { x: i64; }\nfn same(a: Point, b: Point) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
-        coverage: Coverage::RejectedByParser {
-            diagnostic_code: "E_IS_VALUE_TYPE",
+        probe: "type Point { x: i64, }\nfn same(a: Point, b: Point) -> bool { a is b }\nfn main() {\n    println(\"x\");\n}\n",
+        coverage: Coverage::RejectedBeforeProfile {
+            phase: "typecheck",
+            diagnostic_message: "E_IS_VALUE_TYPE",
         },
     },
     Construct {
@@ -739,7 +744,7 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "generic record `==` (Pair<A,B>)",
-        probe: "type Pair<A, B> { first: A; second: B; }\nfn same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool { a == b }\nfn main() {\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 1, second: \"x\" }));\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 2, second: \"x\" }));\n}\n",
+        probe: "type Pair<A, B> { first: A, second: B, }\nfn same<A, B>(a: Pair<A, B>, b: Pair<A, B>) -> bool { a == b }\nfn main() {\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 1, second: \"x\" }));\n    println(same(Pair { first: 1, second: \"x\" }, Pair { first: 2, second: \"x\" }));\n}\n",
         coverage: Coverage::Parity("generic_aggregate_eq"),
     },
     Construct {
@@ -748,8 +753,8 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
-        id: "Option.unwrap / unwrap_or",
-        probe: "fn main() {\n    let s = Some(5);\n    println(s.unwrap());\n    let n: Option<i64> = None;\n    println(n.unwrap_or(9));\n}\n",
+        id: "Option.expect / unwrap_or",
+        probe: "fn main() {\n    let s = Some(5);\n    println(s.expect(\"known value\"));\n    let n: Option<i64> = None;\n    println(n.unwrap_or(9));\n}\n",
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
@@ -758,8 +763,8 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
-        id: "Result.unwrap / unwrap_or",
-        probe: "fn main() {\n    let ok: Result<i64, string> = Ok(7);\n    println(ok.unwrap());\n    let err: Result<i64, string> = Err(\"e\");\n    println(err.unwrap_or(0));\n}\n",
+        id: "Result.expect / unwrap_or",
+        probe: "fn main() {\n    let ok: Result<i64, string> = Ok(7);\n    println(ok.expect(\"known value\"));\n    let err: Result<i64, string> = Err(\"e\");\n    println(err.unwrap_or(0));\n}\n",
         coverage: Coverage::Parity("option_result_methods"),
     },
     Construct {
@@ -794,21 +799,22 @@ const CONSTRUCTS: &[Construct] = &[
         // old declaration surface rather than silently admitting it.
         id: "#[wire] struct declaration (legacy, redirected to type)",
         probe: "#[wire]\nstruct Msg {\n    text: string @1,\n}\nfn main() {\n    println(\"ok\");\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "Other",
+        coverage: Coverage::RejectedBeforeProfile {
+            phase: "parse",
+            diagnostic_message: "unexpected 'struct'",
         },
     },
     Construct {
         // Vec<T>::contains: linear equality scan via canonical comparison.
         // Emits `vector.contains` opcode (added in this parity sweep).
         id: "Vec<T>::contains",
-        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(10);\n    println(v.contains(10));\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
         // v[start..end] exclusive range slice: emits `vector.range_slice` opcode.
         id: "Vec<T> range slice v[start..end]",
-        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(1);\n    v.push(2);\n    v.push(3);\n    let s = v[0..2];\n    println(s.len());\n}\n",
         coverage: Coverage::Parity("vec_operations"),
     },
     Construct {
@@ -816,7 +822,7 @@ const CONSTRUCTS: &[Construct] = &[
         // exclusive end (`end + 1`) and delegates to `vector.range_slice`.
         // End element is included in the result slice.
         id: "Vec<T> inclusive range slice v[start..=end]",
-        probe: "fn main() {\n    let v = Vec<i64>.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
+        probe: "fn main() {\n    var v = Vec<i64>.new();\n    v.push(10);\n    v.push(20);\n    v.push(30);\n    let s = v[0..=1];\n    println(s.len());\n    println(s[1]);\n}\n",
         coverage: Coverage::Parity("vec_inclusive_slice"),
     },
     Construct {
@@ -825,7 +831,7 @@ const CONSTRUCTS: &[Construct] = &[
         // (deep recursive copy) — so the result is independent from the original.
         // Pins deep-copy semantics: no aliasing of nested fields.
         id: "record method `clone()`",
-        probe: "type P { x: i64; }\nfn main() {\n    let a = P { x: 5 };\n    let b = a.clone();\n    println(b.x);\n}\n",
+        probe: "type P { x: i64, }\nfn main() {\n    let a = P { x: 5 };\n    let b = a.clone();\n    println(b.x);\n}\n",
         coverage: Coverage::Parity("record_clone"),
     },
     Construct {
@@ -834,7 +840,7 @@ const CONSTRUCTS: &[Construct] = &[
         // retrieves it via `record.get`, and calls it via `call.indirect`.
         // The type-checker admitted this form in ac0bc0ed.
         id: "fn-field call `(rec.f)(args)`",
-        probe: "type T { f: fn(i64) -> i64; }\nfn double(x: i64) -> i64 { x * 2 }\nfn main() {\n    let t = T { f: double };\n    println((t.f)(7));\n}\n",
+        probe: "type T { f: fn(i64) -> i64, }\nfn double(x: i64) -> i64 { x * 2 }\nfn main() {\n    let t = T { f: double };\n    println((t.f)(7));\n}\n",
         coverage: Coverage::Parity("fn_field_call"),
     },
     Construct {
@@ -843,7 +849,7 @@ const CONSTRUCTS: &[Construct] = &[
         // three compared equal (silent wrong-result).  valuesEqual fixes this
         // by routing f64 pairs through JS === (OEQ) instead of canonicalComparable.
         id: "Vec<f64>::contains with NaN / +-Infinity (fcmp-OEQ semantics)",
-        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    let nans = Vec<f64>.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    let nums = Vec<f64>.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
+        probe: "fn main() {\n    let zero: f64 = 0.0;\n    let nan: f64 = zero / zero;\n    let inf: f64 = 1.0 / zero;\n    var nans = Vec<f64>.new();\n    nans.push(nan);\n    println(nans.contains(nan));\n    println(nans.contains(inf));\n    var nums = Vec<f64>.new();\n    nums.push(2.5);\n    println(nums.contains(2.5));\n}\n",
         coverage: Coverage::Parity("vec_f64_nonfinite_contains"),
     },
     Construct {
@@ -855,7 +861,7 @@ const CONSTRUCTS: &[Construct] = &[
         // `Option::clone`/`Result::clone` (checker reports `UndefinedMethod`),
         // so no valid program can reach the emitter with one.
         id: "Vec/String/Array/Slice method `clone()`",
-        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    let v = Vec<i64>.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
+        probe: "fn takes(xs: [i64]) -> i64 {\n    let ys = xs.clone();\n    ys.len()\n}\nfn main() {\n    var v = Vec<i64>.new();\n    v.push(1);\n    let vc = v.clone();\n    println(vc.len());\n    let s = \"hi\";\n    let sc = s.clone();\n    println(sc);\n    let xs = [1, 2, 3];\n    let xc = xs.clone();\n    println(xc[0]);\n    println(takes(v));\n}\n",
         coverage: Coverage::Parity("method_clone"),
     },
     Construct {
@@ -973,10 +979,37 @@ fn live_gate_matches_declared_coverage() {
             Coverage::RejectedByProfile { diagnostic_kind } => {
                 assert_rejected_by_profile(construct, &compiled, diagnostic_kind);
             }
-            Coverage::RejectedByParser { diagnostic_code } => {
-                assert_rejected_by_parser(construct, &compiled, diagnostic_code);
+            Coverage::RejectedBeforeProfile {
+                phase,
+                diagnostic_message,
+            } => {
+                assert_rejected_before_profile(construct, &compiled, phase, diagnostic_message);
             }
         }
+    }
+}
+
+#[test]
+fn fallible_functions_require_the_shared_result_lowering() {
+    for source in [
+        "fn value() -> i64 fails string { 7 } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+        "fn value() -> i64 fails string { return error \"missing\"; } fn main() -> i64 { match value() { .Ok(n) => n, .Err(_) => 0 } }",
+    ] {
+        let compiled =
+            compile_to_sandbox_bytecode(source, Some(SANDBOX_PROFILE)).expect("sandbox compile");
+        assert!(
+            compiled.bytecode.is_none(),
+            "AST-only emission must not omit Result construction"
+        );
+        assert!(
+            compiled
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == "error"
+                    && diagnostic.kind == "reserved_runtime_feature"),
+            "{}",
+            diagnostics_dump(&compiled)
+        );
     }
 }
 
@@ -1048,7 +1081,7 @@ fn assert_rejected_by_profile(
         compiled
             .diagnostics
             .iter()
-            .any(|d| d.severity == "error" && d.kind == diagnostic_kind),
+            .any(|d| d.severity == "error" && d.phase == "profile" && d.kind == diagnostic_kind),
         "construct `{}` is classified RejectedByProfile({diagnostic_kind}), but no error diagnostic \
          of that kind was emitted; the profile rejection path changed.\ndiagnostics:\n{}",
         construct.id,
@@ -1056,17 +1089,20 @@ fn assert_rejected_by_profile(
     );
 }
 
-fn assert_rejected_by_parser(
+fn assert_rejected_before_profile(
     construct: &Construct,
     compiled: &CompileOutput,
-    diagnostic_code: &str,
+    phase: &str,
+    diagnostic_message: &str,
 ) {
     assert!(
         compiled.bytecode.is_none()
             && compiled.diagnostics.iter().any(|diagnostic| {
-                diagnostic.severity == "error" && diagnostic.message.contains(diagnostic_code)
+                diagnostic.severity == "error"
+                    && diagnostic.phase == phase
+                    && diagnostic.message.contains(diagnostic_message)
             }),
-        "construct `{}` is classified RejectedByParser({diagnostic_code}), but the parser did not \
+        "construct `{}` is classified RejectedBeforeProfile({diagnostic_message}), but {phase} did not \
          emit that error without bytecode.\ndiagnostics:\n{}",
         construct.id,
         diagnostics_dump(compiled)
@@ -1159,20 +1195,21 @@ mod ast_surface {
             }
             Expr::StructInit { .. } => Some("record StructInit + field access"),
             Expr::Select { .. } => Some("scope / structured-concurrency block"),
-            Expr::Join(_) => Some("scope / structured-concurrency block"),
-            Expr::Timeout { .. } => Some("scope / structured-concurrency block"),
+            Expr::Race(_) => Some("scope / structured-concurrency block"),
             Expr::UnsafeBlock(_) => Some("unsafe block"),
             Expr::Yield(_) => Some("scope / structured-concurrency block"),
             // `return` in expression position is reserved_runtime_feature in
             // the sandbox VM (see profile.rs); no parity corpus entry yet.
-            Expr::Return(_) => None,
-            Expr::This => None, // `self` — only meaningful inside actor/impl context.
+            Expr::Return(_)
+            | Expr::ReturnError(_)
+            | Expr::Coalesce { .. }
+            | Expr::Handle { .. } => None,
             Expr::FieldAccess { .. } => Some("record StructInit + field access"),
             Expr::Index { .. } => Some("array literal + index + len"),
             Expr::Cast { .. } => Some("numeric cast (`as`)"),
             Expr::PostfixTry(_) => Some("postfix-try (`?`)"),
             Expr::Range { .. } => Some("recursive call + expr-if + range-for + interpolation"),
-            Expr::Await(_) => Some("actor ask via await + Ok/Err reply match"),
+            Expr::Await(_) => Some("actor call + Ok/Err reply match"),
             // `await_restart` suspends on the native supervisor restart observer
             // — a reserved_runtime_feature in the sandbox VM (see profile.rs); no
             // parity corpus entry.
@@ -1245,12 +1282,17 @@ mod ast_surface {
         match ty {
             TypeExpr::Named { .. } => None,
             TypeExpr::QualifiedAssocPath(_) => None,
-            TypeExpr::Result { .. } => None,
+            TypeExpr::Result { .. } | TypeExpr::Fallible { .. } => None,
             TypeExpr::Option(_) => None,
             TypeExpr::Tuple(_) => Some("tuple value + tuple-let destructure"),
             TypeExpr::Array { .. } => Some("array literal + index + len"),
             TypeExpr::Slice(_) => Some("array literal + index + len"),
             TypeExpr::Function { .. } => Some("closure / lambda value"),
+            // An anonymous actor's handle type, `actor(M) -> R`. The value
+            // construct that produces one (`actor |...| {...}`) is rejected
+            // by the same sandbox profile gate as every other structured-
+            // concurrency construct, so the annotation is covered there too.
+            TypeExpr::ActorFn { .. } => Some("scope / structured-concurrency block"),
             // Raw pointer types are part of the native-FFI surface; the profile
             // rejects them via the same `Unsupported::NATIVE_ONLY` family as an
             // `extern` block. Hew has no address-of operator, so a pointer-typed
@@ -1386,6 +1428,11 @@ fn every_classified_owner_names_a_construct() {
             },
             TypeExpr::Slice(boxed(named())),
             TypeExpr::Function {
+                capabilities: hew_parser::ast::CallableCapabilities::default(),
+                params: vec![(named(), 0..0)],
+                return_type: boxed(named()),
+            },
+            TypeExpr::ActorFn {
                 params: vec![(named(), 0..0)],
                 return_type: boxed(named()),
             },
@@ -1528,7 +1575,7 @@ fn walk_block(block: &hew_parser::ast::Block, owners: &mut Vec<Option<&'static s
     reason = "ratchet walker exhaustively enumerates every statement variant without wildcard arms"
 )]
 fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>>) {
-    use hew_parser::ast::Stmt;
+    use hew_parser::ast::{ConditionItem, Stmt};
     owners.push(ast_surface::classify_stmt(stmt));
     match stmt {
         Stmt::Let {
@@ -1572,16 +1619,22 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
             }
         }
         Stmt::IfLet {
-            pattern,
-            expr,
+            conditions,
             body,
             else_body,
         } => {
-            walk_pattern(pattern, owners);
-            walk_expr(expr, owners);
+            for item in conditions {
+                match item {
+                    ConditionItem::Let { pattern, expr } => {
+                        walk_pattern(pattern, owners);
+                        walk_expr(expr, owners);
+                    }
+                    ConditionItem::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
             walk_block(body, owners);
-            if let Some(block) = else_body {
-                walk_block(block, owners);
+            if let Some(else_expr) = else_body {
+                walk_expr(else_expr, owners);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -1612,13 +1665,17 @@ fn walk_stmt(stmt: &hew_parser::ast::Stmt, owners: &mut Vec<Option<&'static str>
             walk_block(body, owners);
         }
         Stmt::WhileLet {
-            pattern,
-            expr,
-            body,
-            ..
+            conditions, body, ..
         } => {
-            walk_pattern(pattern, owners);
-            walk_expr(expr, owners);
+            for item in conditions {
+                match item {
+                    ConditionItem::Let { pattern, expr } => {
+                        walk_pattern(pattern, owners);
+                        walk_expr(expr, owners);
+                    }
+                    ConditionItem::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
             walk_block(body, owners);
         }
         Stmt::Break { value, .. } => {
@@ -1713,7 +1770,11 @@ fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'stat
                 }
             }
         }
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             walk_type_expr(&ok.0, owners);
             walk_type_expr(&err.0, owners);
         }
@@ -1728,6 +1789,11 @@ fn walk_type_expr(ty: &hew_parser::ast::TypeExpr, owners: &mut Vec<Option<&'stat
         }
         TypeExpr::Array { element, .. } => walk_type_expr(&element.0, owners),
         TypeExpr::Function {
+            params,
+            return_type,
+            ..
+        }
+        | TypeExpr::ActorFn {
             params,
             return_type,
         } => {
@@ -1748,9 +1814,18 @@ fn walk_expr(
     expr: &hew_parser::ast::Spanned<hew_parser::ast::Expr>,
     owners: &mut Vec<Option<&'static str>>,
 ) {
-    use hew_parser::ast::{Expr, StringPart};
+    use hew_parser::ast::{ConditionItem, Expr, StringPart};
     owners.push(ast_surface::classify_expr(&expr.0));
     match &expr.0 {
+        Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
+            walk_expr(left, owners);
+            walk_expr(right, owners);
+        }
         Expr::Binary { left, op, right } => {
             owners.push(ast_surface::classify_binary_op(*op));
             walk_expr(left, owners);
@@ -1761,13 +1836,13 @@ fn walk_expr(
             walk_expr(operand, owners);
         }
         Expr::Clone(operand)
+        | Expr::ReturnError(operand)
         | Expr::PostfixTry(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand) => walk_expr(operand, owners),
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -1800,9 +1875,14 @@ fn walk_expr(
                 walk_expr(base, owners);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             for item in items {
                 walk_expr(item, owners);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                walk_expr(element.expr(), owners);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -1832,16 +1912,22 @@ fn walk_expr(
             }
         }
         Expr::IfLet {
-            pattern,
-            expr,
+            conditions,
             body,
             else_body,
         } => {
-            walk_pattern(pattern, owners);
-            walk_expr(expr, owners);
+            for item in conditions {
+                match item {
+                    ConditionItem::Let { pattern, expr } => {
+                        walk_pattern(pattern, owners);
+                        walk_expr(expr, owners);
+                    }
+                    ConditionItem::Expr(expr) => walk_expr(expr, owners),
+                }
+            }
             walk_block(body, owners);
-            if let Some(block) = else_body {
-                walk_block(block, owners);
+            if let Some(else_expr) = else_body {
+                walk_expr(else_expr, owners);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -1954,10 +2040,6 @@ fn walk_expr(
                 walk_expr(&timeout.duration, owners);
                 walk_expr(&timeout.body, owners);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            walk_expr(expr, owners);
-            walk_expr(duration, owners);
         }
         Expr::Yield(value) | Expr::Return(value) => {
             if let Some(value) = value {

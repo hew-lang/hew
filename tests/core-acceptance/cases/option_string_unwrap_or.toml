@@ -1,0 +1,13 @@
+[[case]]
+id = "option_string_unwrap_or"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/option_string_unwrap_or.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hi-fb\n"
+exit = 0

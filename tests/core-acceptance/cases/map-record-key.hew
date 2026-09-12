@@ -1,0 +1,18 @@
+type Key {
+    label: string,
+    code: i64,
+}
+
+fn main() -> i64 {
+    var source: HashMap<Key, string> = HashMap.new();
+    let key = Key { label: "clé\0key", code: 7 };
+    source.insert(key, "value".to_upper());
+    let copy = source;
+    source.insert(Key { label: "clé\0key", code: 7 }, "new".to_upper());
+    let saved = copy[key];
+    source.clear();
+    println(saved);
+    println(key.code);
+    println(copy.len());
+    0
+}

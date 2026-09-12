@@ -1,0 +1,21 @@
+fn advance(var callback: fn[var, clone]() -> i64) -> i64 {
+    callback();
+    callback()
+}
+
+fn consume_advance(consume var callback: fn[var]() -> i64) -> i64 {
+    callback();
+    callback()
+}
+
+fn main() -> i64 {
+    let count = 10;
+    var counter: fn[var, clone]() -> i64 = capture(var count) || {
+        count += 1;
+        count
+    };
+    println(advance(counter));
+    println(counter());
+    println(consume_advance(counter));
+    0
+}

@@ -157,6 +157,20 @@ pub struct HewActor {
     // native-only, so this slot is never read or written on WASM — it exists
     // purely to preserve the layout parity this module asserts.
     pub parked_ask_channel: AtomicPtr<c_void>,
+    // Payload ownership contract; mirrors the canonical actor tail.
+    pub dispatch_ownership: crate::actor::HewDispatchOwnership,
+
+    /// Borrowed invocation state of the active checked handler, protected by
+    /// activation ownership. Stop requests cancel and drain this invocation
+    /// before its frame can be destroyed. Null between checked turns.
+    pub checked_invocation: AtomicPtr<c_void>,
+    /// Retained terminal cleanup result for checked native actor observers.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub native_completion: Option<std::sync::Arc<crate::actor_native::NativeActorCompletion>>,
+    /// Native-only deferred external terminal code. Present in native test
+    /// builds so this mirror retains the canonical actor layout.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub pending_external_trap_code: AtomicI32,
 }
 
 /// The dispatch entry point selected for one dequeued message — the WASM twin
@@ -238,6 +252,7 @@ const _: () = {
     assert!(offset_of!(W, state_drop_consumed) == offset_of!(N, state_drop_consumed));
     assert!(offset_of!(W, state_drop_borrowed) == offset_of!(N, state_drop_borrowed));
     assert!(offset_of!(W, parked_ask_channel) == offset_of!(N, parked_ask_channel));
+    assert!(offset_of!(W, dispatch_ownership) == offset_of!(N, dispatch_ownership));
 };
 
 // ── HewMsgNode layout (strict prefix of native mailbox.rs) ──────────────
@@ -2724,6 +2739,7 @@ mod tests {
     /// Build a minimal `HewActor` with sensible defaults.
     fn stub_actor() -> HewActor {
         HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 1,
             state: ptr::null_mut(),
@@ -2767,6 +2783,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }
     }
 
@@ -5424,7 +5445,7 @@ mod tests {
         // SAFETY: reply is an i32 payload allocated by hew_reply above.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), ask_value);
-            libc::free(reply);
+            crate::mem::buf_free(reply);
         }
 
         assert_eq!(NOISY_DISPATCHES.load(Ordering::Relaxed), 1);
@@ -5744,13 +5765,13 @@ mod tests {
             "reply delivery must release the queued sender-side retain"
         );
 
-        // SAFETY: reply_take returns a malloc'd pointer or null.
+        // SAFETY: reply_take returns a sized-block-allocated pointer or null.
         let reply = unsafe { crate::reply_channel_wasm::reply_take(ch) };
         assert!(!reply.is_null());
         // SAFETY: reply points to an i32 allocated by hew_reply above.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), value * 2);
-            libc::free(reply);
+            crate::mem::buf_free(reply);
             crate::reply_channel_wasm::hew_reply_channel_free(ch);
             crate::mailbox_wasm::hew_mailbox_free(actor.mailbox.cast());
             reset_globals();
@@ -7228,7 +7249,7 @@ mod tests {
                 ask_value,
                 "reply payload must match the sent value"
             );
-            libc::free(reply);
+            crate::mem::buf_free(reply);
         }
         assert_eq!(
             REPLY_DISPATCHES.load(Ordering::Relaxed),
@@ -7629,6 +7650,7 @@ mod tests {
         assert!(!mailbox.is_null(), "mailbox allocation must succeed");
 
         let actor = Box::into_raw(Box::new(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 99,
             state: ptr::null_mut(),
@@ -7673,6 +7695,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }));
 
         // ── 3. Enqueue one message and run dispatch ───────────────────────────
@@ -7708,7 +7735,7 @@ mod tests {
         //      compile-time offset assertions above the struct definition —
         //      so the cast is valid.
         // SAFETY: actor is Box-allocated, not being dispatched, and the arena +
-        // mailbox are both valid.  state / init_state are null so libc::free(null)
+        // mailbox are both valid.  state / init_state are null so crate::mem::buf_free(null)
         // is a no-op.
         unsafe { crate::actor::free_actor_resources_wasm(actor.cast::<crate::actor::HewActor>()) };
 
@@ -9249,10 +9276,10 @@ mod tests {
             !reply.is_null(),
             "ask must succeed even when the handler parks in the sleep queue before replying"
         );
-        // SAFETY: reply was malloc'd by hew_reply; caller takes ownership.
+        // SAFETY: reply came from hew_reply's sized-block allocation; caller takes ownership.
         unsafe {
             assert_eq!(*reply.cast::<i32>(), 7, "reply value must match");
-            libc::free(reply);
+            crate::mem::buf_free(reply);
         }
         // All reply-channel references must be balanced.
         assert_eq!(

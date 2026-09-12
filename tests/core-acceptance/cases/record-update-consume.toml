@@ -1,0 +1,10 @@
+[[case]]
+id = "record-update-consume"
+intent = "A functional update consumes a temporary or a base with a non-copyable field, transferring carried fields and releasing overridden owned fields at the construction site."
+source = "cases/record-update-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first:3:one\nrenamed:0:two\nthird:7:three\n"
+exit = 0

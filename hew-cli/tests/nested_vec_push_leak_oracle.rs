@@ -58,8 +58,8 @@ use support::{describe_output, require_codegen};
 /// (empty or scribbled) changes the output verbatim.
 const VEC_VEC_STRING_REUSE_SOURCE: &str = "\
 fn build_rows(n: i64) -> Vec<Vec<string>> {\n\
-\x20   let rows: Vec<Vec<string>> = [];\n\
-\x20   let cur_row: Vec<string> = [];\n\
+\x20   var rows: Vec<Vec<string>> = [];\n\
+\x20   var cur_row: Vec<string> = [];\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < n {\n\
 \x20       cur_row.push(f\"r{i}c0\");\n\
@@ -95,11 +95,11 @@ const VEC_VEC_STRING_REUSE_EXPECTED: &str = "r0c0|r0c1|;r1c0|r1c1|;r2c0|r2c1|;OK
 /// value; pre-fix they aliased a single map handle.
 const VEC_HASHMAP_REUSE_SOURCE: &str = "\
 fn main() {\n\
-\x20   let rows: Vec<HashMap<string, i64>> = [];\n\
+\x20   var rows: Vec<HashMap<string, i64>> = [];\n\
 \x20   let key: string = \"k\";\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 3 {\n\
-\x20       let m: HashMap<string, i64> = HashMap.new();\n\
+\x20       var m: HashMap<string, i64> = HashMap.new();\n\
 \x20       m.insert(clone key, i * 7);\n\
 \x20       rows.push(m);\n\
 \x20       i = i + 1;\n\
@@ -130,8 +130,8 @@ fn vec_vec_string_drop_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let rows: Vec<Vec<string>> = [];\n\
-         \x20       let cur: Vec<string> = [];\n\
+         \x20       var rows: Vec<Vec<string>> = [];\n\
+         \x20       var cur: Vec<string> = [];\n\
          \x20       cur.push(\"per-iteration-row-element-one\");\n\
          \x20       cur.push(\"per-iteration-row-element-two\");\n\
          \x20       rows.push(cur);\n\

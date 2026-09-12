@@ -6,10 +6,14 @@ use hew_sir::{
     CallableId, CallableInstance, Edge, EffectSet, FunctionSourceOrigin, GenericTemplateId, OpId,
     Operand, OperandSlot, OwnKind, Provenance, RewriteError, SemAbiParam, SemBlock, SemCallConv,
     SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind, SemParamPassing,
-    SemSignature, SemTerminator, SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite,
-    ValueDef, ValueId,
+    SemSignature, SemTerminator, SemVariant, SemVariantArm, SemVariantField, SemVariantShape,
+    SirDiagnosticKind, SirInstanceKey, SuspendKind, TrapKind, UseSite, ValueDef, ValueId,
+    VariantShapeId,
 };
-use hew_types::{DefId, ResolvedTy};
+use hew_types::{
+    CloneKind, DefId, ResolvedTy, SendFact, TypeFactContext, TypeFactService, TypeFacts,
+    TypeInstanceKey, ValueClass,
+};
 use std::collections::BTreeMap;
 
 fn definition(id: u32) -> ValueDef {
@@ -51,10 +55,10 @@ fn call(
         callee: CallableId(callee),
         args,
         result,
-        normal: Edge {
+        normal: Some(Edge {
             target: BlockId(normal),
             args: normal_args,
-        },
+        }),
         unwind: CallUnwind::NotApplicable,
     }
 }
@@ -94,13 +98,41 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
             callables.push(callable_for(function));
         }
     }
+    let mut fact_service = TypeFactService::new(TypeFactContext::default(), BTreeMap::new());
+    for ty in functions.iter().flat_map(|function| {
+        function
+            .params
+            .iter()
+            .map(|value| &value.ty)
+            .chain(std::iter::once(&function.return_ty))
+            .chain(function.blocks.iter().flat_map(|block| {
+                block.args.iter().map(|value| &value.ty).chain(
+                    block
+                        .ops
+                        .iter()
+                        .flat_map(|op| op.results.iter().map(|value| &value.ty)),
+                )
+            }))
+    }) {
+        let _ = fact_service.require(ty);
+    }
     SemModule {
+        regex_patterns: Vec::new(),
+        actors: Vec::new(),
+        supervisors: Vec::new(),
+        resources: BTreeMap::new(),
+        closures: Vec::new(),
+        vtables: Vec::new(),
+        value_capabilities: BTreeMap::new(),
         callables,
         generic_templates: Vec::new(),
         root_unit_callables: Vec::new(),
+        entry_exit_plan: None,
         entry_callable: None,
         functions,
-        type_facts: BTreeMap::new(),
+        aggregate_shapes: Vec::new(),
+        variant_shapes: Vec::new(),
+        type_facts: fact_service.into_rows(),
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),
     }
@@ -141,6 +173,294 @@ fn unit_function(
     }
 }
 
+fn choice_ty() -> ResolvedTy {
+    ResolvedTy::Named {
+        name: "Choice".to_string(),
+        args: Vec::new(),
+        builtin: None,
+        is_opaque: false,
+    }
+}
+
+fn empty_choice_block(choice: &ResolvedTy) -> SemBlock {
+    SemBlock {
+        id: BlockId(2),
+        args: Vec::new(),
+        ops: vec![
+            SemOp {
+                id: OpId(3),
+                results: vec![ValueDef {
+                    id: ValueId(4),
+                    ty: choice.clone(),
+                    own: OwnKind::Owned,
+                }],
+                kind: SemOpKind::VariantMake {
+                    shape: VariantShapeId(0),
+                    variant: 1,
+                    fields: Vec::new(),
+                },
+                provenance: Provenance::Synthesized,
+            },
+            SemOp {
+                id: OpId(4),
+                results: Vec::new(),
+                kind: SemOpKind::DestroyValue {
+                    value: read(ValueId(4)),
+                },
+                provenance: Provenance::Synthesized,
+            },
+        ],
+        terminator: SemTerminator::Return { value: None },
+    }
+}
+
+fn choice_variant_shape(choice: &ResolvedTy) -> SemVariantShape {
+    SemVariantShape {
+        id: VariantShapeId(0),
+        enum_ty: choice.clone(),
+        is_indirect: false,
+        variants: vec![
+            SemVariant {
+                name: "Payload".to_string(),
+                fields: vec![SemVariantField {
+                    name: "0".to_string(),
+                    ty: ResolvedTy::String,
+                }],
+            },
+            SemVariant {
+                name: "Empty".to_string(),
+                fields: Vec::new(),
+            },
+        ],
+    }
+}
+
+fn exhaustive_choice_switch() -> SemModule {
+    let choice = choice_ty();
+    let mut module = module(vec![SemFunction {
+        id: ItemId(0),
+        callable: CallableId(0),
+        declaration: DefId::for_test("choose"),
+        name: "choose".to_string(),
+        span: 0..0,
+        source_origin: FunctionSourceOrigin::RootUnit,
+        params: vec![BlockArg {
+            value: ValueId(0),
+            ty: choice.clone(),
+            own: OwnKind::Guaranteed,
+        }],
+        return_ty: ResolvedTy::Unit,
+        entry: BlockId(0),
+        blocks: vec![
+            SemBlock {
+                id: BlockId(0),
+                args: Vec::new(),
+                ops: vec![SemOp {
+                    id: OpId(0),
+                    results: vec![ValueDef {
+                        id: ValueId(1),
+                        ty: choice.clone(),
+                        own: OwnKind::Owned,
+                    }],
+                    kind: SemOpKind::CopyValue {
+                        source: read(ValueId(0)),
+                    },
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::SwitchVariant {
+                    id: OpId(1),
+                    shape: VariantShapeId(0),
+                    scrutinee: read(ValueId(1)),
+                    arms: vec![
+                        SemVariantArm {
+                            variant: 0,
+                            fields: vec![ValueDef {
+                                id: ValueId(2),
+                                ty: ResolvedTy::String,
+                                own: OwnKind::Owned,
+                            }],
+                            target: Edge {
+                                target: BlockId(1),
+                                args: vec![read(ValueId(2))],
+                            },
+                        },
+                        SemVariantArm {
+                            variant: 1,
+                            fields: Vec::new(),
+                            target: Edge {
+                                target: BlockId(2),
+                                args: Vec::new(),
+                            },
+                        },
+                    ],
+                },
+            },
+            SemBlock {
+                id: BlockId(1),
+                args: vec![BlockArg {
+                    value: ValueId(3),
+                    ty: ResolvedTy::String,
+                    own: OwnKind::Owned,
+                }],
+                ops: vec![SemOp {
+                    id: OpId(2),
+                    results: Vec::new(),
+                    kind: SemOpKind::DestroyValue {
+                        value: read(ValueId(3)),
+                    },
+                    provenance: Provenance::Synthesized,
+                }],
+                terminator: SemTerminator::Return { value: None },
+            },
+            empty_choice_block(&choice),
+        ],
+        places: Vec::new(),
+        bindings: Vec::new(),
+    }]);
+    module.variant_shapes = vec![choice_variant_shape(&choice)];
+    module.callables[0].signature.params[0].passing = SemParamPassing::Borrow;
+    module.type_facts.insert(
+        TypeInstanceKey(choice),
+        TypeFacts {
+            class: ValueClass::CowValue,
+            clone: CloneKind::FieldWise,
+            send: SendFact::Known(true),
+            hash: false,
+            eq: false,
+        },
+    );
+    module
+}
+
+#[test]
+fn verifier_admits_a_consuming_exhaustive_variant_switch() {
+    let module = exhaustive_choice_switch();
+    assert!(
+        verify_module(&module).is_empty(),
+        "an exact exhaustive variant switch must verify: {:#?}",
+        verify_module(&module)
+    );
+}
+
+/// One `i64` function whose first operation is an integer constant.
+fn integer_constant_module() -> SemModule {
+    module(vec![own_kind_function(OwnKind::None, OwnKind::None)])
+}
+
+#[test]
+fn verifier_refuses_an_integer_constant_outside_its_result_type() {
+    // The constant's exact mathematical value must be admitted by its result
+    // type. u64::MAX typed I64 is the value that used to be unrepresentable
+    // and would now silently become -1 downstream.
+    let mut module = integer_constant_module();
+    let SemOpKind::ConstInteger(value) = &mut module.functions[0].blocks[0].ops[0].kind else {
+        panic!("fixture must contain an integer constant");
+    };
+    *value = i128::from(u64::MAX);
+
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidConstType { actual, .. }
+                if actual.contains("18446744073709551615") && actual.contains("i64")
+        )),
+        "u64::MAX typed i64 must be refused: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn verifier_refuses_an_integer_constant_one_past_u64_max() {
+    let mut module = integer_constant_module();
+    module.functions[0].blocks[0].ops[0].results[0].ty = ResolvedTy::U64;
+    let SemOpKind::ConstInteger(value) = &mut module.functions[0].blocks[0].ops[0].kind else {
+        panic!("fixture must contain an integer constant");
+    };
+    *value = i128::from(u64::MAX) + 1;
+
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidConstType { actual, .. }
+                if actual.contains("18446744073709551616")
+        )),
+        "one past u64::MAX must be refused: {diagnostics:#?}"
+    );
+}
+
+#[test]
+fn verifier_admits_u64_max_typed_u64() {
+    // The negative control for the two refusals above: the same value with the
+    // type that does admit it must not be flagged.
+    let mut module = integer_constant_module();
+    module.functions[0].blocks[0].ops[0].results[0].ty = ResolvedTy::U64;
+    let SemOpKind::ConstInteger(value) = &mut module.functions[0].blocks[0].ops[0].kind else {
+        panic!("fixture must contain an integer constant");
+    };
+    *value = i128::from(u64::MAX);
+
+    assert!(
+        !verify_module(&module).iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidConstType { .. }
+        )),
+        "u64::MAX typed u64 must verify: {:#?}",
+        verify_module(&module)
+    );
+}
+
+#[test]
+fn verifier_refuses_a_variant_switch_with_incomplete_coverage() {
+    let mut module = exhaustive_choice_switch();
+    let SemTerminator::SwitchVariant { arms, .. } = &mut module.functions[0].blocks[0].terminator
+    else {
+        panic!("fixture must contain a variant switch");
+    };
+    arms.pop();
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidTerminator { reason }
+            if reason.contains("descriptor requires 2") || reason.contains("missing arm 1")
+    )));
+}
+
+#[test]
+fn verifier_refuses_a_variant_arm_that_does_not_forward_its_payload() {
+    let mut module = exhaustive_choice_switch();
+    let SemTerminator::SwitchVariant { arms, .. } = &mut module.functions[0].blocks[0].terminator
+    else {
+        panic!("fixture must contain a variant switch");
+    };
+    arms[0].target.args.clear();
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("forward every defined field exactly once")
+    )));
+}
+
+#[test]
+fn verifier_refuses_variant_construction_with_the_wrong_payload_shape() {
+    let mut module = exhaustive_choice_switch();
+    let SemOpKind::VariantMake { variant, .. } = &mut module.functions[0].blocks[2].ops[0].kind
+    else {
+        panic!("fixture must contain a variant construction");
+    };
+    *variant = 0;
+
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("has 0 field(s), expected 1")
+    )));
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -176,7 +496,7 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(0),
                         results: vec![definition(2)],
-                        kind: SemOpKind::ConstI64(0),
+                        kind: SemOpKind::ConstInteger(0),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
@@ -217,14 +537,14 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(2),
                         results: vec![definition(5)],
-                        kind: SemOpKind::ConstI64(1),
+                        kind: SemOpKind::ConstInteger(1),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
                         id: OpId(3),
                         results: vec![definition(6)],
                         kind: SemOpKind::Binary {
-                            op: BinaryOp::Add,
+                            op: BinaryOp::WrappingAdd,
                             lhs: Operand { value: ValueId(4) },
                             rhs: Operand { value: ValueId(5) },
                         },
@@ -247,14 +567,14 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(4),
                         results: vec![definition(8)],
-                        kind: SemOpKind::ConstI64(2),
+                        kind: SemOpKind::ConstInteger(2),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
                         id: OpId(5),
                         results: vec![definition(9)],
                         kind: SemOpKind::Binary {
-                            op: BinaryOp::Add,
+                            op: BinaryOp::WrappingAdd,
                             lhs: Operand { value: ValueId(7) },
                             rhs: Operand { value: ValueId(8) },
                         },
@@ -277,14 +597,14 @@ fn block_arguments_are_ssa_join_values() {
                     SemOp {
                         id: OpId(6),
                         results: vec![definition(11)],
-                        kind: SemOpKind::ConstI64(3),
+                        kind: SemOpKind::ConstInteger(3),
                         provenance: Provenance::Synthesized,
                     },
                     SemOp {
                         id: OpId(7),
                         results: vec![definition(12)],
                         kind: SemOpKind::Binary {
-                            op: BinaryOp::Multiply,
+                            op: BinaryOp::WrappingMul,
                             lhs: Operand { value: ValueId(10) },
                             rhs: Operand { value: ValueId(11) },
                         },
@@ -520,7 +840,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 ops: vec![SemOp {
                     id: OpId(0),
                     results: vec![definition(0)],
-                    kind: SemOpKind::ConstI64(1),
+                    kind: SemOpKind::ConstInteger(1),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -557,7 +877,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 ops: vec![SemOp {
                     id: OpId(0),
                     results: vec![definition(0)],
-                    kind: SemOpKind::ConstI64(1),
+                    kind: SemOpKind::ConstInteger(1),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -596,13 +916,12 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
 
 #[test]
 fn operation_effects_are_derived_and_conservative() {
-    let checked_add = SemOpKind::Binary {
-        op: BinaryOp::Add,
-        lhs: Operand { value: ValueId(0) },
-        rhs: Operand { value: ValueId(1) },
+    let raw_deref = SemOpKind::Unary {
+        op: hew_parser::ast::UnaryOp::RawDeref,
+        value: Operand { value: ValueId(0) },
     };
-    assert_eq!(checked_add.effects(), EffectSet::MAY_TRAP);
-    assert!(checked_add.effects().may_trap());
+    assert_eq!(raw_deref.effects(), EffectSet::MAY_TRAP);
+    assert!(raw_deref.effects().may_trap());
 
     let wrapping_add = SemOpKind::Binary {
         op: BinaryOp::WrappingAdd,
@@ -757,7 +1076,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
             ops: vec![SemOp {
                 id: OpId(0),
                 results: vec![definition(0)],
-                kind: SemOpKind::ConstI64(1),
+                kind: SemOpKind::ConstInteger(1),
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
@@ -1057,7 +1376,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
             ops: vec![SemOp {
                 id: OpId(0),
                 results: vec![definition(0)],
-                kind: SemOpKind::ConstI64(1),
+                kind: SemOpKind::ConstInteger(1),
                 provenance: Provenance::Synthesized,
             }],
             terminator: SemTerminator::Return {
@@ -1118,7 +1437,7 @@ fn rewrite_fixture() -> SemFunction {
                     id: OpId(0),
                     results: vec![definition(3)],
                     kind: SemOpKind::Binary {
-                        op: BinaryOp::Add,
+                        op: BinaryOp::WrappingAdd,
                         lhs: read(ValueId(0)),
                         rhs: read(ValueId(0)),
                     },
@@ -1429,6 +1748,11 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
                 ops: Vec::new(),
                 terminator: SemTerminator::Suspend {
                     kind: SuspendKind::Await,
+                    result: hew_sir::CallResult::Unit,
+                    unwind: Edge {
+                        target: BlockId(1),
+                        args: Vec::new(),
+                    },
                     inputs: vec![BoundaryOperand {
                         operand: read(ValueId(0)),
                         decision: BoundaryDecision::Move,
@@ -1457,16 +1781,15 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
         diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
             SirDiagnosticKind::InvalidTerminator { reason }
-                if reason.contains("outside the verified SIR relation table")
+                if reason.contains("suspension has no matching")
         )),
         "a suspend no §1.5 row admits must be refused, got {diagnostics:?}"
     );
 }
 
-/// The same refusal for `Trap`: §1.6 gives a trap endpoint a kind table this
-/// phase does not check, so the terminator is refused rather than admitted.
+/// A typed trap is a complete semantic endpoint and needs no synthetic return.
 #[test]
-fn verifier_rejects_a_trap_endpoint_it_states_no_rule_for() {
+fn verifier_admits_a_typed_trap_endpoint() {
     let function = SemFunction {
         id: ItemId(0),
         callable: CallableId(0),
@@ -1490,17 +1813,13 @@ fn verifier_rejects_a_trap_endpoint_it_states_no_rule_for() {
     };
     let diagnostics = verify_module(&module(vec![function]));
     assert!(
-        diagnostics.iter().any(|diagnostic| matches!(
-            &diagnostic.kind,
-            SirDiagnosticKind::InvalidTerminator { .. }
-        )),
-        "a trap endpoint must be refused, got {diagnostics:?}"
+        diagnostics.is_empty(),
+        "typed trap must verify: {diagnostics:?}"
     );
 }
 
-/// The counterfactual for both rows above: the terminators this table does
-/// state a relation for are still admitted, so the refusal is about the
-/// unverified kinds and not about terminators in general.
+/// Ordinary control terminators remain admitted alongside typed traps; the
+/// refusal above is specific to an unimplemented suspend relation.
 #[test]
 fn verifier_still_admits_the_terminators_it_states_rules_for() {
     let function = SemFunction {
@@ -1652,7 +1971,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
                         ty: ResolvedTy::I64,
                         own: result_own,
                     }],
-                    kind: SemOpKind::ConstI64(7),
+                    kind: SemOpKind::ConstInteger(7),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Goto(Edge {
@@ -1714,7 +2033,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
                     }],
-                    kind: SemOpKind::ConstI64(7),
+                    kind: SemOpKind::ConstInteger(7),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Goto(Edge {
@@ -1766,7 +2085,8 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
             value: ValueId(0),
             ty: ResolvedTy::I64,
             own: match passing {
-                SemParamPassing::Borrow => OwnKind::Guaranteed,
+                SemParamPassing::Borrow | SemParamPassing::BorrowMut => OwnKind::Guaranteed,
+                SemParamPassing::Consume => OwnKind::Owned,
                 SemParamPassing::ReadOnly => OwnKind::None,
             },
         }],
@@ -1782,7 +2102,7 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
     call_site.blocks[0].ops = vec![SemOp {
         id: OpId(0),
         results: vec![definition(1)],
-        kind: SemOpKind::ConstI64(7),
+        kind: SemOpKind::ConstInteger(7),
         provenance: Provenance::Synthesized,
     }];
     call_site.blocks[0].terminator = call(
@@ -1804,18 +2124,7 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
     module
 }
 
-/// Does any diagnostic carry `needle` in its reason?
-fn any_reason_contains(diagnostics: &[hew_sir::SirDiagnostic], needle: &str) -> bool {
-    diagnostics.iter().any(|diagnostic| match &diagnostic.kind {
-        SirDiagnosticKind::InvalidCallable { reason, .. }
-        | SirDiagnosticKind::InvalidGenericTemplate { reason, .. }
-        | SirDiagnosticKind::InvalidOperation { reason, .. } => reason.contains(needle),
-        _ => false,
-    })
-}
-
-/// §1.2 rule 3's `Borrow` header slot is representable and walled: the callable
-/// table refuses a header that carries it, before any body reads it.
+/// A scalar header cannot claim the owned-value `Borrow` convention.
 #[test]
 fn verifier_refuses_a_callable_header_carrying_a_borrow_slot() {
     let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::Borrow));
@@ -1823,20 +2132,18 @@ fn verifier_refuses_a_callable_header_carrying_a_borrow_slot() {
         &diagnostic.kind,
         SirDiagnosticKind::InvalidCallable { callable, reason }
             if *callable == CallableId(0)
-                && reason.contains("parameter 0 has non-ReadOnly ABI passing")
+                && reason.contains("parameter 0 has Borrow passing, expected ReadOnly")
     )));
 }
 
-/// The second wall on the same module: a direct call to a callee whose slot is
-/// `Borrow` is refused at the call site too, so a header that slipped through
-/// cannot be reached by a call.
+/// A direct call must match the declared parameter-passing decision exactly.
 #[test]
 fn verifier_refuses_a_direct_call_to_a_borrow_slot_parameter() {
     let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::Borrow));
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidOperation { reason, .. }
-            if reason.contains("parameter 0 has non-ReadOnly ABI passing")
+            if reason.contains("is Copy, expected Borrow for Borrow parameter passing")
     )));
 }
 
@@ -1846,14 +2153,11 @@ fn verifier_refuses_a_direct_call_to_a_borrow_slot_parameter() {
 #[test]
 fn verifier_admits_the_same_header_and_call_with_a_read_only_slot() {
     let diagnostics = verify_module(&borrow_slot_module(SemParamPassing::ReadOnly));
-    assert!(
-        !any_reason_contains(&diagnostics, "non-ReadOnly ABI passing"),
-        "{diagnostics:#?}"
-    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }
 
-/// A generic template header carries the same wall: SIR does not own parameter
-/// ownership policy before substitution either.
+/// A template retains the declared read/consume mode. The concrete borrowed
+/// representation is decided after substitution from the actual type facts.
 #[test]
 fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
@@ -1878,8 +2182,8 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     assert!(diagnostics.iter().any(|diagnostic| matches!(
         &diagnostic.kind,
         SirDiagnosticKind::InvalidGenericTemplate { reason, .. }
-            if reason.contains("template parameter 0 carries ownership or caller-visible ABI policy")
-    )));
+            if reason.contains("template parameter 0 must retain a declared read or consume contract")
+    )), "{diagnostics:#?}");
 }
 
 /// The counterfactual for the template wall: the same template with a
@@ -1905,11 +2209,8 @@ fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
         },
     }];
     let diagnostics = verify_module(&module);
-    assert!(
-        !any_reason_contains(
-            &diagnostics,
-            "carries ownership or caller-visible ABI policy"
-        ),
-        "{diagnostics:#?}"
-    );
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
+    module.generic_templates[0].signature.params[0].passing = SemParamPassing::Consume;
+    let diagnostics = verify_module(&module);
+    assert!(diagnostics.is_empty(), "{diagnostics:#?}");
 }

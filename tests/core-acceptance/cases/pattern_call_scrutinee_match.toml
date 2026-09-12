@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_call_scrutinee_match"
+intent = "`match` over a CALL scrutinee (no `let`) that returns a fresh heap-owning enum. The scrutinee temp is not a binding, so the lowering mints one synthetic owner over it and releases the composite exactly once per exit edge (the from-call owner mint). Both payload fields are bound and read, so a use-after-free garbles the total and a double-free aborts."
+source = "cases/pattern_call_scrutinee_match.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

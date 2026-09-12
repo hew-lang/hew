@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_keys_unsupported_value_type"
+intent = "The fixture runs to completion and exits 1."
+source = "../vertical-slice/accept/hashmap_keys_unsupported_value_type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 1

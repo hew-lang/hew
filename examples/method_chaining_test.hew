@@ -2,11 +2,11 @@
 //! Description: Method Chaining Test example.
 
 type Point {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
-impl PointMethods for Point {
+impl Point {
     fn translate(pt: Point, dx: f64, dy: f64) -> Point {
         return Point { x: pt.x + dx, y: pt.y + dy };
     }
@@ -24,4 +24,5 @@ fn main() {
     let p2 = p1.translate(1.0, 1.0);
     let p3 = p2.scale(2.0);
     let d = p3.distance();
+    println(f"distance = {d}");
 }

@@ -18,7 +18,7 @@ import std.link_monitor.{PartitionPolicy, set_partition_policy};
 import std.testing;
 
 actor PolicyProbe {
-    var all_ok: bool = true;
+    var all_ok: bool = true,
 
     // Runs inside a dispatch, so an execution context exists: every variant
     // must be accepted by the mapping and recorded (returns true). A single
@@ -48,11 +48,11 @@ actor PolicyProbe {
 #[test]
 fn set_partition_policy_accepts_every_variant_in_a_dispatch() {
     let p = spawn PolicyProbe;
-    p.probe_every_policy();
+    let _ = p.probe_every_policy();
     // The fire-and-forget probe drains through the mailbox; the ask serialises
     // behind it so the observation reflects the completed probe.
     sleep(100ms);
-    match await p.all_accepted() {
+    match p.all_accepted() {
         .Ok(ok) => testing.assert_true(ok),
         .Err(_) => testing.assert_true(false),
     }

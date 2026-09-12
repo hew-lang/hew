@@ -380,6 +380,267 @@ pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: 
     }
 }
 
+// ── xoshiro256++ (`random.Rng`) ──────────────────────────────────────────
+//
+// `random.Rng` is a seedable, non-cryptographic generator distinct from the
+// thread-local MT19937 above: MT19937 seeds one implicit generator per
+// thread, while `Rng` is an explicit value a caller can hold, pass around,
+// and run several independent streams from in the same thread. xoshiro256++
+// is chosen for its small state (4 u64 words, carried as an ordinary
+// `Vec<u64>` field on the Hew side — no opaque handle required), its speed,
+// and its long track record of passing empirical randomness test suites
+// (BigCrush, PractRand) despite not being cryptographically secure. Secure
+// randomness is a separate, unrelated need served by `crypto_bytes`/
+// `crypto_u64` in `std/random/random.hew`, which delegate to
+// `crypto.random_bytes` (the existing `ring`-backed OS-entropy authority)
+// rather than duplicating a second entropy source here.
+//
+// Seed expansion uses splitmix64, the standard companion generator for
+// xoshiro: a single `i64` seed does not fill 256 bits of state on its own,
+// and splitmix64 is the reference algorithm's own recommended way to expand
+// a small seed into well-mixed state words.
+
+/// One splitmix64 step: advances `state` and returns the next output word.
+fn splitmix64_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Expand an `i64` seed into 4 xoshiro256++ state words via 4 splitmix64
+/// steps, matching the reference construction.
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "seed is a bit pattern here, not a magnitude; every i64 value is a valid seed"
+)]
+fn xoshiro_seed_words(seed: i64) -> [u64; 4] {
+    let mut s = seed as u64;
+    std::array::from_fn(|_| splitmix64_next(&mut s))
+}
+
+/// One xoshiro256++ step: advances `state` in place and returns the next
+/// output word. Reference: <https://prng.di.unimi.it/xoshiro256plusplus.c>.
+fn xoshiro256pp_next(state: &mut [u64; 4]) -> u64 {
+    let result = state[0]
+        .wrapping_add(state[3])
+        .rotate_left(23)
+        .wrapping_add(state[0]);
+    let t = state[1] << 17;
+    state[2] ^= state[0];
+    state[3] ^= state[1];
+    state[1] ^= state[2];
+    state[0] ^= state[3];
+    state[2] ^= t;
+    state[3] = state[3].rotate_left(45);
+    result
+}
+
+/// Draw an unbiased value in `[0, n)` from an xoshiro256++ state via
+/// mask-and-reject sampling (Lemire's simple approach): `n` is rounded up to
+/// the next power of two to get a bitmask, and draws outside `[0, n)` are
+/// rejected. Plain modulo would bias the low end of the range whenever `n`
+/// does not evenly divide 2^64.
+fn xoshiro_randbelow(state: &mut [u64; 4], n: u64) -> u64 {
+    if n <= 1 {
+        return 0;
+    }
+    let mask = n.next_power_of_two() - 1;
+    loop {
+        let r = xoshiro256pp_next(state) & mask;
+        if r < n {
+            return r;
+        }
+    }
+}
+
+/// Load a 4-word xoshiro256++ state from a Hew `Vec<u64>` state handle.
+///
+/// # Safety
+///
+/// `v` must be either null or a valid `HewVec` pointer.
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "HewVec data is always properly aligned for its element type"
+)]
+unsafe fn load_rng_state(v: *mut HewVec, context: &str) -> Option<[u64; 4]> {
+    // SAFETY: caller guarantees `v` is either null or a valid HewVec pointer.
+    let v = unsafe { validate_vec_shape(v, mem::size_of::<u64>(), context) }?;
+    // SAFETY: validate_vec_shape confirmed `v` is non-null and well-formed.
+    let vec = unsafe { &*v };
+    if vec.len != 4 {
+        crate::set_last_error(format!(
+            "{context}: expected a 4-word Rng state, got {}",
+            vec.len
+        ));
+        return None;
+    }
+    let data = vec.data.cast::<u64>();
+    // SAFETY: elem_size == 8 and len == 4 were confirmed above.
+    Some(unsafe { [*data, *data.add(1), *data.add(2), *data.add(3)] })
+}
+
+/// Write a 4-word xoshiro256++ state back into a Hew `Vec<u64>` state handle.
+///
+/// # Safety
+///
+/// `v` must be a valid, non-null `HewVec` pointer already validated by
+/// [`load_rng_state`] against the same allocation (`elem_size` 8, len 4).
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "HewVec data is always properly aligned for its element type"
+)]
+unsafe fn store_rng_state(v: *mut HewVec, state: [u64; 4]) {
+    // SAFETY: caller guarantees `v` is a valid HewVec with elem_size 8, len 4.
+    unsafe {
+        let data = (*v).data.cast::<u64>();
+        data.write(state[0]);
+        data.add(1).write(state[1]);
+        data.add(2).write(state[2]);
+        data.add(3).write(state[3]);
+    }
+}
+
+/// Create a fresh xoshiro256++ state, seeded from `seed` via 4 splitmix64
+/// expansions, as an owned `Vec<u64>` (a plain `HewVec` with
+/// `elem_size == 8`, `len == 4`).
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. The returned pointer is an
+/// ordinary owned `Vec<u64>` value; the caller releases it the same way as
+/// any other Hew-constructed vec.
+#[no_mangle]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "size_of::<u64>() is 8, fits in i64"
+)]
+pub unsafe extern "C" fn hew_rng_new(seed: i64) -> *mut HewVec {
+    let words = xoshiro_seed_words(seed);
+    // SAFETY: hew_vec_new_with_elem_size and hew_vec_push_generic are the
+    // ordinary vec constructors used throughout this crate; the pushed data
+    // pointers are valid `u64` references for the duration of the call.
+    unsafe {
+        let v = crate::vec::hew_vec_new_with_elem_size(mem::size_of::<u64>() as i64);
+        for word in &words {
+            crate::vec::hew_vec_push_generic(v, (word as *const u64).cast());
+        }
+        v
+    }
+}
+
+/// Draw the next `u64` from an `Rng` state, advancing it in place.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. `v` must be either null or a
+/// valid `HewVec` pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hew_rng_next_u64(v: *mut HewVec) -> u64 {
+    // SAFETY: caller guarantees `v` is either null or a valid HewVec pointer.
+    let Some(mut state) = (unsafe { load_rng_state(v, "hew_rng_next_u64") }) else {
+        return 0;
+    };
+    let result = xoshiro256pp_next(&mut state);
+    // SAFETY: load_rng_state validated `v`'s shape above.
+    unsafe { store_rng_state(v, state) };
+    result
+}
+
+/// Draw the next `f64` in `[0.0, 1.0)` from an `Rng` state, advancing it in
+/// place. Uses the top 53 bits of a `next_u64` draw, the precision of an
+/// `f64` mantissa (the standard xoshiro float-conversion recipe).
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. `v` must be either null or a
+/// valid `HewVec` pointer.
+#[no_mangle]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "bits >> 11 fits in 53 bits, exactly an f64 mantissa's width, and 1u64 << 53 is an exact power of two"
+)]
+pub unsafe extern "C" fn hew_rng_next_f64(v: *mut HewVec) -> f64 {
+    // SAFETY: forwarding to hew_rng_next_u64 with the same contract.
+    let bits = unsafe { hew_rng_next_u64(v) };
+    ((bits >> 11) as f64) * (1.0 / (1u64 << 53) as f64)
+}
+
+/// Draw a random integer in the half-open range `[lo, hi)` from an `Rng`
+/// state, advancing it in place. Returns `lo` when `hi <= lo`.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. `v` must be either null or a
+/// valid `HewVec` pointer.
+#[no_mangle]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "hi > lo is guaranteed by the check above"
+)]
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "xoshiro_randbelow(range) < range which fits in i64"
+)]
+pub unsafe extern "C" fn hew_rng_range(v: *mut HewVec, lo: i64, hi: i64) -> i64 {
+    if hi <= lo {
+        return lo;
+    }
+    // SAFETY: caller guarantees `v` is either null or a valid HewVec pointer.
+    let Some(mut state) = (unsafe { load_rng_state(v, "hew_rng_range") }) else {
+        return lo;
+    };
+    let range = (hi - lo) as u64;
+    let r = xoshiro_randbelow(&mut state, range);
+    // SAFETY: load_rng_state validated `v`'s shape above.
+    unsafe { store_rng_state(v, state) };
+    lo + r as i64
+}
+
+/// Shuffle a `Vec<i64>` in-place (Fisher-Yates) using an `Rng` state,
+/// advancing the state in place.
+///
+/// # Safety
+///
+/// Called from compiled Hew programs via C ABI. `state` must be either null
+/// or a valid `HewVec` pointer over `u64` elements; `target` must be either
+/// null or a valid `HewVec` pointer over `i64` elements.
+#[no_mangle]
+#[expect(
+    clippy::cast_ptr_alignment,
+    reason = "HewVec data is always properly aligned for its element type"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "shuffle index is bounded by vec length"
+)]
+pub unsafe extern "C" fn hew_rng_shuffle_i64(state: *mut HewVec, target: *mut HewVec) {
+    // SAFETY: caller guarantees `state` is either null or a valid HewVec pointer.
+    let Some(mut st) = (unsafe { load_rng_state(state, "hew_rng_shuffle_i64") }) else {
+        return;
+    };
+    // SAFETY: caller guarantees `target` is either null or a valid HewVec pointer.
+    if unsafe { validate_vec_shape(target, mem::size_of::<i64>(), "hew_rng_shuffle_i64") }.is_none()
+    {
+        return;
+    }
+    // SAFETY: `target`'s shape was validated above.
+    unsafe {
+        let vec = &mut *target;
+        let len = vec.len;
+        if len > 1 {
+            let data = vec.data.cast::<i64>();
+            for i in (1..len).rev() {
+                let j = xoshiro_randbelow(&mut st, (i + 1) as u64) as usize;
+                core::ptr::swap(data.add(i), data.add(j));
+            }
+        }
+    }
+    // SAFETY: `state`'s shape was validated by load_rng_state above.
+    unsafe { store_rng_state(state, st) };
+}
+
 #[cfg(test)]
 #[expect(
     clippy::cast_possible_truncation,
@@ -387,6 +648,43 @@ pub unsafe extern "C" fn hew_random_choices_vec(v: *mut HewVec, total: f64, _n: 
 )]
 mod tests {
     use super::*;
+
+    /// Reference sequence computed independently in Python from the
+    /// published splitmix64 and xoshiro256++ algorithms (not derived from
+    /// this Rust implementation) — see the xoshiro256++ module doc comment
+    /// for the algorithms and <https://prng.di.unimi.it/xoshiro256plusplus.c>.
+    #[test]
+    fn xoshiro256pp_seed42_matches_independent_reference() {
+        let mut state = xoshiro_seed_words(42);
+        assert_eq!(
+            state,
+            [
+                13_679_457_532_755_275_413,
+                2_949_826_092_126_892_291,
+                5_139_283_748_462_763_858,
+                6_349_198_060_258_255_764,
+            ]
+        );
+        let expected: [u64; 5] = [
+            15_021_278_609_987_233_951,
+            5_881_210_131_331_364_753,
+            18_149_643_915_985_481_100,
+            12_933_668_939_759_105_464,
+            14_637_574_242_682_825_331,
+        ];
+        for want in expected {
+            assert_eq!(xoshiro256pp_next(&mut state), want);
+        }
+    }
+
+    #[test]
+    fn rng_randbelow_never_reaches_bound() {
+        let mut state = xoshiro_seed_words(7);
+        for _ in 0..10_000 {
+            let n = xoshiro_randbelow(&mut state, 37);
+            assert!(n < 37, "randbelow(37) produced {n}");
+        }
+    }
 
     #[test]
     fn test_cpython_seed42_random() {

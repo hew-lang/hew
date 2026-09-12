@@ -1,0 +1,13 @@
+[[case]]
+id = "example-v05-hashmap-run-pass"
+intent = "A HashMap-heavy program runs to completion and prints its recorded output."
+source = "../../examples/v05/hashmap_run_pass.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -5,7 +5,7 @@
 // Two actors exchange messages in a pipeline pattern, exercising
 // rapid message passing and actor scheduling under load.
 actor Pinger {
-    var count: i64;
+    var count: i64,
     receive fn ping(n: i64) {
         count = n;
     }
@@ -16,7 +16,7 @@ actor Pinger {
 }
 
 actor Ponger {
-    var count: i64;
+    var count: i64,
     receive fn pong(n: i64) {
         count = n;
     }
@@ -34,20 +34,20 @@ fn main() {
     for i in 0 .. 1000 {
         let ping_value: i64 = i;
         let pong_value: i64 = i;
-        pinger.ping(ping_value);
-        ponger.pong(pong_value);
+        let _ = pinger.ping(ping_value);
+        let _ = ponger.pong(pong_value);
     }
-    let _ = await pinger.report();
-    let _ = await ponger.report();
+    let _ = pinger.report();
+    let _ = ponger.report();
     // Second burst: stress with higher volume
     println("--- Round 2: 5000 rounds ---");
     for j in 0 .. 5000 {
         let ping_value: i64 = j;
         let pong_value: i64 = j;
-        pinger.ping(ping_value);
-        ponger.pong(pong_value);
+        let _ = pinger.ping(ping_value);
+        let _ = ponger.pong(pong_value);
     }
-    let _ = await pinger.report();
-    let _ = await ponger.report();
+    let _ = pinger.report();
+    let _ = ponger.report();
     println("PASS: 6000 ping-pong rounds completed");
 }

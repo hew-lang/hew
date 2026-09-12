@@ -42,8 +42,8 @@ fn static_children_get_sequential_slot_indices() {
         actor Db    { receive fn exec() {}  }
 
         supervisor App {
-            child cache: Cache
-            child log:   Log
+            child cache: Cache,
+            child log:   Log,
             child db:    Db
         }
         ",
@@ -118,7 +118,7 @@ fn pool_count_and_member_init_arg_are_separated() {
     let output = lower(
         r"
         actor Worker {
-            var id: i64;
+            var id: i64,
             receive fn ping() {}
         }
 
@@ -149,7 +149,7 @@ fn static_child_keeps_count_as_init_field() {
     let output = lower(
         r"
         actor Counter {
-            var count: i64;
+            var count: i64,
             receive fn tick() {}
         }
 
@@ -184,7 +184,7 @@ fn static_and_pool_indices_are_disjoint() {
         actor Worker { receive fn ping()  {} }
 
         supervisor App {
-            child cache:  Cache
+            child cache:  Cache,
             pool  worker: Worker
         }
         ",

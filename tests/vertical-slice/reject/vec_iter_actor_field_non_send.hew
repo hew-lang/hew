@@ -16,7 +16,7 @@
 //   - "keep the resource inside one owning actor and send that actor a message instead"
 
 actor Holder {
-    var cur: VecIter<i64>;
+    var cur: VecIter<i64>,
     receive fn sum() -> i64 {
         var total: i64 = 0;
         for x in cur {
@@ -31,5 +31,5 @@ fn main() {
     v.push(40);
     v.push(2);
     let h = spawn Holder(cur: v.iter());
-    let _ = await h.sum();
+    let _ = h.sum();
 }

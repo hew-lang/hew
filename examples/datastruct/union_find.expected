@@ -1,0 +1,11 @@
+PASS: initial 8 components
+PASS: 4 components after pairs
+PASS: 0 and 1 connected
+PASS: 0 and 2 not connected
+PASS: 3 components after merge
+PASS: 0 and 2 now connected
+PASS: redundant union returns false
+PASS: all in one component
+---
+Passed: 8/8
+ALL PASS

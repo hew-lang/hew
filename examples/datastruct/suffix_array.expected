@@ -1,0 +1,14 @@
+PASS: SA length
+PASS: SA is sorted
+PASS: SA all indices present
+PASS: search [1,4]
+PASS: search [9,2,6]
+PASS: search not found
+PASS: LCP array basics
+PASS: LCP shared prefix
+PASS: search single element
+PASS: search full text
+---
+Passed: 10
+Failed: 0
+ALL PASS

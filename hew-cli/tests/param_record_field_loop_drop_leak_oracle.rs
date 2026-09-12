@@ -345,32 +345,42 @@ fn compile_and_run(source: &str, dir: &std::path::Path, name: &str) -> std::path
     bin
 }
 
+/// Was a check-time refusal: whole-field replacement (`holder.items =
+/// Vec.new()`) while `for value in holder.items` iterates the old vector was
+/// treated as a cursor-invalidating write. The reachable path clones each
+/// element out before the loop body runs the replacement, so the cursor
+/// never touches the freed vector's storage — accepted and clean under the
+/// poisoned allocator. `40` then `2` are the two elements pushed before the
+/// loop starts; the replacement each iteration never adds a third.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "the poisoned allocator contract is macOS-only; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
-fn projection_store_mid_loop_rejects_at_check_time() {
+fn projection_store_mid_loop_replaces_the_field_without_corrupting_the_cursor() {
+    require_codegen();
+
     let dir = tempfile::Builder::new()
         .prefix("projection-store-mid-loop-")
         .tempdir()
         .expect("tempdir");
-    let hew_src = dir.path().join("projection_store_mid_loop.hew");
-    std::fs::write(&hew_src, PROJECTION_STORE_MID_LOOP_SOURCE).expect("write hew source");
-
-    let output = std::process::Command::new(support::hew_binary())
-        .args(["check", hew_src.to_str().expect("hew src utf-8")])
-        .current_dir(support::repo_root())
-        .output()
-        .expect("invoke hew check");
-    assert!(
-        !output.status.success(),
-        "storing to the iterated field projection mid-loop must reject at \
-         check-time — accepting it re-opens the mid-loop handle replacement \
-         (poisoned-allocator abort / reused-handle reads):\n{}",
-        describe_output(&output)
+    let bin = compile_and_run(
+        PROJECTION_STORE_MID_LOOP_SOURCE,
+        dir.path(),
+        "projection_store_mid_loop",
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("assigning `holder.items` while a VecIter cursor borrows it"),
-        "the rejection must name the projected path and the borrowing cursor:\n{}",
-        describe_output(&output)
+    let output = run_under_malloc_scribble(&bin);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "40\n2\n",
+        "the cursor must see both original elements once each; the \
+         mid-loop field replacement must not add, drop or repeat one"
+    );
+    assert_eq!(
+        measure_leaks_exact(&bin),
+        (0, 0),
+        "each replaced Vec.new() and the original vector must be released \
+         exactly once, with no stranded cursor storage"
     );
 }
 

@@ -13,12 +13,12 @@
 //   status: 101              (hew_panic's clean-exit contract, preserved)
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64,
 }
 
 impl Conn {
-    fn close(c: Conn) {
-        print(c.fd);
+    fn close(consume self) {
+        print(self.fd);
         println("");
     }
 }

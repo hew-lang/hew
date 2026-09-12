@@ -5,9 +5,9 @@
 // 42, so a mis-tagged or mis-ordered payload changes the exit code.
 #[wire]
 enum Shape {
-    Dot;
-    Circle(i64);
-    Rect(i64, i64);
+    Dot,
+    Circle(i64),
+    Rect(i64, i64),
 }
 
 fn main() -> i64 {

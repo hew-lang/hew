@@ -15,22 +15,22 @@ fn has_marker(output: &hew_types::TypeCheckOutput, method: OptionResultMethod) -
 #[test]
 fn option_result_methods_record_structured_generic_markers() {
     let source = r#"
-        type Point { x: i64; y: i64; }
+        type Point { x: i64, y: i64, }
 
         fn exercise_option(opt_i64: Option<i64>, opt_str: Option<string>, opt_point: Option<Point>) {
             let _: bool = opt_point.is_some();
             let _: bool = opt_str.is_none();
-            let _: i64 = opt_i64.unwrap();
+            let _: i64 = opt_i64.expect("the value is present");
             let _: string = opt_str.unwrap_or("fallback");
-            let _: Point = opt_point.unwrap();
+            let _: Point = opt_point.expect("the value is present");
         }
 
         fn exercise_result(r_i64: Result<i64, string>, r_f64: Result<f64, string>, r_point: Result<Point, string>) {
             let _: bool = r_point.is_ok();
             let _: bool = r_i64.is_err();
-            let _: i64 = r_i64.unwrap();
+            let _: i64 = r_i64.expect("the value is present");
             let _: f64 = r_f64.unwrap_or(0.0);
-            let _: Point = r_point.unwrap();
+            let _: Point = r_point.expect("the value is present");
         }
     "#;
     let output = typecheck(source);
@@ -42,11 +42,11 @@ fn option_result_methods_record_structured_generic_markers() {
     for method in [
         OptionResultMethod::OptionIsSome,
         OptionResultMethod::OptionIsNone,
-        OptionResultMethod::OptionUnwrap,
+        OptionResultMethod::OptionExpect,
         OptionResultMethod::OptionUnwrapOr,
         OptionResultMethod::ResultIsOk,
         OptionResultMethod::ResultIsErr,
-        OptionResultMethod::ResultUnwrap,
+        OptionResultMethod::ResultExpect,
         OptionResultMethod::ResultUnwrapOr,
     ] {
         assert!(

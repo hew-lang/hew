@@ -1,10 +1,9 @@
-// Accept fixture: an `impl Sub for T` may provide a SUPER-trait method inline.
-// `trait Sub: Super` means the impl-site method-set check must treat `Super`'s
-// declared methods as KNOWN (not extraneous) when validating an `impl Sub`. The
-// impl provides `Sub`'s own `tag` plus `Super`'s `base` in one block, which must
-// ACCEPT — the "extra method" gate folds the whole super-trait chain into the
-// known set. Run e2e so the inline-provided methods are exercised through
-// dispatch. (Guards against the known set being scoped to the sub-trait only.)
+// Accept fixture: a sub-trait impl composes with its super-trait's own impl.
+// `trait Sub: Super` obliges `W` to implement `Super` where `Super` is declared,
+// so `base` lives in `impl Super for W` and `tag` in `impl Sub for W`. Both must
+// dispatch through the sub-trait's method call, so a method-set check that
+// scoped the known set to the sub-trait alone, or lost the super edge, shows up
+// here. Run e2e so both methods are exercised through dispatch.
 trait Super {
     fn base(val: Self) -> i64;
 }
@@ -14,16 +13,18 @@ trait Sub: Super {
 }
 
 type W {
-    id: i64;
+    id: i64,
 }
 
-impl Sub for W {
+impl Super for W {
     fn base(w: W) -> i64 {
         w.id
     }
+}
 
+impl Sub for W {
     fn tag(w: W) -> i64 {
-        w.id + 100
+        w.base() + 100
     }
 }
 

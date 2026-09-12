@@ -1,0 +1,21 @@
+// An `#[extern_symbol]` method declares its C boundary with its own Hew
+// signature: a borrowed receiver, its declared parameters and its declared
+// return type, including a scalar optional whose absent case is the runtime's
+// sentinel.
+import std.text.unicode;
+
+fn main() {
+    let text = "Hé 9世!";
+    println(f"runes={unicode.rune_count(text)} bytes={text.byte_len()} codepoints={text.len()}");
+    match text.codepoint_at_utf8(3) {
+        .Some(cp) => println(f"at3={cp}"),
+        .None => println("at3=none"),
+    }
+    match text.codepoint_at_utf8(99) {
+        .Some(cp) => println(f"at99={cp}"),
+        .None => println("at99=none"),
+    }
+    println(f"trim=[{"  pad  ".trim()}] contains={text.contains("9")}");
+    // The receiver keeps its value: a borrowed extern receiver is not consumed.
+    println(f"again={text.byte_len()}");
+}

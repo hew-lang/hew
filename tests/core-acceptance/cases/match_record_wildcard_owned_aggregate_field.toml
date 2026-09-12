@@ -1,0 +1,13 @@
+[[case]]
+id = "match_record_wildcard_owned_aggregate_field"
+intent = "Match-destructure wildcard on an owned-AGGREGATE field (`Inner` is a record that owns a `string`)."
+source = "../vertical-slice/accept/match_record_wildcard_owned_aggregate_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

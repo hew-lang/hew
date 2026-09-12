@@ -1,0 +1,11 @@
+[[case]]
+id = "channel_auto_close_scope"
+intent = "Sender/Receiver scope-exit auto-close."
+source = "cases/channel_auto_close_scope.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "ready\n"
+exit = 0

@@ -1,4 +1,4 @@
-// Cancelling a `receive gen fn` stream mid-drain (`for await ... break`) must
+// Cancelling a `receive gen fn` stream mid-drain (`for ... break`) must
 // not livelock the producer actor: the peer-closed check unwedges the pump
 // (which never resumes past the check), and the actor answers a later ask
 // normally. An infinite generator makes this unambiguous — the only way the
@@ -19,14 +19,14 @@ actor Ticker {
 fn main() {
     let t = spawn Ticker;
     var count: i64 = 0;
-    for await v in t.stream() {
+    for v in t.stream() {
         println(f"{v}");
         count = count + 1;
         if count >= 3 {
             break;
         }
     }
-    let r = await t.ping();
+    let r = t.ping();
     match r {
         .Ok(v) => println(f"ping={v}"),
         .Err(_) => println("ping failed"),

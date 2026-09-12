@@ -1,0 +1,11 @@
+[[case]]
+id = "yaml-mapping-keys-fault"
+intent = "Key enumeration results, an independent key sibling and the source mapping clean up when later argument evaluation faults before the consuming callee begins."
+source = "cases/yaml-mapping-keys-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

@@ -1,6 +1,6 @@
 //! Status: runnable (v0.5 record elements over std.channel)
 //! Description: Round-trips a heap-owning record through a channel and
-//! breaks out of a `for await` drain early with items still queued.
+//! breaks out of a `for` drain early with items still queued.
 //!
 //! A record with a `string` field is a LayoutManaged element: `send` deep-
 //! copies it into the queue envelope via the witness `clone_fn` (the caller
@@ -10,11 +10,11 @@
 //! `break` below exercises that queue-drop path: two `Tagged` envelopes are
 //! still queued when `rx` goes out of scope.
 
-import std.channel.channel;
+import std.channel;
 
 type Tagged {
-    label: string;
-    value: i64;
+    label: string,
+    value: i64,
 }
 
 actor DrainRecords {
@@ -34,7 +34,7 @@ actor DrainRecords {
         tx.send(Tagged { label: "second", value: 2 });
         tx.send(Tagged { label: "third", value: 3 });
         tx.close();
-        for await item in rx {
+        for item in rx {
             println(item.label);
             println(item.value);
             break;
@@ -45,8 +45,8 @@ actor DrainRecords {
 
 fn main() {
     let worker = spawn DrainRecords;
-    worker.run(0);
-    match await worker.fence() {
+    let _ = worker.run(0);
+    match worker.fence() {
         .Ok(_v) => {},
         .Err(_) => println("fence failed"),
     }

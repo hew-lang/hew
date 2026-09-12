@@ -4,12 +4,65 @@
 )]
 pub(super) use super::*;
 
+use crate::check::types::VecCursorMode;
+
+fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
+    let parse_result = hew_parser::parse(source);
+    assert!(
+        parse_result.errors.is_empty(),
+        "stdlib-backed source should parse cleanly, got: {:#?}",
+        parse_result.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    checker.check_program(&parse_result.program)
+}
+
+#[test]
+fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
+    for (value_type, initializer, operation) in [
+        ("bytes", "bytes.new()", "push(7 as u8)"),
+        (
+            "json.Value",
+            "json.object()",
+            "set(\"answer\", json.null()).expect(\"set succeeds\")",
+        ),
+        ("Vec<i64>", "Vec.new()", "push(7)"),
+    ] {
+        for (binding, mutable) in [("var", true), ("let", false)] {
+            for (declaration, receiver) in [
+                (
+                    format!("{binding} owner: {value_type} = {initializer};"),
+                    "owner",
+                ),
+                (
+                    format!("{binding} owner = Box {{ value: {initializer} }};"),
+                    "owner.value",
+                ),
+            ] {
+                let source = format!(
+                    "import std.encoding.json;\n\
+                     type Box {{ value: {value_type} }}\n\
+                     fn main() {{ {declaration} {receiver}.{operation}; }}"
+                );
+                let output = check_source_with_stdlib(&source);
+                if mutable {
+                    assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+                } else {
+                    assert_eq!(output.errors.len(), 1, "{source}: {:?}", output.errors);
+                    assert_eq!(output.errors[0].kind, TypeErrorKind::MutabilityError);
+                    assert!(output.errors[0].message.contains("`var`"));
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn channel_new_result_preserves_endpoint_type_parameter() {
     for (element_source, element_type) in [("i64", Ty::I64), ("string", Ty::String)] {
         let source = format!(
             r"
-            import std.channel.channel;
+            import std.channel;
 
             fn main() {{
                 let _result: Result<(channel.Sender<{element_source}>, channel.Receiver<{element_source}>), string> =
@@ -17,7 +70,7 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
             }}
             "
         );
-        let output = check_source(&source);
+        let output = check_source_with_stdlib(&source);
         assert!(
             output.errors.is_empty(),
             "channel.new should preserve Result while inferring {element_source} endpoints: {:#?}",
@@ -31,8 +84,16 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
         let call_span = call_start..call_start + call.len();
         let expected = Ty::result(
             Ty::Tuple(vec![
-                Ty::sender(element_type.clone()),
-                Ty::receiver(element_type),
+                Ty::Named {
+                    name: BuiltinType::Sender.canonical_name().to_string(),
+                    args: vec![element_type.clone()],
+                    builtin: Some(BuiltinType::Sender),
+                },
+                Ty::Named {
+                    name: BuiltinType::Receiver.canonical_name().to_string(),
+                    args: vec![element_type],
+                    builtin: Some(BuiltinType::Receiver),
+                },
             ]),
             Ty::String,
         );
@@ -47,9 +108,9 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
 
 #[test]
 fn channel_new_result_does_not_coerce_to_endpoint_tuple() {
-    let output = check_source(
+    let output = check_source_with_stdlib(
         r"
-        import std.channel.channel;
+        import std.channel;
 
         fn main() {
             let _pair: (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
@@ -72,7 +133,10 @@ fn literal_coercion_array_literal_to_fixed_array() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let span = 0..6;
     let expected = Ty::Array(Box::new(Ty::I64), 2);
-    let expr = Expr::Array(vec![make_int_literal(1, 1..2), make_int_literal(2, 4..5)]);
+    let expr = Expr::Array(vec![
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+    ]);
 
     let result = checker.check_against(&expr, &span, &expected);
 
@@ -94,9 +158,9 @@ fn literal_coercion_array_literal_length_mismatch() {
     let span = 0..9;
     let expected = Ty::Array(Box::new(Ty::I64), 2);
     let expr = Expr::Array(vec![
-        make_int_literal(1, 1..2),
-        make_int_literal(2, 4..5),
-        make_int_literal(3, 7..8),
+        ArrayElement::Value(make_int_literal(1, 1..2)),
+        ArrayElement::Value(make_int_literal(2, 4..5)),
+        ArrayElement::Value(make_int_literal(3, 7..8)),
     ]);
 
     let result = checker.check_against(&expr, &span, &expected);
@@ -124,11 +188,11 @@ fn literal_coercion_array_literal_element_mismatch() {
     let string_span = 1..4;
     let expected = Ty::Array(Box::new(Ty::I64), 2);
     let expr = Expr::Array(vec![
-        (
+        ArrayElement::Value((
             Expr::Literal(Literal::String("x".to_string())),
             string_span.clone(),
-        ),
-        make_int_literal(2, 6..7),
+        )),
+        ArrayElement::Value(make_int_literal(2, 6..7)),
     ]);
 
     let result = checker.check_against(&expr, &span, &expected);
@@ -343,8 +407,8 @@ fn hashset_clear_no_args_typechecks() {
 #[test]
 fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() {
     let source = r"
-        type SetBox { s: HashSet<i64>; }
-        type Outer { inner: SetBox; }
+        type SetBox { s: HashSet<i64>, }
+        type Outer { inner: SetBox, }
 
         fn direct(s: HashSet<i64>) {
             for x in s { let _ = x; }
@@ -512,11 +576,7 @@ fn vec_owned_record_new_admitted_via_owned_abi() {
 }
 
 #[test]
-fn vec_layout_unsupported_method_remains_fail_closed() {
-    // `Vec::clear` on layout-backed records has no runtime backing and
-    // must continue to fail closed.  (`Vec::remove`, `Vec::contains`,
-    // `Vec::push`, `Vec::get`, `Vec::set`, and `Vec::pop` are all lifted for
-    // Copy record/tuple elements as of W3.003 / W3.032.)
+fn vec_record_clear_has_semantic_contract() {
     let output = check_source(
         r"
         type Point { x: i64, y: i64 }
@@ -529,21 +589,14 @@ fn vec_layout_unsupported_method_remains_fail_closed() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("`Vec.clear`")
-                && error.message.contains("not")
-                && error.message.contains("runtime-backed yet")
-        }),
-        "Vec::clear on layout-backed records must fail closed, got {:#?}",
-        output.errors
-    );
-    assert!(
-        output.method_call_rewrites.values().all(|rewrite| {
-            !matches!(rewrite, MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "hew_vec_clear_layout")
-        }),
-        "layout-backed Vec::clear must not record a runtime rewrite: {:#?}",
-        output.method_call_rewrites
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Clear) }),
+        "missing semantic Vec::Clear: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -719,13 +772,13 @@ fn explicit_record_clone_rejects_resource_and_linear_in_both_syntaxes() {
         #[resource]
         type ResourceToken { id: i64 }
         impl ResourceToken {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         #[linear]
         type LinearTicket { id: i64 }
         impl LinearTicket {
-            fn redeem(consuming self) -> i64 { self.id }
+            fn redeem(consume self) -> i64 { self.id }
         }
 
         fn main() {
@@ -777,13 +830,13 @@ fn generic_record_clone_rejects_substituted_affine_fields() {
         #[resource]
         type ResourceToken { id: i64 }
         impl ResourceToken {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         #[linear]
         type LinearTicket { id: i64 }
         impl LinearTicket {
-            fn redeem(consuming self) -> i64 { self.id }
+            fn redeem(consume self) -> i64 { self.id }
         }
 
         type Wrapper<T> { value: T }
@@ -832,13 +885,13 @@ fn builtin_container_clone_rejects_affine_payloads() {
         #[resource]
         type ResourceToken { id: i64 }
         impl ResourceToken {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         #[linear]
         type LinearTicket { id: i64 }
         impl LinearTicket {
-            fn redeem(consuming self) -> i64 { self.id }
+            fn redeem(consume self) -> i64 { self.id }
         }
 
         fn main() {
@@ -1058,12 +1111,10 @@ fn record_clone_affine_veto_is_transitive_but_stops_at_rc() {
         } if type_name == "owner.LinearTicket" && member == "linear"
     ));
     // The AFFINE veto still stops at `Rc`: a shared handle to a resource is not
-    // itself affine, so this is not an `AffineValue` refusal. It is refused for
-    // the separate ownership reason — an `Rc` member of a value aggregate has no
-    // aggregate-ingress retain, so the composite drop plan would over-release.
+    // itself affine, and cloning it retains, so the wrapper is admissible.
     assert!(matches!(
         checker.record_clone_admissibility("SharedWrapper", &[], &span),
-        RecordCloneAdmissibility::UnbalancedSharedHandle { member, .. } if member == "shared"
+        RecordCloneAdmissibility::Admissible
     ));
 }
 
@@ -1162,11 +1213,14 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             fields: HashMap::from([
                 ("rc".to_string(), Ty::rc(resource.clone())),
                 ("weak".to_string(), Ty::weak(resource.clone())),
-                ("local".to_string(), Ty::local_pid(resource.clone())),
+                (
+                    "local".to_string(),
+                    Ty::actor_handle("ResourceToken", vec![]),
+                ),
                 ("remote".to_string(), Ty::remote_pid(resource.clone())),
                 (
                     "lambda".to_string(),
-                    Ty::lambda_pid(resource.clone(), resource.clone()),
+                    Ty::actor_fn(resource.clone(), resource.clone()),
                 ),
                 (
                     "actor".to_string(),
@@ -1217,12 +1271,11 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     );
 
     let span = Span::from(0..0);
-    // Semantic-handle fields are not affine-clone blockers. The `rc` field is
-    // still refused, but for the ownership reason (no aggregate-ingress retain
-    // for a shared handle inside a value aggregate), never as an affine veto.
+    // Semantic-handle fields are not affine-clone blockers: cloning an `Rc`
+    // field retains the shared allocation.
     assert!(matches!(
         checker.record_clone_admissibility("HandleWrapper", &[], &span),
-        RecordCloneAdmissibility::UnbalancedSharedHandle { member, .. } if member == "rc"
+        RecordCloneAdmissibility::Admissible
     ));
     assert!(
         matches!(
@@ -1357,14 +1410,17 @@ fn vec_contains_f64_typechecks() {
         output.errors
     );
 
-    // After the W4.027 Stage 3 resolved-call kernel cutover, Vec dispatch is
-    // recorded via `resolved_calls`, not the legacy `method_call_rewrites` side table.
+    // Checking retains the method identity; physical lowering chooses the
+    // selected element equality and its ABI after concrete type demand.
     assert!(
         output.resolved_calls.values().any(|call| {
             call.method_name == "contains"
-                && call.method_target.symbol_name == "hew_vec_contains_f64"
+                && call.target
+                    == crate::CallTarget::RuntimeCollection(MethodTargetFamily::Vec(
+                        VecMethod::Contains,
+                    ))
         }),
-        "Vec<f64>::contains must route to hew_vec_contains_f64 via resolved_calls: {:#?}",
+        "Vec<f64>::contains must retain its resolved collection method identity: {:#?}",
         output.resolved_calls
     );
 }
@@ -1416,11 +1472,7 @@ fn vec_contains_layout_managed_record_rejected_with_eq_eligibility_diagnostic() 
 }
 
 #[test]
-fn vec_owned_record_push_routes_to_owned_abi() {
-    // W5.016: pushing an owned record element routes to the owned-element ABI
-    // (`hew_vec_push_owned`) rather than failing the layout-managed Copy gate.
-    // The owned op deep-clones the element in; the record's per-type
-    // clone/drop thunks make it droppable.
+fn vec_owned_record_push_has_semantic_contract() {
     let output = check_source(
         r#"
         type Person { name: string }
@@ -1433,25 +1485,19 @@ fn vec_owned_record_push_routes_to_owned_abi() {
         "#,
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        !output.errors.iter().any(|error| {
-            error.message.contains("not `Copy`")
-                && error.message.contains("layout-managed Vec elements")
-        }),
-        "owned record Vec::push must be admitted via the owned ABI, got {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
-        }),
-        "owned record Vec::push must route to hew_vec_push_owned via resolved_calls: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
 
 #[test]
-fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
+fn vec_generic_record_methods_keep_semantic_identity() {
     let output = check_source(
         r"
         type Wrap<T> { v: T }
@@ -1485,44 +1531,25 @@ fn vec_generic_bitcopy_record_methods_route_to_plain_layout_abi() {
         output.errors
     );
 
-    for method in ["push", "set", "pop"] {
+    for method in [
+        VecMethod::Push,
+        VecMethod::Set,
+        VecMethod::Get,
+        VecMethod::Pop,
+    ] {
         assert!(
-            output.resolved_calls.values().any(|call| {
-                call.method_name == method
-                    && call.method_target.symbol_name == format!("hew_vec_{method}_layout")
-            }),
-            "Vec<Wrap<i64>> {method} must route to the Plain layout ABI, got: {:#?}",
+            output
+                .resolved_calls
+                .values()
+                .any(|call| { call.method_target.family == MethodTargetFamily::Vec(method) }),
+            "missing semantic Vec::{method:?}: {:#?}",
             output.resolved_calls
         );
     }
-    // `get` is trait-routed (`<Vec<T> as Index>::get`) to the element-agnostic
-    // fresh-owner choke point, NOT the per-element `_layout` getter.
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "get" && call.method_target.symbol_name == "hew_vec_get_clone"
-        }),
-        "Vec<Wrap<i64>>::get must route to the hew_vec_get_clone intrinsic, got: {:#?}",
-        output.resolved_calls
-    );
-    assert!(
-        output
-            .resolved_calls
-            .values()
-            .all(|call| !call.method_target.symbol_name.ends_with("_owned")),
-        "BitCopy generic records must not route to owned Vec ABI: {:#?}",
-        output.resolved_calls
-    );
 }
 
 #[test]
-fn vec_local_pid_push_routes_to_pointer_abi() {
-    // Regression: `Vec<LocalPid<T>>` is a collection of pointer-shaped actor
-    // handles. The constructor lowers `hew_vec_new_ptr` (null layout) in
-    // codegen; the checker MUST agree and route push to `hew_vec_push_ptr`, not
-    // `hew_vec_push_layout` (which would abort at runtime on the null layout —
-    // the constructor-vs-push authority split). Driven by the `builtin`
-    // discriminant (`BuiltinType::lowers_as_pointer_vec_element`), NOT the
-    // `TypeDef.is_indirect` flag, which actor handles leave `false`.
+fn vec_actor_handle_push_keeps_semantic_identity() {
     let output = check_source(
         r"
         actor Worker {
@@ -1530,7 +1557,7 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
         }
 
         fn main() {
-            let v: Vec<LocalPid<Worker>> = Vec.new();
+            var v: Vec<Worker> = Vec.new();
             let w = spawn Worker;
             v.push(w);
             let _ = v.len();
@@ -1538,35 +1565,25 @@ fn vec_local_pid_push_routes_to_pointer_abi() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.is_empty(),
-        "Vec<LocalPid<Worker>> must type-check: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_ptr"
-        }),
-        "Vec<LocalPid<Worker>>::push must route to hew_vec_push_ptr via resolved_calls: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
 
 #[test]
-fn vec_self_recursive_enum_push_routes_to_owned_abi() {
-    // A self-recursive enum (`Array(Vec<RedisReply>)` — the Redis/JSON reply
-    // shape) is admitted as an owned Vec element: its clone/drop thunk recurses
-    // through the inner `Vec<RedisReply>` via the owned-collection ABI. The
-    // self-recursion edge is keyed on the element's own name, so the container
-    // field no longer fails closed. Pushing a variant routes to the owned ABI;
-    // the copy-in clone + scope-exit drop are proven by the recursive-enum leak
-    // oracle.
+fn vec_self_recursive_enum_push_has_semantic_contract() {
     let output = check_source(
         r"
         enum RedisReply {
-            Nil;
-            Int(i64);
-            Array(Vec<RedisReply>);
+            Nil,
+            Int(i64),
+            Array(Vec<RedisReply>),
         }
 
         fn main() {
@@ -1576,30 +1593,19 @@ fn vec_self_recursive_enum_push_routes_to_owned_abi() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        !output
-            .errors
-            .iter()
-            .any(|error| { error.message.contains("cannot be a `Vec` element") }),
-        "self-recursive enum Vec element must now be admitted, got: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
-        }),
-        "self-recursive enum Vec::push must route to hew_vec_push_owned: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
 
 #[test]
-fn vec_record_collection_field_push_routes_to_owned_abi() {
-    // A record whose field is a collection (`Boxed { payload: Vec<i64> }`) is
-    // admitted as an owned Vec element: the record's `__hew_record_*_inplace`
-    // thunk clones/frees `payload` through the owned-collection ABI. Copy-in
-    // `.push` deep-clones the element so the source keeps its own scope-exit
-    // drop (proven by the push-clone leak oracle).
+fn vec_record_collection_field_push_has_semantic_contract() {
     let output = check_source(
         r"
         type Boxed { payload: Vec<i64> }
@@ -1612,19 +1618,13 @@ fn vec_record_collection_field_push_routes_to_owned_abi() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        !output
-            .errors
-            .iter()
-            .any(|error| error.message.contains("cannot be a `Vec` element")),
-        "record-with-collection-field Vec element must be admitted: {:#?}",
-        output.errors
-    );
-    assert!(
-        output.resolved_calls.values().any(|call| {
-            call.method_name == "push" && call.method_target.symbol_name == "hew_vec_push_owned"
-        }),
-        "record-with-collection Vec::push must route to hew_vec_push_owned: {:#?}",
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
         output.resolved_calls
     );
 }
@@ -1638,9 +1638,9 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
     let output = check_source(
         r"
         enum RedisReply {
-            Nil;
-            Int(i64);
-            Array(Vec<RedisReply>);
+            Nil,
+            Int(i64),
+            Array(Vec<RedisReply>),
         }
 
         fn main() {
@@ -1661,6 +1661,127 @@ fn vec_iter_admits_recursive_enum_through_its_vec_field() {
         output.errors.is_empty(),
         "a Vec-indirected recursive enum must be iterable: {:#?}",
         output.errors
+    );
+}
+
+#[test]
+fn recursive_collection_admission_through_entry_record() {
+    let output = check_source(
+        r#"
+        enum Carrier { Text(string), Sequence(Vec<Carrier>), Fields(Vec<Entry>), }
+        type Entry { key: string, value: Carrier, }
+
+        fn main() {
+            var children: Vec<Carrier> = Vec.new();
+            children.push(Carrier.Text("retained"));
+            var entries: Vec<Entry> = Vec.new();
+            entries.push(Entry { key: "child", value: Carrier.Sequence(children) });
+            var roots: Vec<Carrier> = Vec.new();
+            roots.push(Carrier.Fields(entries));
+            let copied = roots.clone();
+            for value in copied {
+                match value {
+                    Carrier.Text(_) => {},
+                    Carrier.Sequence(_) => {},
+                    Carrier.Fields(_) => {},
+                }
+            }
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn recursive_collection_admission_through_generic_entry_record() {
+    let output = check_source(
+        r#"
+        enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
+        type Entry<T> { key: string, value: Carrier<T>, }
+
+        fn main() {
+            var entries: Vec<Entry<string>> = Vec.new();
+            entries.push(Entry { key: "child", value: Carrier.Leaf("retained") });
+            var roots: Vec<Carrier<string>> = Vec.new();
+            roots.push(Carrier.Fields(entries));
+            let copied = roots.clone();
+            for _ in copied { let seen: i64 = 0; }
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+/// An inline cycle (`type Bad { next: Bad }`) has no finite layout, and the
+/// declaration checker owns that fact. The element rule reads the value class,
+/// which treats a recursive occurrence as an owning edge, so it deliberately
+/// does not re-derive declaration finiteness; an outer `Vec` cannot hide the
+/// declaration's own diagnostic.
+#[test]
+fn recursive_collection_admission_rejects_inline_cycles_after_outer_vec() {
+    for declarations in [
+        "type Root { children: Vec<Bad> } type Bad { next: Bad }",
+        "type Root { children: Vec<Bad> } type Bad { next: Peer } type Peer { next: Bad }",
+        "type Root { children: Vec<Bad<string>> } type Bad<T> { next: Inline<Bad<T>> } type Inline<T> { value: T }",
+        "type Root { children: Vec<Bad<string>> } type Bad<T> { next: Inline<Bad<Vec<T>>> } type Inline<T> { value: T }",
+        "type Root { children: Vec<Bad<string>> } type Bad<T> { valid: Vec<Bad<T>>, invalid: Inline<Bad<T>> } type Inline<T> { value: T }",
+    ] {
+        let parsed = hew_parser::parse(declarations);
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(
+            output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::RecursiveValueType { .. } | TypeErrorKind::ClassRecursion)),
+            "the inline declaration must itself be rejected: {declarations}: {:#?}",
+            output.errors,
+        );
+    }
+}
+
+#[test]
+fn recursive_collection_admission_preserves_finite_nested_generic_copy_layout() {
+    let output = check_source(
+        r"
+        type Wrap<T> { value: T }
+        type Outer<T> { child: Wrap<T> }
+        fn main() {
+            var direct: Vec<Wrap<Wrap<i64>>> = Vec.new();
+            direct.push(Wrap { value: Wrap { value: 1 } });
+            var mixed: Vec<Outer<Outer<i64>>> = Vec.new();
+            mixed.push(Outer { child: Wrap { value: Outer { child: Wrap { value: 2 } } } });
+            for _ in direct { let seen: i64 = 0; }
+            for _ in mixed { let seen: i64 = 0; }
+        }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn recursive_collection_admission_borrows_a_nested_resource_element() {
+    // D432: `for value in vec` no longer requires a semantic clone. An
+    // element with none — here a `#[resource]` type reached through nested
+    // heap indirection — is bound as a borrowed loan of the slot instead of
+    // being refused. The premise this test pinned before D432 (that
+    // recursive nesting must still refuse resource cloning) died: cloning
+    // is no longer what direct iteration does at all.
+    let output = check_source(
+        r"
+        #[resource]
+        type Token { id: i64 }
+        impl Token { fn close(consume self) {} }
+        enum Carrier<T> { Leaf(T), Fields(Vec<Entry<T>>), }
+        type Entry<T> { value: Carrier<T>, }
+        fn scan(values: Vec<Carrier<Token>>) {
+            for _ in values { let seen: i64 = 0; }
+        }
+        fn main() {}
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "borrowed iteration over a recursively nested resource element must be admitted: {:#?}",
+        output.errors,
     );
 }
 
@@ -1742,17 +1863,11 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
         builtin: None,
     };
 
-    assert!(
-        !checker.validate_vec_iter_element_clone_type(&ty, &Span::from(0..0)),
-        "a qualified, diverging generic value cycle must reject without overflowing"
-    );
-    assert!(
-        checker
-            .errors
-            .iter()
-            .any(|error| error.message.contains("recursive")),
-        "the VecIter boundary must report the recursive layout: {:#?}",
-        checker.errors
+    assert_eq!(
+        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
+        Some(VecCursorMode::Take),
+        "a qualified, diverging generic value cycle has no clone, so the cursor \
+         moves each element out — and the walk terminates instead of overflowing"
     );
 }
 
@@ -1896,8 +2011,8 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
 
     // Vec storage admits the collection-bearing record (copy-in push).
     assert!(
-        checker.vec_owned_element_admissible(&boxed),
-        "Vec storage must admit a collection-bearing record element"
+        checker.element_admission_refusal(&boxed).is_none() && checker.element_owns_heap(&boxed),
+        "Vec storage must admit a collection-bearing record element as an owned element"
     );
     // The channel/queue path stays fail-closed for it.
     assert!(
@@ -1905,7 +2020,7 @@ fn channel_admission_fails_closed_for_collection_bearing_record() {
         "the channel path must reject a collection-bearing record element"
     );
     // A collection-free record is admitted on both surfaces.
-    assert!(checker.vec_owned_element_admissible(&person));
+    assert!(checker.element_admission_refusal(&person).is_none());
     assert!(
         checker.queue_elem_admissible(&person),
         "a collection-free record must remain a valid channel element"
@@ -1983,10 +2098,7 @@ fn array_repeat_collection_bearing_record_is_admitted() {
 }
 
 #[test]
-fn vec_record_closure_collection_field_fails_closed() {
-    // A record whose collection field holds an UNCLONABLE element (a
-    // function/closure) keeps the record fail-closed: the owned-collection ABI
-    // cannot clone a closure environment per element.
+fn vec_record_function_collection_field_defers_executable_admission() {
     let output = check_source(
         r"
         type Holder { cbs: Vec<fn() -> i64> }
@@ -1999,13 +2111,14 @@ fn vec_record_closure_collection_field_fails_closed() {
         ",
     );
 
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
     assert!(
-        output.errors.iter().any(|error| {
-            error.message.contains("cannot be a `Vec` element")
-                && error.message.contains("no clone/drop thunk path")
-        }),
-        "record with a closure-bearing collection field must fail closed: {:#?}",
-        output.errors
+        output
+            .resolved_calls
+            .values()
+            .any(|call| { call.method_target.family == MethodTargetFamily::Vec(VecMethod::Push) }),
+        "missing semantic Vec::Push: {:#?}",
+        output.resolved_calls
     );
 }
 
@@ -2080,7 +2193,7 @@ fn vec_iter_clone_totality_defers_genuine_function_type_parameter() {
 fn user_vec_iter_name_does_not_bypass_into_iterator() {
     let output = check_source(
         r"
-        type VecIter<T> { value: T; }
+        type VecIter<T> { value: T, }
 
         fn main() {
             let iter = VecIter { value: 1 };
@@ -2134,18 +2247,22 @@ fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::BuiltinVecIntoIter { elem_ty }
-                if *elem_ty == ResolvedTy::I64
-        )),
+        output
+            .method_call_rewrites
+            .values()
+            .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinVecIntoIter)),
         "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
         output.method_call_rewrites
     );
 }
 
 #[test]
-fn vec_iter_clone_totality_rejects_direct_function_element() {
+fn vec_iter_borrows_direct_function_element() {
+    // D432: a function/closure element has no semantic clone, so direct
+    // `for` iteration binds it as a borrowed loan instead of refusing at a
+    // clone-totality boundary. The old refusal this test pinned applied to
+    // the pre-D432 design, where `for` always cloned; that premise died
+    // with the borrowed-iteration mode.
     let output = check_source(
         r"
         fn scan(callbacks: Vec<fn(i64) -> i64>) {
@@ -2155,86 +2272,71 @@ fn vec_iter_clone_totality_rejects_direct_function_element() {
         }
         ",
     );
-
-    let matching: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error
-                .message
-                .contains("`VecIter<fn(i64) -> i64>` is not supported")
-                && error
-                    .message
-                    .contains("has no semantic clone/retain operation")
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "direct iteration over a function/closure element must fail once at the clone-totality boundary: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "direct iteration over a function/closure element must borrow, not refuse: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn vec_iter_clone_totality_rejects_opaque_resource_element() {
+fn vec_iter_takes_an_opaque_resource_element() {
     let output = check_source(
         r"
         #[resource]
         #[opaque]
         type Handle {}
 
+        impl Handle {
+            fn close(consume self) {}
+        }
+
         fn scan(handles: Vec<Handle>) {
-            var it = handles.iter();
-            let _ = it.next();
+            var it = handles.into_iter();
+            let taken = it.next();
+            match taken {
+                Option.Some(handle) => handle.close(),
+                Option.None => {},
+            }
         }
         ",
     );
 
-    let matching: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error.message.contains("`VecIter<Handle>` is not supported")
-                && error.message.contains("resource/linear value `Handle`")
-                && error
-                    .message
-                    .contains("has no semantic clone/retain operation")
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "opaque/resource elements must fail once before VecIter clone-out lowering: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "an opaque/resource element is moved out by the cursor, not refused: {:#?}",
         output.errors
     );
 }
 
+/// A marked value has no clone, so the cursor moves it out instead of copying
+/// it — directly and through a record that carries one.
 #[test]
-fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
+fn vec_iter_drains_marked_resource_direct_and_wrapped() {
     let output = check_source(
         r"
         #[resource]
         type Tok { id: i64 }
+
+        impl Tok {
+            fn close(consume self) {}
+        }
+
         type Wrap { token: Tok }
+
         fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
-            let _ = xs.iter().next();
-            let _ = wrapped.iter().next();
+            for token in xs.into_iter() {
+                token.close();
+            }
+            for item in wrapped.into_iter() {
+                item.token.close();
+            }
         }
         ",
     );
-    let blockers: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error.message.contains("VecIter<")
-                && error.message.contains("resource/linear value `Tok`")
-        })
-        .collect();
-    assert_eq!(
-        blockers.len(),
-        2,
-        "direct and wrapped marked values must fail at VecIter: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "a clone-free element drains through the consuming iterator: {:#?}",
         output.errors
     );
 }
@@ -2248,7 +2350,7 @@ fn vec_iter_clone_totality_rejects_marked_resource_direct_and_wrapped() {
 fn vec_clone_growing_recursive_generic_terminates_and_names_the_refusal() {
     let output = check_source(
         r"
-        enum Grow<T> { Node(Vec<Grow<Vec<T>>>); Leaf(T); }
+        enum Grow<T> { Node(Vec<Grow<Vec<T>>>), Leaf(T), }
         fn main() { let xs: Vec<Grow<i64>> = []; let _ys = xs.clone(); }
     ",
     );
@@ -2270,43 +2372,31 @@ fn vec_clone_growing_recursive_generic_terminates_and_names_the_refusal() {
     );
 }
 
+/// A closure payload inside a positional record leaves the record without a
+/// clone, so the cursor drains it rather than copying each element out.
 #[test]
-fn vec_iter_clone_totality_rejects_function_inside_positional_record() {
+fn vec_iter_drains_a_function_inside_a_positional_record() {
     let output = check_source(
         r"
         type Callback(fn(i64) -> i64);
 
         fn scan(callbacks: Vec<Callback>) {
-            for callback in callbacks.iter() {
+            for callback in callbacks.into_iter() {
                 let _ = callback;
             }
         }
         ",
     );
 
-    let matching: Vec<_> = output
-        .errors
-        .iter()
-        .filter(|error| {
-            error
-                .message
-                .contains("`VecIter<Callback>` is not supported")
-                && error.message.contains("fn(i64) -> i64")
-                && error
-                    .message
-                    .contains("has no semantic clone/retain operation")
-        })
-        .collect();
-    assert_eq!(
-        matching.len(),
-        1,
-        "positional record constructor payloads must participate in clone-totality: {:#?}",
+    assert!(
+        output.errors.is_empty(),
+        "a clone-free positional record drains through the consuming iterator: {:#?}",
         output.errors
     );
 }
 
 #[test]
-fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
+fn vec_iter_cursor_takes_a_qualified_opaque_element() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker
         .user_opaque_type_names
@@ -2317,66 +2407,16 @@ fn vec_iter_clone_totality_rejects_qualified_opaque_name() {
         builtin: None,
     };
 
-    assert!(
-        !checker.validate_vec_iter_element_clone_type(&ty, &Span::from(0..0)),
+    assert_eq!(
+        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
+        Some(VecCursorMode::Take),
         "a qualified use must resolve against the declaration-local opaque name"
     );
     assert_eq!(
         checker.errors.len(),
-        1,
-        "qualified opaque rejection must remain a single boundary diagnostic: {:#?}",
+        0,
+        "an opaque element is drained, not refused: {:#?}",
         checker.errors
-    );
-    assert!(
-        checker.errors[0]
-            .message
-            .contains("opaque/resource handle `pkg.Handle`"),
-        "diagnostic must retain the resolved qualified identity: {:#?}",
-        checker.errors
-    );
-}
-
-#[test]
-fn vec_indirect_enum_element_rejected_at_checker_boundary() {
-    // #2647 — checker/MIR Vec-element admission convergence. An `indirect enum`
-    // element takes the `Ptr` token in `classify_element` (its `Vec` buffer is
-    // one heap-boxed node pointer per slot, built by codegen's `hew_vec_new_ptr`
-    // arm), so it bypasses the `Layout`-gated `vec_owned_element_admissible`
-    // check the record/enum arms consult — the checker ADMITTED it, then MIR
-    // rejected it deep in lowering with `Unsupported(NoReleaseProtocol)` because
-    // the per-element node free is unwired. That divergence (authoritative
-    // type-checker clean, downstream MIR fail-closed) is closed here: the
-    // release-protocol reject now fires at the checker boundary where the
-    // element type is already known.
-    //
-    // The pointer-token ABI invariant is UNCHANGED and lives at the
-    // `classify_element`/`resolve_runtime_symbol` authority
-    // (`is_owned && abi != Ptr`), pinned by `vec_local_pid_push_routes_to_pointer_abi`
-    // — this reject sits ABOVE that routing, it does not replace it.
-    let output = check_source(
-        r"
-        indirect enum StrNode {
-            Str(string);
-            Empty;
-        }
-
-        fn main() {
-            let nodes: Vec<StrNode> = Vec.new();
-            let _ = nodes.len();
-        }
-        ",
-    );
-
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("cannot be a `Vec` element")
-                && e.message.contains("indirect enum")
-                && e.message.contains("release protocol")),
-        "Vec<StrNode> (indirect enum) must be rejected AT the checker with the \
-         release-protocol reason, converging with the MIR reject: {:#?}",
-        output.errors
     );
 }
 
@@ -2457,8 +2497,9 @@ fn vec_trait_object_clone_dependent_surfaces_remain_refused() {
     );
     assert!(
         messages.iter().any(|message| message
-            .contains("array repeat requires the element type to be Clone")
-            && message.contains("no clone path")),
+            .contains("array repeat copies the element into every slot")
+            && message.contains("dyn Speaker")
+            && message.contains("no copy operation")),
         "array repeat must not duplicate a trait-object owner: {:#?}",
         output.errors
     );
@@ -2521,7 +2562,7 @@ fn dyn_trait_function_parameter_still_admitted() {
 }
 
 #[test]
-fn local_pid_actor_dispatch_uses_builtin_discriminator() {
+fn actor_handle_dispatch_uses_builtin_discriminator() {
     let output = check_source(
         r"
         actor Worker {
@@ -2530,7 +2571,7 @@ fn local_pid_actor_dispatch_uses_builtin_discriminator() {
 
         fn main() {
             let worker = spawn Worker;
-            worker.ping();
+            let _ = worker.ping();
         }
         ",
     );
@@ -2538,9 +2579,9 @@ fn local_pid_actor_dispatch_uses_builtin_discriminator() {
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
         output.actor_method_dispatch.values().any(
-            |dispatch| matches!(dispatch, ActorMethodKind::Fire(method) if method == "Worker::ping")
+            |dispatch| matches!(dispatch, ActorMethodKind::Ask { method_id, .. } if method_id == "Worker::ping")
         ),
-        "LocalPid<Worker> actor dispatch must be recorded by typed builtin discriminator: {:?}",
+        "Worker actor dispatch must be recorded by typed builtin discriminator: {:?}",
         output.actor_method_dispatch
     );
 }
@@ -2624,12 +2665,9 @@ fn turbofish_arity_mismatch_is_rejected() {
 }
 
 #[test]
-fn block_wrapped_await_actor_ask_types_as_result() {
-    // `await { actor.method() }` — the method call is wrapped in a bare block
-    // whose trailing expression is the method call. The checker must unwrap the
-    // block and recognise the ask, returning `Result<i64, AskError>` rather than
-    // the raw method return type `i64`.  Before the fix this produced a
-    // "constructor pattern `Ok` cannot match non-enum type `i64`" error.
+fn actor_ask_in_match_types_as_result() {
+    // Regression guard: an actor ask is an ordinary call and must resolve to
+    // `Result<i64, AskError>` so that `Ok`/`Err` arms type-check.
     let output = check_source(
         r"
         actor Doubler {
@@ -2640,7 +2678,7 @@ fn block_wrapped_await_actor_ask_types_as_result() {
 
         fn main() {
             let doubler = spawn Doubler;
-            let r = match await { doubler.process(5) } {
+            let r = match doubler.process(5) {
                 .Ok(v) => v,
                 .Err(_) => -1,
             };
@@ -2650,36 +2688,7 @@ fn block_wrapped_await_actor_ask_types_as_result() {
 
     assert!(
         output.errors.is_empty(),
-        "block-wrapped actor-ask await must type-check without errors; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn bare_await_actor_ask_in_match_still_types_as_result() {
-    // Regression guard: the bare form `await actor.method()` must continue
-    // to resolve to `Result<i64, AskError>` so that `Ok`/`Err` arms type-check.
-    let output = check_source(
-        r"
-        actor Doubler {
-            receive fn process(n: i64) -> i64 {
-                n * 2
-            }
-        }
-
-        fn main() {
-            let doubler = spawn Doubler;
-            let r = match await doubler.process(5) {
-                .Ok(v) => v,
-                .Err(_) => -1,
-            };
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "bare actor-ask await in match must type-check without errors; got: {:?}",
+        "an actor ask in match must type-check without errors; got: {:?}",
         output.errors
     );
 }
@@ -2698,7 +2707,7 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
     // `UndefinedMethod` diagnostic naming the builtin `Result<...>` receiver.
     let output = check_source(
         r#"
-        type Result { handle: i64; }
+        type Result { handle: i64, }
         impl Result {
             fn free(self) {}
         }
@@ -2709,7 +2718,7 @@ fn user_method_on_builtin_result_wrapper_is_rejected() {
         }
         fn main() {
             let db = spawn Db;
-            let r = await db.query("SELECT 1");
+            let r = db.query("SELECT 1");
             r.free();
         }
         "#,
@@ -2755,8 +2764,8 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
     // for builtin `Result`/`Option` receivers selects the builtin method for
     // ALL method names.
     let output = check_source_allowing_prelude_redeclaration(
-        r"
-        type Result { handle: i64; }
+        r#"
+        type Result { handle: i64, }
         impl Result {
             fn is_ok(self) -> i64 { self.handle }
         }
@@ -2765,11 +2774,11 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
         }
         fn main() {
             let d = spawn Doubler;
-            let r = await d.process(5);
+            let r = d.process(5);
             let ok: bool = r.is_ok();
-            let v = r.unwrap();
+            let v = r.expect("the value is present");
         }
-        ",
+        "#,
     );
 
     assert!(
@@ -2805,22 +2814,17 @@ fn builtin_result_methods_resolve_on_actor_ask_wrapper() {
 }
 
 #[test]
-fn builtin_option_extractors_publish_transfer_ownership() {
-    use crate::runtime_call::{
-        ProducedArgumentBoundary as Boundary, ProducedValueAcquisition as Acquisition,
-        ProducedValueOwnership as Ownership,
-    };
-
+fn builtin_option_extractors_consume_the_receiver() {
     let output = check_source(
-        r"
+        r#"
         fn take(value: Option<string>) -> string {
-            value.unwrap()
+            value.expect("the value is present")
         }
 
         fn take_or(value: Option<string>, fallback: string) -> string {
             value.unwrap_or(fallback)
         }
-        ",
+        "#,
     );
     assert!(
         output.errors.is_empty(),
@@ -2828,9 +2832,9 @@ fn builtin_option_extractors_publish_transfer_ownership() {
         output.errors
     );
 
-    for (method, expected_arguments) in [
-        (OptionResultMethod::OptionUnwrap, Vec::new()),
-        (OptionResultMethod::OptionUnwrapOr, vec![Boundary::Transfer]),
+    for method in [
+        OptionResultMethod::OptionExpect,
+        OptionResultMethod::OptionUnwrapOr,
     ] {
         let key = output
             .method_call_rewrites
@@ -2844,26 +2848,43 @@ fn builtin_option_extractors_publish_transfer_ownership() {
                 .then(|| key.clone())
             })
             .unwrap_or_else(|| panic!("missing builtin Option rewrite for {method:?}"));
-        let fact = output
-            .produced_value_ownership
-            .get(&key)
-            .unwrap_or_else(|| panic!("missing produced-value fact for {method:?}"));
-        assert_eq!(fact.ownership, Ownership::owned(Acquisition::MoveOut));
-        assert_eq!(fact.receiver_boundary, Some(Boundary::Transfer));
-        assert_eq!(fact.arguments, expected_arguments);
         assert!(output.method_call_consumes_receiver.contains(&key));
     }
+}
+
+#[test]
+fn unwrap_is_refused_and_points_at_expect() {
+    let output = check_source(
+        r"
+        fn take(value: Option<string>) -> string {
+            value.unwrap()
+        }
+        ",
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|e| e.message.contains("no method `unwrap`"))
+        .expect("`unwrap` must be refused on Option");
+    assert!(
+        error
+            .suggestions
+            .iter()
+            .any(|s| s.contains("expect(\"reason\")")),
+        "the refusal must point at `expect(reason)`; got: {:?}",
+        error.suggestions
+    );
 }
 
 #[test]
 fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
     let output = check_source_allowing_prelude_redeclaration(
         r"
-        type Option { value: i64; }
+        type Option { value: i64, }
         impl Option {
             fn is_some(self) -> i64 { self.value }
         }
-        type Result { value: i64; }
+        type Result { value: i64, }
         impl Result {
             fn is_ok(self) -> i64 { self.value }
         }
@@ -2895,7 +2916,7 @@ fn user_option_and_result_methods_do_not_get_builtin_rewrites() {
 fn user_generic_option_variant_constructors_preserve_source_nominal_identity() {
     let output = check_source_allowing_prelude_redeclaration(
         r"
-        enum Option<T> { Some(T); None }
+        enum Option<T> { Some(T), None }
 
         fn main() -> i64 {
             let inferred = Option.Some(6);
@@ -3039,8 +3060,8 @@ fn supervisor_wired_to_rejects_remote_pid_by_role() {
         }
 
         supervisor App {
-            child db: Db;
-            child api: Api wired_to: { db };
+            child db: Db,
+            child api: Api wired_to: { db },
         }
         ",
     );
@@ -3067,18 +3088,14 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
         r"
         machine MachineState {
             events {
-                Tick;
+                Tick,
             }
 
-            state Idle;
-            state Running;
+            state Idle,
+            state Running,
 
-            on Tick: Idle => .Running {
-                .Running
-            }
-            on Tick: Running => .Idle {
-                .Idle
-            }
+            on Tick: Idle => .Running,
+            on Tick: Running => .Idle,
         }
 
         fn main() {
@@ -3090,12 +3107,9 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     assert!(
-        output
-            .machine_method_dispatch
-            .values()
-            .any(|dispatch| matches!(dispatch, MachineMethodKind::Step { machine_name } if machine_name == "MachineState")),
-        "user machine named MachineState must still register as a nominal machine: {:?}",
-        output.machine_method_dispatch
+        output.type_defs.contains_key("MachineState"),
+        "user machine named MachineState must still register as a nominal type: {:?}",
+        output.type_defs.keys().collect::<Vec<_>>()
     );
     assert_eq!(
         Ty::normalize_named("MachineState".to_string(), vec![]),
@@ -3115,6 +3129,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
     let mut checker = Checker::new(registry);
 
     let inner = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "Inner".to_string(),
@@ -3142,6 +3157,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         lang_item: None,
     };
     let outer = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "Outer".to_string(),
@@ -3169,6 +3185,7 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
         lang_item: None,
     };
     let plain = TypeDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         visibility: Visibility::Private,
         kind: TypeDeclKind::Struct,
         name: "Plain".to_string(),
@@ -3213,8 +3230,11 @@ fn register_type_decl_marks_transitive_handle_bearing_structs() {
 #[test]
 fn vec_owned_element_admits_rc_and_weak_handles() {
     let checker = Checker::new(ModuleRegistry::new(vec![]));
-    assert!(checker.vec_owned_element_admissible(&Ty::rc(Ty::I64)));
-    assert!(checker.vec_owned_element_admissible(&Ty::weak(Ty::I64)));
+    for handle in [Ty::rc(Ty::I64), Ty::weak(Ty::I64)] {
+        assert_eq!(checker.element_admission_refusal(&handle), None);
+        assert!(checker.element_owns_heap(&handle));
+        assert_eq!(checker.element_clone_blocker(&handle), None);
+    }
 }
 
 #[test]
@@ -3255,25 +3275,6 @@ fn free_call_len_on_hashset_records_lowering_fact() {
     assert_eq!(fact.element_type, crate::HashSetElementType::I64);
     assert_eq!(fact.abi_variant, crate::HashSetAbi::Int64);
     assert_eq!(fact.drop_kind, crate::DropKind::HashSetFree);
-}
-
-#[test]
-fn concrete_vec_validation_reaches_function_wrapped_vec() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let ty = Ty::Function {
-        params: vec![Ty::Named {
-            builtin: Some(crate::BuiltinType::Vec),
-            name: "Vec".to_string(),
-            args: vec![Ty::Array(Box::new(Ty::String), 4)],
-        }],
-        ret: Box::new(Ty::Unit),
-    };
-
-    assert!(!checker.validate_concrete_vec_type(&ty, &(0..0)));
-    assert!(checker
-        .errors
-        .iter()
-        .any(|err| err.kind == TypeErrorKind::InvalidOperation && err.message.contains("Vec<")));
 }
 
 #[test]
@@ -3356,7 +3357,7 @@ fn non_root_private_rc_record_is_admitted_during_body_checking() {
         doc: None,
     };
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module).unwrap();
+    mg.add_module(module).expect("the value is present");
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
         module_graph: Some(mg),
@@ -3413,7 +3414,7 @@ fn imported_module_record_seeds_send_marker_for_actor_ask_reply() {
         doc: None,
     };
     let mut mg = ModuleGraph::new(root_id.clone());
-    mg.add_module(module).unwrap();
+    mg.add_module(module).expect("the value is present");
     mg.topo_order = vec![mod_id, root_id];
     let program = Program {
         module_graph: Some(mg),
@@ -3488,7 +3489,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
         source_paths: vec![],
         doc: None,
     })
-    .unwrap();
+    .expect("the value is present");
     mg.add_module(Module {
         id: good_id.clone(),
         items: good.program.items,
@@ -3496,7 +3497,7 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
         source_paths: vec![],
         doc: None,
     })
-    .unwrap();
+    .expect("the value is present");
     mg.topo_order = vec![bad_id, good_id, root_id];
     let program = Program {
         module_graph: Some(mg),
@@ -3530,11 +3531,11 @@ fn same_bare_name_imported_replies_derive_send_per_module() {
 }
 
 #[test]
-fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
+fn actor_handle_layout_does_not_recurse_into_actor_rc_state() {
     let parsed = hew_parser::parse(
         r"
         actor Worker {
-            let value: Rc<i64>;
+            let value: Rc<i64>,
             receive fn ping() {}
         }
 
@@ -3548,13 +3549,9 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let _ = checker.check_program(&parsed.program);
-    let local_pid_ty = Ty::local_pid(Ty::Named {
-        builtin: None,
-        name: "Worker".to_string(),
-        args: vec![],
-    });
+    let actor_handle_ty = Ty::actor_handle("Worker", vec![]);
 
-    let vec_ty = checker.make_vec_type(local_pid_ty, &(0..0));
+    let vec_ty = checker.make_vec_type(actor_handle_ty, &(0..0));
     assert!(matches!(
         vec_ty,
         Ty::Named {
@@ -3566,7 +3563,7 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
         !checker.errors.iter().any(|err| {
             err.kind == TypeErrorKind::UnsafeCollectionElement && err.message.contains("Vec")
         }),
-        "LocalPid<Worker> should not inspect Worker state for Vec layout, got: {:?}",
+        "Worker should not inspect Worker state for Vec layout, got: {:?}",
         checker.errors
     );
 }
@@ -3593,10 +3590,10 @@ fn local_pid_layout_does_not_recurse_into_actor_rc_state() {
 fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
     let output = check_source(
         r"
-        type Bag<T> { items: Vec<T>; }
+        type Bag<T> { items: Vec<T>, }
 
         fn main() {
-            let b = Bag { items: Vec.new() };
+            var b = Bag { items: Vec.new() };
             b.items.push(7);
         }
         ",
@@ -3626,11 +3623,11 @@ fn vec_new_with_deferred_element_type_publishes_its_runtime_target() {
 fn nested_generic_record_vec_new_publishes_its_runtime_target() {
     let output = check_source(
         r"
-        type Inner<T> { xs: Vec<T>; }
-        type Outer<T> { inner: Inner<T>; }
+        type Inner<T> { xs: Vec<T>, }
+        type Outer<T> { inner: Inner<T>, }
 
         fn main() {
-            let o = Outer { inner: Inner { xs: Vec.new() } };
+            var o = Outer { inner: Inner { xs: Vec.new() } };
             o.inner.xs.push(3);
         }
         ",
@@ -3650,5 +3647,155 @@ fn nested_generic_record_vec_new_publishes_its_runtime_target() {
         )),
         "nested deferred-element `Vec::new()` must publish its canonical target: {:#?}",
         output.direct_call_targets
+    );
+}
+
+/// `HashMap.new()` and `HashSet.new()` without a turbofish take their type
+/// arguments from the expected type — an annotated binding, or a record-literal
+/// field whose declared type supplies the shape. Both must publish the canonical
+/// runtime constructor target: a call that reaches semantic lowering carrying
+/// only the builtin catalog endpoint has no ownership contract and fails closed
+/// with `E_SIR_UNSUPPORTED`.
+#[test]
+fn annotated_map_and_set_constructors_publish_their_runtime_targets() {
+    let output = check_source(
+        r#"
+        fn main() {
+            var labels: HashMap<string, i64> = HashMap.new();
+            var members: HashSet<string> = HashSet.new();
+            labels.insert("one", 1);
+            members.insert("one");
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "annotated map and set constructors must typecheck: {:#?}",
+        output.errors
+    );
+    for family in [
+        crate::runtime_call::RuntimeCallFamily::HashMapNew,
+        crate::runtime_call::RuntimeCallFamily::HashSetNew,
+    ] {
+        assert!(
+            output.direct_call_targets.values().any(|target| matches!(
+                target,
+                crate::check::dispatch::CallTarget::Runtime(published) if *published == family
+            )),
+            "annotated constructor must publish {family:?}: {:#?}",
+            output.direct_call_targets
+        );
+    }
+}
+
+/// The same property through a record-literal field initializer, the shape the
+/// collection-field acceptance cases use. The field's declared type is the
+/// expected type, so the constructor resolves there and nowhere else.
+#[test]
+fn record_field_map_and_set_constructors_publish_their_runtime_targets() {
+    let output = check_source(
+        r#"
+        type Registry { labels: HashMap<string, string>, members: HashSet<string>, }
+
+        fn main() {
+            var r = Registry { labels: HashMap.new(), members: HashSet.new() };
+            r.members.insert("one");
+        }
+        "#,
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "record field map and set constructors must typecheck: {:#?}",
+        output.errors
+    );
+    for family in [
+        crate::runtime_call::RuntimeCallFamily::HashMapNew,
+        crate::runtime_call::RuntimeCallFamily::HashSetNew,
+    ] {
+        assert!(
+            output.direct_call_targets.values().any(|target| matches!(
+                target,
+                crate::check::dispatch::CallTarget::Runtime(published) if *published == family
+            )),
+            "record field constructor must publish {family:?}: {:#?}",
+            output.direct_call_targets
+        );
+    }
+}
+
+/// Negative control: a map constructor whose expected type is not a `HashMap`
+/// is a type error, and the mismatch does not change which callee was written.
+/// `HashMap.new` is the map constructor whatever the annotation says, so the
+/// published target stays the map family and the diagnostic carries the refusal.
+#[test]
+fn map_constructor_against_a_non_map_expectation_is_rejected() {
+    let output = check_source(
+        r"
+        fn main() {
+            var wrong: Vec<i64> = HashMap.new();
+        }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "a map constructor assigned to a `Vec` binding must be rejected"
+    );
+    assert!(
+        output.direct_call_targets.values().any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(
+                crate::runtime_call::RuntimeCallFamily::HashMapNew
+            )
+        )),
+        "the map constructor keeps its callee identity under a mismatch: {:#?}",
+        output.direct_call_targets
+    );
+}
+
+/// `finalize_hashmap_admission` replays deferred `HashMap` key admission
+/// after inference settles, on a scope it rebuilds from the type parameters
+/// recorded at the deferred site. That rebuild used to carry only the
+/// parameter *names*, dropping their declared bounds, so a generic actor's
+/// `K: Hash + Eq` field key was checked against an empty bound set and
+/// spuriously rejected. The declared bounds must survive to the deferred
+/// check.
+#[test]
+fn generic_actor_hashmap_field_key_bounds_survive_deferred_admission() {
+    let output = check_source(
+        r"
+        actor Cache<K: Hash + Eq, V: Clone> {
+            var entries: HashMap<K, V>,
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+
+    assert!(
+        output.errors.is_empty(),
+        "K: Hash + Eq must satisfy HashMap key admission for a generic actor field; got: {:#?}",
+        output.errors
+    );
+}
+
+/// Negative control for the above: a key type parameter declared without
+/// `Hash` must still be refused as a `HashMap` key, so the fix does not
+/// disable the admission check itself.
+#[test]
+fn generic_actor_hashmap_field_key_without_hash_bound_is_still_rejected() {
+    let output = check_source(
+        r"
+        actor Cache<K: Eq, V: Clone> {
+            var entries: HashMap<K, V>,
+        }
+        fn main() -> i64 { 0 }
+        ",
+    );
+
+    assert!(
+        !output.errors.is_empty(),
+        "K without a Hash bound must still be rejected as a HashMap key"
     );
 }

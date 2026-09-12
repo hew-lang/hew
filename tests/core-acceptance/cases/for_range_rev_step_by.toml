@@ -1,0 +1,13 @@
+[[case]]
+id = "for_range_rev_step_by"
+intent = "The fixture prints exactly its recorded output and exits 0."
+source = "../vertical-slice/accept/for_range_rev_step_by.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "10\n7\n4\n1\n"
+exit = 0

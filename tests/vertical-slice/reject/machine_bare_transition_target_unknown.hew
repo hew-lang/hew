@@ -11,13 +11,13 @@
 
 machine Light {
     events {
-        Go;
+        Go,
     }
 
-    state Idle;
-    state Running;
+    state Idle,
+    state Running,
 
-    on Go: Idle => Bogus;
+    on Go: Idle => Bogus,
 
     default { state }
 }

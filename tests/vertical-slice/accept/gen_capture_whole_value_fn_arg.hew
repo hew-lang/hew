@@ -4,13 +4,13 @@
 // mutates its copy; neither the environment's view nor the caller's original
 // observes that mutation, and nothing is released twice at teardown.
 fn take(value: Vec<i64>) -> Vec<i64> {
-    let v = value;
+    var v = value;
     v.push(99);
     v
 }
 
 fn main() {
-    let items: Vec<i64> = Vec.new();
+    var items: Vec<i64> = Vec.new();
     items.push(10);
     items.push(20);
     let g = gen {

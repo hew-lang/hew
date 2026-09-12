@@ -1,0 +1,12 @@
+[[case]]
+id = "example-v05-linear-unconsumed-fall-through"
+intent = "A `#[linear]` value that falls through to the return unconsumed is refused; today the refusal is the SIR limitation on the nominal, not the MustConsume check the fixture is written for."
+source = "../../examples/v05/linear/reject/linear_unconsumed_fall_through.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0

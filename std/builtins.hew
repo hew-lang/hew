@@ -5,20 +5,30 @@
 //! program control flow.
 
 // ---------------------------------------------------------------------------
-// Actor pid types
+// Actor references
 // ---------------------------------------------------------------------------
-/// A process-local actor pid returned by `spawn`.
-///
-/// `LocalPid<T>` is accepted by all built-in actor functions (`close`, `link`,
-/// `monitor`, etc.) and by any function that takes `dyn Pid<Msg = M>`.
-pub type LocalPid<T> {
-}
-
+// An actor is the type of its handle: `spawn Orders(...)` has type `Orders`,
+// and a field, parameter, return or element that holds an actor is written
+// with the actor's own name. There is no separate pid type to declare here.
+//
+// Termination has three spellings:
+//
+// - `close(actor)` requests a cooperative stop and returns once the actor's
+//   terminal cleanup has run.
+// - `fork close(actor)` makes the same request without waiting; `await` on the
+//   task it yields waits for the same point.
+// - `closed(actor)` waits for an actor another party is stopping, and requests
+//   nothing itself.
+//
+// Calls to receive handlers wait for completion, including void handlers.
+// Use `mailbox(target, on_full: ...)` for submission and
+// `policy(target, on_full: ...)` to choose completion-call admission.
 /// A stable reference to a supervised actor role.
 ///
-/// Unlike `LocalPid<T>`, a `ChildRef<T>` never snapshots an actor allocation.
-/// Each operation resolves the role's current incarnation through its owning
-/// supervisor and returns an error while the child is unavailable or stopped.
+/// Unlike an actor handle, a `ChildRef<T>` never snapshots an actor
+/// allocation. Each operation resolves the role's current incarnation through
+/// its owning supervisor and returns an error while the child is unavailable
+/// or stopped.
 pub type ChildRef<T> {
 }
 
@@ -30,46 +40,166 @@ pub type NodeId {
 pub type Location {
 }
 
+pub type NodeConfig {
+    bind: string,
+    transport: string,
+    key: string,
+    trust: string,
+    peers: Vec<string>,
+    seeds: Vec<string>,
+}
+
+/// A node lifecycle operation could not apply the supplied configuration.
+pub enum NodeError {
+    Config,
+}
+
+impl NodeConfig {
+    fn at(bind: string) -> NodeConfig {
+        NodeConfig { bind: bind, transport: "tcp", key: "", trust: "pinned", peers: Vec.new(), seeds: Vec.new() }
+    }
+}
+
 /// An actor pid on a remote node carrying its complete actor location.
 ///
 /// Produced by authenticated peer discovery.
-/// Does NOT coerce implicitly to `LocalPid<T>` — remote actors are a distinct class.
+/// Does NOT coerce implicitly to a local actor handle — a remote actor is a
+/// distinct class with its own physical representation.
 ///
-/// On the native target `.send` and `.ask` are real cross-node operations:
-/// codegen rewrites each call on a `RemotePid<T>` receiver to the runtime
-/// transport ABI, sending the message over the mesh to the peer (proven by the
-/// two-process distributed harness). A remote `.ask` returns its peer's reply,
-/// or a typed `AskError` — including `Partition` when the route to the peer is
-/// declared dead — never a hang. The Hew bodies in the `RemotePid<T>` impl below
-/// are the WASM/uninterpreted fail-closed fallback only.
+/// The intended remote call contract uses the same completion calls and
+/// mailbox submission views as local actors, with typed transport failures.
+/// Native transport lowering exists, but final-compiler distributed lifecycle
+/// acceptance remains incomplete. These declarations alone do not establish
+/// end-to-end native or sandbox support.
 pub type RemotePid<T> {
+}
+
+/// An immutable one-way view for void receive handlers. Construct one with `mailbox(target, on_full: ...)`.
+/// A receive call through the view submits under that policy and returns as
+/// soon as admission or a policy-selected discard is resolved. The policy
+/// type records whether submission can suspend. A call on the actor handle itself waits for the
+/// handler to finish instead.
+pub type ActorMailbox<Target, Policy> {
+    target: Target,
+}
+
+/// An immutable completion view choosing how its own calls are admitted.
+/// Construct one with `policy(target, on_full: ...)`. A call through the view
+/// waits for the handler exactly as a call on the actor handle does; the
+/// policy decides only what happens when the destination mailbox is full.
+/// `.Wait` is the bare-handle behaviour; `.Reject` yields
+/// `ActorError.Rejected(failure)` instead of parking the caller.
+pub type ActorPolicy<Target, Policy> {
+    target: Target,
+}
+
+/// Owned request description for one-way submission recovery.
+/// Consuming `retry()` and `to(target)` retain the request's typing.
+pub type Message<Target, Payload, Policy> {
+    target: Target,
+    message_id: u32,
+    payload: Payload,
+}
+
+/// Internal owner of an unaccepted completion request.
+#[resource]
+#[opaque]
+pub type ActorRequestOwner {
+}
+
+#[opaque]
+pub type ActorRequestAdmission {
+}
+
+impl ActorRequestOwner {
+    fn close(consume self) {
+        unsafe {
+            hew_msg_envelope_release(self)
+        };
+    }
+}
+
+extern "C" {
+    fn hew_msg_envelope_release(consume request: ActorRequestOwner);
+    fn hew_actor_ask_wait_take_request(admission: ActorRequestAdmission) -> ActorRequestOwner;
+}
+
+/// The request protocol is a sealed, inferred type parameter. The original
+/// payload stays inside its runtime owner until admission or cleanup.
+pub type ActorRequest<Protocol> {
+    owner: ActorRequestOwner,
+}
+
+/// A rejected submission retains its complete unaccepted message.
+pub type SendFailure<M> {
+    reason: SendError,
+    message: M,
+}
+
+/// Successful submission describes acceptance or an explicitly chosen discard.
+pub enum Delivery {
+    Accepted,
+    Discarded,
+}
+
+impl Display for Delivery {
+    fn fmt(outcome: Delivery) -> string {
+        match outcome {
+            Delivery.Accepted => "accepted",
+            Delivery.Discarded => "discarded by the chosen policy",
+        }
+    }
+}
+
+/// A sender chooses how its own submission responds to a full mailbox.
+pub enum OnFull {
+    Reject,
+    Wait,
+    DropNewest,
+    ReplaceLatest,
+}
+
+// Compiler-selected immutable policy witnesses. They contain no runtime state.
+pub type RejectSend {
+}
+
+pub type WaitSend {
+}
+
+pub type DropNewestSend {
+}
+
+pub type ReplaceLatestSend {
 }
 
 /// Error returned when a pid send cannot be completed.
 pub enum SendError {
     /// The destination mailbox is full.
-    Full;
+    Full,
     /// The destination is closed or no longer alive.
-    Closed;
+    Closed,
     /// Cross-node routing has not been wired for this runtime path yet.
-    NodeRoutingNotWired;
+    NodeRoutingNotWired,
     /// The route to the peer is unavailable or the peer is suspected dead.
-    Partition;
+    Partition,
     /// The pid refers to an old session or actor incarnation.
-    StaleRef;
+    StaleRef,
     /// The local node is shutting down before the send can complete.
-    LocalShutdown;
+    LocalShutdown,
     /// The caller cancelled the send before it completed.
-    Cancelled;
+    Cancelled,
     /// The peer rejected the send because protocol or schema versions differ.
-    VersionMismatch;
+    VersionMismatch,
     /// The peer rejected the send because the caller lacks authority.
-    Unauthorized;
+    Unauthorized,
     /// The destination or route is applying flow control.
-    Backpressure;
+    Backpressure,
     /// The declared mailbox policy discarded, replaced, or coalesced work
     /// while processing this send.
-    MessageLost;
+    MessageLost,
+    /// The supervised role the send addressed has no occupant and will not
+    /// get one: its restart budget is spent.
+    Dead,
 }
 
 impl Display for SendError {
@@ -86,6 +216,7 @@ impl Display for SendError {
             SendError.Unauthorized => "the peer rejected the send because the caller lacks authority",
             SendError.Backpressure => "the destination or route is applying flow control",
             SendError.MessageLost => "the declared mailbox policy discarded, replaced, or coalesced this send",
+            SendError.Dead => "the supervised role has no occupant and its restart budget is spent",
         }
     }
 }
@@ -100,21 +231,21 @@ impl Display for SendError {
 /// per `set_last_error` for the diagnostic detail.
 pub enum LookupError {
     /// No actor is registered under the requested name.
-    NotFound;
+    NotFound,
     /// The lookup route is unavailable or the peer is suspected dead.
-    Partition;
+    Partition,
     /// The caller's lookup deadline elapsed before a result arrived.
-    Timeout;
+    Timeout,
     /// The name resolved to an old session or actor incarnation.
-    StaleRef;
+    StaleRef,
     /// The caller cancelled the lookup before it completed.
-    Cancelled;
+    Cancelled,
     /// The local node is shutting down before the lookup can complete.
-    LocalShutdown;
+    LocalShutdown,
     /// The peer rejected the lookup because protocol or schema versions differ.
-    VersionMismatch;
+    VersionMismatch,
     /// The peer rejected the lookup because the caller lacks authority.
-    Unauthorized;
+    Unauthorized,
 }
 
 impl Display for LookupError {
@@ -132,103 +263,80 @@ impl Display for LookupError {
     }
 }
 
-/// Error returned when a remote actor ask cannot complete.
+/// The error of a handler that cannot fail.
 ///
-/// The runtime ask ABI translates its internal success sentinel before
-/// materializing this public error-only enum.
-pub enum AskError {
-    /// The local node is not running.
-    NodeNotRunning;
-    /// The destination node or actor could not be routed.
-    RoutingFailed;
-    /// The request payload could not be encoded.
-    EncodeFailed;
-    /// The request could not be sent.
-    SendFailed;
-    /// The caller-supplied timeout elapsed before a reply arrived.
-    Timeout;
-    /// The remote connection closed before the reply arrived.
-    ConnectionDropped;
-    /// The reply payload did not match the expected reply size.
-    PayloadSizeMismatch;
-    /// The remote ask worker is at capacity.
-    WorkerAtCapacity;
-    /// The destination actor is stopped.
-    ActorStopped;
-    /// The destination actor mailbox is full.
-    MailboxFull;
-    /// A reply arrived after its waiter was gone.
-    OrphanedAsk;
-    /// The runtime had no runnable work while waiting for the reply.
-    NoRunnableWork;
-    /// The inbound request payload could not be decoded into a value in the
-    /// receiving node's address space; the handler was never dispatched.
-    DecodeFailure;
-    /// The route to the peer is unavailable or the peer is suspected dead.
-    Partition;
-    /// The pid refers to an old session or actor incarnation.
-    StaleRef;
-    /// The caller cancelled the ask before it completed.
-    Cancelled;
-    /// The local node is shutting down before the ask can complete.
-    LocalShutdown;
-    /// The peer rejected the ask because protocol or schema versions differ.
-    VersionMismatch;
-    /// The peer rejected the ask because the caller lacks authority.
-    Unauthorized;
-    /// The destination or route is applying flow control.
-    Backpressure;
-    /// A monitor required to resolve the ask was lost before completion.
-    MonitorLost;
+/// `Never` has no values, so `ActorError<Never>.Failed` can never be
+/// constructed: a call on an infallible handler reports transport and
+/// lifecycle outcomes only.
+pub enum Never {
 }
 
-impl Display for AskError {
-    fn fmt(err: AskError) -> string {
+impl Display for Never {
+    fn fmt(err: Never) -> string {
+        "unreachable"
+    }
+}
+
+/// Error of a completion call on an actor handle.
+///
+/// `E` is the handler's declared `fails` type — `Never` when the handler
+/// cannot fail. `Req` carries an unaccepted request when admission may reject it.
+/// Omitted parameters default to `Never`.
+///
+/// Only `Rejected` is safely retryable: nothing was accepted, so the caller
+/// may make the same call again. Every other variant means the request was
+/// accepted or its fate is unknown, so repeating it would duplicate work.
+pub enum ActorError<E, Req> {
+    /// Nothing was accepted. `failure.reason` explains why;
+    /// `failure.message.retry()` or `.to(target)` consumes the sealed request.
+    Rejected(SendFailure<Req>),
+    /// The handler ran and returned its declared error.
+    Failed(E),
+    /// The handler faulted; its actor retains ownership of the fault.
+    Trapped,
+    /// The destination actor is gone and will not come back.
+    Dead,
+    /// The caller's deadline elapsed before a reply arrived.
+    Timeout,
+    /// The local node is not running.
+    NodeNotRunning,
+    /// The destination node or actor could not be routed.
+    RoutingFailed,
+    /// The request payload could not be encoded.
+    EncodeFailed,
+    /// The remote connection closed before the reply arrived.
+    ConnectionDropped,
+    /// The route to the peer is unavailable or the peer is suspected dead.
+    Partition,
+}
+
+impl<E, Req> Display for ActorError<E, Req> {
+    fn fmt(err: ActorError<E, Req>) -> string {
         match err {
-            AskError.NodeNotRunning => "the local node is not running",
-            AskError.RoutingFailed => "the destination node or actor could not be routed",
-            AskError.EncodeFailed => "the request payload could not be encoded",
-            AskError.SendFailed => "the request could not be sent",
-            AskError.Timeout => "the caller-supplied timeout elapsed before a reply arrived",
-            AskError.ConnectionDropped => "the remote connection closed before the reply arrived",
-            AskError.PayloadSizeMismatch => "the reply payload did not match the expected reply size",
-            AskError.WorkerAtCapacity => "the remote ask worker is at capacity",
-            AskError.ActorStopped => "the destination actor is stopped",
-            AskError.MailboxFull => "the destination actor mailbox is full",
-            AskError.OrphanedAsk => "a reply arrived after its waiter was gone",
-            AskError.NoRunnableWork => "the runtime had no runnable work while waiting for the reply",
-            AskError.DecodeFailure => "the inbound request payload could not be decoded; the handler was never dispatched",
-            AskError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
-            AskError.StaleRef => "the pid refers to an old session or actor incarnation",
-            AskError.Cancelled => "the caller cancelled the ask before it completed",
-            AskError.LocalShutdown => "the local node is shutting down before the ask could complete",
-            AskError.VersionMismatch => "the peer rejected the ask because protocol or schema versions differ",
-            AskError.Unauthorized => "the peer rejected the ask because the caller lacks authority",
-            AskError.Backpressure => "the destination or route is applying flow control",
-            AskError.MonitorLost => "a monitor required to resolve the ask was lost before completion",
+            ActorError.Rejected(_) => "the request was refused and nothing was accepted",
+            ActorError.Failed(_) => "the handler returned its declared error",
+            ActorError.Trapped => "the handler faulted before replying",
+            ActorError.Dead => "the destination actor is gone and will not come back",
+            ActorError.Timeout => "the deadline elapsed before a reply arrived",
+            ActorError.NodeNotRunning => "the local node is not running",
+            ActorError.RoutingFailed => "the destination node or actor could not be routed",
+            ActorError.EncodeFailed => "the request payload could not be encoded",
+            ActorError.ConnectionDropped => "the remote connection closed before the reply arrived",
+            ActorError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
         }
     }
 }
 
-/// Error arm of `await rx.recv() | after d` and `await stream.recv() | after d`.
+/// Error arm of a receive that ran out of time.
 ///
 /// Returned as `Err(TimeoutError.Timeout)` when the deadline fires before an
 /// item arrives.  Distinguishes a timeout from a closed channel (`Ok(None)`).
 ///
-/// Not yet implemented: `await ... | after d` requires a suspendable
-/// actor/closure/task context, so this snippet is illustrative only and does
-/// not compile standalone.
-///
-/// ```hew
-/// match await rx.recv() | after 50ms {
-///     Ok(Some(v)) => v,       // item received before deadline
-///     .Ok(None)    => -1,      // channel closed (no deadline race)
-///     .Err(_)      => -2,      // deadline fired
-/// }
-/// ```
+/// A deadline over a receive is a `scope within d { .. }` block or a `select`
+/// timer arm; there is no timeout combinator on the call itself.
 pub enum TimeoutError {
     /// The deadline fired before the recv completed.
-    Timeout;
+    Timeout,
 }
 
 impl Display for TimeoutError {
@@ -239,84 +347,32 @@ impl Display for TimeoutError {
     }
 }
 
-/// Error returned by the `link(handle)` builtin in value position
-/// (`link(actor) -> Result<(), LinkError>`).
-///
-/// Prelude-published — like `SendError` / `TimeoutError`, the variants are
-/// nameable in match arms without an explicit import, because `link()` is a
-/// compiler builtin. `std.link_monitor` re-exports the same surface for
-/// programs that name `MonitorRef` / `MonitorError` / `PartitionPolicy`.
-///
-/// `AlreadyLinked` is an idempotent non-fatal condition — callers may treat it
-/// as `Ok(())`. `TargetDead` is returned when the target actor has already
-/// exited; the caller's exit handler will fire immediately.
+/// Failure to subscribe to an actor's exit through `link` or `monitor`.
+/// Both operations require a current actor to receive the notification.
 pub enum LinkError {
-    AlreadyLinked;
-    TargetDead;
-    NodeNotRunning;
-    NoCurrentActor;
-    InvalidTarget;
-    Partition;
-    StaleRef;
-    EncodeFailure;
-    LocalShutdown;
-    ResourceExhausted;
+    Dead,
+    Partition,
+    NoContext,
 }
 
 impl Display for LinkError {
     fn fmt(err: LinkError) -> string {
         match err {
-            LinkError.AlreadyLinked => "the target is already linked",
-            LinkError.TargetDead => "the target actor has already exited",
-            LinkError.NodeNotRunning => "the local node is not running",
-            LinkError.NoCurrentActor => "link() was called outside an actor context",
-            LinkError.InvalidTarget => "the target is not a linkable handle",
-            LinkError.Partition => "the route to the peer is unavailable or the peer is suspected dead",
-            LinkError.StaleRef => "the target refers to an old session or actor incarnation",
-            LinkError.EncodeFailure => "the link request payload could not be encoded",
-            LinkError.LocalShutdown => "the local node is shutting down before the link could complete",
-            LinkError.ResourceExhausted => "the runtime has no capacity left to track this link",
+            LinkError.Dead => "the target actor has already exited",
+            LinkError.Partition => "the route to the peer is unavailable",
+            LinkError.NoContext => "the operation requires an actor context",
         }
     }
 }
 
-/// Message contract for actor types used behind `LocalPid<A>` / `RemotePid<A>`.
+/// Message contract for actor types addressed through `RemotePid<A>`.
 ///
-/// Named actors opt into the erased `Pid` surface by implementing this trait
-/// and binding `Msg` to the envelope type accepted by `.send` / `.ask`, plus
+/// An actor binds `Msg` to the envelope type accepted by `.send` / `.ask` and
 /// `Reply` to the response type returned by `.ask`.
 pub trait ActorMsg {
     type Msg;
 
     type Reply;
-}
-
-/// Trait satisfied by both `LocalPid<A>` and `RemotePid<A>`.
-///
-/// Future surface target for accepting either local or remote pids. A640:
-/// generic `P: Pid` sends are fail-closed unless `P.Msg` is concretely proven
-/// Serializable; local-only dispatch through `LocalPid<T>` keeps the value
-/// model below.
-///
-/// Not yet implemented: the checker cannot express the `P.Msg: Serializable`
-/// projection bound yet (A640), so this snippet does not compile today.
-///
-/// ```
-/// fn ping<P: Pid>(p: P, msg: P.Msg) -> Result<(), SendError> {
-///     p.send(msg)
-/// }
-/// ```
-pub trait Pid {
-    type Msg;
-
-    fn send(pid: Self, msg: Self.Msg) -> Result<(), SendError>;
-}
-
-impl<T: ActorMsg> LocalPid<T> {
-    /// Send a message to this local actor.
-    fn send(pid: LocalPid<T>, msg: T.Msg) -> Result<(), SendError> {
-        Ok(())
-    }
 }
 
 impl<T: ActorMsg> ChildRef<T> {
@@ -390,38 +446,18 @@ impl<T: ActorMsg> RemotePid<T> {
     /// `hew_node_api_send_location(location, dispatch, msg_type, ptr, size)`
     /// runtime ABI plus an in-place `Result<(), SendError>` construction.
     /// The body below is unreachable on the native path and is retained
-    /// only for type-check seeding (so the trait surface matches `LocalPid`)
-    /// and as a fail-closed fallback on targets without the codegen
+    /// only for type-check seeding and as a fail-closed fallback on targets
+    /// without the codegen
     /// interception (notably WASM, where remote routing is not wired —
     /// WASM-TODO(distributed): add authenticated remote routing on wasm32).
     fn send(pid: RemotePid<T>, msg: T.Msg) -> Result<(), SendError> {
         Err(SendError.NodeRoutingNotWired)
     }
-    /// Ask this remote actor for a reply, failing with `AskError` if the
-    /// caller-supplied timeout elapses or routing/reply delivery fails.
-    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, AskError> {
-        Err(AskError.NodeNotRunning)
-    }
-}
-
-impl<T: ActorMsg> Pid for LocalPid<T> {
-    type Msg = T.Msg;
-    fn send(pid: LocalPid<T>, msg: Self.Msg) -> Result<(), SendError> {
-        pid.send(msg)
-    }
-}
-
-impl<T: ActorMsg> Pid for ChildRef<T> {
-    type Msg = T.Msg;
-    fn send(child: ChildRef<T>, msg: Self.Msg) -> Result<(), SendError> {
-        child.send(msg)
-    }
-}
-
-impl<T: ActorMsg> Pid for RemotePid<T> {
-    type Msg = T.Msg;
-    fn send(pid: RemotePid<T>, msg: Self.Msg) -> Result<(), SendError> {
-        pid.send(msg)
+    /// Ask this remote actor for a reply, failing with `ActorError` if the
+    /// caller-supplied timeout elapses or routing/reply delivery fails. A
+    /// remote call carries no sealed message, so it never reports `Rejected`.
+    fn ask(pid: RemotePid<T>, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
+        Err(ActorError.NodeNotRunning)
     }
 }
 
@@ -462,10 +498,11 @@ pub trait Iterator {
 // ---------------------------------------------------------------------------
 /// Convert a value into an `Iterator`.
 ///
-/// `for x in expr { ... }` desugars to `let mut it = expr.into_iter(); loop {
-/// match it.next() { .Some(x) => ..., .None => break } }` — the iterable on the
-/// right of `in` must implement `IntoIterator`, and the loop binding is typed
-/// as `<Self.IntoIter as Iterator>.Item`.
+/// For trait-based iteration, a `for` loop creates a mutable iterator and
+/// calls `next()` until it returns `None`. The item type is
+/// `<Self.IntoIter as Iterator>.Item`. Built-in collections also support
+/// borrowed iteration; a loop over an unbounded generic `Vec<T>` borrows its
+/// elements rather than taking ownership of them.
 ///
 /// `IntoIter` carries the `Iterator<Item = Self.Item>` bound so that callers
 /// projecting `<T as IntoIterator>.IntoIter.Item` always agree with
@@ -530,13 +567,20 @@ impl<T> Vec<T> {
 /// `Vec` is a refcounted heap handle, so the cursor carries the underlying
 /// vector storage by handle (no per-step copy).
 ///
+/// In a generic body with unbounded `T`, indexing and ordinary `for` loops
+/// borrow elements consistently across instantiations. Use `into_iter()` to
+/// consume the vector and obtain owned items, or explicitly clone an item
+/// under a `T: Clone` bound. The current owned cursor may still clone elements
+/// when their type supports cloning; consuming the vector does not promise
+/// clone-free iteration.
+///
 /// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
 /// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
 /// per-stdlib-module receiver-impl harness only handles a fixed set of
 /// receivers; auto-registration on builtin nominals belongs in builtins).
 pub type VecIter<T> {
-    vec: Vec<T>;
-    idx: i64;
+    vec: Vec<T>,
+    idx: i64,
 }
 
 impl<T> Iterator for VecIter<T> {
@@ -592,9 +636,9 @@ impl<T> IntoIterator for Vec<T> {
 /// receiver stays `Live` after exhaustion and drops at scope exit — the
 /// `Iterator` "exhaustion ≠ drop" invariant.
 pub type HashMapIter<K, V> {
-    ks: Vec<K>;
-    vs: Vec<V>;
-    idx: i64;
+    ks: Vec<K>,
+    vs: Vec<V>,
+    idx: i64,
 }
 
 impl<K, V> Iterator for HashMapIter<K, V> {
@@ -628,31 +672,23 @@ impl<K, V> Iterator for HashMapIter<K, V> {
 // clone-on-read path without an abstract method-dispatch hazard.
 
 // ---------------------------------------------------------------------------
-// Generator / AsyncGenerator — Iterator impls
+// Generator — Iterator impl
 // ---------------------------------------------------------------------------
 //
-// `Generator<Y, R>` and `AsyncGenerator<Y>` formally implement `Iterator` so
-// `for x in gen { ... }` and `std::iter` adapters (`iter::map`,
-// `iter::filter`, ...) compose over generator values through the same trait
+// `Generator<Y, R>` formally implements `Iterator` so
+// `for x in gen { ... }` and `std.iter` adapters (`iter.map`,
+// `iter.filter`, ...) compose over generator values through the same trait
 // surface as `Vec`/`HashMap`, instead of a checker-level special case.
-// `Generator` carries two type arguments (yield, return); `AsyncGenerator`
-// carries one (yield only) — see `Ty::as_generator` / `Ty::as_async_generator`.
+// `Generator` carries two type arguments (yield, return); see `Ty::as_generator`.
 //
 // `next`'s body calls the receiver's own `.next()`. This is NOT recursion:
-// method dispatch on a `Generator`/`AsyncGenerator` receiver is intercepted
+// method dispatch on a `Generator` receiver is intercepted
 // by a checker-level special case (`methods.rs`, the
-// `(Ty::Named{builtin:Some(Generator|AsyncGenerator)}, "next")` arm) BEFORE
+// `(Ty::Named{builtin:Some(Generator)}, "next")` arm) BEFORE
 // any trait-impl lookup, rewriting the call to the `GeneratorNext` HIR node
 // that drives the runtime's `hew_gen_next` resume protocol. This impl's body
 // reuses that existing dispatch rather than duplicating it.
 impl<Y, R> Iterator for Generator<Y, R> {
-    type Item = Y;
-    fn next(var self) -> Option<Y> {
-        self.next()
-    }
-}
-
-impl<Y> Iterator for AsyncGenerator<Y> {
     type Item = Y;
     fn next(var self) -> Option<Y> {
         self.next()
@@ -695,7 +731,9 @@ pub trait Index<Idx> {
 impl<T> Index<i64> for Vec<T> {
     type Output = T;
     fn get(self, index: i64) -> Option<T> {}
-    fn at(self, index: i64) -> T {}
+    fn at(self, index: i64) -> T {
+        self[index]
+    }
 }
 
 impl<K, V> Index<K> for HashMap<K, V> {
@@ -721,6 +759,14 @@ impl<K, V> Index<K> for HashMap<K, V> {
 pub trait Display {
     #[lang_item(display_fmt)]
     fn fmt(val: Self) -> string;
+}
+
+/// The marker an error type carries so it can be erased to `dyn Error`.
+///
+/// `Error` adds no methods of its own: an error is a value that can say what
+/// went wrong, so `Display` is the whole obligation. Declaring
+/// `impl Error for MyError {}` therefore requires `impl Display for MyError`.
+pub trait Error: Display {
 }
 
 // Blanket impls for primitive types.  Each body delegates to the magic
@@ -899,7 +945,7 @@ impl instant {
 
 // Render a duration as its exact nanosecond count with an `ns` suffix
 // (e.g. `10ms` prints as `10000000ns`). Integer-only and round-trippable
-// through `duration::from_nanos`, so the rendering is exact and lossless; a
+// through `duration.from_nanos`, so the rendering is exact and lossless; a
 // human-unit format would need float division and lose that property. `instant`
 // has no Display body — it canonicalises to i64 and renders as raw nanos
 // through HIR's i64 dispatch arm (see `require_display_impl`).
@@ -953,9 +999,11 @@ pub fn print(value: dyn Display) {}
 /// ```
 pub fn assert(condition: bool) {}
 
-/// Assert that two values are equal. Panics with a diff if they differ.
+/// Assert that two values are equal.
 ///
-/// Both arguments must be the same type.
+/// Both operands share one type that carries equality and a `Display`
+/// rendering. A mismatch raises the same recoverable logical fault `assert`
+/// and `panic` raise, with a message showing both values.
 ///
 /// # Examples
 ///
@@ -968,11 +1016,13 @@ pub fn assert(condition: bool) {}
 ///     assert_eq(add(1, 2), 3);
 /// }
 /// ```
-pub fn assert_eq(left: dyn Display, right: dyn Display) {}
+pub fn assert_eq<T: Eq + Display>(left: T, right: T) {}
 
-/// Assert that two values are not equal. Panics if they are the same.
+/// Assert that two values are not equal.
 ///
-/// Both arguments must be the same type.
+/// Both operands share one type that carries equality and a `Display`
+/// rendering. A match raises the same recoverable logical fault `assert`
+/// and `panic` raise, with a message showing both values.
 ///
 /// # Examples
 ///
@@ -983,82 +1033,11 @@ pub fn assert_eq(left: dyn Display, right: dyn Display) {}
 ///     assert_ne(a, b);
 /// }
 /// ```
-pub fn assert_ne(left: dyn Display, right: dyn Display) {}
-
-// ---------------------------------------------------------------------------
-// Math
-// ---------------------------------------------------------------------------
-/// Returns the absolute value of an integer.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let x = abs(-5);  // 5
-/// }
-/// ```
-pub fn abs(x: i32) -> i32 {
-    0 as i32
-}
-
-/// Returns the square root of a floating-point number.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let r = sqrt(9.0);  // 3.0
-/// }
-/// ```
-pub fn sqrt(x: f64) -> f64 {
-    0.0
-}
-
-/// Returns the smaller of two integers.
-pub fn min(a: i32, b: i32) -> i32 {
-    0 as i32
-}
-
-/// Returns the larger of two integers.
-pub fn max(a: i32, b: i32) -> i32 {
-    0 as i32
-}
-
-/// Convert an integer to a floating-point number.
-///
-/// Not yet implemented: the checker admits the call but cannot lower it to
-/// an executable target yet, so this snippet does not compile today.
-///
-/// # Examples
-///
-/// ```
-/// let f = to_float(42);  // 42.0
-/// ```
-pub fn to_float(x: i32) -> f64 {
-    0.0
-}
+pub fn assert_ne<T: Eq + Display>(left: T, right: T) {}
 
 // ---------------------------------------------------------------------------
 // string operations
 // ---------------------------------------------------------------------------
-/// Concatenate two strings, returning a new string.
-///
-/// # Examples
-///
-/// ```
-/// fn main() {
-///     let full = string_concat("hello ", "world");
-/// }
-/// ```
-pub fn string_concat(a: string, b: string) -> string {
-    ""
-}
-
-/// Returns the byte length of a string.
-pub fn string_length(s: string) -> i32 {
-    0 as i32
-}
-
 /// Convert any value to its string representation.
 ///
 /// Accepts any type that implements `Display` — this includes all numeric
@@ -1080,59 +1059,6 @@ pub fn to_string(value: dyn Display) -> string {
 /// Returns the length of a collection or string.
 pub fn len(value: dyn Display) -> i32 {
     0 as i32
-}
-
-/// Returns the character (as a `char`) at the given byte index.
-pub fn string_char_at(s: string, index: i32) -> char {
-    'a'
-}
-
-/// Test whether two strings are equal.
-pub fn string_equals(a: string, b: string) -> bool {
-    false
-}
-
-/// Convert an integer to a string.
-///
-/// Not yet implemented: the checker admits the call but cannot lower it to
-/// an executable target yet, so this snippet does not compile today.
-///
-/// # Examples
-///
-/// ```
-/// let s = string_from_int(42);  // "42"
-/// ```
-pub fn string_from_int(n: i64) -> string {
-    ""
-}
-
-/// Test whether `haystack` contains `needle`.
-pub fn string_contains(haystack: string, needle: string) -> bool {
-    false
-}
-
-/// Test whether a string starts with the given prefix.
-pub fn string_starts_with(s: string, prefix: string) -> bool {
-    false
-}
-
-/// Extract a substring by byte indices `[start, end)`.
-///
-/// Not yet implemented: the checker admits the call but cannot lower it to
-/// an executable target yet, so this snippet does not compile today.
-///
-/// # Examples
-///
-/// ```
-/// let s = substring("hello", 0, 3);  // "hel"
-/// ```
-pub fn substring(s: string, start: i32, end: i32) -> string {
-    ""
-}
-
-/// Strip leading and trailing whitespace.
-pub fn string_trim(s: string) -> string {
-    ""
 }
 
 // ---------------------------------------------------------------------------
@@ -1201,12 +1127,14 @@ pub fn sleep(d: duration) {}
 /// ```
 pub fn sleep_until(target: instant) {}
 
-/// Stop an actor gracefully.
+/// Legacy declaration; use the built-in `close(actor)` lifecycle operation.
 pub fn stop(target: dyn Display) {}
 
-/// Terminate the program with the given exit code.
+/// Terminate the program immediately with the given exit code.
 ///
-/// This function never returns.
+/// This function never returns and does not run scope cleanup. Return from
+/// `main` for orderly cleanup. An unrecovered fault instead reports its
+/// diagnostic and exits with status 1 on the native path.
 pub fn exit(code: i32) {}
 
 /// Terminate the program with an error message.
@@ -1221,3 +1149,10 @@ pub fn exit(code: i32) {}
 /// }
 /// ```
 pub fn panic(message: string) {}
+
+/// A structured scope failure, available only after child and deferred cleanup.
+/// Parent cancellation propagates to the enclosing scope and is not recoverable here.
+pub enum ScopeFailure {
+    Deadline { message: string },
+    Fault { message: string },
+}

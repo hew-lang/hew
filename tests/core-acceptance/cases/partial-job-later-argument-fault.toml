@@ -1,0 +1,11 @@
+[[case]]
+id = "partial-job-later-argument-fault"
+intent = "A callback taken from an owned job stays owned while a later argument is evaluated; argument failure releases that callback and the job siblings without entering the callee."
+source = "cases/partial-job-later-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

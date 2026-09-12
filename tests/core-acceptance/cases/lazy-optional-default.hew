@@ -1,0 +1,16 @@
+fn fallback() -> string {
+    println("fallback");
+    "default".to_upper()
+}
+
+fn choose(value: Option<string>) -> string {
+    value ?? fallback()
+}
+
+fn main() -> i64 {
+    let present = Some("kept".to_upper());
+    println(choose(present));
+    println(choose(present));
+    println(choose(None));
+    0
+}

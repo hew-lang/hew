@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-element-json-value"
+intent = "An owning encoding value is a collection element by its value class, not by a hand-written allowlist: `Vec<json.Value>` and `HashMap<string, json.Value>` push, index, clone, iterate and remove, and every element is released once."
+source = "cases/vec-element-json-value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "pushed=3 first=1\ncopy=4 source=3\niterated=1;\"two\";true;\nmap=2 a=10\nremoved=\"beta\" left=1\n"
+exit = 0

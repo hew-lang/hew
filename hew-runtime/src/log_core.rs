@@ -8,7 +8,8 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::cabi::{cstr_to_str, malloc_cstring};
+use crate::cabi::cstr_to_str;
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::os::raw::c_char;
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -59,19 +60,17 @@ pub extern "C" fn hew_log_set_format(format: i32) {
 ///
 /// # Safety
 ///
-/// `msg` must be a valid NUL-terminated C string (or null, which is a no-op).
+/// `msg` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_log_emit(level: i32, msg: *const c_char) {
+pub unsafe extern "C" fn hew_log_emit(level: i32, msg: *const HewString) {
     // Filter: lower numeric level = higher severity.  Emit only when
     // message level ≤ the configured threshold.
     if level > LOG_LEVEL.load(Ordering::Relaxed) {
         return;
     }
 
-    // SAFETY: msg is a valid NUL-terminated C string per caller contract.
-    let Some(text) = (unsafe { cstr_to_str(msg) }) else {
-        return;
-    };
+    // SAFETY: msg is null (canonical empty) or a live managed string handle.
+    let text = unsafe { string_as_str(msg) };
 
     if LOG_FORMAT.load(Ordering::Relaxed) == 1 {
         emit_json(level, text);
@@ -86,7 +85,7 @@ pub unsafe extern "C" fn hew_log_emit(level: i32, msg: *const c_char) {
 /// `min_level`   — threshold: emit only when `level ≤ min_level`. Pass −1 to
 ///                 suppress all output; pass 4 to emit everything.
 /// `format`      — 0=TEXT, 1=JSON. Values outside 0..=1 fall back to TEXT.
-/// `msg`         — NUL-terminated C string (null is a no-op).
+/// `msg`         — managed string handle (null is the canonical empty message).
 ///
 /// This is the structured-logging back-end used by Logger values in Hew.
 /// Unlike `hew_log_emit`, it does not consult the global `LOG_LEVEL` /
@@ -94,22 +93,20 @@ pub unsafe extern "C" fn hew_log_emit(level: i32, msg: *const c_char) {
 ///
 /// # Safety
 ///
-/// `msg` must be a valid NUL-terminated C string (or null, which is a no-op).
+/// `msg` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_log_emit_ex(
     level: i32,
     min_level: i32,
     format: i32,
-    msg: *const c_char,
+    msg: *const HewString,
 ) {
     if level > min_level {
         return;
     }
 
-    // SAFETY: msg is a valid NUL-terminated C string per caller contract.
-    let Some(text) = (unsafe { cstr_to_str(msg) }) else {
-        return;
-    };
+    // SAFETY: msg is null (canonical empty) or a live managed string handle.
+    let text = unsafe { string_as_str(msg) };
 
     if format == 1 {
         emit_json(level, text);
@@ -548,24 +545,18 @@ pub unsafe extern "C" fn hew_stderr_write(s: *const c_char) {
 ///
 /// # Safety
 ///
-/// `v` must be a valid NUL-terminated C string (or null, which returns an
-/// empty string).
+/// `v` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_log_encode_field_value(v: *const c_char) -> *mut c_char {
-    // SAFETY: v is a valid NUL-terminated C string per caller contract.
-    let encoded = if let Some(s) = unsafe { cstr_to_str(v) } {
-        encode_field_value(s)
-    } else {
-        String::new()
-    };
-    let bytes = encoded.as_bytes();
-    // SAFETY: bytes is a valid UTF-8 slice from a Rust String.
-    unsafe { malloc_cstring(bytes.as_ptr(), bytes.len()) }
+pub unsafe extern "C" fn hew_log_encode_field_value(v: *const HewString) -> *mut HewString {
+    // SAFETY: v is null (canonical empty) or a live managed string handle.
+    let text = unsafe { string_as_str(v) };
+    string_from_str(&encode_field_value(text))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use std::ffi::CString;
 
     #[test]
@@ -618,29 +609,29 @@ mod tests {
     #[test]
     fn emit_filters_by_level() {
         hew_log_set_level(2); // INFO
-        let msg = CString::new("should appear").unwrap();
+        let msg = ManagedString::new("should appear");
         // INFO (2) ≤ INFO (2): emitted (no crash)
-        // SAFETY: msg is a valid NUL-terminated C string.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit(2, msg.as_ptr()) };
-        let dbg = CString::new("should be filtered").unwrap();
+        let dbg = ManagedString::new("should be filtered");
         // DEBUG (3) > INFO (2): filtered out
-        // SAFETY: dbg is a valid NUL-terminated C string.
+        // SAFETY: dbg is a live managed string handle.
         unsafe { hew_log_emit(3, dbg.as_ptr()) };
     }
 
     #[test]
     fn emit_null_is_noop() {
         hew_log_set_level(4);
-        // SAFETY: Passing null is the case under test; the function handles it.
+        // SAFETY: null is the canonical empty message.
         unsafe { hew_log_emit(2, std::ptr::null()) };
     }
 
     #[test]
     fn emit_suppressed_when_uninitialized() {
         LOG_LEVEL.store(-1, Ordering::Relaxed);
-        let msg = CString::new("hidden").unwrap();
+        let msg = ManagedString::new("hidden");
         // Level 0 (ERROR) > -1: filtered out
-        // SAFETY: msg is a valid NUL-terminated C string.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit(0, msg.as_ptr()) };
         hew_log_set_level(2); // reset
     }
@@ -684,8 +675,8 @@ mod tests {
     fn emit_json_mode() {
         hew_log_set_level(4);
         hew_log_set_format(1);
-        let msg = CString::new("hello key=value").unwrap();
-        // SAFETY: msg is a valid CString.
+        let msg = ManagedString::new("hello key=value");
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit(2, msg.as_ptr()) };
         hew_log_set_format(0); // reset
         hew_log_set_level(2);
@@ -864,56 +855,56 @@ mod tests {
     #[test]
     fn emit_ex_filters_by_min_level() {
         // min_level=2 (INFO): ERROR(0) passes, DEBUG(3) is filtered
-        let msg = CString::new("ex_filter_test").unwrap();
-        // SAFETY: msg is a valid NUL-terminated CString.
+        let msg = ManagedString::new("ex_filter_test");
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(0, 2, 0, msg.as_ptr()) }; // ERROR ≤ INFO: emitted
-        let dbg = CString::new("ex_filtered").unwrap();
-        // SAFETY: dbg is a valid NUL-terminated CString.
+        let dbg = ManagedString::new("ex_filtered");
+        // SAFETY: dbg is a live managed string handle.
         unsafe { hew_log_emit_ex(3, 2, 0, dbg.as_ptr()) }; // DEBUG > INFO: filtered
     }
 
     #[test]
     fn emit_ex_respects_explicit_format() {
-        let msg = CString::new("ex_json_test key=val").unwrap();
-        // SAFETY: msg is a valid NUL-terminated CString.
+        let msg = ManagedString::new("ex_json_test key=val");
+        // SAFETY: msg is a live managed string handle.
         // format=1 (JSON) regardless of global LOG_FORMAT
         unsafe { hew_log_emit_ex(2, 4, 1, msg.as_ptr()) };
     }
 
     #[test]
     fn emit_ex_null_is_noop() {
-        // SAFETY: Passing null is the case under test; the function handles it.
+        // SAFETY: null is the canonical empty message.
         unsafe { hew_log_emit_ex(2, 4, 0, std::ptr::null()) };
     }
 
     #[test]
     fn emit_ex_suppressed_by_minus_one_threshold() {
-        let msg = CString::new("should_not_appear").unwrap();
+        let msg = ManagedString::new("should_not_appear");
         // min_level=-1 means nothing passes (even ERROR level 0 > -1)
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(0, -1, 0, msg.as_ptr()) };
     }
 
     #[test]
     fn emit_ex_invalid_params_do_not_crash_or_ub() {
-        let msg = CString::new("invalid_params k=v").unwrap();
+        let msg = ManagedString::new("invalid_params k=v");
 
         // Invalid level values (negative/huge) must not panic.
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(-10, 4, 0, msg.as_ptr()) };
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(i32::MAX, i32::MAX, 0, msg.as_ptr()) };
 
         // Invalid min_level values must not panic.
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(0, i32::MIN, 0, msg.as_ptr()) };
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(0, i32::MAX, 0, msg.as_ptr()) };
 
         // Invalid format values must fall back to TEXT branch (no crash).
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(2, 4, 99, msg.as_ptr()) };
-        // SAFETY: msg is a valid NUL-terminated CString.
+        // SAFETY: msg is a live managed string handle.
         unsafe { hew_log_emit_ex(2, 4, -5, msg.as_ptr()) };
 
         // Null msg must be a safe no-op even when the filter would pass.

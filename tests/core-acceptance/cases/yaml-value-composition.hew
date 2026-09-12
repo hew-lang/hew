@@ -1,0 +1,53 @@
+import std.encoding.yaml;
+
+type Envelope { value: yaml.Value }
+
+fn retained() -> yaml.Value {
+    var child = yaml.array();
+    child.push(yaml.from_string("déjà\0vu")).expect("push succeeds");
+    var original = yaml.object();
+    original.set("items", child).expect("set succeeds");
+    var edited = original;
+    edited.set("items", yaml.null()).expect("set succeeds");
+    child.push(yaml.from_int(8)).expect("push succeeds");
+    println(child.array_len().expect("array_len succeeds"));
+    println(edited.get_field("items").expect("get_field succeeds").expect("get_field returns a value").type_of() == Kind.Null);
+    original.get_field("items").expect("get_field succeeds").expect("get_field returns a value")
+}
+
+fn capture_value(value: yaml.Value) -> fn[clone]() -> string {
+    || value.array_get(0).expect("array_get succeeds").expect("array_get returns a value").get_string().expect("get_string succeeds")
+}
+
+fn main() -> i64 {
+    var values = retained();
+    let snapshot = values;
+    let captured = capture_value(values);
+    values.push(yaml.from_bool(false)).expect("push succeeds");
+    println(values.array_len().expect("array_len succeeds"));
+    println(snapshot.array_len().expect("array_len succeeds"));
+    println(captured().len());
+    println(captured() == "déjà\0vu");
+    let encoded = snapshot.stringify().expect("stringify succeeds");
+    println(yaml.parse(encoded).expect("parse succeeds") == snapshot);
+    var wrong = yaml.from_string("unchanged");
+    println(wrong.push(values).is_err());
+    println(wrong.get_string().expect("get_string succeeds"));
+    println(values.array_len().expect("array_len succeeds"));
+    println(values.array_get(2).expect("array_get succeeds").is_none());
+    println(values.array_get(-1).is_err());
+    println(yaml.parse("[").is_err());
+    println(yaml.from_int(7).get_int().expect("get_int succeeds"));
+    var envelope = Envelope { value: yaml.array() };
+    let original = envelope;
+    envelope.value.push(yaml.from_int(11)).expect("push succeeds");
+    println(envelope.value.array_len().expect("array_len succeeds"));
+    println(original.value.array_len().expect("array_len succeeds"));
+    values.push({
+        values.push(yaml.from_int(99)).expect("push succeeds");
+        yaml.from_int(100)
+    }).expect("the call succeeds");
+    println(values.array_len().expect("array_len succeeds"));
+    println(snapshot.array_len().expect("array_len succeeds"));
+    0
+}

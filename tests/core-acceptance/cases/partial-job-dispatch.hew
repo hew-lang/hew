@@ -1,0 +1,34 @@
+type Job {
+    run: fn[once]() -> string,
+    label: string,
+    payload: bytes,
+}
+
+fn make_job(label: string) -> Job {
+    let message = f"run:{label}".to_upper();
+    Job { run: move || message, label: label.to_upper(), payload: label.to_bytes() }
+}
+
+type Bundle {
+    first: Job,
+    second: (Job, string),
+}
+
+fn main() -> i64 {
+    let job = make_job("local");
+    println(job.run());
+    println(job.label);
+    println(job.payload.len());
+    let bundle = Bundle { first: make_job("nested"), second: (make_job("tuple"), "envelope".to_upper()) };
+    let nested = bundle.first.run;
+    println(nested());
+    println(bundle.first.label);
+    println(bundle.first.payload.len());
+    let from_tuple = bundle.second.0.run;
+    println(from_tuple());
+    println(bundle.second.0.label);
+    println(bundle.second.0.payload.len());
+    println(bundle.second.1);
+    println(make_job("temporary").run());
+    0
+}

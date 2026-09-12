@@ -6,7 +6,7 @@
 // it links the mesh transport in the native runtime. WASM/sandbox builds carry
 // no networking, so this example is native-only there.
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) {
         count = count + n;
         println(count);
@@ -16,30 +16,34 @@ actor Counter {
 fn main() {
     // ── Local actor ──────────────────────────────────────────
     let counter = spawn Counter(count: 0);
-    counter.increment(5);
-    counter.increment(3);
-
+    let _ = counter.increment(5);
+    let _ = counter.increment(3);
     // ── Secure distributed node (QUIC mesh, mutual TLS) ──────
-    // load_keys mints and persists the stable key from which this node's NodeId
-    // is derived. identity_key() returns the public credential (lowercase hex)
-    // for out-of-band exchange. allow_peer binds a peer credential to this
-    // process's receiver-local route slot 2; the numeric slot is not identity.
-    // A peer presenting any other credential is rejected before it is routable.
-    Node.set_transport("quic-mesh");
-    Node.load_keys("node.key");
+    // `key` mints and persists the stable key from which this node's NodeId is
+    // derived. identity_key() returns the public credential (lowercase hex)
+    // for out-of-band exchange. `peers` pins peer credentials to this
+    // process's receiver-local route slots, in array order starting at 1; the
+    // numeric slot is not identity. A peer presenting any other credential is
+    // rejected before it is routable.
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: "quic-mesh", key: "node.key", trust: "pinned", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
+    // identity_key() reads the loaded key material, so it only resolves once
+    // `Node.start` has staged and loaded it.
     let me = Node.identity_key();
     println(f"this node's pinnable credential: {me}");
-    Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-    Node.start("127.0.0.1:0");
     match Node.id() {
         .Some(id) => println(f"this node's key-derived identity: {id}"),
         .None => println("node identity unavailable"),
     }
     Node.register("counter", counter);
-    // A second node that pinned this credential at its local route slot 2 would
-    // call Node.connect("2@127.0.0.1:9000"), then Node.lookup("counter") and
-    // message the returned RemotePid. The PID carries NodeId, actor slot, and
-    // durable session incarnation, so a same-key restart fences the old value.
+    // A second node that pinned this credential at its local route slot 1
+    // would call Node.connect("1@127.0.0.1:9000"), then Node.lookup("counter")
+    // and message the returned RemotePid. The PID carries NodeId, actor slot,
+    // and durable session incarnation, so a same-key restart fences the old
+    // value.
     Node.shutdown();
     println("Counter node demo complete");
 }

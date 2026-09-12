@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-composite-states"
+intent = "Targeting a depth-1 composite enters its initial substate, the group's rule applies from every substate, a substate rule declared after the block beats it, and composite hooks bracket the substates' own with none on an intra-group move."
+source = "cases/machine-composite-states.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Closed\nLive.entry\nAuthing.entry\nAuthing\nAuthing.exit\nLive.exit\nClosed\nLive.entry\nAuthing.entry\nAuthing.exit\nActive.entry\nActive\nActive.exit\nLive.exit\nClosed\nLive.entry\nAuthing.entry\nAuthing.exit\nActive.entry\nActive.exit\nDraining.entry\nDraining\nDraining.exit\nLive.exit\nKicked\n"
+exit = 0

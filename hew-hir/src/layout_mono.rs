@@ -1,7 +1,6 @@
 //! Dedicated post-function-mono record/enum layout discovery pass.
 //!
-//! This is the structural sibling of [`crate::machine_mono`]. Where
-//! `machine_mono` discovers concrete *machine* instantiations reachable only
+//! Where function-mono discovers concrete instantiations reachable only
 //! through a substituted generic-function body, this pass discovers concrete
 //! *record* and *enum* layout instantiations reachable the same way and
 //! registers them under the shared `origin$$arg1$arg2` mangling so MIR's
@@ -25,7 +24,7 @@
 //!
 //! `run_layout_mono_pass` MUST run **after** `closure_under_substitution` has
 //! fully populated [`crate::node::HirModule::monomorphisations`] and **before**
-//! the `HirModule` is constructed — the same window as `run_machine_mono_pass`.
+//! the `HirModule` is constructed.
 //! Running earlier would observe a partial function-mono registry and miss
 //! transitively-reachable instantiations.
 //!
@@ -37,13 +36,13 @@
 //! domain is a function-mono defect or a checker-authority gap; the pass emits
 //! [`crate::diagnostic::HirDiagnosticKind::UnresolvedLayoutTypeParamPostMono`]
 //! and refuses to register the under-instantiated layout. This mirrors
-//! `machine_mono`'s DI-015 residual discipline exactly (see that module for
+//! the DI-015 residual discipline exactly (see the module docs for
 //! the name-collision rationale): a concrete decl whose spelling collides with
 //! an origin type-param name on some *unrelated* declaration must not be
 //! flagged abstract, so the domain is built from the walked fn's own params.
 
 // The layout-mono walker visits the `#[deprecated]` `CallTraitMethodStatic`
-// variant exhaustively (same justification as `lower.rs` / `machine_mono.rs`).
+// variant exhaustively (same justification as `lower.rs`).
 // Construction sites are allowlist-gated by the test below.
 #![allow(
     deprecated,
@@ -207,8 +206,8 @@ pub fn run_layout_mono_pass(
                 all_type_params.extend(td.type_params.iter().cloned());
                 // A struct-kind type decl contributes a record layout; an
                 // enum-kind type decl contributes an enum layout. The two are
-                // disjoint (a type decl has either `fields` or `variants`).
-                if td.variants.is_empty() {
+                // disjoint even when an enum has no variants.
+                if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls.insert(
                         td.qualified_name(),
                         RecordDecl {
@@ -249,8 +248,7 @@ pub fn run_layout_mono_pass(
             // walk below (impl methods are also emitted as `HirItem::Function`
             // entries; actor/machine bodies carry concrete `expr.ty`s walked
             // via their monomorphic-fn analogue when reachable).
-            HirItem::Machine(_)
-            | HirItem::Actor(_)
+            HirItem::Actor(_)
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)
             | HirItem::Const(_) => {}
@@ -299,7 +297,7 @@ pub fn run_layout_mono_pass(
             }
             HirItem::TypeDecl(td) => {
                 all_type_params.extend(td.type_params.iter().cloned());
-                if td.variants.is_empty() {
+                if td.kind == crate::HirTypeDeclKind::Struct {
                     record_decls
                         .entry(td.qualified_name())
                         .or_insert_with(|| RecordDecl {
@@ -328,7 +326,6 @@ pub fn run_layout_mono_pass(
             // caller error; contribute nothing.
             HirItem::Function(_)
             | HirItem::Impl(_)
-            | HirItem::Machine(_)
             | HirItem::Actor(_)
             | HirItem::Supervisor(_)
             | HirItem::ExternFn(_)
@@ -353,7 +350,7 @@ pub fn run_layout_mono_pass(
         .iter()
         .filter(|spec| !spec.type_params.is_empty())
     {
-        let type_name = spec.type_name;
+        let type_name = spec.canonical_type_name;
         // Only seed if not already present (a user-declared enum named
         // "Option" or "Result" would shadow the builtin; honour that).
         enum_decls
@@ -411,6 +408,11 @@ pub fn run_layout_mono_pass(
         all_type_params.extend(type_params);
     }
 
+    // A resolved declaration remains concrete even when another declaration
+    // uses the same spelling for a parameter. The walked function's own
+    // residual domain is checked separately before this borrowed-name set.
+    all_type_params
+        .retain(|name| !record_decls.contains_key(name) && !enum_decls.contains_key(name));
     let mut disc = Discovery {
         record_decls: &record_decls,
         enum_decls: &enum_decls,
@@ -500,7 +502,13 @@ fn walk_stmt(
                 walk_expr(e, subst, residual_domain, disc);
             }
         }
-        HirStmtKind::Assign { target, value } => {
+        HirStmtKind::Destructure { value, fields } => {
+            walk_expr(value, subst, residual_domain, disc);
+            for binding in fields.iter().filter_map(|field| field.binding.as_ref()) {
+                disc.visit_ty(&binding.ty, &binding.span, subst, residual_domain);
+            }
+        }
+        HirStmtKind::Assign { target, value, .. } => {
             walk_expr(target, subst, residual_domain, disc);
             walk_expr(value, subst, residual_domain, disc);
         }
@@ -509,26 +517,6 @@ fn walk_stmt(
         }
         HirStmtKind::Return(None) => {}
         HirStmtKind::Defer { body, .. } => walk_expr(body, subst, residual_domain, disc),
-        HirStmtKind::LetElse {
-            scrutinee,
-            bindings,
-            success_prelude,
-            else_body,
-            ..
-        } => {
-            walk_expr(scrutinee, subst, residual_domain, disc);
-            for binding in bindings {
-                disc.visit_ty(&binding.ty, &scrutinee.span, subst, residual_domain);
-            }
-            // Aggregate-payload leaf binders (`Ok((n, s))` → `n`, `s`) carry
-            // their own resolved types and projection expressions; visit them
-            // so a generic record/enum reached only through a destructured leaf
-            // is still discovered for monomorphisation.
-            for prelude_stmt in success_prelude {
-                walk_stmt(prelude_stmt, subst, residual_domain, disc);
-            }
-            walk_block(else_body, subst, residual_domain, disc);
-        }
     }
 }
 
@@ -544,7 +532,7 @@ fn walk_stmt(
 )]
 #[allow(
     clippy::match_same_arms,
-    reason = "many HirExprKind arms recurse identically (same args to walk_expr); merging via `|` would obscure which variants the walker explicitly handles vs. delegates — same rationale as machine_mono::walk_expr"
+    reason = "many HirExprKind arms recurse identically (same args to walk_expr); merging via `|` would obscure which variants the walker explicitly handles vs. delegates"
 )]
 fn walk_expr(
     expr: &HirExpr,
@@ -570,7 +558,7 @@ fn walk_expr(
                 walk_expr(operand, subst, residual_domain, disc);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             walk_expr(callee, subst, residual_domain, disc);
             for a in args {
                 walk_expr(a, subst, residual_domain, disc);
@@ -581,7 +569,8 @@ fn walk_expr(
                 walk_expr(arg, subst, residual_domain, disc);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
@@ -596,7 +585,7 @@ fn walk_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             walk_expr(conn, subst, residual_domain, disc);
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             walk_expr(child, subst, residual_domain, disc);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -628,13 +617,14 @@ fn walk_expr(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             walk_expr(operand, subst, residual_domain, disc);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 walk_expr(elem, subst, residual_domain, disc);
             }
@@ -668,16 +658,27 @@ fn walk_expr(
             walk_expr(object, subst, residual_domain, disc);
         }
         HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::Loop { body, .. } => {
             walk_block(body, subst, residual_domain, disc);
+        }
+        HirExprKind::ScopeRecovery {
+            scope,
+            error,
+            handler,
+        } => {
+            walk_expr(scope, subst, residual_domain, disc);
+            disc.visit_ty(&error.ty, &error.span, subst, residual_domain);
+            walk_expr(handler, subst, residual_domain, disc);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             walk_expr(duration, subst, residual_domain, disc);
             walk_block(body, subst, residual_domain, disc);
         }
         HirExprKind::TupleIndex { tuple, .. } => walk_expr(tuple, subst, residual_domain, disc),
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             walk_expr(container, subst, residual_domain, disc);
             walk_expr(index, subst, residual_domain, disc);
         }
@@ -725,54 +726,14 @@ fn walk_expr(
                 walk_expr(&arm.body, subst, residual_domain, disc);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            walk_expr(scrutinee, subst, residual_domain, disc);
-            walk_block(body, subst, residual_domain, disc);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            walk_expr(scrutinee, subst, residual_domain, disc);
-            walk_block(body, subst, residual_domain, disc);
-            if let Some(eb) = else_body {
-                walk_block(eb, subst, residual_domain, disc);
-            }
-        }
         HirExprKind::Break {
             value: Some(value), ..
         }
         | HirExprKind::Return { value: Some(value) } => {
             walk_expr(value, subst, residual_domain, disc);
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(arg, subst, residual_domain, disc);
-        }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, e) in fields {
-                walk_expr(e, subst, residual_domain, disc);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(event, subst, residual_domain, disc);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-            walk_expr(event, subst, residual_domain, disc);
-        }
         HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -792,11 +753,8 @@ fn walk_expr(
                     HirSelectArmKind::StreamNext { stream } => {
                         walk_expr(stream, subst, residual_domain, disc);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        walk_expr(actor, subst, residual_domain, disc);
-                        for a in args {
-                            walk_expr(a, subst, residual_domain, disc);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        walk_expr(call, subst, residual_domain, disc);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         walk_expr(task, subst, residual_domain, disc);
@@ -811,14 +769,6 @@ fn walk_expr(
                 walk_expr(&arm.body, subst, residual_domain, disc);
             }
         }
-        HirExprKind::Join(join) => {
-            for branch in &join.branches {
-                walk_expr(&branch.actor, subst, residual_domain, disc);
-                for a in &branch.args {
-                    walk_expr(a, subst, residual_domain, disc);
-                }
-            }
-        }
         // Leaf variants: no child expressions. `expr.ty` was already visited
         // above, so a leaf typed as a concrete generic record/enum (e.g. a
         // `BindingRef` of type `Box<i64>`) still reaches through.
@@ -826,9 +776,6 @@ fn walk_expr(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::AwaitTask { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Break { value: None, .. }
         | HirExprKind::Return { value: None }
@@ -872,7 +819,6 @@ impl Discovery<'_> {
                 continue;
             };
             let decl_key = match builtin {
-                Some(hew_types::BuiltinType::VecIter) => "@synthetic.VecIter",
                 Some(hew_types::BuiltinType::HashMapIter) => "@synthetic.HashMapIter",
                 _ => name,
             };
@@ -1228,7 +1174,7 @@ fn collect_named_children(ty: &ResolvedTy, worklist: &mut Vec<ResolvedTy>) {
             }
         }
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => worklist.push((**elem).clone()),
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             for p in params {
                 worklist.push(p.clone());
             }
@@ -1238,6 +1184,7 @@ fn collect_named_children(ty: &ResolvedTy, worklist: &mut Vec<ResolvedTy>) {
             params,
             ret,
             captures,
+            ..
         } => {
             for p in params {
                 worklist.push(p.clone());
@@ -1280,10 +1227,17 @@ fn first_residual(args: &[ResolvedTy], residual_domain: &HashSet<String>) -> Opt
 /// site. Mirrors `lower::contains_abstract_symbol` (a structural `TypeParam`
 /// is abstract by construction).
 fn abstract_in_ty(ty: &ResolvedTy, all_type_params: &HashSet<String>) -> bool {
-    match ty {
-        ResolvedTy::TypeParam { .. } => true,
-        _ => residual_in_ty(ty, all_type_params).is_some(),
+    let mut worklist = vec![ty.clone()];
+    while let Some(ty) = worklist.pop() {
+        if matches!(ty, ResolvedTy::TypeParam { .. })
+            || matches!(&ty, ResolvedTy::Named { name, args, .. }
+                if args.is_empty() && all_type_params.contains(name))
+        {
+            return true;
+        }
+        collect_named_children(&ty, &mut worklist);
     }
+    false
 }
 
 fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<String> {
@@ -1301,7 +1255,7 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             residual_in_ty(elem, residual_domain)
         }
-        ResolvedTy::Function { params, ret } => params
+        ResolvedTy::Function { params, ret, .. } => params
             .iter()
             .find_map(|p| residual_in_ty(p, residual_domain))
             .or_else(|| residual_in_ty(ret, residual_domain)),
@@ -1309,6 +1263,7 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
             params,
             ret,
             captures,
+            ..
         } => params
             .iter()
             .find_map(|p| residual_in_ty(p, residual_domain))
@@ -1341,6 +1296,19 @@ fn residual_in_ty(ty: &ResolvedTy, residual_domain: &HashSet<String>) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_structural_parameters_remain_abstract_without_name_membership() {
+        let names = HashSet::new();
+        let nested = ResolvedTy::Tuple(vec![ResolvedTy::Task(Box::new(ResolvedTy::TypeParam {
+            name: "Payload".into(),
+        }))]);
+        assert!(abstract_in_ty(&nested, &names));
+        assert!(!abstract_in_ty(
+            &ResolvedTy::named_user("Payload", vec![]),
+            &names,
+        ));
+    }
 
     /// A fresh `Discovery` with empty seed sets and a generous cap — enough to
     /// exercise `register_record` / `register_enum` in isolation.

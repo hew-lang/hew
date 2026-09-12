@@ -1,0 +1,13 @@
+[[case]]
+id = "nested_string_concat_temp"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/nested_string_concat_temp.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Ada Lovelace\n"
+exit = 0

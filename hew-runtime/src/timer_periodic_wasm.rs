@@ -509,6 +509,7 @@ mod tests {
             let arena = crate::arena::hew_arena_new();
             let id = NEXT_TEST_ACTOR_ID.fetch_add(1, Ordering::Relaxed);
             let actor = Box::into_raw(Box::new(HewActor {
+                dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
                 state: counter.cast(),
@@ -552,6 +553,11 @@ mod tests {
                 state_drop_consumed: AtomicBool::new(false),
                 state_drop_borrowed: AtomicBool::new(false),
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+                checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_external_trap_code: AtomicI32::new(0),
+                #[cfg(not(target_arch = "wasm32"))]
+                native_completion: None,
             }));
             Self { actor, counter }
         }

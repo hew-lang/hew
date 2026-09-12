@@ -1,0 +1,13 @@
+[[case]]
+id = "class_recursion_growing_instantiation"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/class_recursion_growing_instantiation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_LIMIT_CLASS_RECURSION"
+line = 11
+column = 24
+message = "E_LIMIT_CLASS_RECURSION"

@@ -7,14 +7,14 @@ import hew.rootreply;
 
 // Root's own `Payload` with a DIVERGENT field set (`tag`, not `code`).
 type Payload {
-    tag: i64;
+    tag: i64,
 }
 
 fn main() {
     let local = Payload { tag: 1 };
     println(local.tag);
     let src = spawn rootreply.Source(seed: 2);
-    match await src.fetch() {
+    match src.fetch() {
         .Ok(p) => println(p.code),
         .Err(_) => println("err"),
     }

@@ -3,7 +3,8 @@
 use std::collections::{BTreeSet, HashSet};
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem, TypeBodyItem,
+    Block, ConditionItem, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem,
+    TypeBodyItem,
 };
 use hew_types::check::{FnSig, TypeDefKind};
 use hew_types::{method_resolution, TypeCheckOutput, VariantDef};
@@ -189,6 +190,55 @@ fn try_dot_completions(
     };
 
     let mut items = Vec::new();
+    let message_ty = match receiver_ty {
+        hew_types::Ty::Named { name, args, .. }
+            if name == hew_types::actor_delivery::FAILURE_TYPE && args.len() == 1 =>
+        {
+            &args[0]
+        }
+        _ => receiver_ty,
+    };
+    if let Some((_, payload, _)) = hew_types::actor_delivery::message_parts(message_ty) {
+        if let Some((_, _, success, failure)) = hew_types::actor_delivery::request_parts(payload) {
+            let result = hew_types::Ty::result(
+                success.clone(),
+                hew_types::Ty::actor_error_with_request(failure.clone(), message_ty.clone()),
+            );
+            for (method, parameters, insertion, documentation) in [
+                (
+                    "retry",
+                    "",
+                    "retry()",
+                    "Consume the unaccepted request and wait for completion on its original actor.",
+                ),
+                (
+                    "to",
+                    "actor",
+                    "to(${1:actor})",
+                    "Consume the unaccepted request and wait for completion on a compatible actor.",
+                ),
+            ] {
+                items.push(CompletionItem {
+                    label: method.into(),
+                    kind: CompletionKind::Method,
+                    detail: Some(format!(
+                        "fn {method}({parameters}) -> {}",
+                        result.user_facing()
+                    )),
+                    documentation: Some(documentation.into()),
+                    insert_text: Some(insertion.into()),
+                    insert_text_is_snippet: method == "to",
+                    sort_text: None,
+                });
+            }
+        }
+        // The request is sealed; its addressing and payload fields are not
+        // source-accessible. A SendFailure still exposes reason and message.
+        if message_ty == receiver_ty && hew_types::actor_delivery::request_parts(payload).is_some()
+        {
+            return Some(items);
+        }
+    }
     if let Some(type_def) = lookup_type_def_for_receiver(tc, receiver_ty) {
         for (field_name, field_ty) in &type_def.fields {
             items.push(CompletionItem {
@@ -628,20 +678,47 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     }
                 }
             }
-            Item::Machine(m) => {
-                for transition in &m.transitions {
-                    if let Some(guard) = &transition.guard {
-                        collect_locals_from_spanned_expr(guard, offset, &mut locals);
-                    }
-                    collect_locals_from_spanned_expr(&transition.body, offset, &mut locals);
-                }
-            }
+            Item::Machine(m) => collect_machine_locals(m, offset, &mut locals),
             // Record fields carry no expressions; no locals to collect.
             Item::Record(_) | Item::Import(_) | Item::ExternBlock(_) | Item::TypeAlias(_) => {}
         }
     }
 
     locals
+}
+
+/// Locals visible inside a machine body: the implicit `state` and `event`
+/// bindings, any event-head binding, and ordinary bindings from the body.
+///
+/// `self` belongs to actors and methods and is never bound here
+/// (HEW-SPEC-2026 §3.11.3), so it is never offered.
+fn collect_machine_locals(
+    machine: &hew_parser::ast::MachineDecl,
+    offset: usize,
+    locals: &mut Vec<CompletionItem>,
+) {
+    if let Some(scope) = crate::machine_scope::scope_at(machine, offset) {
+        for binding in &scope.bindings {
+            locals.push(typed_local_completion(binding.name, &binding.ty));
+        }
+        for name in &scope.head_bindings {
+            locals.push(local_completion(name));
+        }
+    }
+    for transition in &machine.transitions {
+        if let Some(guard) = &transition.guard {
+            collect_locals_from_spanned_expr(guard, offset, locals);
+        }
+        collect_locals_from_spanned_expr(&transition.body, offset, locals);
+    }
+    for state in &machine.states {
+        for hook in [state.entry.as_ref(), state.exit.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            collect_locals_from_block(hook, offset, locals);
+        }
+    }
 }
 
 fn span_contains_offset(span: &Span, offset: usize) -> bool {
@@ -670,11 +747,25 @@ fn collect_locals_from_stmt(
 ) {
     let in_stmt_scope = span_contains_offset(stmt_span, offset);
     match stmt {
-        Stmt::Let { pattern, .. } => {
-            collect_pattern_names(&pattern.0, locals);
+        Stmt::Let { pattern, value, .. } => {
+            if let Some(value) = value
+                .as_ref()
+                .filter(|value| span_contains_offset(&value.1, offset))
+            {
+                collect_locals_from_spanned_expr(value, offset, locals);
+            } else {
+                collect_pattern_names(&pattern.0, locals);
+            }
         }
-        Stmt::Var { name, .. } => {
-            locals.push(local_completion(name));
+        Stmt::Var { name, value, .. } => {
+            if let Some(value) = value
+                .as_ref()
+                .filter(|value| span_contains_offset(&value.1, offset))
+            {
+                collect_locals_from_spanned_expr(value, offset, locals);
+            } else {
+                locals.push(local_completion(name));
+            }
         }
         Stmt::For { pattern, body, .. } if in_stmt_scope => {
             collect_pattern_names(&pattern.0, locals);
@@ -683,8 +774,10 @@ fn collect_locals_from_stmt(
         Stmt::Loop { body, .. } | Stmt::While { body, .. } if in_stmt_scope => {
             collect_locals_from_block(body, offset, locals);
         }
-        Stmt::WhileLet { pattern, body, .. } if in_stmt_scope => {
-            collect_pattern_names(&pattern.0, locals);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } if in_stmt_scope => {
+            collect_condition_names(conditions, locals);
             collect_locals_from_block(body, offset, locals);
         }
         Stmt::If {
@@ -703,15 +796,14 @@ fn collect_locals_from_stmt(
             }
         }
         Stmt::IfLet {
-            pattern,
+            conditions,
             body,
             else_body,
-            ..
         } if in_stmt_scope => {
-            collect_pattern_names(&pattern.0, locals);
+            collect_condition_names(conditions, locals);
             collect_locals_from_block(body, offset, locals);
-            if let Some(block) = else_body {
-                collect_locals_from_block(block, offset, locals);
+            if let Some(else_expr) = else_body {
+                collect_locals_from_expr(&else_expr.0, offset, locals);
             }
         }
         Stmt::Match { arms, .. } if in_stmt_scope => {
@@ -769,8 +861,8 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             body, else_body, ..
         } => {
             collect_locals_from_block(body, offset, locals);
-            if let Some(block) = else_body {
-                collect_locals_from_block(block, offset, locals);
+            if let Some(else_expr) = else_body {
+                collect_locals_from_expr(&else_expr.0, offset, locals);
             }
         }
         Expr::Match { arms, .. } => {
@@ -796,16 +888,32 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
                 collect_locals_from_spanned_expr(arg.expr(), offset, locals);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. } | Expr::Coalesce { left, right } => {
             collect_locals_from_spanned_expr(left, offset, locals);
             collect_locals_from_spanned_expr(right, offset, locals);
+        }
+        Expr::Handle {
+            operand,
+            error,
+            body,
+        } => {
+            collect_locals_from_spanned_expr(operand, offset, locals);
+            if span_contains_offset(&body.1, offset) {
+                locals.push(local_completion(&error.0));
+                collect_locals_from_spanned_expr(body, offset, locals);
+            }
         }
         Expr::Unary { operand, .. } => {
             collect_locals_from_spanned_expr(operand, offset, locals);
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_locals_from_spanned_expr(expr, offset, locals);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                collect_locals_from_spanned_expr(element.expr(), offset, locals);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -832,10 +940,6 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
         Expr::SpawnLambdaActor { body, .. } | Expr::Lambda { body, .. } => {
             collect_locals_from_spanned_expr(body, offset, locals);
         }
-        Expr::Timeout { expr, duration } => {
-            collect_locals_from_spanned_expr(expr, offset, locals);
-            collect_locals_from_spanned_expr(duration, offset, locals);
-        }
         Expr::FieldAccess { object, .. } => {
             collect_locals_from_spanned_expr(object, offset, locals);
         }
@@ -843,7 +947,7 @@ fn collect_locals_from_expr(expr: &Expr, offset: usize, locals: &mut Vec<Complet
             collect_locals_from_spanned_expr(object, offset, locals);
             collect_locals_from_spanned_expr(index, offset, locals);
         }
-        Expr::Await(inner) | Expr::Yield(Some(inner)) => {
+        Expr::Await(inner) | Expr::ReturnError(inner) | Expr::Yield(Some(inner)) => {
             collect_locals_from_spanned_expr(inner, offset, locals);
         }
         Expr::Range { start, end, .. } => {
@@ -885,6 +989,16 @@ fn collect_locals_from_spanned_expr(
 ) {
     if span_contains_offset(&expr.1, offset) {
         collect_locals_from_expr(&expr.0, offset, locals);
+    }
+}
+
+/// Every name a pattern condition binds: one condition can carry several `let`
+/// operands, and all of their binders are live in the then block.
+fn collect_condition_names(conditions: &[ConditionItem], locals: &mut Vec<CompletionItem>) {
+    for item in conditions {
+        if let ConditionItem::Let { pattern, .. } = item {
+            collect_pattern_names(&pattern.0, locals);
+        }
     }
 }
 
@@ -962,6 +1076,14 @@ fn local_completion(name: &str) -> CompletionItem {
     }
 }
 
+/// A local whose type the editor can show, such as a machine's `state`.
+fn typed_local_completion(name: &str, ty: &str) -> CompletionItem {
+    CompletionItem {
+        detail: Some(format!("{name}: {ty}")),
+        ..local_completion(name)
+    }
+}
+
 /// Build a completion item from a function signature.
 fn fn_sig_completion(name: &str, sig: &FnSig) -> CompletionItem {
     let detail = format_fn_signature_inline(name, sig);
@@ -1017,8 +1139,8 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
         ),
         (
             "receive",
-            "receive ${1:name}(${2:params}) {\n\t$0\n}",
-            "receive name(params) { ... }",
+            "receive fn ${1:name}(${2:params}) {\n\t$0\n}",
+            "receive fn name(params) { ... }",
         ),
         ("loop", "loop {\n\t$0\n}", "loop { ... }"),
         (
@@ -1041,11 +1163,6 @@ pub fn keyword_snippets() -> Vec<CompletionItem> {
             "select from",
             "select {\n\t${1:binding} from ${2:source} => ${3:expr},\n\tafter ${4:duration} => ${0:timeout_expr},\n}",
             "select { pattern from source => expr, after duration => expr }",
-        ),
-        (
-            "timeout",
-            "${1:expr} | after ${2:duration}",
-            "expr | after duration",
         ),
         ("defer", "defer ${0:expr};", "defer expr;"),
         (
@@ -1114,6 +1231,54 @@ mod tests {
         complete(&source, &parse_result, type_output, offset)
     }
 
+    const MACHINE_SOURCE: &str = concat!(
+        "machine Counter {\n",
+        "    events { Tick { by: i64 } }\n",
+        "    state Idle,\n",
+        "    state Live { hits: i64 },\n",
+        "    on Tick(by): Idle => Live { hits: by }\n",
+        "    on Tick: Live => Live reenter {\n",
+        "        /*cursor*/\n",
+        "        Live { hits: state.hits + event.by }\n",
+        "    }\n",
+        "}\n",
+    );
+
+    #[test]
+    fn machine_transition_body_offers_state_and_event_never_self() {
+        let items = items_at_cursor(MACHINE_SOURCE, None);
+        let state = items
+            .iter()
+            .find(|item| item.label == "state")
+            .expect("a transition body binds `state`");
+        assert_eq!(state.detail.as_deref(), Some("state: Counter.Live"));
+        let event = items
+            .iter()
+            .find(|item| item.label == "event")
+            .expect("a transition body binds `event`");
+        assert_eq!(event.detail.as_deref(), Some("event: CounterEvent.Tick"));
+        assert!(
+            !items.iter().any(|item| item.label == "self"),
+            "`self` is an actor receiver and is never bound in a machine body"
+        );
+    }
+
+    #[test]
+    fn machine_event_head_binding_is_a_local() {
+        let source = concat!(
+            "machine Counter {\n",
+            "    events { Tick { by: i64 } }\n",
+            "    state Idle,\n",
+            "    state Live { hits: i64 },\n",
+            "    on Tick(by): Idle => Live {\n",
+            "        hits: /*cursor*/by\n",
+            "    }\n",
+            "    on Tick: Live => Live reenter { hits: state.hits }\n",
+            "}\n",
+        );
+        assert!(labels_at_cursor(source).contains(&"by".to_string()));
+    }
+
     fn labels_at_cursor(source_with_cursor: &str) -> Vec<String> {
         items_at_cursor(source_with_cursor, None)
             .into_iter()
@@ -1158,7 +1323,7 @@ mod tests {
                         selection_trailing_comma: false,
                         module_alias: module_alias.map(str::to_string),
                         file_path: None,
-                        resolved_items: Some(parsed.program.items),
+                        resolved_items: Some(parsed.program.items.into()),
                         resolved_item_source_paths: Vec::new(),
                         resolved_source_paths: Vec::new(),
                     }),
@@ -1189,7 +1354,7 @@ mod tests {
     #[test]
     fn spawn_completions_disambiguate_same_named_module_actors() {
         let actor_src = "pub actor Account {\n\
-                         \x20   var n: i64 = 0;\n\
+                         \x20   var n: i64 = 0,\n\
                          \x20   receive fn who() -> i64 { 1 }\n\
                          }\n";
         // Checked program (parsable shape) supplies the imported actors.
@@ -1263,8 +1428,8 @@ mod tests {
     #[test]
     fn completions_surface_impl_block_methods_with_return_type() {
         let source = "\
-type Caps { count: i64; }
-type Matcher { id: i64; }
+type Caps { count: i64, }
+type Matcher { id: i64, }
 trait MatcherMethods {
     fn captures(self, input: string) -> Caps;
     fn find_all(self, input: string) -> Vec<string>;
@@ -1308,6 +1473,16 @@ fn probe(mat: Matcher, s: string) {
     }
 
     #[test]
+    fn local_handler_completions_include_only_the_lexical_error_binding() {
+        let inside = labels_at_cursor("fn f(value: Result<i64, string>) { let answer = value handle problem { /*cursor*/ 7 }; answer }");
+        assert!(inside.iter().any(|name| name == "problem"));
+        assert!(!inside.iter().any(|name| name == "answer"));
+        let outside = labels_at_cursor("fn f(value: Result<i64, string>) { let answer = value handle problem { 7 }; /*cursor*/ answer }");
+        assert!(outside.iter().any(|name| name == "answer"));
+        assert!(!outside.iter().any(|name| name == "problem"));
+    }
+
+    #[test]
     fn completions_include_locals_inside_call_argument_blocks() {
         let labels = labels_at_cursor(
             r"fn example() {
@@ -1320,6 +1495,25 @@ fn probe(mat: Matcher, s: string) {
         );
 
         assert!(labels.iter().any(|label| label == "arg_local"));
+    }
+
+    #[test]
+    fn completions_include_locals_inside_a_spread_operand() {
+        // A spread operand is an ordinary expression position: completion sees
+        // the same locals it would anywhere else in the literal.
+        let labels = labels_at_cursor(
+            r"fn example() {
+    let outer = 5;
+    let joined = [1, ..{
+        let spread_local = 7;
+        /*cursor*/
+        spread_local
+    }];
+}",
+        );
+
+        assert!(labels.iter().any(|label| label == "spread_local"));
+        assert!(labels.iter().any(|label| label == "outer"));
     }
 
     #[test]
@@ -1422,8 +1616,8 @@ fn example() {
     #[test]
     fn struct_init_completions_do_not_fire_for_enum_types() {
         let source = r"enum Color {
-    Red;
-    Blue;
+    Red,
+    Blue,
 }
 
 fn example() {
@@ -1442,9 +1636,9 @@ fn example() {
     #[test]
     fn enum_variant_completions_offer_all_variants() {
         let source = r"enum Color {
-    Blue;
-    Point { x: i32, y: i32 };
-    Rgb(u8, u8, u8);
+    Blue,
+    Point { x: i32, y: i32 },
+    Rgb(u8, u8, u8),
 }
 
 fn example() {
@@ -1500,9 +1694,9 @@ fn example() {
     #[test]
     fn enum_variant_completions_include_payload_detail() {
         let source = r"enum Color {
-    Blue;
-    Point { x: i32, y: i32 };
-    Rgb(u8, u8, u8);
+    Blue,
+    Point { x: i32, y: i32 },
+    Rgb(u8, u8, u8),
 }
 
 fn example() {
@@ -1705,14 +1899,14 @@ impl Box {
 
     #[test]
     fn actor_handle_dot_completions_include_receive_handler_and_exclude_internal_fields() {
-        // Dot-completing on a `LocalPid<Counter>` handle must offer the actor's
+        // Dot-completing on a `Counter` actor handle must offer the actor's
         // declared receive handler (`increment`) and must NOT leak the actor's
         // internal struct fields (`count`).
         //
         // This test uses an empty module registry (no stdlib), so `tell` won't
         // appear here; it is covered by the stdlib-loaded hew-lsp integration test.
         let source = r"actor Counter {
-    count: i64;
+    count: i64,
     receive fn increment(n: i64) { count = count + n; }
 }
 fn main() {
@@ -1730,6 +1924,39 @@ fn main() {
             !labels.contains(&"count"),
             "internal actor field `count` must not appear in handle completions; got: {labels:?}"
         );
+    }
+
+    #[test]
+    fn rejected_completion_offers_recovery_without_exposing_payload_fields() {
+        let source = r#"
+            actor Worker { receive fn echo(value: string) -> string { value } }
+            fn main() {
+                let worker = policy(spawn Worker(), on_full: .Reject);
+                let result = worker.echo("hello");
+                match result {
+                    .Err(ActorError.Rejected(failure)) => {
+                        let _ = failure.message./*cursor*/retry();
+                    },
+                    _ => {},
+                }
+            }
+        "#;
+        let tc = type_check(&source.replace(CURSOR, ""));
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let items = items_at_cursor(source, Some(&tc));
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert!(
+            labels.contains(&"retry") && labels.contains(&"to"),
+            "{labels:?}"
+        );
+        assert!(
+            !labels.contains(&"payload") && !labels.contains(&"target"),
+            "{labels:?}"
+        );
+        assert!(items.iter().all(|item| item
+            .detail
+            .as_ref()
+            .is_some_and(|detail| detail.contains("Result<string"))));
     }
 
     /// A local declared INSIDE the tail-promoted then-branch must be visible at

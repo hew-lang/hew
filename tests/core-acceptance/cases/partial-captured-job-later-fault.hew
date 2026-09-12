@@ -1,0 +1,28 @@
+type Job {
+    run: fn[once]() -> string,
+    label: string,
+    values: Vec<string>,
+    payload: bytes,
+}
+
+fn make_job(label: string) -> Job {
+    let message = f"run:{label}".to_upper();
+    Job { run: move || message, label: label.to_upper(), values: ["queued".to_upper()], payload: label.to_bytes() }
+}
+
+fn main() -> i64 {
+    let caller = "caller owner".to_upper();
+    let captured = make_job("fault");
+    let report = move |divisor: i64| -> i64 {
+        let result = captured.run();
+        println(f"{result}:{captured.label}:{captured.values[0]}:{captured.payload.len()}");
+        let local = captured.label.to_upper();
+        let bytes = local.to_bytes();
+        let value = bytes.len() / divisor;
+        println("unexpected callback continuation");
+        value
+    };
+    let result = report(0);
+    println(caller);
+    result
+}

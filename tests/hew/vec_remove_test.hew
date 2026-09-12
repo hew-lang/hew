@@ -6,14 +6,14 @@
 import std.testing;
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 // ── scalar (i64) ────────────────────────────────────────────────────────────
 #[test]
 fn test_remove_middle_returns_element_and_shifts() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(10);
     v.push(20);
     v.push(30);
@@ -27,7 +27,7 @@ fn test_remove_middle_returns_element_and_shifts() {
 
 #[test]
 fn test_remove_first_shifts_tail_down() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -39,7 +39,7 @@ fn test_remove_first_shifts_tail_down() {
 
 #[test]
 fn test_remove_last_leaves_prefix() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(7);
     v.push(8);
     v.push(9);
@@ -51,7 +51,7 @@ fn test_remove_last_leaves_prefix() {
 
 #[test]
 fn test_remove_single_element_empties_vec() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(42);
     testing.assert_eq(v.remove(0), 42);
     testing.assert_eq(v.len(), 0);
@@ -61,7 +61,7 @@ fn test_remove_single_element_empties_vec() {
 // ── bool (named codegen dispatch) ───────────────────────────────────────────
 #[test]
 fn test_remove_bool_element() {
-    let v: Vec<bool> = Vec.new();
+    var v: Vec<bool> = Vec.new();
     v.push(true);
     v.push(false);
     v.push(true);
@@ -74,7 +74,7 @@ fn test_remove_bool_element() {
 // ── string (owned move-out; the leak/double-free crux) ──────────────────────
 #[test]
 fn test_remove_string_returns_owned_and_survivors_intact() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("alpha");
     v.push("beta");
     v.push("gamma");
@@ -88,7 +88,7 @@ fn test_remove_string_returns_owned_and_survivors_intact() {
 
 #[test]
 fn test_remove_string_first_then_last() {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push("one");
     v.push("two");
     v.push("three");
@@ -102,7 +102,7 @@ fn test_remove_string_first_then_last() {
 // ── BitCopy record (layout move-out) ────────────────────────────────────────
 #[test]
 fn test_remove_bitcopy_record_element() {
-    let v: Vec<Point> = Vec.new();
+    var v: Vec<Point> = Vec.new();
     v.push(Point { x: 1, y: 2 });
     v.push(Point { x: 3, y: 4 });
     v.push(Point { x: 5, y: 6 });

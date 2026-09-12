@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_capture_heap"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/lambda_capture_heap.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hello, ada\nhello, alan\ncaller still owns: hello\n"
+exit = 0

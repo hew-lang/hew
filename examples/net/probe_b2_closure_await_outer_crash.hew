@@ -1,11 +1,7 @@
-// Retained future semantic fixture for an ASK handler that crashes before a
-// child suspending closure reaches its await. Once function types carry
-// suspension metadata, this will exercise restoration of the outer reply route
-// while a closure driver is active. The `trigger` parameter keeps the await
-// structurally reachable so the closure remains classified as suspending.
-// Today invocation sites cannot select a matching driver safely, so MIR
-// deliberately rejects this fixture with `suspension inside a closure` before
-// code generation; none of the runtime crash/reply behavior below is executed.
+// Probe an outer fault while a closure using a captured connection is active.
+// The trigger keeps the fault and suspended read paths observable.
+import std.encoding.utf8;
+
 import std.net.{Listener};
 
 extern "C" {
@@ -13,22 +9,26 @@ extern "C" {
 }
 
 actor Reader {
-    let addr: string;
+    let addr: string,
     receive fn go(trigger: i64) -> i64 {
         sleep(200ms);
         let conn = match net.connect(addr) {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
-        let read_once = || {
+        let read_once = move || {
             if trigger >= 0 {
                 panic("reader crashed mid suspending-closure await");
             }
-            await conn.read_string()
+            let decoded = utf8.decode(conn.read());
+            let _ = conn.close();
+            decoded
         };
-        let body = read_once();
+        let body = read_once() handle error {
+            println(f"invalid UTF-8: {error}");
+            return -1;
+        };
         println(f"reader-received: {body}");
-        let _ = conn.close();
         7
     }
 }
@@ -36,13 +36,13 @@ actor Reader {
 fn main() {
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    let r = await reader.go(0);
+    let r = reader.go(0);
     match r {
         .Ok(v) => println(f"reader-returned: {v}"),
         .Err(_) => println("reader-crash-fallback"),

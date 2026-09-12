@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-child-after-restart"
+intent = "A supervisor slot lookup taken after the restart barrier resolves the replacement child Live, so a read through a freshly fetched handle answers with the restarted actor's state rather than trapping on a Transient slot."
+source = "cases/supervisor-child-after-restart.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "7\n7\nstopped\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\n"
+exit = 0

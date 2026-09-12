@@ -4,8 +4,8 @@
 import std.iter;
 
 type HashMapIter {
-    value: i64;
-    done: bool;
+    value: i64,
+    done: bool,
 }
 
 impl Iterator for HashMapIter {
@@ -27,7 +27,7 @@ pub fn main() -> i64 {
         .None => 90,
     };
 
-    let map: HashMap<i64, i64> = HashMap.new();
+    var map: HashMap<i64, i64> = HashMap.new();
     map.insert(1, 10);
     map.insert(2, 20);
     map.insert(3, 30);

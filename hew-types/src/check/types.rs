@@ -5,7 +5,7 @@ use crate::module_registry::ModuleRegistry;
 use crate::resolved_ty::ResolvedTy;
 use crate::traits::TraitRegistry;
 use crate::ty::{Substitution, Ty, TypeVar};
-use crate::type_facts::{TypeFacts, TypeInstanceKey};
+use crate::type_facts::{TypeFactContext, TypeFacts, TypeInstanceKey};
 use crate::WasmUnsupportedFeature;
 use hew_parser::ast::{
     ImportSpec, Literal, NamingCase, Span, Spanned, TraitBound, TraitMethod, TypeExpr, Visibility,
@@ -91,11 +91,10 @@ impl ExecutionContextReader {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct ActorInitParamInfo {
     pub(super) name: String,
     pub(super) ty: Ty,
-    pub(super) span: Span,
 }
 
 /// One checker-derived lifecycle for a qualified closeable opaque nominal.
@@ -186,6 +185,19 @@ pub(super) struct SourceExternDeclaration {
     pub(super) consuming_params: Vec<bool>,
 }
 
+/// One `#[extern_symbol]` method's declared C-boundary signature.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternMethodSignature {
+    /// The linker endpoint the attribute names.
+    pub endpoint: String,
+    pub params: Vec<Ty>,
+    /// `consume` disposition per parameter, parallel to `params`.
+    pub consumes: Vec<bool>,
+    pub result: Ty,
+    /// Dotted module path the declaration came from, when it has one.
+    pub declaring_module: Option<String>,
+}
+
 /// Exact source declaration and linker endpoint selected for one open-set
 /// `#[extern_symbol]` method call.
 ///
@@ -204,9 +216,137 @@ pub struct ExternMethodCallIdentity {
     pub trusted_compiled_stdlib: bool,
 }
 
+/// Integer process-exit representation selected for a source entry function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EntryIntegerType {
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    Isize,
+    Usize,
+}
+
+impl EntryIntegerType {
+    pub(super) fn from_ty(ty: &Ty) -> Option<Self> {
+        match ty {
+            Ty::I8 => Some(Self::I8),
+            Ty::I16 => Some(Self::I16),
+            Ty::I32 => Some(Self::I32),
+            Ty::I64 => Some(Self::I64),
+            Ty::U8 => Some(Self::U8),
+            Ty::U16 => Some(Self::U16),
+            Ty::U32 => Some(Self::U32),
+            Ty::U64 => Some(Self::U64),
+            Ty::Isize => Some(Self::Isize),
+            Ty::Usize => Some(Self::Usize),
+            _ => None,
+        }
+    }
+}
+
+/// `Display::fmt` realization selected for a `Result` entry error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryDisplayTarget {
+    /// A concrete implementation resolved from the error type.
+    Declared {
+        declaration: crate::DefId,
+        instance: EntryCallableInstance,
+    },
+    /// The error type is erased to a trait object, so the entry renders it
+    /// through the vtable slot the coercion site published. The receiver is
+    /// borrowed: `Display::fmt` declares a by-value named receiver, which is
+    /// a read at the semantic call boundary.
+    DynSlot { slot: u32 },
+}
+
+/// Complete callable realization selected for an entry-boundary dependency.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryCallableInstance {
+    Declared,
+    Generic { type_args: Vec<ResolvedTy> },
+}
+
+/// Closed process-exit action selected by the checker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EntryExitAction {
+    Unit,
+    Integer(EntryIntegerType),
+    Result {
+        result_ty: ResolvedTy,
+        error_ty: ResolvedTy,
+        display: EntryDisplayTarget,
+    },
+}
+
+/// Typed process-entry exit plan keyed by the selected source declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EntryExitPlan {
+    pub entry: crate::DefId,
+    pub action: EntryExitAction,
+}
+
+/// Source-selected constructor for the shared Result return representation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResultReturnKind {
+    Success,
+    Error,
+}
+
+/// Checked source for one select arm, stored in source-arm order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckedSelectSource {
+    /// Preparation borrows this handle; only its winning edge consumes it.
+    TaskAwait {
+        operand: SpanKey,
+    },
+    ActorAsk {
+        call: SpanKey,
+    },
+    ChannelReceive {
+        call: SpanKey,
+    },
+}
+
+/// A task place borrowed while later selection sources are evaluated.
+#[derive(Debug)]
+pub(super) struct PreparedSelectTask {
+    pub binding: TypeBindingId,
+    pub path: Vec<String>,
+    pub span: Span,
+}
+
+/// How one `for` loop binds each `Vec<T>` element (D432).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecIterationMode {
+    /// Each iteration owns an independent copy of the element.
+    Clone,
+    /// Each iteration reads a loan of the slot the vector still owns.
+    Borrow,
+}
+
+/// How a `VecIter<T>` cursor produces each element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VecCursorMode {
+    /// `next()` copies the element into an independent owner.
+    Clone,
+    /// `next()` moves the element out, so the drain empties the vector. This is
+    /// the only step available to an element with no semantic clone.
+    Take,
+}
+
 /// Result of type-checking a program.
 #[derive(Debug, Clone)]
 pub struct TypeCheckOutput {
+    /// Ordinary checked program produced by machine normalization, when present.
+    pub normalized_machines: Option<std::sync::Arc<super::machine_normalize::NormalizedMachines>>,
+    pub select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
+    /// Checked local recovery semantics; HIR must consume this fact.
+    pub recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Interpolation operands whose rendering selected an explicit `Display`
     /// implementation. The value preserves alias identity for HIR dispatch.
@@ -215,25 +355,16 @@ pub struct TypeCheckOutput {
     /// a user-provided `impl` overriding the derived comparison (D340). See
     /// [`UserComparisonDispatch`].
     pub user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
-    /// Total checker-authored ownership facts for accepted expression results.
+    /// Explicit widening targets for numeric binary and index operands.
+    pub numeric_operand_coercions: HashMap<SpanKey, Ty>,
+    /// Declared C-boundary signatures for `#[extern_symbol]` methods, keyed by
+    /// the source declaration identity a `CallTarget::Extern` carries.
     ///
-    /// HIR projects this span-keyed table onto stable `SiteId`s. MIR consumes
-    /// that projection and may not reconstruct ownership from callee spellings,
-    /// result types, or expression intent.
-    pub produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
-    /// Closed structural dependency graph for result ownership.  This carries
-    /// the checker-proven source relation alongside the final ownership
-    /// verdict, so downstream lowering never has to reconstruct a transfer
-    /// from expression spelling or a local-number coincidence.
-    pub produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
-    /// Declaration spans of non-receiver parameters whose resolved type has
-    /// at least one checker-proven projection into storage shared with the
-    /// caller.
-    ///
-    /// This is a positive capability fact, not a method-name allowlist. MIR
-    /// combines it with an actual representation-replacing write before
-    /// granting a representation loan; absence always fails closed.
-    pub caller_visible_param_projections: HashSet<SpanKey>,
+    /// An `#[extern_symbol]` method declares its boundary signature with its
+    /// own Hew parameters and return type, exactly as an `extern` block
+    /// declares one. Publishing it here keeps that single authority: no later
+    /// stage re-derives a signature per endpoint spelling.
+    pub extern_method_signatures: HashMap<(crate::DefId, String), ExternMethodSignature>,
     /// Spans of `self.field` projections the checker resolved to the enclosing
     /// actor's own state field.
     ///
@@ -245,6 +376,26 @@ pub struct TypeCheckOutput {
     /// of the field names, so the two spellings cannot drift apart in one
     /// backend and not another.
     pub actor_self_state_fields: HashSet<SpanKey>,
+    /// Type-annotation spans of actor state fields that `init` initializes
+    /// (D447). Their storage is uninitialized until init's first store.
+    pub actor_deferred_field_decls: HashSet<SpanKey>,
+    /// Target spans of the assignments in `init` that are a deferred field's
+    /// first store. Every other assignment to a state field replaces a value.
+    pub actor_init_first_stores: HashSet<SpanKey>,
+    /// Iterable spans of `for` loops whose element type has no clone, so each
+    /// element is bound as a loan of the slot the sequence still owns (D432).
+    /// The checker decides borrow versus clone once, here; no lowering stage
+    /// re-derives it from the element's facts.
+    pub borrowed_element_for_loops: HashSet<SpanKey>,
+    /// Spans of `xs[i]` reads over a `Vec<T>` whose element has no clone, so
+    /// the read is a loan of the slot the vector still owns (D432).
+    pub borrowed_element_index_reads: HashSet<SpanKey>,
+    /// Spans of `VecIter` cursor sites whose element has no semantic clone, so
+    /// `next()` moves each element out instead of copying it.
+    pub owning_take_vec_cursors: HashSet<SpanKey>,
+    /// Spans of `get` calls whose element has no semantic clone, so `Some`
+    /// carries a loan of the slot the collection still owns.
+    pub borrowed_element_option_reads: HashSet<SpanKey>,
     /// W4.047 P1.1 — the **typed** checker→HIR handoff side-table.
     ///
     /// Carries the post-substitution, post-literal-defaulting [`ResolvedTy`]
@@ -282,6 +433,12 @@ pub struct TypeCheckOutput {
     /// collection's does. A type §1.1 refuses gets **no row**: absence is a
     /// refusal the consumer fails closed on, never a licence to guess.
     pub type_facts: BTreeMap<TypeInstanceKey, TypeFacts>,
+    /// Declaration context used by the shared concrete type-fact service.
+    ///
+    /// This is retained separately from the row projection because SIR may
+    /// synthesize a concrete structural instance that no source expression
+    /// spelled. It never carries an alternate `Send`, `Hash`, or `Eq` verdict.
+    pub type_fact_context: TypeFactContext,
     /// RHS spans of accepted `lhs is TypeName` type patterns.
     ///
     /// The parser still represents the RHS as an identifier expression; this
@@ -332,13 +489,6 @@ pub struct TypeCheckOutput {
     /// so downstream lowering phases consume checker-owned field tags, names,
     /// casing, and version metadata instead of recovering it from source text.
     pub wire_layouts: WireLayoutTable,
-    /// Checker-owned numeric method lowering decisions keyed by method-call span.
-    ///
-    /// Populated for accepted integer opt-out methods:
-    /// `.wrapping_{add,sub,mul}`, `.checked_{add,sub,mul}`, and
-    /// `.saturating_{add,sub,mul}`. HIR/MIR must consume this table instead of
-    /// re-matching method-name strings downstream.
-    pub numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned width-conversion method lowering decisions keyed by
     /// method-call span.
     ///
@@ -360,6 +510,7 @@ pub struct TypeCheckOutput {
     /// HIR lowering consumes this side table before the generic method-call
     /// rewrite bridge and never reclassifies the receiver type downstream.
     pub actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    pub actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
     /// Checker-owned machine method dispatch decisions keyed by the method call span.
     ///
     /// Populated for every accepted `.step()` / `.state_name()` call on a
@@ -370,20 +521,6 @@ pub struct TypeCheckOutput {
     ///
     /// MIR/codegen consumers: wired in slice 6.
     pub machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
-    /// Checker-resolved `await conn.read()` / `await conn.read_string()` sites,
-    /// keyed by the inner method-call span (NEW-1). Populated when an `await`
-    /// wraps a `net.Connection::read`/`read_string` call. HIR lowering consumes
-    /// this to emit `HirExprKind::ConnAwaitRead` (the non-blocking suspending
-    /// read) instead of the blocking method call. The `bool` is `true` for
-    /// `read_string` (bytes-to-string wrap), `false` for raw `read`.
-    pub conn_await_reads: HashMap<SpanKey, bool>,
-    /// Checker-resolved `await listener.accept()` sites, keyed by the inner
-    /// method-call span (NEW-2). Populated when an `await` wraps a
-    /// `net.Listener::accept` call. HIR lowering consumes this to emit
-    /// `HirExprKind::ListenerAwaitAccept` (the non-blocking suspending accept)
-    /// instead of the blocking method call — the listener-readiness sibling of
-    /// [`TypeCheckOutput::conn_await_reads`].
-    pub listener_await_accepts: HashSet<SpanKey>,
     /// Function tail expressions the checker Ok-wraps to satisfy an explicit
     /// `-> Result<Ok, Err>` return, keyed by the tail expression's span. A
     /// `Result`-returning function whose tail yields the `Ok` payload type
@@ -396,6 +533,8 @@ pub struct TypeCheckOutput {
     /// directly — no double-wrap). HIR lowering consumes this set to wrap the
     /// lowered tail in a synthetic `Ok(..)` variant constructor.
     pub tail_ok_coercions: HashSet<SpanKey>,
+    /// Explicit Result constructor selected at a `fails` return boundary.
+    pub result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span. Missing entry means the checker rejected the target.
     pub assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
@@ -443,6 +582,8 @@ pub struct TypeCheckOutput {
     /// exact declaration occurrence; no downstream canonical-string alias is
     /// published.
     pub identity: crate::IdentityView,
+    /// The checker-selected process entry and its complete exit contract.
+    pub entry_exit_plan: Option<EntryExitPlan>,
     /// The compile's single-owner extern contract table (rc1-F1 stage B):
     /// one C symbol resolves under exactly one [`crate::extern_table::ExternContract`],
     /// minted at the first declaration; later declarations must agree and
@@ -451,13 +592,19 @@ pub struct TypeCheckOutput {
     pub extern_contracts: crate::extern_table::ExternTable,
     /// Function signatures keyed by declaration identity.
     ///
-    /// Key shapes: `{module}.{name}` for source free functions,
-    /// `Type::method` for methods, and bare names for builtins. Source
-    /// declarations publish only their canonical spelling; this map remains
-    /// a name-keyed semantic registry until consumers move to `DefId`.
+    /// Key shapes: `{module}.{name}` for source free functions — the module
+    /// being the identity table's render, so a module reached under two import
+    /// spellings keys one namespace — `Type::method` for methods, and bare
+    /// names for compiler builtins and `extern "C"` symbols, whose namespace is
+    /// the linker's rather than a module's. No source declaration is reachable
+    /// under a bare name: an import publishes a binding into the importing
+    /// file's `{module}.{name}` namespace and records the declaration it names
+    /// in `import_fn_name_aliases`, so a module sees what it declares or
+    /// imports and nothing else.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
+    pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     /// Canonical trait and trait-method declaration identities, keyed by the
     /// owner-qualified source spelling `Trait::method`. This is the sole
@@ -554,8 +701,8 @@ pub struct TypeCheckOutput {
     ///
     /// Keyed by the `SpanKey` of the field-access expression (e.g. the span of
     /// `app.cache` in `app.cache.query(req)`). Populated during type-checking
-    /// of field-access expressions whose object resolves to a `LocalPid<S>`
-    /// where `S` is a known supervisor type.
+    /// of field-access expressions whose object resolves to `S`'s own
+    /// actor-handle type, where `S` is a known supervisor type.
     ///
     /// The `index` field is the position of the child within its own slot space:
     /// - `Static` children index into `HewSupervisor.children[]` (0-based, source order).
@@ -624,6 +771,9 @@ pub struct TypeCheckOutput {
     /// through this side-table — see `hew_mir::lower` where the actor
     /// layout is constructed.
     pub actor_protocol_descriptors: HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
+    /// Resolver-minted identities for every lambda actor, keyed by the span of
+    /// its `actor` expression. HIR synthesizes one actor declaration per entry.
+    pub lambda_actor_declarations: HashMap<SpanKey, crate::actor_protocol::LambdaActorIdentity>,
     /// Intrinsic-declaration side-table: function name → intrinsic key.
     ///
     /// Populated for every `#[intrinsic("key")] pub fn name(...)` declaration
@@ -666,34 +816,6 @@ pub struct TypeCheckOutput {
     /// for f-string `Display` dispatch instead of hard-coding `"Display"` /
     /// `"fmt"` symbols. See [`crate::LangItemRegistry`].
     pub lang_items: crate::LangItemRegistry,
-    /// Checker-authored layout-key `HashMap` lowering facts keyed by call-site span.
-    ///
-    /// Populated by `finalize_hashmap_admission` for `HashMap<CopyRecord, V>` sites
-    /// after hash-eligibility validation.  Facts begin in the `Pending` state;
-    /// codegen (C-3) transitions each to `Finalized` after emitting the key-layout
-    /// global.  Absent entry for a Named-key site means the checker rejected the key.
-    pub hashmap_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashMapLoweringFact>,
-    /// Checker-authored layout-element `HashSet` lowering facts keyed by call-site span.
-    ///
-    /// Populated by `finalize_lowering_facts` for `HashSet<CopyRecord>` sites
-    /// after hash-eligibility validation.  Facts begin in the `Pending` state;
-    /// codegen (C-3) transitions each to `Finalized` after emitting the elem-layout
-    /// global.  Absent entry for a Named-element site means the checker rejected the element.
-    pub hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
-    /// Per-spawn-site type arguments for generic actor instantiations.
-    ///
-    /// Keyed by the `SpanKey` of the `spawn` expression. Each entry holds the
-    /// actor name and the checker-resolved type arguments supplied at that
-    /// spawn site (`spawn Foo<i64>(...)` → `("Foo", [Ty::I64])`).
-    ///
-    /// Populated by `check_spawn` when non-empty type args are resolved.
-    /// Empty for non-generic actors (no entry) or for generic actors that
-    /// triggered a `MissingActorTypeArgs` diagnostic (also no entry).
-    ///
-    /// Consumed by the actor-mono discovery pass (blocked on
-    /// `MachineMonoPass` infra) to build per-instantiation `ActorLayout`
-    /// records keyed by `mangle_instantiation(SymbolClass::Actor, …)`.
-    pub actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
     /// Checker-authored unified-dispatch table keyed by method-call span.
     ///
     /// This is the substrate introduced by W4.001 Stage A. It will, in
@@ -741,6 +863,24 @@ pub struct TypeCheckOutput {
     /// to the checker's canonical owner (`hew.lmonobox.Box`) before a generic
     /// type argument can reach layout registration or unification.
     pub module_import_bindings: HashMap<ImportBindingKey, String>,
+    /// Exact declaring owner for each bare constant binding an import published
+    /// into a file's scope, keyed by that file.
+    ///
+    /// A named import (`import lib.{ LIB_K };`) binds `LIB_K` only in the file
+    /// that wrote it, whichever file that is: a root program, a package module,
+    /// or a file the root pulled in with `import "sub.hew";`. HIR resolves a
+    /// bare constant reference through this table so it reads the same scope the
+    /// checker admitted the reference under, rather than re-deriving import
+    /// scope from the AST.
+    pub published_bare_const_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
+    /// Exact declaring owner for each bare function binding an import published
+    /// into a file's scope, keyed by that file.
+    ///
+    /// The companion of [`TypeCheckOutput::published_bare_const_owners`] for
+    /// functions: HIR maps the owner to the module-qualified symbol it emitted
+    /// the body under, so a bare call in a spliced file reaches the same
+    /// declaration the checker resolved it to.
+    pub import_fn_name_aliases: HashMap<ImportBindingKey, String>,
 }
 
 /// Whether a wire struct field's enclosing map key may be absent.
@@ -795,49 +935,6 @@ pub struct WireLayoutEntry {
 /// All wire types registered during type-checking, keyed by canonical type name.
 pub type WireLayoutTable = HashMap<String, WireLayoutEntry>;
 
-/// Capture mode selected by the checker for one closure environment field.
-///
-/// `Copy` and `Move` are the historical v0.5 variants — `Copy` is an implicit
-/// by-value capture of a `Copy`-typed binding, and `Move` is the explicit
-/// `move |...|` form that consumes the source binding. `Borrow` and
-/// `BorrowMut` are inferred from body usage when the source binding is
-/// neither `Copy`-typed nor consumed by `move`: read-only references infer
-/// `Borrow`, mutating projections infer `BorrowMut`. There is no surface
-/// syntax for `Borrow`/`BorrowMut`; they are checker-substrate output only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ClosureCaptureMode {
-    /// The source value implements `Copy`, so an implicit by-value copy is legal.
-    Copy,
-    /// The closure was written `move |...|`; the source binding is consumed.
-    Move,
-    /// The body only reads the captured binding (read-only deref / field
-    /// project); the checker classifies this capture as a shared reference
-    /// for downstream lowering.
-    Borrow,
-    /// The body mutates the captured binding (assignment, mutating method
-    /// call, or assignment through a projection); the checker classifies
-    /// this capture as an exclusive reference for downstream lowering.
-    BorrowMut,
-}
-
-/// Provenance of a [`ClosureCaptureMode`] decision.
-///
-/// Records which inference rule produced the mode so that downstream
-/// diagnostics (suspend-crossing, escape advisory, future auto-lock
-/// wrappers) can explain the choice without re-running inference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CaptureModeOrigin {
-    /// `Move`: the closure literal carried the `move` keyword.
-    ExplicitMove,
-    /// `Copy`: the captured binding's resolved type implements `Copy`.
-    ImplicitCopy,
-    /// `Borrow`: the body uses the binding only in read-only positions.
-    InferredBorrow,
-    /// `BorrowMut`: the body mutates the binding (assignment or mutating
-    /// method call).
-    InferredBorrowMut,
-}
-
 /// Checker-owned capture record for one binding referenced by a closure body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosureCaptureFact {
@@ -847,16 +944,16 @@ pub struct ClosureCaptureFact {
     pub name: String,
     /// Fully resolved captured type at checker-output time.
     pub ty: Ty,
-    /// Capture mode selected by the checker.
-    pub mode: ClosureCaptureMode,
-    /// Inference-rule provenance for `mode`.
-    pub mode_origin: CaptureModeOrigin,
+    /// How construction acquires this environment field.
+    pub acquisition: crate::ClosureCaptureAcquisition,
+    /// Whether this private field is writable during invocation.
+    pub access: crate::ClosureCaptureAccess,
+    /// Whether invocation can consume an owner from this field.
+    pub consumption: crate::ClosureCaptureConsumption,
     /// Whether the captured type satisfies the actor/task boundary marker.
     pub is_send: bool,
     /// Whether the captured type satisfies the `Sync` marker. Populated by
-    /// the same `TraitRegistry::is_sync` query that the rest of the checker
-    /// uses; consumed by the non-Sync-mut-capture-crosses-suspend
-    /// diagnostic and by future auto-lock injection.
+    /// the same `TraitRegistry::is_sync` query that the rest of the checker uses.
     pub is_sync: bool,
     /// Source span of this use inside the closure body.
     pub use_span: Span,
@@ -887,9 +984,8 @@ pub enum ClosureEscapeKind {
 ///
 /// `Local` and `Forked` carry the positive rule that classified them;
 /// `Escapes` carries the conservative-default rule that rejected
-/// `Local`/`Forked`. The variant is consumed by the advisory diagnostic
-/// (`ClosureEscapeAdvisory`) so the user can see *why* `Local` was not
-/// admitted.
+/// `Local`/`Forked`. The rule remains part of the checker-owned fact so
+/// downstream consumers can inspect why the closure may escape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ClosureEscapeRule {
     /// Every use of the closure-bound name is a direct call `f(args)`.
@@ -969,6 +1065,12 @@ pub struct DynVtableEntry {
     pub method_name: String,
     /// Implementer-side function key (`Type::method`).
     pub impl_fn_key: String,
+    /// Declaration identity of the implementer-side method that fills this
+    /// slot. `None` when the impl was matched structurally or comes from a
+    /// primitive/builtin registry that mints no source declaration; a
+    /// consumer that needs an executable target fails closed on `None`
+    /// rather than recovering one from `impl_fn_key`.
+    pub impl_method: Option<crate::DefId>,
     /// Caller-side signature after substituting trait type parameters and
     /// associated-type bindings (e.g. `Self::Item` -> `int`).
     pub signature: FnSig,
@@ -1115,10 +1217,10 @@ pub enum PoolAccessorKind {
 pub(crate) struct SupervisorChildren {
     /// Children declared with `child name: Type`, in source order.
     /// Slot index = position in this vec.
-    pub(crate) statics: Vec<(String, String)>,
+    pub(crate) statics: Vec<(String, Ty)>,
     /// Children declared with `pool name: Type`, in source order.
     /// Slot index = position in this vec.
-    pub(crate) pools: Vec<(String, String)>,
+    pub(crate) pools: Vec<(String, Ty)>,
 }
 
 // ── Pattern-resolution side table ────────────────────────────────────────────
@@ -1224,6 +1326,14 @@ pub struct PayloadBinding {
     pub ty: Ty,
 }
 
+/// A literal test against a checker-instantiated variant payload field.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PayloadLiteralPattern {
+    pub field_idx: usize,
+    pub literal: Literal,
+    pub ty: Ty,
+}
+
 /// Checker-resolved nested constructor subpattern occupying one payload slot
 /// of an enclosing constructor pattern.
 ///
@@ -1236,10 +1346,9 @@ pub struct PayloadBinding {
 ///
 /// `bindings` and `nested` index into THIS nested variant's payload list,
 /// not the enclosing one. The structure is recursive so arbitrary
-/// constructor-nesting depth flows through one shape; non-constructor
-/// refutable subpatterns (literals, struct/tuple destructures, or-patterns)
-/// inside a nested constructor remain fail-closed at the checker.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// constructor-nesting depth flows through one shape. Literal predicates use
+/// the instantiated field types at each level.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PayloadVariantPattern {
     /// 0-based slot of this subpattern within the ENCLOSING variant's
     /// payload list.
@@ -1251,6 +1360,8 @@ pub struct PayloadVariantPattern {
     pub variant_match: VariantMatch,
     /// Bindings introduced from THIS nested variant's payload slots.
     pub bindings: Vec<PayloadBinding>,
+    /// Literal tests within THIS variant, before bindings or guard evaluation.
+    pub literals: Vec<PayloadLiteralPattern>,
     /// Deeper nested constructor subpatterns within this variant's payload.
     pub nested: Vec<PayloadVariantPattern>,
 }
@@ -1259,7 +1370,7 @@ pub struct PayloadVariantPattern {
 ///
 /// Keyed by `SpanKey::from(&arm.pattern.1)` in the
 /// `TypeCheckOutput::pattern_resolutions` side table.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ArmResolution {
     /// High-level pattern classification.
     pub pattern_kind: PatternKind,
@@ -1273,12 +1384,14 @@ pub struct ArmResolution {
     /// itself is expressed via the environment, not here), `None` / unit
     /// variants, and struct/tuple patterns that destructure to wildcards only.
     pub payload_bindings: Vec<PayloadBinding>,
-    /// Nested constructor subpatterns in this arm's constructor payload
-    /// (e.g. the `IoError::NotFound` in `Err(IoError::NotFound)`).
+    /// Nested constructor subpatterns occupying one slot of this arm's
+    /// pattern: a constructor payload (the `IoError::NotFound` in
+    /// `Err(IoError::NotFound)`), a tuple element (the `.Some(n)` in
+    /// `(.Some(n), m)`) or a plain record field (`Point { x: .Some(n) }`).
     ///
-    /// Populated only for `VariantCtor` arms; consumers that cannot honour
-    /// the nested checks (if-let / while-let lowering) MUST fail closed on a
-    /// non-empty vector rather than ignore it.
+    /// `field_idx` indexes the enclosing shape's slots — payload slots for a
+    /// `VariantCtor` arm, declaration-order fields for `StructPattern`, and
+    /// element positions for `TuplePattern`.
     pub payload_variant_patterns: Vec<PayloadVariantPattern>,
 }
 
@@ -1311,15 +1424,23 @@ impl Default for TypeCheckOutput {
     /// calls and therefore need no `method_call_rewrites` entries).
     fn default() -> Self {
         Self {
+            normalized_machines: None,
+            recovery_kinds: HashMap::new(),
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
-            caller_visible_param_projections: HashSet::new(),
+            numeric_operand_coercions: HashMap::new(),
+            extern_method_signatures: HashMap::new(),
             actor_self_state_fields: HashSet::new(),
+            actor_deferred_field_decls: HashSet::new(),
+            actor_init_first_stores: HashSet::new(),
+            borrowed_element_for_loops: HashSet::new(),
+            borrowed_element_index_reads: HashSet::new(),
+            owning_take_vec_cursors: HashSet::new(),
+            borrowed_element_option_reads: HashSet::new(),
             resolved_expr_types: HashMap::new(),
             type_facts: BTreeMap::new(),
+            type_fact_context: TypeFactContext::default(),
             is_type_patterns: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
             method_call_consumes_receiver: HashSet::default(),
@@ -1330,7 +1451,6 @@ impl Default for TypeCheckOutput {
             actor_handler_state_guards: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
@@ -1341,8 +1461,10 @@ impl Default for TypeCheckOutput {
             type_defs: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             identity: crate::IdentityView::default(),
+            entry_exit_plan: None,
             extern_contracts: crate::extern_table::ExternTable::new(),
             fn_sigs: HashMap::new(),
+            suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
@@ -1359,25 +1481,26 @@ impl Default for TypeCheckOutput {
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_delivery_calls: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: HashSet::new(),
             tail_ok_coercions: HashSet::new(),
+            result_return_coercions: HashMap::new(),
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
+            lambda_actor_declarations: HashMap::new(),
             intrinsic_declarations: HashMap::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             import_type_name_aliases: HashMap::new(),
             module_import_bindings: HashMap::new(),
+            published_bare_const_owners: HashMap::new(),
+            import_fn_name_aliases: HashMap::new(),
         }
     }
 }
@@ -1470,6 +1593,9 @@ pub(super) struct ActorFieldInfo {
     pub is_mutable: bool,
     /// Span of the field's type annotation (the declaration line).
     pub decl_span: Span,
+    /// `init` owns the field's first store (D447): no default, assigned in
+    /// the init body. A spawn cannot name it.
+    pub deferred: bool,
 }
 
 /// Position context for `synthesize_index` (`obj[k]`).
@@ -1534,67 +1660,6 @@ impl From<&Span> for SpanKey {
     }
 }
 
-/// Checker-authored ownership fact for one expression publication site.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProducedValueFact {
-    pub ownership: crate::runtime_call::ProducedValueOwnership,
-    /// Exact receiver expression span for `ReceiverIdentity`; absent for all
-    /// other result dispositions.
-    pub receiver_span: Option<SpanKey>,
-    /// Checker-resolved ownership mode for a method receiver.
-    pub receiver_boundary: Option<crate::runtime_call::ProducedArgumentBoundary>,
-    /// One checker-owned boundary mode per source argument, in source order.
-    /// Non-call expressions carry an empty vector.
-    pub arguments: Vec<crate::runtime_call::ProducedArgumentBoundary>,
-}
-
-/// Resolved direct-call identity retained until the checked-output boundary,
-/// where the validated opaque lifecycle graph is available.
-#[derive(Debug, Clone)]
-pub(super) struct PendingDirectCallOwnership {
-    pub(super) fact: ProducedValueFact,
-    pub(super) extern_symbol: Option<String>,
-    pub(super) extern_declaring_module: Option<String>,
-    pub(super) extern_param_count: usize,
-    pub(super) resolved_result_ty: Ty,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct PendingMethodCallOwnership {
-    pub(super) fact: ProducedValueFact,
-    pub(super) extern_identity: Option<ExternMethodCallIdentity>,
-    pub(super) resolved_result_ty: Ty,
-}
-
-#[derive(Debug, Clone)]
-pub enum ProducedValueDependency {
-    /// This expression itself is the authority boundary for its produced
-    /// value.  Keeping leaves explicit makes the checker output a total,
-    /// closed graph rather than asking downstream consumers to treat a
-    /// missing map entry as semantic information.
-    Leaf,
-    Identity(SpanKey),
-    /// A specialised parent preserves the child's ownership disposition and
-    /// provenance but is the sole materialized publication. Parent and child
-    /// types may differ; downstream lowering must mint only the parent slot.
-    Subsumes(SpanKey),
-    Join(Vec<SpanKey>),
-    MoveOut(SpanKey),
-    Projection(SpanKey),
-}
-
-impl ProducedValueFact {
-    #[must_use]
-    pub fn result(ownership: crate::runtime_call::ProducedValueOwnership) -> Self {
-        Self {
-            ownership,
-            receiver_span: None,
-            receiver_boundary: None,
-            arguments: Vec::new(),
-        }
-    }
-}
-
 impl SpanKey {
     /// Construct a key for a span in module `module_idx` (0 = root).
     #[must_use]
@@ -1605,6 +1670,16 @@ impl SpanKey {
             module_idx,
         }
     }
+}
+
+/// Semantic authority for one checked `handle` or `??` expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecoveryKind {
+    Option,
+    Result,
+    Scope {
+        failure_ty: crate::resolved_ty::ResolvedTy,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1657,11 +1732,11 @@ pub enum MethodCallReceiverKind {
 pub enum OptionResultMethod {
     OptionIsSome,
     OptionIsNone,
-    OptionUnwrap,
+    OptionExpect,
     OptionUnwrapOr,
     ResultIsOk,
     ResultIsErr,
-    ResultUnwrap,
+    ResultExpect,
     ResultUnwrapOr,
 }
 
@@ -1706,7 +1781,7 @@ pub enum MethodCallRewrite {
     /// [`crate::runtime_call::RuntimeCallFamily`] catalog enumerates. It is
     /// `None` for every open-set string: user-trait method keys like `i64::fmt`
     /// AND every `#[extern_symbol]` FFI method — including stdlib `duration` /
-    /// `instant` / `LambdaActorHandle` bindings — *even when that method's raw
+    /// `instant` bindings — *even when that method's raw
     /// symbol collides with a catalog name* (e.g. `hew_duration_hours`). An
     /// `#[extern_symbol]` method is open-set by mechanism: its family is only
     /// recoverable by reverse-parsing the symbol string, which the
@@ -1745,6 +1820,10 @@ pub enum MethodCallRewrite {
         extern_identity: Option<ExternMethodCallIdentity>,
         elem_ty: Option<crate::resolved_ty::ResolvedTy>,
         consumes_receiver: bool,
+        /// Checked source receiver contract. HIR carries writeback explicitly;
+        /// an emitted body symbol is not a key for rediscovering this fact.
+        requires_mutable_receiver: bool,
+        receiver_update: ReceiverUpdate,
         /// Exact receiver-in/result-out ownership identity, derived from the
         /// validated method signature rather than the symbol spelling.
         returns_receiver_identity: bool,
@@ -1784,29 +1863,11 @@ pub enum MethodCallRewrite {
     /// receiver type; codegen lowers it to the borrowing
     /// `hew_cancel_token_is_requested` runtime call.
     CancellationTokenIsCancelled,
-    /// Builtin `Vec<T>::into_iter()` iterator constructor. HIR expands this
-    /// directly to a `VecIter<T>` record so the Rust MIR pipeline does not need
-    /// to lower the generic stdlib impl body.
-    BuiltinVecIntoIter {
-        elem_ty: crate::resolved_ty::ResolvedTy,
-    },
-    /// Builtin `Vec<T>::iter()` non-consuming iterator constructor. HIR expands
-    /// this to the SAME `VecIter<T>` cursor `into_iter` uses, but for a place
-    /// receiver it snapshots the receiver via an independent `hew_vec_clone`
-    /// instead of moving it — the cursor owns its own copy of the buffer and the
-    /// source binding stays a live, independent owner. Because the snapshot is
-    /// taken at the call, later mutations to the source are NOT observed by the
-    /// cursor (a by-value snapshot, not a live view), and the source's buffer and
-    /// the cursor's clone are each freed exactly once on their own drops (no
-    /// double-free, no dangling — `Vec` is a single-owner heap handle with no
-    /// buffer refcount). The place-receiver clone is an O(n) deep copy until
-    /// shared/refcounted buffers land. A non-place rvalue receiver
-    /// (`make_vec().iter()`) has no surviving source binding and is consumed
-    /// directly, exactly like `BuiltinVecIntoIter`. `VecIter::next` clones each
-    /// element out on read, so every yielded item is an independent owner.
-    BuiltinVecIter {
-        elem_ty: crate::resolved_ty::ResolvedTy,
-    },
+    /// Checked cursor constructor identity. The element comes from the
+    /// finalized receiver type; it must not be frozen before inference ends.
+    BuiltinVecIntoIter,
+    /// Snapshot cursor constructor, with the same ordinary value semantics.
+    BuiltinVecIter,
     /// Builtin `HashMap<K, V>::into_iter()` iterator constructor. HIR expands
     /// this directly to a `HashMapIter<K, V>` record built from `keys()` /
     /// `values()` snapshots — the same cursor the `for (k, v) in m` desugar
@@ -1820,9 +1881,7 @@ pub enum MethodCallRewrite {
     /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
     /// the call site so the caller's mutable iterator binding observes the
     /// cursor update.
-    BuiltinVecIterNext {
-        elem_ty: crate::resolved_ty::ResolvedTy,
-    },
+    BuiltinVecIterNext,
     /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
     /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
     /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call
@@ -2053,42 +2112,6 @@ pub enum VecHigherOrderOp {
     Reduce,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericMethodFamily {
-    Wrapping,
-    Checked,
-    Saturating,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericMethodOp {
-    Add,
-    Sub,
-    Mul,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericSignedness {
-    Signed,
-    Unsigned,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum NumericWidth {
-    Bits(u32),
-    Pointer,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NumericMethodLowering {
-    pub family: NumericMethodFamily,
-    pub op: NumericMethodOp,
-    pub result_ty: Ty,
-    pub operand_ty: Ty,
-    pub signedness: NumericSignedness,
-    pub width: NumericWidth,
-}
-
 /// Discriminator for width-conversion method lowering.
 ///
 /// `Wrapping` → bit-truncate/extend (semantics: modular wrap, same as `as`-cast).
@@ -2141,19 +2164,22 @@ pub struct TryWidthCastLowering {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorMethodKind {
-    /// Fire-and-forget dispatch to an actor receive handler that returns `()`.
-    Fire(String),
-    /// Unit-returning dispatch whose bounded `block` mailbox may suspend the
-    /// caller until capacity is available.
-    BlockingFire(String),
-    /// Policy-sensitive dispatch to a unit-returning actor receive handler.
-    ///
-    /// A bounded mailbox that can lose or reject a message (`drop_new`,
-    /// `drop_old`, `coalesce`, or `fail`) reports `Result<(), SendError>` so
-    /// the call site can observe its policy outcome.
-    CheckedFire(String),
-    /// Request/reply dispatch to an actor receive handler with a non-unit reply.
-    Ask(String, Ty),
+    /// Construct an owned description without submitting it to the mailbox.
+    Message {
+        method_id: String,
+        policy: crate::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
+    /// A completion call: dispatch to an actor receive handler and wait for
+    /// its outcome. `policy` is how the call's own admission behaves when the
+    /// destination mailbox is full — `Wait` for a bare handle, whatever the
+    /// `policy(..)` view carries when the call goes through one.
+    Ask {
+        method_id: String,
+        reply_ty: Ty,
+        policy: crate::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+    },
     /// Dispatch to a `receive gen fn` handler: a per-call, channel-backed
     /// `Stream<T>` whose producer runs inside the actor. The carried `Ty` is
     /// the stream's element type (the handler's declared `-> T`), recorded
@@ -2197,8 +2223,8 @@ pub(super) struct PendingLoweringFact {
 }
 
 /// A `HashMap` key/value admission check deferred until after all inference
-/// has settled.  Recorded when `validate_hashmap_key_value_types` encounters
-/// `Ty::Var` arguments (type still in-flight); drained by
+/// has settled and every declaration is registered. Recorded by
+/// `validate_hashmap_key_value_types`; drained by
 /// `finalize_hashmap_admission` in `check_program`.
 #[derive(Debug, Clone)]
 pub(super) struct DeferredHashMapAdmission {
@@ -2206,7 +2232,24 @@ pub(super) struct DeferredHashMapAdmission {
     pub(super) key_ty: Ty,
     pub(super) val_ty: Ty,
     pub(super) source_module: Option<String>,
-    pub(super) is_abstract_key_param: bool,
+    /// Declared bounds for every type parameter in scope at the record site,
+    /// keyed by name. Carried verbatim into `finalize_hashmap_admission`'s
+    /// replayed scope so a bare key type parameter's bounds (e.g. `K: Hash +
+    /// Eq`) survive to the deferred check and decide admission there — the
+    /// scope is the one authority; there is no separate abstract-key flag.
+    pub(super) type_param_bounds: HashMap<String, Vec<String>>,
+}
+
+/// A `HashMap` value-copy obligation deferred until inference has settled.
+/// Recorded when a copying operation (`m[k]`, `values()`, `entries()`,
+/// `clone()`, `into_iter()`, `for (k, v) in m`) sees a value type that is still
+/// in flight; drained by `finalize_hashmap_admission`.
+#[derive(Debug, Clone)]
+pub(super) struct DeferredHashMapValueCopy {
+    pub(super) span: Span,
+    pub(super) val_ty: Ty,
+    pub(super) operation: String,
+    pub(super) source_module: Option<String>,
 }
 
 /// A `HashSet` element admission check deferred until after all inference has
@@ -2245,26 +2288,15 @@ pub(super) struct DeferredBuiltinCloneAdmission {
     pub(super) source_module: Option<String>,
 }
 
-/// A structural-equality requirement raised by a generic function body.
-///
-/// `a == b` on an aggregate whose members bottom out in the enclosing
-/// function's type parameters is admitted in the template — the parameter has
-/// no concrete leaf to walk yet — and the obligation is recorded here in the
-/// owner's own type-parameter terms (`Option<T>`). Every instantiation of that
-/// function substitutes the obligation and re-runs the *same* eligibility
-/// walk, so the checker refuses `T = HashMap<string, i64>` instead of letting
-/// codegen's `eq_thunk` be the first to notice.
-///
-/// A semantic `Eq` bound is deliberately NOT accepted as a proxy: `Eq` can be
-/// satisfied by types that have no structural compare path.
+/// An equality demand in the existing generic instantiation graph.
+/// Concrete comparisons are checked after registration and inference; generic
+/// comparisons use the same selected Eq authority after substitution.
 #[derive(Debug, Clone)]
-pub(super) struct GenericStructuralEqRequirement {
-    /// The aggregate type, spelled in the owning function's type parameters.
+pub(super) struct EqRequirement {
     pub(super) ty: Ty,
-    /// The owning signature's type parameters, so the discharge walk can tell a
-    /// fully pinned instantiation from one whose substitution left a parameter
-    /// abstract (which it must not decide).
     pub(super) owner_type_params: Vec<String>,
+    pub(super) span: Span,
+    pub(super) source_module: Option<String>,
 }
 
 /// One generic function call site, recorded so structural-equality obligations
@@ -2278,7 +2310,7 @@ pub(super) struct GenericFnInstantiationSite {
     /// Partial, name-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
-    /// [`Checker::finalize_generic_structural_eq`] walk generic → generic call
+    /// [`Checker::finalize_eq_requirements`] walk generic → generic call
     /// edges from a concrete root instead of stopping at the first hop.
     pub(super) substitution: HashMap<String, Ty>,
     pub(super) span: Span,
@@ -2370,6 +2402,27 @@ impl PendingLoweringFact {
     }
 }
 
+/// Look up a type definition under either spelling `type_defs` is keyed by.
+///
+/// A qualified declaration is registered under its full path and under the
+/// twin one segment shorter, so a resolved type may carry either. Splitting on
+/// the first dot maps `std.channel.Sender` to `channel.Sender` and
+/// `channel.Sender` to `Sender`, which is the twin in both cases.
+#[must_use]
+#[expect(
+    clippy::implicit_hasher,
+    reason = "mirrors the concrete HashMap the checker and TypeCheckOutput store"
+)]
+pub fn type_def_for_spelling<'a>(
+    type_defs: &'a HashMap<String, TypeDef>,
+    name: &str,
+) -> Option<&'a TypeDef> {
+    type_defs.get(name).or_else(|| {
+        name.split_once('.')
+            .and_then(|(_, twin)| type_defs.get(twin))
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeDef {
     pub kind: TypeDefKind,
@@ -2451,6 +2504,7 @@ pub enum TypeDefKind {
     Struct,
     Enum,
     Actor,
+    Supervisor,
     Machine,
     /// Immutable value-type record declared with the `record` keyword.
     ///
@@ -2460,11 +2514,21 @@ pub enum TypeDefKind {
     Record,
 }
 
+/// How a mutable method acquires the caller's receiver before evaluation.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ReceiverUpdate {
+    /// Transfer the receiver to the method and replace it on normal return.
+    #[default]
+    Replace,
+    /// Evaluate an independent copy; retain the original until normal return.
+    Staged,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "FnSig is the canonical fn-signature record; each bool encodes \
-              a distinct cross-cutting attribute (async/kwargs/mutable-receiver) \
+              a distinct cross-cutting attribute (kwargs/mutable-receiver) \
               that downstream passes need to query individually — collapsing into \
               an enum would force per-flag enum-variant matches at every read site"
 )]
@@ -2473,8 +2537,10 @@ pub struct FnSig {
     pub type_param_bounds: HashMap<String, Vec<String>>,
     pub param_names: Vec<String>,
     pub params: Vec<Ty>,
+    /// Ownership explicitly declared for each parameter, aligned with `params`.
+    /// Callable value types cannot preserve consuming slots, so erasure is refused.
+    pub param_ownership: Vec<crate::env::ParameterOwnership>,
     pub return_type: Ty,
-    pub is_async: bool,
     pub accepts_kwargs: bool,
     pub doc_comment: Option<String>,
     /// Structured `#[extern_symbol("…")]` attribute attached to the
@@ -2506,8 +2572,9 @@ pub struct FnSig {
     /// signatures whose receiver was declared by-value, and for free
     /// functions whose first parameter happens to be named `self`.
     pub requires_mutable_receiver: bool,
-    /// `true` iff this signature was declared with a `consuming self` receiver
-    /// (the terminal single-consume surface: `fn build(consuming self) -> T`, a
+    pub receiver_update: ReceiverUpdate,
+    /// `true` iff this signature was declared with a `consume self` receiver
+    /// (the terminal single-consume surface: `fn build(consume self) -> T`, a
     /// `#[linear]` type's consuming method).
     ///
     /// Populated by the registration pass from [`hew_parser::ast::FnDecl`]'s
@@ -2551,12 +2618,13 @@ impl Default for FnSig {
             type_param_bounds: HashMap::new(),
             param_names: vec![],
             params: vec![],
+            param_ownership: vec![],
             return_type: Ty::Unit,
-            is_async: false,
             accepts_kwargs: false,
             doc_comment: None,
             extern_symbol: None,
             requires_mutable_receiver: false,
+            receiver_update: ReceiverUpdate::Replace,
             consumes_receiver: false,
             returns_receiver_identity: false,
             is_builtin_variant: false,
@@ -2641,8 +2709,9 @@ pub(super) struct DeferredBoundCheck {
     pub(super) span: Span,
 }
 
-/// Result of resolving a bare actor reference (`spawn Account(...)`, a bare
-/// `LocalPid<Account>` inner name) against the local-first identity policy.
+/// Result of resolving a bare actor reference (`spawn Account(...)`, or the
+/// bare name carried by `Account`'s own actor-handle type) against the
+/// local-first identity policy.
 ///
 /// Produced by `Checker::resolve_bare_actor_identity`. `Resolved` carries the
 /// registered identity key — bare for root/flat actors, dotted
@@ -2663,6 +2732,8 @@ pub(super) enum BareActorResolution {
     reason = "checker state flags are independent booleans"
 )]
 pub struct Checker {
+    /// Exact declarations whose values require an explicit disposition.
+    pub(super) must_use_types: HashSet<crate::DefId>,
     pub(super) env: TypeEnv,
     pub(super) subst: Substitution,
     pub(super) registry: TraitRegistry,
@@ -2676,32 +2747,13 @@ pub struct Checker {
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::user_comparison_dispatch`].
     pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
-    /// Checker-side accumulator for
-    /// [`TypeCheckOutput::produced_value_ownership`].
-    pub(super) produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
-    /// Resolved direct/indirect call ownership facts produced by call
-    /// resolution and consumed by the expression-result publisher.
-    pub(super) resolved_direct_call_ownership: HashMap<SpanKey, PendingDirectCallOwnership>,
-    /// Resolved inherent/impl/static/dyn/var-self method-site facts.
-    pub(super) resolved_method_call_ownership: HashMap<SpanKey, PendingMethodCallOwnership>,
-    /// Parent expression edges recomputed after every call leaf and deferred
-    /// dispatch fact has reached its final form.
-    pub(super) produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
-    /// Source expression occurrences that have passed the central public
-    /// completion hook. `record_type` may seed a conservative raw fact for a
-    /// checker-synthetic span; this set lets the real expression publisher
-    /// replace that seed exactly once without double-running side effects when
-    /// `check_against` delegates through `synthesize`.
-    pub(super) published_value_occurrences: HashSet<SpanKey>,
-    /// Expected `(has_receiver, source_argument_count)` for every resolved
-    /// call publication site.
-    pub(super) produced_call_arities: HashMap<SpanKey, (bool, usize)>,
-    /// Per-formal ownership disposition keyed by canonical function identity.
-    pub(super) fn_param_ownership:
-        HashMap<String, Vec<crate::runtime_call::ProducedArgumentBoundary>>,
+    pub(super) numeric_operand_coercions: HashMap<SpanKey, Ty>,
     /// Declaring provenance for attributed methods, keyed by canonical
     /// `Type::method` signature identity.
     pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
+    /// Declared C-boundary signatures for the `#[extern_symbol]` methods this
+    /// unit dispatched, keyed by source declaration identity.
+    pub(super) extern_method_signatures: HashMap<(crate::DefId, String), ExternMethodSignature>,
     /// Origin override used only while registering compiler-embedded stdlib
     /// source; unlike `current_module`, it never changes lookup keys.
     pub(super) registration_origin_module: Option<String>,
@@ -2735,6 +2787,8 @@ pub struct Checker {
     /// Source-order discriminator used only for source-less AST inventories
     /// whose top-level declarations all carry the synthetic `0..0` span.
     pub(super) current_item_ordinal: usize,
+    /// Exact source occurrence selected as process entry by a file frontend.
+    pub(super) entry_selection: Option<crate::DeclarationOccurrence>,
     /// Type names declared per source FILE (populated during type
     /// collection from per-item attribution). This is the lexical authority
     /// behind extern-signature nominal identity: a bare name in an extern
@@ -2763,11 +2817,26 @@ pub struct Checker {
     /// owner-qualified identity even when the leaf shadows a builtin name.
     pub(super) flat_file_import_module_names: HashSet<String>,
     /// Checker-side accumulator for
-    /// [`TypeCheckOutput::caller_visible_param_projections`].
-    pub(super) caller_visible_param_projections: HashSet<SpanKey>,
-    /// Checker-side accumulator for
     /// [`TypeCheckOutput::actor_self_state_fields`].
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::actor_deferred_field_decls`].
+    pub(super) actor_deferred_field_decls: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::actor_init_first_stores`].
+    pub(super) actor_init_first_stores: HashSet<SpanKey>,
+    /// Deferred field names per actor identity, in declaration order,
+    /// decided at registration from the init body's assignment targets.
+    pub(super) actor_deferred_fields: HashMap<String, Vec<String>>,
+    /// Whether the body being checked is an actor `init`, where a `return`
+    /// must leave every deferred field initialized.
+    pub(super) checking_actor_init: bool,
+    /// See [`TypeCheckOutput::borrowed_element_for_loops`].
+    pub(super) borrowed_element_for_loops: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::borrowed_element_index_reads`].
+    pub(super) borrowed_element_index_reads: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::owning_take_vec_cursors`].
+    pub(super) owning_take_vec_cursors: HashSet<SpanKey>,
+    /// See [`TypeCheckOutput::borrowed_element_option_reads`].
+    pub(super) borrowed_element_option_reads: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
     pub(super) expr_type_source_modules: HashMap<SpanKey, Option<String>>,
     pub(super) method_call_receiver_kinds: HashMap<SpanKey, MethodCallReceiverKind>,
@@ -2792,31 +2861,22 @@ pub struct Checker {
     /// Mirrors [`TypeCheckOutput::actor_max_heap`]; populated in
     /// `check_actor` and moved out at the end of `check_program`.
     pub(super) actor_max_heap: HashMap<String, u64>,
-    /// Qualified method names (e.g. `"Closable::close"`) whose dispatch should
+    /// Qualified method names (e.g. `"Sink::drain"`) whose dispatch should
     /// mark the receiver moved and propagate `consumes_receiver` into the
-    /// per-call-site side table. Empty in PR 1 (issue #1295); PR 2 populates
-    /// this set when `trait Closable` is registered. Tests may insert names
-    /// directly to exercise the consume-marker path before PR 2 lands.
+    /// per-call-site side table. Tests may insert names directly to exercise
+    /// the consume-marker path.
     pub(super) consume_receiver_methods: HashSet<String>,
     pub(super) pending_lowering_facts: HashMap<SpanKey, PendingLoweringFact>,
     /// `HashMap` key/value admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same map).
     pub(super) deferred_hashmap_admission: HashMap<SpanKey, DeferredHashMapAdmission>,
+    /// See [`DeferredHashMapValueCopy`].
+    pub(super) deferred_hashmap_value_copy: HashMap<SpanKey, DeferredHashMapValueCopy>,
     /// `HashSet` element admission checks deferred until after inference
     /// completes.  Keyed by span to suppress duplicates from repeated
     /// traversals of the same site (annotation + method call on the same set).
     pub(super) deferred_hashset_admission: HashMap<SpanKey, DeferredHashSetAdmission>,
-    /// Layout-key `HashMap` lowering facts accumulated by `finalize_hashmap_admission`.
-    ///
-    /// Keyed by the span of the admission site (type annotation or method call).
-    /// Drained into `TypeCheckOutput::hashmap_layout_facts` at the output boundary.
-    pub(super) hashmap_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashMapLoweringFact>,
-    /// Layout-element `HashSet` lowering facts accumulated by `finalize_lowering_facts`.
-    ///
-    /// Keyed by the span of the call site that triggered the `HashSet` method.
-    /// Drained into `TypeCheckOutput::hashset_layout_facts` at the output boundary.
-    pub(super) hashset_layout_facts: HashMap<SpanKey, crate::lowering_facts::HashSetLoweringFact>,
     /// `Vec` element admission checks deferred until after inference
     /// completes. Keyed by span to suppress duplicates from repeated traversals
     /// of the same site.
@@ -2824,9 +2884,6 @@ pub struct Checker {
     /// Built-in value-container clone checks deferred until after inference.
     /// Keyed by clone call-site span.
     pub(super) deferred_builtin_clone_admission: HashMap<SpanKey, DeferredBuiltinCloneAdmission>,
-    /// Structural-equality obligations raised inside generic function bodies,
-    /// keyed by the owning function's `fn_sigs` key. Discharged per
-    /// instantiation by `finalize_generic_structural_eq`.
     /// Dedup set for [`Checker::reject_shadowing_method_type_params`], keyed by
     /// the DECLARATION's identity: owner key, declaration span, parameter name.
     ///
@@ -2835,10 +2892,11 @@ pub struct Checker {
     /// registering-module key emitted the same diagnostic once per module — the
     /// second copy landing at unrelated lines in the implementor's file.
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
-    pub(super) generic_structural_eq_requirements:
-        HashMap<String, Vec<GenericStructuralEqRequirement>>,
+    /// Equality demands grouped by owning function; None covers expressions
+    /// outside a function. Resolved once concretely or through generic calls.
+    pub(super) eq_requirements: HashMap<Option<String>, Vec<EqRequirement>>,
     /// Every generic function call site observed while checking bodies, in
-    /// source order. Consumed alongside `generic_structural_eq_requirements`.
+    /// source order. Consumed alongside `eq_requirements`.
     pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
     /// Channel method call rewrites deferred until after inference completes.
     /// Keyed by call-site span so repeated traversal of the same site is
@@ -2854,29 +2912,20 @@ pub struct Checker {
     /// for Stage B's unified resolver. See `dispatch.rs` module docs and
     /// `TypeCheckOutput::resolved_calls`.
     pub(super) resolved_calls: HashMap<SpanKey, crate::check::dispatch::ResolvedCall>,
-    pub(super) numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     pub(super) width_cast_lowerings: HashMap<SpanKey, WidthCastLowering>,
     pub(super) try_width_cast_lowerings: HashMap<SpanKey, TryWidthCastLowering>,
     pub(super) actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    pub(super) actor_delivery_calls: HashMap<SpanKey, crate::actor_delivery::ActorDeliveryCall>,
     /// Mailbox overflow policy keyed by the actor's canonical declaration
     /// identity. Absence means an unbounded mailbox. A bounded declaration
     /// with no explicit policy is recorded as `Block`.
     pub(super) actor_overflow_policies: HashMap<String, hew_parser::ast::OverflowPolicy>,
     /// Machine method dispatch side-table. Mirrors [`TypeCheckOutput::machine_method_dispatch`].
     pub(super) machine_method_dispatch: HashMap<SpanKey, MachineMethodKind>,
-    /// `await conn.read()` suspending-read sites. Mirrors
-    /// [`TypeCheckOutput::conn_await_reads`].
-    pub(super) conn_await_reads: HashMap<SpanKey, bool>,
-    /// `await listener.accept()` suspending-accept sites. Mirrors
-    /// [`TypeCheckOutput::listener_await_accepts`].
-    pub(super) listener_await_accepts: HashSet<SpanKey>,
-    /// Exact receiver nominal proven when a suspending network method is
-    /// admitted. Ownership publication requires this witness in addition to
-    /// the public lowering side-table membership.
-    pub(super) suspending_io_receiver_nominals: HashMap<SpanKey, String>,
     /// Function-tail Ok-coercion sites. Mirrors
     /// [`TypeCheckOutput::tail_ok_coercions`].
     pub(super) tail_ok_coercions: HashSet<SpanKey>,
+    pub(super) result_return_coercions: HashMap<SpanKey, ResultReturnKind>,
     /// `true` while checking an expression that is the tail of a
     /// `Result`-returning function (and the if/match arm tails that flow to
     /// the function return). Armed in `check_fn_decl` only when the declared
@@ -2898,7 +2947,7 @@ pub struct Checker {
     /// registration.  This is deliberately distinct from `fn_sigs`: a
     /// signature name is an open-set source lookup key, whereas this table is
     /// the checker-owned executable authority for compiler-provided builtins.
-    pub(super) runtime_builtin_targets: HashMap<String, crate::runtime_call::RuntimeCallFamily>,
+    pub(super) builtin_call_targets: HashMap<String, super::CallTarget>,
     /// Exact import bindings for free functions. Values retain the source
     /// declaration identity (`owner.OriginalName`), so an aliased import never
     /// causes the call-target boundary to manufacture `owner.Alias`.
@@ -2911,7 +2960,16 @@ pub struct Checker {
     /// functions, constants share an env slot for legacy lookup, so this exact
     /// owner set is the ambiguity authority at identifier use sites.
     pub(super) published_bare_const_owners: HashMap<ImportBindingKey, BTreeSet<String>>,
+    /// Constants a file import published, keyed by their bare spelling and
+    /// valued by the owner-qualified source identities. The value environment
+    /// is one flat scope, so defining the bare binding makes it resolvable
+    /// program-wide; this is the export record the use-time scope gate reads to
+    /// refuse it in a file that did not write the import. Module-path imports
+    /// need no entry: they never define the bare spelling at all.
+    pub(super) file_import_const_exports: HashMap<String, BTreeSet<String>>,
     /// Per-call target facts for ordinary `Expr::Call` expressions.
+    pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
+    pub(super) effect_graph: super::effects::EffectGraph,
     pub(super) direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
@@ -2959,6 +3017,20 @@ pub struct Checker {
     pub(super) refresh_call_count: usize,
     /// Qualified `Actor::method` names declared with `receive gen fn`.
     pub(super) receive_generator_methods: HashSet<String>,
+    /// Receive fns declared `-> R fails E`. The declaration is the only
+    /// authority for whether a handler's `Result`-shaped reply is a declared
+    /// failure (which a completion call reports as `ActorError.Failed`) or an
+    /// ordinary `Result` value the handler happens to return.
+    pub(super) receive_fails_methods: HashSet<String>,
+    /// `Actor::handler` ids submitted one way through a mailbox view. Their
+    /// declared failure becomes the actor's own fault, so the checker must
+    /// prove the error renders before the program is published.
+    pub(super) view_submitted_fails_methods: HashMap<String, std::ops::Range<usize>>,
+    /// Completion calls made from inside a receive fn body, as
+    /// `(caller handler, callee handler, call span)`. A cycle among these is a
+    /// deadlock every participant waits in, so it is reported once the whole
+    /// program has been checked.
+    pub(super) completion_call_edges: Vec<(String, String, Span)>,
     /// Qualified `Actor::method` names declared with `receive fn` (including
     /// generator receives). Used by the actor-mailbox boundary enforcement
     /// to distinguish receive handlers from non-receive `methods` declared
@@ -2992,6 +3064,9 @@ pub struct Checker {
     /// rc1-F1 stage A classification: CANONICALIZED with `fn_sigs` (co-minted
     /// with `fn_def_spans` under the canonical declaration key).
     pub(super) fn_visibility: HashMap<String, Visibility>,
+    /// Root free functions declared `#[test]`. The test harness enters them
+    /// directly, so they are dead-code roots exactly as `main` is.
+    pub(super) test_fn_names: HashSet<String>,
     /// Tracks the span where each top-level type/trait namespace name was first defined.
     pub(super) type_def_spans: HashMap<String, Span>,
     /// Declared visibility for each top-level type/trait/enum/record/alias/const/
@@ -3008,12 +3083,13 @@ pub struct Checker {
     /// user's own program and flat file imports share one module). Builtins are
     /// registered without going through this gate and stay globally visible.
     pub(super) type_namespace_owners: HashMap<(Option<String>, String), Span>,
-    /// Tracks public top-level names introduced by prior flat file imports so later
-    /// flat imports can reject collisions instead of silently overwriting them.
-    pub(super) flat_file_import_pub_spans: HashMap<String, Span>,
-    /// Canonical source paths for flat file imports already registered in the
-    /// current checker run so repeated imports stay idempotent.
-    pub(super) registered_flat_file_import_sources: HashSet<PathBuf>,
+    /// Tracks public top-level names introduced by prior flat file imports into
+    /// one importing file, so a later flat import there rejects the collision
+    /// instead of silently overwriting it.
+    pub(super) flat_file_import_pub_spans: HashMap<ImportBindingKey, Span>,
+    /// Canonical source paths for flat file imports already registered into one
+    /// importing file, so repeated imports there stay idempotent.
+    pub(super) registered_flat_file_import_sources: HashSet<(Option<String>, u32, PathBuf)>,
     /// Tracks stdlib Hew modules whose public Hew items have already been registered.
     /// Uses the canonical entry source path when available, and falls back to the
     /// module path for callers that only populate `resolved_items`.
@@ -3067,34 +3143,28 @@ pub struct Checker {
     /// same nominal instantiation, but the reference site should emit one
     /// `BoundsNotSatisfied` diagnostic.
     pub(super) reported_type_def_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
-    /// Trait bounds declared on each actor's generic type parameters, keyed by
-    /// actor name. Populated during `register_actor_decl` from
-    /// `ActorDecl.type_params`. Consulted at the use site by
-    /// `check_spawn` to enforce bounds on explicitly supplied type args.
-    ///
-    /// Mirrors `machine_type_param_bounds` — the clone-pattern is deliberate;
-    /// actors and machines share bound-enforcement semantics but are separate
-    /// declaration kinds. Do not collapse: actor and machine bound tables have
-    /// distinct lookup scopes.
-    pub(super) actor_type_param_bounds: HashMap<String, HashMap<String, Vec<String>>>,
-    /// Dedup set for `enforce_actor_instantiation_bounds`. Mirrors
-    /// `reported_machine_bound_violations` but scoped to actor spawns so
-    /// that machine and actor violations cannot accidentally suppress each other.
-    pub(super) reported_actor_bound_violations: HashSet<(String, Vec<Ty>, SpanKey)>,
-    /// Actors declaring at least one `#[every(duration)]` periodic receive
-    /// handler, keyed by actor name; the value is the first periodic
-    /// handler's name (for diagnostics). Populated during
-    /// `register_actor_decl`, consulted by `check_supervisor` to reject
-    /// child specs whose runtime spawn path cannot arm periodic timers.
-    pub(super) actors_with_periodic_handlers: HashMap<String, String>,
+    /// Spans that already carry the retired-actor-handle-spelling refusal. A
+    /// signature is resolved more than once, and one written type earns one
+    /// diagnostic.
+    pub(super) reported_actor_handle_type_spans: HashSet<SpanKey>,
+    /// `(trait_name, span_key)`: a `dyn Trait` annotation is resolved once
+    /// during registration and again at its use, so the unknown-trait refusal
+    /// reports each written spelling once.
+    pub(super) reported_unknown_dyn_traits: HashSet<(String, SpanKey)>,
     pub(super) current_return_type: Option<Ty>,
+    /// Return constraints collected while a lambda's result type is inferred.
+    pub(super) inferred_lambda_returns: Option<Vec<Ty>>,
+    pub(super) current_fails: bool,
     pub(super) in_generator: bool,
     /// Set to `true` for the duration of synthesizing the inner expression of
     /// `Expr::Await(inner)`.  Enables `check_named_method_fallback` to
     /// distinguish an actor ask under `await` (valid) from an actor ask without
-    /// `await` (rejected: requires explicit `await`).
-    pub(super) inside_await_expr: bool,
+    /// Only these operand calls are explicitly awaited or forked.
+    pub(super) suspension_operands: HashSet<SpanKey>,
+    pub(super) prepared_select_tasks: Vec<PreparedSelectTask>,
     pub(super) loop_depth: u32,
+    /// Loop and label floors of a currently checked deferred body.
+    pub(super) deferred_body: Option<(u32, usize)>,
     /// Labels of enclosing loops, for validating `break @label` / `continue @label`.
     pub(super) loop_labels: Vec<String>,
     pub(super) modules: HashSet<String>,
@@ -3134,6 +3204,8 @@ pub struct Checker {
     /// Resolver-minted implementation method identities keyed by the exact
     /// implemented type, trait, and method selected during type checking.
     pub(super) trait_impl_method_declaration_ids: HashMap<(String, String, String), crate::DefId>,
+    pub(super) trait_impl_method_binders:
+        HashMap<crate::DefId, crate::type_facts::ImplMethodBinders>,
     /// Trait impls keyed by canonical receiver kind for primitives and
     /// compiler-builtin generics (e.g. `int`, `bool`, `String`, `Vec`,
     /// `HashMap`, `HashSet`, `Bytes`).  Method dispatch on these receivers
@@ -3188,16 +3260,10 @@ pub struct Checker {
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    pub(super) select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
-    /// Spans that already emitted the `ClosureEscapeAdvisory` warning. The
-    /// escape classifier visits a literal more than once (the let-bound block
-    /// walk and the anonymous-expression walk, and the top-level item list
-    /// plus the module graph both cover the entry module), so the advisory
-    /// is gated on first-insert per span — one warning per closure literal,
-    /// distinct literals still warn independently.
-    pub(super) closure_escape_advisory_spans: HashSet<SpanKey>,
     /// Maps actor name to its resolved `init()` parameter list.
     ///
     /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
@@ -3329,8 +3395,8 @@ pub struct Checker {
     /// imported `module_graph` modules are registered in a LATER pass where that
     /// module's own traits/types are not in the active `trait_defs` / `known_types`
     /// (those carry the root module's declarations) nor yet in the module-scoped
-    /// `local_*` sets. A `LocalPid<ConnectionHandler>` inside an imported
-    /// `std::net` would therefore false-positive against the per-pass tables.
+    /// `local_*` sets. A bare `ConnectionHandler` actor-handle type inside an
+    /// imported `std::net` would therefore false-positive against the per-pass tables.
     /// Consulting this program-wide set makes any declared nominal type resolve
     /// uniformly regardless of which pass is running. A genuinely undefined type
     /// (`Bogus`) is declared nowhere, so it is still caught; cross-module import
@@ -3467,14 +3533,6 @@ pub struct Checker {
     /// walk, the root surface, import registration), and a refused path is
     /// refused on every one of them.
     pub(super) reported_declaration_collisions: std::collections::HashSet<String>,
-    /// Import spellings that name a module reached under a different
-    /// canonical owner, mapped to that owner.
-    ///
-    /// `import std.channel.channel;` names the primary file of the directory
-    /// module `std.channel`, and registration keys the module's items by the
-    /// spelling the import used while the declarations were minted under the
-    /// canonical owner. Declaration lookup resolves the one through the other.
-    pub(super) canonical_module_spellings: std::collections::HashMap<String, String>,
     /// Bare record/type-decl names that genuinely collide across modules
     /// (2+ distinct declaring package/file-import modules share the bare name,
     /// after re-export subsumption). Mirrors the HIR/MIR authoritative
@@ -3496,6 +3554,12 @@ pub struct Checker {
     pub(super) local_trait_defs: HashSet<String>,
     /// The type name and args of the current impl block target (for resolving `Self`).
     pub(super) current_self_type: Option<(String, Vec<Ty>)>,
+    /// The surface spelling of the active `impl` target when it differs from
+    /// the identity the target resolves to (`json.Value` for
+    /// `std.encoding.json.Value`). HIR derives an impl block's emitted symbol
+    /// from the spelling the source wrote, so the declaration must stay
+    /// reachable under it while every checker table keys the identity.
+    pub(super) current_impl_surface_target: Option<String>,
     /// Source-resolved type of the current impl target.
     ///
     /// Unlike `current_self_type`, this retains the resolver's nominal identity
@@ -3527,14 +3591,26 @@ pub struct Checker {
     /// it identifies the OUTERMOST target place, which is exactly the place a
     /// plain `=` re-initialises.
     pub(super) place_write_depth: usize,
+    /// The place the pattern about to be bound destructures, when the source
+    /// is a place at all (`match booking { … }`, `let Booking { … } = booking`).
+    ///
+    /// A pattern binder takes its field out of that place exactly as
+    /// `let t = booking.ticket` does, so the same partial-move bookkeeping has
+    /// to see it. Set immediately before [`bind_pattern`] and consumed by the
+    /// pattern node it describes: an aggregate subpattern re-sets it for its
+    /// own fields, and every other pattern shape drops it, because a variant
+    /// payload or a temporary scrutinee is not a field of a caller's place.
+    pub(super) pattern_place: Option<(String, crate::env::PlacePath)>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
-    /// `LocalPid<Actor>` → `LocalPid<ConnectionHandler>` coercion can confirm an
+    /// `Actor`'s own actor-handle type → `ConnectionHandler`'s coercion can confirm an
     /// actor's `receive fn`s structurally satisfy a handler trait. Moved into
     /// `TypeCheckOutput::actor_protocol_descriptors` at the end of
     /// `check_program` (no rebuild — see `actor_satisfies_handler_trait`).
     pub(super) actor_protocol_descriptors:
         HashMap<String, crate::actor_protocol::ActorProtocolDescriptor>,
+    pub(super) lambda_actor_declarations:
+        HashMap<SpanKey, crate::actor_protocol::LambdaActorIdentity>,
     pub(super) impl_alias_scopes: Vec<ImplAliasScope>,
     /// When set, the resolver is inside a trait-body context that gives
     /// meaning to `Self::Bar` as a projection into this trait's associated
@@ -3604,14 +3680,6 @@ pub struct Checker {
     pub(super) wasm_reject_spans: HashSet<(SpanKey, WasmUnsupportedFeature)>,
     /// Tracks slice annotation spans we've already rejected so repeated
     /// resolution passes don't emit duplicate diagnostics.
-    /// Inside a machine transition body, the (`machine_name`, `source_state_name`, `event_name`) tuple.
-    pub(super) current_machine_transition: Option<(String, String, String)>,
-    /// Inside a machine state `entry` or `exit` lifecycle block, the
-    /// (`machine_name`, `state_name`) pair.  Enables payload-state field
-    /// access (`state.seq`) without granting transition-event privileges
-    /// (no event-enum matching, no `event.field` binding).  Checked after
-    /// `current_machine_transition` in the field-access resolver.
-    pub(super) current_machine_lifecycle: Option<(String, String)>,
     /// Compile-time known numeric literal values used by later coercion sites.
     pub(super) const_values: HashMap<String, ConstValue>,
     /// Lexical bindings in `const_values` that originate from a real `const`
@@ -3679,7 +3747,7 @@ pub struct Checker {
     pub(super) deferred_range_bounds: Vec<(
         Span,
         TypeVar,
-        Option<i64>,
+        Option<i128>,
         Option<Span>,
         u32,
         Option<TypeVar>,
@@ -3730,13 +3798,6 @@ pub struct Checker {
     /// WHEN OBSOLETE: if a `let rec` or fixed-point surface is ratified.
     /// REAL SOLUTION: a proper `letrec`/`fix`-point binder in the type checker.
     pub(super) pending_let_closure_name: Option<String>,
-    /// Per-spawn-site type arguments for generic actor instantiations.
-    ///
-    /// Mirrors [`TypeCheckOutput::actor_spawn_type_args`]. Populated in
-    /// `check_spawn` when explicit type args are resolved for a generic actor.
-    /// Moved into the output at `check_program` exit after `subst.resolve`
-    /// settles inference variables.
-    pub(super) actor_spawn_type_args: HashMap<SpanKey, (String, Vec<Ty>)>,
     /// Canonical builtin `Result`/`Option` receiver method signatures, snapshotted
     /// from the compiled-in `std/result.hew` / `std/option.hew` impl blocks at
     /// builtin-registration time, keyed by `(builtin discriminant, method name)`.
@@ -3792,7 +3853,8 @@ pub(super) struct IntegerTypeInfo {
 /// Known compile-time numeric literal value (for later coercion checks).
 #[derive(Debug, Clone)]
 pub(super) enum ConstValue {
-    Integer(i64),
+    /// Exact mathematical value in the `i128` literal carrier (D421).
+    Integer(i128),
     Float(f64),
 }
 
@@ -3855,14 +3917,9 @@ impl Checker {
             expr_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             user_comparison_dispatch: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            resolved_direct_call_ownership: HashMap::new(),
-            resolved_method_call_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
-            published_value_occurrences: HashSet::new(),
-            produced_call_arities: HashMap::new(),
-            fn_param_ownership: HashMap::new(),
+            numeric_operand_coercions: HashMap::new(),
             extern_method_origins: HashMap::new(),
+            extern_method_signatures: HashMap::new(),
             registration_origin_module: None,
             canonical_std_module_sources: HashSet::new(),
             module_source_paths: HashMap::new(),
@@ -3870,13 +3927,21 @@ impl Checker {
             source_file_span_indices: HashMap::new(),
             current_item_source: None,
             current_item_ordinal: 0,
+            entry_selection: None,
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),
             registration_is_flat_file_import: false,
             flat_file_import_module_names: HashSet::new(),
-            caller_visible_param_projections: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
+            actor_deferred_field_decls: HashSet::new(),
+            actor_init_first_stores: HashSet::new(),
+            actor_deferred_fields: HashMap::new(),
+            checking_actor_init: false,
+            borrowed_element_for_loops: HashSet::new(),
+            borrowed_element_index_reads: HashSet::new(),
+            owning_take_vec_cursors: HashSet::new(),
+            borrowed_element_option_reads: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),
             method_call_receiver_kinds: HashMap::new(),
@@ -3891,38 +3956,38 @@ impl Checker {
             consume_receiver_methods: HashSet::new(),
             pending_lowering_facts: HashMap::new(),
             deferred_hashmap_admission: HashMap::new(),
+            deferred_hashmap_value_copy: HashMap::new(),
             deferred_hashset_admission: HashMap::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
             deferred_vec_admission: HashMap::new(),
             deferred_builtin_clone_admission: HashMap::new(),
             shadowed_method_type_param_reports: HashSet::new(),
-            generic_structural_eq_requirements: HashMap::new(),
+            eq_requirements: HashMap::new(),
             generic_fn_instantiation_sites: Vec::new(),
             deferred_channel_rewrites: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
             resolved_calls: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
+            actor_delivery_calls: HashMap::new(),
             actor_overflow_policies: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: HashSet::new(),
-            suspending_io_receiver_nominals: HashMap::new(),
             tail_ok_coercions: HashSet::new(),
+            result_return_coercions: HashMap::new(),
             tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),
-            runtime_builtin_targets: HashMap::new(),
+            builtin_call_targets: HashMap::new(),
             import_fn_name_aliases: HashMap::new(),
             published_bare_function_owners: HashMap::new(),
             published_bare_const_owners: HashMap::new(),
+            file_import_const_exports: HashMap::new(),
+            recovery_kinds: HashMap::new(),
+            effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
@@ -3936,6 +4001,9 @@ impl Checker {
             handle_bearing_dirty: false,
             refresh_call_count: 0,
             receive_generator_methods: HashSet::new(),
+            receive_fails_methods: HashSet::new(),
+            view_submitted_fails_methods: HashMap::new(),
+            completion_call_edges: Vec::new(),
             actor_receive_methods: HashSet::new(),
             type_def_inference_holes: HashMap::new(),
             fn_sig_inference_holes: HashMap::new(),
@@ -3945,6 +4013,7 @@ impl Checker {
             deferred_monomorphic_sites: Vec::new(),
             fn_def_spans: HashMap::new(),
             fn_visibility: HashMap::new(),
+            test_fn_names: HashSet::new(),
             type_def_spans: HashMap::new(),
             type_visibility: HashMap::new(),
             type_namespace_owners: HashMap::new(),
@@ -3957,13 +4026,16 @@ impl Checker {
             machine_const_params: HashMap::new(),
             reported_machine_bound_violations: HashSet::new(),
             reported_type_def_bound_violations: HashSet::new(),
-            actor_type_param_bounds: HashMap::new(),
-            reported_actor_bound_violations: HashSet::new(),
-            actors_with_periodic_handlers: HashMap::new(),
+            reported_actor_handle_type_spans: HashSet::new(),
+            reported_unknown_dyn_traits: HashSet::new(),
             current_return_type: None,
+            inferred_lambda_returns: None,
+            current_fails: false,
             in_generator: false,
-            inside_await_expr: false,
+            suspension_operands: HashSet::new(),
+            prepared_select_tasks: Vec::new(),
             loop_depth: 0,
+            deferred_body: None,
             loop_labels: Vec::new(),
             modules: HashSet::new(),
             known_types: HashSet::new(),
@@ -3975,6 +4047,7 @@ impl Checker {
             conflicting_trait_impl_reported: HashSet::new(),
             trait_impl_method_names: HashMap::new(),
             trait_impl_method_declaration_ids: HashMap::new(),
+            trait_impl_method_binders: HashMap::new(),
             primitive_trait_impls: HashMap::new(),
             primitive_trait_impl_self_args: HashMap::new(),
             supervisor_children: HashMap::new(),
@@ -3983,8 +4056,8 @@ impl Checker {
             dyn_trait_coercions: HashMap::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            select_sources: HashMap::new(),
             closure_escape_facts: HashMap::new(),
-            closure_escape_advisory_spans: HashSet::new(),
             actor_init_params: HashMap::new(),
             lambda_capture_depth: None,
             lambda_captures: Vec::new(),
@@ -4027,19 +4100,21 @@ impl Checker {
             extern_table: crate::extern_table::ExternTable::new(),
             contractless_extern_occurrences: std::collections::HashMap::new(),
             reported_declaration_collisions: std::collections::HashSet::new(),
-            canonical_module_spellings: std::collections::HashMap::new(),
             cross_module_colliding_record_names: HashSet::new(),
             current_module_idx: 0,
             local_type_defs: HashSet::new(),
             source_type_defs: HashSet::new(),
             local_trait_defs: HashSet::new(),
             current_self_type: None,
+            current_impl_surface_target: None,
             current_self_binding_ty: None,
             current_actor_type: None,
             current_actor_fields: Vec::new(),
             place_base_depth: 0,
             place_write_depth: 0,
+            pattern_place: None,
             actor_protocol_descriptors: HashMap::new(),
+            lambda_actor_declarations: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
             impl_assoc_type_bindings: HashMap::new(),
@@ -4049,11 +4124,10 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            must_use_types: HashSet::new(),
             has_checked_program: false,
             wasm_warning_spans: HashSet::new(),
             wasm_reject_spans: HashSet::new(),
-            current_machine_transition: None,
-            current_machine_lifecycle: None,
             const_values: HashMap::new(),
             declared_const_bindings: HashMap::new(),
             call_type_args: HashMap::new(),
@@ -4069,7 +4143,6 @@ impl Checker {
             pending_pattern_resolutions: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
             lang_item_spans: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             builtin_result_option_method_sigs: HashMap::new(),
             builtin_vec_method_sigs: HashMap::new(),
             lint_levels: super::LintLevels::from_defaults(),
@@ -4161,10 +4234,8 @@ impl Checker {
     /// [`TypeCheckOutput::method_call_consumes_receiver`] is set so codegen
     /// can null the drop slot.
     ///
-    /// PR 1 (issue #1295) ships this seam unused in production: no Hew
-    /// surface syntax populates the set, and stdlib trait registration does
-    /// not call this until PR 2 introduces `Closable::close`. Tests use it
-    /// to exercise the consume-marker pipeline before PR 2 lands.
+    /// Tests use this seam to exercise the consume-marker pipeline for a
+    /// trait method that is consuming by contract.
     pub fn register_consume_receiver_method(&mut self, qualified_name: impl Into<String>) {
         self.consume_receiver_methods.insert(qualified_name.into());
     }

@@ -141,8 +141,11 @@ impl Parser<'_> {
                 let (next, _) = self.advance()?;
                 match next {
                     Token::Integer(s) => {
-                        if let Ok((value, radix)) = parse_negated_int_literal(s) {
-                            Pattern::Literal(Literal::Integer { value, radix })
+                        if let Ok((value, radix)) = parse_int_literal(s) {
+                            Pattern::Literal(Literal::Integer {
+                                value: -value,
+                                radix,
+                            })
                         } else {
                             self.error_invalid_literal_with_hint(
                                 format!("invalid integer literal '-{s}'"),
@@ -411,9 +414,19 @@ impl Parser<'_> {
         })
     }
 
+    /// `<pattern> from <source> => <body>` (spec 4.11.1). The source clause is
+    /// spelled `from`, a contextual identifier rather than a keyword, so `from`
+    /// stays usable as an ordinary name everywhere else.
     pub(crate) fn parse_select_arm(&mut self) -> Option<SelectArm> {
         let binding = self.parse_pattern()?;
-        self.expect(&Token::From)?;
+        if matches!(self.peek(), Some(Token::Identifier(word)) if *word == "from") {
+            self.advance();
+        } else {
+            self.error(
+                "a select arm binds its source with `from`: `name from source => body`".to_string(),
+            );
+            return None;
+        }
         let source = self.parse_expr()?;
         self.expect(&Token::FatArrow)?;
         let body = self.parse_expr()?;
@@ -460,53 +473,5 @@ impl Parser<'_> {
         };
         self.restore_pos(saved_pos);
         probe
-    }
-
-    /// Parse the body of a struct literal after the opening `{` has been
-    /// consumed.  Handles named fields, an optional trailing comma, and the
-    /// functional-update `..base` tail.
-    ///
-    /// Returns `(fields, base)` where `fields` is a vec of `(name, expr)`
-    /// pairs and `base` is `Some(expr)` when a `..base` suffix was present.
-    ///
-    /// Returns `None` if parsing fails (error is recorded on `self`).
-    #[allow(
-        clippy::type_complexity,
-        reason = "return tuple encodes (fields, base) for struct literal body; extracting a named type would require a public struct in a private-helper context"
-    )]
-    pub(crate) fn parse_struct_init_body(
-        &mut self,
-    ) -> Option<(Vec<(String, Spanned<Expr>)>, Option<Box<Spanned<Expr>>>)> {
-        let mut fields = Vec::new();
-        let mut base: Option<Box<Spanned<Expr>>> = None;
-
-        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            if self.peek() == Some(&Token::DotDot) {
-                // `..base_expr` — must be the last item in the list.
-                self.advance(); // consume `..`
-                let base_expr = self.parse_expr()?;
-                base = Some(Box::new(base_expr));
-                // Allow an optional trailing comma before `}`.
-                self.eat(&Token::Comma);
-                if self.peek() != Some(&Token::RightBrace) {
-                    self.error(
-                        "functional-update `..base` must be the last item in the field list"
-                            .to_string(),
-                    );
-                }
-                break;
-            }
-            let field_name = self.expect_ident()?;
-            self.expect(&Token::Colon)?;
-            let value = self.parse_expr()?;
-            fields.push((field_name, value));
-
-            if !self.eat(&Token::Comma) {
-                break;
-            }
-        }
-        self.expect(&Token::RightBrace)?;
-
-        Some((fields, base))
     }
 }

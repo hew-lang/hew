@@ -4,7 +4,7 @@
 // a mid-handler yield cannot release it.
 // Expected: type error containing "E_GENBLOCK_IN_ACTOR_RECEIVE"
 actor Counter {
-    count: i32;
+    count: i32,
     receive fn tick() {
         let _g = gen { count = count + 1; };
     }

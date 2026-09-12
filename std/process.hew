@@ -12,17 +12,20 @@
 //! import std.process;
 //!
 //! fn main() {
-//!     let shell_output = process.run("echo hello");
-//!     println(shell_output);
+//!     let shell_output = process.run("echo hello").expect("run succeeds");
+//!     println(shell_output.stdout);
 //!
-//!     let args: Vec<string> = Vec.new();
+//!     var args: Vec<string> = Vec.new();
 //!     args.push("<%s>|<%s>");
 //!     args.push("hello world");
 //!     args.push("hew");
-//!     let output = process.run_argv("printf", args);
+//!     let output = process.run_argv("printf", args).expect("run_argv succeeds");
 //!     println(output.stdout);
 //!
-//!     let child = process.start("sleep 10");
+//!     let child = match process.start("sleep 10") {
+//!         .Ok(child) => child,
+//!         .Err(error) => panic(to_string(error)),
+//!     };
 //!     println(child.wait());
 //! }
 //! ```
@@ -36,7 +39,7 @@ pub type ProcessResultHandle {
 }
 
 impl ProcessResultHandle {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_process_result_free(self)
         };
@@ -56,20 +59,20 @@ type ChildHandle {
 /// and waited on at scope exit.
 #[resource]
 pub type Child {
-    handle: ChildHandle;
+    handle: ChildHandle,
 }
 
 /// Captured output from a completed command.
 pub type CommandOutput {
-    exit_code: i64;
-    stdout: string;
-    stderr: string;
+    exit_code: i64,
+    stdout: string,
+    stderr: string,
 }
 
 /// Structured execution errors for process launch and argument validation.
 pub enum ProcessError {
-    InvalidArguments(string);
-    LaunchFailed(string);
+    InvalidArguments(string),
+    LaunchFailed(string),
 }
 
 /// Methods available on a `Child` process.
@@ -106,9 +109,9 @@ impl Child {
     /// Resource close performs a non-blocking check first. If the child is
     /// still running, close kills it and waits for it to exit so leaked
     /// `Child` values do not leave OS processes or zombie handles behind.
-    fn close(child: Child) {
+    fn close(consume self) {
         unsafe {
-            hew_process_drop(child.handle)
+            hew_process_drop(self.handle)
         };
     }
 }
@@ -137,7 +140,7 @@ fn last_process_error(default_message: string) -> ProcessError {
     }
 }
 
-fn take_command_output(result: ProcessResultHandle) -> CommandOutput {
+fn take_command_output(consume result: ProcessResultHandle) -> CommandOutput {
     unsafe {
         let output = CommandOutput { exit_code: hew_process_result_exit_code(result) as i64, stdout: hew_process_result_stdout(result), stderr: hew_process_result_stderr(result) };
         hew_process_result_free(result);
@@ -151,7 +154,7 @@ fn legacy_packed_args_note() -> string {
 
 fn split_legacy_packed_args(args: string) -> Vec<string> {
     let raw_parts = string.split(args, " ");
-    let filtered: Vec<string> = Vec.new();
+    var filtered: Vec<string> = Vec.new();
     for i in 0 .. raw_parts.len() {
         let part = raw_parts[i];
         if part != "" {

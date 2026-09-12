@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-content-io"
+intent = "Content-backed stream reads and writes suspend through native I/O and preserve UTF-8, embedded NUL and empty writes."
+source = "cases/stream-content-io.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "native stream content I/O\n"
+exit = 0

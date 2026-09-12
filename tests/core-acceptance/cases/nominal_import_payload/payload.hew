@@ -1,0 +1,12 @@
+pub type Delivery {
+    payload: string,
+}
+
+pub enum Receive {
+    Message(Delivery),
+    Missing,
+}
+
+pub fn next() -> Receive {
+    .Message(Delivery { payload: "delivered" })
+}

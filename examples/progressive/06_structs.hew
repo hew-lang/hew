@@ -1,13 +1,13 @@
 // Lesson 6: Records
 // Defining and using record types with `type`
 type Person {
-    age: i64;
-    id: i64;
+    age: i64,
+    id: i64,
 }
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {

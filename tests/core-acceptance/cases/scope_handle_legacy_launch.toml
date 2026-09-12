@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_handle_legacy_launch"
+intent = "Reject fixture: scope_handle_legacy_launch — removed `scope |s| { s.launch(...) }` surface."
+source = "../vertical-slice/reject/scope_handle_legacy_launch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UnexpectedToken"
+line = 17
+column = 11
+message = "expected `{`, found `|`"

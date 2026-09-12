@@ -1,0 +1,13 @@
+[[case]]
+id = "match_destructure_wildcard_closure_field"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/match_destructure_wildcard_closure_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "label-x\n"
+exit = 0

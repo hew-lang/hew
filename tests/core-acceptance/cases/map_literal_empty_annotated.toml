@@ -1,0 +1,13 @@
+[[case]]
+id = "map_literal_empty_annotated"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/map_literal_empty_annotated.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

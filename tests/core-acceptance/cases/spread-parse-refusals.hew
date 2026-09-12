@@ -1,0 +1,17 @@
+//! The shapes `..` refuses before typing. A record literal has one base,
+//! because two bases give two answers for every unnamed field; and a repeat
+//! literal repeats one value, so a spread has no repeat count.
+//!
+//! Harness verb: hew check (must fail)
+
+type Point { x: i64, y: i64, }
+
+fn _two_bases(a: Point, b: Point) -> Point {
+    Point { ..a, ..b }
+}
+
+fn _repeat_count(xs: Vec<i64>) -> Vec<i64> {
+    [..xs; 3]
+}
+
+fn main() {}

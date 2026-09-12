@@ -140,7 +140,6 @@ const fn builtin_named_type_index(kind: BuiltinNamedType) -> usize {
         BuiltinNamedType::Stream => 2,
         BuiltinNamedType::Sink => 3,
         BuiltinNamedType::Duplex => 4,
-        BuiltinNamedType::LocalPid => 5,
         BuiltinNamedType::RemotePid => 6,
         BuiltinNamedType::CancellationToken => 7,
     }
@@ -202,8 +201,8 @@ builtin_named_types! {
         qualified: "stream.Stream",
         methods: [
             // Channel-family naming: recv/close mirror Duplex and RecvHalf.
-            // Iterator-style aliases (.next, .lines) are removed from
-            // the fundamental surface; they land via trait impls in stdlib work.
+            // `.next` is spelled `.recv`; `.lines`/`.chunks`/`.take` are the
+            // lazy adaptors, each consuming its source stream.
             // Layout-witness recv entries: one symbol per operation for every
             // describable element type (mirrors Receiver<T> above). The
             // blocking recv flips to the suspending channel-await substrate
@@ -219,6 +218,12 @@ builtin_named_types! {
             "close" => {
                 signature: ReturnUnit,
                 runtime: BuiltinMethodRuntime::Fixed("hew_stream_close")
+            },
+            // `CloneSelf` is the `() -> Self` shape: `lines()` re-frames the
+            // same stream, one newline-terminated item at a time.
+            "lines" => {
+                signature: CloneSelf,
+                runtime: BuiltinMethodRuntime::Fixed("hew_stream_lines")
             },
             "chunks" => {
                 signature: CountToSelf,
@@ -303,27 +308,12 @@ builtin_named_types! {
         qualified: "duplex.Duplex",
         methods: []
     },
-    // LocalPid<T>: actor pid in this process, returned by `spawn`.
-    //
-    // A `LocalPid<T>` is process-local: it refers to an actor running in the current
-    // node. Built-in actor functions (`close`, `link`, `monitor`, etc.) use
-    // `LocalPid<T>` directly; it is nominally distinct from `RemotePid<T>`.
-    //
-    // Methods (`.send`) are declared in `std/builtins.hew` as `impl LocalPid<T>` and
-    // resolved via the normal user-type method dispatch path.
-    LocalPid {
-        consts: (LOCAL_PID, QUALIFIED_LOCAL_PID),
-        methods_const: LOCAL_PID_METHODS,
-        canonical: "LocalPid",
-        qualified: "LocalPid",
-        methods: []
-    },
     // RemotePid<T>: actor pid on a remote node.
     //
     // The constructor is `Node::lookup<T>(name) ->
     // Result<RemotePid<T>, LookupError>`, which snapshots the full registration
     // Location the StaleRef boundary tracks. `RemotePid<T>` does NOT unify with
-    // `LocalPid<T>` and has no provenance-free public constructor.
+    // an actor handle and has no provenance-free public constructor.
     //
     // `.send` returns Result<(), SendError>; a captured ref whose registration
     // was superseded fails closed with `SendError::StaleRef`.
@@ -361,7 +351,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
         Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
-        Some(BuiltinType::LocalPid) => Some(BuiltinNamedType::LocalPid),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(
@@ -373,11 +362,11 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::VecIter
             | BuiltinType::HashMapIter
             | BuiltinType::Task
+            | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
             | BuiltinType::StreamPair
             | BuiltinType::Generator
-            | BuiltinType::AsyncGenerator
             | BuiltinType::Range
             | BuiltinType::Rc
             | BuiltinType::Weak
@@ -392,8 +381,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::MachineState
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaActorHandle
-            | BuiltinType::LambdaPid
+            | BuiltinType::ActorHandle
+            | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
             | BuiltinType::CrashAction
             | BuiltinType::CrashNotification
@@ -403,7 +392,7 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::DownReason
             | BuiltinType::DownNotification
             | BuiltinType::SendError
-            | BuiltinType::AskError
+            | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
@@ -415,7 +404,9 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Duration
             | BuiltinType::Instant
             | BuiltinType::Trap
-            | BuiltinType::TimeoutError,
+            | BuiltinType::TimeoutError
+            | BuiltinType::JsonValue
+            | BuiltinType::YamlValue,
         )
         | None => None,
     }
@@ -445,10 +436,12 @@ impl BuiltinMethodSigTemplate {
     fn instantiate(self, owner: BuiltinNamedType) -> FnSig {
         let item_ty = type_param_ty();
         let item_fn = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![item_ty.clone()],
             ret: Box::new(item_ty.clone()),
         };
         let item_predicate = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![item_ty.clone()],
             ret: Box::new(Ty::Bool),
         };

@@ -1,0 +1,8 @@
+Test reverse ... PASS
+Test sorted ... PASS
+Test duplicates ... PASS
+Test zeros ... PASS
+Test single ... PASS
+Test empty ... PASS
+6/6 tests passed
+ALL PASS

@@ -1,0 +1,38 @@
+//! Accept: a match-destructure wildcard on a closure-typed field.
+//!
+//! The selected arm destructures the record once, so the unbound closure field
+//! becomes an ordinary owned result in the arm's cleanup set and is released
+//! through the same value destroy as any other owner. No field-addressed
+//! in-place drop is involved, so a closure's captured environment needs no
+//! special discharge route.
+//!
+//! Observable contract: prints `label-x` across many iterations with bounded
+//! RSS. A regression that skipped the closure field's release would leak its
+//! environment box per iteration.
+
+type Holder {
+    label: string,
+    op: fn(i64) -> i64,
+}
+
+fn make() -> Holder {
+    let k = 3;
+    Holder {
+        label: ("label-" + "x"),
+        op: |x| x * k,
+    }
+}
+
+fn main() -> i64 {
+    var i: i64 = 0;
+    var last = "";
+    while i < 100000 {
+        let h = make();
+        last = match h {
+            Holder { label: l, op: _ } => l,
+        };
+        i = i + 1;
+    }
+    println(last);
+    0
+}

@@ -7,23 +7,15 @@
 // event-companion `Instr::EnumTagLoad` end-to-end through codegen.
 machine Counter {
     events {
-        Inc;
-        Reset;
+        Inc,
+        Reset,
     }
 
-    state Zero;
-    state NonZero { value: i64; }
+    state Zero,
+    state NonZero { value: i64, },
 
-    on Inc: Zero => NonZero {
-        NonZero { value: 1 }
-    }
-    on Inc: NonZero => NonZero reenter {
-        NonZero { value: self.value + 1 }
-    }
-    on Reset: NonZero => Zero {
-        Counter.Zero
-    }
-    on Reset: Zero => Zero reenter {
-        Counter.Zero
-    }
+    on Inc: Zero => NonZero { value: 1 }
+    on Inc: NonZero => NonZero reenter { value: state.value + 1 }
+    on Reset: NonZero => Zero,
+    on Reset: Zero => Zero reenter,
 }

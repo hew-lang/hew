@@ -2,8 +2,8 @@
 //! @description Record types and pattern matching over structured data
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn distance_from_origin(p: Point) -> i64 {

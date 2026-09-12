@@ -1,0 +1,10 @@
+[[case]]
+id = "channel-generic-endpoints"
+intent = "Generic channel constructors retain distinct element types through typed function boundaries, and try_recv executes in a non-suspending function for empty, queued and closed receivers."
+source = "cases/channel-generic-endpoints.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "typed channels and immediate receive\n"
+exit = 0

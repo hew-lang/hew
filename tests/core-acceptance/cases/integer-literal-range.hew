@@ -1,0 +1,71 @@
+// Every integer literal carries its exact mathematical value, so each type's
+// extremes are writable in source and reach the running program unchanged.
+
+fn round_trip_u64(value: u64) -> u64 {
+    value
+}
+
+fn classify(value: u64) -> string {
+    match value {
+        0 => "zero",
+        18446744073709551615 => "u64 max",
+        _ => "other",
+    }
+}
+
+fn sign_of(value: i32) -> string {
+    match value {
+        -2147483648 => "i32 min",
+        2147483647 => "i32 max",
+        _ => "interior",
+    }
+}
+
+fn main() -> i64 {
+    // Unsigned extremes, decimal and every radix spelling of the same value.
+    let decimal: u64 = 18446744073709551615;
+    let hex: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+    let octal: u64 = 0o1777777777777777777777;
+    let binary: u64 =
+        0b1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111_1111;
+    println(f"{decimal}");
+    println(decimal == hex);
+    println(decimal == octal);
+    println(decimal == binary);
+
+    // The value survives a function boundary, not just a binding.
+    println(f"{round_trip_u64(18446744073709551615)}");
+
+    // Unsigned widths.
+    let u8_max: u8 = 255;
+    let u16_max: u16 = 65535;
+    let u32_max: u32 = 4294967295;
+    println(f"{u8_max} {u16_max} {u32_max}");
+
+    // Signed extremes, including the minima that need a negated literal.
+    let i8_min: i8 = -128;
+    let i8_max: i8 = 127;
+    let i16_min: i16 = -32768;
+    let i32_min: i32 = -2147483648;
+    let i64_min: i64 = -9223372036854775808;
+    let i64_max: i64 = 9223372036854775807;
+    println(f"{i8_min} {i8_max} {i16_min}");
+    println(f"{i32_min}");
+    println(f"{i64_min}");
+    println(f"{i64_max}");
+
+    // Extremes as match predicates, unsigned and negated-signed.
+    println(classify(18446744073709551615));
+    println(classify(0));
+    println(classify(1));
+    println(sign_of(-2147483648));
+    println(sign_of(2147483647));
+    println(sign_of(0));
+
+    // Arithmetic on the full-range value still reads the exact bits.
+    let one_less: u64 = 18446744073709551614;
+    println(decimal - one_less);
+    println(decimal > one_less);
+
+    0
+}

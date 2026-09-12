@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_return_mismatch"
+intent = "Reject fixture: E_LAMBDA_RETURN_TYPE_MISMATCH An ask-shaped actor lambda whose body returns a different type than the declared reply type is rejected."
+source = "../vertical-slice/reject/lambda_return_mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ReturnTypeMismatch"
+line = 8
+column = 16
+message = "ask-shaped actor body returns `string` but the declared reply type is `i64` (E_LAMBDA_RETURN_TYPE_MISMATCH)"

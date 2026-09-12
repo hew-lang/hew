@@ -15,12 +15,17 @@ pub(super) use hew_parser::ast::IntRadix;
 pub(super) use hew_parser::ast::{ImportName, TraitMethod, TypeExpr, Visibility};
 pub(super) use hew_parser::module::{Module, ModuleGraph, ModuleId};
 
+mod actor_delivery;
 mod actor_fields;
+mod async_io;
 mod basic;
 mod branch_join;
 mod builtins;
+mod callables;
 mod collections;
 mod control_flow;
+mod encoding_values;
+mod entry_exit;
 mod exhaustiveness;
 mod extern_fn;
 mod genblocks;
@@ -31,14 +36,19 @@ mod indexing;
 mod infer;
 mod intrinsics;
 mod lints;
+mod machines;
 mod modules;
 mod mut_receiver;
 mod opaque_resources;
 mod option_none;
+mod optional_control_flow;
 mod output;
+mod pattern_conditions;
 mod patterns;
+mod race;
 mod records;
 mod supervisor;
+mod suspension_effects;
 mod traits;
 mod value_param_mutation;
 mod wasm;
@@ -110,12 +120,17 @@ pub(super) fn check_source_in_canonical_std_module(
     let root_id = ModuleId::root();
     let mod_id = ModuleId::new(module_path.to_vec());
     let leaf = module_path.last().expect("canonical std module has a leaf");
-    let source_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    let module_base = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("hew-types has a workspace parent")
         .join("std")
-        .join(module_path.iter().skip(1).collect::<std::path::PathBuf>())
-        .join(format!("{leaf}.hew"));
+        .join(module_path.iter().skip(1).collect::<std::path::PathBuf>());
+    let flat_source = module_base.with_extension("hew");
+    let source_path = if flat_source.is_file() {
+        flat_source
+    } else {
+        module_base.join(format!("{leaf}.hew"))
+    };
     let module = Module {
         id: mod_id.clone(),
         items: parsed.program.items,
@@ -134,7 +149,7 @@ pub(super) fn check_source_in_canonical_std_module(
     Checker::new(ModuleRegistry::new(vec![])).check_program(&program)
 }
 
-pub(super) fn make_int_literal(n: i64, span: Span) -> Spanned<Expr> {
+pub(super) fn make_int_literal(n: i128, span: Span) -> Spanned<Expr> {
     (
         Expr::Literal(Literal::Integer {
             value: n,
@@ -176,8 +191,8 @@ pub(super) fn parse_and_check_with_stdlib(source: &str) -> (Vec<TypeError>, Vec<
 /// Helper: build a simple pub function declaration.
 pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Pub,
         name: name.to_string(),
@@ -200,8 +215,8 @@ pub(super) fn make_pub_fn(name: &str, params: Vec<Param>, ret: Option<TypeExpr>)
 /// Helper: build a private (non-pub) function declaration.
 pub(super) fn make_priv_fn(name: &str) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: Visibility::Private,
         name: name.to_string(),
@@ -239,7 +254,7 @@ pub(super) fn make_user_import(
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(items),
+        resolved_items: Some(items.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     }
@@ -421,6 +436,20 @@ pub(super) fn check_source_allowing_prelude_redeclaration(source: &str) -> TypeC
 fn test_empty_program() {
     let output = check_source("");
     assert!(output.errors.is_empty());
+}
+
+#[test]
+fn result_field_access_requires_handling_the_result() {
+    let output = check_source(
+        "type Record { value: i64 } fn main() { let result: Result<Record, string> = Ok(Record { value: 3 }); let _value = result.value; }",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::UndefinedField && error.message.contains("value")
+        }),
+        "unhandled Result field access must produce a source diagnostic: {:?}",
+        output.errors
+    );
 }
 
 #[test]

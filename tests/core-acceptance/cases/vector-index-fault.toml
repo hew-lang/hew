@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-index-fault"
+intent = "A negative vector read index cleans up the borrowed receiver and enclosing owners through its logical fault edge."
+source = "cases/vector-index-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

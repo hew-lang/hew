@@ -1,11 +1,11 @@
-//! Status: runnable (v0.5 for-await over Receiver<f64>)
-//! Description: Drains a float channel receiver with `for await`.
+//! Status: runnable (v0.5 ordinary for over Receiver<f64>)
+//! Description: Drains a float channel receiver with `for`.
 //!
 //! `Receiver<f64>` rides the element-layout witness: the checker admits any
 //! describable element type and the recv path decodes the 8-byte Plain
 //! envelope through `hew_channel_recv_layout` — no per-type runtime symbol.
 
-import std.channel.channel;
+import std.channel;
 
 actor DrainFloats {
     receive fn run(unused: i64) {
@@ -17,7 +17,7 @@ actor DrainFloats {
         tx.send(1.25);
         tx.send(-3.75);
         tx.close();
-        for await sample in rx {
+        for sample in rx {
             println(sample);
         }
     }
@@ -25,6 +25,6 @@ actor DrainFloats {
 
 fn main() {
     let worker = spawn DrainFloats;
-    worker.run(0);
+    let _ = worker.run(0);
     sleep(500ms);
 }

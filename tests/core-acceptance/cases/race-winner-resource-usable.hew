@@ -1,0 +1,20 @@
+// The winning race operand returns a resource handle that stays usable in
+// the enclosing scope and is closed exactly once, by the caller.
+#[resource] type Handle { label: string }
+impl Handle {
+    fn close(consume self) {
+        println("closed " + self.label);
+    }
+    fn describe(self) -> string {
+        "used " + self.label
+    }
+}
+fn make(label: string, delay: duration) -> Handle {
+    sleep(delay);
+    Handle { label: label }
+}
+fn main() {
+    let winner = race { make("slow", 5s), make("fast", 20ms) };
+    println(winner.describe());
+    winner.close();
+}

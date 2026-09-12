@@ -43,7 +43,7 @@ use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, hew_supervisor_wait_restart, ExitReason, HewChildSpec,
+    hew_supervisor_set_restart_notify, test_wait_for_restart, ExitReason, HewChildSpec,
     HEW_TRAP_HEAP_EXCEEDED,
 };
 use hew_runtime_testkit::ensure_scheduler;
@@ -311,7 +311,7 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
         );
 
         // Step 7: supervisor restart cycle.
-        let restart_count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5_000);
+        let restart_count = test_wait_for_restart(sup.as_ptr(), 1, 5_000);
         assert!(
             restart_count >= 1,
             "supervisor must complete a restart cycle after the HeapExceeded crash \

@@ -5,10 +5,26 @@
 pub(super) use super::*;
 
 #[test]
+fn contextual_complement_rejects_invalid_operands() {
+    for source in [
+        "fn main() { let value: u8 = ~256; }",
+        "fn main() { let value: u8 = ~-1; }",
+        "fn main() { let value: u8 = ~true; }",
+        "fn main() { let input: u64 = 1; let value: u8 = ~input; }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            !output.errors.is_empty(),
+            "invalid complement accepted: {source}"
+        );
+    }
+}
+
+#[test]
 fn contextual_variants_resolve_only_from_the_expected_type() {
     let output = check_source(
         r"
-enum Choice { Some(i64); None }
+enum Choice { Some(i64), None }
 
 fn choose(flag: bool) -> Choice {
     if flag { .Some(7) } else { .None }
@@ -72,7 +88,7 @@ fn contextual_variant_reports_ambiguous_expected_owner() {
 fn bare_variant_patterns_error_in_every_pattern_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent; Named { value: i64 } }
+enum Choice { Present(i64), Absent, Named { value: i64 } }
 fn make() -> Choice { Present(7) }
 fn read(value: Choice) -> i64 {
     match value { Present(number) => number, Named { value } => value, Absent => 0 }
@@ -119,7 +135,7 @@ fn tag_test(value: Choice) -> i64 {
 fn dotted_variant_patterns_check_in_every_pattern_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent; Named { value: i64 } }
+enum Choice { Present(i64), Absent, Named { value: i64 } }
 fn read(value: Choice) -> i64 {
     match value { .Present(number) => number, .Named { value } => value, .Absent => 0 }
 }
@@ -162,7 +178,7 @@ fn sum(p: Point) -> i64 {
 fn migration_mode_downgrades_both_bare_variant_spellings_to_warnings() {
     let parse_result = hew_parser::parse(
         r"
-enum Choice { Present(i64); Absent }
+enum Choice { Present(i64), Absent }
 fn contextual() -> Choice { Present(7) }
 fn read(value: Choice) -> i64 {
     match value { Present(number) => number, Absent => 0 }
@@ -221,7 +237,7 @@ fn inferred() { let value = Present(9); }
 fn dotted_owner_variants_typecheck_in_expression_position() {
     let output = check_source(
         r"
-enum Choice { Present(i64); Absent }
+enum Choice { Present(i64), Absent }
 fn tuple() -> Choice { Choice.Present(7) }
 fn unit() -> Choice { Choice.Absent }
 ",
@@ -254,7 +270,7 @@ fn dotted_associated_calls_resolve_without_using_the_head_as_a_value() {
         r#"
 fn main() {
     let values: Vec<i64> = Vec.new();
-    Node.start("127.0.0.1:0");
+    Node.start(NodeConfig.at("127.0.0.1:0"));
 }
 "#,
     );
@@ -284,7 +300,7 @@ fn read(value: i64) -> i64 {
 
 #[test]
 fn prelude_declarations_are_protected_before_source_registration() {
-    let output = check_source("type Iterator { value: i64; }");
+    let output = check_source("type Iterator { value: i64, }");
     assert!(output
         .errors
         .iter()
@@ -294,7 +310,7 @@ fn prelude_declarations_are_protected_before_source_registration() {
 #[test]
 fn non_root_prelude_declarations_are_protected_by_their_owner() {
     let output = check_source_in_module(
-        "type Result { value: i64; }",
+        "type Result { value: i64, }",
         vec!["hew".to_string(), "fixture".to_string()],
     );
     let collisions = output
@@ -311,7 +327,7 @@ fn non_root_prelude_declarations_are_protected_by_their_owner() {
 
 #[test]
 fn ordinary_builtin_declarations_remain_shadowable() {
-    let output = check_source("type HashMapIter { value: i64; }");
+    let output = check_source("type HashMapIter { value: i64, }");
     assert!(
         output.errors.is_empty(),
         "an ordinary builtin must remain shadowable: {:#?}",
@@ -319,9 +335,30 @@ fn ordinary_builtin_declarations_remain_shadowable() {
     );
 }
 
+/// Check a root program that binds `helper` as an imported module. No module
+/// is in scope without its import (A409), so a module-shaped diagnostic needs
+/// a real binding.
+fn check_source_importing_helper(source: &str) -> TypeCheckOutput {
+    let mut root = hew_parser::parse(&format!("import helper;\n{source}"));
+    assert!(root.errors.is_empty(), "fixture parse: {:?}", root.errors);
+    let import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("fixture import");
+    import.resolved_items = Some(vec![].into());
+    Checker::new(ModuleRegistry::new(vec![])).check_program(&root.program)
+}
+
 #[test]
 fn modules_and_types_are_rejected_in_value_position() {
-    let output = check_source("fn main() { let module_value = math; let type_value = Vec; }");
+    let output = check_source_importing_helper(
+        "fn main() { let module_value = helper; let type_value = Vec; }",
+    );
     assert!(output
         .errors
         .iter()
@@ -357,7 +394,7 @@ fn bare_type_remains_rejected_as_a_value_after_dotted_path_dispatch() {
 
 #[test]
 fn module_member_lookup_uses_path_diagnostics() {
-    let output = check_source("fn main() { math.missing(); }");
+    let output = check_source_importing_helper("fn main() { helper.missing(); }");
     assert!(output
         .errors
         .iter()
@@ -647,7 +684,7 @@ fn typecheck_binary_op_type_mismatch() {
 
 #[test]
 fn record_equality_comparison_typechecks_when_structurally_eligible() {
-    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
+    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    if a == b {\n        println(\"equal\");\n    }\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -662,7 +699,7 @@ fn record_equality_comparison_typechecks_when_structurally_eligible() {
 /// exists for aggregates, so this is a compiler gap, not a program error.
 #[test]
 fn record_inequality_typechecks_and_ordering_is_rejected() {
-    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
+    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() {\n    let a = Pt { x: 1, y: 2 };\n    let b = Pt { x: 1, y: 2 };\n    let ne = a != b;\n    let lt = a < b;\n    let _ = ne;\n    let _ = lt;\n}";
     let output = check_source(source);
     assert!(
         !output
@@ -689,7 +726,7 @@ fn record_inequality_typechecks_and_ordering_is_rejected() {
 /// structural-equality gate.
 #[test]
 fn enum_equality_not_gated_by_record_comparison_refusal() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
+    let source = "enum Colour {\n    Red,\n    Green,\n}\n\nfn compare() -> bool {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    a == b\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -703,7 +740,7 @@ fn enum_equality_not_gated_by_record_comparison_refusal() {
 /// `InvalidOperation`.
 #[test]
 fn enum_ordering_reports_checker_diagnostic() {
-    let source = "enum Colour {\n    Red;\n    Green;\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
+    let source = "enum Colour {\n    Red,\n    Green,\n}\n\nfn main() {\n    let a = Colour.Red;\n    let b = Colour.Green;\n    let _ = a < b;\n}";
     let output = check_source(source);
     assert!(
         output.errors.iter().any(|e| e.kind
@@ -719,7 +756,7 @@ fn enum_ordering_reports_checker_diagnostic() {
 
 #[test]
 fn payload_enum_equality_typechecks_when_structurally_eligible() {
-    let source = "enum Shape {\n    Circle(i64);\n    Empty;\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}";
+    let source = "enum Shape {\n    Circle(i64),\n    Empty,\n}\n\nfn main() {\n    let a = Shape.Circle(1);\n    let b = Shape.Circle(1);\n    let _ = a == b;\n}";
     let output = check_source(source);
     assert!(
         output.errors.is_empty(),
@@ -740,27 +777,50 @@ fn builtin_payload_enum_comparison_typechecks_when_structurally_eligible() {
 }
 
 #[test]
-fn record_with_bytes_field_eq_rejects_with_named_diagnostic() {
+fn record_with_bytes_field_eq_and_hash_are_accepted() {
     let output = check_source(
         r"
         type Packet { data: bytes }
-
-        fn same(a: Packet, b: Packet) -> bool {
-            a == b
-        }
+        fn same(a: Packet, b: Packet) -> bool { a == b }
         ",
     );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let facts = output
+        .type_facts
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+            "Packet",
+            vec![],
+        )))
+        .unwrap();
+    assert!(facts.eq);
     assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message.contains("`==` on record type `Packet`")
-                && e.message.contains("member `data`")
-                && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("bytes")
-                && !e.message.contains("IntCmp")
-        }),
-        "managed record eq should fail closed with a named checker diagnostic: {:#?}",
-        output.errors
+        facts.hash,
+        "bytes hashes like string, so a record holding one hashes too"
+    );
+}
+
+/// Negative control for the row above: a record whose members are not all
+/// hashable does not become hashable just because `bytes` is.
+#[test]
+fn record_with_non_hashable_field_is_not_hashable() {
+    let output = check_source(
+        r"
+        type Sample { data: bytes, tags: Vec<string> }
+        fn same(a: Sample, b: Sample) -> bool { a == b }
+        ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let facts = output
+        .type_facts
+        .get(&crate::TypeInstanceKey(ResolvedTy::named_user(
+            "Sample",
+            vec![],
+        )))
+        .unwrap();
+    assert!(facts.eq);
+    assert!(
+        !facts.hash,
+        "a record holding a non-hashable member must not publish Hash"
     );
 }
 
@@ -783,34 +843,20 @@ fn record_with_string_field_eq_is_accepted() {
 }
 
 #[test]
-fn managed_payload_enum_eq_rejects_with_named_diagnostic() {
+fn bytes_payload_enum_eq_is_accepted() {
     let output = check_source(
         r"
-        fn same(a: Option<bytes>, b: Option<bytes>) -> bool {
-            a == b
-        }
+        fn same(a: Option<bytes>, b: Option<bytes>) -> bool { a == b }
         ",
     );
-    assert!(
-        output.errors.iter().any(|e| {
-            e.kind == TypeErrorKind::InvalidOperation
-                && e.message
-                    .contains("`==` on enum `Option<bytes>` with payload variants")
-                && e.message.contains("member `Some`")
-                && e.message.contains("layout-managed/non-Copy")
-                && e.message.contains("bytes")
-                && !e.message.contains("IntCmp")
-        }),
-        "managed payload enum eq should fail closed with a named checker diagnostic: {:#?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
 /// When the operand types disagree, the plain mismatch diagnostic wins;
 /// the record gate must not double-report.
 #[test]
 fn record_comparison_type_mismatch_reports_mismatch_not_refusal() {
-    let source = "type Pt {\n    x: i64;\n    y: i64;\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}";
+    let source = "type Pt {\n    x: i64,\n    y: i64,\n}\n\nfn main() -> bool {\n    let a = Pt { x: 1, y: 2 };\n    a == 5\n}";
     let output = check_source(source);
     assert!(
         output
@@ -1004,6 +1050,95 @@ fn var_bound_literal_unifies_to_i32_when_added_to_i32_result() {
 }
 
 #[test]
+fn full_range_unsigned_literals_are_admitted() {
+    // D421: the literal carrier is exact, so every integer type's extremes are
+    // writable in source. `u64::MAX` used to be rejected as an invalid literal
+    // before the checker ever saw it.
+    let output = check_source(
+        r"
+        fn main() -> i64 {
+            let decimal: u64 = 18446744073709551615;
+            let hex: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+            let i64_min: i64 = -9223372036854775808;
+            let u32_max: u32 = 4294967295;
+            0
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "full-range literals must type check, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn integer_literal_beyond_its_type_is_a_range_error() {
+    // One past `u64::MAX` still parses into the carrier, so the diagnostic is
+    // the contextual range error, not a parser "invalid literal".
+    for (source, expected) in [
+        (
+            "fn main() -> i64 { let w: u64 = 18446744073709551616; 0 }",
+            "does not fit in `u64` (range 0..=18446744073709551615)",
+        ),
+        (
+            "fn main() -> i64 { let w: i64 = 18446744073709551615; 0 }",
+            "does not fit in `i64`",
+        ),
+        (
+            "fn main() -> i64 { let w: u8 = 256; 0 }",
+            "does not fit in `u8` (range 0..=255)",
+        ),
+        (
+            "fn main() -> i64 { let w: i32 = -2147483649; 0 }",
+            "does not fit in `i32`",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|err| err.message.contains(expected)),
+            "expected `{expected}` for `{source}`, got: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn negated_literal_on_an_unsigned_type_is_rejected() {
+    let output = check_source("fn main() -> i64 { let w: u64 = -1; 0 }");
+    assert!(
+        output.errors.iter().any(|err| err
+            .message
+            .contains("negative literal `-1` cannot be assigned to unsigned type `u64`")),
+        "expected the unsigned-negative diagnostic, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn full_range_unsigned_match_predicate_is_admitted() {
+    // Match predicates run through a separate range check from bindings.
+    let output = check_source(
+        r"
+        fn classify(x: u64) -> i64 {
+            match x {
+                18446744073709551615 => 1,
+                _ => 0,
+            }
+        }
+    ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a u64::MAX match predicate must type check, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn integer_literal_match_pattern_must_fit_scrutinee_width() {
     let output = check_source(
         r"
@@ -1099,7 +1234,7 @@ fn for_range_start_literal_and_unannotated_end_bound_narrow_together() {
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec.new();
+            var xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
@@ -1123,11 +1258,11 @@ fn for_range_narrowing_does_not_leak_to_sibling_range_over_concrete_i64_bound() 
     let source = r"
         fn main() {
             let n = 6;
-            let xs: Vec<i32> = Vec.new();
+            var xs: Vec<i32> = Vec.new();
             for i in 0 .. n {
                 xs.push(i);
             }
-            let ys: Vec<i32> = Vec.new();
+            var ys: Vec<i32> = Vec.new();
             ys.push(1);
             let len = ys.len();
             for e in 0 .. len {
@@ -1351,7 +1486,7 @@ fn for_range_step_by_negative_rejected() {
 #[test]
 fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
     let source = r"
-        fn main() -> f64 {
+        fn sum_range() -> f64 {
             var acc: f64 = 0.0;
             for i in 0..8 {
                 let _: Option<f64> = i.try_to_f64();
@@ -1375,7 +1510,7 @@ fn for_range_literal_bounds_loop_var_resolves_before_method_lookup() {
 fn for_range_const_bound_loop_var_resolves_before_method_lookup() {
     let source = r"
         const N: i64 = 8;
-        fn main() -> f64 {
+        fn sum_range() -> f64 {
             var acc: f64 = 0.0;
             for i in 0..N {
                 let _: Option<f64> = i.try_to_f64();
@@ -1403,7 +1538,7 @@ fn for_range_literal_bounds_method_only_body_resolves_to_i64() {
     // function-call use-site narrows the width. The loop variable must default
     // to i64.
     let source = r"
-        fn main() -> f64 {
+        fn sum_range() -> f64 {
             var sum: f64 = 0.0;
             for i in 0..4 {
                 let _: Option<f64> = i.try_to_f64();
@@ -1941,7 +2076,7 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
     let source = concat!(
         "import ecosystem.db.sqlite;\n",
         "enum Result {\n",
-        "    Ok(i64);\n",
+        "    Ok(i64),\n",
         "    Err(i64)\n",
         "}\n",
         "fn unwrap_or(r: Result, fallback: i64) -> i64 {\n",
@@ -2108,7 +2243,7 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
 
     let second = hew_parser::parse(
         r"
-        pub type Listener { value: i64; }
+        pub type Listener { value: i64, }
         impl Listener {
             fn accept(self) -> i64 { self.value }
         }
@@ -2174,19 +2309,19 @@ fn checker_reuse_does_not_leak_loaded_handle_methods_into_user_module() {
 fn reserved_type_names_fail_closed_across_declaration_kinds() {
     for (source, name) in [
         (
-            "type i64 { value: i64; }\nfn main() -> i64 { return 0; }",
+            "type i64 { value: i64, }\nfn main() -> i64 { return 0; }",
             "i64",
         ),
         (
-            "type CancellationToken { value: i64; }\nfn main() -> i64 { return 0; }",
+            "type CancellationToken { value: i64, }\nfn main() -> i64 { return 0; }",
             "CancellationToken",
         ),
         (
-            "type tuple<T> { value: T; }\nfn main() -> i64 { return 0; }",
+            "type tuple<T> { value: T, }\nfn main() -> i64 { return 0; }",
             "tuple",
         ),
         (
-            "type typeparam<T> { value: T; }\nfn main() -> i64 { return 0; }",
+            "type typeparam<T> { value: T, }\nfn main() -> i64 { return 0; }",
             "typeparam",
         ),
         (
@@ -2202,11 +2337,11 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
         (
             r"
             machine tuple {
-                events { Toggle; }
-                state Closed;
-                state Open;
-                on Toggle: Closed => .Open { Open }
-                on Toggle: Open => .Closed { Closed }
+                events { Toggle, }
+                state Closed,
+                state Open,
+                on Toggle: Closed => .Open,
+                on Toggle: Open => .Closed,
             }
             fn main() {}
             ",
@@ -2237,16 +2372,258 @@ fn reserved_type_names_fail_closed_across_declaration_kinds() {
 #[test]
 fn non_reserved_type_names_remain_accepted() {
     let output = check_source(
-        "type Point { x: i64; y: i64; }\n\
-         type Tuple { a: i64; }\n\
-         type MyString { s: i64; }\n\
-         type CancellationTokens { count: i64; }\n\
-         enum Colour { Red; Green; Blue; }\n\
+        "type Point { x: i64, y: i64, }\n\
+         type Tuple { a: i64, }\n\
+         type MyString { s: i64, }\n\
+         type CancellationTokens { count: i64, }\n\
+         enum Colour { Red, Green, Blue, }\n\
          fn main() -> i64 { return 0; }",
     );
     assert!(
         output.errors.is_empty(),
         "non-reserved type names should be accepted; got: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn selected_eq_admits_independent_owned_vectors() {
+    let output = check_source(
+        r#"
+        fn compare() -> bool {
+            var left: Vec<string> = Vec.new();
+            var right: Vec<string> = Vec.new();
+            left.push("same");
+            right.push("same");
+            left == right && !(left != right)
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_admits_independent_owned_tuples() {
+    let output = check_source(
+        r#"
+        fn compare() -> bool {
+            let left = ("same", 42);
+            let right = ("same", 42);
+            left == right && !(left != right)
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_admits_owned_option_result_composition() {
+    let output = check_source(
+        r#"
+        fn compare() -> bool {
+            let left: Option<Result<string, bytes>> = Some(Ok("same"));
+            let right: Option<Result<string, bytes>> = Some(Ok("same"));
+            left == right && !(left != right)
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_admits_bytes_with_hash() {
+    let output = check_source(
+        "fn compare(left: bytes, right: bytes) -> bool { left == right && !(left != right) }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let facts = output
+        .type_facts
+        .get(&crate::TypeInstanceKey(ResolvedTy::Bytes))
+        .unwrap();
+    assert!(facts.eq);
+    assert!(facts.hash, "bytes carries Eq and Hash like string");
+}
+
+#[test]
+fn selected_eq_admits_nested_bytes() {
+    let output = check_source(
+        r"
+        type Packet { data: Option<(i32, bytes)>, blocks: Vec<bytes> }
+        fn compare(left: Packet, right: Packet) -> bool { left == right && !(left != right) }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_uses_nested_user_methods_for_otherwise_ineligible_members() {
+    let output = check_source(
+        r"
+        type Key { id: i64, values: HashMap<string, i64> }
+        impl Eq for Key { fn eq(self, other: Key) -> bool { self.id == other.id } }
+        type Wrapper { value: Key }
+        fn vectors(left: Vec<Key>, right: Vec<Key>) -> bool { left == right }
+        fn tuples(left: (Key, string), right: (Key, string)) -> bool { left != right }
+        fn records(left: Wrapper, right: Wrapper) -> bool { left == right }
+        fn variants(left: Option<Result<Key, bytes>>, right: Option<Result<Key, bytes>>) -> bool { left != right }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let expected = output
+        .identity
+        .declaration_by_path("Key::<impl Eq for Key>::eq")
+        .unwrap()
+        .clone();
+    let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
+    let selected = service
+        .capability_plan(
+            &ResolvedTy::named_user("Key", vec![]),
+            crate::ValueCapability::Eq,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected.plan(),
+        &crate::ValueMethodPlan::User {
+            method: expected,
+            type_args: vec![]
+        }
+    );
+}
+
+#[test]
+fn selected_eq_rejects_nested_members_without_an_eq_implementation() {
+    let source = r"
+        type Key { id: i64, values: HashMap<string, i64> }
+        type Wrapper { value: Key }
+        fn compare(left: Wrapper, right: Wrapper) -> bool { left == right }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    let error = &output.errors[0];
+    assert_eq!(error.kind, TypeErrorKind::InvalidOperation);
+    assert!(
+        error.message.contains("`Wrapper` has no selected Eq"),
+        "{error:?}"
+    );
+    assert_eq!(source[error.span.clone()].trim(), "left == right");
+}
+
+#[test]
+fn selected_eq_waits_for_inference_before_rejecting_a_vector() {
+    let source = r"
+        fn compare() -> bool {
+            var left = Vec.new();
+            var right = Vec.new();
+            let same = left == right;
+            let a: HashMap<string, i64> = HashMap.new();
+            let b: HashMap<string, i64> = HashMap.new();
+            left.push(a);
+            right.push(b);
+            same
+        }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0]
+        .message
+        .contains("Vec<HashMap<string, i64>>"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "left == right"
+    );
+}
+
+#[test]
+fn selected_eq_does_not_rewrite_ordinary_float_comparisons() {
+    let source = "fn compare(a: f64, b: f64) -> bool { a == b || a != b || a < b }";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output.user_comparison_dispatch.is_empty());
+    for expression in ["a == b", "a != b", "a < b"] {
+        assert_eq!(
+            output.expr_types.iter().find_map(|(key, ty)| {
+                (source[key.start..key.end].trim() == expression).then_some(ty)
+            }),
+            Some(&Ty::Bool)
+        );
+    }
+    let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
+    assert_eq!(
+        service
+            .capability_plan(&ResolvedTy::F64, crate::ValueCapability::Eq)
+            .unwrap()
+            .unwrap()
+            .plan(),
+        &crate::ValueMethodPlan::Derived
+    );
+}
+
+#[test]
+fn selected_eq_composes_exact_generic_user_method_for_bytes() {
+    let output = check_source(
+        r"
+        type Key<T> { value: T, ignored: HashMap<string, i64> }
+        impl<T: Eq> Eq for Key<T> {
+            fn eq(self, other: Key<T>) -> bool { self.value == other.value }
+        }
+        fn compare(left: Option<Key<bytes>>, right: Option<Key<bytes>>) -> bool { left == right }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let expected = output
+        .identity
+        .declaration_by_path("Key::<impl Eq for Key<T>>::eq")
+        .unwrap()
+        .clone();
+    let mut service = crate::TypeFactService::new(output.type_fact_context, output.type_facts);
+    let key = ResolvedTy::named_user("Key", vec![ResolvedTy::Bytes]);
+    let selected = service
+        .capability_plan(&key, crate::ValueCapability::Eq)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        selected.plan(),
+        &crate::ValueMethodPlan::User {
+            method: expected,
+            type_args: vec![ResolvedTy::Bytes],
+        }
+    );
+}
+
+#[test]
+fn selected_eq_checks_both_result_payload_capabilities() {
+    let source = r"
+        fn compare(left: Result<bytes, HashMap<string, i64>>, right: Result<bytes, HashMap<string, i64>>) -> bool { left == right }
+    ";
+    let output = check_source(source);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert_eq!(output.errors[0].kind, TypeErrorKind::InvalidOperation);
+    assert!(output.errors[0]
+        .message
+        .contains("Result<bytes, HashMap<string, i64>>"));
+    assert_eq!(
+        source[output.errors[0].span.clone()].trim(),
+        "left == right"
+    );
+}
+
+#[test]
+fn selected_eq_keeps_aggregate_ordering_gate_during_operand_inference() {
+    let source = r"
+        type Pair { x: i64, y: i64 }
+        fn compare(left: _, right: Pair) -> bool { left < right }
+    ";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| {
+            matches!(
+                error.kind,
+                TypeErrorKind::InvalidOperation | TypeErrorKind::DerivedOrdUnavailable { .. }
+            ) && error.message.contains("PartialOrd")
+        }),
+        "{:?}",
         output.errors
     );
 }

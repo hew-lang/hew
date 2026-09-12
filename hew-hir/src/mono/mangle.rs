@@ -81,8 +81,6 @@ pub enum SymbolClass {
     SyntheticRecord,
     /// Generic enum monomorphisation.
     Enum,
-    /// Generic machine monomorphisation.
-    Machine,
     /// Generic actor-spawn monomorphisation (consumed by the
     /// actor-spawn discovery subsystem).
     Actor,
@@ -103,21 +101,24 @@ impl SymbolClass {
             Self::Record => "rc",
             Self::SyntheticRecord => "sr",
             Self::Enum => "en",
-            Self::Machine => "mc",
             Self::Actor => "ac",
             Self::TraitConcrete => "tc",
         }
     }
 }
 
-/// Placeholder no longer — the real [`ConstValue`] now lives in
-/// [`super::machine`] and is re-exported here for back-compat with
-/// existing import sites (`use hew_hir::mono::mangle::ConstValue`).
+/// Constexpr-evaluated const-argument value carried in a mono key's
+/// `const_args`.
 ///
-/// `mangle_instantiation` renders each variant via
-/// [`mangle_const_value`]; new variants added to [`ConstValue`] must
-/// extend `mangle_const_value`'s match without collision.
-pub use super::machine::ConstValue;
+/// `usize` only today; every other integer width and every non-integer
+/// type is deferred. `mangle_instantiation` renders each variant via
+/// [`mangle_const_value`], which new variants must extend without
+/// collision.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ConstValue {
+    /// `usize` const-argument value, captured as `u64`.
+    Usize(u64),
+}
 
 /// Render a single [`ConstValue`] as a mangled symbol fragment.
 ///

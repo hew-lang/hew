@@ -1,10 +1,10 @@
 //! Accept-fixture parity tests for the M2 unified-concurrency runtime
 //! substrate.
 //!
-//! The plan's named accept fixtures (`lambda_self_send_fib.hew`,
-//! `duplex_construct_pair.hew`, `duplex_split_halves.hew`,
+//! The plan's named accept fixtures (`duplex_construct_pair.hew`,
+//! `duplex_split_halves.hew`,
 //! `duplex_close_both_dirs.hew`) cannot run end-to-end without slice
-//! 5 codegen (which emits the `hew_duplex_*` / `hew_lambda_actor_*`
+//! 5 codegen (which emits the `hew_duplex_*`
 //! ABI calls from compiled Hew programs). Until slice 5 lands, the
 //! same behavioural envelope is exercised through the C-ABI surface
 //! directly via these Rust integration tests.
@@ -24,11 +24,6 @@ use hew_runtime::duplex::{
     hew_duplex_send_half, hew_recv_half_recv, hew_send_half_send, HewDuplexDirection,
     HewDuplexHandle, RecvError, SendError,
 };
-use hew_runtime::lambda_actor::{
-    hew_lambda_actor_downgrade, hew_lambda_actor_new, hew_lambda_actor_release,
-    hew_lambda_actor_weak_drop, hew_lambda_actor_weak_send, LambdaShape,
-};
-use hew_runtime::scheduler::hew_sched_init;
 
 /// Helper: synchronous recv that returns the bytes (copying out of the
 /// runtime-owned buffer before freeing it).
@@ -174,78 +169,6 @@ fn duplex_close_both_dirs() {
         );
         assert_eq!(hew_duplex_close(b), SendError::Ok as i32);
     }
-}
-
-// ── lambda_self_send_fib.hew ───────────────────────────────────────────────
-//
-// Demonstrates the §5.9 ratification 2 stop-guarantee: a lambda body's
-// self-binding-name reference is captured as a weak handle, so the
-// body never keeps the actor alive past external strong-refcount
-// zero. When external handles drop, an attempted self-send (which
-// would be the recursive `fib(n-1)` body invocation in the surface
-// program) surfaces as SendError::ActorStopped instead of
-// resurrecting the actor.
-//
-// This test exercises weak-refcount discipline only; it does not
-// exercise ask/reply semantics. The actor uses Tell shape with a
-// noop body so the test is self-contained.
-
-/// Noop tell-shape body callback for tests that only need refcount mechanics.
-unsafe extern "C-unwind" fn noop_tell_body(
-    _state: *mut std::ffi::c_void,
-    _msg: *const u8,
-    _msg_len: usize,
-    reply_out: *mut *mut u8,
-    reply_len_out: *mut usize,
-) -> i32 {
-    // SAFETY: reply_out / reply_len_out are non-null out-params supplied by
-    // the dispatch layer; writing null/0 is valid for tell-shape noop bodies.
-    unsafe {
-        *reply_out = ptr::null_mut();
-        *reply_len_out = 0;
-    }
-    0
-}
-
-/// Noop state-drop for tests that use a null state pointer.
-unsafe extern "C-unwind" fn noop_state_drop(_state: *mut std::ffi::c_void) {}
-
-#[test]
-fn lambda_self_send_fib_stop_after_external_release() {
-    hew_sched_init();
-
-    // SAFETY: noop_tell_body / noop_state_drop are valid extern "C" fn ptrs;
-    // state is null (noop body ignores it); capacity > 0.
-    let actor = unsafe {
-        hew_lambda_actor_new(
-            8,
-            LambdaShape::Tell as i32,
-            Some(noop_tell_body),
-            ptr::null_mut(),
-            Some(noop_state_drop),
-        )
-    };
-    assert!(!actor.is_null());
-    // SAFETY: actor non-null.
-    let weak = unsafe { hew_lambda_actor_downgrade(actor) };
-    assert!(!weak.is_null());
-    // Simulate the body running while external refcount > 0: weak
-    // self-send succeeds.
-    let arg = b"5";
-    // SAFETY: handles valid; arg valid for its length.
-    let rc1 = unsafe { hew_lambda_actor_weak_send(weak, arg.as_ptr(), arg.len()) };
-    assert_eq!(rc1, SendError::Ok as i32);
-    // Drop the external strong handle.
-    // SAFETY: actor is a live strong handle.
-    unsafe { assert_eq!(hew_lambda_actor_release(actor), SendError::Ok as i32) };
-    // Now the body's self-send must surface ActorStopped — NOT block,
-    // NOT enqueue silently, NOT resurrect.
-    let arg2 = b"4";
-    // SAFETY: weak still valid; arg valid.
-    let rc2 = unsafe { hew_lambda_actor_weak_send(weak, arg2.as_ptr(), arg2.len()) };
-    assert_eq!(rc2, SendError::ActorStopped as i32);
-    // SAFETY: clean up weak.
-    unsafe { assert_eq!(hew_lambda_actor_weak_drop(weak), SendError::Ok as i32) };
 }
 
 // ── Clone keeps directions open ────────────────────────────────────────────

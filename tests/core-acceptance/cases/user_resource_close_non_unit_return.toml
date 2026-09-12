@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_close_non_unit_return"
+intent = "W3.030 V12 — `#[resource]` whose inherent-impl `close` returns a non-unit type must be rejected at HIR with `ResourceCloseMustReturnUnit`."
+source = "../vertical-slice/reject/user_resource_close_non_unit_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ResourceCloseMustReturnUnit"
+line = 13
+column = 8
+message = "E_HIR: `#[resource]` type `Conn` declares `close` returning `i64`; the implicit drop contract dispatches `close` on every scope-exit path and only unit return is admitted in v0.5 \u2014 compose fallible cleanup via `defer` instead"

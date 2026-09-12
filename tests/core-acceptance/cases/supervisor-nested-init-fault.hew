@@ -1,0 +1,28 @@
+actor Worker {
+    var label: string = "",
+    var fail_start: bool = false,
+    init(seed: string, refuse: bool) {
+        label = seed;
+        fail_start = refuse;
+    }
+    #[on(start)]
+    fn started() { if fail_start { panic("nested start failed"); } }
+    #[on(stop)]
+    fn stopped() { println(label); }
+    receive fn ping() {}
+}
+
+supervisor Branch(seed: string, refuse: bool) {
+    child worker: Worker(seed: seed, refuse: refuse),
+}
+
+supervisor Root(seed: string) {
+    child ready: Branch(seed: seed, refuse: false),
+    child broken: Branch(seed: seed, refuse: true),
+}
+
+fn main() {
+    let root = spawn Root(seed: "completed child released".to_upper());
+    println("unreachable");
+    close(root);
+}

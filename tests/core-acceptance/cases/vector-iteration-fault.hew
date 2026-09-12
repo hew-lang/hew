@@ -1,0 +1,11 @@
+fn main() -> i64 {
+    var values = ["first", "second"];
+    let outer = ["outer"];
+    for value in values {
+        let local = [value.to_upper()];
+        values.clear();
+        println(local[3]);
+    }
+    println(outer[0]);
+    0
+}

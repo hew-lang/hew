@@ -1,0 +1,16 @@
+// Every scalar width renders through its runtime conversion, with the narrow
+// widths widened to the canonical ABI width first.
+fn main() -> i64 {
+    let small: i8 = -7;
+    let short: i16 = -300;
+    let word: i32 = -70000;
+    let ushort: u16 = 65535;
+    let uword: u32 = 4000000000;
+    let ulong: u64 = 9000000000000000000;
+    let ratio = 1.5;
+    let letter: char = 'é';
+    let flag = true;
+    println(f"{small} {short} {word} {ushort} {uword} {ulong}");
+    println(f"{ratio} {ratio * 2.0} {letter} {flag}");
+    0
+}

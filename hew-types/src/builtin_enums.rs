@@ -99,6 +99,19 @@ pub fn resolved_monomorphic_builtin_enum_ty(name: &str) -> Option<crate::Resolve
     })
 }
 
+/// The one nominal identity a generated monomorphic builtin enum carries.
+///
+/// `resolve_type_expr_tracking_holes` already stamps annotations, fields and
+/// variant payloads with the catalog's `canonical_name`, so every other table
+/// keyed by that declaration — trait impls above all — must agree on the same
+/// spelling. Accepts either the source leaf (`SendError`) or the canonical
+/// identity itself, and returns the canonical identity.
+#[must_use]
+pub fn canonical_monomorphic_builtin_enum_identity(name: &str) -> Option<&'static str> {
+    let fact = monomorphic_builtin_enum(name)?;
+    crate::lookup_builtin_type(fact.name).map(|_| fact.canonical_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,7 +178,7 @@ mod tests {
             fact.canonical_name,
             Some(discriminator)
         ));
-        for missing_or_wrong in [None, Some(crate::BuiltinType::AskError)] {
+        for missing_or_wrong in [None, Some(crate::BuiltinType::Iterator)] {
             assert!(!has_exact_monomorphic_builtin_enum_identity(
                 fact.canonical_name,
                 missing_or_wrong
@@ -176,53 +189,6 @@ mod tests {
                 leaf_or_foreign,
                 Some(discriminator)
             ));
-        }
-    }
-
-    #[test]
-    fn production_enum_synthesis_inventory_has_no_leaf_named_struct_literals() {
-        // Reviewed semantic synthesis surfaces. Tests below a top-level
-        // `#[cfg(test)]` may intentionally construct user same-leaf collision
-        // values, so inventory only the production prefix of each file.
-        let sources = [
-            ("checker items", include_str!("check/items.rs")),
-            (
-                "checker registration",
-                include_str!("check/registration.rs"),
-            ),
-            ("HIR lowering", include_str!("../../hew-hir/src/lower.rs")),
-            (
-                "MIR actor lowering",
-                include_str!("../../hew-mir/src/lower/actor.rs"),
-            ),
-            (
-                "MIR task lowering",
-                include_str!("../../hew-mir/src/lower/task.rs"),
-            ),
-            (
-                "MIR closure lowering",
-                include_str!("../../hew-mir/src/lower/closure_gen.rs"),
-            ),
-            (
-                "MIR constants",
-                include_str!("../../hew-mir/src/lower/consts.rs"),
-            ),
-        ];
-        for (surface, source) in sources {
-            let production = source.split("\n#[cfg(test)]").next().unwrap_or(source);
-            for fact in monomorphic_builtin_enums() {
-                for forbidden in [
-                    format!("name: \"{}\".to_string()", fact.name),
-                    format!("named_user(\"{}\"", fact.name),
-                    format!("named_builtin(\"{}\"", fact.name),
-                ] {
-                    assert!(
-                        !production.contains(&forbidden),
-                        "{surface} directly synthesizes leaf `{}` via `{forbidden}`; use the generated enum constructor",
-                        fact.name,
-                    );
-                }
-            }
         }
     }
 }

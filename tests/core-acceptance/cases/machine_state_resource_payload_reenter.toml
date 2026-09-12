@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_state_resource_payload_reenter"
+intent = "Pure machine evaluation rejects a state payload carrying resource identity."
+source = "../vertical-slice/reject/machine_state_resource_payload_reenter.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 13
+column = 1
+message = "machine evaluator is not demonstrably pure: `Session` can carry external identity, effects or unclassified payloads"

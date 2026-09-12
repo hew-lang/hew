@@ -1,0 +1,10 @@
+//! A file import publishes into the importing file only, for every declaration
+//! kind. The root imported `sub.hew`, so the type and the constant `helper.hew`
+//! published into `sub.hew` are not names the root can write bare.
+
+import "sub.hew";
+
+fn main() {
+    let p = Point { x: 3, y: 4 };
+    println(f"{p.x + ORIGIN_X + sub_total()}");
+}

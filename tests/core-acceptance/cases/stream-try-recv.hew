@@ -1,0 +1,61 @@
+// A non-blocking `Stream<string>.try_recv()` drains queued frames as `Some`,
+// then yields `None` once the queue is empty and the sink is closed. Each
+// frame is an owned string the consumer releases, so a drained stream leaves
+// nothing behind and an undrained one releases its queued elements on close.
+import std.stream;
+
+actor TryRecvStrings {
+    receive fn run(unused: i64) {
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
+        sink.send("frame-0");
+        sink.send("");
+        sink.send(f"frame-{1}");
+        sink.close();
+        var received = 0;
+        var done = false;
+        while !done {
+            match input.try_recv() {
+                .Some(frame) => {
+                    println(f"poll [{frame}]");
+                    received = received + 1;
+                },
+                .None => {
+                    done = true;
+                },
+            }
+        }
+        println(f"drained {received} frames");
+        // A second poll on a finished stream stays `None`.
+        match input.try_recv() {
+            .Some(frame) => println(f"unexpected [{frame}]"),
+            .None => println("empty"),
+        }
+    }
+}
+
+actor AbandonQueued {
+    receive fn run(unused: i64) {
+        let (sink, input) = match stream.pipe(8) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
+        sink.send(f"kept-{7}");
+        sink.send(f"dropped-{8}");
+        sink.close();
+        // One take, one element left queued: closing the consumer releases it.
+        match input.try_recv() {
+            .Some(frame) => println(f"took [{frame}]"),
+            .None => println("took nothing"),
+        }
+    }
+}
+
+fn main() {
+    let drainer = spawn TryRecvStrings;
+    let _ = drainer.run(0);
+    let abandoner = spawn AbandonQueued;
+    let _ = abandoner.run(0);
+}

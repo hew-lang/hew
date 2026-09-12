@@ -1,0 +1,13 @@
+[[case]]
+id = "refutable_let_no_else"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/refutable_let_no_else.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_REFUTABLE_LET"
+line = 12
+column = 9
+message = "else"

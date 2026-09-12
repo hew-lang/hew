@@ -1,5 +1,8 @@
 // Hash Set with Open Addressing (Linear Probing)
 // Uses Vec<i64> with EMPTY=-1, DELETED=-2 sentinels
+//
+// A parameter is the callee's own copy, so insert and remove return the set
+// alongside their result and the caller reassigns.
 fn hash(key: i64, capacity: i64) -> i64 {
     let h = key % capacity;
     if h < 0 {
@@ -10,7 +13,7 @@ fn hash(key: i64, capacity: i64) -> i64 {
 }
 
 fn make_set(capacity: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     let EMPTY = 0 - 1;
     for i in 0 .. capacity {
         v.push(EMPTY);
@@ -18,7 +21,7 @@ fn make_set(capacity: i64) -> Vec<i64> {
     v
 }
 
-fn set_insert(set: Vec<i64>, key: i64) -> bool {
+fn set_insert(var set: Vec<i64>, key: i64) -> (Vec<i64>, bool) {
     let capacity = set.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -27,26 +30,25 @@ fn set_insert(set: Vec<i64>, key: i64) -> bool {
     while i < capacity {
         let val = set[idx];
         if val == key {
-            return false;
+            return (set, false);
         }
         if val == EMPTY {
             set.set(idx, key);
-            return true;
+            return (set, true);
         }
         if val == DELETED {
             set.set(idx, key);
-            return true;
+            return (set, true);
         }
         idx = (idx + 1) % capacity;
         i = i + 1;
     }
-    false
+    (set, false)
 }
 
 fn set_contains(set: Vec<i64>, key: i64) -> bool {
     let capacity = set.len();
     let EMPTY = 0 - 1;
-    let DELETED = 0 - 2;
     var idx = hash(key, capacity);
     var i = 0;
     while i < capacity {
@@ -63,7 +65,7 @@ fn set_contains(set: Vec<i64>, key: i64) -> bool {
     false
 }
 
-fn set_remove(set: Vec<i64>, key: i64) -> bool {
+fn set_remove(var set: Vec<i64>, key: i64) -> (Vec<i64>, bool) {
     let capacity = set.len();
     let EMPTY = 0 - 1;
     let DELETED = 0 - 2;
@@ -73,15 +75,15 @@ fn set_remove(set: Vec<i64>, key: i64) -> bool {
         let val = set[idx];
         if val == key {
             set.set(idx, DELETED);
-            return true;
+            return (set, true);
         }
         if val == EMPTY {
-            return false;
+            return (set, false);
         }
         idx = (idx + 1) % capacity;
         i = i + 1;
     }
-    false
+    (set, false)
 }
 
 fn set_size(set: Vec<i64>) -> i64 {
@@ -103,11 +105,12 @@ fn set_size(set: Vec<i64>) -> i64 {
 fn main() {
     var passed = 0;
     var failed = 0;
-    let set = make_set(16);
+    var set = make_set(16);
     // Test 1: Insert and contains
-    set_insert(set, 5);
-    set_insert(set, 10);
-    set_insert(set, 15);
+    let (after5, _ok5) = set_insert(set, 5);
+    let (after10, _ok10) = set_insert(after5, 10);
+    let (after15, _ok15) = set_insert(after10, 15);
+    set = after15;
     if set_contains(set, 5) {
         if set_contains(set, 10) {
             if set_contains(set, 15) {
@@ -148,7 +151,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Duplicate insert
-    let dup = set_insert(set, 5);
+    let (after_dup, dup) = set_insert(set, 5);
+    set = after_dup;
     if dup {
         println("FAIL: duplicate insert");
         failed = failed + 1;
@@ -163,7 +167,8 @@ fn main() {
         }
     }
     // Test 5: Remove
-    let removed = set_remove(set, 10);
+    let (after_removed, removed) = set_remove(set, 10);
+    set = after_removed;
     if removed {
         if set_contains(set, 10) {
             println("FAIL: remove");
@@ -196,7 +201,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Remove non-existent
-    let rem2 = set_remove(set, 99);
+    let (after_rem2, rem2) = set_remove(set, 99);
+    set = after_rem2;
     if rem2 {
         println("FAIL: remove non-existent");
         failed = failed + 1;
@@ -205,7 +211,8 @@ fn main() {
         passed = passed + 1;
     }
     // Test 8: Re-insert after remove
-    set_insert(set, 10);
+    let (after_reinsert, _reinserted) = set_insert(set, 10);
+    set = after_reinsert;
     if set_contains(set, 10) {
         let sz4 = set_size(set);
         if sz4 == 3 {

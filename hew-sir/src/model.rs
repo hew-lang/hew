@@ -1,12 +1,17 @@
 use std::collections::BTreeMap;
 
+use crate::{ClosureId, SemClosure};
+
 use hew_hir::{ItemId, SiteId};
 use hew_parser::ast::Span;
-use hew_types::{DefId, ResolvedTy, TypeFacts, TypeInstanceKey};
+use hew_types::{
+    BuiltinType, DefId, NominalInstance, ResolvedTy, RuntimeVariantResultKind, TypeFacts,
+    TypeInstanceKey,
+};
 
 use crate::ownership::{
-    Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceDecl, PlaceId,
-    StringLiteralId, SuspendKind, TrapKind,
+    Binding, BindingTarget, BoundaryDecision, BytesLiteralId, OwnKind, PlaceBase, PlaceDecl,
+    PlaceId, StringLiteralId, SuspendKind, TrapKind,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -15,6 +20,15 @@ pub struct BlockId(pub u32);
 pub struct ValueId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct OpId(pub u32);
+/// Static identity of a deferred action within a function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeferId(pub u32);
+/// Lexical cleanup boundary; nested active boundaries use distinct parks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeferScopeId(pub u32);
+/// Linear optional fault carrier, separate from source values and places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FaultParkId(pub u32);
 /// Stable, module-local identity for a SIR direct-call target.
 ///
 /// IDs are assigned from the deterministic [`SemModule::callables`] order;
@@ -52,7 +66,23 @@ pub struct SirInstanceKey {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallableInstance {
     Monomorphic,
+    /// A private member of the concrete actor named by `SemCallableKind::HewActor`.
+    /// Source declaration plus that actor owner distinguishes its body, including
+    /// when multiple actor instances share the same generic source declaration.
+    ActorMember,
     Generic(SirInstanceKey),
+    /// A concrete closure body, resolved by its environment descriptor.
+    Closure(ClosureId),
+    /// The synthesized process-entry body that realizes a `Result` exit plan
+    /// under the entry declaration's identity.
+    EntryAdapter,
+    /// One declared child's spawn body, synthesized under its supervisor's
+    /// bootstrap declaration. Every child of one supervisor shares that
+    /// declaration, so the child index is what distinguishes them.
+    SupervisorChild {
+        supervisor: crate::SupervisorId,
+        child: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,8 +260,8 @@ pub struct SemFunction {
     pub return_ty: ResolvedTy,
     pub entry: BlockId,
     pub blocks: Vec<SemBlock>,
-    /// Memory places this body addresses (§1.3 `alloc_place`). Non-escaping
-    /// `var`s never get one: HIR-to-SIR construction does mem2reg.
+    /// Semantic storage locations this body addresses, with typed origins and
+    /// explicit lifetime operations independent of their physical allocation.
     pub places: Vec<PlaceDecl>,
     /// Every source binding in this body, parameters first and then statement
     /// bindings in source order (§1.6).
@@ -271,6 +301,9 @@ impl SemFunction {
 /// Runtime, C-ABI, coroutine, actor, and other specialised conventions stay
 /// outside this initial domain.  Keeping this enum explicit prevents a
 /// resolved SIR call from silently acquiring a target-specific ABI policy.
+/// Default calls return normally or propagate an unrecoverable trap. They do
+/// not transport cooperative cancellation; admitting another exit cause must
+/// extend this contract and the lifetime flow together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SemCallConv {
     Default,
@@ -281,6 +314,10 @@ pub enum SemCallConv {
 pub enum SemCallableKind {
     /// An ordinary Hew user function or flattened impl-method body.
     HewDirect,
+    /// A closure body with an explicit environment receiver.
+    HewClosure,
+    /// A private actor body entered with its exclusive initialized state seat.
+    HewActor(crate::ActorId),
 }
 
 /// ABI disposition for one semantic callable parameter.
@@ -292,16 +329,12 @@ pub enum SemCallableKind {
 pub enum SemParamPassing {
     /// The initial scalar direct-call domain accepts only non-owning reads.
     ReadOnly,
-    /// The callee borrows the caller's value for the whole body: §1.2 rule 3
-    /// makes the parameter a `Guaranteed` value, so a consuming use of it is
-    /// rule 3's `E_OWN_CONSUME_BORROWED` wall rather than a leak.
-    ///
-    /// No lowering emits this slot yet — the ownership-bearing parameter types
-    /// that need it arrive with the callable header's borrow disposition (L3) —
-    /// and every structural check in `verify.rs` refuses a non-`ReadOnly` slot
-    /// until then. The kind derivation reads the slot rather than the type
-    /// alone, so the slot is the only thing that has to change.
+    /// The caller retains the value and grants shared access for the call.
     Borrow,
+    /// The caller retains the value and grants exclusive access for the call.
+    BorrowMut,
+    /// The callee receives the ownership obligation on both return and fault.
+    Consume,
 }
 
 /// ABI-neutral parameter facts owned by a resolved SIR callable.
@@ -368,9 +401,9 @@ pub struct SemCallable {
     /// generic specialization.  This is the authoritative semantic instance
     /// identity; `symbol` is only its derived emitted-name projection.
     pub instance: CallableInstance,
-    /// Exact emitted body symbol. Monomorphic callables retain the resolver's
-    /// direct-call symbol; a generic callable derives this only after its
-    /// canonical semantic instance has been selected.
+    /// Exact private-ABI body symbol, assigned in the reserved `__hew_`
+    /// namespace from the resolver's direct-call symbol. Generic instances and
+    /// closures derive their names from that same private symbol authority.
     pub symbol: String,
     pub source_origin: FunctionSourceOrigin,
     pub signature: SemSignature,
@@ -378,8 +411,249 @@ pub struct SemCallable {
     pub kind: SemCallableKind,
 }
 
+/// Module-local identity of one demanded concrete record shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AggregateShapeId(pub u32);
+
+/// Semantic aggregate shape selected by an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum AggregateShapeRef {
+    /// Tuple field order and types come from the operation's exact tuple type.
+    Tuple,
+    /// Named record shape carried in [`SemModule::aggregate_shapes`].
+    Record(AggregateShapeId),
+}
+
+/// One ordered, fully substituted record field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemAggregateField {
+    pub name: String,
+    pub ty: ResolvedTy,
+}
+
+/// Exact semantic shape of one concrete named record used by demanded bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemAggregateShape {
+    pub id: AggregateShapeId,
+    pub aggregate_ty: ResolvedTy,
+    pub instance: NominalInstance,
+    /// Exact declaration discipline, independent of the classes of members.
+    /// A plain record containing a resource is still structurally projectable;
+    /// a resource or linear declaration cannot be partially dismantled.
+    pub marker: hew_types::DeclarationMarker,
+    pub fields: Vec<SemAggregateField>,
+}
+
+/// Module-local identity of one demanded `(dyn Trait, concrete type)` table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SemVtableId(pub u32);
+
+/// One dispatchable slot of a demanded trait-object table.
+///
+/// `slot` is the checker's index (`3 + declaration order`, past the runtime's
+/// `drop_in_place`/`size_of`/`align_of` prefix). SIR never recomputes it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemVtableSlot {
+    pub slot: u32,
+    /// The trait that declares the method, for diagnostics only.
+    pub trait_name: String,
+    pub method_name: String,
+    /// The exact implementation this concrete type contributes.
+    pub callee: CallableId,
+    /// How the erased receiver crosses the dispatch boundary.
+    pub receiver: SemParamPassing,
+    /// The dispatch signature, excluding the receiver.
+    pub signature: SemSignature,
+}
+
+/// Exact semantic dispatch table for one erasure of a concrete type.
+///
+/// One table per `(dyn Trait, concrete type)`: the coercion site names the
+/// concrete type, and every dispatch on the resulting value reads a slot by
+/// index. Physical MIR realizes the table; SIR decides which implementations
+/// fill it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemVtable {
+    pub id: SemVtableId,
+    pub dyn_ty: ResolvedTy,
+    pub concrete_ty: ResolvedTy,
+    /// Slots in emitted order; `slots[i].slot == 3 + i`.
+    pub slots: Vec<SemVtableSlot>,
+}
+
+/// Module-local identity of one demanded concrete enum shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VariantShapeId(pub u32);
+
+/// One ordered, fully substituted enum-variant payload field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVariantField {
+    pub name: String,
+    pub ty: ResolvedTy,
+}
+
+/// One enum variant in declaration order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVariant {
+    pub name: String,
+    pub fields: Vec<SemVariantField>,
+}
+
+/// Exact semantic shape of one concrete enum used by demanded bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemVariantShape {
+    pub id: VariantShapeId,
+    pub enum_ty: ResolvedTy,
+    pub is_indirect: bool,
+    pub variants: Vec<SemVariant>,
+}
+
+/// Module-local descriptor references proven to implement one closed runtime
+/// variant-result contract. These are references into the existing aggregate
+/// and variant tables, not a second layout or tag description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeVariantShapeRefs {
+    pub result: VariantShapeId,
+    pub error: AggregateShapeId,
+    pub error_len: VariantShapeId,
+}
+
+/// Validate the demanded descriptors used by a runtime-produced enum value.
+///
+/// The runtime family constrains the exact language types. Descriptor tables
+/// remain authoritative for declaration-order tags and ordered record fields.
+/// This join prevents a hand-written SIR module from pairing a valid runtime
+/// family with a same-named or malformed payload shape.
+///
+/// # Errors
+///
+/// Refuses a result type outside the closed runtime contract, a missing exact
+/// descriptor, or any disagreement in canonical variant, field, or payload
+/// shape.
+pub fn runtime_variant_shape_refs(
+    kind: RuntimeVariantResultKind,
+    result_ty: &ResolvedTy,
+    aggregate_shapes: &[SemAggregateShape],
+    variant_shapes: &[SemVariantShape],
+) -> Result<RuntimeVariantShapeRefs, String> {
+    let (ok_ty, error_ty) = kind.payload_types(result_ty).ok_or_else(|| {
+        format!(
+            "runtime variant result contract does not admit `{}`",
+            result_ty.user_facing()
+        )
+    })?;
+    let result = variant_shapes
+        .iter()
+        .find(|shape| &shape.enum_ty == result_ty)
+        .ok_or_else(|| {
+            format!(
+                "runtime variant result `{}` has no demanded variant descriptor",
+                result_ty.user_facing()
+            )
+        })?;
+    let [ok, err] = result.variants.as_slice() else {
+        return Err(format!(
+            "runtime variant result `{}` must have exactly Ok and Err variants",
+            result_ty.user_facing()
+        ));
+    };
+    if ok.name != "Ok" || ok.fields.len() != 1 || ok.fields[0].ty != *ok_ty {
+        return Err(format!(
+            "runtime variant result `{}` has a malformed Ok payload descriptor",
+            result_ty.user_facing()
+        ));
+    }
+    if err.name != "Err" || err.fields.len() != 1 || err.fields[0].ty != *error_ty {
+        return Err(format!(
+            "runtime variant result `{}` has a malformed Err payload descriptor",
+            result_ty.user_facing()
+        ));
+    }
+
+    let error = aggregate_shapes
+        .iter()
+        .find(|shape| &shape.aggregate_ty == error_ty)
+        .ok_or_else(|| {
+            format!(
+                "runtime variant error `{}` has no demanded aggregate descriptor",
+                error_ty.user_facing()
+            )
+        })?;
+    if error_ty.nominal_instance().as_ref() != Some(&error.instance) {
+        return Err(format!(
+            "runtime variant error `{}` descriptor has the wrong nominal identity",
+            error_ty.user_facing()
+        ));
+    }
+    let [valid_up_to, error_len] = error.fields.as_slice() else {
+        return Err(format!(
+            "runtime variant error `{}` must have valid_up_to and error_len fields",
+            error_ty.user_facing()
+        ));
+    };
+    if valid_up_to.name != "valid_up_to" || valid_up_to.ty != ResolvedTy::I64 {
+        return Err(format!(
+            "runtime variant error `{}` has a malformed valid_up_to field",
+            error_ty.user_facing()
+        ));
+    }
+    let ResolvedTy::Named {
+        args,
+        builtin: Some(BuiltinType::Option),
+        ..
+    } = &error_len.ty
+    else {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    };
+    if error_len.name != "error_len" || args.as_slice() != [ResolvedTy::I64] {
+        return Err(format!(
+            "runtime variant error `{}` error_len field must be Option<i64>",
+            error_ty.user_facing()
+        ));
+    }
+    let error_len_shape = variant_shapes
+        .iter()
+        .find(|shape| shape.enum_ty == error_len.ty)
+        .ok_or_else(|| "runtime variant error_len has no demanded Option descriptor".to_string())?;
+    let [some, none] = error_len_shape.variants.as_slice() else {
+        return Err(
+            "runtime variant error_len Option must have Some and None variants".to_string(),
+        );
+    };
+    if some.name != "Some"
+        || some.fields.len() != 1
+        || some.fields[0].ty != ResolvedTy::I64
+        || none.name != "None"
+        || !none.fields.is_empty()
+    {
+        return Err("runtime variant error_len has a malformed Option descriptor".to_string());
+    }
+
+    Ok(RuntimeVariantShapeRefs {
+        result: result.id,
+        error: error.id,
+        error_len: error_len_shape.id,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SemModule {
+    /// Demanded actors with exact state, body and receive protocol identities.
+    pub actors: Vec<crate::SemActor>,
+    /// Demanded supervisors with their config, restart policy and child roles.
+    pub supervisors: Vec<crate::SemSupervisor>,
+    /// Exact resource release recipes; ownership remains in SSA and places.
+    pub resources: BTreeMap<ResolvedTy, crate::ResourceRelease>,
+    /// Concrete environments in canonical module-local identity order.
+    pub closures: Vec<SemClosure>,
+    /// Checker-selected operations demanded by concrete collection keys.
+    /// User methods retain their resolved declaration and specialization;
+    /// derived operations compose the separately selected component plans.
+    pub value_capabilities:
+        BTreeMap<(ResolvedTy, hew_types::ValueCapability), crate::SemValueMethodPlan>,
     /// Deterministic resolved direct-call authority.  IDs must equal their
     /// indexes in this vector; [`crate::verify_module`] checks that invariant.
     pub callables: Vec<SemCallable>,
@@ -392,13 +666,23 @@ pub struct SemModule {
     /// from [`Self::entry_callable`], so unrelated root bodies do not block a
     /// selected program.
     pub root_unit_callables: Vec<CallableId>,
-    /// Resolved entry callable, projected from `HirModule::entry_declaration`.
-    /// HIR applies the language's entry rule once and publishes the
-    /// declaration id; SIR only joins on it. Neither lowering nor the verifier
-    /// rediscovers an entry from a declaration path or an emitted symbol, so a
-    /// program whose entry is not spelled `main` selects exactly as well.
+    /// Checker-selected process entry and the exit action physical lowering
+    /// realizes. A `Result` action never reaches here: SIR consumes it in
+    /// the entry adapter and publishes the integer status that body returns.
+    pub entry_exit_plan: Option<hew_types::EntryExitPlan>,
+    /// Resolved entry callable, projected by joining the entry plan's `DefId`.
+    /// Neither lowering nor the verifier rediscovers an entry from a
+    /// declaration path or emitted symbol.
     pub entry_callable: Option<CallableId>,
     pub functions: Vec<SemFunction>,
+    /// Demanded trait-object dispatch tables in module-local ID order.
+    pub vtables: Vec<SemVtable>,
+    /// Concrete named aggregate shapes mentioned by demanded SIR bodies, in
+    /// module-local ID order. Tuple shapes remain structural in `ResolvedTy`.
+    pub aggregate_shapes: Vec<SemAggregateShape>,
+    /// Concrete enum shapes mentioned by demanded SIR bodies, in module-local
+    /// ID order. Variant order is the declaration-order tag contract.
+    pub variant_shapes: Vec<SemVariantShape>,
     /// The §6.3 fact table for every type this module's bodies mention,
     /// projected from `TypeCheckOutput::type_facts`.
     ///
@@ -410,6 +694,10 @@ pub struct SemModule {
     pub string_literals: BTreeMap<StringLiteralId, String>,
     /// Interned `bytes` literal pool. `BTreeMap` per §6.1's determinism rule.
     pub bytes_literals: BTreeMap<BytesLiteralId, Vec<u8>>,
+    /// Regex-literal patterns in `literal_id` order, carried straight from
+    /// HIR's deduplicated table. Each is compiled once into the module's
+    /// handle array; a `RegexMatch` call selects its slot by index.
+    pub regex_patterns: Vec<String>,
 }
 
 impl SemModule {
@@ -420,6 +708,57 @@ impl SemModule {
         self.callables
             .get(usize::try_from(id.0).ok()?)
             .filter(|callable| callable.id == id)
+    }
+
+    /// Resolve a dispatch table only when its ID agrees with the canonical
+    /// table position.
+    #[must_use]
+    pub fn vtable(&self, id: SemVtableId) -> Option<&SemVtable> {
+        self.vtables
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|vtable| vtable.id == id)
+    }
+
+    /// Resolve a record shape only when its ID agrees with the canonical table
+    /// position.
+    #[must_use]
+    pub fn aggregate_shape(&self, id: AggregateShapeId) -> Option<&SemAggregateShape> {
+        self.aggregate_shapes
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|shape| shape.id == id)
+    }
+
+    /// Resolve the one exact concrete record descriptor for a semantic type.
+    #[must_use]
+    pub fn aggregate_shape_for_type(&self, ty: &ResolvedTy) -> Option<&SemAggregateShape> {
+        self.aggregate_shapes
+            .iter()
+            .find(|shape| &shape.aggregate_ty == ty)
+    }
+
+    /// Resolve an enum shape only when its ID agrees with the canonical table
+    /// position.
+    #[must_use]
+    pub fn variant_shape(&self, id: VariantShapeId) -> Option<&SemVariantShape> {
+        self.variant_shapes
+            .get(usize::try_from(id.0).ok()?)
+            .filter(|shape| shape.id == id)
+    }
+
+    /// Resolve the one exact concrete enum descriptor for a semantic type.
+    #[must_use]
+    pub fn variant_shape_for_type(&self, ty: &ResolvedTy) -> Option<&SemVariantShape> {
+        self.variant_shapes
+            .iter()
+            .find(|shape| &shape.enum_ty == ty)
+            .or_else(|| {
+                // A channel half is spelled with its message type at a user
+                // site and bare inside `std.channel`; one enum instance can
+                // reach here under either spelling.
+                self.variant_shapes
+                    .iter()
+                    .find(|shape| crate::call_boundary_types_match(&shape.enum_ty, ty))
+            })
     }
 
     /// Find a monomorphic resolved callable from checker-owned declaration
@@ -595,14 +934,113 @@ impl EffectSet {
     }
 }
 
-/// The value, if any, produced by an invoke-style call terminator.
+/// Check the recursive semantic dependencies used by a collection's value recipes.
+/// This carries no target layout and adds no parallel value descriptor table.
 ///
+/// # Errors
+/// Refuses missing facts and missing nominal ownership recipes.
+pub fn collection_value_dependencies(
+    collection: &ResolvedTy,
+    facts: &crate::ownership::TypeFactTable,
+    aggregates: &[SemAggregateShape],
+    variants: &[SemVariantShape],
+    resources: &BTreeMap<ResolvedTy, crate::ResourceRelease>,
+) -> Result<(), String> {
+    let (kind, arguments) = hew_types::runtime_call::collection_type_arguments(collection)
+        .ok_or_else(|| "collection value requires a canonical collection identity".to_string())?;
+    let mut pending = arguments.to_vec();
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(ty) = pending.pop() {
+        if !seen.insert(ty.clone()) {
+            continue;
+        }
+        let row = facts
+            .get(&hew_types::TypeInstanceKey(ty.clone()))
+            .ok_or_else(|| {
+                format!(
+                    "collection component `{}` has no concrete type facts",
+                    ty.user_facing()
+                )
+            })?;
+        // A Vec element and a HashMap value may have no clone: they are read
+        // by borrow and moved out by an owning removal. A key still needs one,
+        // which the checker's key capabilities already prove.
+        if !matches!(
+            kind,
+            hew_types::BuiltinType::Vec | hew_types::BuiltinType::HashMap
+        ) && row.clone == hew_types::CloneKind::None
+        {
+            return Err(format!(
+                "collection component `{}` has no semantic copy",
+                ty.user_facing()
+            ));
+        }
+        if resources.contains_key(&ty) {
+            // An opaque owner's exact release recipe replaces structural fields.
+            continue;
+        }
+        if matches!(
+            &ty,
+            ResolvedTy::Named {
+                builtin: Some(hew_types::BuiltinType::ActorHandle),
+                ..
+            }
+        ) || matches!(&ty, ResolvedTy::Named {
+            builtin: Some(hew_types::BuiltinType::ActorFn), args, ..
+        } if args.len() == 2)
+        {
+            // An actor handle's type arguments are the actor declaration's own,
+            // and an anonymous actor's are its protocol: neither is an embedded
+            // value. The handle's checked copy recipe is complete on its own.
+            continue;
+        }
+        if matches!(&ty, ResolvedTy::Named { builtin: Some(kind), .. }
+            if kind.is_encoding_value())
+        {
+            // A managed encoding value carries its own copy and release
+            // recipes from the runtime; §1.1 classes it `CowValue`/`DeepCopy`
+            // whatever it holds. It has no structural field partition to
+            // describe, and asking for one refused every collection of them.
+            continue;
+        }
+        if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(&ty) {
+            pending.extend_from_slice(arguments);
+        } else if let Some(payload) = hew_types::runtime_call::shared_handle_payload(&ty) {
+            // A shared handle carries its retain and release from the runtime,
+            // the way an encoding value does. The allocation's payload is the
+            // nested value that still needs describing.
+            pending.push(payload.clone());
+        } else if let ResolvedTy::Named { .. } = &ty {
+            if let Some(shape) = aggregates.iter().find(|shape| shape.aggregate_ty == ty) {
+                pending.extend(shape.fields.iter().map(|field| field.ty.clone()));
+            } else if let Some(shape) = variants.iter().find(|shape| shape.enum_ty == ty) {
+                pending.extend(
+                    shape
+                        .variants
+                        .iter()
+                        .flat_map(|variant| &variant.fields)
+                        .map(|field| field.ty.clone()),
+                );
+            } else {
+                return Err(format!(
+                    "collection component `{}` has no exact semantic shape",
+                    ty.user_facing()
+                ));
+            }
+        }
+        hew_types::push_type_components(&ty, &mut pending);
+    }
+    Ok(())
+}
+
 /// A value result is defined at the call and must be forwarded on its normal
 /// edge to a continuation block argument. It is never available for another
 /// operation in the terminated block.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CallResult {
     Unit,
+    /// The checked result is uninhabited; there is no normal continuation.
+    Never,
     Value(ValueDef),
 }
 
@@ -616,6 +1054,13 @@ pub enum CallUnwind {
     Cleanup(Edge),
 }
 
+/// One exact checked-arithmetic failure successor.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckedFailure {
+    pub kind: TrapKind,
+    pub edge: Edge,
+}
+
 /// Value-producing, non-suspending operations in the first SIR slice.
 ///
 /// Effects are derived by [`Self::effects`] rather than stored redundantly on
@@ -623,7 +1068,69 @@ pub enum CallUnwind {
 /// ordinary SSA operations.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemOpKind {
-    ConstI64(i64),
+    /// Transfer a nullary owning callable into a lazy generator.
+    GeneratorMake {
+        closure: ClosureId,
+        callable: Operand,
+    },
+    /// Create one bounded element pipe: results are its owned `Stream<T>` and
+    /// `Sink<T>` halves. Each half releases independently; unconsumed
+    /// elements are destroyed by whichever half closes last.
+    StreamPipe {
+        capacity: u32,
+    },
+    /// Begin a lexical task lifetime with explicit cancellation ancestry.
+    TaskScopeEnter {
+        scope: crate::TaskScopeId,
+        parent: Option<crate::TaskScopeId>,
+        duration: Option<Operand>,
+    },
+    /// Release a scope after its checked drain has completed.
+    TaskScopeClose {
+        scope: crate::TaskScopeId,
+    },
+    /// Transfer a nullary once callable into a scope-owned child.
+    TaskSpawn {
+        scope: crate::TaskScopeId,
+        callable: Operand,
+    },
+    /// Reserve the exact free places for an action, without borrowing them.
+    RegisterDefer {
+        defer: DeferId,
+        scope: DeferScopeId,
+        dependencies: Vec<PlaceId>,
+    },
+    /// Create a callable value for an exact demanded function, with no captures.
+    FunctionMake {
+        callable: CallableId,
+    },
+    /// Consume the ordered capture operands into one owned environment.
+    ClosureMake {
+        closure: ClosureId,
+        fields: Vec<Operand>,
+    },
+    /// Erase one owned concrete value into a trait object.
+    ///
+    /// The operand transfers into the object; the result owns the erased
+    /// value and releases it through the table's drop slot.
+    DynMake {
+        vtable: SemVtableId,
+        value: Operand,
+    },
+    /// Transfer a callable while weakening only its proved capabilities.
+    CallableCoerce {
+        source: Operand,
+    },
+    /// Borrow a projected field, retaining its explicit owner dependency.
+    /// Its sole dependency is the declared place; the place origin supplies
+    /// the owner instead of a redundant value operand.
+    LoadBorrow {
+        place: PlaceId,
+    },
+    /// An integer constant carrying its exact mathematical value (D421).
+    /// The concrete width is the result type; physical lowering derives the
+    /// destination-width bit pattern.
+    ConstInteger(i128),
     ConstBool(bool),
     /// Construct a semantic tuple value from its ordered elements.
     ///
@@ -642,6 +1149,76 @@ pub enum SemOpKind {
         tuple: Operand,
         index: u32,
     },
+    /// Construct one owned semantic aggregate by consuming every ordered
+    /// field operand. The shape carries no layout or storage decision.
+    AggregateMake {
+        shape: AggregateShapeRef,
+        fields: Vec<Operand>,
+    },
+    /// Construct a fixed array by consuming exactly N element operands.
+    /// No allocation or per-element layout is attached at this stage.
+    ArrayMake {
+        fields: Vec<Operand>,
+    },
+    /// Construct a nonempty fixed array from one evaluated seed. Consumes the
+    /// seed; lengths greater than one require its semantic copy capability.
+    ArrayRepeat {
+        value: Operand,
+    },
+    /// Read one aggregate field and produce an independent logical copy.
+    AggregateProjectCopy {
+        shape: AggregateShapeRef,
+        aggregate: Operand,
+        field: u32,
+    },
+    /// Borrow one owning aggregate field. The guaranteed result depends on
+    /// the aggregate until `end_borrow`; it cannot escape as an owned value.
+    AggregateProjectBorrow {
+        shape: AggregateShapeRef,
+        aggregate: Operand,
+        field: u32,
+    },
+    /// Construct one enum value by consuming every ordered field of the exact
+    /// declaration-order variant. The descriptor carries no physical tag or
+    /// payload layout.
+    VariantMake {
+        shape: VariantShapeId,
+        variant: u32,
+        fields: Vec<Operand>,
+    },
+    /// Test whether one enum value holds the exact declaration-order variant.
+    /// The operand is only read, so a failed match candidate leaves it live.
+    VariantIs {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+    },
+    /// Read one payload field of the tested variant and produce an
+    /// independent logical copy. A runtime tag other than `variant` is corrupt
+    /// representation and terminates the process.
+    VariantProjectCopy {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+        field: u32,
+    },
+    /// Borrow one owning payload field of the tested variant. The guaranteed
+    /// result depends on the enum until `end_borrow`; it cannot escape as an
+    /// owned value.
+    VariantProjectBorrow {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+        field: u32,
+    },
+    /// Consume one enum whose tag was tested and transfer every payload field
+    /// of that variant, one result per field, each of which must be consumed
+    /// on every path.
+    VariantDestructure {
+        shape: VariantShapeId,
+        variant: u32,
+        source: Operand,
+    },
     Unary {
         op: hew_parser::ast::UnaryOp,
         value: Operand,
@@ -656,7 +1233,9 @@ pub enum SemOpKind {
         to: ResolvedTy,
     },
     // --- P1 literal producers (matrix Legend `const.{f,char,unit,duration,str,bytes}`)
-    ConstF64(f64),
+    /// Literal value represented at host f64 precision; the exact result type
+    /// selects f32 or f64 rounding at physical materialization.
+    ConstFloat(f64),
     ConstChar(char),
     ConstUnit,
     /// Nanoseconds, the representation `duration` already carries.
@@ -686,7 +1265,8 @@ pub enum SemOpKind {
         source: Operand,
     },
     /// `destroy_value %v` - consumes the obligation. Illegal on a `Linear`
-    /// value except on an unwind edge (rule 6d).
+    /// value except within verified trap-only cleanup (rule 6d). Cancellation
+    /// does not forgive the consuming obligation.
     DestroyValue {
         value: Operand,
     },
@@ -711,6 +1291,7 @@ pub enum SemOpKind {
     /// `destructure %agg` - consumes the aggregate and produces one result per
     /// field, each of which must be consumed on every path.
     Destructure {
+        shape: AggregateShapeRef,
         aggregate: Operand,
     },
 
@@ -732,7 +1313,9 @@ pub enum SemOpKind {
         place: PlaceId,
         value: Operand,
     },
-    /// `store.assign %p, %v` - the old value is destroyed, then stored.
+    /// `store.assign %p, %v` - replace the old value, then initialize the place.
+    /// Aggregate projections destroy only their still-initialized contents,
+    /// so assignment also restores a field taken on some or all incoming paths.
     StoreAssign {
         place: PlaceId,
         value: Operand,
@@ -757,9 +1340,18 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
-            Self::ConstI64(_)
+            Self::TaskScopeEnter { duration, .. } => {
+                if let Some(duration) = duration {
+                    visit(OperandSlot(0), duration);
+                }
+            }
+            Self::TaskScopeClose { .. }
+            | Self::RegisterDefer { .. }
+            | Self::FunctionMake { .. }
+            | Self::StreamPipe { .. }
+            | Self::ConstInteger(_)
             | Self::ConstBool(_)
-            | Self::ConstF64(_)
+            | Self::ConstFloat(_)
             | Self::ConstChar(_)
             | Self::ConstUnit
             | Self::ConstDuration(_)
@@ -767,6 +1359,7 @@ impl SemOpKind {
             | Self::ConstBytes(_)
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
+            | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::EndLifetime { .. } => {}
             Self::TupleMake { elements } => {
@@ -780,6 +1373,25 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
+            Self::AggregateMake { fields, .. }
+            | Self::ArrayMake { fields }
+            | Self::VariantMake { fields, .. }
+            | Self::ClosureMake { fields, .. } => {
+                for (index, field) in fields.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        field,
+                    );
+                }
+            }
+            Self::AggregateProjectCopy { aggregate, .. }
+            | Self::AggregateProjectBorrow { aggregate, .. } => visit(OperandSlot(0), aggregate),
+            Self::VariantIs { source, .. }
+            | Self::VariantProjectCopy { source, .. }
+            | Self::VariantProjectBorrow { source, .. }
+            | Self::VariantDestructure { source, .. } => visit(OperandSlot(0), source),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -789,13 +1401,24 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::CopyValue { source: value }
+            Self::GeneratorMake {
+                callable: value, ..
+            }
+            | Self::TaskSpawn {
+                callable: value, ..
+            }
+            | Self::CallableCoerce { source: value }
+            | Self::DynMake { value, .. }
+            | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
             | Self::DestroyValue { value }
+            | Self::ArrayRepeat { value }
             | Self::BeginBorrow { owner: value }
             | Self::EndBorrow { borrow: value }
-            | Self::Destructure { aggregate: value }
+            | Self::Destructure {
+                aggregate: value, ..
+            }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
         }
@@ -809,9 +1432,18 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
-            Self::ConstI64(_)
+            Self::TaskScopeEnter { duration, .. } => {
+                if let Some(duration) = duration {
+                    visit(OperandSlot(0), duration);
+                }
+            }
+            Self::TaskScopeClose { .. }
+            | Self::RegisterDefer { .. }
+            | Self::FunctionMake { .. }
+            | Self::StreamPipe { .. }
+            | Self::ConstInteger(_)
             | Self::ConstBool(_)
-            | Self::ConstF64(_)
+            | Self::ConstFloat(_)
             | Self::ConstChar(_)
             | Self::ConstUnit
             | Self::ConstDuration(_)
@@ -819,6 +1451,7 @@ impl SemOpKind {
             | Self::ConstBytes(_)
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
+            | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::EndLifetime { .. } => {}
             Self::TupleMake { elements } => {
@@ -832,6 +1465,25 @@ impl SemOpKind {
                 }
             }
             Self::TupleGet { tuple, .. } => visit(OperandSlot(0), tuple),
+            Self::AggregateMake { fields, .. }
+            | Self::ArrayMake { fields }
+            | Self::VariantMake { fields, .. }
+            | Self::ClosureMake { fields, .. } => {
+                for (index, field) in fields.iter_mut().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR operation operand count exceeds u32"),
+                        ),
+                        field,
+                    );
+                }
+            }
+            Self::AggregateProjectCopy { aggregate, .. }
+            | Self::AggregateProjectBorrow { aggregate, .. } => visit(OperandSlot(0), aggregate),
+            Self::VariantIs { source, .. }
+            | Self::VariantProjectCopy { source, .. }
+            | Self::VariantProjectBorrow { source, .. }
+            | Self::VariantDestructure { source, .. } => visit(OperandSlot(0), source),
             Self::Unary { value, .. } | Self::Cast { value, .. } => {
                 visit(OperandSlot(0), value);
             }
@@ -841,15 +1493,99 @@ impl SemOpKind {
                 visit(OperandSlot(0), lhs);
                 visit(OperandSlot(1), rhs);
             }
-            Self::CopyValue { source: value }
+            Self::GeneratorMake {
+                callable: value, ..
+            }
+            | Self::TaskSpawn {
+                callable: value, ..
+            }
+            | Self::CallableCoerce { source: value }
+            | Self::DynMake { value, .. }
+            | Self::CopyValue { source: value }
             | Self::Move { source: value }
             | Self::Fork { source: value }
             | Self::DestroyValue { value }
+            | Self::ArrayRepeat { value }
             | Self::BeginBorrow { owner: value }
             | Self::EndBorrow { borrow: value }
-            | Self::Destructure { aggregate: value }
+            | Self::Destructure {
+                aggregate: value, ..
+            }
             | Self::StoreInit { value, .. }
             | Self::StoreAssign { value, .. } => visit(OperandSlot(0), value),
+        }
+    }
+
+    /// Visit the declared storage locations directly addressed by this operation.
+    pub fn visit_places(&self, mut visit: impl FnMut(PlaceId)) {
+        match self {
+            Self::RegisterDefer { dependencies, .. } => {
+                dependencies.iter().copied().for_each(visit);
+            }
+            Self::AllocPlace { place }
+            | Self::LoadCopy { place }
+            | Self::LoadTake { place }
+            | Self::LoadBorrow { place }
+            | Self::StoreInit { place, .. }
+            | Self::StoreAssign { place, .. }
+            | Self::EndLifetime { place } => visit(*place),
+            Self::TaskScopeEnter { .. }
+            | Self::TaskScopeClose { .. }
+            | Self::TaskSpawn { .. }
+            | Self::GeneratorMake { .. }
+            | Self::StreamPipe { .. }
+            | Self::FunctionMake { .. }
+            | Self::ClosureMake { .. }
+            | Self::CallableCoerce { .. }
+            | Self::DynMake { .. }
+            | Self::ConstInteger(..)
+            | Self::ConstBool(..)
+            | Self::TupleMake { .. }
+            | Self::TupleGet { .. }
+            | Self::AggregateMake { .. }
+            | Self::ArrayMake { .. }
+            | Self::ArrayRepeat { .. }
+            | Self::AggregateProjectCopy { .. }
+            | Self::AggregateProjectBorrow { .. }
+            | Self::VariantMake { .. }
+            | Self::VariantIs { .. }
+            | Self::VariantProjectCopy { .. }
+            | Self::VariantProjectBorrow { .. }
+            | Self::VariantDestructure { .. }
+            | Self::Unary { .. }
+            | Self::Binary { .. }
+            | Self::Cast { .. }
+            | Self::ConstFloat(..)
+            | Self::ConstChar(..)
+            | Self::ConstUnit
+            | Self::ConstDuration(..)
+            | Self::ConstStr(..)
+            | Self::ConstBytes(..)
+            | Self::StrEq { .. }
+            | Self::BytesEq { .. }
+            | Self::CopyValue { .. }
+            | Self::DestroyValue { .. }
+            | Self::BeginBorrow { .. }
+            | Self::EndBorrow { .. }
+            | Self::Move { .. }
+            | Self::Fork { .. }
+            | Self::Destructure { .. } => {}
+        }
+    }
+
+    /// Immediate lifetime dependency of the operation's guaranteed result.
+    /// Projection chains preserve each parent rather than guessing an owner
+    /// from the result's type or its eventual runtime consumer.
+    #[must_use]
+    pub const fn borrow_parent(&self) -> Option<PlaceBase> {
+        match self {
+            Self::BeginBorrow { owner } => Some(PlaceBase::Value(owner.value)),
+            Self::LoadBorrow { place } => Some(PlaceBase::Place(*place)),
+            Self::AggregateProjectBorrow { aggregate, .. }
+            | Self::VariantProjectBorrow {
+                source: aggregate, ..
+            } => Some(PlaceBase::Value(aggregate.value)),
+            _ => None,
         }
     }
 
@@ -858,40 +1594,49 @@ impl SemOpKind {
     pub const fn effects(&self) -> EffectSet {
         match self {
             Self::Unary {
-                op: hew_parser::ast::UnaryOp::Negate | hew_parser::ast::UnaryOp::RawDeref,
-                ..
-            }
-            | Self::Binary {
-                op:
-                    hew_parser::ast::BinaryOp::Add
-                    | hew_parser::ast::BinaryOp::Subtract
-                    | hew_parser::ast::BinaryOp::Multiply
-                    | hew_parser::ast::BinaryOp::Divide
-                    | hew_parser::ast::BinaryOp::Modulo
-                    | hew_parser::ast::BinaryOp::Shl
-                    | hew_parser::ast::BinaryOp::Shr,
+                op: hew_parser::ast::UnaryOp::RawDeref,
                 ..
             } => EffectSet::MAY_TRAP,
             // Ownership operations are optimization barriers, not pure
             // values: two `copy_value`s of one value are two retains and must
             // never be common-subexpression-eliminated into one, and a
             // `destroy_value` or a place write is observable.
-            Self::CopyValue { .. }
+            Self::TaskScopeEnter { .. }
+            | Self::TaskScopeClose { .. }
+            | Self::RegisterDefer { .. }
+            | Self::TaskSpawn { .. }
+            | Self::GeneratorMake { .. }
+            | Self::StreamPipe { .. }
+            | Self::ClosureMake { .. }
+            | Self::CallableCoerce { .. }
+            | Self::DynMake { .. }
+            | Self::CopyValue { .. }
             | Self::DestroyValue { .. }
             | Self::BeginBorrow { .. }
             | Self::EndBorrow { .. }
             | Self::Move { .. }
             | Self::Fork { .. }
+            | Self::AggregateMake { .. }
+            | Self::ArrayMake { .. }
+            | Self::ArrayRepeat { .. }
+            | Self::VariantMake { .. }
+            | Self::AggregateProjectCopy { .. }
+            | Self::AggregateProjectBorrow { .. }
+            | Self::VariantProjectCopy { .. }
+            | Self::VariantProjectBorrow { .. }
+            | Self::VariantDestructure { .. }
             | Self::Destructure { .. }
             | Self::AllocPlace { .. }
             | Self::LoadCopy { .. }
+            | Self::LoadBorrow { .. }
             | Self::LoadTake { .. }
             | Self::StoreInit { .. }
             | Self::StoreAssign { .. }
             | Self::EndLifetime { .. } => EffectSet::IMPURE,
-            Self::ConstI64(_)
+            Self::FunctionMake { .. }
+            | Self::ConstInteger(_)
             | Self::ConstBool(_)
-            | Self::ConstF64(_)
+            | Self::ConstFloat(_)
             | Self::ConstChar(_)
             | Self::ConstUnit
             | Self::ConstDuration(_)
@@ -901,6 +1646,7 @@ impl SemOpKind {
             | Self::BytesEq { .. }
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
+            | Self::VariantIs { .. }
             | Self::Unary { .. }
             | Self::Binary { .. }
             | Self::Cast { .. } => EffectSet::PURE,
@@ -915,9 +1661,23 @@ impl SemOpKind {
     pub const fn transfers_obligation(&self) -> bool {
         matches!(
             self,
-            Self::DestroyValue { .. }
+            Self::TaskScopeEnter { .. }
+                | Self::TaskScopeClose { .. }
+                | Self::RegisterDefer { .. }
+                | Self::TaskSpawn { .. }
+                | Self::GeneratorMake { .. }
+                | Self::StreamPipe { .. }
+                | Self::ClosureMake { .. }
+                | Self::CallableCoerce { .. }
+                | Self::DynMake { .. }
+                | Self::DestroyValue { .. }
                 | Self::Move { .. }
                 | Self::Fork { .. }
+                | Self::AggregateMake { .. }
+                | Self::ArrayMake { .. }
+                | Self::ArrayRepeat { .. }
+                | Self::VariantMake { .. }
+                | Self::VariantDestructure { .. }
                 | Self::Destructure { .. }
                 | Self::LoadTake { .. }
                 | Self::StoreInit { .. }
@@ -937,6 +1697,37 @@ impl SemOpKind {
 /// [`Provenance`] model rather than collapsing that attribution during a pass.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemTerminator {
+    /// Pop the pending action and park the optional active fault before entry.
+    EnterDefer {
+        defer: DeferId,
+        park: FaultParkId,
+        body: Edge,
+    },
+    /// Combine owned faults after body-local cleanup, then continue the drain.
+    FinishDefer {
+        defer: DeferId,
+        park: FaultParkId,
+        next: Edge,
+    },
+    /// Refine optional fault presence; only the normal edge may resume success.
+    CleanupDispatch {
+        normal: Edge,
+        fault: Edge,
+    },
+    /// Admit recovery after lexical cleanup, consuming the fault into its
+    /// checked source enum only when enclosing cancellation permits it.
+    RecoverFault {
+        result: ValueDef,
+        deadline_variant: u32,
+        fault_variant: u32,
+        normal: Edge,
+        unwind: Edge,
+    },
+    /// Materialize the original checked failure before any effectful cleanup.
+    CheckedRaiseFault {
+        kind: TrapKind,
+        cleanup: Edge,
+    },
     Return {
         value: Option<BoundaryOperand>,
     },
@@ -946,11 +1737,76 @@ pub enum SemTerminator {
         then_target: Edge,
         else_target: Edge,
     },
+    /// Consume one enum and transfer all active payload fields through the
+    /// edge for its exact declaration-order variant.
+    ///
+    /// The arms must cover the descriptor exactly once. A runtime tag outside
+    /// that closed set is corrupt representation and terminates the process;
+    /// it is not a language-visible trap or unwind edge.
+    SwitchVariant {
+        id: OpId,
+        shape: VariantShapeId,
+        scrutinee: Operand,
+        arms: Vec<SemVariantArm>,
+    },
+    /// Checked integer arithmetic with explicit normal and failure control.
+    ///
+    /// `result` exists only on the normal edge. Each failure edge must clean
+    /// up live owners before reaching a matching [`SemTerminator::Trap`].
+    CheckedBinary {
+        id: OpId,
+        op: hew_parser::ast::BinaryOp,
+        lhs: Operand,
+        rhs: Operand,
+        result: ValueDef,
+        normal: Edge,
+        failures: Vec<CheckedFailure>,
+    },
     /// A resolved ordinary Hew direct call with explicit normal and unwind
-    /// control flow.
+    /// control flow. The normal edge is absent exactly for a Never result.
     Call {
         id: OpId,
         callee: CallableId,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Option<Edge>,
+        unwind: CallUnwind,
+    },
+    /// Invoke an evaluated callable value through its exact semantic signature.
+    /// The callee is the first boundary operand, followed by source arguments.
+    /// Its boundary distinguishes read, exclusive and consuming invocation.
+    /// The normal edge is absent exactly for a Never result.
+    IndirectCall {
+        id: OpId,
+        callee: BoundaryOperand,
+        signature: SemSignature,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Option<Edge>,
+        unwind: CallUnwind,
+    },
+    /// Dispatch one trait method through an erased receiver's vtable slot.
+    ///
+    /// The receiver occupies boundary operand slot zero, followed by the
+    /// source arguments. `slot` is the checker's index; no stage recomputes
+    /// it. The normal edge is absent exactly for a Never result.
+    DynCall {
+        id: OpId,
+        receiver: BoundaryOperand,
+        slot: u32,
+        signature: SemSignature,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Option<Edge>,
+        unwind: CallUnwind,
+    },
+    /// Execute the exact checker-selected value method from the module's
+    /// capability table. Arguments borrow values; the scalar result exists
+    /// only on the normal edge. The cleanup edge owns a propagated fault.
+    ValueCall {
+        id: OpId,
+        ty: ResolvedTy,
+        capability: hew_types::ValueCapability,
         args: Vec<BoundaryOperand>,
         result: CallResult,
         normal: Edge,
@@ -958,6 +1814,26 @@ pub enum SemTerminator {
     },
     /// A call to a runtime symbol family. Per-operand ownership comes from the
     /// family's FFI ownership row, never from the symbol spelling.
+    ActorCall {
+        id: OpId,
+        operation: crate::ActorOperation,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
+    /// Execute the checked wire schema using borrowed input. The complete
+    /// owned result exists only on success; logical failure enters cleanup.
+    WireCodec {
+        id: OpId,
+        direction: hew_types::WireCodecDirection,
+        plan: std::sync::Arc<crate::SemWirePlan>,
+        text_result: Option<crate::SemWireTextResult>,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
     RtCall {
         id: OpId,
         family: hew_types::RuntimeCallFamily,
@@ -965,6 +1841,25 @@ pub enum SemTerminator {
         result: CallResult,
         normal: Edge,
         unwind: CallUnwind,
+    },
+    /// A call to a declared C-ABI symbol. Per-operand ownership comes from the
+    /// `extern` declaration carried in `signature`, never from the spelling of
+    /// the symbol. A C call cannot raise a Hew fault, so `unwind` is always
+    /// [`CallUnwind::NotApplicable`].
+    ExternCall {
+        id: OpId,
+        signature: Box<crate::ExternSignature>,
+        args: Vec<BoundaryOperand>,
+        result: CallResult,
+        normal: Edge,
+        unwind: CallUnwind,
+    },
+    /// Copy a borrowed string into an owned logical panic fault, then enter
+    /// the explicit cleanup region. There is no result or successful edge.
+    /// The message occupies operand slot zero; cleanup arguments follow it.
+    Panic {
+        message: BoundaryOperand,
+        cleanup: Edge,
     },
     /// A language-visible trap (§1.6). Unlike [`Self::Unreachable`] this is a
     /// reachable endpoint the program can take.
@@ -980,11 +1875,15 @@ pub enum SemTerminator {
     Suspend {
         kind: SuspendKind,
         inputs: Vec<BoundaryOperand>,
+        /// Defined only on the first successful resume edge, like a call result.
+        result: CallResult,
         /// One edge per outcome: `await` has one, `select` has one per arm,
         /// a deadline form has two, `join` has one.
         resumes: Vec<Edge>,
         /// Always present; its first op is the kind's abandon op.
         cancel: Edge,
+        /// Logical operation failure, after abandoning its pending registration.
+        unwind: Edge,
     },
     /// Continue unwinding after an invoke cleanup block has discharged its
     /// obligations.
@@ -997,6 +1896,14 @@ pub enum SemTerminator {
     Unreachable,
 }
 
+/// One exact successor of a consuming [`SemTerminator::SwitchVariant`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct SemVariantArm {
+    pub variant: u32,
+    pub fields: Vec<ValueDef>,
+    pub target: Edge,
+}
+
 impl SemTerminator {
     /// Visit call, return and suspension values together with their total
     /// boundary decisions.
@@ -1007,9 +1914,30 @@ impl SemTerminator {
     /// `u32` operand-slot range can represent.
     pub fn visit_boundary_operands(&self, mut visit: impl FnMut(OperandSlot, &BoundaryOperand)) {
         match self {
+            Self::Panic { message, .. } => visit(OperandSlot(0), message),
             Self::Return { value: Some(value) } => visit(OperandSlot(0), value),
-            Self::Call { args, .. } | Self::RtCall { args, .. } => {
+            Self::Call { args, .. }
+            | Self::WireCodec { args, .. }
+            | Self::RtCall { args, .. }
+            | Self::ExternCall { args, .. }
+            | Self::ActorCall { args, .. }
+            | Self::ValueCall { args, .. } => {
                 for (index, argument) in args.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index).expect("SIR boundary operand count exceeds u32"),
+                        ),
+                        argument,
+                    );
+                }
+            }
+            Self::IndirectCall { callee, args, .. }
+            | Self::DynCall {
+                receiver: callee,
+                args,
+                ..
+            } => {
+                for (index, argument) in std::iter::once(callee).chain(args).enumerate() {
                     visit(
                         OperandSlot(
                             u32::try_from(index).expect("SIR boundary operand count exceeds u32"),
@@ -1028,9 +1956,16 @@ impl SemTerminator {
                     );
                 }
             }
-            Self::Return { value: None }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::CleanupDispatch { .. }
+            | Self::RecoverFault { .. }
+            | Self::Return { value: None }
             | Self::Goto(_)
             | Self::Branch { .. }
+            | Self::SwitchVariant { .. }
+            | Self::CheckedBinary { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
             | Self::Unreachable => {}
@@ -1044,23 +1979,92 @@ impl SemTerminator {
                 result: CallResult::Value(result),
                 ..
             }
+            | Self::WireCodec {
+                result: CallResult::Value(result),
+                ..
+            }
             | Self::RtCall {
                 result: CallResult::Value(result),
                 ..
-            } => visit(result),
-            Self::Return { .. }
+            }
+            | Self::ExternCall {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::ActorCall {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::IndirectCall {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::DynCall {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::ValueCall {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::Suspend {
+                result: CallResult::Value(result),
+                ..
+            }
+            | Self::CheckedBinary { result, .. }
+            | Self::RecoverFault { result, .. } => visit(result),
+            Self::SwitchVariant { arms, .. } => {
+                for arm in arms {
+                    for field in &arm.fields {
+                        visit(field);
+                    }
+                }
+            }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::CleanupDispatch { .. }
+            | Self::Return { .. }
             | Self::Goto(_)
             | Self::Branch { .. }
             | Self::Call {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::WireCodec {
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
             | Self::RtCall {
-                result: CallResult::Unit,
+                result: CallResult::Unit | CallResult::Never,
                 ..
             }
+            | Self::ExternCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::ActorCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::IndirectCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::DynCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::ValueCall {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
+            | Self::Panic { .. }
             | Self::Trap { .. }
-            | Self::Suspend { .. }
+            | Self::Suspend {
+                result: CallResult::Unit | CallResult::Never,
+                ..
+            }
             | Self::ResumeUnwind
             | Self::Unreachable => {}
         }
@@ -1076,10 +2080,54 @@ impl SemTerminator {
     ///
     /// Panics only when a branch carries more operands than the module-local
     /// `u32` operand-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive terminator operand visitor"
+    )]
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
+        let argument_start = match self {
+            Self::IndirectCall { callee, .. }
+            | Self::DynCall {
+                receiver: callee, ..
+            } => {
+                visit(OperandSlot(0), &callee.operand);
+                1
+            }
+            _ => 0,
+        };
         match self {
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge) => edge.visit_operands(visit),
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
+                let mut index = 0;
+                for operand in normal.args.iter().chain(fault.args.iter()) {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("terminator operand count exceeds u32");
+                }
+            }
+            Self::Panic { message, cleanup } => {
+                visit(OperandSlot(0), &message.operand);
+                cleanup.visit_operands(|slot, operand| {
+                    visit(
+                        OperandSlot(
+                            slot.0
+                                .checked_add(1)
+                                .expect("SIR panic operand count exceeds u32"),
+                        ),
+                        operand,
+                    );
+                });
+            }
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &value.operand),
-            Self::Goto(edge) => edge.visit_operands(visit),
             Self::Branch {
                 condition,
                 then_target,
@@ -1100,7 +2148,37 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
+            Self::SwitchVariant {
+                scrutinee, arms, ..
+            } => visit_variant_switch_operands(scrutinee, arms, visit),
+            Self::CheckedBinary {
+                lhs,
+                rhs,
+                normal,
+                failures,
+                ..
+            } => visit_checked_binary_operands(lhs, rhs, normal, failures, visit),
             Self::Call {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::IndirectCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::DynCall {
+                args,
+                normal,
+                unwind,
+                ..
+            } => {
+                visit_call_operands(args, normal.as_ref(), unwind, argument_start, visit);
+            }
+            Self::WireCodec {
                 args,
                 normal,
                 unwind,
@@ -1111,33 +2189,32 @@ impl SemTerminator {
                 normal,
                 unwind,
                 ..
+            }
+            | Self::ExternCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ActorCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ValueCall {
+                args,
+                normal,
+                unwind,
+                ..
             } => {
-                let mut next = 0_u32;
-                for argument in args {
-                    visit(OperandSlot(next), &argument.operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                for operand in &normal.args {
-                    visit(OperandSlot(next), operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                if let CallUnwind::Cleanup(edge) = unwind {
-                    for operand in &edge.args {
-                        visit(OperandSlot(next), operand);
-                        next = next
-                            .checked_add(1)
-                            .expect("SIR call operand count exceeds u32");
-                    }
-                }
+                visit_call_operands(args, Some(normal), unwind, argument_start, visit);
             }
             Self::Suspend {
                 inputs,
                 resumes,
                 cancel,
+                unwind,
                 ..
             } => {
                 let mut next = 0_u32;
@@ -1147,7 +2224,7 @@ impl SemTerminator {
                         .checked_add(1)
                         .expect("SIR suspend operand count exceeds u32");
                 }
-                for edge in resumes.iter().chain(std::iter::once(cancel)) {
+                for edge in resumes.iter().chain([cancel, unwind]) {
                     for operand in &edge.args {
                         visit(OperandSlot(next), operand);
                         next = next
@@ -1169,10 +2246,54 @@ impl SemTerminator {
     ///
     /// Panics only when a branch carries more operands than the module-local
     /// `u32` operand-slot range can represent.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustive terminator operand visitor"
+    )]
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
+        let argument_start = match self {
+            Self::IndirectCall { callee, .. }
+            | Self::DynCall {
+                receiver: callee, ..
+            } => {
+                visit(OperandSlot(0), &mut callee.operand);
+                1
+            }
+            _ => 0,
+        };
         match self {
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge) => edge.visit_operands_mut(visit),
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
+                let mut index = 0;
+                for operand in normal.args.iter_mut().chain(fault.args.iter_mut()) {
+                    visit(OperandSlot(index), operand);
+                    index = index
+                        .checked_add(1)
+                        .expect("terminator operand count exceeds u32");
+                }
+            }
+            Self::Panic { message, cleanup } => {
+                visit(OperandSlot(0), &mut message.operand);
+                cleanup.visit_operands_mut(|slot, operand| {
+                    visit(
+                        OperandSlot(
+                            slot.0
+                                .checked_add(1)
+                                .expect("SIR panic operand count exceeds u32"),
+                        ),
+                        operand,
+                    );
+                });
+            }
             Self::Return { value: Some(value) } => visit(OperandSlot(0), &mut value.operand),
-            Self::Goto(edge) => edge.visit_operands_mut(visit),
             Self::Branch {
                 condition,
                 then_target,
@@ -1193,7 +2314,37 @@ impl SemTerminator {
                         .expect("SIR branch operand count exceeds u32");
                 }
             }
+            Self::SwitchVariant {
+                scrutinee, arms, ..
+            } => visit_variant_switch_operands_mut(scrutinee, arms, visit),
+            Self::CheckedBinary {
+                lhs,
+                rhs,
+                normal,
+                failures,
+                ..
+            } => visit_checked_binary_operands_mut(lhs, rhs, normal, failures, visit),
             Self::Call {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::IndirectCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::DynCall {
+                args,
+                normal,
+                unwind,
+                ..
+            } => {
+                visit_call_operands_mut(args, normal.as_mut(), unwind, argument_start, visit);
+            }
+            Self::WireCodec {
                 args,
                 normal,
                 unwind,
@@ -1204,33 +2355,32 @@ impl SemTerminator {
                 normal,
                 unwind,
                 ..
+            }
+            | Self::ExternCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ActorCall {
+                args,
+                normal,
+                unwind,
+                ..
+            }
+            | Self::ValueCall {
+                args,
+                normal,
+                unwind,
+                ..
             } => {
-                let mut next = 0_u32;
-                for argument in args {
-                    visit(OperandSlot(next), &mut argument.operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                for operand in &mut normal.args {
-                    visit(OperandSlot(next), operand);
-                    next = next
-                        .checked_add(1)
-                        .expect("SIR call operand count exceeds u32");
-                }
-                if let CallUnwind::Cleanup(edge) = unwind {
-                    for operand in &mut edge.args {
-                        visit(OperandSlot(next), operand);
-                        next = next
-                            .checked_add(1)
-                            .expect("SIR call operand count exceeds u32");
-                    }
-                }
+                visit_call_operands_mut(args, Some(normal), unwind, argument_start, visit);
             }
             Self::Suspend {
                 inputs,
                 resumes,
                 cancel,
+                unwind,
                 ..
             } => {
                 let mut next = 0_u32;
@@ -1240,7 +2390,7 @@ impl SemTerminator {
                         .checked_add(1)
                         .expect("SIR suspend operand count exceeds u32");
                 }
-                for edge in resumes.iter_mut().chain(std::iter::once(cancel)) {
+                for edge in resumes.iter_mut().chain([cancel, unwind]) {
                     for operand in &mut edge.args {
                         visit(OperandSlot(next), operand);
                         next = next
@@ -1269,8 +2419,21 @@ impl SemTerminator {
     /// `u32` successor-slot range can represent.
     pub fn visit_successors_with_slots(&self, mut visit: impl FnMut(SuccessorSlot, &Edge)) {
         match self {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                visit(SuccessorSlot(1), fault);
+            }
             Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
-            Self::Goto(edge) => visit(SuccessorSlot(0), edge),
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
@@ -1279,16 +2442,58 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
             }
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+            Self::SwitchVariant { arms, .. } => {
+                for (index, arm) in arms.iter().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index)
+                                .expect("SIR variant-switch edge count exceeds u32"),
+                        ),
+                        &arm.target,
+                    );
+                }
+            }
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                for (index, failure) in failures.iter().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index + 1)
+                                .expect("SIR checked-binary edge count exceeds u32"),
+                        ),
+                        &failure.edge,
+                    );
+                }
+            }
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => {
+                if let Some(normal) = normal {
+                    visit(SuccessorSlot(0), normal);
+                }
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    visit(SuccessorSlot(1), edge);
+                }
+            }
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
                     visit(SuccessorSlot(1), edge);
                 }
             }
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => {
-                for (index, edge) in resumes.iter().chain(std::iter::once(cancel)).enumerate() {
+                for (index, edge) in resumes.iter().chain([cancel, unwind]).enumerate() {
                     visit(
                         SuccessorSlot(
                             u32::try_from(index).expect("SIR suspend edge count exceeds u32"),
@@ -1311,8 +2516,21 @@ impl SemTerminator {
         mut visit: impl FnMut(SuccessorSlot, &mut Edge),
     ) {
         match self {
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                visit(SuccessorSlot(1), fault);
+            }
             Self::Return { .. } | Self::Trap { .. } | Self::ResumeUnwind | Self::Unreachable => {}
-            Self::Goto(edge) => visit(SuccessorSlot(0), edge),
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. } => visit(SuccessorSlot(0), edge),
             Self::Branch {
                 then_target,
                 else_target,
@@ -1321,20 +2539,58 @@ impl SemTerminator {
                 visit(SuccessorSlot(0), then_target);
                 visit(SuccessorSlot(1), else_target);
             }
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
+            Self::SwitchVariant { arms, .. } => {
+                for (index, arm) in arms.iter_mut().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index)
+                                .expect("SIR variant-switch edge count exceeds u32"),
+                        ),
+                        &mut arm.target,
+                    );
+                }
+            }
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => {
+                visit(SuccessorSlot(0), normal);
+                for (index, failure) in failures.iter_mut().enumerate() {
+                    visit(
+                        SuccessorSlot(
+                            u32::try_from(index + 1)
+                                .expect("SIR checked-binary edge count exceeds u32"),
+                        ),
+                        &mut failure.edge,
+                    );
+                }
+            }
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => {
+                if let Some(normal) = normal {
+                    visit(SuccessorSlot(0), normal);
+                }
+                if let CallUnwind::Cleanup(edge) = unwind {
+                    visit(SuccessorSlot(1), edge);
+                }
+            }
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => {
                 visit(SuccessorSlot(0), normal);
                 if let CallUnwind::Cleanup(edge) = unwind {
                     visit(SuccessorSlot(1), edge);
                 }
             }
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => {
-                for (index, edge) in resumes
-                    .iter_mut()
-                    .chain(std::iter::once(cancel))
-                    .enumerate()
-                {
+                for (index, edge) in resumes.iter_mut().chain([cancel, unwind]).enumerate() {
                     visit(
                         SuccessorSlot(
                             u32::try_from(index).expect("SIR suspend edge count exceeds u32"),
@@ -1354,7 +2610,25 @@ impl SemTerminator {
     #[must_use]
     pub fn successor(&self, slot: SuccessorSlot) -> Option<&Edge> {
         match self {
-            Self::Goto(edge) if slot == SuccessorSlot(0) => Some(edge),
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => match slot.0 {
+                0 => Some(normal),
+                1 => Some(fault),
+                _ => None,
+            },
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. }
+                if slot == SuccessorSlot(0) =>
+            {
+                Some(edge)
+            }
             Self::Branch {
                 then_target,
                 else_target,
@@ -1364,24 +2638,54 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
-                match slot.0 {
-                    0 => Some(normal),
-                    1 => match unwind {
-                        CallUnwind::NotApplicable => None,
-                        CallUnwind::Cleanup(edge) => Some(edge),
-                    },
-                    _ => None,
-                }
-            }
+            Self::SwitchVariant { arms, .. } => arms
+                .get(usize::try_from(slot.0).ok()?)
+                .map(|arm| &arm.target),
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => match slot.0 {
+                0 => normal.as_ref(),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => match slot.0 {
+                0 => Some(normal),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => match slot.0 {
+                0 => Some(normal),
+                value => failures
+                    .get(usize::try_from(value - 1).ok()?)
+                    .map(|failure| &failure.edge),
+            },
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => resumes
                 .iter()
-                .chain(std::iter::once(cancel))
+                .chain([cancel, unwind])
                 .nth(usize::try_from(slot.0).ok()?),
-            Self::Return { .. }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::Return { .. }
             | Self::Goto(_)
+            | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
             | Self::Unreachable => None,
@@ -1392,7 +2696,25 @@ impl SemTerminator {
     #[must_use]
     pub fn successor_mut(&mut self, slot: SuccessorSlot) -> Option<&mut Edge> {
         match self {
-            Self::Goto(edge) if slot == SuccessorSlot(0) => Some(edge),
+            Self::CleanupDispatch { normal, fault }
+            | Self::RecoverFault {
+                normal,
+                unwind: fault,
+                ..
+            } => match slot.0 {
+                0 => Some(normal),
+                1 => Some(fault),
+                _ => None,
+            },
+            Self::EnterDefer { body: edge, .. }
+            | Self::FinishDefer { next: edge, .. }
+            | Self::CheckedRaiseFault { cleanup: edge, .. }
+            | Self::Goto(edge)
+            | Self::Panic { cleanup: edge, .. }
+                if slot == SuccessorSlot(0) =>
+            {
+                Some(edge)
+            }
             Self::Branch {
                 then_target,
                 else_target,
@@ -1402,24 +2724,54 @@ impl SemTerminator {
                 1 => Some(else_target),
                 _ => None,
             },
-            Self::Call { normal, unwind, .. } | Self::RtCall { normal, unwind, .. } => {
-                match slot.0 {
-                    0 => Some(normal),
-                    1 => match unwind {
-                        CallUnwind::NotApplicable => None,
-                        CallUnwind::Cleanup(edge) => Some(edge),
-                    },
-                    _ => None,
-                }
-            }
+            Self::SwitchVariant { arms, .. } => arms
+                .get_mut(usize::try_from(slot.0).ok()?)
+                .map(|arm| &mut arm.target),
+            Self::Call { normal, unwind, .. }
+            | Self::IndirectCall { normal, unwind, .. }
+            | Self::DynCall { normal, unwind, .. } => match slot.0 {
+                0 => normal.as_mut(),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
+            Self::WireCodec { normal, unwind, .. }
+            | Self::RtCall { normal, unwind, .. }
+            | Self::ExternCall { normal, unwind, .. }
+            | Self::ActorCall { normal, unwind, .. }
+            | Self::ValueCall { normal, unwind, .. } => match slot.0 {
+                0 => Some(normal),
+                1 => match unwind {
+                    CallUnwind::NotApplicable => None,
+                    CallUnwind::Cleanup(edge) => Some(edge),
+                },
+                _ => None,
+            },
+            Self::CheckedBinary {
+                normal, failures, ..
+            } => match slot.0 {
+                0 => Some(normal),
+                value => failures
+                    .get_mut(usize::try_from(value - 1).ok()?)
+                    .map(|failure| &mut failure.edge),
+            },
             Self::Suspend {
-                resumes, cancel, ..
+                resumes,
+                cancel,
+                unwind,
+                ..
             } => resumes
                 .iter_mut()
-                .chain(std::iter::once(cancel))
+                .chain([cancel, unwind])
                 .nth(usize::try_from(slot.0).ok()?),
-            Self::Return { .. }
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::Return { .. }
             | Self::Goto(_)
+            | Self::Panic { .. }
             | Self::Trap { .. }
             | Self::ResumeUnwind
             | Self::Unreachable => None,
@@ -1449,6 +2801,8 @@ impl SemTerminator {
     #[must_use]
     pub fn operand_context(&self, slot: OperandSlot) -> &'static str {
         match self {
+            Self::Panic { .. } if slot.0 == 0 => "panic message",
+            Self::Panic { .. } => "panic cleanup-edge argument",
             Self::Return { .. } => "return value",
             Self::Goto(_) => "goto edge argument",
             Self::Branch { then_target, .. } if slot.0 == 0 => "branch condition",
@@ -1458,24 +2812,80 @@ impl SemTerminator {
                 "branch then-edge argument"
             }
             Self::Branch { .. } => "branch else-edge argument",
-            Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
+            Self::SwitchVariant { .. } if slot.0 == 0 => "variant-switch scrutinee",
+            Self::SwitchVariant { .. } => "variant-switch arm argument",
+            Self::CheckedBinary { normal, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot < 2 + normal.args.len()) =>
+            {
+                if slot.0 == 0 {
+                    "checked-binary left operand"
+                } else if slot.0 == 1 {
+                    "checked-binary right operand"
+                } else {
+                    "checked-binary normal-edge argument"
+                }
+            }
+            Self::CheckedBinary { .. } => "checked-binary failure-edge argument",
+            Self::IndirectCall { .. } if slot.0 == 0 => "indirect callee",
+            Self::DynCall { .. } if slot.0 == 0 => "dynamic dispatch receiver",
+            Self::IndirectCall { args, .. } | Self::DynCall { args, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| slot <= args.len()) =>
+            {
+                "call argument"
+            }
+            Self::IndirectCall { args, normal, .. } | Self::DynCall { args, normal, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| {
+                    slot <= args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
+                }) =>
+            {
+                "call normal-edge argument"
+            }
+            Self::Call { args, .. }
+            | Self::WireCodec { args, .. }
+            | Self::RtCall { args, .. }
+            | Self::ExternCall { args, .. }
+            | Self::ActorCall { args, .. }
+            | Self::ValueCall { args, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < args.len()) =>
             {
                 "call argument"
             }
-            Self::Call { args, normal, .. } | Self::RtCall { args, normal, .. }
+            Self::Call { args, normal, .. }
+                if usize::try_from(slot.0).is_ok_and(|slot| {
+                    slot < args.len() + normal.as_ref().map_or(0, |edge| edge.args.len())
+                }) =>
+            {
+                "call normal-edge argument"
+            }
+            Self::WireCodec { args, normal, .. }
+            | Self::RtCall { args, normal, .. }
+            | Self::ExternCall { args, normal, .. }
+            | Self::ActorCall { args, normal, .. }
+            | Self::ValueCall { args, normal, .. }
                 if usize::try_from(slot.0)
                     .is_ok_and(|slot| slot < args.len() + normal.args.len()) =>
             {
                 "call normal-edge argument"
             }
-            Self::Call { .. } | Self::RtCall { .. } => "call unwind-edge argument",
+            Self::Call { .. }
+            | Self::WireCodec { .. }
+            | Self::RtCall { .. }
+            | Self::ExternCall { .. }
+            | Self::ActorCall { .. }
+            | Self::ValueCall { .. }
+            | Self::IndirectCall { .. }
+            | Self::DynCall { .. } => "call unwind-edge argument",
             Self::Suspend { inputs, .. }
                 if usize::try_from(slot.0).is_ok_and(|slot| slot < inputs.len()) =>
             {
                 "suspend input"
             }
             Self::Suspend { .. } => "suspend edge argument",
+            Self::EnterDefer { .. }
+            | Self::FinishDefer { .. }
+            | Self::CheckedRaiseFault { .. }
+            | Self::CleanupDispatch { .. }
+            | Self::RecoverFault { .. } => "cleanup edge operand",
             Self::Trap { .. } => "trap terminator operand",
             Self::ResumeUnwind => "resume-unwind terminator operand",
             Self::Unreachable => "unreachable terminator operand",
@@ -1499,5 +2909,128 @@ impl SemTerminator {
             }
         });
         replaced
+    }
+}
+
+fn visit_checked_binary_operands(
+    lhs: &Operand,
+    rhs: &Operand,
+    normal: &Edge,
+    failures: &[CheckedFailure],
+    mut visit: impl FnMut(OperandSlot, &Operand),
+) {
+    visit(OperandSlot(0), lhs);
+    visit(OperandSlot(1), rhs);
+    let mut next = 2_u32;
+    for edge in std::iter::once(normal).chain(failures.iter().map(|failure| &failure.edge)) {
+        for operand in &edge.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR checked-binary operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_checked_binary_operands_mut(
+    lhs: &mut Operand,
+    rhs: &mut Operand,
+    normal: &mut Edge,
+    failures: &mut [CheckedFailure],
+    mut visit: impl FnMut(OperandSlot, &mut Operand),
+) {
+    visit(OperandSlot(0), lhs);
+    visit(OperandSlot(1), rhs);
+    let mut next = 2_u32;
+    for edge in std::iter::once(normal).chain(failures.iter_mut().map(|failure| &mut failure.edge))
+    {
+        for operand in &mut edge.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR checked-binary operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_variant_switch_operands(
+    scrutinee: &Operand,
+    arms: &[SemVariantArm],
+    mut visit: impl FnMut(OperandSlot, &Operand),
+) {
+    visit(OperandSlot(0), scrutinee);
+    let mut next = 1_u32;
+    for arm in arms {
+        for operand in &arm.target.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR variant-switch operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_variant_switch_operands_mut(
+    scrutinee: &mut Operand,
+    arms: &mut [SemVariantArm],
+    mut visit: impl FnMut(OperandSlot, &mut Operand),
+) {
+    visit(OperandSlot(0), scrutinee);
+    let mut next = 1_u32;
+    for arm in arms {
+        for operand in &mut arm.target.args {
+            visit(OperandSlot(next), operand);
+            next = next
+                .checked_add(1)
+                .expect("SIR variant-switch operand count exceeds u32");
+        }
+    }
+}
+
+fn visit_call_operands(
+    args: &[BoundaryOperand],
+    normal: Option<&Edge>,
+    unwind: &CallUnwind,
+    mut next: u32,
+    mut visit: impl FnMut(OperandSlot, &Operand),
+) {
+    let failure = match unwind {
+        CallUnwind::Cleanup(edge) => edge.args.as_slice(),
+        CallUnwind::NotApplicable => &[],
+    };
+    for operand in args
+        .iter()
+        .map(|arg| &arg.operand)
+        .chain(normal.into_iter().flat_map(|edge| &edge.args))
+        .chain(failure)
+    {
+        visit(OperandSlot(next), operand);
+        next = next
+            .checked_add(1)
+            .expect("SIR call operand count exceeds u32");
+    }
+}
+
+fn visit_call_operands_mut(
+    args: &mut [BoundaryOperand],
+    normal: Option<&mut Edge>,
+    unwind: &mut CallUnwind,
+    mut next: u32,
+    mut visit: impl FnMut(OperandSlot, &mut Operand),
+) {
+    let failure = match unwind {
+        CallUnwind::Cleanup(edge) => edge.args.as_mut_slice(),
+        CallUnwind::NotApplicable => &mut [],
+    };
+    for operand in args
+        .iter_mut()
+        .map(|arg| &mut arg.operand)
+        .chain(normal.into_iter().flat_map(|edge| &mut edge.args))
+        .chain(failure)
+    {
+        visit(OperandSlot(next), operand);
+        next = next
+            .checked_add(1)
+            .expect("SIR call operand count exceeds u32");
     }
 }

@@ -1,0 +1,45 @@
+import std.encoding.utf8;
+// MIR-corpus fixture: typed byte stream pipe — ordinary send/recv + close.
+//
+// Pins the suspending sink write (lowered as a Suspend carrier; the
+// `hew_sink_write_bytes` symbol materialises at codegen), the
+// layout-witness stream recv, and the sink/stream close releases
+// (`hew_sink_close` / `hew_stream_close`).
+import std.stream;
+
+actor Echo {
+    let n: i64,
+    receive fn run(unused: i64) {
+        let (sink, input) = match stream.bytes_pipe(4) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
+        for i in 0 .. n {
+            sink.send(f"x{i}".to_bytes());
+        }
+        sink.close();
+        var done = false;
+        while !done {
+            let item = input.recv();
+            match item {
+                .Some(b) => {
+                    let text = utf8.decode(b) handle error {
+                        println(f"invalid UTF-8: {error}");
+                        return;
+                    };
+                    println(text);
+                },
+                .None => {
+                    done = true;
+                },
+            }
+        }
+        input.close();
+    }
+}
+
+fn main() {
+    let e = spawn Echo(n: 2);
+    let _ = e.run(0);
+    sleep(200ms);
+}

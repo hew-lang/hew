@@ -4,8 +4,11 @@
 
 // Deque using Vec<i64>: [front, back, capacity, data...]
 // front points to first element, back points past last element
+//
+// A parameter is the callee's own copy, so every push and pop hands the deque
+// back and the caller reassigns; a pop also reports the value it removed.
 fn deque_create(capacity: i64) -> Vec<i64> {
-    let d: Vec<i64> = Vec.new();
+    var d: Vec<i64> = Vec.new();
     d.push(0); // index 0: front
     d.push(0); // index 1: back
     d.push(capacity); // index 2: capacity
@@ -26,28 +29,28 @@ fn deque_size(d: Vec<i64>) -> i64 {
     (back - front + cap) % cap
 }
 
-fn deque_push_back(d: Vec<i64>, val: i64) -> i64 {
+fn deque_push_back(var d: Vec<i64>, val: i64) -> Vec<i64> {
     let back = d[1];
     let cap = d[2];
     d.set(3 + back, val);
     d.set(1, (back + 1) % cap);
-    0
+    d
 }
 
-fn deque_pop_back(d: Vec<i64>) -> i64 {
+fn deque_pop_back(var d: Vec<i64>) -> (Vec<i64>, i64) {
     let back = d[1];
     let cap = d[2];
     let new_back = (back - 1 + cap) % cap;
     d.set(1, new_back);
-    d[3 + new_back]
+    (d, d[3 + new_back])
 }
 
-fn deque_pop_front(d: Vec<i64>) -> i64 {
+fn deque_pop_front(var d: Vec<i64>) -> (Vec<i64>, i64) {
     let front = d[0];
     let cap = d[2];
     let val = d[3 + front];
     d.set(0, (front + 1) % cap);
-    val
+    (d, val)
 }
 
 fn deque_front(d: Vec<i64>) -> i64 {
@@ -66,13 +69,14 @@ fn deque_back(d: Vec<i64>) -> i64 {
 // Returns Vec<i64> with n-k+1 results
 fn sliding_window_max(arr: Vec<i64>, k: i64) -> Vec<i64> {
     let n = arr.len();
-    let result: Vec<i64> = Vec.new();
-    let dq = deque_create(n + 1);
+    var result: Vec<i64> = Vec.new();
+    var dq = deque_create(n + 1);
     for i in 0 .. n {
         // Remove elements outside the window from front
         while !deque_is_empty(dq) {
             if deque_front(dq) < i - k + 1 {
-                deque_pop_front(dq);
+                let (dropped, _stale) = deque_pop_front(dq);
+                dq = dropped;
             } else {
                 break;
             }
@@ -80,12 +84,13 @@ fn sliding_window_max(arr: Vec<i64>, k: i64) -> Vec<i64> {
         // Remove elements smaller than current from back
         while !deque_is_empty(dq) {
             if arr[deque_back(dq)] <= arr[i] {
-                deque_pop_back(dq);
+                let (shrunk, _smaller) = deque_pop_back(dq);
+                dq = shrunk;
             } else {
                 break;
             }
         }
-        deque_push_back(dq, i);
+        dq = deque_push_back(dq, i);
         // Start recording once first window is complete
         if i >= k - 1 {
             result.push(arr[deque_front(dq)]);
@@ -102,7 +107,7 @@ fn main() {
     // But no negative literals, use positive values:
     // arr = [1, 3, 2, 0, 5, 3, 6, 7], k = 3
     // Windows: [1,3,2]->3, [3,2,0]->3, [2,0,5]->5, [0,5,3]->5, [5,3,6]->6, [3,6,7]->7
-    let arr: Vec<i64> = Vec.new();
+    var arr: Vec<i64> = Vec.new();
     arr.push(1);
     arr.push(3);
     arr.push(2);
@@ -144,7 +149,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 2: Window size = 1 (each element is its own max)
-    let arr2: Vec<i64> = Vec.new();
+    var arr2: Vec<i64> = Vec.new();
     arr2.push(5);
     arr2.push(2);
     arr2.push(8);
@@ -176,7 +181,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: Window size = array length (single result = global max)
-    let arr3: Vec<i64> = Vec.new();
+    var arr3: Vec<i64> = Vec.new();
     arr3.push(3);
     arr3.push(7);
     arr3.push(2);
@@ -196,7 +201,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: All same elements
-    let arr4: Vec<i64> = Vec.new();
+    var arr4: Vec<i64> = Vec.new();
     arr4.push(4);
     arr4.push(4);
     arr4.push(4);
@@ -223,7 +228,7 @@ fn main() {
     // Test 5: Increasing sequence
     // arr = [1, 2, 3, 4, 5], k=3
     // Windows: [1,2,3]->3, [2,3,4]->4, [3,4,5]->5
-    let arr5: Vec<i64> = Vec.new();
+    var arr5: Vec<i64> = Vec.new();
     arr5.push(1);
     arr5.push(2);
     arr5.push(3);
@@ -255,7 +260,7 @@ fn main() {
     // Test 6: Decreasing sequence
     // arr = [5, 4, 3, 2, 1], k=3
     // Windows: [5,4,3]->5, [4,3,2]->4, [3,2,1]->3
-    let arr6: Vec<i64> = Vec.new();
+    var arr6: Vec<i64> = Vec.new();
     arr6.push(5);
     arr6.push(4);
     arr6.push(3);
@@ -287,7 +292,7 @@ fn main() {
     // Test 7: Window size 2
     // arr = [10, 5, 2, 7, 8, 7], k=2
     // Windows: [10,5]->10, [5,2]->5, [2,7]->7, [7,8]->8, [8,7]->8
-    let arr7: Vec<i64> = Vec.new();
+    var arr7: Vec<i64> = Vec.new();
     arr7.push(10);
     arr7.push(5);
     arr7.push(2);
@@ -324,10 +329,11 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Deque operations directly
-    let dq = deque_create(8);
-    deque_push_back(dq, 10);
-    deque_push_back(dq, 20);
-    deque_push_back(dq, 30);
+    var dq = deque_create(8);
+    let seeds: Vec<i64> = [10, 20, 30];
+    for seed in seeds {
+        dq = deque_push_back(dq, seed);
+    }
     let f = deque_front(dq);
     let b = deque_back(dq);
     if f == 10 {

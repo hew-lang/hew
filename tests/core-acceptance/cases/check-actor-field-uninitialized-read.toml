@@ -1,0 +1,13 @@
+[[case]]
+id = "check-actor-field-uninitialized-read"
+intent = "D447: a deferred state field has no value until `init` assigns it; reading it before that first store is refused rather than reading uninitialized state."
+source = "cases/check-actor-field-uninitialized-read.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 10
+column = 21
+message = "E_ACTOR_FIELD_UNINITIALIZED: state field `label` is read before `init`"

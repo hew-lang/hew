@@ -1,0 +1,14 @@
+PASS: leaf lengths
+PASS: leaf index
+PASS: concat length
+PASS: concat index
+PASS: triple concat length
+PASS: index across nodes
+PASS: collect in order
+PASS: right-heavy tree
+PASS: single element rope
+PASS: concat single elements
+---
+Passed: 10
+Failed: 0
+ALL PASS

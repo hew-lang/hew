@@ -8,11 +8,11 @@ actor FastText {
 }
 
 actor Selector {
-    let fast: LocalPid<FastText>;
+    let fast: FastText,
 
     receive fn run(trigger: i64) -> i64 {
         let selected = select {
-            reply from fast.text() => reply,
+            reply from fast.text() => reply.expect("ask reply"),
             after 500ms => "timed-out",
         };
         println(f"selected={selected}");
@@ -26,7 +26,7 @@ actor Selector {
 fn main() {
     let fast = spawn FastText;
     let selector = spawn Selector(fast: fast);
-    match await selector.run(1) {
+    match selector.run(1) {
         .Ok(_) => println("unexpected"),
         .Err(_) => println("select-handled-crash"),
     }

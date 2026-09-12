@@ -1,0 +1,11 @@
+[[case]]
+id = "owned-enum-fault"
+intent = "A callee fault releases extracted enum data and the caller's retained enum without continuing."
+source = "cases/owned-enum-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

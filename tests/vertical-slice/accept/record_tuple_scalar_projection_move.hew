@@ -5,8 +5,8 @@ type TupleScalarMoveCarrier {
 
 fn project(i: i64) -> i64 {
     let r = TupleScalarMoveCarrier {
-        pair: (string_concat("tuple-", "owner"), i),
-        sibling: string_concat("sibling-", "owner"),
+        pair: (("tuple-" + "owner"), i),
+        sibling: ("sibling-" + "owner"),
     };
     let moved = r.pair.1;
     moved

@@ -3,13 +3,22 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-const JIT_CLASSIFICATION_TOML: &str = include_str!("../../scripts/jit-symbol-classification.toml");
+const RUNTIME_EXPORT_CLASSIFICATION_TOML: &str =
+    include_str!("../../scripts/runtime-export-classification.toml");
+const USER_DECLARABLE_BLOCKS: &[&str] = &["stable = [", "stable-stdlib = ["];
+const CLASSIFIED_BLOCKS: &[&str] = &[
+    "stable = [",
+    "stable-stdlib = [",
+    "non-declarable = [",
+    "public-host = [",
+    "public-host-stdlib = [",
+];
 
-fn parse_symbol_blocks(headers: &[&str]) -> HashSet<&'static str> {
+fn parse_symbol_blocks(source: &'static str, headers: &[&str]) -> HashSet<&'static str> {
     let mut set = HashSet::new();
     for header in headers {
         let mut inside = false;
-        for line in JIT_CLASSIFICATION_TOML.lines() {
+        for line in source.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with(header) {
                 inside = true;
@@ -36,7 +45,9 @@ fn parse_symbol_blocks(headers: &[&str]) -> HashSet<&'static str> {
 #[must_use]
 pub fn stable_symbols() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| parse_symbol_blocks(&["stable = [", "stable-stdlib = ["]))
+    SET.get_or_init(|| {
+        parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, USER_DECLARABLE_BLOCKS)
+    })
 }
 
 /// Whether `symbol` belongs to a classified Hew runtime or stdlib FFI tier.
@@ -47,15 +58,8 @@ pub fn stable_symbols() -> &'static HashSet<&'static str> {
 #[must_use]
 pub fn is_classified_hew_ffi_symbol(symbol: &str) -> bool {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| {
-        parse_symbol_blocks(&[
-            "stable = [",
-            "stable-stdlib = [",
-            "codegen-stable = [",
-            "internal = [",
-        ])
-    })
-    .contains(symbol)
+    SET.get_or_init(|| parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, CLASSIFIED_BLOCKS))
+        .contains(symbol)
 }
 
 #[cfg(test)]
@@ -63,7 +67,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn stable_and_internal_tiers_are_distinguished() {
+    fn public_host_symbols_are_classified_without_source_declaration_authority() {
+        const SOURCE: &str = r#"
+stable = [
+  "ordinary",
+]
+public-host = [
+  "host_runtime",
+]
+public-host-stdlib = [
+  "host_stdlib",
+]
+"#;
+        let all = parse_symbol_blocks(SOURCE, CLASSIFIED_BLOCKS);
+        let declarable = parse_symbol_blocks(SOURCE, USER_DECLARABLE_BLOCKS);
+        assert!(declarable.contains("ordinary"));
+        for host in ["host_runtime", "host_stdlib"] {
+            assert!(all.contains(host));
+            assert!(!declarable.contains(host));
+        }
+    }
+
+    #[test]
+    fn stable_and_non_declarable_tiers_are_distinguished() {
         assert!(stable_symbols().contains("hew_env_get"));
         assert!(is_classified_hew_ffi_symbol("hew_actor_cooperate"));
         assert!(!stable_symbols().contains("hew_actor_cooperate"));

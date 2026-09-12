@@ -1,9 +1,8 @@
 //! Shared integration-test helpers.
 
-use fd_lock::RwLock;
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
@@ -1211,7 +1210,7 @@ fn run_cargo_build_hew_bin(
 /// `extra_fresh` lets callers apply an artifact-specific currency check.
 ///
 /// The stamp read, the build, the artifact presence check, and the stamp
-/// write all happen inside the `fd_lock` write guard — no TOCTOU window
+/// write all happen while the file is exclusively locked — no TOCTOU window
 /// between "stamp matches" and "build" and "artifact present". The lock is
 /// intentionally held across `build_fn` (that IS the serialization); the
 /// only hazard would be re-entrancy, which is absent here because `build_fn`
@@ -1280,10 +1279,7 @@ fn ensure_built_serialized_inner(
         .truncate(false)
         .open(&lock_path)
         .map_err(|e| format!("open lock {}: {e}", lock_path.display()))?;
-    let mut lock = RwLock::new(lock_file);
-    let _guard = lock
-        .write()
-        .map_err(|e| format!("lock {}: {e}", lock_path.display()))?;
+    lock_file_exclusively(&lock_file, &lock_path)?;
     if fresh() {
         return Ok(()); // re-check under lock
     }
@@ -1296,6 +1292,16 @@ fn ensure_built_serialized_inner(
     }
     fs::write(&stamp_path, &run_id)
         .map_err(|e| format!("write stamp {}: {e}", stamp_path.display()))
+}
+
+fn lock_file_exclusively(file: &File, path: &Path) -> Result<(), String> {
+    loop {
+        match file.lock() {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(format!("lock {}: {error}", path.display())),
+        }
+    }
 }
 
 fn target_dir_and_profile(workspace_root: &Path) -> (PathBuf, String) {
@@ -1539,7 +1545,7 @@ mod hew_lib_bootstrap_tests {
     }
 
     /// N threads race `ensure_built_serialized` on one tempdir; the injected
-    /// build stub must run exactly once (`fd_lock` serializes the writers, the
+    /// build stub must run exactly once (the file lock serializes the writers, the
     /// stamp fast-path short-circuits everyone after the first winner).
     #[test]
     fn concurrent_callers_build_exactly_once() {

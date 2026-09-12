@@ -1,0 +1,11 @@
+// Reject fixture: the retired `tell` verb on a remote pid.
+//
+// `RemotePid<T>` publishes `send`; the pre-freeze `tell` spelling is gone and
+// must be reported as an unknown method rather than silently resolving.
+type Ping { n: i64 }
+actor Worker { receive fn ping(msg: Ping) {} }
+impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }
+fn probe(pid: RemotePid<Worker>) {
+    let result = pid.tell(Ping { n: 1 });
+}
+fn main() {}

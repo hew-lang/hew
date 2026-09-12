@@ -1,0 +1,13 @@
+[[case]]
+id = "jwt_error_message_removed"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/jwt_error_message_removed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_PATH_MEMBER_NOT_FOUND"
+line = 7
+column = 13
+message = "no function `error_message` in module `jwt`"

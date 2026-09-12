@@ -1,14 +1,14 @@
 #[resource]
 type Token {
-    id: i64;
+    id: i64,
 }
 
 impl Token {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 type Holder {
-    item: Option<(i64, Token)>;
+    item: Option<(i64, Token)>,
 }
 
 fn main() {

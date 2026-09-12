@@ -24,12 +24,12 @@
 import hew.closableerr.{LocalShadowClosable as ForeignClosable};
 
 pub type ClosableHandle {
-    id: i64;
+    id: i64,
 }
 
 // Local type shadowing the trait owner's sibling error type by bare name.
 pub type LocalShadowError {
-    detail: i64;
+    detail: i64,
 }
 
 impl ForeignClosable for ClosableHandle {

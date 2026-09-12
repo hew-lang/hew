@@ -6,5 +6,5 @@
 //! name `Widget` collides across the two packages (last-write-wins).
 
 pub type Widget {
-    v: i64;
+    v: i64,
 }

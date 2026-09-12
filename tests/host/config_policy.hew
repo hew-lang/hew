@@ -1,0 +1,18 @@
+fn rejected(label: string) -> bool {
+    label.starts_with("reject:")
+}
+
+pub fn normalize_label(label: string) -> string {
+    if rejected(label) {
+        let detail = label.to_upper();
+        panic(detail);
+    }
+    label.trim()
+}
+
+pub fn take_label(consume label: string) -> string {
+    if rejected(label) {
+        panic(label);
+    }
+    label
+}

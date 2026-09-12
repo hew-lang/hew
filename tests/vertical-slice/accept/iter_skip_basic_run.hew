@@ -21,7 +21,7 @@
 //! distinct diagnostic code (101/102) so a regression is legible.
 
 type Countdown {
-    n: i64;
+    n: i64,
 }
 
 impl Iterator for Countdown {
@@ -42,8 +42,8 @@ impl Iterator for Countdown {
 /// sites (e.g. `Skip<Countdown, i64>`) can pin the item type and satisfy
 /// associated-type bounds in generic helpers (`fold_i64`).
 type Skip<I, A> {
-    iter: I;
-    remaining: i64;
+    iter: I,
+    remaining: i64,
 }
 
 impl<I, A> Iterator for Skip<I, A> where I: Iterator<Item = A> {

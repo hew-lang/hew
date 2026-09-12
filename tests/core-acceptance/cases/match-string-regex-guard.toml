@@ -1,0 +1,11 @@
+[[case]]
+id = "match-string-regex-guard"
+intent = "A string match mixes a regex arm, a string literal arm, a whole-scrutinee binding arm and a wildcard in source order. A guard that rejects a matching regex hands the scrutinee whole to the literal arm written after it, and a binding arm whose guard fails releases the value it bound before the wildcard runs. The repetition loop turns a missed release into a leak signal."
+source = "cases/match-string-regex-guard.hew"
+suites = ["acceptance", "safety"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "long digits\nseven\nshort digits\nabcdef!\nother\nkey4/even\nkey7/odd\nchurn 243333\n"
+exit = 0

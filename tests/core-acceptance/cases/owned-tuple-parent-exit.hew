@@ -1,0 +1,15 @@
+fn main() -> i64 {
+    let child = {
+        let parent = ("outer".to_upper(), ("inner".to_upper(), "A".to_bytes()));
+        parent.1
+    };
+    let label = child.0;
+    let original = child.1;
+    var changed = original;
+    changed.push(66);
+    if original.len() != 1 || changed.len() != 2 {
+        return 1;
+    }
+    println(f"{label}:{original[0]}:{changed[1]}");
+    0
+}

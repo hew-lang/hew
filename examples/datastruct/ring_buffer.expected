@@ -1,0 +1,14 @@
+PASS: initially empty
+PASS: available = capacity
+PASS: write/read single
+PASS: FIFO order
+PASS: full buffer
+PASS: write full fails
+PASS: read all from full
+PASS: wraparound
+PASS: read empty sentinel
+PASS: interleaved wraparound
+---
+Passed: 10
+Failed: 0
+ALL PASS

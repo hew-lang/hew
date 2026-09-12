@@ -1,0 +1,13 @@
+[[case]]
+id = "signed_const_arithmetic"
+intent = "Target-typed signed module-constant arithmetic must lower through the ordinary const path, not a unary-minus spelling exception."
+source = "../vertical-slice/accept/signed_const_arithmetic.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "-1\n"
+exit = 0

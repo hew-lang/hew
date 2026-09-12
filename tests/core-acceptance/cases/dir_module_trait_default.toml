@@ -1,0 +1,13 @@
+[[case]]
+id = "dir_module_trait_default"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/dir_module_trait_default/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Rex\nHEY\nHello, Rex!\nHello, Rex!\n"
+exit = 0

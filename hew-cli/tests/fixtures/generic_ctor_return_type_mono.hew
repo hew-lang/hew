@@ -12,14 +12,14 @@
 // the nested `Stack<Stack<i64>>` case proves the outer and inner ctors both
 // resolve through the same machinery.
 type Stack<T> {
-    items: Vec<T>;
+    items: Vec<T>,
 }
 
 impl<T> Stack<T> {
     fn new() -> Stack<T> {
         Stack { items: Vec.new() }
     }
-    fn push(self, x: T) {
+    fn push(var self, x: T) {
         self.items.push(x);
     }
     fn len(self) -> i64 {
@@ -38,18 +38,18 @@ fn make_strings() -> Stack<string> {
 
 fn main() {
     // assoc-fn ctor, `T` (= i64) from the `let` annotation
-    let a: Stack<i64> = Stack.new();
+    var a: Stack<i64> = Stack.new();
     a.push(1);
     a.push(2);
     println(a.len());
 
     // free-fn ctor, `T` (= i64) from the `let` annotation
-    let b: Stack<i64> = new_stack();
+    var b: Stack<i64> = new_stack();
     b.push(3);
     println(b.len());
 
     // assoc-fn ctor at a DIFFERENT type (string), via return-position inference
-    let s = make_strings();
+    var s = make_strings();
     s.push("x");
     s.push("y");
     s.push("z");
@@ -57,8 +57,8 @@ fn main() {
 
     // nested: Stack<Stack<i64>> — both the outer and inner ctor are
     // return-type-polymorphic
-    let outer: Stack<Stack<i64>> = Stack.new();
-    let inner: Stack<i64> = Stack.new();
+    var outer: Stack<Stack<i64>> = Stack.new();
+    var inner: Stack<i64> = Stack.new();
     inner.push(10);
     outer.push(inner);
     println(outer.len());
@@ -67,7 +67,7 @@ fn main() {
     // type parameter is pinned at the call site, not by the expected type. This
     // surface already lowered before the F7 fix; pinning it here guards the
     // whole constructor family against regression.
-    let t = Stack<i64>.new();
+    var t = Stack<i64>.new();
     t.push(100);
     t.push(200);
     t.push(300);

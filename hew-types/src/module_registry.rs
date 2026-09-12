@@ -3,7 +3,7 @@
 //! Replaces the baked-in `stdlib_generated.rs` tables. Discovers modules
 //! by searching the filesystem and parsing `.hew` files at user compile time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use hew_parser::ast::Item;
@@ -12,17 +12,28 @@ use hew_parser::module::ModuleId;
 use crate::stdlib_loader::{load_module_checked, ModuleInfo};
 
 /// Parsed module data that may be reused across checker runs.
+///
+/// Keyed by the canonical path of the source each module was parsed from, not
+/// by the spelling that reached it. A spelling is a resolution input, and two
+/// sources may answer one spelling across programs (a different search path, a
+/// different project root), so a spelling-keyed slot hands the second program
+/// the first program's source.
 #[derive(Debug, Default)]
 struct ModuleParseCache {
-    modules: HashMap<ModuleId, ModuleInfo>,
+    modules: HashMap<PathBuf, ModuleInfo>,
+}
+
+/// The cache identity of a parsed source: its canonical path where the
+/// filesystem resolves one, else the path as selected.
+fn parse_cache_key(source: &std::path::Path) -> PathBuf {
+    std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf())
 }
 
 /// Module declarations and derived metadata visible to one checked program.
 #[derive(Debug, Clone, Default)]
 struct ProgramModuleState {
-    modules: HashMap<ModuleId, ModuleInfo>,
+    modules: BTreeMap<ModuleId, ModuleInfo>,
     handle_types: HashSet<String>,
-    resource_wrapper_types: HashSet<String>,
     drop_types: HashSet<String>,
     drop_funcs: HashMap<String, String>,
 }
@@ -47,6 +58,22 @@ pub struct ModuleRegistry {
     compiler_stdlib_root: Option<PathBuf>,
 }
 
+/// One module in the registry's active program closure.
+///
+/// The view borrows the parser-owned declarations retained by the registry;
+/// consumers must not reconstruct or clone a separate source program. Compiler
+/// ownership is derived from the selected source's canonical path, never from
+/// the module's spelling.
+#[derive(Debug, Clone, Copy)]
+pub struct LoadedModule<'a> {
+    /// Canonical nominal identity selected for the active source.
+    pub module_id: &'a ModuleId,
+    /// Parsed declarations and extracted module metadata.
+    pub info: &'a ModuleInfo,
+    /// Whether the source belongs to this compiler's stdlib distribution.
+    pub compiler_owned: bool,
+}
+
 /// Parse a canonical dotted module identity at the registry boundary.
 fn module_id_from_identity(module_path: &str) -> ModuleId {
     ModuleId::new(
@@ -63,10 +90,17 @@ fn module_id_from_identity(module_path: &str) -> ModuleId {
 ///
 /// Returns `None` if no such ancestor exists, which is the normal case for
 /// external Hew projects compiled with an installed binary.
+///
+/// The walk runs on an absolute path so the answer never depends on the
+/// process working directory. A relative input would otherwise ascend to the
+/// empty path and report `""` as the checkout root, and every module source
+/// resolved under that root would be a cwd-relative path that
+/// `canonical_stdlib_module_for_source` cannot canonicalize.
 #[must_use]
 pub fn find_enclosing_hew_root(from: &std::path::Path) -> Option<PathBuf> {
+    let from = std::path::absolute(from).ok()?;
     let start = if from.is_dir() {
-        from.to_path_buf()
+        from
     } else {
         from.parent()?.to_path_buf()
     };
@@ -341,26 +375,19 @@ fn canonical_stdlib_module_source_in_roots(
 }
 
 /// Return the declaration owner selected by an import's resolved source.
-///
-/// `std::channel::channel` is the legacy filesystem spelling for
-/// `std/channel/channel.hew`; the repeated basename does not introduce a
-/// second source module. Collapse it only when the resolved path is the exact
-/// shipped channel source, so an identically-spelled user package retains its
-/// own nominal owner.
 #[must_use]
 pub fn canonical_source_module_identity(
     requested_dotted: &str,
     source_paths: &[PathBuf],
 ) -> String {
-    if requested_dotted == "std.channel.channel"
-        && source_paths
-            .iter()
-            .any(|source| is_canonical_stdlib_module_source(source, "std.channel"))
-    {
-        "std.channel".to_string()
-    } else {
-        requested_dotted.to_string()
-    }
+    // Directory-module peers are alternate physical spellings of the same
+    // shipped module.  Resolve their owner from the trusted source path so a
+    // direct `std.net.http.http_client` import cannot create a second nominal
+    // owner beside the assembled `std.net.http` module.
+    source_paths
+        .iter()
+        .find_map(|source| canonical_stdlib_module_for_source(source))
+        .unwrap_or_else(|| requested_dotted.to_string())
 }
 
 #[derive(Debug)]
@@ -376,6 +403,72 @@ pub enum ModuleError {
         column: usize,
         message: String,
     },
+}
+
+/// Failure to activate a module from the running compiler's own distribution.
+#[derive(Debug)]
+pub enum CompilerModuleError {
+    /// No installed or development stdlib root belongs to this compiler.
+    AuthorityUnavailable {
+        /// Requested dotted module identity.
+        module_path: String,
+    },
+    /// The program already resolved this nominal identity to another source.
+    ConflictingActiveModule {
+        /// Requested dotted module identity.
+        module_path: String,
+        /// Source already active for the identity, when recorded.
+        loaded_source: Option<PathBuf>,
+    },
+    /// The trusted root resolved through a symlink or alias to an outside source.
+    SourceOutsideAuthority {
+        /// Requested dotted module identity.
+        module_path: String,
+        /// Outside source selected by the loader, when recorded.
+        source_path: Option<PathBuf>,
+    },
+    /// The compiler-owned source was missing or malformed.
+    Module(ModuleError),
+}
+
+impl std::fmt::Display for CompilerModuleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AuthorityUnavailable { module_path } => write!(
+                f,
+                "compiler-owned standard library is unavailable while loading `{module_path}`"
+            ),
+            Self::ConflictingActiveModule {
+                module_path,
+                loaded_source,
+            } => write!(
+                f,
+                "module `{module_path}` is already active from a non-compiler source{}",
+                loaded_source
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
+            ),
+            Self::SourceOutsideAuthority {
+                module_path,
+                source_path,
+            } => write!(
+                f,
+                "compiler module `{module_path}` resolved outside its owned standard library{}",
+                source_path
+                    .as_ref()
+                    .map_or_else(String::new, |path| format!(" ({})", path.display()))
+            ),
+            Self::Module(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for CompilerModuleError {}
+
+impl From<ModuleError> for CompilerModuleError {
+    fn from(error: ModuleError) -> Self {
+        Self::Module(error)
+    }
 }
 
 impl std::fmt::Display for ModuleError {
@@ -428,11 +521,12 @@ impl ModuleRegistry {
     /// must come from the same selected source.
     fn exact_module_source_type_owner(&self, owner: &str, leaf: &str) -> Option<String> {
         let module_id = module_id_from_identity(owner);
+        let loader_path = module_id.path.join("::");
         if let Some(info) = self
             .active
             .modules
             .get(&module_id)
-            .or_else(|| self.cache.modules.get(&module_id))
+            .or_else(|| self.cached_module_for_spelling(&loader_path))
         {
             if !Self::module_info_declares_nominal(info, leaf) {
                 return None;
@@ -440,7 +534,6 @@ impl ModuleRegistry {
             let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
             return Some(canonical_source_module_identity(owner, &source_paths));
         }
-        let loader_path = module_id_from_identity(owner).path.join("::");
         self.search_paths.iter().find_map(|search_path| {
             let info = load_module_checked(&loader_path, search_path)
                 .ok()
@@ -598,6 +691,115 @@ impl ModuleRegistry {
         })
     }
 
+    fn module_info_has_stdlib_authority(&self, id: &ModuleId, info: &ModuleInfo) -> bool {
+        info.source_path.as_deref().is_some_and(|source_path| {
+            self.source_has_stdlib_authority(source_path, &id.path.join("."))
+        })
+    }
+
+    /// Iterate the modules active for this checked program in canonical identity
+    /// order.
+    ///
+    /// Parse-cache and configured backing maps are not separately exposed. Each
+    /// item borrows a declaration currently active for the program and reports
+    /// compiler ownership from canonical source provenance.
+    #[must_use]
+    pub fn loaded_modules(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = LoadedModule<'_>> + ExactSizeIterator {
+        self.active
+            .modules
+            .iter()
+            .map(|(module_id, info)| LoadedModule {
+                module_id,
+                info,
+                compiler_owned: self.module_info_has_stdlib_authority(module_id, info),
+            })
+    }
+
+    /// Activate a module from the running compiler's exact stdlib distribution.
+    ///
+    /// This bypasses ordinary project and environment search paths. A compatible
+    /// compiler-owned active or cached entry is reused; an active same-identity
+    /// module from another source is rejected rather than silently replacing
+    /// checker-visible state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CompilerModuleError::AuthorityUnavailable`] when the running
+    /// compiler has no owned stdlib layout, a wrapped [`ModuleError`] when the
+    /// exact source cannot be loaded, or a provenance error when the selected or
+    /// already-active source is outside compiler authority.
+    pub fn load_compiler_stdlib_module(
+        &mut self,
+        module_path: &str,
+    ) -> Result<(), CompilerModuleError> {
+        let id = module_id_from_identity(module_path);
+        let loader_path = id.path.join("::");
+
+        if let Some(info) = self.active.modules.get(&id) {
+            if !self.module_info_has_stdlib_authority(&id, info) {
+                return Err(CompilerModuleError::ConflictingActiveModule {
+                    module_path: module_path.to_string(),
+                    loaded_source: info.source_path.clone(),
+                });
+            }
+            return Ok(());
+        }
+
+        let compiler_root = self.compiler_stdlib_root.clone().ok_or_else(|| {
+            CompilerModuleError::AuthorityUnavailable {
+                module_path: module_path.to_string(),
+            }
+        })?;
+        let Some(source) = crate::stdlib_loader::resolve_hew_path(&loader_path, &compiler_root)
+        else {
+            return Err(ModuleError::NotFound {
+                module_path: module_path.to_string(),
+                searched: vec![compiler_root],
+            }
+            .into());
+        };
+        let cache_key = parse_cache_key(&source);
+        let cached = self.cache.modules.get(&cache_key).cloned();
+        let info = if let Some(info) = cached {
+            info
+        } else {
+            let Some(info) = load_module_checked(&loader_path, &compiler_root)? else {
+                return Err(ModuleError::NotFound {
+                    module_path: module_path.to_string(),
+                    searched: vec![compiler_root],
+                }
+                .into());
+            };
+            info
+        };
+
+        let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+        let canonical_owner = canonical_source_module_identity(&id.path.join("."), &source_paths);
+        let canonical_id = module_id_from_identity(&canonical_owner);
+        if !self.module_info_has_stdlib_authority(&canonical_id, &info) {
+            return Err(CompilerModuleError::SourceOutsideAuthority {
+                module_path: module_path.to_string(),
+                source_path: info.source_path,
+            });
+        }
+
+        if let Some(active) = self.active.modules.get(&canonical_id) {
+            if !self.module_info_has_stdlib_authority(&canonical_id, active) {
+                return Err(CompilerModuleError::ConflictingActiveModule {
+                    module_path: canonical_owner,
+                    loaded_source: active.source_path.clone(),
+                });
+            }
+            return Ok(());
+        }
+
+        self.cache.modules.insert(cache_key, info.clone());
+        self.activate_module(&canonical_id, info);
+        Ok(())
+    }
+
     /// Load a module by its full path (e.g. `std::encoding::json`).
     ///
     /// If the module is already cached, returns the cached version.
@@ -612,13 +814,6 @@ impl ModuleRegistry {
     /// Returns [`ModuleError::NotFound`] if no search path contains the module,
     /// or [`ModuleError::ParseError`] if the module file exists but cannot be parsed.
     ///
-    /// # Panics
-    ///
-    /// Panics (fail-closed) if a newly loaded module makes a fielded
-    /// `#[resource]` handle-wrapper share its short name with a fieldless
-    /// `#[opaque]` handle in the loaded set — an internal stdlib-authoring
-    /// invariant that would otherwise let handle-method dispatch misclassify the
-    /// wrapper as an opaque handle. The current stdlib satisfies it.
     pub fn load(&mut self, module_path: &str) -> Result<&ModuleInfo, ModuleError> {
         let id = module_id_from_identity(module_path);
         let loader_path = id.path.join("::");
@@ -626,21 +821,29 @@ impl ModuleRegistry {
         if self.active.modules.contains_key(&id) {
             return Ok(&self.active.modules[&id]);
         }
-        if let Some(info) = self.cache.modules.get(&id).cloned() {
-            return Ok(self.activate_module(&id, info));
-        }
 
-        for search_path in &self.search_paths {
-            if let Some(info) = load_module_checked(&loader_path, search_path)? {
-                let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
-                let canonical_owner =
-                    canonical_source_module_identity(&id.path.join("."), &source_paths);
-                let canonical_id = module_id_from_identity(&canonical_owner);
-                self.cache
-                    .modules
-                    .insert(canonical_id.clone(), info.clone());
-                return Ok(self.activate_module(&canonical_id, info));
-            }
+        let search_paths = self.search_paths.clone();
+        for search_path in &search_paths {
+            let Some(source) = crate::stdlib_loader::resolve_hew_path(&loader_path, search_path)
+            else {
+                continue;
+            };
+            let cache_key = parse_cache_key(&source);
+            let cached = self.cache.modules.get(&cache_key).cloned();
+            let info = if let Some(info) = cached {
+                info
+            } else {
+                let Some(info) = load_module_checked(&loader_path, search_path)? else {
+                    continue;
+                };
+                self.cache.modules.insert(cache_key, info.clone());
+                info
+            };
+            let source_paths = info.source_path.iter().cloned().collect::<Vec<_>>();
+            let canonical_owner =
+                canonical_source_module_identity(&id.path.join("."), &source_paths);
+            let canonical_id = module_id_from_identity(&canonical_owner);
+            return Ok(self.activate_module(&canonical_id, info));
         }
 
         Err(ModuleError::NotFound {
@@ -649,31 +852,25 @@ impl ModuleRegistry {
         })
     }
 
+    /// The parse-cache entry for the source a spelling resolves to under the
+    /// configured search paths, if that source has already been parsed.
+    fn cached_module_for_spelling(&self, loader_path: &str) -> Option<&ModuleInfo> {
+        self.search_paths.iter().find_map(|search_path| {
+            let source = crate::stdlib_loader::resolve_hew_path(loader_path, search_path)?;
+            self.cache.modules.get(&parse_cache_key(&source))
+        })
+    }
+
     fn activate_module(&mut self, id: &ModuleId, info: ModuleInfo) -> &ModuleInfo {
         self.active
             .handle_types
             .extend(info.handle_types.iter().cloned());
-        self.active
-            .resource_wrapper_types
-            .extend(info.resource_wrapper_types.iter().cloned());
         self.active
             .drop_types
             .extend(info.drop_types.iter().cloned());
         self.active
             .drop_funcs
             .extend(info.drop_funcs.iter().cloned());
-
-        if let Some((wrapper, handle)) = crate::stdlib_loader::resource_wrapper_shadowing_handle(
-            &self.active.handle_types,
-            &self.active.resource_wrapper_types,
-        ) {
-            panic!(
-                "stdlib invariant violated: #[resource] handle-wrapper `{wrapper}` \
-               shares its short name with fieldless #[opaque] handle `{handle}` — \
-               rename one so handle-method dispatch cannot misclassify the wrapper \
-               as an opaque handle"
-            );
-        }
 
         self.active.modules.insert(id.clone(), info);
         &self.active.modules[id]
@@ -813,10 +1010,22 @@ impl ModuleRegistry {
             .canonical_registry_signature_type_identity(&name, canonical_owner)
             .unwrap_or(name);
         crate::ty::Ty::Named {
+            builtin: builtin.or_else(|| self.encoding_value_builtin(&name)),
             name,
             args,
-            builtin,
         }
+    }
+
+    /// Only a declaration in the active, exact shipped source can grant an
+    /// encoding value identity to a registry signature.
+    fn encoding_value_builtin(&self, name: &str) -> Option<crate::BuiltinType> {
+        let (owner, leaf) = name.rsplit_once('.')?;
+        let builtin = crate::BuiltinType::from_encoding_value_source(owner, leaf)?;
+        let id = module_id_from_identity(owner);
+        let info = self.active.modules.get(&id)?;
+        (Self::module_info_declares_nominal(info, leaf)
+            && self.module_info_has_stdlib_authority(&id, info))
+        .then_some(builtin)
     }
 
     /// Check if a fully-qualified name is a drop type across all loaded modules.
@@ -998,6 +1207,28 @@ mod tests {
     }
 
     #[test]
+    fn canonical_source_owner_follows_directory_peer_layout() {
+        let stdlib = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std");
+        assert_eq!(
+            canonical_source_module_identity(
+                "std.net.http.http_client",
+                &[stdlib.join("net/http/http_client.hew")]
+            ),
+            "std.net.http"
+        );
+        assert_eq!(
+            canonical_source_module_identity("std.net.http", &[stdlib.join("net/http/http.hew")]),
+            "std.net.http"
+        );
+        let user_lookalike = std::env::temp_dir().join("user/std/net/http/http_client.hew");
+        assert_eq!(
+            canonical_source_module_identity("std.net.http.http_client", &[user_lookalike]),
+            "std.net.http.http_client",
+            "only a shipped source names a directory module; a user source keeps its own owner"
+        );
+    }
+
+    #[test]
     fn canonical_stdlib_owner_rejects_a_user_lookalike() {
         let user_dir = TestDir::new("module-registry-user-stdlib-lookalike");
         let user_source = user_dir.root.join("std/string.hew");
@@ -1006,29 +1237,6 @@ mod tests {
         fs::write(&user_source, "pub fn len() -> i64 { 0 }\n").expect("write lookalike source");
 
         assert_eq!(canonical_stdlib_module_for_source(&user_source), None);
-    }
-
-    #[test]
-    fn channel_repeated_basename_maps_only_exact_shipped_source_to_canonical_owner() {
-        let shipped = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("std/channel/channel.hew");
-        assert_eq!(
-            canonical_source_module_identity("std.channel.channel", &[shipped]),
-            "std.channel"
-        );
-
-        let user_lookalike = std::env::temp_dir().join("user/std/channel/channel.hew");
-        assert_eq!(
-            canonical_source_module_identity("std.channel.channel", &[user_lookalike]),
-            "std.channel.channel",
-            "a same-spelled user module must retain its own nominal owner"
-        );
-        assert_eq!(
-            canonical_source_module_identity("std.channel", &[]),
-            "std.channel",
-            "the canonical owner is already stable"
-        );
     }
 
     #[test]
@@ -1047,7 +1255,7 @@ mod tests {
         let user_source = user_channel_dir.join("channel.hew");
         fs::write(
             &user_source,
-            "pub type Sender { marker: i64; }\npub type Receiver { marker: i64; }\n",
+            "pub type Sender { marker: i64, }\npub type Receiver { marker: i64, }\n",
         )
         .expect("write user channel lookalike");
 
@@ -1152,8 +1360,12 @@ mod tests {
         let out_of_tree_executable = TestDir::new("compiler-stdlib-out-of-tree-targets")
             .root
             .join("deeply/nested/unrelated/path/deps/hew_types-abc123");
+        // The development tier returns the manifest-dir ancestor as spelled,
+        // so canonicalize both sides: an out-of-tree `target/` symlink
+        // otherwise spells the same directory two ways.
         assert_eq!(
-            compiler_stdlib_root_impl(&out_of_tree_executable, &child_manifest_dir),
+            compiler_stdlib_root_impl(&out_of_tree_executable, &child_manifest_dir)
+                .and_then(|root| root.canonicalize().ok()),
             development.root.canonicalize().ok(),
             "the development tier must resolve from manifest_dir, not the executable path"
         );
@@ -1282,18 +1494,18 @@ mod tests {
         reg.load("std.net.http").unwrap();
         assert!(reg.is_handle_type("json.Value"), "json.Value still present");
         assert!(
-            !reg.is_handle_type("http.Request"),
-            "http.Request is a fielded resource wrapper, not an opaque handle"
+            reg.is_handle_type("http.Request"),
+            "http.Request is a fieldless opaque resource with one release authority"
         );
     }
 
     #[test]
     fn drop_types_accumulated() {
         let mut reg = registry();
-        reg.load("std.encoding.json").unwrap();
+        reg.load("std.encoding.toml").unwrap();
         assert!(
-            reg.is_drop_type("json.Value"),
-            "json.Value is a `#[resource]` handle, so it is a drop type"
+            reg.is_drop_type("toml.Value"),
+            "toml.Value is a `#[resource]` handle, so it is a drop type"
         );
         reg.load("std.net.http").unwrap();
         assert!(
@@ -1314,22 +1526,29 @@ mod tests {
             reg.is_drop_type("regex.Pattern"),
             "regex.Pattern is a `#[resource]` handle, so it is a drop type"
         );
+        for resource in ["toml.Value", "http.Request", "http.Server", "process.Child"] {
+            assert!(
+                reg.is_drop_type(resource),
+                "{resource} must remain registered"
+            );
+        }
     }
 
     #[test]
     fn drop_funcs_accumulated() {
         let mut reg = registry();
-        reg.load("std.encoding.json").unwrap();
+        reg.load("std.encoding.toml").unwrap();
         assert_eq!(
-            reg.drop_func_for("json.Value"),
-            Some("hew_json_free"),
-            "json.Value.close directly forwards to its sole raw disposer"
+            reg.drop_func_for("toml.Value"),
+            Some("hew_toml_free"),
+            "toml.Value.close directly forwards to its sole raw disposer"
         );
         reg.load("std.net.http").unwrap();
         assert_eq!(
             reg.drop_func_for("http.Request"),
-            None,
-            "http.Request should not have a drop func"
+            Some("hew_http_request_free"),
+            "http.Request.close consumes the handle itself, so its drop func is \
+             the one release authority"
         );
         reg.load("std.process").unwrap();
         assert_eq!(
@@ -1346,12 +1565,12 @@ mod tests {
         );
         let process_source = include_str!("../../std/process.hew");
         assert!(
-            process_source.contains("fn close(child: Child)"),
+            process_source.contains("fn close(consume self)"),
             "process.Child must retain its source-level resource close method"
         );
         assert_eq!(
             process_source
-                .matches("hew_process_drop(child.handle)")
+                .matches("hew_process_drop(self.handle)")
                 .count(),
             1,
             "process.Child::close must release its wrapped ChildHandle exactly once"
@@ -1369,7 +1588,7 @@ mod tests {
         );
         let all = reg.all_drop_funcs();
         for expected in [
-            ("json.Value".to_string(), "hew_json_free".to_string()),
+            ("toml.Value".to_string(), "hew_toml_free".to_string()),
             (
                 "http.Server".to_string(),
                 "hew_http_server_close".to_string(),
@@ -1413,7 +1632,7 @@ mod tests {
         let fixture = TestDir::new("registry-signature-channel-physical-alias");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std.channel.channel as ch;\n",
+            "import std.channel as ch;\n",
         )
         .expect("write signature importer");
 
@@ -1426,51 +1645,12 @@ mod tests {
         assert_eq!(
             reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
             Some("std.channel.Sender".to_string()),
-            "the selected shipped source collapses its repeated physical basename"
+            "the shipped source publishes its declarations under the directory owner"
         );
         assert_eq!(
             reg.canonical_registry_signature_type_identity("ch.Foreign", "signature_importer",),
             None,
             "an imported qualifier cannot authorize a type absent from that exact source"
-        );
-    }
-
-    #[test]
-    fn imported_registry_signature_user_lookalike_is_order_independent() {
-        let mut reg = registry();
-        reg.load("std.channel")
-            .expect("prime canonical shipped channel cache");
-
-        let fixture = TestDir::new("registry-signature-channel-user-lookalike");
-        let channel_dir = fixture.root.join("std/channel");
-        fs::create_dir_all(&channel_dir).expect("create user channel path");
-        fs::write(
-            channel_dir.join("channel.hew"),
-            "pub type Sender { marker: i64; }\n",
-        )
-        .expect("write user channel lookalike");
-        fs::write(
-            fixture.root.join("signature_importer.hew"),
-            "import std.channel.channel as ch;\n",
-        )
-        .expect("write user signature importer");
-
-        // Model a later importer with a different exact resolution context.
-        // The already-cached shipped canonical owner must not grant authority
-        // to this same-spelled user source or rewrite it back to std.channel.
-        reg.search_paths = vec![fixture.root.clone()];
-        reg.load("signature_importer")
-            .expect("load user-lookalike importer");
-
-        assert_eq!(
-            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
-            Some("std.channel.channel.Sender".to_string()),
-            "the user source retains its nested nominal owner despite shipped-cache order"
-        );
-        assert_eq!(
-            reg.canonical_registry_signature_type_identity("ch.Receiver", "signature_importer",),
-            None,
-            "the shipped Receiver declaration must not leak through the canonical cache"
         );
     }
 
@@ -1630,7 +1810,7 @@ mod tests {
     #[test]
     fn same_legacy_receiver_spelling_never_cross_wires_loaded_modules() {
         fn shared_info(c_symbol: &str, dispatch_through_impl: bool) -> ModuleInfo {
-            let parsed = hew_parser::parse("pub type Pattern { value: i32; }\n");
+            let parsed = hew_parser::parse("pub type Pattern { value: i32, }\n");
             assert!(parsed.errors.is_empty());
             ModuleInfo {
                 source_path: None,
@@ -1818,6 +1998,211 @@ mod tests {
         fn root(&self) -> &PathBuf {
             &self.dir.root
         }
+
+        fn write_std_module(&self, name: &str, source: &str) -> PathBuf {
+            let path = self.dir.root.join("std").join(format!("{name}.hew"));
+            fs::write(&path, source).expect("write test stdlib module");
+            path
+        }
+    }
+
+    #[test]
+    fn loaded_modules_are_active_only_and_deterministically_ordered() {
+        let modules = TestHewTree::new("loaded-module-order");
+        modules.write_std_module("zeta", "pub fn zeta() -> i64 { 26 }\n");
+        modules.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![modules.root().clone()]);
+        registry.load("std.zeta").expect("load zeta module");
+        registry.load("std.alpha").expect("load alpha module");
+
+        let loaded = registry
+            .loaded_modules()
+            .map(|module| module.module_id.path.join("."))
+            .collect::<Vec<_>>();
+        assert_eq!(loaded, ["std.alpha", "std.zeta"]);
+
+        let next_program = registry.for_new_program();
+        assert!(
+            next_program.loaded_modules().next().is_none(),
+            "the loaded view must not reveal parse-cache entries from a completed program"
+        );
+    }
+
+    #[test]
+    fn parse_cache_keeps_two_sources_under_one_spelling_apart_across_programs() {
+        // Two project trees each declare `std.alpha`, and both are checked by
+        // one registry the way a driver reuses it: the second program's
+        // `std.alpha` is a different file, so it must be parsed from its own
+        // source rather than served from the first program's slot.
+        let first = TestHewTree::new("cache-key-first");
+        first.write_std_module("alpha", "pub fn alpha() -> i64 { 1 }\n");
+        let second = TestHewTree::new("cache-key-second");
+        let second_source = second.write_std_module("alpha", "pub fn alpha() -> i64 { 2 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![first.root().clone()]);
+        registry.load("std.alpha").expect("load the first alpha");
+
+        let mut registry = registry.for_new_program();
+        registry.search_paths = vec![second.root().clone()];
+        let info = registry.load("std.alpha").expect("load the second alpha");
+        assert_eq!(
+            info.source_path.as_ref(),
+            Some(&second_source),
+            "a second source under the same spelling must not reuse the first source's parse"
+        );
+    }
+
+    #[test]
+    fn encoding_registry_signatures_acquire_only_loaded_shipped_identity() {
+        use crate::{BuiltinType, Ty};
+        let mut registry = ModuleRegistry::new(vec![]);
+        for (format, kind) in [
+            ("json", BuiltinType::JsonValue),
+            ("yaml", BuiltinType::YamlValue),
+        ] {
+            let owner = format!("std.encoding.{format}");
+            let input = Ty::option(Ty::named(format!("{format}.Value"), vec![]));
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&input, &owner),
+                input
+            );
+            registry.load_compiler_stdlib_module(&owner).unwrap();
+            let expected = Ty::option(Ty::Named {
+                name: kind.canonical_name().to_string(),
+                args: vec![],
+                builtin: Some(kind),
+            });
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&input, &owner),
+                expected
+            );
+            let bare = Ty::named("Value", vec![]);
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&bare, &owner),
+                bare
+            );
+            let foreign = Ty::named("user.Value", vec![]);
+            assert_eq!(
+                registry.canonicalize_registry_signature_ty(&foreign, &owner),
+                foreign
+            );
+        }
+    }
+
+    #[test]
+    fn encoding_registry_signature_rejects_a_user_source_at_the_same_module_path() {
+        let project = TestHewTree::new("encoding-value-lookalike");
+        fs::create_dir_all(project.root().join("std/encoding")).unwrap();
+        project.write_std_module("encoding/json", "#[resource] #[opaque] pub type Value {}");
+        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
+        registry.load("std.encoding.json").unwrap();
+        assert_eq!(
+            registry.canonicalize_registry_signature_ty(
+                &crate::Ty::named("json.Value", vec![]),
+                "std.encoding.json"
+            ),
+            crate::Ty::named("std.encoding.json.Value", vec![])
+        );
+    }
+
+    #[test]
+    fn compiler_module_activation_uses_exact_owned_source_and_reuses_membership() {
+        let compiler = TestHewTree::new("compiler-module-exact-source");
+        let compiler_source =
+            compiler.write_std_module("option", "pub fn authority() -> i64 { 1 }\n");
+        let lookalike = TestHewTree::new("compiler-module-lookalike-search-path");
+        lookalike.write_std_module("option", "pub fn authority() -> i64 { 2 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![lookalike.root().clone()]);
+        registry.compiler_stdlib_root = compiler.root().canonicalize().ok();
+
+        registry
+            .load_compiler_stdlib_module("std.option")
+            .expect("load exact compiler-owned option module");
+        let loaded = registry
+            .get("std.option")
+            .expect("compiler-owned option module is active");
+        // Both sides go through `canonicalize`: an out-of-tree `target/`
+        // symlink otherwise spells the same file two ways.
+        assert_eq!(
+            loaded
+                .source_path
+                .as_deref()
+                .and_then(|path| path.canonicalize().ok()),
+            compiler_source.canonicalize().ok()
+        );
+
+        registry
+            .load_compiler_stdlib_module("std.option")
+            .expect("reuse exact compiler-owned option module");
+        let active = registry.loaded_modules().collect::<Vec<_>>();
+        assert_eq!(
+            active.len(),
+            1,
+            "reuse must not duplicate active membership"
+        );
+        assert_eq!(active[0].module_id.path, ["std", "option"]);
+        assert!(active[0].compiler_owned);
+        assert_eq!(
+            active[0]
+                .info
+                .source_path
+                .as_deref()
+                .and_then(|path| path.canonicalize().ok()),
+            compiler_source.canonicalize().ok()
+        );
+    }
+
+    #[test]
+    fn compiler_module_activation_rejects_an_active_lookalike() {
+        let compiler = TestHewTree::new("compiler-module-conflict-owned");
+        compiler.write_std_module("result", "pub fn authority() -> i64 { 1 }\n");
+        let lookalike = TestHewTree::new("compiler-module-conflict-lookalike");
+        let lookalike_source =
+            lookalike.write_std_module("result", "pub fn authority() -> i64 { 2 }\n");
+
+        let mut registry = ModuleRegistry::new(vec![lookalike.root().clone()]);
+        registry.compiler_stdlib_root = compiler.root().canonicalize().ok();
+        registry
+            .load("std.result")
+            .expect("activate ordinary lookalike module");
+
+        let error = registry
+            .load_compiler_stdlib_module("std.result")
+            .expect_err("an active lookalike must conflict with compiler authority");
+        assert!(matches!(
+            error,
+            CompilerModuleError::ConflictingActiveModule { ref module_path, ref loaded_source }
+                if module_path == "std.result"
+                    && loaded_source.as_deref() == Some(lookalike_source.as_path())
+        ));
+        let active = registry.loaded_modules().collect::<Vec<_>>();
+        assert_eq!(active.len(), 1);
+        assert!(!active[0].compiler_owned);
+        assert_eq!(
+            active[0].info.source_path.as_deref(),
+            Some(lookalike_source.as_path()),
+            "a failed authority load must not replace active program state"
+        );
+    }
+
+    #[test]
+    fn compiler_module_activation_fails_closed_without_owned_root() {
+        let project = TestHewTree::new("compiler-module-no-authority");
+        project.write_std_module("option", "pub fn authority() -> i64 { 2 }\n");
+        let mut registry = ModuleRegistry::new(vec![project.root().clone()]);
+        registry.compiler_stdlib_root = None;
+
+        let error = registry
+            .load_compiler_stdlib_module("std.option")
+            .expect_err("missing compiler authority must fail closed");
+        assert!(matches!(
+            error,
+            CompilerModuleError::AuthorityUnavailable { ref module_path }
+                if module_path == "std.option"
+        ));
+        assert!(registry.loaded_modules().next().is_none());
     }
 
     #[test]
@@ -1990,6 +2375,27 @@ mod tests {
         assert_eq!(canon_result, canon_tree);
     }
 
+    #[test]
+    fn find_enclosing_hew_root_answers_the_same_for_a_relative_path() {
+        // The crate directory is a child of the checkout root, so a relative
+        // module source resolves against it exactly like the absolute form.
+        // Before the walk ran on an absolute path, a relative input ascended to
+        // the empty path and reported `""` as the root; every module source
+        // loaded under it was then a cwd-relative path that
+        // `canonical_stdlib_module_for_source` could not canonicalize.
+        let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../std/net/http/http.hew");
+        let relative = PathBuf::from("../std/net/http/http.hew");
+        let from_absolute =
+            find_enclosing_hew_root(&absolute).expect("shipped source is inside the checkout");
+        let from_relative =
+            find_enclosing_hew_root(&relative).expect("relative source is inside the checkout");
+        assert!(from_relative.is_absolute(), "root must be absolute");
+        assert_eq!(
+            std::fs::canonicalize(&from_relative).expect("canonical root"),
+            std::fs::canonicalize(&from_absolute).expect("canonical root"),
+        );
+    }
+
     /// `find_enclosing_hew_root`: a directory tree with no `std/builtins.hew`
     /// anywhere returns None.  We test with a self-contained temp tree that is
     /// itself rooted (no further parent walk needed) by creating it under
@@ -2001,6 +2407,7 @@ mod tests {
     /// parent chain does not include the real repo root.  We achieve that by
     /// creating the dir directly under the OS temp dir so the walk never
     /// reaches the Hew repo root.
+
     #[test]
     fn find_enclosing_hew_root_returns_none_outside_checkout() {
         use std::time::{SystemTime, UNIX_EPOCH};

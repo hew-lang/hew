@@ -7,10 +7,9 @@
 //! the consume mark). Reading the scrutinee afterward is therefore legitimate,
 //! and the binding's composite drop still fires at scope exit.
 //!
-//! This is the inverse of `reject/match_destructure_use_after_consume`: there
-//! an owned field is moved into a binding, the scrutinee is consume-marked, and
-//! a post-match read fires `UseAfterConsume`. Here nothing is moved, so the
-//! post-match read of `o.name` compiles and observes the intact value.
+//! `accept/match_destructure_scrutinee_live_after_move` is the sibling case
+//! where an owned field IS moved into a binding; the scrutinee stays readable
+//! there too, because the match owns its own copy of the aggregate.
 //!
 //! Observable contract: prints `alpha` (the untouched `name` field) and exits
 //! 0. A regression that over-eagerly consume-marked an all-wildcard scrutinee
@@ -27,8 +26,8 @@ type Outer {
 
 fn make() -> Outer {
     Outer {
-        name: string_concat("alpha", ""),
-        inner: Inner { value: string_concat("beta", "") },
+        name: ("alpha" + ""),
+        inner: Inner { value: ("beta" + "") },
     }
 }
 

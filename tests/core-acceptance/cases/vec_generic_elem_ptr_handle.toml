@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_generic_elem_ptr_handle"
+intent = "#1929 Stage 1: the pointer-ABI element of an element-typed Vec method under a type parameter."
+source = "../vertical-slice/accept/vec_generic_elem_ptr_handle.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1\n"
+exit = 0

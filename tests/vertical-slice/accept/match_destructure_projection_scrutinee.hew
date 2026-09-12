@@ -1,0 +1,36 @@
+//! Accept: a record match destructure on a projection scrutinee.
+//!
+//! `match h.p { ... }` reads a copy of the projected field, so the match owns
+//! its own aggregate and the source storage behind `h` is untouched. Both the
+//! extracted binding and a later read of the same projection are live.
+//!
+//! Observable contract: prints the extracted `a` and then `h.p.b`, read after
+//! the match through the same shape.
+
+type Pair {
+    a: string,
+    b: string,
+}
+
+type Holder {
+    p: Pair,
+}
+
+fn make_holder() -> Holder {
+    Holder {
+        p: Pair {
+            a: ("a-" + "payload"),
+            b: ("b-" + "payload"),
+        },
+    }
+}
+
+fn main() -> i64 {
+    let h = make_holder();
+    let x = match h.p {
+        Pair { a: x, b: _ } => x,
+    };
+    println(x);
+    println(h.p.b);
+    0
+}

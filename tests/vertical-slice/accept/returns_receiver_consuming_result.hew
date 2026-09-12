@@ -1,4 +1,4 @@
-// A `#[returns_receiver]` method with a `consuming self` receiver ends the
+// A `#[returns_receiver]` method with a `consume self` receiver ends the
 // receiver generation at the call; the returned identity is the binding's
 // next generation and is released exactly once by whoever adopts it.
 #[opaque]
@@ -7,17 +7,17 @@ type Handle {
 
 #[resource]
 type Value {
-    handle: Handle;
+    handle: Handle,
 }
 
 trait ValueMethods {
     #[returns_receiver]
-    fn push(consuming self, consume child: Value) -> Self;
+    fn push(consume self, consume child: Value) -> Self;
 }
 
 impl ValueMethods for Value {
     #[returns_receiver]
-    fn push(consuming self, consume child: Value) -> Value {
+    fn push(consume self, consume child: Value) -> Value {
         unsafe {
             hew_json_array_push(self.handle, child.release())
         };
@@ -26,12 +26,12 @@ impl ValueMethods for Value {
 }
 
 impl Value {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_json_free(self.handle)
         };
     }
-    fn release(consuming self) -> Handle {
+    fn release(consume self) -> Handle {
         self.handle
     }
 }
@@ -44,9 +44,15 @@ extern "C" {
 }
 
 fn try_build() -> Result<Value, string> {
-    let value = Value { handle: unsafe { hew_json_array_new() } };
-    if unsafe { hew_json_type(value.handle) } >= 0 {
-        let child = Value { handle: unsafe { hew_json_array_new() } };
+    let value = Value { handle: unsafe {
+        hew_json_array_new()
+    } };
+    if unsafe {
+        hew_json_type(value.handle)
+    } >= 0 {
+        let child = Value { handle: unsafe {
+            hew_json_array_new()
+        } };
         Ok(value.push(child))
     } else {
         value.close();

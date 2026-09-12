@@ -22,7 +22,7 @@ pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<Type
                 collect_unresolved_inference_vars(arg, vars);
             }
         }
-        Ty::Function { params, ret } => {
+        Ty::Function { params, ret, .. } => {
             for param in params {
                 collect_unresolved_inference_vars(param, vars);
             }
@@ -32,6 +32,7 @@ pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<Type
             params,
             ret,
             captures,
+            ..
         } => {
             for param in params {
                 collect_unresolved_inference_vars(param, vars);
@@ -82,9 +83,11 @@ pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Op
             .as_ref()
             .and_then(|args| args.iter().find_map(first_infer_span_in_type_expr)),
         TypeExpr::QualifiedAssocPath(path) => first_infer_span_in_type_expr(&path.base),
-        TypeExpr::Result { ok, err } => {
-            first_infer_span_in_type_expr(ok).or_else(|| first_infer_span_in_type_expr(err))
-        }
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => first_infer_span_in_type_expr(ok).or_else(|| first_infer_span_in_type_expr(err)),
         TypeExpr::Option(inner)
         | TypeExpr::Slice(inner)
         | TypeExpr::Array { element: inner, .. }
@@ -92,6 +95,11 @@ pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Op
         | TypeExpr::Borrow(inner) => first_infer_span_in_type_expr(inner),
         TypeExpr::Tuple(elems) => elems.iter().find_map(first_infer_span_in_type_expr),
         TypeExpr::Function {
+            params,
+            return_type,
+            ..
+        }
+        | TypeExpr::ActorFn {
             params,
             return_type,
         } => params
@@ -199,7 +207,7 @@ pub(super) fn is_float_literal(expr: &Expr) -> bool {
 }
 
 /// Extract the value from an integer literal expression (including negated).
-pub(super) fn extract_integer_literal_value(expr: &Expr) -> Option<i64> {
+pub(super) fn extract_integer_literal_value(expr: &Expr) -> Option<i128> {
     match expr {
         Expr::Literal(Literal::Integer { value, .. }) => Some(*value),
         Expr::Unary {
@@ -207,7 +215,7 @@ pub(super) fn extract_integer_literal_value(expr: &Expr) -> Option<i64> {
             operand,
         } => {
             if let Expr::Literal(Literal::Integer { value, .. }) = &operand.0 {
-                Some(-value)
+                value.checked_neg()
             } else {
                 None
             }
@@ -239,35 +247,10 @@ pub(super) fn extract_float_literal_value(expr: &Expr) -> Option<f64> {
 /// `ptr_width` (32 on `wasm32`, 64 native) determines the bounds of the
 /// platform-sized `Isize`/`Usize` arms: a 32-bit target bounds `isize` to the
 /// `i32` range and `usize` to the `u32` range, matching the LLVM width codegen
-/// emits for the target. Literal values are carried as `i64`, so a `usize`
-/// above `i64::MAX` is unrepresentable on the const path — mirroring today's
-/// `u64` literal behaviour, not a regression introduced here.
-pub(super) fn integer_fits_type(value: i64, ty: &Ty, ptr_width: u8) -> bool {
-    match ty {
-        Ty::I8 => i8::try_from(value).is_ok(),
-        Ty::I16 => i16::try_from(value).is_ok(),
-        Ty::I32 => i32::try_from(value).is_ok(),
-        Ty::I64 => true,
-        Ty::U8 => u8::try_from(value).is_ok(),
-        Ty::U16 => u16::try_from(value).is_ok(),
-        Ty::U32 => u32::try_from(value).is_ok(),
-        Ty::U64 => u64::try_from(value).is_ok(),
-        Ty::Isize => {
-            if ptr_width == 32 {
-                i32::try_from(value).is_ok()
-            } else {
-                true // 64-bit isize == i64 range
-            }
-        }
-        Ty::Usize => {
-            if ptr_width == 32 {
-                u32::try_from(value).is_ok()
-            } else {
-                u64::try_from(value).is_ok() // 64-bit usize == u64 range
-            }
-        }
-        _ => false,
-    }
+/// emits for the target. [`integer_type_range`] is the single bounds
+/// authority; the `i128` literal carrier represents every value in it.
+pub(super) fn integer_fits_type(value: i128, ty: &Ty, ptr_width: u8) -> bool {
+    integer_type_range(ty, ptr_width).is_some_and(|(lo, hi)| (lo..=hi).contains(&value))
 }
 
 /// Check if a float value fits in a specific float type (f32 range check).

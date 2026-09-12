@@ -14,7 +14,7 @@
 // regression would surface as a spurious `unknown type `T`` when the importer
 // checks this module.
 pub actor Worker<T> {
-    var value: i64;
+    var value: i64,
     receive fn id() -> i64 {
         value
     }
@@ -28,17 +28,17 @@ pub trait Container<T> {
 }
 
 pub actor Echo {
-    var n: i64;
+    var n: i64,
     receive fn ping() -> i64 {
         n
     }
 }
 
 supervisor Pool {
-    strategy: simple_one_for_one;
-    intensity: 5 within 60s;
+    strategy: simple_one_for_one,
+    intensity: 5 within 60s,
 
-    pool workers: Echo(n: 7) count: 2;
+    pool workers: Echo(n: 7) count: 2,
 }
 
 pub fn entry() -> i64 {

@@ -409,6 +409,7 @@ mod tests {
     /// Only `id` and `actor_state` are exercised by `all_stopped`.
     fn stub_actor(id: u64, state: HewActorState) -> HewActor {
         HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id,
             state: ptr::null_mut(),
@@ -452,6 +453,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         }
     }
 
@@ -584,6 +590,10 @@ mod tests {
     /// from the main thread and then calling `is_actor_live` (which acquires
     /// `LIVE_ACTORS`) from another thread during the send does not deadlock.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "complete actor fixture and concurrent mailbox regression"
+    )]
     fn send_by_id_block_mailbox_full_does_not_deadlock() {
         let _rt = crate::runtime_test_guard();
 
@@ -596,6 +606,7 @@ mod tests {
         assert!(!mb.is_null());
 
         let actor = TrackedActor::install(HewActor {
+            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: actor_id,
             state: ptr::null_mut(),
@@ -639,6 +650,11 @@ mod tests {
             state_drop_consumed: AtomicBool::new(false),
             state_drop_borrowed: AtomicBool::new(false),
             parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+            checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_external_trap_code: AtomicI32::new(0),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_completion: None,
         });
 
         // Fill the mailbox to capacity (capacity = 1).

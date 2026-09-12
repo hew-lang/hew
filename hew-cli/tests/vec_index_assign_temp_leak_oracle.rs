@@ -147,7 +147,7 @@ fn main() {\n\
 const BORROWED_CAPTURE_SOURCE: &str = "\
 type Holder { items: Vec<string> }\n\
 fn mkItems() -> Vec<string> {\n\
-\x20   let xs: Vec<string> = Vec.new();\n\
+\x20   var xs: Vec<string> = Vec.new();\n\
 \x20   xs.push(\"deep-elem-a\");\n\
 \x20   xs.push(\"deep-elem-b\");\n\
 \x20   return xs;\n\

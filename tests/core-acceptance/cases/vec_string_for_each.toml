@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_string_for_each"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_string_for_each.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "red\nblue\ncount=2\n"
+exit = 0

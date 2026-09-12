@@ -32,7 +32,7 @@ import std.testing;
 type Dq {{}}
 
 impl Dq {{
-    fn close(self) {{
+    fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
@@ -109,7 +109,7 @@ import std.testing;
 type {type_name} {{}}
 
 impl {type_name} {{
-    fn close(self) {{
+    fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
@@ -124,7 +124,7 @@ extern "C" {{
 }}
 
 actor Keeper {{
-    let handle: {type_name};
+    let handle: {type_name},
     receive fn ping() -> i64 {{ 1 }}
 }}
 
@@ -184,7 +184,7 @@ fn run_imported_receiver_collision_teardown_oracle(package_import: bool) {
 pub type UserReceiver {{}}
 
 impl UserReceiver {{
-    fn close(self) {{
+    fn close(consume self) {{
         unsafe {{ hew_deque_free(self) }};
         match fs.append("{marker_literal}", "closed\n") {{
             .Ok(_) => {{}},
@@ -194,7 +194,7 @@ impl UserReceiver {{
 }}
 
 pub actor Keeper {{
-    let handle: UserReceiver = unsafe {{ hew_deque_new() }};
+    let handle: UserReceiver = unsafe {{ hew_deque_new() }},
     receive fn ping() -> i64 {{ 1 }}
 }}
 
@@ -224,7 +224,7 @@ extern "C" {{
 
 fn main() {{
     let keeper = spawn {actor}();
-    match await keeper.ping() {{
+    match keeper.ping() {{
         .Ok(n) => if n != 1 {{ panic("wrong reply") }},
         .Err(_) => panic("ask failed"),
     }}
@@ -298,7 +298,7 @@ fn direct_resource_actor_state_closes_once_on_teardown() {
     run_teardown_close_oracle(
         "direct",
         r"actor Keeper {
-    let dq: Dq;
+    let dq: Dq,
     receive fn ping() -> i64 { 1 }
 }",
         "spawn Keeper(dq: unsafe { hew_deque_new() })",
@@ -310,7 +310,7 @@ fn wrapped_resource_actor_state_still_closes_once_on_teardown() {
     run_teardown_close_oracle(
         "wrapped",
         r"actor Keeper {
-    let holder: Holder;
+    let holder: Holder,
     receive fn ping() -> i64 { 1 }
 }",
         "spawn Keeper(holder: Holder { dq: unsafe { hew_deque_new() } })",
@@ -351,7 +351,7 @@ fn builtin_cancellation_token_actor_state_uses_runtime_release() {
 }
 
 actor Keeper {
-    let token: CancellationToken;
+    let token: CancellationToken,
 }
 
 fn main() {
@@ -403,7 +403,7 @@ fn direct_resource_actor_state_uses_restart_clone_refusal_and_single_close_drop(
 type Dq {}
 
 impl Dq {
-    fn close(self) {
+    fn close(consume self) {
         unsafe { hew_deque_free(self) };
     }
 }
@@ -417,11 +417,11 @@ type Holder {
 }
 
 actor Direct {
-    let dq: Dq;
+    let dq: Dq,
 }
 
 actor Wrapped {
-    let holder: Holder;
+    let holder: Holder,
 }
 
 fn main() {}

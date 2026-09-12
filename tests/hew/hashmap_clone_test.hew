@@ -27,7 +27,7 @@ type Point {
 
 #[test]
 fn test_hashmap_clone_scalar_value_independent() {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 1);
     m.insert("b", 2);
     let c: HashMap<string, i64> = m.clone();
@@ -46,7 +46,7 @@ fn test_hashmap_clone_scalar_value_independent() {
 
 #[test]
 fn test_hashmap_clone_string_value_deep() {
-    let m: HashMap<string, string> = HashMap.new();
+    var m: HashMap<string, string> = HashMap.new();
     m.insert("alpha", "one");
     m.insert("beta", "two");
     let c: HashMap<string, string> = m.clone();
@@ -61,10 +61,10 @@ fn test_hashmap_clone_string_value_deep() {
 
 #[test]
 fn test_hashmap_clone_nested_owned_value() {
-    let inner: Vec<string> = Vec.new();
+    var inner: Vec<string> = Vec.new();
     inner.push("x");
     inner.push("y");
-    let m: HashMap<string, Vec<string>> = HashMap.new();
+    var m: HashMap<string, Vec<string>> = HashMap.new();
     m.insert("k", inner);
     let c: HashMap<string, Vec<string>> = m.clone();
     testing.assert_eq(c.len(), 1);
@@ -76,7 +76,7 @@ fn test_hashmap_clone_nested_owned_value() {
 
 #[test]
 fn test_hashmap_clone_copy_record_key() {
-    let m: HashMap<Point, string> = HashMap.new();
+    var m: HashMap<Point, string> = HashMap.new();
     m.insert(Point { x: 1, y: 2 }, "a");
     let c: HashMap<Point, string> = m.clone();
     testing.assert_eq(c.len(), 1);
@@ -88,7 +88,7 @@ fn test_hashmap_clone_copy_record_key() {
 
 #[test]
 fn test_hashset_clone_independent() {
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("x");
     s.insert("y");
     let c: HashSet<string> = s.clone();

@@ -19,21 +19,21 @@ import std.process;
 import std.time.cron;
 
 fn main() {
-    match process.try_run("printf ok") {
+    match process.run("printf ok") {
         .Ok(output) => println(output.stdout),
         .Err(_) => (),
     }
     let run_args: Vec<string> = Vec.new();
-    match process.try_run_argv("printf", run_args) {
+    match process.run_argv("printf", run_args) {
         .Ok(output) => println(output.stdout),
         .Err(_) => (),
     }
-    match process.try_start("true") {
+    match process.start("true") {
         .Ok(child) => println(child.wait()),
         .Err(_) => (),
     }
     let spawn_args: Vec<string> = Vec.new();
-    match process.try_start_argv("true", spawn_args) {
+    match process.start_argv("true", spawn_args) {
         .Ok(child) => println(child.wait()),
         .Err(_) => (),
     }
@@ -53,6 +53,15 @@ fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
     &body[..end]
 }
 
+/// Call sites of `symbol` on the wrapper's own failure arm, excluding the
+/// cleanup releases physical MIR mints for fault propagation. Those release the
+/// same handle on a path the failure arm never takes, so counting them would
+/// conflate two authorities and make "exactly once" wrong.
+///
+/// The discriminator is the operand, not the block label: since cleanup
+/// contents became a per-leaf certificate the emitter no longer mints a labelled
+/// `aggregate.drop` block, but it still names the value it releases
+/// `%aggregate.drop.*`.
 fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
     body.lines()
         .scan(0, |offset, line| {
@@ -61,8 +70,10 @@ fn call_positions(body: &str, symbol: &str) -> Vec<usize> {
             Some((line_start, line))
         })
         .filter_map(|(offset, line)| {
-            ((line.contains("call ") || line.contains("invoke ")) && line.contains(symbol))
-                .then_some(offset)
+            ((line.contains("call ") || line.contains("invoke "))
+                && line.contains(symbol)
+                && !line.contains("%aggregate.drop"))
+            .then_some(offset)
         })
         .collect()
 }
@@ -131,44 +142,37 @@ fn stdlib_raw_owned_failure_handles_are_released_once_after_detail_is_copied() {
 
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$try_run\"",
-        "@\"std$process$last_process_error\"",
+        "define i32 @\"__hew_fn_std$process$run\"(",
+        "@\"__hew_fn_std$process$last_process_error\"",
         "@hew_process_result_free(",
         None,
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mCommandOutput$std$mprocess$mProcessError\" @\"std$process$try_run_argv\"",
-        "@\"std$process$last_process_error\"",
+        "define i32 @\"__hew_fn_std$process$run_argv\"(",
+        "@\"__hew_fn_std$process$last_process_error\"",
         "@hew_process_result_free(",
         None,
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %std.process.Child @\"std$process$start\"",
-        "@\"std$process$last_process_error\"",
+        "define i32 @\"__hew_fn_std$process$start\"(",
+        "@\"__hew_fn_std$process$last_process_error\"",
         "@hew_process_drop(",
-        Some("@\"std.process.Child::close\""),
+        Some("@\"__hew_fn_std.process.Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$try_start\"",
-        "@\"std$process$last_process_error\"",
+        "define i32 @\"__hew_fn_std$process$start_argv\"(",
+        "@\"__hew_fn_std$process$last_process_error\"",
         "@hew_process_drop(",
-        Some("@\"std.process.Child::close\""),
+        Some("@\"__hew_fn_std.process.Child::close\""),
     );
     assert_failure_cleanup(
         &ir,
-        "define internal %\"Result$$std$mprocess$mChild$std$mprocess$mProcessError\" @\"std$process$try_start_argv\"",
-        "@\"std$process$last_process_error\"",
-        "@hew_process_drop(",
-        Some("@\"std.process.Child::close\""),
-    );
-    assert_failure_cleanup(
-        &ir,
-        "define internal %std.time.cron.Expr @\"std$time$cron$parse\"",
-        "@\"std$time$cron$cron_last_error_message\"",
+        "define i32 @\"__hew_fn_std$time$cron$parse\"(",
+        "@\"__hew_fn_std$time$cron$cron_last_error_message\"",
         "@hew_cron_free(",
-        Some("@\"std.time.cron.Expr::close\""),
+        Some("@\"__hew_fn_std.time.cron.Expr::close\""),
     );
 }

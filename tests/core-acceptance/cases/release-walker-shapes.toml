@@ -1,0 +1,10 @@
+[[case]]
+id = "release-walker-shapes"
+intent = "Ordinary data releases through the runtime's iterative walker: a wide vector, a 50000-deep map chain and a map of deep vectors all tear down under the sanitizer stack, while a resource inside a nested collection keeps its recursive path and its declared close order."
+source = "cases/release-walker-shapes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 300
+
+[case.expected]
+stdout = "wide=200000\ndeepmap=1\nmapdeep=4\nresource-built\nclose 2\nclose 1\nmixed-built\nclose 10\nclose 11\n"
+exit = 0

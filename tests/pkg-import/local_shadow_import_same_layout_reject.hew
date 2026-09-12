@@ -17,7 +17,7 @@
 import hew.widgeti64;
 
 type Widget {
-    v: i64;
+    v: i64,
 }
 
 fn take_imported(w: widgeti64.Widget) -> i64 {

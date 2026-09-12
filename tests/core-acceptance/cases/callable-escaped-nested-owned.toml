@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-escaped-nested-owned"
+intent = "An escaped closure owns another captured closure and its allocated text; independent copies remain callable after the creating scope is released."
+source = "cases/callable-escaped-nested-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "NESTED OWNED\nNESTED OWNED\nNESTED OWNED\nNESTED OWNED\n"
+exit = 0

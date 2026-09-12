@@ -1,10 +1,10 @@
 #[resource]
 type RawConnection {
-    id: i64
+    id: i64,
 }
 
 impl RawConnection {
-    fn close(self) {
+    fn close(consume self) {
         println("closed");
     }
 }

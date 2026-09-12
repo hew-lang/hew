@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Compute the system-lane reachability closure over the runtime call graph.
 
-`docs/internal/jit-host-abi.md` states the classification invariant:
+`docs/internal/runtime-export-classification.md` states the classification invariant:
 
     No `stable` symbol may produce, install, mutate, observe, or destroy
     system-lane state.
@@ -25,7 +25,7 @@ This script computes the property mechanically instead:
   4. GATE   -- every `stable` (or `stable-stdlib`) symbol in the closure is a
                violation.
 
-Two escape hatches exist, both in `scripts/jit-symbol-classification.toml`, both
+Two escape hatches exist, both in `scripts/runtime-export-classification.toml`, both
 requiring a written reason per entry:
 
   [sys-lane-closure.authenticated-edges]
@@ -73,7 +73,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 SCAN_DIRS = [ROOT / "hew-runtime" / "src", ROOT / "hew-std" / "src"]
-JIT_SYMBOL_CLASSIFICATION = ROOT / "scripts" / "jit-symbol-classification.toml"
+RUNTIME_EXPORT_CLASSIFICATION = ROOT / "scripts" / "runtime-export-classification.toml"
 SOURCE_ENCODING = "utf-8"
 
 # The system-lane state set, in source terms. A function whose body names any
@@ -547,11 +547,26 @@ _EDGE_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\s*$")
 def load_classification(
     path: Path | None = None,
 ) -> tuple[dict[str, set[str]], Waivers]:
-    text = (path or JIT_SYMBOL_CLASSIFICATION).read_text(encoding=SOURCE_ENCODING)
+    text = (path or RUNTIME_EXPORT_CLASSIFICATION).read_text(encoding=SOURCE_ENCODING)
     document = tomllib.loads(text)
+    allowed_keys = {
+        "stable",
+        "stable-stdlib",
+        "non-declarable",
+        "public-host",
+        "public-host-stdlib",
+        "sys-lane-closure",
+        "ownership",
+    }
+    unknown_keys = sorted(set(document) - allowed_keys)
+    if unknown_keys:
+        raise ValueError(
+            f"{RUNTIME_EXPORT_CLASSIFICATION}: unknown classification list(s): "
+            + ", ".join(unknown_keys)
+        )
     tiers = {
         key: set(document.get(key, []))
-        for key in ("stable", "stable-stdlib", "codegen-stable", "internal")
+        for key in ("stable", "stable-stdlib", "non-declarable")
     }
     table = document.get("sys-lane-closure", {})
     edges: dict[tuple[str, str], str] = {}
@@ -559,19 +574,19 @@ def load_classification(
         match = _EDGE_RE.match(str(key))
         if match is None:
             raise ValueError(
-                f"{JIT_SYMBOL_CLASSIFICATION}: authenticated-edges key "
+                f"{RUNTIME_EXPORT_CLASSIFICATION}: authenticated-edges key "
                 f'{key!r} is not of the form "caller -> callee"'
             )
         if not str(reason).strip():
             raise ValueError(
-                f"{JIT_SYMBOL_CLASSIFICATION}: authenticated edge {key!r} has no reason"
+                f"{RUNTIME_EXPORT_CLASSIFICATION}: authenticated edge {key!r} has no reason"
             )
         edges[(match.group(1), match.group(2))] = str(reason)
     non_roots: dict[str, str] = {}
     for key, reason in table.get("non-roots", {}).items():
         if not str(reason).strip():
             raise ValueError(
-                f"{JIT_SYMBOL_CLASSIFICATION}: non-root {key!r} has no reason"
+                f"{RUNTIME_EXPORT_CLASSIFICATION}: non-root {key!r} has no reason"
             )
         non_roots[str(key)] = str(reason)
     return tiers, Waivers(edges, non_roots)
@@ -735,7 +750,7 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "sys-lane closure: these `stable` symbols reach system-lane state.\n"
             'A stable symbol is one user `extern "rt"` code may name directly, and\n'
-            "`docs/internal/jit-host-abi.md` forbids any of them from producing,\n"
+            "`docs/internal/runtime-export-classification.md` forbids any of them from producing,\n"
             "installing, mutating, observing, or destroying the private lane --\n"
             "including through a call. Reclassify, split the capability, or record\n"
             "the authenticated edge in [sys-lane-closure.authenticated-edges].",

@@ -13,8 +13,8 @@ use std::path::Path;
 use support::{run_hew_in, strip_ansi, tempdir};
 
 const BARE: &str = r"enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
 }
 
 fn make() -> Choice {
@@ -30,8 +30,8 @@ fn main() {
 ";
 
 const CONTEXTUAL: &str = r"enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
 }
 
 fn make() -> Choice {
@@ -47,8 +47,8 @@ fn main() {
 ";
 
 const QUALIFIED: &str = r"enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
 }
 
 fn make() -> Choice {
@@ -67,8 +67,8 @@ fn main() {
 /// qualified, so a run that reports `E_BARE_VARIANT_EXPR` here would mean the
 /// two rules had been wired to the same site.
 const BARE_PATTERN: &str = r"enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
 }
 
 fn main() {
@@ -84,8 +84,8 @@ fn main() {
 /// pattern, a struct-variant pattern, a unit pattern, and a `let`-position tag
 /// test.
 const MIXED: &str = r"enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
     Named { count: i64 }
 }
 
@@ -119,8 +119,8 @@ fn main() {
 /// falls inside `{...}` here. Before #3243 that token-lookup miss produced a
 /// hard refusal that aborted the whole migration.
 const FSTRING_INTERPOLATION: &str = r#"enum Choice {
-    Present(i64);
-    Absent;
+    Present(i64),
+    Absent,
 }
 
 fn accept(c: Choice) -> i64 {

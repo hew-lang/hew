@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_len_live_count"
+intent = "Arena<T>: len tracks the exact live count across a sequence of inserts and removes."
+source = "../vertical-slice/accept/arena_len_live_count.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n2\n3\ntrue\n"
+exit = 0

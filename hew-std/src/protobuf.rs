@@ -3,10 +3,12 @@
 //! Provides dynamic protobuf message construction, serialization, and field
 //! access for compiled Hew programs without requiring `.proto` schemas at
 //! compile time. Each message is a bag of `(field_number, wire_type, value)`
-//! tuples. All returned [`HewProtoMsg`] pointers are heap-allocated via `Box`
-//! and must be freed with [`hew_proto_msg_free`].
-use hew_cabi::cabi::{alloc_cstring, malloc_bytes};
-use std::os::raw::c_char;
+//! tuples. String fields borrow managed [`HewString`] handles and text
+//! results transfer an independent managed owner; null is the canonical
+//! empty string. All returned [`HewProtoMsg`] pointers are heap-allocated via
+//! `Box` and must be freed with [`hew_proto_msg_free`].
+use hew_cabi::cabi::malloc_bytes;
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 // ---------------------------------------------------------------------------
 // Wire-format constants
@@ -405,19 +407,19 @@ pub unsafe extern "C" fn hew_proto_msg_set_bytes(
 /// # Safety
 ///
 /// `msg` must be a valid pointer returned by [`hew_proto_msg_new`] or
-/// [`hew_proto_msg_decode`]. `s` must be a valid NUL-terminated C string.
+/// [`hew_proto_msg_decode`]. `s` must be null (canonical empty) or a live
+/// managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_proto_msg_set_string(
     msg: *mut HewProtoMsg,
     field_number: u32,
-    s: *const c_char,
+    s: *const HewString,
 ) {
-    if msg.is_null() || s.is_null() {
+    if msg.is_null() {
         return;
     }
-    // SAFETY: s is a valid NUL-terminated C string per caller contract.
-    let cs = unsafe { std::ffi::CStr::from_ptr(s) };
-    let bytes = cs.to_bytes().to_vec();
+    // SAFETY: s is null (canonical empty) or a live managed string handle.
+    let bytes = unsafe { string_as_str(s) }.as_bytes().to_vec();
     // SAFETY: msg is a valid HewProtoMsg pointer per caller contract.
     let m = unsafe { &mut *msg };
     m.set_field(field_number, ProtoValue::Bytes(bytes));
@@ -425,8 +427,8 @@ pub unsafe extern "C" fn hew_proto_msg_set_string(
 
 /// Encode the message to protobuf wire format.
 ///
-/// Returns a `malloc`-allocated buffer. The caller must free it with
-/// `libc::free`. Writes the buffer length to `*out_len`. Returns null on
+/// Returns a buffer from the sized-block allocator. The caller must free it
+/// with `buf_free`. Writes the buffer length to `*out_len`. Returns null on
 /// allocation failure or if `msg` is null.
 ///
 /// # Safety
@@ -586,9 +588,10 @@ pub unsafe extern "C" fn hew_proto_msg_get_bytes(
     }
 }
 
-/// Get a string field as a header-aware, NUL-terminated Hew string.
+/// Get a string field as an owned managed string.
 /// The caller must release the returned pointer with `hew_string_drop`.
-/// Returns null if the field is missing or has a different wire type.
+/// Returns canonical empty (null) if the field is missing, has a different
+/// wire type, or is set to the empty string.
 ///
 /// # Safety
 ///
@@ -597,7 +600,7 @@ pub unsafe extern "C" fn hew_proto_msg_get_bytes(
 pub unsafe extern "C" fn hew_proto_msg_get_string(
     msg: *const HewProtoMsg,
     field_number: u32,
-) -> *mut c_char {
+) -> *mut HewString {
     if msg.is_null() {
         return std::ptr::null_mut();
     }
@@ -607,16 +610,10 @@ pub unsafe extern "C" fn hew_proto_msg_get_string(
         Some(ProtoField {
             value: ProtoValue::Bytes(b),
             ..
-        }) => {
-            let len = b.len();
-            // Header-aware (S1): the result reaches hew_string_drop / free_cstring.
-            // SAFETY: b.as_ptr() is valid for len bytes; alloc_cstring copies them.
-            let ptr = unsafe { alloc_cstring(b.as_ptr(), len) }; // CSTRING-ALLOC: str-open (hew_proto_msg_get_string — header-aware Hew string; reaches hew_string_drop)
-            if ptr.is_null() {
-                return std::ptr::null_mut();
-            }
-            ptr
-        }
+        }) => match std::str::from_utf8(b) {
+            Ok(s) => string_from_str(s),
+            Err(_) => std::ptr::null_mut(),
+        },
         _ => std::ptr::null_mut(),
     }
 }
@@ -663,7 +660,18 @@ pub unsafe extern "C" fn hew_proto_msg_free(msg: *mut HewProtoMsg) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
+
+    /// Helper: read a managed string result and release it.
+    unsafe fn read_and_free_string(ptr: *mut HewString) -> String {
+        assert!(!ptr.is_null());
+        // SAFETY: ptr is a live managed owner per caller contract.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr is an owned managed result.
+        unsafe { string_release(ptr) };
+        s
+    }
 
     fn assert_decode_error(data: &[u8], expected: &DecodeError, expected_message: &str) {
         let error = HewProtoMsg::decode(data).expect_err("decode should fail");
@@ -683,7 +691,7 @@ mod tests {
             hew_proto_msg_set_fixed64(msg, 3, 0xDEAD_BEEF_CAFE_BABE);
             hew_proto_msg_set_fixed32(msg, 4, 0x1234_5678);
 
-            let hello = CString::new("hello").unwrap();
+            let hello = ManagedString::new("hello");
             hew_proto_msg_set_string(msg, 5, hello.as_ptr());
 
             let mut out_len: usize = 0;
@@ -702,13 +710,10 @@ mod tests {
             );
             assert_eq!(hew_proto_msg_get_fixed32(decoded, 4, 0), 0x1234_5678);
 
-            let s = hew_proto_msg_get_string(decoded, 5);
-            assert!(!s.is_null());
-            let rs = std::ffi::CStr::from_ptr(s).to_str().unwrap();
+            let rs = read_and_free_string(hew_proto_msg_get_string(decoded, 5));
             assert_eq!(rs, "hello");
-            hew_cabi::cabi::free_cstring(s); // CSTRING-FREE: str-open (get_string output)
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -740,7 +745,7 @@ mod tests {
             // Missing field returns default.
             assert_eq!(hew_proto_msg_get_varint(decoded, 99, 777), 777);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -752,34 +757,29 @@ mod tests {
 
         // SAFETY: msg is a valid HewProtoMsg from hew_proto_msg_new.
         unsafe {
-            let name = CString::new("Hew language").unwrap();
+            let name = ManagedString::new("Hew language");
             hew_proto_msg_set_string(msg, 1, name.as_ptr());
 
-            let empty = CString::new("").unwrap();
-            hew_proto_msg_set_string(msg, 2, empty.as_ptr());
+            // A field explicitly set to the empty string round-trips through
+            // the wire format, but reads back through the canonical-empty
+            // (null) representation — indistinguishable from an unset field.
+            hew_proto_msg_set_string(msg, 2, std::ptr::null());
 
             let mut out_len: usize = 0;
             let encoded = hew_proto_msg_encode(msg, &raw mut out_len);
             let decoded = hew_proto_msg_decode(encoded, out_len);
             assert!(!decoded.is_null());
 
-            let s1 = hew_proto_msg_get_string(decoded, 1);
-            assert!(!s1.is_null());
-            assert_eq!(
-                std::ffi::CStr::from_ptr(s1).to_str().unwrap(),
-                "Hew language"
-            );
-            hew_cabi::cabi::free_cstring(s1); // CSTRING-FREE: str-open (get_string s1)
+            let s1 = read_and_free_string(hew_proto_msg_get_string(decoded, 1));
+            assert_eq!(s1, "Hew language");
 
-            let s2 = hew_proto_msg_get_string(decoded, 2);
-            assert!(!s2.is_null());
-            assert_eq!(std::ffi::CStr::from_ptr(s2).to_str().unwrap(), "");
-            hew_cabi::cabi::free_cstring(s2); // CSTRING-FREE: str-open (get_string s2)
+            assert!(hew_proto_msg_has_field(decoded, 2) == 1);
+            assert!(hew_proto_msg_get_string(decoded, 2).is_null());
 
             // Missing string returns null.
             assert!(hew_proto_msg_get_string(decoded, 99).is_null());
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -811,7 +811,7 @@ mod tests {
             assert!(hew_proto_msg_get_bytes(decoded, 99, &raw mut missing_len).is_null());
             assert_eq!(missing_len, 0);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -825,7 +825,7 @@ mod tests {
         // SAFETY: inner and outer are valid HewProtoMsg pointers.
         unsafe {
             hew_proto_msg_set_varint(inner, 1, 100);
-            let tag = CString::new("nested").unwrap();
+            let tag = ManagedString::new("nested");
             hew_proto_msg_set_string(inner, 2, tag.as_ptr());
 
             // Encode inner.
@@ -856,16 +856,14 @@ mod tests {
             assert!(!decoded_inner.is_null());
             assert_eq!(hew_proto_msg_get_varint(decoded_inner, 1, 0), 100);
 
-            let s = hew_proto_msg_get_string(decoded_inner, 2);
-            assert!(!s.is_null());
-            assert_eq!(std::ffi::CStr::from_ptr(s).to_str().unwrap(), "nested");
-            hew_cabi::cabi::free_cstring(s); // CSTRING-FREE: str-open (get_string output)
+            let s = read_and_free_string(hew_proto_msg_get_string(decoded_inner, 2));
+            assert_eq!(s, "nested");
 
             hew_proto_msg_free(decoded_inner);
             hew_proto_msg_free(decoded_outer);
-            libc::free(outer_buf.cast()); // CSTRING-FREE: libc-bytes (outer_buf)
+            hew_cabi::mem::buf_free(outer_buf.cast()); // CSTRING-FREE: sized-block (outer_buf)
             hew_proto_msg_free(outer);
-            libc::free(inner_buf.cast()); // CSTRING-FREE: libc-bytes (inner_buf)
+            hew_cabi::mem::buf_free(inner_buf.cast()); // CSTRING-FREE: sized-block (inner_buf)
             hew_proto_msg_free(inner);
         }
     }
@@ -946,18 +944,21 @@ mod tests {
 
     #[test]
     fn set_string_null_msg_is_noop() {
-        let s = CString::new("test").unwrap();
+        let s = ManagedString::new("test");
         // SAFETY: testing null-safety.
         unsafe { hew_proto_msg_set_string(std::ptr::null_mut(), 1, s.as_ptr()) };
     }
 
     #[test]
-    fn set_string_null_str_is_noop() {
+    fn set_string_null_sets_the_field_to_the_empty_string() {
+        // Null is the canonical empty managed string, not a distinguished
+        // "no value" sentinel: setting a string field with it sets the field.
         let msg = hew_proto_msg_new();
-        // SAFETY: msg is valid; null string should be a no-op.
+        // SAFETY: msg is valid; null is the canonical empty string.
         unsafe {
             hew_proto_msg_set_string(msg, 1, std::ptr::null());
-            assert_eq!(hew_proto_msg_has_field(msg, 1), 0);
+            assert_eq!(hew_proto_msg_has_field(msg, 1), 1);
+            assert!(hew_proto_msg_get_string(msg, 1).is_null());
             hew_proto_msg_free(msg);
         }
     }
@@ -1287,7 +1288,7 @@ mod tests {
             // Decoding zero-length data returns null (no fields to parse).
             assert!(hew_proto_msg_decode(encoded, 0).is_null());
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(msg);
         }
     }
@@ -1345,7 +1346,7 @@ mod tests {
             assert!(!decoded.is_null());
             assert_eq!(hew_proto_msg_get_varint(decoded, big_field, 0), 12345);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1368,7 +1369,7 @@ mod tests {
             assert_eq!(hew_proto_msg_get_fixed64(decoded, 1, 99), 0);
             assert_eq!(hew_proto_msg_get_fixed64(decoded, 2, 0), u64::MAX);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1391,7 +1392,7 @@ mod tests {
             assert_eq!(hew_proto_msg_get_fixed32(decoded, 1, 99), 0);
             assert_eq!(hew_proto_msg_get_fixed32(decoded, 2, 0), u32::MAX);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1415,7 +1416,7 @@ mod tests {
             assert_eq!(hew_proto_msg_get_varint(decoded, 2, 0), 200);
             assert_eq!(hew_proto_msg_get_varint(decoded, 3, 0), 300);
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }
@@ -1429,7 +1430,7 @@ mod tests {
             hew_proto_msg_set_varint(msg, 1, 42);
             hew_proto_msg_set_fixed32(msg, 2, 0xBEEF);
             hew_proto_msg_set_fixed64(msg, 3, 0xCAFE_BABE);
-            let s = CString::new("mixed").unwrap();
+            let s = ManagedString::new("mixed");
             hew_proto_msg_set_string(msg, 4, s.as_ptr());
             let blob = [0xAA, 0xBB, 0xCC];
             hew_proto_msg_set_bytes(msg, 5, blob.as_ptr(), blob.len());
@@ -1443,9 +1444,8 @@ mod tests {
             assert_eq!(hew_proto_msg_get_fixed32(decoded, 2, 0), 0xBEEF);
             assert_eq!(hew_proto_msg_get_fixed64(decoded, 3, 0), 0xCAFE_BABE);
 
-            let got_s = hew_proto_msg_get_string(decoded, 4);
-            assert_eq!(std::ffi::CStr::from_ptr(got_s).to_str().unwrap(), "mixed");
-            hew_cabi::cabi::free_cstring(got_s); // CSTRING-FREE: str-open (get_string output)
+            let got_s = read_and_free_string(hew_proto_msg_get_string(decoded, 4));
+            assert_eq!(got_s, "mixed");
 
             let mut blob_len: usize = 0;
             let blob_ptr = hew_proto_msg_get_bytes(decoded, 5, &raw mut blob_len);
@@ -1454,7 +1454,7 @@ mod tests {
                 &[0xAA, 0xBB, 0xCC]
             );
 
-            libc::free(encoded.cast()); // CSTRING-FREE: libc-bytes (encoded)
+            hew_cabi::mem::buf_free(encoded.cast()); // CSTRING-FREE: sized-block (encoded)
             hew_proto_msg_free(decoded);
             hew_proto_msg_free(msg);
         }

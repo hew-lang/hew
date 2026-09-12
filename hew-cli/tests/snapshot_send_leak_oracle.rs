@@ -16,14 +16,12 @@ type Boxed {{
     payload: Vec<i64>,
 }}
 
-actor ProbeSink {{
-    var seen: i64;
+actor ProbeSink {{ 
+    var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
-        value.payload.push(tag);
-        if value.payload[2] == tag {{
-            seen = seen + 1;
-        }}
+        value.payload.push(tag), if value.payload[2] == tag {{
+            seen = seen + 1 }}
     }}
 
     receive fn count() -> i64 {{
@@ -62,11 +60,10 @@ type Boxed {{
     payload: Vec<i64>,
 }}
 
-actor ProbeSink {{
-    var seen: i64;
+actor ProbeSink {{ 
+    var seen: i64,
     receive fn take(value: Boxed) {{
-        seen = seen + value.payload.len();
-    }}
+        seen = seen + value.payload.len() }}
     receive fn count() -> i64 {{ seen }}
 }}
 
@@ -97,14 +94,12 @@ type Envelope {{
     boxed: Boxed,
 }}
 
-actor ProbeSink {{
-    var seen: i64;
+actor ProbeSink {{ 
+    var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
-        value.payload.push(tag);
-        if value.payload[2] == tag {{
-            seen = seen + 1;
-        }}
+        value.payload.push(tag), if value.payload[2] == tag {{
+            seen = seen + 1 }}
     }}
 
     receive fn count() -> i64 {{
@@ -144,22 +139,20 @@ type Envelope {{
     boxed: Boxed,
 }}
 
-actor ProbeSink {{
-    var seen: i64;
+actor ProbeSink {{ 
+    var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
-        value.payload.push(tag);
-        if value.payload[2] == tag {{
-            seen = seen + 1;
-        }}
+        value.payload.push(tag), if value.payload[2] == tag {{
+            seen = seen + 1 }}
     }}
 }}
 
 supervisor App {{
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child sink: ProbeSink(seen: 0);
+    child sink: ProbeSink(seen: 0),
 }}
 
 fn main() -> i64 {{
@@ -187,26 +180,23 @@ fn main() -> i64 {{
 fn borrowed_resend_source(frames: usize) -> String {
     format!(
         r#"
-actor Consumer {{
-    var last: string;
+actor Consumer {{ 
+    var last: string,
 
     receive fn take(value: string) {{
-        last = value;
-    }}
+        last = value }}
 
     receive fn received_live() -> i64 {{
         if last.contains("borrow") {{ 1 }} else {{ 0 }}
     }}
 }}
 
-actor Relay {{
-    var consumer: LocalPid<Consumer>;
-    var last: string;
+actor Relay {{ 
+    var consumer: Consumer,
+    var last: string,
 
     receive fn forward(value: string) {{
-        consumer.take(value);
-        last = value;
-    }}
+        consumer.take(value), last = value }}
 
     receive fn source_live() -> i64 {{
         if last.contains("borrow") {{ 1 }} else {{ 0 }}

@@ -11,11 +11,11 @@
 //
 // Elements "aa","bbb","cccc" (lens 2+3+4 = 9): exit 9.
 type SetBox {
-    s: HashSet<string>;
+    s: HashSet<string>,
 }
 
 fn make_set_box() -> SetBox {
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     s.insert("aa");
     s.insert("bbb");
     s.insert("cccc");

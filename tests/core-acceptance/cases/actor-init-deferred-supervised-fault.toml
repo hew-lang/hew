@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-init-deferred-supervised-fault"
+intent = "A supervised child whose init faults after storing a deferred owned field refuses the whole supervisor with the child's own diagnostic and releases what init stored."
+source = "cases/actor-init-deferred-supervised-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): worker init failed\n"
+exit = 1

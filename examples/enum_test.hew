@@ -2,14 +2,14 @@
 //! Description: Enum Test example.
 
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 enum Shape {
-    Circle(i32);
-    Rectangle(i32);
+    Circle(i32),
+    Rectangle(i32),
 }
 
 fn describe_colour(tag: i32) -> i32 {

@@ -1,0 +1,15 @@
+machine Counter {
+    events {
+        Tick,
+    }
+
+    state Idle,
+    state Live { hits: i64 },
+
+    on Tick: Idle => Live { hits: 0 }
+    on Tick: Live => Live reenter { hits: self.hits + 1 }
+}
+
+fn self_transition_rejection_probe() -> i32 {
+    7
+}

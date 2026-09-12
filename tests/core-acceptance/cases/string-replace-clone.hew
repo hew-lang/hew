@@ -1,0 +1,18 @@
+fn owned_clone() -> string {
+    let text = "é\0🙂".repeat(2);
+    text.clone()
+}
+
+fn main() {
+    let original = owned_clone();
+    let copy = original.clone();
+    let replaced = copy.replace("🙂", "<雪>");
+    assert(replaced == "é\0<雪>é\0<雪>");
+    assert(original == "é\0🙂é\0🙂");
+    assert(copy == original);
+    assert(original.replace("missing", "x") == original);
+    assert(original.replace("", "x") == original);
+    assert(original.replace("é\0", "") == "🙂🙂");
+    assert("".clone().replace("x", "y") == "");
+    println("string clone and replace preserve owned Unicode text");
+}

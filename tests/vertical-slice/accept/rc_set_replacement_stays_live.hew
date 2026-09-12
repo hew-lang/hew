@@ -1,0 +1,8 @@
+// `Rc.set` adopts its replacement, and an operand with a copy recipe is read as
+// an independent owner first, so the caller keeps its own value.
+fn main() {
+    let rc = Rc.new("o" + "ld");
+    let replacement = "n" + "ew";
+    rc.set(replacement);
+    println(replacement);
+}

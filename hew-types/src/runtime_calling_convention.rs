@@ -129,7 +129,7 @@ pub enum RuntimeCallingConvention {
     /// [`Ty::Named`] that is a **proven** heap-handle nominal
     /// — that is, a name whose resolved
     /// [`TypeDef::is_indirect`](crate::check::TypeDef) is
-    /// `true` (`Vec`, `HashMap`, `HashSet`, `LocalPid`, opaque
+    /// `true` (`Vec`, `HashMap`, `HashSet`, `ActorHandle`, opaque
     /// handles like `net.Listener`, and any user `type T {}` whose
     /// `is_indirect` is `true`).
     ///
@@ -606,10 +606,17 @@ mod tests {
         // boundary as a heap-boxed pair handle, riding the pointer
         // convention (no 16-byte width class, no `_layout` witness entry).
         let fn_ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I64],
             ret: Box::new(Ty::I64),
         };
         let closure_ty = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(Ty::Unit),
             captures: vec![],

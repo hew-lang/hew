@@ -12,7 +12,7 @@
 // The second half is the negative control: binding the carrier to a local
 // first does mint the scrutinee owner, so that shape already yields the string
 // today and must keep doing so.
-import std.channel.channel;
+import std.channel;
 
 fn main() {
     let (tx1, rx1): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {

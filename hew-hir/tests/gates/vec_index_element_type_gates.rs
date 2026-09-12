@@ -71,12 +71,23 @@ fn slice_diagnostics(out: &hew_hir::LowerOutput) -> Vec<String> {
 
 #[test]
 fn vec_index_unsupported_element_types_rejected() {
-    // Scalar index on Vec<bytes> must emit a
-    // VecIndexElementTypeUnsupported diagnostic. Platform-sized integers and
-    // duration are accepted below; bytes still has no Vec element ABI.
+    // Scalar index on a trait-object element must emit a
+    // VecIndexElementTypeUnsupported diagnostic: returning the owner would
+    // need a semantic trait-object clone, and there is none. `bytes` is a
+    // supported element today, so the gate is observed through the element
+    // class that is still fail-closed.
     let out = lower(
         r"
-        fn pick_bytes(xs: Vec<bytes>, i: i64) -> bytes { xs[i] }
+        trait Shape {
+            fn area(val: Self) -> i64;
+        }
+
+        type Circle { radius: i64, }
+        impl Shape for Circle {
+            fn area(c: Circle) -> i64 { c.radius }
+        }
+
+        fn pick_shape(xs: Vec<dyn Shape>, i: i64) -> dyn Shape { xs[i] }
         ",
     );
 
@@ -87,28 +98,19 @@ fn vec_index_unsupported_element_types_rejected() {
         "expected exactly 1 VecIndexElementTypeUnsupported diagnostic, got: {:#?}",
         out.diagnostics
     );
-    assert!(
-        diags.contains(&"bytes".to_string()),
-        "missing bytes: {diags:?}"
-    );
 
-    // The diagnostic note should enumerate the supported element-type
-    // allowlist — including string, which is a supported scalar index
-    // element — so users know what works.
+    // A trait-object element gets the dedicated note naming the missing
+    // semantic clone and the consuming alternatives, not the scalar
+    // allowlist enumeration.
     for d in &out.diagnostics {
         if matches!(
             d.kind,
             HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
         ) {
             assert!(
-                d.note.contains("i32")
-                    && d.note.contains("i64")
-                    && d.note.contains("f64")
-                    && d.note.contains("string")
-                    && d.note.contains("isize")
-                    && d.note.contains("usize"),
-                "diagnostic note must enumerate supported element types \
-                 (including string/isize/usize): {:?}",
+                d.note.contains("semantic trait-object clone") && d.note.contains("into_iter()"),
+                "trait-object diagnostic note must name the missing clone and \
+                 the consuming alternative: {:?}",
                 d.note
             );
         }
@@ -121,54 +123,34 @@ fn vec_index_unsupported_element_types_rejected() {
 }
 
 #[test]
-fn vec_slice_unsupported_element_types_rejected() {
-    // Range-slice on element ABIs with no slice substrate still emits a
-    // VecSliceElementTypeUnsupported diagnostic. Named records/enums and
-    // platform-sized integers are accepted by the G5 slice substrate below.
-    let out = lower(
+fn vec_slice_over_non_clonable_element_rejected_at_type_check() {
+    // A range-slice copies each selected element into a fresh `Vec`, so an
+    // element with no semantic clone/retain (a closure/fn value) is refused
+    // structurally at type-check, before HIR lowering's ABI gate ever sees
+    // it. This is a stricter, earlier check than the ABI-substrate gate
+    // above (D432): the direct `for` loop over the same element would
+    // borrow instead of refusing, but a slice cannot borrow — it produces
+    // an independently owned `Vec`.
+    let parsed = hew_parser::parse(
         r"
-        fn double(x: i64) -> i64 { x * 2 }
-        fn pick_bytes(xs: Vec<bytes>) -> Vec<bytes> { xs[0..1] }
         fn pick_fn(xs: Vec<fn(i64) -> i64>) -> Vec<fn(i64) -> i64> { xs[0..1] }
         ",
     );
-
-    let diags = slice_diagnostics(&out);
-    assert_eq!(
-        diags.len(),
-        2,
-        "expected exactly 2 VecSliceElementTypeUnsupported diagnostics, got: {:#?}",
-        out.diagnostics
-    );
     assert!(
-        diags.contains(&"bytes".to_string()),
-        "missing bytes: {diags:?}"
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
     );
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let tc_output = checker.check_program(&parsed.program);
     assert!(
-        diags.contains(&"fn(i64) -> i64".to_string()),
-        "missing function element: {diags:?}"
-    );
-
-    for d in &out.diagnostics {
-        if matches!(
-            d.kind,
-            HirDiagnosticKind::VecSliceElementTypeUnsupported { .. }
-        ) {
-            assert!(
-                d.note.contains("string")
-                    && d.note.contains("i32")
-                    && d.note.contains("isize")
-                    && d.note.contains("user-defined types"),
-                "range-slice diagnostic note must enumerate supported \
-                 element types (including string/isize/named): {:?}",
-                d.note
-            );
-        }
-    }
-
-    assert!(
-        out.into_result().is_err(),
-        "into_result() must be Err when any VecSliceElementTypeUnsupported diagnostic is present"
+        tc_output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("cannot be range-sliced")
+                && e.message.contains("fn(i64) -> i64")),
+        "slicing a Vec of closures must be refused at type-check: {:#?}",
+        tc_output.errors
     );
 }
 
@@ -224,7 +206,7 @@ fn vec_slice_supported_element_types_accepted() {
     let out = lower(
         r"
         type UserRecord { x: i32 }
-        enum Colour { Red; Green; }
+        enum Colour { Red, Green, }
         fn slice_bool(xs: Vec<bool>) -> Vec<bool> { xs[0..2] }
         fn slice_char(xs: Vec<char>) -> Vec<char> { xs[0..2] }
         fn slice_i8(xs: Vec<i8>) -> Vec<i8> { xs[0..2] }
@@ -275,43 +257,51 @@ fn vec_slice_supported_element_types_accepted() {
 // and these positions are covered. The transition-body and
 // transition-guard arms below exercise the live code path end-to-end.
 
+/// Element declarations shared by the machine-walker gate tests. `()` is a
+/// machine-pure element the checker admits and the runtime Vec element ABI
+/// does not carry, so `Vec<()>` scalar indexing stays fail-closed at the HIR
+/// gate. Trait objects would also trip the gate but the machine purity check
+/// refuses them first, so they cannot reach the walker.
+const UNIT_ELEM_DECLS: &str = r"        fn make_units() -> Vec<()> { [] }";
+
 fn vec_index_diag_for_elem(out: &hew_hir::LowerOutput, elem: &str) -> bool {
     index_diagnostics(out).iter().any(|e| e == elem)
 }
 
 #[test]
 fn vec_index_in_machine_transition_body_rejected() {
-    // Vec<bytes> scalar-indexed inside a transition body must trip the gate.
-    // Transition bodies are type-checked (registration.rs ~ check_against),
-    // so `tc.expr_types` carries the container type at the indexing site.
-    // bytes still has no Vec element ABI (duration is now supported).
-    let out = lower(
+    // A unit element scalar-indexed inside a transition body must trip the
+    // gate. Transition bodies are type-checked (registration.rs ~
+    // check_against), so `tc.expr_types` carries the container type at the
+    // indexing site. `bytes` is a supported element today; `()` has no Vec
+    // element ABI, so it carries this walker regression.
+    let out = lower(&format!(
         r"
-        fn make_byteses() -> Vec<bytes> { [] }
+{UNIT_ELEM_DECLS}
 
-        machine M {
-            events {
-                Go;
-                Reset;
-            }
+        machine M {{
+            events {{
+                Go,
+                Reset,
+            }}
 
-            state Idle;
-            state Done;
-            on Go: Idle => .Done {
-                let xs: Vec<bytes> = make_byteses();
-                let _: bytes = xs[0];
+            state Idle,
+            state Done,
+            on Go: Idle => .Done {{
+                let xs: Vec<()> = make_units();
+                let _: () = xs[0];
                 .Done
-            }
-            on Go: Done => .Done;
-            on Reset: Done => .Idle;
-            on Reset: Idle => .Idle;
-        }
-        ",
-    );
+            }}
+            on Go: Done => .Done,
+            on Reset: Done => .Idle,
+            on Reset: Idle => .Idle,
+        }}
+        "
+    ));
 
     assert!(
-        vec_index_diag_for_elem(&out, "bytes"),
-        "expected VecIndexElementTypeUnsupported(bytes) inside transition body; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "()"),
+        "expected VecIndexElementTypeUnsupported(()) inside transition body; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -322,34 +312,35 @@ fn vec_index_in_machine_transition_body_rejected() {
 
 #[test]
 fn vec_index_in_machine_transition_guard_rejected() {
-    // Vec<bytes> scalar-indexed inside a transition `when` guard must trip
-    // the gate. Guards are type-checked against `Ty::Bool`
-    // (registration.rs:2663 check_against), so `tc.expr_types` carries
-    // the container type at the indexing site. bytes remains fail-closed
-    // (duration is now supported).
-    let out = lower(
+    // A unit element scalar-indexed inside a transition `when` guard must
+    // trip the gate. Guards are type-checked against `Ty::Bool`
+    // (registration.rs:2663 check_against), so `tc.expr_types` carries the
+    // container type at the indexing site. `bytes` is a supported element
+    // today; `()` has no Vec element ABI.
+    let out = lower(&format!(
         r"
-        fn make_byteses() -> Vec<bytes> { [] }
+{UNIT_ELEM_DECLS}
 
-        machine M {
-            events {
-                Go;
-                Reset;
-            }
+        machine M {{
+            events {{
+                Go,
+                Reset,
+            }}
 
-            state Idle;
-            state Done;
-            on Go: Idle => .Done when make_byteses()[0].is_empty() { .Done }
-            on Go: Done => .Done;
-            on Reset: Done => .Idle;
-            on Reset: Idle => .Idle;
-        }
-        ",
-    );
+            state Idle,
+            state Done,
+            on Go: Idle => .Done when make_units()[0] == (),
+            on Go: Idle => .Idle,
+            on Go: Done => .Done,
+            on Reset: Done => .Idle,
+            on Reset: Idle => .Idle,
+        }}
+        "
+    ));
 
     assert!(
-        vec_index_diag_for_elem(&out, "bytes"),
-        "expected VecIndexElementTypeUnsupported(bytes) inside transition guard; got diagnostics: {:#?}",
+        vec_index_diag_for_elem(&out, "()"),
+        "expected VecIndexElementTypeUnsupported(()) inside transition guard; got diagnostics: {:#?}",
         out.diagnostics
     );
     assert!(
@@ -377,8 +368,8 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
 
         machine M {
             events {
-                Go;
-                Reset;
+                Go,
+                Reset,
             }
 
             state Idle {
@@ -390,12 +381,12 @@ fn machine_state_entry_exit_blocks_are_walked_by_vec_index_gate() {
                     let xs: Vec<bool> = make_bools();
                     let _: bool = xs[0];
                 }
-            }
-            state Done;
-            on Go: Idle => .Done;
-            on Go: Done => .Done;
-            on Reset: Done => .Idle;
-            on Reset: Idle => .Idle;
+            },
+            state Done,
+            on Go: Idle => .Done,
+            on Go: Done => .Done,
+            on Reset: Done => .Idle,
+            on Reset: Idle => .Idle,
         }
         ",
     );

@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_slice_open_left"
+intent = "An open-left byte-slice `b[..3]` yields the leading bytes and its length is the exit code."
+source = "../vertical-slice/accept/bytes_slice_open_left.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "abc\n"
+exit = 3

@@ -1,0 +1,10 @@
+[[case]]
+id = "scalar-variant-patterns"
+intent = "Float and character payloads survive repeated calls and select ordered exact or wildcard patterns independently."
+source = "cases/scalar-variant-patterns.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1:1:2:3:4:5\n"
+exit = 0

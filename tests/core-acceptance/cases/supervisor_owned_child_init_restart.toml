@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor_owned_child_init_restart"
+intent = "The fixture runs to completion and exits 10."
+source = "../vertical-slice/accept/supervisor_owned_child_init_restart.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): crash to force a restart\nhew: actor crash in Tagged.crash_me (actor 1): UserPanic\n"
+exit = 10

@@ -61,8 +61,8 @@
 // lifecycle code. The runtime handles crash isolation, restart backoff,
 // and budget enforcement automatically.
 actor ConnWorker {
-    let role: i32; // 0 = reader, 1 = writer
-    let port: i32;
+    let role: i32, // 0 = reader, 1 = writer
+    let port: i32,
     receive fn handle(request_id: i32) {
         if role == 0 {
             print("  [reader:");
@@ -87,11 +87,11 @@ actor ConnWorker {
 
 // This IS the supervision tree. 6 lines.
 supervisor ConnectionPool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child reader: ConnWorker(role: 0, port: 8080);
-    child writer: ConnWorker(role: 1, port: 8081);
+    child reader: ConnWorker(role: 0, port: 8080),
+    child writer: ConnWorker(role: 1, port: 8081),
 }
 
 fn main() {
@@ -102,26 +102,26 @@ fn main() {
     let reader = sup.reader;
     let writer = sup.writer;
     // Normal operation
-    reader.handle(1);
+    let _ = reader.handle(1);
     sleep(10ms);
-    writer.handle(2);
+    let _ = writer.handle(2);
     sleep(10ms);
-    reader.handle(3);
+    let _ = reader.handle(3);
     sleep(30ms);
 
     // Reader crashes — writer keeps running
     println("");
     println("Reader connection drops:");
-    reader.fail();
+    let _ = reader.fail();
     sleep(300ms);
 
     // New reader is already running (supervisor restarted it)
     println("");
     println("After automatic restart:");
     let reader2 = sup.reader;
-    reader2.handle(4);
+    let _ = reader2.handle(4);
     sleep(10ms);
-    writer.handle(5);
+    let _ = writer.handle(5);
     sleep(30ms);
     println("");
     println("Zero downtime. Zero manual recovery. That's supervision.");

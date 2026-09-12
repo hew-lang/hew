@@ -1,9 +1,25 @@
+use super::types::{VecCursorMode, VecIterationMode};
 #[allow(
     clippy::wildcard_imports,
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use crate::type_facts::CloneKind;
+use crate::value_class::{ClassError, ValueClass};
 use crate::BuiltinType;
+
+/// How one value class reads in a diagnostic, so a refusal names the rule that
+/// produced it rather than the shape the checker happened to walk.
+fn class_description(class: ValueClass) -> &'static str {
+    match class {
+        ValueClass::BitCopy => "a bit-copyable value",
+        ValueClass::View => "a non-owning view",
+        ValueClass::CowValue => "a heap value",
+        ValueClass::PersistentShare => "a shared value whose descriptor carries no copy slot",
+        ValueClass::AffineResource => "an affine resource",
+        ValueClass::Linear => "a linear value that must be consumed",
+    }
+}
 
 pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
     params.iter().any(ty_contains_error) || ty_contains_error(ret)
@@ -81,11 +97,7 @@ fn primitive_copy_layout_on_path(
             Some((elem_size.checked_mul(count)?, elem_align))
         }
         Ty::Named { name, args, .. } => {
-            // Try direct lookup first, then strip module prefix (mirrors lookup_type_def).
-            let type_def = type_defs.get(name.as_str()).or_else(|| {
-                name.split_once('.')
-                    .and_then(|(_, local)| type_defs.get(local))
-            })?;
+            let type_def = crate::check::types::type_def_for_spelling(type_defs, name)?;
             let visit_key = type_def.name.clone();
             if !visiting.insert(visit_key.clone()) {
                 return None;
@@ -129,6 +141,14 @@ fn primitive_copy_layout_member_on_path(
                 .iter()
                 .position(|param| param == name)?;
             let type_arg = type_args.get(type_param_index)?;
+            // A fresh parameter path is needed for finite Wrap<Wrap<i64>>,
+            // but must not erase a declaration cycle through that parameter.
+            // Reuse the checker termination proof before restarting the walk;
+            // it also refuses cycles with growing generic arguments.
+            let resolved_arg = ResolvedTy::from_ty(type_arg).ok()?;
+            if !declaration_walk_terminates(&resolved_arg, type_defs) {
+                return None;
+            }
             primitive_copy_layout(type_arg, type_defs)
         }
         Ty::Array(elem, count) => {
@@ -149,34 +169,6 @@ fn primitive_copy_layout_member_on_path(
             primitive_copy_layout_on_path(&instantiated, type_defs, visiting)
         }
     }
-}
-
-/// Compute `(total_size, max_align)` for a Copy named-record type.
-///
-/// Fields are walked in **declaration order** — the order fields appear in the
-/// source declaration.  This matches the order used by HIR `RecordLayout.fields`,
-/// MIR `RecordLayout.field_tys`, and codegen's LLVM struct body emission, ensuring
-/// that the checker-computed key size/alignment agrees with the binary ABI.
-///
-/// Uses `type_def.field_order` (populated by `register_record_decl` and friends in
-/// `registration.rs`).  For synthetic/test `TypeDef`s where `field_order` is empty
-/// but `fields` is non-empty, falls back to **alphabetical order** so that unit
-/// tests that build `TypeDef`s by hand still produce a deterministic result.  This
-/// fallback should not occur in production paths (the registration pass always
-/// populates `field_order` for named-field records).
-///
-/// Returns `None` when:
-/// - The record has no fields (zero-size keys are an ABI violation).
-/// - A field's layout cannot be determined (type not in scope, generic param, etc.).
-///
-/// The computed size is the C-like struct size: fields are padded to their
-/// natural alignment, and the total size is rounded up to the struct's max-field
-/// alignment (i.e., `sizeof(struct { ... })` in C terms).
-pub(crate) fn compute_copy_record_layout(
-    type_def: &TypeDef,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    compute_copy_record_layout_on_path(type_def, type_defs, &mut HashSet::new())
 }
 
 fn compute_copy_record_layout_on_path(
@@ -239,111 +231,6 @@ fn compute_copy_record_layout_with_args_on_path(
     Some((total_size, max_align))
 }
 
-/// Slot-blob size/alignment of a hash-key leaf, admitting `string` as a single
-/// owned pointer in addition to the fixed-size Copy primitives.
-///
-/// This is the hash-key counterpart of [`primitive_copy_layout`] and must NOT be
-/// confused with it: `primitive_copy_layout` is the **Copy authority** (`None`
-/// for `string`) consulted by `vec_element_has_copy_layout`, where a `string`
-/// field makes a type non-Copy. Here we
-/// answer a different question — "what is the byte layout of this leaf when it
-/// sits in a `HashMap` key slot?" — for which a `string` is a pointer-width blob
-/// (its heap payload is hashed by descent and freed by the per-record key drop
-/// thunk). Eligibility (`ty_is_hash_eligible`) gates which leaves reach this
-/// sizer; this only computes the layout of an already-admitted key.
-fn primitive_hash_key_layout(
-    ty: &Ty,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    match ty {
-        // String slot blob: a single owned `*const c_char` (pointer-width /
-        // pointer-aligned; 8/8 on the 64-bit targets this sizer serves).
-        Ty::String => Some((8, 8)),
-        Ty::Array(elem, count) => {
-            let (elem_size, elem_align) = primitive_hash_key_layout(elem, type_defs)?;
-            let count = usize::try_from(*count).ok()?;
-            Some((elem_size.checked_mul(count)?, elem_align))
-        }
-        Ty::Named { name, args, .. } => {
-            let type_def = type_defs.get(name.as_str()).or_else(|| {
-                name.split_once('.')
-                    .and_then(|(_, local)| type_defs.get(local))
-            })?;
-            if args.is_empty() {
-                hash_key_record_layout(type_def, type_defs)
-            } else {
-                if type_def.type_params.len() != args.len() {
-                    return None;
-                }
-                let subst: HashMap<String, Ty> = type_def
-                    .type_params
-                    .iter()
-                    .zip(args.iter())
-                    .map(|(param, arg)| (param.clone(), arg.clone()))
-                    .collect();
-                let mut instantiated = type_def.clone();
-                instantiated.fields = type_def
-                    .fields
-                    .iter()
-                    .map(|(field, ty)| (field.clone(), ty.substitute_named_params_parallel(&subst)))
-                    .collect();
-                hash_key_record_layout(&instantiated, type_defs)
-            }
-        }
-        // All other leaves: defer to the Copy sizer (fixed-size primitives /
-        // nested Copy records). A non-Copy, non-string leaf returns `None`,
-        // matching `ty_is_hash_eligible`'s fail-closed conjunction.
-        _ => primitive_copy_layout(ty, type_defs),
-    }
-}
-
-/// `(total_size, max_align)` for a hash-key record whose fields are each
-/// hash-eligible-or-`string`. The hash-key counterpart of
-/// [`compute_copy_record_layout`]: identical field-walk and padding rules, but
-/// it sizes a `string` field as a pointer blob via [`primitive_hash_key_layout`]
-/// rather than rejecting it. Used only at the HashMap/HashSet key/element
-/// admission sites; never as a Copy-ness decision.
-pub(crate) fn hash_key_record_layout(
-    type_def: &TypeDef,
-    type_defs: &HashMap<String, TypeDef>,
-) -> Option<(usize, usize)> {
-    if type_def.fields.is_empty() {
-        return None;
-    }
-
-    let mut offset: usize = 0;
-    let mut max_align: usize = 1;
-
-    let ordered_names: Vec<&String>;
-    let mut alpha_sorted: Vec<&String>;
-    let field_names: &[&String] = if type_def.field_order.is_empty() {
-        alpha_sorted = type_def.fields.keys().collect();
-        alpha_sorted.sort();
-        &alpha_sorted
-    } else {
-        ordered_names = type_def.field_order.iter().collect();
-        &ordered_names
-    };
-
-    for name in field_names {
-        let field_ty = type_def.fields.get(*name)?;
-        let (field_size, field_align) = primitive_hash_key_layout(field_ty, type_defs)?;
-
-        offset = align_up(offset, field_align);
-        offset = offset.checked_add(field_size)?;
-        if field_align > max_align {
-            max_align = field_align;
-        }
-    }
-
-    let total_size = align_up(offset, max_align);
-    if total_size == 0 {
-        return None;
-    }
-
-    Some((total_size, max_align))
-}
-
 /// Enforce the fail-closed output contract for `lowering_facts` after
 /// [`Checker::finalize_lowering_facts`] has run.
 ///
@@ -397,90 +284,19 @@ fn ty_contains_error(ty: &Ty) -> bool {
     ty.contains_error()
 }
 
-fn normalize_synthetic_channel_handle_type(ty: &Ty) -> Ty {
-    match ty {
-        Ty::Named { name, args, .. } => {
-            let normalized_args: Vec<Ty> = args
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect();
-            if matches!(
-                builtin_named_type(name.as_str()),
-                Some(kind) if kind.is_channel_handle()
-            ) && matches!(normalized_args.as_slice(), [Ty::Var(_)])
-            {
-                return Ty::normalize_named(name.clone(), vec![]);
-            }
-            Ty::normalize_named(name.clone(), normalized_args)
-        }
-        Ty::Tuple(elems) => Ty::Tuple(
-            elems
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-        ),
-        Ty::Array(elem, size) => Ty::Array(
-            Box::new(normalize_synthetic_channel_handle_type(elem)),
-            *size,
-        ),
-        Ty::Slice(elem) => Ty::Slice(Box::new(normalize_synthetic_channel_handle_type(elem))),
-        Ty::Function { params, ret } => Ty::Function {
-            params: params
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
-        },
-        Ty::Closure {
-            params,
-            ret,
-            captures,
-        } => Ty::Closure {
-            params: params
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-            ret: Box::new(normalize_synthetic_channel_handle_type(ret)),
-            captures: captures
-                .iter()
-                .map(normalize_synthetic_channel_handle_type)
-                .collect(),
-        },
-        Ty::Pointer {
-            is_mutable,
-            pointee,
-        } => Ty::Pointer {
-            is_mutable: *is_mutable,
-            pointee: Box::new(normalize_synthetic_channel_handle_type(pointee)),
-        },
-        _ => ty.clone(),
-    }
-}
-
-fn normalized_variant_def_has_inference_var(variant: &VariantDef) -> bool {
+fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
     match variant {
         VariantDef::Unit => false,
-        VariantDef::Tuple(fields) => fields
-            .iter()
-            .map(normalize_synthetic_channel_handle_type)
-            .any(|field| field.has_inference_var()),
+        VariantDef::Tuple(fields) => fields.iter().any(Ty::has_inference_var),
         VariantDef::Struct(fields) => fields
             .iter()
-            .map(|(_, field)| normalize_synthetic_channel_handle_type(field))
-            .any(|field| field.has_inference_var()),
+            .map(|(_, field)| field)
+            .any(Ty::has_inference_var),
     }
 }
 
 fn fn_sig_has_inference_var(sig: &FnSig) -> bool {
-    sig.params
-        .iter()
-        .map(normalize_synthetic_channel_handle_type)
-        .any(|param| param.has_inference_var())
-        || normalize_synthetic_channel_handle_type(&sig.return_type).has_inference_var()
-}
-
-fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
-    normalized_variant_def_has_inference_var(variant)
+    sig.params.iter().any(Ty::has_inference_var) || sig.return_type.has_inference_var()
 }
 
 fn variant_def_contains_error_type(variant: &VariantDef) -> bool {
@@ -500,11 +316,7 @@ fn type_def_shape_contains_error_type(type_def: &TypeDef) -> bool {
 }
 
 fn type_def_shape_has_inference_var(type_def: &TypeDef) -> bool {
-    type_def
-        .fields
-        .values()
-        .map(normalize_synthetic_channel_handle_type)
-        .any(|field| field.has_inference_var())
+    type_def.fields.values().any(Ty::has_inference_var)
         || type_def
             .variants
             .values()
@@ -706,18 +518,6 @@ impl Checker {
             if unresolved.is_empty() {
                 continue;
             }
-            if !unresolved.is_subset(covered_inference_vars) {
-                let normalized = normalize_synthetic_channel_handle_type(ty);
-                if normalized != *ty {
-                    let mut normalized_unresolved = HashSet::new();
-                    collect_unresolved_inference_vars(&normalized, &mut normalized_unresolved);
-                    *ty = normalized;
-                    unresolved = normalized_unresolved;
-                    if unresolved.is_empty() {
-                        continue;
-                    }
-                }
-            }
             leaked_expr_type_spans.push(span.clone());
             if unresolved.is_subset(covered_inference_vars) {
                 continue;
@@ -800,9 +600,7 @@ impl Checker {
                 return false;
             }
             match dispatch {
-                ActorMethodKind::Fire(_)
-                | ActorMethodKind::BlockingFire(_)
-                | ActorMethodKind::CheckedFire(_) => true,
+                ActorMethodKind::Message { .. } => true,
                 // Output-contract pruning ONLY: retain the dispatch entry when
                 // the reply type is fully resolved and error-free. This is NOT
                 // the reply-type admissibility gate — a non-Send reply (`Rc`,
@@ -812,7 +610,7 @@ impl Checker {
                 // there (#1739). Do not add a Send/handle rejection here; this
                 // pass runs after type-checking and only graduates the
                 // side-table to a validated contract.
-                ActorMethodKind::Ask(_, reply_ty) => {
+                ActorMethodKind::Ask { reply_ty, .. } => {
                     !reply_ty.has_inference_var() && !reply_ty.contains_error()
                 }
                 // Same output-contract pruning as `Ask`: retain only when the
@@ -961,7 +759,7 @@ impl Checker {
         // A type is a valid Sink/Stream payload if and only if it implements
         // both the Encode and Decode marker traits (the "Wire capability").
         // implements_marker performs structural derivation — closures, raw
-        // pointers, dyn-Trait, LocalPid, and other non-serialisable types
+        // pointers, dyn-Trait, an actor handle, and other non-serialisable types
         // naturally fall out here without any explicit allowlist entry.
         let has_encode = self.registry.implements_marker(&inner, MarkerTrait::Encode);
         let has_decode = self.registry.implements_marker(&inner, MarkerTrait::Decode);
@@ -1008,48 +806,62 @@ impl Checker {
         Ty::Error
     }
 
-    fn is_supported_hashmap_key_type(&self, ty: &Ty) -> bool {
-        // W4.001 Stage C3: legacy per-K allowlist retired. Admit any K that
-        // implements both `Hash` and `Eq` markers — the resolver's
-        // `where K: Hash + Eq` bound is the sole admission contract.
-        // Unsatisfied bounds (e.g. `f64: Hash` failing) surface as a
-        // `BoundsNotSatisfied` diagnostic from `record_resolved_hashmap_call`.
-        matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(ty),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::Complete
-        ) && self.registry.implements_marker(ty, MarkerTrait::Hash)
-            && self.registry.implements_marker(ty, MarkerTrait::Eq)
+    /// Concrete key operations come from the exact semantic type and selected
+    /// impl bounds. A bare template parameter is governed by its declared bound.
+    pub(super) fn collection_key_marker_available(&self, ty: &Ty, marker: MarkerTrait) -> bool {
+        let capability = match marker {
+            MarkerTrait::Hash => crate::ValueCapability::Hash,
+            MarkerTrait::Eq => crate::ValueCapability::Eq,
+            _ => return self.registry.implements_marker(ty, marker),
+        };
+        if let Ty::Named {
+            name,
+            args,
+            builtin: None,
+        } = ty
+        {
+            if args.is_empty() && self.is_type_param_in_scope(name) {
+                return self.type_param_has_marker_bound(name, marker);
+            }
+        }
+        let ty = self.subst.resolve(ty).materialize_literal_defaults();
+        let Ok(resolved) =
+            crate::ResolvedTy::from_ty_with_type_params(&ty, &self.current_type_param_names())
+        else {
+            return false;
+        };
+        crate::TypeFactService::new(self.type_fact_context(), BTreeMap::new())
+            .capability_plan(&resolved, capability)
+            .is_ok_and(|selection| selection.is_some())
     }
 
-    fn hashmap_nested_key_clone_blocker(
-        &self,
+    pub(super) fn validate_collection_key_capabilities(
+        &mut self,
         ty: &Ty,
-        _visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
-            return None;
-        }
-        match &resolved {
-            Ty::String => None,
-            // `hew_hashmap_clone_layout` can deep-clone Plain and string keys.
-            // Bytes/layout-managed keys have no key-side clone thunk field in
-            // `HewMapKeyLayout`, so a HashMap with such a key is not cloneable
-            // when nested inside another owned value.
-            Ty::Bytes => Some("bytes key".to_string()),
-            Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::TraitObject { .. }
-            | Ty::CancellationToken
-            | Ty::Task(_) => Some(resolved.user_facing().to_string()),
-            Ty::Named { name, .. }
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.is_user_opaque_type_name(name) =>
-            {
-                Some(name.clone())
+        collection: &str,
+        span: &Span,
+    ) -> bool {
+        let mut missing = Vec::new();
+        for marker in [MarkerTrait::Hash, MarkerTrait::Eq] {
+            if !self.collection_key_marker_available(ty, marker) {
+                missing.push(marker.to_string());
             }
-            other => Some(format!("non-cloneable map key `{}`", other.user_facing())),
         }
+        if missing.is_empty() {
+            return true;
+        }
+        if !self.has_bounds_not_satisfied_at(span) {
+            self.report_error(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`{}` does not satisfy the required bounds for `{collection}` ({})",
+                    ty.user_facing(),
+                    missing.join(" + ")
+                ),
+            );
+        }
+        false
     }
 
     /// Opaque declarations are nominal. Imported uses must carry the exact
@@ -1086,673 +898,296 @@ impl Checker {
             .unwrap_or_default()
     }
 
-    fn hashmap_type_def_clone_blocker(
-        &self,
-        type_def: &TypeDef,
-        args: &[Ty],
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        let field_blocker = type_def.fields.values().find_map(|field_ty| {
-            let field_ty = Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-            self.hashmap_value_clone_blocker(&field_ty, visiting)
-        });
-        if field_blocker.is_some() {
-            return field_blocker;
-        }
-
-        type_def
-            .variants
-            .values()
-            .find_map(|variant| match variant {
-                VariantDef::Unit => None,
-                VariantDef::Tuple(tys) => tys.iter().find_map(|field_ty| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.hashmap_value_clone_blocker(&field_ty, visiting)
-                }),
-                VariantDef::Struct(fields) => fields.iter().find_map(|(_, field_ty)| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.hashmap_value_clone_blocker(&field_ty, visiting)
-                }),
-            })
-    }
-
-    fn hashmap_named_value_clone_blocker(
-        &self,
-        name: &str,
-        args: &[Ty],
-        builtin: Option<BuiltinType>,
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        if self.canonical_owned_handle_type_name(name).is_some()
-            || self.is_user_opaque_type_name(name)
-        {
-            return Some(name.to_string());
-        }
-
-        match builtin {
-            Some(BuiltinType::Vec) => {
-                return args
-                    .first()
-                    .and_then(|elem| self.hashmap_value_clone_blocker(elem, visiting));
-            }
-            Some(BuiltinType::HashMap) if args.len() == 2 => {
-                return self
-                    .hashmap_nested_key_clone_blocker(&args[0], visiting)
-                    .or_else(|| self.hashmap_value_clone_blocker(&args[1], visiting));
-            }
-            Some(BuiltinType::HashSet) => {
-                return args
-                    .first()
-                    .and_then(|elem| self.hashmap_nested_key_clone_blocker(elem, visiting));
-            }
-            Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
-                if let Some(blocker) = args
-                    .iter()
-                    .find_map(|arg| self.hashmap_value_clone_blocker(arg, visiting))
-                {
-                    return Some(blocker);
-                }
-            }
-            _ => {}
-        }
-
-        if let Some(blocker) = args
-            .iter()
-            .find_map(|arg| self.hashmap_value_clone_blocker(arg, visiting))
-        {
-            return Some(blocker);
-        }
-
-        let type_def = self.lookup_type_def(name)?;
-        // Track declaration identity, not the resolved display spelling: a
-        // generic or qualified recursive use must re-enter this same frame.
-        let visit_key = type_def.name.clone();
-        if !visiting.insert(visit_key.clone()) {
-            return None;
-        }
-        let blocker = self.hashmap_type_def_clone_blocker(&type_def, args, visiting);
-        visiting.remove(&visit_key);
-        blocker
-    }
-
-    fn hashmap_value_clone_blocker(
+    /// The §1.1 value class and clone kind of a collection element type.
+    ///
+    /// This is the one authority behind every element question the checker
+    /// asks: whether a type may be a `Vec`, `HashMap`, `HashSet` or array
+    /// element, whether it can be copied out of one, and whether the element
+    /// carries an ownership obligation the collection has to release. It is
+    /// the same rule SIR reads for ownership and physical MIR reads for the
+    /// clone and destroy actions, so the checker and the backend cannot
+    /// disagree about one element type.
+    ///
+    /// # Errors
+    ///
+    /// Returns the class rule's own refusal. A type the boundary cannot render
+    /// as a [`ResolvedTy`] has no class either, and reports as
+    /// [`ClassError::UnknownDeclaration`] on its spelling.
+    pub(super) fn element_value_facts(
         &self,
         ty: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
+    ) -> Result<(ValueClass, CloneKind), ClassError> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        match &resolved {
-            Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::TraitObject { .. }
-            | Ty::CancellationToken
-            | Ty::Task(_) => Some(resolved.user_facing().to_string()),
-            Ty::Tuple(items) => items
-                .iter()
-                .find_map(|item| self.hashmap_value_clone_blocker(item, visiting)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => {
-                self.hashmap_value_clone_blocker(elem, visiting)
-            }
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => self.hashmap_named_value_clone_blocker(name, args, *builtin, visiting),
-            _ => None,
+        // The enclosing item's own parameters render as abstract parameters
+        // rather than as user nominals, so an in-scope `T` reaches the class
+        // rule as the parameter it is and refuses with `TypeParam` instead of
+        // as a declaration nobody wrote.
+        let rendered =
+            ResolvedTy::from_ty_with_type_params(&resolved, &self.current_type_param_names())
+                .map_err(|_| ClassError::UnknownDeclaration {
+                    name: resolved.user_facing().to_string(),
+                })?;
+        crate::value_class::classify_ty(
+            &rendered,
+            &crate::value_class::ClassContext::new(&self.class_declarations()),
+        )
+    }
+
+    /// Why this type cannot be a collection element at all, if it cannot.
+    ///
+    /// A type with a class is storable: `BitCopy` rides the plain layout
+    /// family and every other class the owned-element descriptor, whose clone
+    /// and destroy actions come from the same class row. So the only refusals
+    /// left are the class rule's own: a compiler-internal name that is never
+    /// the type of a value, a callable whose declared copy capability
+    /// contradicts what it captures, a declaration whose members reach it at a
+    /// growing instantiation, and a spelling with no declaration behind it. An
+    /// abstract parameter is substituted before the element ABI is chosen, so
+    /// it refuses nothing here.
+    pub(super) fn element_admission_refusal(&self, ty: &Ty) -> Option<(TypeErrorKind, String)> {
+        match self.element_value_facts(ty) {
+            Ok(_) | Err(ClassError::TypeParam { .. }) => None,
+            // A declaration with no finite member walk is the class rule's own
+            // limit, and it keeps that kind wherever it surfaces so one
+            // declaration produces one named refusal.
+            Err(error @ ClassError::RecursiveInstantiation { .. }) => Some((
+                TypeErrorKind::ClassRecursion,
+                format!("E_LIMIT_CLASS_RECURSION: {error}"),
+            )),
+            Err(error) => Some((TypeErrorKind::InvalidOperation, error.to_string())),
         }
     }
 
-    /// Clone-totality for the element/value position of a descriptor-backed
-    /// heap container (`Vec<T>`, `HashMap<K, V>`'s `V`).
+    /// Does this element carry an ownership obligation the collection must
+    /// release, so its slots ride the owned-element descriptor ABI?
     ///
-    /// A `Vec`/`HashMap` slot is a pointer into a separately allocated buffer,
-    /// so a value cycle that crosses this edge is FINITE: re-encountering a
-    /// nominal that is still on the active recursion stack means the layout
-    /// closes through the container's heap indirection, not through an inline
-    /// self-embedding. The cloned-out element owns its own buffer, and the
-    /// container's per-element clone/drop descriptor re-enters the element
-    /// type's own thunk per slot, so the copy-in deep clone terminates.
-    ///
-    /// The witness is evaluated per nominal AT THIS EDGE, never accumulated:
-    /// only the nominal whose cycle closes across this exact container is
-    /// admitted. An unrelated container crossed earlier on the path leaves no
-    /// residue, so a direct inline self-cycle introduced below that boundary
-    /// still fails closed in [`vec_iter_clone_blocker`].
-    ///
-    /// The witness applies only when the element position IS the nominal: an
-    /// element that wraps the nominal inline (a tuple, `Option<T>`, a record)
-    /// re-descends and re-detects the inline cycle.
-    fn vec_iter_container_element_clone_blocker(
-        &self,
-        elem: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        let resolved = self.subst.resolve(elem).materialize_literal_defaults();
-        if let Ty::Named {
-            name,
-            builtin: None,
-            ..
-        } = &resolved
-        {
-            let visit_key = self
-                .lookup_type_def(name)
-                .map_or_else(|| name.clone(), |type_def| type_def.name);
-            if visiting.contains(&visit_key) {
-                return None;
-            }
-        }
-        self.vec_iter_clone_blocker(&resolved, visiting)
+    /// A `BitCopy` element is bits in the buffer and a `View` borrows storage
+    /// it does not own; every other class owns something. A class the rule
+    /// refuses owns nothing this collection can be asked to release, and the
+    /// refusal itself is reported by the admission site.
+    pub(super) fn element_owns_heap(&self, ty: &Ty) -> bool {
+        matches!(
+            self.element_value_facts(ty),
+            Ok((class, _)) if !matches!(class, ValueClass::BitCopy | ValueClass::View)
+        )
     }
 
-    /// Return the first leaf that prevents `VecIter::next` from cloning an
-    /// element into an independent owner.
+    /// Why this element type cannot be copied out of a collection, if it
+    /// cannot.
     ///
-    /// This is a positive structural proof over the exact descriptor-backed
-    /// classes the runtime clone choke supports. Drop-only closure pairs,
-    /// opaque/resource/linear handles, raw pointers, tasks, and unresolved
-    /// layouts fail closed. Nested Vec/HashMap/HashSet values recurse through
-    /// their own clone descriptors; Rc/Weak are retainable owners.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the positive clone-totality proof deliberately enumerates every Ty shape in one exhaustive match"
-    )]
-    fn vec_iter_clone_blocker(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Option<String> {
-        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        // User resource/linear markers are semantic ownership authority. A
-        // marker may sit on an otherwise bit-copy layout, so this must precede
-        // the Copy-layout fast path below.
-        if let Ty::Named { name, .. } = &resolved {
-            if self.registry.is_resource(name) || self.registry.is_linear(name) {
-                return Some(format!("resource/linear value `{name}`"));
-            }
+    /// One authority: the element's §1.1 clone kind
+    /// ([`crate::value_class::classify_ty`]). `xs[i]`, a range slice, a
+    /// `HashMap` value read, cloning iteration and `Vec.clone` all copy an
+    /// element into an independent owner, so they admit exactly the element
+    /// types the class table gives a copy path. An abstract parameter has no
+    /// class until the instance service substitutes it and MIR's
+    /// per-monomorphisation clone check answers there, so it blocks nothing
+    /// here.
+    pub(super) fn element_clone_blocker(&self, ty: &Ty) -> Option<String> {
+        match self.element_value_facts(ty) {
+            Ok((class, CloneKind::None)) => Some(format!(
+                "`{}` ({})",
+                self.subst
+                    .resolve(ty)
+                    .materialize_literal_defaults()
+                    .user_facing(),
+                class_description(class)
+            )),
+            Ok(_) | Err(ClassError::TypeParam { .. }) => None,
+            Err(error) => Some(error.to_string()),
         }
-        if primitive_copy_layout(&resolved, &self.type_defs).is_some() {
+    }
+
+    /// How a `VecIter<T>` cursor produces each element.
+    ///
+    /// An element with a semantic clone is copied out per step, leaving the
+    /// vector whole. An element without one — a `#[resource]` or `#[linear]`
+    /// type, an opaque handle, a channel half, a generator, a trait object, an
+    /// unbounded type parameter — is moved out instead, so `into_iter()` drains
+    /// the vector and it ends empty. The cursor owns the vector, so an early
+    /// exit releases whatever the drain did not reach.
+    ///
+    /// `None` means the element is not iterable at all and a diagnostic was
+    /// reported.
+    pub(super) fn vec_iter_element_mode(&mut self, ty: &Ty, span: &Span) -> Option<VecCursorMode> {
+        let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        if matches!(resolved, Ty::Error) {
             return None;
         }
-        match &resolved {
-            Ty::Tuple(items) => items
-                .iter()
-                .find_map(|item| self.vec_iter_clone_blocker(item, visiting)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.vec_iter_clone_blocker(elem, visiting),
-            Ty::Function { .. } | Ty::Closure { .. } => {
-                Some(format!("closure value `{}`", resolved.user_facing()))
-            }
-            Ty::Pointer { .. } | Ty::Borrow { .. } | Ty::TraitObject { .. } | Ty::Task(_) => {
-                Some(format!("opaque pointer value `{}`", resolved.user_facing()))
-            }
-            Ty::CancellationToken => Some("resource handle `CancellationToken`".to_string()),
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                if self.canonical_owned_handle_type_name(name).is_some()
-                    || self.is_user_opaque_type_name(name)
-                {
-                    return Some(format!("opaque/resource handle `{name}`"));
-                }
-                if builtin.is_some_and(|kind| {
-                    matches!(
-                        kind.marker(),
-                        crate::builtin_type::BuiltinTypeMarker::Resource
-                            | crate::builtin_type::BuiltinTypeMarker::Linear
-                    )
-                }) {
-                    return Some(format!("resource handle `{}`", resolved.user_facing()));
-                }
-                // `Instant`, `Unit` and `Duration` were named beside this
-                // marker read because they carried marker `None` while §1.1
-                // classed them `BitCopy`. The markers are corrected, so the
-                // marker read answers for them and the second list is deleted.
-                if builtin.is_some_and(|kind| {
-                    kind.marker() == crate::builtin_type::BuiltinTypeMarker::BitCopy
-                }) {
-                    return None;
-                }
-                match builtin {
-                    Some(BuiltinType::Rc | BuiltinType::Weak) if args.len() == 1 => return None,
-                    Some(BuiltinType::Vec) if args.len() == 1 => {
-                        return self.vec_iter_container_element_clone_blocker(&args[0], visiting);
-                    }
-                    Some(BuiltinType::HashMap) if args.len() == 2 => {
-                        return self
-                            .hashmap_nested_key_clone_blocker(&args[0], visiting)
-                            .or_else(|| {
-                                self.vec_iter_container_element_clone_blocker(&args[1], visiting)
-                            });
-                    }
-                    Some(BuiltinType::HashSet) if args.len() == 1 => {
-                        return self.hashmap_nested_key_clone_blocker(&args[0], visiting);
-                    }
-                    Some(BuiltinType::Option | BuiltinType::Result | BuiltinType::Range) => {
-                        return args
-                            .iter()
-                            .find_map(|arg| self.vec_iter_clone_blocker(arg, visiting));
-                    }
-                    _ => {}
-                }
+        if self.clone_proven_element(&resolved) && self.element_clone_blocker(&resolved).is_none() {
+            return Some(VecCursorMode::Clone);
+        }
+        let _ = span;
+        Some(VecCursorMode::Take)
+    }
 
-                if self.is_type_param_in_scope(name)
-                    && self.type_param_has_marker_bound(name, MarkerTrait::Clone)
-                {
-                    return None;
-                }
-                // A genuine function type parameter is not a concrete layout
-                // verdict yet.  Generic bodies are checked once, before HIR
-                // records their concrete monomorphisations, so rejecting an
-                // unbounded `T` here would also reject supported call sites
-                // such as `count<i64>(Vec<i64>)`.  Defer this one shape to
-                // MIR's per-monomorphisation clone-totality gate, where `T`
-                // has been substituted and the complete record/enum layout
-                // registries are available.  A same-named ordinary nominal
-                // does not satisfy `is_type_param_in_scope` and still fails
-                // closed through the lookup below.
-                if args.is_empty() && self.is_type_param_in_scope(name) {
-                    return None;
-                }
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return Some(format!("unregistered value layout `{name}`"));
-                };
-                if !matches!(
-                    type_def.kind,
-                    TypeDefKind::Record | TypeDefKind::Struct | TypeDefKind::Enum
-                ) {
-                    return Some(format!("non-value type `{name}`"));
-                }
-                // Keep the active-stack key at nominal identity, not its
-                // substituted display spelling: a recursive generic may
-                // reach the same declaration under different type arguments,
-                // but its outgoing layout edges are already being checked by
-                // the outer frame. This is also the key used by the container
-                // witness above.
-                let visit_key = type_def.name.clone();
-                // Reaching a nominal already on the active stack through an
-                // INLINE edge (record field, enum payload, tuple member) is an
-                // infinite value layout: the element would have to embed a copy
-                // of itself. A cycle that crosses a descriptor-backed heap
-                // container is admitted earlier, at the container edge itself
-                // (`vec_iter_container_element_clone_blocker`), so it never
-                // reaches here.
-                if !visiting.insert(visit_key.clone()) {
-                    return Some(format!("recursive value layout `{visit_key}`"));
-                }
-                let blocker = type_def
-                    .fields
-                    .values()
-                    .map(|field_ty| {
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
-                    })
-                    .find_map(|field_ty| self.vec_iter_clone_blocker(&field_ty, visiting))
-                    .or_else(|| {
-                        self.tuple_record_constructor_fields(name, &type_def)
-                            .iter()
-                            .find_map(|field_ty| {
-                                let field_ty = Self::instantiate_type_def_member(
-                                    field_ty,
-                                    &type_def.type_params,
-                                    args,
-                                );
-                                self.vec_iter_clone_blocker(&field_ty, visiting)
-                            })
-                    })
-                    .or_else(|| {
-                        type_def
-                            .variants
-                            .values()
-                            .find_map(|variant| match variant {
-                                VariantDef::Unit => None,
-                                VariantDef::Tuple(fields) => fields.iter().find_map(|field_ty| {
-                                    let field_ty = Self::instantiate_type_def_member(
-                                        field_ty,
-                                        &type_def.type_params,
-                                        args,
-                                    );
-                                    self.vec_iter_clone_blocker(&field_ty, visiting)
-                                }),
-                                VariantDef::Struct(fields) => {
-                                    fields.iter().find_map(|(_, field_ty)| {
-                                        let field_ty = Self::instantiate_type_def_member(
-                                            field_ty,
-                                            &type_def.type_params,
-                                            args,
-                                        );
-                                        self.vec_iter_clone_blocker(&field_ty, visiting)
-                                    })
-                                }
-                            })
-                    });
-                visiting.remove(&visit_key);
-                blocker
+    /// Record `span` as a cursor site that moves each element out, and report
+    /// whether the cursor is admitted at all.
+    pub(super) fn record_vec_iter_element_mode(&mut self, ty: &Ty, span: &Span) -> bool {
+        match self.vec_iter_element_mode(ty, span) {
+            Some(VecCursorMode::Take) => {
+                self.owning_take_vec_cursors
+                    .insert(SpanKey::in_module(span, self.current_module_idx));
+                true
             }
-            Ty::Var(_) | Ty::AssocType { .. } => {
-                Some(format!("unresolved element `{}`", resolved.user_facing()))
-            }
-            // Error recovery already has a source diagnostic. List every
-            // supported leaf explicitly: this match is the positive proof for
-            // clone-out admission, so a future `Ty` variant must choose an
-            // operation instead of inheriting a catch-all "cloneable" answer.
-            Ty::String
-            | Ty::Bytes
-            | Ty::Error
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Isize
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Char
-            | Ty::Duration
-            | Ty::Unit
-            | Ty::Never
-            | Ty::IntLiteral
-            | Ty::FloatLiteral => None,
+            Some(VecCursorMode::Clone) => true,
+            None => false,
         }
     }
 
-    /// Fail-closed gate over the `MachineStatePayload` position of the value
-    /// -context lattice (`hew-mir/src/drop_obligation.rs`): a `#[resource]` /
-    /// `#[linear]` value carried in a machine state's payload has no wired
-    /// release on state transition or scope exit — the machine's tag-aware
-    /// drop elaboration is a later slice. Compiling it would leak the close
-    /// silently, so the declaration is rejected with a user-facing message
-    /// naming the state and the resource.
-    pub(super) fn check_machine_state_resource_payloads(
+    /// How `for value in vec` binds each element (D432).
+    ///
+    /// An element with a semantic clone is copied out per iteration, which is
+    /// what every cursor form does today. An element without one — a
+    /// `#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
+    /// generator — is bound as a loan of the slot the vector still owns: the
+    /// body may read it and call its borrowing methods, and the owning removal
+    /// is the way to move it out. A trait object stays refused here; its
+    /// consuming iterator is the trait-objects surface.
+    ///
+    /// Inside a generic template the element is not a concrete layout yet, so
+    /// the copy mode must be *proven from the bound*: an unbounded parameter is
+    /// a resource at some monomorphisation, and the borrowed form is the one
+    /// that is sound at every instantiation.
+    ///
+    /// `None` means the element is not iterable at all and a diagnostic was
+    /// reported.
+    pub(super) fn vec_iteration_element_mode(
         &mut self,
-        machine_name: &str,
+        ty: &Ty,
         span: &Span,
-    ) {
-        let Some(type_def) = self.lookup_type_def(machine_name) else {
-            return;
-        };
-        let mut findings: Vec<(String, String)> = Vec::new();
-        for (state_name, variant) in &type_def.variants {
-            let field_tys: Vec<Ty> = match variant {
-                VariantDef::Unit => continue,
-                VariantDef::Tuple(fields) => fields.clone(),
-                VariantDef::Struct(fields) => fields.iter().map(|(_, ty)| ty.clone()).collect(),
-            };
-            for field_ty in field_tys {
-                let mut visiting = HashSet::new();
-                if let Some(blocker) = self.resource_marker_blocker(&field_ty, &mut visiting) {
-                    findings.push((state_name.clone(), blocker));
-                }
-            }
-        }
-        for (state_name, blocker) in findings {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "machine `{machine_name}` state `{state_name}` holds {blocker}: a \
-                     resource in a machine state payload is not released on transition \
-                     or scope exit, so the machine is rejected rather than leaking its \
-                     `close`"
-                ),
-            );
-        }
-    }
-
-    /// The first `#[resource]` / `#[linear]`-marked value reachable from `ty`
-    /// through inline structure (tuple members, record fields, enum/machine
-    /// variant payloads, container type arguments). Deliberately NARROWER than
-    /// [`Self::vec_iter_clone_blocker`]: only the user close-contract markers
-    /// veto — heap-owning payloads keep their existing (advisory) posture and
-    /// unresolved type parameters defer to per-monomorphisation gates.
-    fn resource_marker_blocker(&self, ty: &Ty, visiting: &mut HashSet<String>) -> Option<String> {
+    ) -> Option<VecIterationMode> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if let Ty::Named { name, .. } = &resolved {
-            if self.registry.is_resource(name) || self.registry.is_linear(name) {
-                return Some(format!("`#[resource]`/`#[linear]` value `{name}`"));
-            }
+        if matches!(resolved, Ty::Error) {
+            return None;
         }
-        match &resolved {
-            Ty::Tuple(items) => items
-                .iter()
-                .find_map(|item| self.resource_marker_blocker(item, visiting)),
-            Ty::Array(elem, _) | Ty::Slice(elem) => self.resource_marker_blocker(elem, visiting),
+        if self.clone_proven_element(&resolved) && self.element_clone_blocker(&resolved).is_none() {
+            return Some(VecIterationMode::Clone);
+        }
+        let _ = span;
+        Some(VecIterationMode::Borrow)
+    }
+
+    /// Whether every type-parameter occurrence in `ty` carries a `Clone` bound.
+    ///
+    /// [`Self::element_clone_blocker`] deliberately admits an unbounded
+    /// parameter and defers it to MIR's per-monomorphisation clone check; that
+    /// is right for admitting call sites and wrong for choosing a copy mode,
+    /// because the template's loop shape is fixed before its instantiations are
+    /// known. A parameter with no `Clone` bound therefore reads as clone-free
+    /// and iterates by borrow at every monomorphisation.
+    fn clone_proven_element(&self, ty: &Ty) -> bool {
+        match ty {
             Ty::Named { name, args, .. } => {
-                if self.is_type_param_in_scope(name) {
-                    return None;
+                if self.is_type_param_in_scope(name)
+                    && !self.type_param_has_marker_bound(name, MarkerTrait::Clone)
+                {
+                    return false;
                 }
-                // A registered type definition's INSTANTIATED members are the
-                // authoritative storage inventory: a phantom generic argument
-                // (`Phantom<Tok>` where `T` is never stored) contributes
-                // nothing. Only a builtin/unregistered generic (Vec / Option /
-                // HashMap / ...) falls back to the conservative raw-argument
-                // walk.
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return self.resource_marker_blocker_in_args(args, visiting);
-                };
-                let visit_key = type_def.name.clone();
-                if !visiting.insert(visit_key) {
-                    return None;
-                }
-                let fields: Vec<Ty> = type_def
-                    .fields
-                    .values()
-                    .chain(
-                        type_def
-                            .variants
-                            .values()
-                            .flat_map(|variant| match variant {
-                                VariantDef::Tuple(fields) => fields.iter(),
-                                VariantDef::Unit | VariantDef::Struct(_) => [].iter(),
-                            }),
-                    )
-                    .map(|field_ty| {
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args)
-                    })
-                    .collect();
-                let struct_fields: Vec<Ty> = type_def
-                    .variants
-                    .values()
-                    .flat_map(|variant| match variant {
-                        VariantDef::Struct(fields) => fields
-                            .iter()
-                            .map(|(_, field_ty)| {
-                                Self::instantiate_type_def_member(
-                                    field_ty,
-                                    &type_def.type_params,
-                                    args,
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                        _ => Vec::new(),
-                    })
-                    .collect();
-                fields
-                    .iter()
-                    .chain(struct_fields.iter())
-                    .find_map(|field_ty| self.resource_marker_blocker(field_ty, visiting))
+                args.iter().all(|arg| self.clone_proven_element(arg))
             }
-            _ => None,
+            Ty::Tuple(items) => items.iter().all(|item| self.clone_proven_element(item)),
+            Ty::Array(elem, _) | Ty::Slice(elem) => self.clone_proven_element(elem),
+            _ => true,
         }
     }
 
-    fn resource_marker_blocker_in_args(
-        &self,
-        args: &[Ty],
-        visiting: &mut HashSet<String>,
-    ) -> Option<String> {
-        args.iter()
-            .find_map(|arg| self.resource_marker_blocker(arg, visiting))
-    }
-
-    /// Checker boundary for every operation that constructs or advances a
-    /// `VecIter<T>`. Most elements need a semantic clone. A trait object is the
-    /// consuming-iterator exception: its cursor moves and nulls each slot.
-    pub(super) fn validate_vec_iter_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
+    /// Checker boundary for `xs[a..b]` over `Vec<T>`.
+    ///
+    /// A Vec range slice is an independent `Vec<T>`: every selected element is
+    /// copied into the result. An element with no clone therefore has no slice,
+    /// and the consuming drain is the operation that moves elements out.
+    pub(super) fn validate_vec_slice_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::Error) {
             return false;
         }
-        // Consuming Vec iteration moves a heap-boxed trait object out of its
-        // descriptor slot and nulls that slot; it does not require a clone.
-        if matches!(resolved, Ty::TraitObject { .. }) {
-            return true;
-        }
-        let mut visiting = HashSet::new();
-        let Some(blocker) = self.vec_iter_clone_blocker(&resolved, &mut visiting) else {
+        let Some(blocker) = self.element_clone_blocker(&resolved) else {
             return true;
         };
         self.report_error(
             TypeErrorKind::InvalidOperation,
             span,
             format!(
-                "`VecIter<{}>` is not supported: `VecIter.next()` clones each element \
-                 into an independent owner, but {blocker} has no semantic clone/retain \
-                 operation",
+                "E_ELEMENT_NO_COPY: `Vec<{}>` cannot be range-sliced: a slice copies each \
+                 element into an independent `Vec`, but {blocker} has no copy operation; use \
+                 an owning removal such as `pop()` to move the elements out instead",
                 resolved.user_facing()
             ),
         );
         false
     }
 
-    /// Whether a direct `for value in vec` is admitted for this element type.
+    /// Checker boundary for `xs.get(i)` over `Vec<T>`.
     ///
-    /// Direct Vec iteration uses `VecIter::next`, which clones each element into
-    /// an independent owner. Trait objects are the consuming-iterator exception
-    /// and therefore remain excluded here: the direct-loop checker rejects their
-    /// borrowed-snapshot form.
-    ///
-    /// `type_params` maps the type parameters in scope at the query site to
-    /// their declared bound names. Inside a generic template the element type is
-    /// not a concrete layout yet, so admission must be *proven from the bound*:
-    /// a parameter carrying `Clone` stands for a cloneable element at every
-    /// monomorphisation, and one without it does not. This is stricter than the
-    /// compile-time gate in [`Self::vec_iter_clone_blocker`], which deliberately
-    /// defers an unbounded parameter to MIR's per-monomorphisation clone check —
-    /// deferring is right for admitting real call sites, and wrong for telling a
-    /// user to rewrite code that would then fail to compile for a
-    /// resource-valued instantiation.
-    pub(super) fn supports_direct_vec_iteration(
-        &self,
-        ty: &Ty,
-        type_params: &HashMap<String, Vec<String>>,
-    ) -> bool {
+    /// `get` reads a copy of the element out of the vector; the vector keeps
+    /// its own. A concrete element with no copy operation therefore has no
+    /// `get`, exactly as it has no `xs[i]` and no range slice: reading one out
+    /// would hand the caller a second owner of a single-owner value. An
+    /// unbounded type parameter is not concrete and keeps the borrowed read
+    /// every instantiation of a generic body shares (spec §3.8.1).
+    pub(super) fn validate_vec_get_element_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if matches!(resolved, Ty::Error | Ty::TraitObject { .. }) {
+        if matches!(resolved, Ty::Error) {
             return false;
         }
-        let Some(witnessed) = Self::clone_proven_witness(&resolved, type_params) else {
-            return false;
+        let Some(blocker) = self.element_clone_blocker(&resolved) else {
+            return true;
         };
-        let mut visiting = HashSet::new();
-        self.vec_iter_clone_blocker(&witnessed, &mut visiting)
-            .is_none()
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "E_ELEMENT_NO_COPY: `Vec<{}>` cannot be read with `get`: `get` copies the \
+                 element out and leaves the vector's own in place, but {blocker} has no copy \
+                 operation; use an owning removal such as `pop()` or `remove(i)`, or consuming \
+                 iteration, to move the element out instead",
+                resolved.user_facing()
+            ),
+        );
+        false
     }
 
-    /// Rewrite every in-scope type-parameter occurrence in `ty` to a concrete
-    /// cloneable witness (`string`), or return `None` when any occurrence has no
-    /// `Clone` bound to prove it with.
-    ///
-    /// Substituting a witness rather than threading a policy flag through the
-    /// blocker recursion keeps one clone-admission authority: the blocker's
-    /// type-parameter arms admit unconditionally, so replacing a `Clone`-bounded
-    /// parameter with a type the blocker already admits produces exactly the
-    /// "proven from the bound" verdict, and an unbounded parameter never reaches
-    /// the blocker at all.
-    fn clone_proven_witness(ty: &Ty, type_params: &HashMap<String, Vec<String>>) -> Option<Ty> {
-        if type_params.is_empty() {
-            return Some(ty.clone());
+    /// Checker boundary for a `HashMap` operation that copies its values out:
+    /// `m[k]`, `values()`, `entries()`, `clone()`, `into_iter()` and the
+    /// `for (k, v) in m` desugar. A value with no clone stays in the map; the
+    /// borrowed `get` reads it and the owning `remove` moves it out.
+    pub(super) fn validate_hashmap_value_clone_type(
+        &mut self,
+        ty: &Ty,
+        operation: &str,
+        span: &Span,
+    ) -> bool {
+        let resolved = self.subst.resolve(ty);
+        if matches!(resolved, Ty::Error) {
+            return false;
         }
-        Some(match ty {
-            Ty::Named {
-                name,
-                args,
-                builtin,
-            } => {
-                if let Some(bounds) = type_params.get(name) {
-                    if !bounds.iter().any(|bound| bound == "Clone") {
-                        return None;
-                    }
-                    return Some(Ty::String);
-                }
-                let args = args
-                    .iter()
-                    .map(|arg| Self::clone_proven_witness(arg, type_params))
-                    .collect::<Option<Vec<_>>>()?;
-                Ty::Named {
-                    name: name.clone(),
-                    args,
-                    builtin: *builtin,
-                }
-            }
-            Ty::Tuple(items) => Ty::Tuple(
-                items
-                    .iter()
-                    .map(|item| Self::clone_proven_witness(item, type_params))
-                    .collect::<Option<Vec<_>>>()?,
-            ),
-            Ty::Array(elem, len) => Ty::Array(
-                Box::new(Self::clone_proven_witness(elem, type_params)?),
-                *len,
-            ),
-            Ty::Slice(elem) => Ty::Slice(Box::new(Self::clone_proven_witness(elem, type_params)?)),
-            other => other.clone(),
-        })
-    }
-
-    fn validate_hashmap_value_clone_type(&mut self, ty: &Ty, span: &Span) -> bool {
-        let mut visiting = HashSet::new();
-        if let Some(blocker) = self.hashmap_value_clone_blocker(ty, &mut visiting) {
-            let resolved = self.subst.resolve(ty).materialize_literal_defaults();
+        // Inference is still in flight here; the obligation is checked once the
+        // value type has settled.
+        if resolved.has_inference_var() {
+            self.deferred_hashmap_value_copy
+                .entry(SpanKey::in_module(span, self.current_module_idx))
+                .or_insert_with(|| super::types::DeferredHashMapValueCopy {
+                    span: span.clone(),
+                    val_ty: ty.clone(),
+                    operation: operation.to_string(),
+                    source_module: self.current_module.clone(),
+                });
+            return true;
+        }
+        if let Some(blocker) = self.element_clone_blocker(ty) {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "`HashMap<_, {}>` is not supported: `HashMap.get()` returns an owned \
-                     `Option<V>`, but value type `{}` contains `{blocker}` which has no \
-                     map value clone_fn; use a cloneable value type",
-                    resolved.user_facing(),
-                    resolved.user_facing(),
+                    "E_ELEMENT_NO_COPY: `{operation}` copies each value out of the map, but \
+                     the value type {blocker} has no copy operation; read it with `get(k)`, \
+                     which borrows, or move it out with `remove(k)`"
                 ),
             );
             return false;
         }
         true
-    }
-
-    fn is_supported_hashmap_projection_element_type(&self, ty: &Ty) -> bool {
-        match ty {
-            Ty::Bool
-            | Ty::Char
-            | Ty::I32
-            | Ty::U32
-            | Ty::I64
-            | Ty::U64
-            | Ty::F32
-            | Ty::F64
-            | Ty::String => true,
-            Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } => {
-                let Some(type_def) = self.type_defs.get(name.as_str()).or_else(|| {
-                    name.split_once('.')
-                        .and_then(|(_, local)| self.type_defs.get(local))
-                }) else {
-                    return false;
-                };
-                matches!(
-                    type_def.kind,
-                    TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
-                ) && !self.registry.is_resource(name)
-                    && (primitive_copy_layout(ty, &self.type_defs).is_some()
-                        || self.registry.implements_marker(ty, MarkerTrait::Copy))
-            }
-            _ => false,
-        }
     }
 
     pub(super) fn validate_hashmap_key_value_types(
@@ -1770,117 +1205,59 @@ impl Checker {
             return false;
         }
 
-        if matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(&resolved_key),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::MissingOverwriteRelease
-        ) {
-            if !self.has_collection_key_ownership_error("HashMap key") {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`bytes` cannot be used as a HashMap key yet: duplicate-key insertion cannot \
-                     release the caller-owned bytes key on the overwrite path; use `string` or a \
-                     supported fixed-width key"
-                        .to_string(),
-                );
-            }
-            return false;
-        }
-
-        // Ty::Var: inference is still in-flight at this call site.  Defer the
-        // admission check until finalize_hashmap_admission() runs after all
-        // inference has settled, mirroring the HashSet lowering-fact pattern.
-        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
-            self.deferred_hashmap_admission
-                .entry(SpanKey::in_module(span, self.current_module_idx))
-                .or_insert_with(|| DeferredHashMapAdmission {
-                    span: span.clone(),
-                    key_ty: key_ty.clone(),
-                    val_ty: val_ty.clone(),
-                    source_module: self.current_module.clone(),
-                    is_abstract_key_param: false,
-                });
-            return true; // optimistically admit; finalization will fail closed
-        }
-
-        let is_abstract_key_param = matches!(
-            &resolved_key,
-            Ty::Named { name, args, builtin: None }
-                if args.is_empty() && self.is_type_param_in_scope(name)
-        );
-        let is_abstract_val_param = matches!(
-            &resolved_val,
-            Ty::Named { name, args, builtin: None }
-                if args.is_empty() && self.is_type_param_in_scope(name)
-        );
-
-        if !is_abstract_val_param && !self.validate_hashmap_value_clone_type(&resolved_val, span) {
-            return false;
-        }
-
-        // Named record key: defer to finalize_hashmap_admission for full hash-eligibility
-        // check and HashMapLoweringFact production (C-2c).  Optimistically admit here;
-        // finalize will fail closed with a diagnostic if the key is ineligible.
-        if matches!(&resolved_key, Ty::Named { .. }) {
-            self.deferred_hashmap_admission
-                .entry(SpanKey::in_module(span, self.current_module_idx))
-                .and_modify(|existing| {
-                    existing.is_abstract_key_param |= is_abstract_key_param;
-                })
-                .or_insert_with(|| DeferredHashMapAdmission {
-                    span: span.clone(),
-                    key_ty: resolved_key.clone(),
-                    val_ty: resolved_val.clone(),
-                    source_module: self.current_module.clone(),
-                    is_abstract_key_param,
-                });
+        // Registration sees legal forward references before their declarations
+        // exist. Keep this obligation in the existing inference queue and check
+        // it once the complete declaration graph and substitution are available.
+        let type_param_bounds = self.current_type_param_bounds_map();
+        self.deferred_hashmap_admission
+            .entry(SpanKey::in_module(span, self.current_module_idx))
+            .and_modify(|check| {
+                for (name, bounds) in &type_param_bounds {
+                    check
+                        .type_param_bounds
+                        .entry(name.clone())
+                        .or_insert_with(|| bounds.clone());
+                }
+            })
+            .or_insert_with(|| DeferredHashMapAdmission {
+                span: span.clone(),
+                key_ty: resolved_key.clone(),
+                val_ty: resolved_val.clone(),
+                source_module: self.current_module.clone(),
+                type_param_bounds,
+            });
+        if !self.type_decls_registered
+            || resolved_key.has_inference_var()
+            || resolved_val.has_inference_var()
+        {
             return true;
         }
+        // Named keys wait until all impls are registered. Concrete operation
+        // sites additionally prove the same capabilities through the resolver.
+        if !self.validate_hashmap_value_shape(&resolved_val, span) {
+            return false;
+        }
+        matches!(&resolved_key, Ty::Named { .. })
+            || self.validate_collection_key_capabilities(&resolved_key, "Map", span)
+    }
 
-        if self.is_supported_hashmap_key_type(&resolved_key) {
+    /// A callable map value has no working ingress: its checked type carries a
+    /// copy capability the map's value descriptor cannot name, so the runtime
+    /// boundary would disagree with the declared value type. Refuse the shape
+    /// here rather than at that boundary.
+    fn validate_hashmap_value_shape(&mut self, val_ty: &Ty, span: &Span) -> bool {
+        if !matches!(val_ty, Ty::Function { .. } | Ty::Closure { .. }) {
             return true;
         }
-
-        // Key fails resolver bounds (e.g. `f64: Hash`). Emit the structured
-        // `BoundsNotSatisfied(Hash/Eq, K)` diagnostic here and return false
-        // so callers fail closed uniformly (bare-type annotation paths via
-        // `validate_concrete_hashmap_type` plus all HashMap method arms,
-        // including the resolver-bypass arms `is_empty` / `keys` /
-        // `values` / `clone`). Method arms that also invoke
-        // `record_resolved_hashmap_call` short-circuit on `Ty::Error`
-        // before reaching the resolver, so no double-emit.
-        if !self.has_bounds_not_satisfied_at(span) {
-            let hash_ok = self
-                .registry
-                .implements_marker(&resolved_key, MarkerTrait::Hash);
-            let eq_ok = self
-                .registry
-                .implements_marker(&resolved_key, MarkerTrait::Eq);
-            let mut missing: Vec<&'static str> = Vec::new();
-            if !hash_ok {
-                missing.push("Hash");
-            }
-            if !eq_ok {
-                missing.push("Eq");
-            }
-            let bound_summary = if missing.is_empty() {
-                "Hash + Eq".to_string()
-            } else {
-                missing
-                    .iter()
-                    .map(|m| format!("K: {m}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            self.report_error(
-                TypeErrorKind::BoundsNotSatisfied,
-                span,
-                format!(
-                    "`{}` does not satisfy the required bounds for `Map` \
-                     ({bound_summary})",
-                    resolved_key.user_facing()
-                ),
-            );
+        let message = format!(
+            "`HashMap<_, {}>` is not supported: a callable value has no map ingress; \
+             store it in a record field or a `Vec` instead",
+            val_ty.user_facing()
+        );
+        // The same annotation is admitted from both the declaration and the
+        // operation that reads it; one diagnostic answers both.
+        if !self.errors.iter().any(|error| error.message == message) {
+            self.report_error(TypeErrorKind::InvalidOperation, span, message);
         }
         false
     }
@@ -1894,68 +1271,6 @@ impl Checker {
         self.validate_hashmap_key_value_types(key_ty, val_ty, span)
     }
 
-    pub(super) fn validate_hashmap_projection_element_types(
-        &mut self,
-        key_ty: &Ty,
-        val_ty: &Ty,
-        method: &str,
-        span: &Span,
-    ) -> bool {
-        if !self.validate_hashmap_owned_element_types(key_ty, val_ty, span) {
-            return false;
-        }
-
-        let resolved_key = self.subst.resolve(key_ty).materialize_literal_defaults();
-        let resolved_val = self.subst.resolve(val_ty).materialize_literal_defaults();
-
-        if matches!(resolved_key, Ty::Error) || matches!(resolved_val, Ty::Error) {
-            return false;
-        }
-
-        if matches!(resolved_key, Ty::Var(_)) || matches!(resolved_val, Ty::Var(_)) {
-            return true;
-        }
-
-        // `keys()` only needs the key layout — `hew_hashmap_keys_layout`
-        // (hew-runtime/src/hashmap.rs) branches solely on `map.key_layout` and
-        // never reads the value layout at all, so a value type unsupported for
-        // projection (e.g. a managed `Vec<i64>`) must not block `.keys()`; it
-        // only actually blocks `.values()` (and the `into_iter`/`for (k, v) in m`
-        // desugars, which separately call this function again with
-        // `method == "values"` and so still gate the value type there).
-        if method != "keys" && !self.is_supported_hashmap_projection_element_type(&resolved_val) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting from a map with value type `{}` into an owned `Vec` is not lowered; supported projection value types are scalar primitives, `string`, and Copy record/enum types",
-                    resolved_key.user_facing(),
-                    resolved_val.user_facing(),
-                    resolved_val.user_facing()
-                ),
-            );
-            return false;
-        }
-
-        if matches!(method, "keys" | "entries")
-            && !self.is_supported_hashmap_projection_element_type(&resolved_key)
-        {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`HashMap<{}, {}>.{method}()` is not yet supported: projecting key type `{}` into an owned `Vec` is not lowered; supported projection key types are scalar primitives, `string`, and Copy record/enum types",
-                    resolved_key.user_facing(),
-                    resolved_val.user_facing(),
-                    resolved_key.user_facing()
-                ),
-            );
-            return false;
-        }
-
-        true
-    }
-
     pub(super) fn validate_hashset_element_type(&mut self, elem_ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(elem_ty);
 
@@ -1965,21 +1280,10 @@ impl Checker {
             return false;
         }
 
-        if matches!(
-            crate::hash_eligibility::collection_key_ownership_capability(&resolved),
-            crate::hash_eligibility::CollectionKeyOwnershipCapability::MissingOverwriteRelease
-        ) {
-            if !self.has_collection_key_ownership_error("HashSet element") {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    "`bytes` cannot be used as a HashSet element yet: duplicate insertion cannot \
-                     release the caller-owned bytes value; use `string` or a supported fixed-width \
-                     element"
-                        .to_string(),
-                );
-            }
-            return false;
+        if matches!(&resolved, Ty::Named { name, args, builtin: None }
+            if args.is_empty() && self.is_type_param_in_scope(name))
+        {
+            return self.validate_collection_key_capabilities(&resolved, "Set", span);
         }
 
         // Ty::Var: inference is still in-flight at this call site.  Defer the
@@ -1996,62 +1300,17 @@ impl Checker {
             return true; // optimistically admit; finalization will fail closed
         }
 
-        if matches!(resolved, Ty::String | Ty::I64 | Ty::U64 | Ty::IntLiteral) {
+        if matches!(&resolved, Ty::Named { .. }) || !self.type_decls_registered {
+            self.deferred_hashset_admission
+                .entry(SpanKey::in_module(span, self.current_module_idx))
+                .or_insert_with(|| DeferredHashSetAdmission {
+                    span: span.clone(),
+                    elem_ty: resolved,
+                    source_module: self.current_module.clone(),
+                });
             return true;
         }
-
-        // Named type: optimistically admit.  `record_hashset_lowering_fact` adds
-        // the element type to `pending_lowering_facts`; `finalize_lowering_facts`
-        // runs hash-eligibility and produces a `HashSetLoweringFact` or emits a
-        // diagnostic (C-2c).
-        if matches!(&resolved, Ty::Named { .. }) {
-            return true;
-        }
-
-        // W4.001 Stage C3: legacy per-element allowlist retired. Admit any
-        // T that implements `Hash + Eq`; otherwise emit a structured
-        // `BoundsNotSatisfied` diagnostic and fail closed (see the
-        // matching rationale in `validate_hashmap_key_value_types`).
-        if self
-            .registry
-            .implements_marker(&resolved, MarkerTrait::Hash)
-            && self.registry.implements_marker(&resolved, MarkerTrait::Eq)
-        {
-            return true;
-        }
-
-        if !self.has_bounds_not_satisfied_at(span) {
-            let hash_ok = self
-                .registry
-                .implements_marker(&resolved, MarkerTrait::Hash);
-            let eq_ok = self.registry.implements_marker(&resolved, MarkerTrait::Eq);
-            let mut missing: Vec<&'static str> = Vec::new();
-            if !hash_ok {
-                missing.push("Hash");
-            }
-            if !eq_ok {
-                missing.push("Eq");
-            }
-            let bound_summary = if missing.is_empty() {
-                "Hash + Eq".to_string()
-            } else {
-                missing
-                    .iter()
-                    .map(|m| format!("T: {m}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            };
-            self.report_error(
-                TypeErrorKind::BoundsNotSatisfied,
-                span,
-                format!(
-                    "`{}` does not satisfy the required bounds for `Set` \
-                     ({bound_summary})",
-                    resolved.user_facing()
-                ),
-            );
-        }
-        false
+        self.validate_collection_key_capabilities(&resolved, "Set", span)
     }
 
     /// Returns true if a `BoundsNotSatisfied` diagnostic has already been
@@ -2065,14 +1324,6 @@ impl Checker {
         self.errors.iter().any(|e| {
             matches!(e.kind, TypeErrorKind::BoundsNotSatisfied)
                 && SpanKey::in_module(&e.span, self.current_module_idx) == key
-        })
-    }
-
-    fn has_collection_key_ownership_error(&self, collection_role: &str) -> bool {
-        self.errors.iter().any(|error| {
-            matches!(error.kind, TypeErrorKind::InvalidOperation)
-                && error.message.contains("`bytes` cannot be used as a")
-                && error.message.contains(collection_role)
         })
     }
 
@@ -2115,55 +1366,6 @@ impl Checker {
             || primitive_copy_layout(elem_ty, &self.type_defs).is_some()
     }
 
-    pub(super) fn vec_element_contains_structural_array(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<String>,
-    ) -> bool {
-        let resolved = self.subst.resolve(ty);
-        match &resolved {
-            Ty::Array(_, _) => true,
-            Ty::Tuple(elems) => elems
-                .iter()
-                .any(|elem| self.vec_element_contains_structural_array(elem, visiting)),
-            Ty::Named {
-                builtin: Some(BuiltinType::Range | BuiltinType::Option | BuiltinType::Result),
-                args,
-                ..
-            } => args
-                .iter()
-                .any(|arg| self.vec_element_contains_structural_array(arg, visiting)),
-            Ty::Named { name, args, .. } => {
-                let Some(type_def) = self.lookup_type_def(name) else {
-                    return false;
-                };
-                if visiting.contains(type_def.name.as_str()) {
-                    return false;
-                }
-
-                visiting.insert(type_def.name.clone());
-                let result = type_def.fields.values().any(|field_ty| {
-                    let field_ty =
-                        Self::instantiate_type_def_member(field_ty, &type_def.type_params, args);
-                    self.vec_element_contains_structural_array(&field_ty, visiting)
-                }) || type_def.variants.values().any(|variant| match variant {
-                    VariantDef::Unit => false,
-                    VariantDef::Tuple(tys) => tys.iter().any(|ty| {
-                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
-                        self.vec_element_contains_structural_array(&ty, visiting)
-                    }),
-                    VariantDef::Struct(fields) => fields.iter().any(|(_, ty)| {
-                        let ty = Self::instantiate_type_def_member(ty, &type_def.type_params, args);
-                        self.vec_element_contains_structural_array(&ty, visiting)
-                    }),
-                });
-                visiting.remove(type_def.name.as_str());
-                result
-            }
-            _ => false,
-        }
-    }
-
     /// True when a Vec element type transitively carries a function/closure
     /// value INSIDE a composite (record field, enum variant payload, tuple
     /// member, Option/Result/Range argument). A direct `Vec<fn(...)>` element
@@ -2171,8 +1373,7 @@ impl Checker {
     /// exempts the top-level Function/Closure shape. Composite elements ride
     /// the layout/owned byte-copy ABIs, which would shallow-copy the embedded
     /// pair and alias its sole-owner environment box, so they fail closed at
-    /// admission. Recursion shape mirrors
-    /// [`vec_element_contains_structural_array`](Self::vec_element_contains_structural_array).
+    /// admission.
     pub(super) fn vec_element_contains_fn_value(
         &self,
         ty: &Ty,
@@ -2230,24 +1431,6 @@ impl Checker {
         span: &Span,
     ) -> bool {
         if !self.validate_concrete_collection_types(resolved, span) {
-            return false;
-        }
-
-        // Reject ANY Vec element that contains a structural array, regardless of
-        // whether the array has a copy layout.  Codegen cannot lower array/composite
-        // Vec elements yet (Cluster 2 deferred).  Admitting a copy-layout array
-        // (e.g. [i64; 2]) here only defers the failure to an unspanned codegen
-        // error — fail closed at the checker instead so the user sees a source span.
-        let mut visiting = HashSet::new();
-        if self.vec_element_contains_structural_array(resolved, &mut visiting) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "`Vec<{}>` is not supported; vec lowering does not support array element types yet",
-                    resolved.user_facing()
-                ),
-            );
             return false;
         }
 
@@ -2318,7 +1501,7 @@ impl Checker {
             Ty::Array(elem, _) | Ty::Slice(elem) => {
                 self.validate_concrete_collection_type(elem, span, collection)
             }
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 params
                     .iter()
                     .all(|param| self.validate_concrete_collection_type(param, span, collection))
@@ -2328,6 +1511,7 @@ impl Checker {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 params
                     .iter()
@@ -2442,10 +1626,17 @@ impl Checker {
             } => {
                 if self.canonical_owned_handle_type_name(name).is_some()
                     || self.is_user_opaque_type_name(name)
-                    || self.registry.is_resource(name)
                     || self.registry.is_linear(name)
                 {
                     return false;
+                }
+                // A `#[resource]` releases through its own `close`, which the
+                // shared allocation installs as the payload destructor. Its
+                // fields belong to that close, not to this walk. `#[linear]`
+                // stays refused: a shared handle can outlive every path that
+                // would consume it.
+                if self.registry.is_resource(name) {
+                    return true;
                 }
                 let Some(type_def) = self.lookup_type_def(name) else {
                     return self
@@ -2547,6 +1738,12 @@ mod tests {
     #[test]
     fn ty_contains_error_recurses_through_named_and_closure_types() {
         let ty = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::normalize_named(
                 "Result".to_string(),
                 vec![Ty::I32, Ty::Tuple(vec![Ty::Error])],
@@ -2562,6 +1759,7 @@ mod tests {
     fn signature_contains_error_type_flags_error_anywhere_in_signature() {
         let params = vec![Ty::I32];
         let ret = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Tuple(vec![Ty::Error])],
             ret: Box::new(Ty::Bool),
         };
@@ -2631,7 +1829,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_checker_output_contract_retains_channel_handles_and_prunes_other_ty_vars() {
+    fn validate_checker_output_contract_prunes_unresolved_channel_signature_elements() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let normalized_param_var = TypeVar::fresh();
         let normalized_return_var = TypeVar::fresh();
@@ -2703,22 +1901,8 @@ mod tests {
             fn_sigs.contains_key("good_fn"),
             "clean signature must survive the contract check"
         );
-        assert!(matches!(
-            &fn_sigs["normalized_param_fn"].params[0],
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                args,
-                ..
-            } if args.len() == 1
-        ));
-        assert!(matches!(
-            fn_sigs["normalized_return_fn"].return_type,
-            Ty::Named {
-                builtin: Some(BuiltinType::Receiver),
-                ref args,
-                ..
-            } if args.len() == 1
-        ));
+        assert!(!fn_sigs.contains_key("normalized_param_fn"));
+        assert!(!fn_sigs.contains_key("normalized_return_fn"));
         assert!(
             !fn_sigs.contains_key("leaked_param_fn"),
             "signature with a real untracked Ty::Var in params must be pruned"
@@ -2734,7 +1918,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "exercise channel handle fields, variants, and methods in one focused regression"
     )]
-    fn validate_checker_output_contract_retains_channel_handles_and_prunes_other_type_defs() {
+    fn validate_checker_output_contract_prunes_unresolved_channel_member_elements() {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let normalized_field_var = TypeVar::fresh();
         let normalized_variant_var = TypeVar::fresh();
@@ -2850,37 +2034,9 @@ mod tests {
             "concrete type definitions must survive the contract check"
         );
         assert!(
-            type_defs.contains_key("NormalizedHandles"),
-            "synthetic bare channel handles must survive the output contract"
+            !type_defs.contains_key("NormalizedHandles"),
+            "a channel endpoint with an unresolved element must be pruned, not erased"
         );
-        assert!(matches!(
-            &type_defs["NormalizedHandles"].fields["tx"],
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                args,
-                ..
-            } if args.len() == 1
-        ));
-        assert!(matches!(
-            &type_defs["NormalizedHandles"].variants["Recv"],
-            VariantDef::Tuple(fields)
-                if matches!(
-                    fields.as_slice(),
-                    [Ty::Named {
-                        builtin: Some(BuiltinType::Receiver),
-                        args,
-                        ..
-                    }] if args.len() == 1
-                )
-        ));
-        assert!(matches!(
-            &type_defs["NormalizedHandles"].methods["close"].params[0],
-            Ty::Named {
-                builtin: Some(BuiltinType::Sender),
-                args,
-                ..
-            } if args.len() == 1
-        ));
         assert!(
             !type_defs.contains_key("LeakedField"),
             "type definitions with real untracked Ty::Var fields must be pruned"
@@ -3142,11 +2298,12 @@ mod tests {
                     args: vec![],
                 }],
                 return_type: Ty::Unit,
-                is_async: false,
                 accepts_kwargs: false,
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
+                receiver_update: crate::ReceiverUpdate::Replace,
+                param_ownership: vec![],
                 consumes_receiver: false,
                 returns_receiver_identity: false,
                 is_builtin_variant: false,
@@ -3757,24 +2914,6 @@ mod tests {
         td
     }
 
-    fn make_enum(name: &str, variants: Vec<(&str, VariantDef)>) -> TypeDef {
-        TypeDef {
-            kind: TypeDefKind::Enum,
-            name: name.to_string(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields: HashMap::new(),
-            field_order: vec![],
-            variants: variants
-                .into_iter()
-                .map(|(name, variant)| (name.to_string(), variant))
-                .collect(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            is_indirect: false,
-        }
-    }
-
     #[test]
     fn primitive_copy_layout_bool_is_1_1() {
         assert_eq!(
@@ -3859,146 +2998,9 @@ mod tests {
     #[test]
     fn primitive_copy_layout_string_returns_none() {
         // String is heap-managed; not a fixed-layout Copy type. The hash-key
-        // sizer (`primitive_hash_key_layout`) admits it separately as a pointer
+        // Its payload requires a clone rather than a bit copy.
         // blob — `primitive_copy_layout` stays the Copy authority.
         assert_eq!(primitive_copy_layout(&Ty::String, &HashMap::new()), None);
-    }
-
-    #[test]
-    fn primitive_hash_key_layout_string_is_pointer_width() {
-        // The hash-key sizer admits a `string` leaf as a single owned pointer
-        // (the heap payload lives elsewhere and is hashed/dropped by descent).
-        assert_eq!(
-            primitive_hash_key_layout(&Ty::String, &HashMap::new()),
-            Some((8, 8))
-        );
-    }
-
-    #[test]
-    fn hash_key_record_layout_admits_string_field() {
-        // A record key with a string field has a well-defined slot layout: the
-        // string is a pointer-width blob, sized after the i64 field.
-        let mut tds = HashMap::new();
-        tds.insert(
-            "Person".to_string(),
-            TypeDef {
-                kind: TypeDefKind::Record,
-                name: "Person".to_string(),
-                type_params: vec![],
-                bounds: HashMap::new(),
-                fields: [
-                    ("name".to_string(), Ty::String),
-                    ("age".to_string(), Ty::I64),
-                ]
-                .into_iter()
-                .collect(),
-                field_order: vec!["name".to_string(), "age".to_string()],
-                variants: HashMap::new(),
-                methods: HashMap::new(),
-                doc_comment: None,
-                is_indirect: false,
-            },
-        );
-        let td = tds.get("Person").unwrap().clone();
-        // name (8/8 pointer) + age (8/8) => 16 bytes, align 8.
-        assert_eq!(hash_key_record_layout(&td, &tds), Some((16, 8)));
-    }
-
-    #[test]
-    fn hashmap_projection_element_gate_accepts_lowered_scalars_and_string() {
-        let checker = Checker::new(ModuleRegistry::new(vec![]));
-        for ty in [
-            Ty::Bool,
-            Ty::Char,
-            Ty::I32,
-            Ty::U32,
-            Ty::I64,
-            Ty::U64,
-            Ty::F32,
-            Ty::F64,
-            Ty::String,
-        ] {
-            assert!(
-                checker.is_supported_hashmap_projection_element_type(&ty),
-                "expected `{}` to be admitted for HashMap projection",
-                ty.user_facing()
-            );
-        }
-    }
-
-    #[test]
-    fn hashmap_projection_element_gate_accepts_copy_record_and_enum() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I64), ("y", Ty::I64)]),
-        );
-        checker.type_defs.insert(
-            "Direction".to_string(),
-            make_enum(
-                "Direction",
-                vec![
-                    ("North", VariantDef::Unit),
-                    ("Delta", VariantDef::Tuple(vec![Ty::I64])),
-                ],
-            ),
-        );
-        checker
-            .registry
-            .register_type("Direction".to_string(), vec![Ty::I64]);
-
-        for ty in [
-            Ty::normalize_named("Point".to_string(), vec![]),
-            Ty::normalize_named("Direction".to_string(), vec![]),
-        ] {
-            assert!(
-                checker.is_supported_hashmap_projection_element_type(&ty),
-                "expected `{}` to be admitted for HashMap projection",
-                ty.user_facing()
-            );
-        }
-    }
-
-    #[test]
-    fn hashmap_projection_element_gate_rejects_owned_aggregate_shapes() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        checker.type_defs.insert(
-            "User".to_string(),
-            make_record("User", vec![("name", Ty::String), ("id", Ty::I64)]),
-        );
-        checker.type_defs.insert(
-            "Payload".to_string(),
-            make_enum(
-                "Payload",
-                vec![(
-                    "Chunk",
-                    VariantDef::Tuple(vec![Ty::Named {
-                        name: "Vec".to_string(),
-                        args: vec![Ty::I64],
-                        builtin: Some(BuiltinType::Vec),
-                    }]),
-                )],
-            ),
-        );
-        checker.registry.register_type(
-            "Payload".to_string(),
-            vec![Ty::Named {
-                name: "Vec".to_string(),
-                args: vec![Ty::I64],
-                builtin: Some(BuiltinType::Vec),
-            }],
-        );
-
-        let record_ty = Ty::normalize_named("User".to_string(), vec![]);
-        let enum_ty = Ty::normalize_named("Payload".to_string(), vec![]);
-        let vec_ty = Ty::Named {
-            name: "Vec".to_string(),
-            args: vec![Ty::I64],
-            builtin: Some(BuiltinType::Vec),
-        };
-        assert!(!checker.is_supported_hashmap_projection_element_type(&record_ty));
-        assert!(!checker.is_supported_hashmap_projection_element_type(&enum_ty));
-        assert!(!checker.is_supported_hashmap_projection_element_type(&vec_ty));
     }
 
     #[test]
@@ -4099,655 +3101,6 @@ mod tests {
         assert_eq!(
             primitive_copy_layout(&nested_wrap, &type_defs),
             Some((8, 8))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_empty_record_returns_none() {
-        let td = make_record("Empty", vec![]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            None,
-            "zero-field records must return None (zero-size ABI violation)"
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_single_i32_field() {
-        // record Point { x: i32 }  →  size=4, align=4
-        let td = make_record("Point", vec![("x", Ty::I32)]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            Some((4, 4))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_two_i32_fields() {
-        // record Point { x: i32, y: i32 }  →  size=8, align=4
-        let td = make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            Some((8, 4))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_mixed_alignment_respects_padding() {
-        // record Padded { a: bool, b: i32 }
-        // Fields sorted alphabetically: a (bool,1,1) then b (i32,4,4)
-        //   offset after a:  0+1 = 1
-        //   offset after padding to align(4): 4
-        //   offset after b:  4+4 = 8
-        //   total size rounded to align(4): 8
-        let td = make_record("Padded", vec![("a", Ty::Bool), ("b", Ty::I32)]);
-        assert_eq!(
-            compute_copy_record_layout(&td, &HashMap::new()),
-            Some((8, 4))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_declaration_order_is_respected() {
-        // Both records have the same fields but in different declaration order.
-        // Since `make_record` populates `field_order` from the Vec input,
-        // these represent records declared with different field orderings.
-        // This specific case (x:i8 then z:i64 vs z:i64 then x:i8) happens to
-        // produce the same *size* — but the test confirms both variants are
-        // handled correctly using their own field_order.
-        let td1 = make_record("R", vec![("x", Ty::I8), ("z", Ty::I64)]);
-        let td2 = make_record("R", vec![("z", Ty::I64), ("x", Ty::I8)]);
-        // td1 declaration order [x, z]: x(1) at 0 → 1; z(8) align to 8 → 16; total=16
-        // td2 declaration order [z, x]: z(8) at 0 → 8; x(1) at 8 → 9; total=align_up(9,8)=16
-        // Both happen to produce size=16 (same struct size despite different order).
-        assert_eq!(
-            compute_copy_record_layout(&td1, &HashMap::new()),
-            Some((16, 8))
-        );
-        assert_eq!(
-            compute_copy_record_layout(&td2, &HashMap::new()),
-            Some((16, 8))
-        );
-    }
-
-    #[test]
-    fn compute_copy_record_layout_declaration_order_diverges_from_alphabetical() {
-        // record R { y: i32, z: i64, x: i32 }
-        // Declaration order [y, z, x] vs alphabetical order [x, y, z] produce DIFFERENT sizes.
-        //
-        // Declaration order [y, z, x]:
-        //   y(i32,4) at 0 → offset=4
-        //   z(i64,8): align_up(4,8)=8 → offset=16  (4 bytes padding inserted)
-        //   x(i32,4) at 16 → offset=20
-        //   total = align_up(20,8) = 24; align=8
-        //
-        // Alphabetical order [x, y, z]:
-        //   x(i32,4) at 0 → offset=4
-        //   y(i32,4) at 4 → offset=8
-        //   z(i64,8): align_up(8,8)=8 → offset=16  (no padding needed)
-        //   total = align_up(16,8) = 16; align=8
-        //
-        // The divergence demonstrates why declaration order must be used to match codegen.
-        let td_decl = make_record("R", vec![("y", Ty::I32), ("z", Ty::I64), ("x", Ty::I32)]);
-        // Manually build a TypeDef with alphabetical field_order for comparison
-        let td_alpha = {
-            let fields = vec![("x", Ty::I32), ("y", Ty::I32), ("z", Ty::I64)];
-            make_record("R", fields)
-        };
-        let decl_layout = compute_copy_record_layout(&td_decl, &HashMap::new());
-        let alpha_layout = compute_copy_record_layout(&td_alpha, &HashMap::new());
-        assert_eq!(
-            decl_layout,
-            Some((24, 8)),
-            "declaration order [y,z,x] → size=24"
-        );
-        assert_eq!(
-            alpha_layout,
-            Some((16, 8)),
-            "alphabetical order [x,y,z] → size=16"
-        );
-        assert_ne!(
-            decl_layout, alpha_layout,
-            "declaration order and alphabetical order must diverge for this field combination"
-        );
-    }
-
-    #[test]
-    fn finalize_hashmap_named_key_eligible_scalar_value_produces_layout_fact() {
-        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 10..20;
-        // Register a simple Copy record: record Point { x: i32, y: i32 }
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
-        );
-        // Insert a deferred entry: HashMap<Point, i64>
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Point".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "eligible Named key with i64 value must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = checker.hashmap_layout_facts.get(&key).expect(
-            "finalize_hashmap_admission must produce a HashMapLoweringFact for eligible Named key",
-        );
-        assert_eq!(
-            fact.state,
-            HashMapLoweringFactState::Pending,
-            "produced fact must be in Pending state"
-        );
-        assert!(
-            matches!(&fact.abi, HashMapAbi::LayoutKey { key_record_name, .. } if key_record_name == "Point"),
-            "abi must be LayoutKey with key_record_name == Point; got: {:?}",
-            fact.abi
-        );
-        // Point has two i32 fields → size=8, align=4
-        assert_eq!(
-            fact.key_size,
-            Some(8),
-            "key_size must be Some(8) for two-i32 record"
-        );
-        assert_eq!(
-            fact.key_align,
-            Some(4),
-            "key_align must be Some(4) for two-i32 record"
-        );
-    }
-
-    #[test]
-    fn hashmap_source_record_key_i64_fields_is_hash_eligible() {
-        let source = r"
-            type Point { x: i64, y: i64 }
-            fn main() {
-                let m: HashMap<Point, i64> = HashMap.new();
-                m.insert(Point { x: 1, y: 2 }, 10);
-            }
-        ";
-        let parsed = hew_parser::parse(source);
-        assert!(
-            parsed.errors.is_empty(),
-            "parse errors: {:?}",
-            parsed.errors
-        );
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let output = checker.check_program(&parsed.program);
-        let point_def = checker.type_defs.get("Point").cloned();
-        assert!(
-            matches!(
-                point_def.as_ref().and_then(|td| td.fields.get("x")),
-                Some(Ty::I64)
-            ),
-            "Point.x should register as i64; got: {point_def:?}"
-        );
-        assert!(
-            output.errors.is_empty(),
-            "HashMap<Point, i64> with i64 record fields must be admitted; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn hashmap_resource_struct_key_is_refused_before_layout_fact_derivation() {
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 21..31;
-        let mut token = make_record("Token", vec![("id", Ty::I64)]);
-        token.kind = TypeDefKind::Struct;
-        checker.type_defs.insert("Token".to_string(), token);
-        checker.registry.register_resource_type("Token".to_string());
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Token".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-
-        checker.finalize_hashmap_admission();
-
-        assert!(
-            !checker.errors.is_empty(),
-            "a #[resource] struct must be refused as a HashMap key"
-        );
-        assert!(
-            !checker
-                .hashmap_layout_facts
-                .contains_key(&SpanKey::in_module(&span, 0)),
-            "a #[resource] struct must not produce a layout-key fact"
-        );
-    }
-
-    #[test]
-    fn finalize_hashmap_named_key_float_field_is_admitted() {
-        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 50..60;
-        // record FKey { x: f64 } — float fields hash on their bit pattern, so
-        // the record is hash-eligible and admitted as a layout key.
-        let key = SpanKey::in_module(&span, 0);
-        checker.type_defs.insert(
-            "FKey".to_string(),
-            make_record("FKey", vec![("x", Ty::F64)]),
-        );
-        checker.deferred_hashmap_admission.insert(
-            key.clone(),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("FKey".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "float-field key must be admitted (bitwise hash); got: {:?}",
-            checker.errors
-        );
-        let fact = checker
-            .hashmap_layout_facts
-            .get(&key)
-            .expect("admitted float-field key must produce a layout fact");
-        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
-        assert!(
-            matches!(&fact.abi, HashMapAbi::LayoutKey { key_record_name, .. } if key_record_name == "FKey"),
-            "abi must be LayoutKey with key_record_name == FKey; got: {:?}",
-            fact.abi
-        );
-        // One f64 field → size=8, align=8.
-        assert_eq!(fact.key_size, Some(8));
-        assert_eq!(fact.key_align, Some(8));
-    }
-
-    #[test]
-    fn finalize_hashset_named_elem_eligible_produces_layout_fact() {
-        use crate::lowering_facts::{HashMapLoweringFactState, HashSetAbi};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 70..80;
-        // record Point { x: i32, y: i32 }
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
-        );
-        // Simulate record_hashset_lowering_fact adding to pending_lowering_facts
-        // (the Named path is admitted inline, then finalize_lowering_facts is called).
-        // We bypass record_hashset_lowering_fact and inject directly into pending_lowering_facts.
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("Point".to_string(), vec![]),
-                source_module: None,
-            },
-        );
-        let _result = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "eligible Named element must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = checker.hashset_layout_facts.get(&key).expect(
-            "finalize_lowering_facts must produce a HashSetLoweringFact for eligible Named element",
-        );
-        assert_eq!(
-            fact.state,
-            HashMapLoweringFactState::Pending,
-            "produced fact must be in Pending state"
-        );
-        assert!(
-            matches!(&fact.abi, HashSetAbi::Layout { elem_record_name } if elem_record_name == "Point"),
-            "abi must be Layout with elem_record_name == Point; got: {:?}",
-            fact.abi
-        );
-        assert_eq!(
-            fact.elem_size,
-            Some(8),
-            "elem_size must be Some(8) for two-i32 record"
-        );
-        assert_eq!(
-            fact.elem_align,
-            Some(4),
-            "elem_align must be Some(4) for two-i32 record"
-        );
-    }
-
-    #[test]
-    fn finalize_hashset_named_elem_float_field_is_admitted() {
-        use crate::lowering_facts::{HashMapLoweringFactState, HashSetAbi};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 90..100;
-        // record FElem { v: f32 } — float fields hash on their bit pattern, so
-        // the record is hash-eligible and admitted as a layout element.
-        let key = SpanKey::in_module(&span, 0);
-        checker.type_defs.insert(
-            "FElem".to_string(),
-            make_record("FElem", vec![("v", Ty::F32)]),
-        );
-        checker.pending_lowering_facts.insert(
-            key.clone(),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("FElem".to_string(), vec![]),
-                source_module: None,
-            },
-        );
-        let _result = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "float-field element must be admitted (bitwise hash); got: {:?}",
-            checker.errors
-        );
-        let fact = checker
-            .hashset_layout_facts
-            .get(&key)
-            .expect("admitted float-field element must produce a layout fact");
-        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
-        assert!(
-            matches!(&fact.abi, HashSetAbi::Layout { elem_record_name } if elem_record_name == "FElem"),
-            "abi must be Layout with elem_record_name == FElem; got: {:?}",
-            fact.abi
-        );
-        // One f32 field → size=4, align=4.
-        assert_eq!(fact.elem_size, Some(4));
-        assert_eq!(fact.elem_align, Some(4));
-    }
-
-    // ── Additional admissibility tests from independent review ────────────────
-
-    #[test]
-    fn hashmap_string_field_key_admitted() {
-        // record K { s: string } — a string field is structurally hashable, so
-        // K is admitted as a layout key (string field hashed by descent, owned
-        // key dropped via the per-record key drop thunk). A layout fact is
-        // produced and no diagnostic is emitted.
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 1..10;
-        let mut td = make_record("K", vec![("s", Ty::String)]);
-        td.field_order = vec!["s".to_string()];
-        checker.type_defs.insert("K".to_string(), td);
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("K".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "string-field key must be admitted; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            !checker.hashmap_layout_facts.is_empty(),
-            "a layout fact must be produced for an admitted string-field key"
-        );
-    }
-
-    #[test]
-    fn hashmap_managed_key_rejected() {
-        // record Handle — is_indirect = true makes it IneligibleManaged
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 2..11;
-        let mut td = make_record("Handle", vec![("fd", Ty::I32)]);
-        td.is_indirect = true;
-        checker.type_defs.insert("Handle".to_string(), td);
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Handle".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            !checker.errors.is_empty(),
-            "indirect/managed key must be rejected; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact for indirect key"
-        );
-    }
-
-    #[test]
-    fn hashmap_enum_key_rejected() {
-        // type Color = Enum — Enum kind must be rejected (IneligibleNamedNonRecord)
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 3..12;
-        let td = TypeDef {
-            kind: TypeDefKind::Enum,
-            name: "Color".to_string(),
-            type_params: vec![],
-            bounds: HashMap::new(),
-            fields: HashMap::new(),
-            field_order: vec![],
-            variants: HashMap::new(),
-            methods: HashMap::new(),
-            doc_comment: None,
-            is_indirect: false,
-        };
-        checker.type_defs.insert("Color".to_string(), td);
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Color".to_string(), vec![]),
-                val_ty: Ty::I64,
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            !checker.errors.is_empty(),
-            "Enum key must be rejected; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            checker.hashmap_layout_facts.is_empty(),
-            "no layout fact for Enum key"
-        );
-    }
-
-    #[test]
-    fn hashmap_layout_key_with_layout_value_record_admitted() {
-        // HashMap<Point, Pos> — both key and value are Copy named records
-        use crate::lowering_facts::{HashMapAbi, HashMapLoweringFactState, HashMapValueType};
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 4..13;
-        // record Point { x: i32, y: i32 }
-        checker.type_defs.insert(
-            "Point".to_string(),
-            make_record("Point", vec![("x", Ty::I32), ("y", Ty::I32)]),
-        );
-        // record Pos { lat: i64, lon: i64 }
-        checker.type_defs.insert(
-            "Pos".to_string(),
-            make_record("Pos", vec![("lat", Ty::I64), ("lon", Ty::I64)]),
-        );
-        checker.deferred_hashmap_admission.insert(
-            SpanKey::in_module(&span, 0),
-            DeferredHashMapAdmission {
-                span: span.clone(),
-                key_ty: Ty::normalize_named("Point".to_string(), vec![]),
-                val_ty: Ty::normalize_named("Pos".to_string(), vec![]),
-                source_module: None,
-                is_abstract_key_param: false,
-            },
-        );
-        checker.finalize_hashmap_admission();
-        assert!(
-            checker.errors.is_empty(),
-            "eligible Named key + Named value must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = checker
-            .hashmap_layout_facts
-            .get(&key)
-            .expect("layout key + layout value must produce a HashMapLoweringFact");
-        assert_eq!(fact.state, HashMapLoweringFactState::Pending);
-        assert!(
-            matches!(
-                &fact.abi,
-                HashMapAbi::LayoutKey { key_record_name, val: HashMapValueType::Layout }
-                    if key_record_name == "Point"
-            ),
-            "abi must be LayoutKey with val=Layout; got: {:?}",
-            fact.abi
-        );
-        // Point has two i32 fields → size=8, align=4
-        assert_eq!(fact.key_size, Some(8));
-        assert_eq!(fact.key_align, Some(4));
-        // Pos has two i64 fields → size=16, align=8
-        assert_eq!(fact.val_size, Some(16));
-        assert_eq!(fact.val_align, Some(8));
-    }
-
-    #[test]
-    fn hashset_indirect_record_rejected() {
-        // record Handle — is_indirect=true element must be rejected
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 5..14;
-        let mut td = make_record("Handle", vec![("fd", Ty::I32)]);
-        td.is_indirect = true;
-        checker.type_defs.insert("Handle".to_string(), td);
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::normalize_named("Handle".to_string(), vec![]),
-                source_module: None,
-            },
-        );
-        let _result = checker.finalize_lowering_facts();
-        assert!(
-            !checker.errors.is_empty(),
-            "indirect/managed element must be rejected; errors: {:?}",
-            checker.errors
-        );
-        assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "no layout fact for indirect element"
-        );
-    }
-
-    #[test]
-    fn hashset_string_element_still_uses_string_abi() {
-        // Regression: HashSet<String> must still produce LoweringFact with String ABI.
-        use crate::lowering_facts::HashSetAbi;
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 6..15;
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::String,
-                source_module: None,
-            },
-        );
-        let lowering_facts = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "String element must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = lowering_facts
-            .get(&key)
-            .expect("finalize_lowering_facts must produce a LoweringFact for String element");
-        assert_eq!(
-            fact.abi_variant,
-            HashSetAbi::String,
-            "String element must produce String ABI; got: {:?}",
-            fact.abi_variant
-        );
-        assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "String element must NOT produce a HashSetLoweringFact (uses scalar path)"
-        );
-    }
-
-    #[test]
-    fn hashset_i64_element_still_uses_int64_abi() {
-        // Regression: HashSet<i64> must still produce LoweringFact with Int64 ABI.
-        use crate::lowering_facts::HashSetAbi;
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 7..16;
-        checker.pending_lowering_facts.insert(
-            SpanKey::in_module(&span, 0),
-            crate::check::types::PendingLoweringFact {
-                hashset_element_ty: Ty::I64,
-                source_module: None,
-            },
-        );
-        let lowering_facts = checker.finalize_lowering_facts();
-        assert!(
-            checker.errors.is_empty(),
-            "I64 element must produce no errors; got: {:?}",
-            checker.errors
-        );
-        let key = SpanKey::in_module(&span, 0);
-        let fact = lowering_facts
-            .get(&key)
-            .expect("finalize_lowering_facts must produce a LoweringFact for I64 element");
-        assert_eq!(
-            fact.abi_variant,
-            HashSetAbi::Int64,
-            "I64 element must produce Int64 ABI; got: {:?}",
-            fact.abi_variant
-        );
-        assert!(
-            checker.hashset_layout_facts.is_empty(),
-            "I64 element must NOT produce a HashSetLoweringFact (uses scalar path)"
-        );
-    }
-
-    #[test]
-    fn vec_array_element_rejected_at_checker_not_codegen() {
-        // Regression guard: Vec<[i64; 2]> has a copy layout, but codegen cannot
-        // lower array/composite Vec elements (Cluster 2 deferred).  Before this
-        // fix the `&& !has_copy_layout` exception caused copy-layout arrays to
-        // slip through the type checker and fail with an unspanned codegen error.
-        // The checker must produce a spanned error regardless of copy layout.
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let span = 10..24;
-        let array_i64_2 = Ty::Array(Box::new(Ty::I64), 2);
-        let result = checker.validate_vec_element_type(&array_i64_2, &span);
-        assert!(
-            !result,
-            "Vec<[i64; 2]> element must be rejected at the checker"
-        );
-        assert!(
-            !checker.errors.is_empty(),
-            "Vec<[i64; 2]> element must emit a checker error; errors: {:?}",
-            checker.errors
-        );
-        // The error must carry the source span.
-        let err = &checker.errors[0];
-        assert_eq!(
-            err.span.start, 10,
-            "checker error must carry the source span start; err: {err:?}"
         );
     }
 

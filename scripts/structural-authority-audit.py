@@ -50,6 +50,15 @@ ALL_GROUPS = {
     # callee's type parameters, infers them from the arguments, and records the
     # instantiation; a hand-rolled arg-vs-parameter loop does none of it.
     "signature-application",
+    # D486 stage one: freeze the HIR/SIR boundary so it only shrinks.
+    # `hir-ast-boundary` inventories hew-hir reading the parser's own closed
+    # AST shape (Item/Expr/Stmt/Pattern variants, ImportDecl.resolved_items)
+    # instead of the checker's resolved TypeCheckOutput.
+    # `sir-hir-fact-rederivation` inventories hew-sir re-deriving a checker/HIR
+    # fact (a payload's variant shape, a match arm's predicate classification)
+    # instead of consuming one published decision.
+    "hir-ast-boundary",
+    "sir-hir-fact-rederivation",
 }
 SEMANTIC_KEY_BUILDERS = {
     "scoped_module_item_name",
@@ -1212,14 +1221,12 @@ def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
     have allowlisted `..._with_assoc_renamed`), and it reduces callees through
     the parse rather than through rendered text. EVERY primitive call anywhere
     under `hew-types/src/` is a finding whose form is its enclosing function's
-    exact name, so the inventory records a reviewed count per (function, file) —
+    exact name, so the inventory records a reviewed row per (function, file) —
     including the authority's own.
 
-    Residual, stated rather than implied: the inventory is a per-function COUNT,
-    so it cannot see a net-zero relocation — moving a call from one already
-    reviewed function to another leaves both totals unchanged only if the two
-    counts move in opposite directions by the same amount, which the count
-    comparison does not distinguish from no change at all.
+    Residual, stated rather than implied: the inventory is presence-only, so
+    it cannot see a net-zero relocation — moving a call between two already
+    reviewed functions changes neither function's presence in the inventory.
     """
     functions = enclosing_function_index(ast_grep, root)
     findings: set[Finding] = set()
@@ -1243,6 +1250,137 @@ def signature_application_findings(ast_grep: Path, root: Path) -> set[Finding]:
         _, name = min(enclosing, key=lambda item: item[0].byte_end - item[0].byte_start)
         findings.add(finding("signature-application", name, match))
     return findings
+
+
+HIR_AST_BOUNDARY_SCOPE = ["hew-hir/src"]
+HIR_AST_VARIANT_FORMS = {
+    "Item": "item-use",
+    "Expr": "expr-use",
+    "Stmt": "stmt-use",
+    "Pattern": "pattern-use",
+}
+HIR_AST_VARIANT_PATTERN = re.compile(r"^(Item|Expr|Stmt|Pattern)::")
+
+
+def hir_ast_boundary_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """D486 stage one: HIR must consume the checker's resolved
+    `TypeCheckOutput`, never the parser AST's own closed shape.
+
+    `lower_program` takes `&Program` for structural traversal (source order,
+    spans), but matching or constructing against
+    `hew_parser::ast::{Item,Expr,Stmt,Pattern}` variants re-derives a
+    resolution decision the checker already made, and reading
+    `ImportDecl.resolved_items` reaches into the parser's own unresolved-
+    import cache instead of a checker-published import fact.
+
+    The form is `<fact>:<enclosing function>`, one reviewed row per function
+    per fact -- the `signature-application` precedent for a single file that
+    carries hundreds of sites. Presence-only per (group, form, path): a new
+    call inside an already-listed function does not grow the inventory, but a
+    NEW function reaching one of these forms is a reviewed addition. This is
+    the D486 stage-one freeze; the row set shrinks as each function's fact
+    moves onto `TypeCheckOutput` or the D473 identity table.
+    """
+    scope = HIR_AST_BOUNDARY_SCOPE
+    governed = test_governed_ranges(ast_grep, root, scope)
+    functions = enclosing_function_index(ast_grep, root)
+
+    def enclosing_name(node: SyntaxRange) -> str:
+        candidates = [
+            (fn_range, name)
+            for fn_range, name in functions.get(node.path, [])
+            if range_contains(fn_range, node)
+        ]
+        if not candidates:
+            raise SystemExit(
+                f"hir-ast-boundary finding at {node.path}:{node.byte_start} has no "
+                "enclosing function; the inventory form would be unattributable"
+            )
+        # Innermost wins, matching signature_application_findings.
+        _, name = min(
+            candidates, key=lambda item: item[0].byte_end - item[0].byte_start
+        )
+        return name
+
+    def admit(fact: str, match: dict[str, object]) -> Finding | None:
+        node = node_range(match)
+        if not is_source_path(node.path):
+            return None
+        if any(scope_range.contains(node) for scope_range in governed):
+            return None
+        return finding("hir-ast-boundary", f"{fact}:{enclosing_name(node)}", match)
+
+    results: set[Finding] = set()
+    for kind in ("scoped_identifier", "scoped_type_identifier"):
+        for match in run_query_at(ast_grep, root, scope, kind=kind):
+            variant = HIR_AST_VARIANT_PATTERN.match(str(match["text"]))
+            if not variant:
+                continue
+            item = admit(HIR_AST_VARIANT_FORMS[variant.group(1)], match)
+            if item is not None:
+                results.add(item)
+    # `matches!($X, Item::Variant(..))` and its siblings sit inside a macro's
+    # token tree, which the parser does not expose as a `scoped_identifier`
+    # node: a `--pattern` query is needed to reach the same variant name
+    # there, exactly as the SIR predicate check below needs one for
+    # `matches!(arm.predicate, ..)`.
+    for enum_name, fact in HIR_AST_VARIANT_FORMS.items():
+        for match in run_query_at(
+            ast_grep, root, scope, pattern=f"matches!($X, {enum_name}::$$$REST)"
+        ):
+            item = admit(fact, match)
+            if item is not None:
+                results.add(item)
+    for match in run_query_at(ast_grep, root, scope, kind="field_identifier"):
+        if str(match["text"]) != "resolved_items":
+            continue
+        item = admit("resolved-items-access", match)
+        if item is not None:
+            results.add(item)
+    return results
+
+
+SIR_FACT_RERIVATION_SCOPE = ["hew-sir/src"]
+
+
+def sir_hir_fact_rederivation_findings(ast_grep: Path, root: Path) -> set[Finding]:
+    """D486 stage one: SIR must consume HIR's already-decided shape facts.
+
+    `require_variant_shape` computes a payload's variant descriptor from a
+    `ResolvedTy` on every call rather than reading a shape HIR published once.
+    Independent `arm.predicate` shape matches scattered across
+    `lower_match.rs` re-derive the same arm classification (wildcard,
+    binding, literal, enum-variant) separately in each of several functions
+    instead of consuming one shared classifier. This inventory is exact and
+    presence-only by path; it freezes the boundary and shrinks as each fact
+    moves onto a published HIR/SIR contract field.
+    """
+    scope = SIR_FACT_RERIVATION_SCOPE
+    governed = test_governed_ranges(ast_grep, root, scope)
+    results: set[Finding] = set()
+
+    def admit(group_form: str, match: dict[str, object]) -> None:
+        item = finding("sir-hir-fact-rederivation", group_form, match)
+        if not is_source_path(item.path):
+            return
+        if any(scope_range.contains(item) for scope_range in governed):
+            return
+        results.add(item)
+
+    for pattern in (
+        "require_variant_shape($$$ARGS)",
+        "$R.require_variant_shape($$$ARGS)",
+    ):
+        for match in run_query_at(ast_grep, root, scope, pattern=pattern):
+            admit("require-variant-shape-call", match)
+    for match in run_query_at(ast_grep, root, scope, kind="field_expression"):
+        if str(match["text"]) == "arm.predicate":
+            admit("predicate-shape-match", match)
+    for match in run_query_at(
+        ast_grep, root, scope, pattern="matches!(arm.predicate, $$$REST)"
+    ):
+        admit("predicate-shape-match", match)
+    return results
 
 
 def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange]]:
@@ -1317,6 +1455,8 @@ def discover(ast_grep: Path, root: Path) -> tuple[set[Finding], list[SyntaxRange
     findings.update(semantic_owner_shortening_findings(ast_grep, root, test_ranges))
     reject_raw_codegen_call_dispatch(ast_grep, root)
     findings.update(rc1_structural_authority_findings(ast_grep, root, test_ranges))
+    findings.update(hir_ast_boundary_findings(ast_grep, root))
+    findings.update(sir_hir_fact_rederivation_findings(ast_grep, root))
     return {item for item in findings if not excluded(item, test_ranges)}, test_ranges
 
 
@@ -1493,6 +1633,10 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         )
     if group == "signature-application":
         return "stage-1"
+    if group == "hir-ast-boundary":
+        return "stage-2"
+    if group == "sir-hir-fact-rederivation":
+        return "stage-3"
     if group == "string-method-identity":
         if path.startswith(("hew-types/", "hew-hir/", "hew-analysis/")):
             return "stage-1"
@@ -1501,24 +1645,13 @@ def canonical_stage(group: str, form: str, path: str) -> str:
         return "stage-5"
 
 
-def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
-    expected: dict[tuple[str, str, str], int] = {}
+def load_inventory(path: Path) -> set[tuple[str, str, str]]:
+    expected: set[tuple[str, str, str]] = set()
     with path.open(newline="") as handle:
         source = (line for line in handle if line.strip() and not line.startswith("#"))
         for row in csv.DictReader(source, delimiter="\t"):
-            group, form, target, count = (
-                row["group"],
-                row["form"],
-                row["path"],
-                row["count"],
-            )
-            if (
-                group not in ALL_GROUPS
-                or not form
-                or not target
-                or not count.isdigit()
-                or int(count) == 0
-            ):
+            group, form, target = row["group"], row["form"], row["path"]
+            if group not in ALL_GROUPS or not form or not target:
                 raise SystemExit(f"invalid authority inventory row: {row}")
             required_stage = canonical_stage(group, form, target)
             if row.get("retirement_stage") != required_stage:
@@ -1532,7 +1665,7 @@ def load_inventory(path: Path) -> dict[tuple[str, str, str], int]:
             key = (group, form, target)
             if key in expected:
                 raise SystemExit(f"duplicate authority inventory row: {key}")
-            expected[key] = int(count)
+            expected.add(key)
     return expected
 
 
@@ -1548,30 +1681,29 @@ def load_inventory_reasons(path: Path) -> dict[tuple[str, str, str], str]:
 
 def render_inventory(
     path: Path,
-    counts: dict[tuple[str, str, str], int],
+    keys: set[tuple[str, str, str]],
     reasons: dict[tuple[str, str, str], str],
 ) -> str:
-    """Rebuild the inventory from observed counts, preserving the prologue.
+    """Rebuild the inventory from observed keys, preserving the prologue.
 
-    Counts are derived, so they are rewritten. Reasons are editorial, so an
-    authority form/path that has never been reviewed cannot be minted here --
-    `write_inventory` refuses instead of authoring a placeholder.
+    Presence is derived, so the row set is rewritten. Reasons are editorial,
+    so an authority form/path that has never been reviewed cannot be minted
+    here -- `write_inventory` refuses instead of authoring a placeholder.
     """
     lines = path.read_text().splitlines()
     prologue = [line for line in lines if line.startswith("#")]
-    header = "group\tform\tpath\tcount\tretirement_stage\treason"
+    header = "group\tform\tpath\tretirement_stage\treason"
     rows = [
         "\t".join(
             (
                 group,
                 form,
                 target,
-                str(counts[(group, form, target)]),
                 canonical_stage(group, form, target),
                 reasons[(group, form, target)],
             )
         )
-        for (group, form, target) in counts
+        for (group, form, target) in keys
     ]
     rows.sort()
     return "\n".join([*prologue, header, *rows]) + "\n"
@@ -1579,17 +1711,18 @@ def render_inventory(
 
 def write_inventory(
     path: Path,
-    counts: dict[tuple[str, str, str], int],
+    keys: set[tuple[str, str, str]],
 ) -> int:
-    """Re-record the inventory counts. A brand-new authority row is an error.
+    """Re-record the present inventory keys. A brand-new authority row is an error.
 
-    Dropping to zero and shrinking are the drift this regen exists to absorb:
-    they mean an authority was retired, which is the direction the cutover is
-    supposed to move. A key with no prior row is the opposite -- new authority
-    landed -- and it needs a human reason before it enters the baseline.
+    Dropping a key is not drift this regen absorbs silently -- it means an
+    authority was retired, which is the direction the cutover is supposed to
+    move, so the row is simply omitted. A key with no prior row is the
+    opposite -- new authority landed -- and it needs a human reason before it
+    enters the baseline.
     """
     reasons = load_inventory_reasons(path)
-    unreviewed = sorted(key for key in counts if key not in reasons)
+    unreviewed = sorted(key for key in keys if key not in reasons)
     if unreviewed:
         print(
             "structural authority inventory: new authority form/path rows cannot be "
@@ -1598,14 +1731,14 @@ def write_inventory(
         )
         for group, form, target in unreviewed:
             print(
-                f"  - {group}\t{form}\t{target}\t{counts[(group, form, target)]}"
+                f"  - {group}\t{form}\t{target}"
                 f"\t{canonical_stage(group, form, target)}\t<reason>",
                 file=sys.stderr,
             )
         return 1
-    path.write_text(render_inventory(path, counts, reasons))
+    path.write_text(render_inventory(path, keys, reasons))
     print(
-        f"structural authority inventory: re-recorded {len(counts)} authority "
+        f"structural authority inventory: re-recorded {len(keys)} authority "
         "form/path rows"
     )
     return 0
@@ -1673,10 +1806,16 @@ def discover_opaque_resource_facts(
     """
     declarations = run_hew_query(ast_grep, root, pattern="type $NAME { }")
     attributes = run_hew_query(ast_grep, root, kind="attribute")
+    prefixes = attributes.copy()
+    for kind in ("visibility", "line_comment", "block_comment"):
+        prefixes.extend(run_hew_query(ast_grep, root, kind=kind))
+    prefixes.sort(key=lambda node: _match_offsets(node)[1], reverse=True)
+    source_bytes = {
+        path: (root / path).read_bytes()
+        for path in {_match_path(node) for node in declarations}
+    }
     impls = run_hew_query(ast_grep, root, pattern="impl $TYPE { $$$BODY }")
-    closes = run_hew_query(
-        ast_grep, root, pattern="fn close(consuming self) { $$$BODY }"
-    )
+    closes = run_hew_query(ast_grep, root, pattern="fn close(consume self) { $$$BODY }")
     calls = run_hew_query(ast_grep, root, pattern="$F($$$ARGS)")
     extern_blocks = run_hew_query(ast_grep, root, pattern='extern "C" { $$$BODY }')
     parser_error_nodes = run_hew_query(ast_grep, root, kind="ERROR")
@@ -1699,16 +1838,19 @@ def discover_opaque_resource_facts(
     for declaration in declarations:
         path = _match_path(declaration)
         start, _ = _match_offsets(declaration)
-        # Attribute nodes are siblings of the declaration in the program item;
-        # constrain their adjacency with byte ranges so a distant marker cannot
-        # authorize a different type.
-        sibling_attrs = [
-            attr
-            for attr in attributes
-            if _match_path(attr) == path
-            and start - _match_offsets(attr)[1] < 96
-            and _match_offsets(attr)[1] <= start
-        ]
+        # Walk the declaration's parsed prefix siblings through whitespace.
+        # An intervening item stops the walk, however close its attributes are.
+        # Comments and visibility do not detach a declaration's own attributes.
+        sibling_attrs = []
+        cursor = start
+        for prefix in prefixes:
+            prefix_start, prefix_end = _match_offsets(prefix)
+            if _match_path(prefix) != path or prefix_end > cursor:
+                continue
+            if source_bytes[path][prefix_end:cursor].strip():
+                break
+            sibling_attrs.append(prefix)
+            cursor = prefix_start
         marker_texts = {str(attr["text"]).strip() for attr in sibling_attrs}
         if marker_texts.isdisjoint({"#[resource]"}) or marker_texts.isdisjoint(
             {"#[opaque]"}
@@ -2362,12 +2504,12 @@ def main() -> int:
             return 0
 
     inventory = args.inventory or root / "scripts/structural-authority-inventory.tsv"
-    expected = {} if args.write_inventory else load_inventory(inventory)
+    expected = set() if args.write_inventory else load_inventory(inventory)
     findings, test_ranges = discover(ast_grep, root)
 
-    actual: defaultdict[tuple[str, str, str], int] = defaultdict(int)
-    for item in findings:
-        actual[(item.group, item.form, item.path)] += 1
+    actual: set[tuple[str, str, str]] = {
+        (item.group, item.form, item.path) for item in findings
+    }
 
     if args.write_inventory:
         # A forbidden authority is not drift and is never re-recorded; it stops
@@ -2386,13 +2528,13 @@ def main() -> int:
         if blocked:
             print("\n".join(f"  - {item}" for item in blocked), file=sys.stderr)
             return 1
-        return write_inventory(inventory, dict(actual))
+        return write_inventory(inventory, actual)
 
     failures = []
-    for key in sorted(set(expected) | set(actual)):
-        want, got = expected.get(key, 0), actual.get(key, 0)
-        if want != got:
-            failures.append(f"{key[0]}/{key[1]} {key[2]}: expected {want}, found {got}")
+    for key in sorted(actual - expected):
+        failures.append(f"new authority form/path: {key[0]}/{key[1]} {key[2]}")
+    for key in sorted(expected - actual):
+        failures.append(f"stale inventory row: {key[0]}/{key[1]} {key[2]}")
     forbidden = scalar_span_site_findings(ast_grep, root, test_ranges)
     for item in forbidden:
         failures.append(

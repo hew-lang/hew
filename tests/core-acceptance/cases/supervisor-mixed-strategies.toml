@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-mixed-strategies"
+intent = "Actor and nested-supervisor failures apply one-for-all and rest-for-one across mixed child kinds in declaration order; retained roles reach fresh state and earlier siblings survive rest-for-one."
+source = "cases/supervisor-mixed-strategies.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "mixed child kinds obey declaration-ordered restart strategies\n"
+stderr = "hew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 7): UserPanic\nhew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 10): UserPanic\nhew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 18): UserPanic\nhew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 16): UserPanic\nhew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 21): UserPanic\nhew: failure: UserPanic (212): restart mixed child\nhew: actor crash in Counter.fail (actor 15): UserPanic\n"
+exit = 0

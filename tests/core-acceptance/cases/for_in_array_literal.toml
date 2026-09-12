@@ -1,0 +1,13 @@
+[[case]]
+id = "for_in_array_literal"
+intent = "#2356: `for x in [<array literal>]` must exit clean, matching its let-bound equivalent (`let a = [...]; for x in a { ..."
+source = "../vertical-slice/accept/for_in_array_literal.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "99\n6\n100\n"
+exit = 0

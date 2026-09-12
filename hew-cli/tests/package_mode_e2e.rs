@@ -419,7 +419,9 @@ fn build_writes_target_debug_by_default() {
     assert_prints_greeting(&package_binary_in(dir.path(), "debug", "debugpkg"));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Built target/debug/debugpkg"),
+        stderr
+            .replace('\\', "/")
+            .contains("Built target/debug/debugpkg"),
         "status line should name the debug artefact path:\n{}",
         describe_output(&output),
     );
@@ -451,7 +453,9 @@ fn build_release_writes_target_release() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Built target/release/relpkg"),
+        stderr
+            .replace('\\', "/")
+            .contains("Built target/release/relpkg"),
         "status line should name the release artefact path:\n{}",
         describe_output(&output),
     );

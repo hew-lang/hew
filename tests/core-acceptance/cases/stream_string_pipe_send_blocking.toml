@@ -1,0 +1,11 @@
+[[case]]
+id = "stream_string_pipe_send_blocking"
+intent = "Send a string through a pipe from main. A plain call waits for capacity; main is a resumable caller too. This example fits within the pipe capacity."
+source = "cases/stream_string_pipe_send_blocking.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-stream-consumer"
+intent = "A receive gen fn feeds another actor's `for` from a snapshot of its state; a consumer that leaves early ends the producer turn, so a later ask is answered and the state is unchanged."
+source = "cases/actor-stream-consumer.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "item:item\nitem:item\nitem:item\n3\nitem:item\nitem:item\n5\n10\nclosed\n"
+exit = 0

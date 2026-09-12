@@ -1,7 +1,7 @@
 // Test 9: Simple Actor
 // First time trying to use actors
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) {
         count = count + n;
     }
@@ -12,10 +12,10 @@ actor Counter {
 
 fn main() {
     let counter = spawn Counter(count: 0);
-    counter.increment(5);
-    counter.increment(10);
-    // Actor asks return Result<T, string> — use `match await` to extract the value.
-    match await counter.get_count() {
+    let _ = counter.increment(5);
+    let _ = counter.increment(10);
+    // Actor completion calls return Result<T, ActorError>; match the result to extract the value.
+    match counter.get_count() {
         .Ok(count) => println(count),
         .Err(_) => println("ask failed"),
     }

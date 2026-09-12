@@ -1,0 +1,11 @@
+[[case]]
+id = "escaped_sibling_field_drop"
+intent = "Escaped-sibling field discharge (#2212)."
+source = "cases/escaped_sibling_field_drop.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

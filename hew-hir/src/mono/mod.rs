@@ -17,8 +17,6 @@
 //!   work will replace with a real constexpr-evaluated value type.
 //! - [`function`] holds the [`function::Function`] kind marker and a
 //!   [`function::FunctionMonoKey`] type alias.
-//! - [`machine`] holds the [`machine::Machine`] kind marker and the
-//!   [`machine::MachineMonoKey`] type alias.
 //!
 //! ## Non-breaking-change discipline
 //!
@@ -44,11 +42,9 @@ use hew_types::ResolvedTy;
 use crate::ids::ItemId;
 
 pub mod function;
-pub mod machine;
 pub mod mangle;
 
 pub use function::{Function, FunctionMonoKey};
-pub use machine::{machine_layout_key, Machine, MachineMonoEntry, MachineMonoKey};
 pub use mangle::{mangle_instantiation, sanitize_for_symbol, ConstValue, SymbolClass};
 
 /// Type alias for the parametric actor-mono key shape.
@@ -69,7 +65,7 @@ pub use mangle::{mangle_instantiation, sanitize_for_symbol, ConstValue, SymbolCl
 /// The `origin` field is left as the sentinel [`ItemId::PLACEHOLDER`]
 /// because the checker does not yet run a full HIR resolve
 /// that assigns persistent `ItemId`s to actor declarations. The
-/// actor-mono discovery pass (blocked on `MachineMonoPass` infra)
+/// actor-mono discovery pass
 /// will back-fill the real `ItemId` from the lowered module.
 pub type ActorMonoKey = MonoKey<Actor>;
 

@@ -19,6 +19,10 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "mailbox_native.rs"]
+pub(crate) mod native;
+
 use crate::util::{CondvarExt, MutexExt};
 #[cfg(test)]
 use std::cell::Cell;
@@ -472,14 +476,14 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
-    unsafe { libc::malloc(size) }
+    crate::mem::buf_try_alloc(size)
 }
 
 // ── Message node ────────────────────────────────────────────────────────
 
 /// A single message in a mailbox queue.
 ///
-/// Allocated with [`libc::malloc`] and freed by the caller (or by
+/// Allocated with the sized-block allocator and freed by the caller (or by
 /// [`hew_msg_node_free`]).
 ///
 /// ## Envelope discriminator (Phase α COW)
@@ -488,7 +492,7 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
 /// `data` / `data_size` / `libc::memcpy` path). When `envelope` is
 /// non-null the payload lives behind a refcounted [`HewMsgEnvelope`]
 /// and `data` / `data_size` are unused — `hew_msg_node_free` releases
-/// the envelope instead of `libc::free`-ing `data`.
+/// the envelope instead of `buf_free`-ing `data`.
 ///
 /// The legacy and envelope paths coexist; codegen flips sites to the
 /// envelope path in a later commit. This commit is strictly additive:
@@ -502,7 +506,7 @@ pub struct HewMsgNode {
     pub next: AtomicPtr<HewMsgNode>,
     /// Application-defined message type tag.
     pub msg_type: i32,
-    /// Pointer to deep-copied message payload (malloc'd) on the legacy
+    /// Pointer to deep-copied message payload (sized-block allocated) on the legacy
     /// copy path. Unused (and may be null) when `envelope` is non-null.
     pub data: *mut c_void,
     /// Size of `data` in bytes on the legacy copy path. Unused on the
@@ -536,8 +540,9 @@ pub struct HewMsgNode {
 ///
 /// # Safety
 ///
-/// `payload` must be a malloc-compatible allocation of `payload_size` bytes
-/// (or null for zero bytes). Ownership transfers to the returned envelope.
+/// `payload` must be a sized-block allocation of `payload_size` bytes from
+/// the sized-block allocator (or null for zero bytes). Ownership transfers
+/// to the returned envelope.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_envelope_new(
     payload: *mut c_void,
@@ -601,7 +606,7 @@ pub unsafe extern "C" fn hew_msg_envelope_fork_for_write(
     unsafe { crate::cow_envelope::fork_for_write(env, mailbox_malloc) }
 }
 
-/// Allocate a [`HewMsgNode`] via `libc::malloc`, deep-copying `data`.
+/// Allocate a [`HewMsgNode`] via the sized-block allocator, deep-copying `data`.
 ///
 /// # Safety
 ///
@@ -694,8 +699,8 @@ unsafe fn msg_node_alloc_with_trace(
         (*node).envelope = ptr::null_mut();
         (*node).trace_context = trace_context;
         // Explicit zero-init for the mailbox-envelope ABI fields.
-        // These fields are NEW; mailbox_malloc uses libc::malloc (not calloc)
-        // so they are NOT zero-initialized by the allocator. An uninitialized
+        // These fields are NEW; mailbox_malloc uses buf_try_alloc (not a zeroing
+        // allocator like calloc) so they are NOT zero-initialized. An uninitialized
         // payload_class byte that happened to equal SerializedCrossNode (3)
         // would silently pass the cross-node gate — defeating the fail-closed
         // invariant. Zero maps to the canonical sentinels:
@@ -710,7 +715,7 @@ unsafe fn msg_node_alloc_with_trace(
         if data_size > 0 && !data.is_null() {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
-                libc::free(node.cast());
+                crate::mem::buf_free(node.cast());
                 return ptr::null_mut();
             }
             libc::memcpy(buf, data, data_size);
@@ -1087,29 +1092,29 @@ where
 /// # Safety
 ///
 /// `node` must have been allocated by [`msg_node_alloc`],
-/// [`msg_node_alloc_aliased`], or [`libc::malloc`] with the same
+/// [`msg_node_alloc_aliased`], or the sized-block allocator with the same
 /// layout and must not be used after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
     cabi_guard!(node.is_null());
     #[cfg(test)]
     untrack_ask_node_for_test(node);
-    // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
+    // SAFETY: caller guarantees `node` came from the sized-block allocator and is exclusively owned.
     unsafe {
         // Explicit orphaned-ask teardown: queued ask nodes own a sender-side
         // reply reference that must be retired before the node memory is freed.
         retire_msg_node_ask_sender_ref(node);
         // Phase-α COW: branch on the envelope discriminator. Legacy
-        // nodes hold a malloc'd payload buffer in `data`; envelope
+        // nodes hold a sized-block-allocated payload buffer in `data`; envelope
         // nodes drop one refcount on the shared envelope and let the
         // envelope's release path run drop glue + free the payload.
         if (*node).envelope.is_null() {
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
         }
-        libc::free(node.cast());
+        crate::mem::buf_free(node.cast());
     }
 }
 
@@ -1150,7 +1155,7 @@ fn alloc_stub_node() -> *mut HewMsgNode {
         (*node).data_size = 0;
         (*node).reply_channel = ptr::null_mut();
         // The stub never carries an envelope payload; zero so that
-        // hew_msg_node_free routes through the legacy `libc::free` path.
+        // hew_msg_node_free routes through the legacy `buf_free` path.
         (*node).envelope = ptr::null_mut();
         (*node).trace_context = HewTraceContext::default();
         // Explicit zero-init for the mailbox-envelope ABI fields.
@@ -1471,6 +1476,8 @@ pub struct HewMailbox {
     /// Separate from `slow_path` because close may be invoked by a callback
     /// while that queue lock is already held.
     blocked_senders: Mutex<VecDeque<BlockedSender>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) native_capacity: crate::wake::ReadinessRegistrations,
     /// Queued user messages plus bounded fast-path slots reserved by in-flight
     /// producers.
     pub(crate) count: AtomicI64,
@@ -1545,7 +1552,7 @@ impl HewMailbox {
     /// node's payload *without* the consumer handler ever running on it —
     /// i.e. `DropOld` (evicts the oldest queued node) or `Coalesce` (replaces
     /// a matching node's payload, or falls back to `DropOld`). Both retire the
-    /// superseded node's `data` buffer via `libc::free` / `hew_msg_node_free`.
+    /// superseded node's `data` buffer via `buf_free` / `hew_msg_node_free`.
     ///
     /// The active-mode I/O reactor relies on this to fail closed at attach
     /// time: its `on_data` envelope is a raw (`envelope == null`) node whose
@@ -1652,6 +1659,8 @@ pub unsafe extern "C" fn hew_mailbox_new() -> *mut HewMailbox {
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: -1,
@@ -1693,6 +1702,8 @@ pub unsafe extern "C" fn hew_mailbox_new_bounded(capacity: i32) -> *mut HewMailb
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: i64::from(capacity),
@@ -1743,6 +1754,8 @@ pub unsafe extern "C" fn hew_mailbox_new_with_policy(
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: cap,
@@ -1785,6 +1798,8 @@ pub unsafe extern "C" fn hew_mailbox_new_coalesce(capacity: u32) -> *mut HewMail
             user_queue: VecDeque::new(),
         }),
         blocked_senders: Mutex::new(VecDeque::new()),
+        #[cfg(not(target_arch = "wasm32"))]
+        native_capacity: crate::wake::ReadinessRegistrations::default(),
         count: AtomicI64::new(0),
         sys_count: AtomicUsize::new(0),
         capacity: cap,
@@ -1857,7 +1872,7 @@ unsafe fn replace_node_payload(
             if let Some(drop_fn) = message_drop_fn {
                 drop_fn((*node).msg_type, (*node).data, (*node).data_size);
             }
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
@@ -2411,7 +2426,7 @@ unsafe fn enqueue_reserved_fast_user_node(mb: &HewMailbox, node: *mut HewMsgNode
 /// - `mb` must reference a valid, live [`HewMailbox`].
 /// - `envelope` carries exactly one caller-transferred refcount (it may
 ///   be null, in which case the node delivers an empty payload and the
-///   node free path is a no-op `libc::free(null)`).
+///   node free path is a no-op `crate::mem::buf_free(null)`).
 #[cfg(not(target_arch = "wasm32"))]
 #[expect(
     clippy::too_many_lines,
@@ -2643,6 +2658,61 @@ unsafe fn send_aliased_with_overflow(
     // SAFETY: `node` owned here with next == null.
     unsafe { enqueue_user_node(mb, node) };
     SendOutcome::Enqueued
+}
+
+/// Admit one envelope and its optional sender-side reply reference together.
+/// Rejection preserves both references for the caller.
+///
+/// # Safety
+/// The mailbox is pinned and both references are unpublished and uniquely owned.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn try_admit_native_request(
+    mb: &HewMailbox,
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+    reply: *mut c_void,
+) -> SendOutcome {
+    if mb.closed.load(Ordering::Acquire) {
+        return SendOutcome::Closed;
+    }
+    // SAFETY: allocation retains caller ownership of the envelope until publication.
+    let node = unsafe { msg_node_alloc_aliased(msg_type, envelope, reply) };
+    if node.is_null() {
+        return SendOutcome::Oom;
+    }
+    let outcome = if mb.capacity > 0 && mb.use_slow_path {
+        let mut queue = mb.slow_path.lock_or_recover();
+        if mb.closed.load(Ordering::Acquire) {
+            SendOutcome::Closed
+        } else if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity {
+            SendOutcome::Failed
+        } else {
+            enqueue_bounded_slow_path_node(mb, &mut queue, node);
+            drop(queue);
+            update_high_water_mark(mb);
+            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+            return SendOutcome::Enqueued;
+        }
+    } else if mb.capacity > 0 {
+        if try_reserve_fast_path_capacity(mb) {
+            // SAFETY: this producer owns the node and its reserved capacity slot.
+            unsafe { enqueue_reserved_fast_user_node(mb, node) };
+            return SendOutcome::Enqueued;
+        }
+        SendOutcome::Failed
+    } else {
+        // SAFETY: this producer owns the unpublished node.
+        unsafe { enqueue_user_node(mb, node) };
+        return SendOutcome::Enqueued;
+    };
+    // SAFETY: nothing was published. Detach the envelope before freeing the node,
+    // leaving its single reference with the source message owner.
+    unsafe {
+        (*node).envelope = ptr::null_mut();
+        (*node).reply_channel = ptr::null_mut();
+        hew_msg_node_free(node);
+    }
+    outcome
 }
 
 /// Send an envelope-aliased message to the mailbox.
@@ -3359,6 +3429,8 @@ pub(crate) unsafe fn mailbox_close(mb: *mut HewMailbox) {
         // coalesce key/drop callback. Always use the protocol: a sender may
         // already be parked even if coalesce configuration changed afterward.
         mb.notify_not_full_all();
+        #[cfg(not(target_arch = "wasm32"))]
+        mb.native_capacity.notify();
     }
 }
 
@@ -3476,6 +3548,8 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
                 // Preserve the foreign-thread blocking sender path.
                 mb.notify_not_full_one();
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            mb.native_capacity.notify();
             return RecvNode {
                 node,
                 origin: Origin::User,
@@ -3487,6 +3561,8 @@ pub(crate) unsafe fn mailbox_try_recv_with_origin(mb: *mut HewMailbox) -> RecvNo
         if !node.is_null() {
             mb.count.fetch_sub(1, Ordering::Release);
             MESSAGES_RECEIVED.fetch_add(1, Ordering::Relaxed);
+            #[cfg(not(target_arch = "wasm32"))]
+            mb.native_capacity.notify();
             return RecvNode {
                 node,
                 origin: Origin::User,
@@ -4675,7 +4751,7 @@ mod tests {
                 symbol: 42,
                 price: 99,
             };
-            let payload = libc::malloc(size_of::<PriceUpdate>());
+            let payload = crate::mem::buf_try_alloc(size_of::<PriceUpdate>());
             assert!(!payload.is_null());
             ptr::write(payload.cast::<PriceUpdate>(), update);
             let envelope = hew_msg_envelope_new(payload, size_of::<PriceUpdate>(), None);
@@ -6179,10 +6255,86 @@ mod tests {
     fn alloc_test_payload(bytes: &[u8]) -> *mut c_void {
         // SAFETY: malloc + memcpy under the standard contract.
         unsafe {
-            let buf = libc::malloc(bytes.len());
+            let buf = crate::mem::buf_try_alloc(bytes.len());
             assert!(!buf.is_null());
             libc::memcpy(buf, bytes.as_ptr().cast(), bytes.len());
             buf
+        }
+    }
+
+    #[test]
+    fn native_admission_preserves_rejected_message_across_mailbox_policies() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        for policy in [
+            HewOverflowPolicy::Fail,
+            HewOverflowPolicy::DropNew,
+            HewOverflowPolicy::DropOld,
+            HewOverflowPolicy::Block,
+        ] {
+            ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+            // SAFETY: this test owns both mailboxes and the unpublished envelope.
+            unsafe {
+                let full = hew_mailbox_new_with_policy(1, policy);
+                let backup = hew_mailbox_new();
+                assert!(!full.is_null() && !backup.is_null());
+                let filler = 1_i32;
+                assert_eq!(
+                    hew_mailbox_send(
+                        full,
+                        0,
+                        (&raw const filler).cast_mut().cast(),
+                        size_of::<i32>()
+                    ),
+                    0
+                );
+                let payload = alloc_test_payload(b"retained");
+                let envelope = hew_msg_envelope_new(payload, 8, Some(envelope_test_drop_glue));
+                assert!(matches!(
+                    try_admit_native_request(&*full, 7, envelope, ptr::null_mut()),
+                    SendOutcome::Failed
+                ));
+                assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
+                assert_eq!((*envelope).payload, payload);
+                assert_eq!((*envelope).refcount.load(Ordering::SeqCst), 1);
+                assert!(matches!(
+                    try_admit_native_request(&*backup, 7, envelope, ptr::null_mut()),
+                    SendOutcome::Enqueued
+                ));
+                hew_mailbox_free(full);
+                assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
+                hew_mailbox_free(backup);
+                assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn native_admission_preserves_message_on_close_and_allocation_failure() {
+        let _guard = ENVELOPE_DROP_LOCK.lock().unwrap();
+        ENVELOPE_DROP_COUNT.store(0, Ordering::SeqCst);
+        // SAFETY: the mailbox and envelope are private to this test.
+        unsafe {
+            let mailbox = hew_mailbox_new();
+            let payload = alloc_test_payload(b"retained");
+            let envelope = hew_msg_envelope_new(payload, 8, Some(envelope_test_drop_glue));
+            {
+                let _fail = fail_mailbox_alloc_on_nth(0);
+                assert!(matches!(
+                    try_admit_native_request(&*mailbox, 7, envelope, ptr::null_mut()),
+                    SendOutcome::Oom
+                ));
+            }
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
+            mailbox_close(mailbox);
+            assert!(matches!(
+                try_admit_native_request(&*mailbox, 7, envelope, ptr::null_mut()),
+                SendOutcome::Closed
+            ));
+            assert_eq!((*envelope).payload, payload);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 0);
+            hew_mailbox_free(mailbox);
+            hew_msg_envelope_release(envelope);
+            assert_eq!(ENVELOPE_DROP_COUNT.load(Ordering::SeqCst), 1);
         }
     }
 
@@ -6657,7 +6809,7 @@ mod tests {
             );
         }
     }
-    /// not for the pid handle itself; a `LocalPid<A>`/`RemotePid<A>`
+    /// not for the pid handle itself; an actor handle or `RemotePid<A>`
     /// inside a payload struct is reachable through the payload's
     /// drop glue, which the envelope runs exactly once on the
     /// transition to refcount==0. We model that with a plain
@@ -6669,7 +6821,7 @@ mod tests {
 
         /// Drop glue for a payload buffer that holds an in-place
         /// `Arc<()>`. The envelope free's the buffer afterwards via
-        /// `libc::free`; this glue only runs the destructor.
+        /// `buf_free`; this glue only runs the destructor.
         unsafe extern "C" fn arc_in_buf_drop_glue(payload: *mut c_void) {
             // SAFETY: caller (envelope release) guarantees the buffer
             // holds an initialised `Arc<()>` constructed in-place via
@@ -6680,13 +6832,13 @@ mod tests {
         let observed: Arc<()> = Arc::new(());
         assert_eq!(Arc::strong_count(&observed), 1);
 
-        // SAFETY: we libc::malloc a buffer the size of one `Arc<()>`,
+        // SAFETY: we allocate a buffer the size of one `Arc<()>`,
         // ptr::write a clone into it, and hand ownership to the
         // envelope. The envelope releases the clone via drop_glue and
         // free's the buffer afterwards.
         unsafe {
             let arc_size = std::mem::size_of::<Arc<()>>();
-            let buf = libc::malloc(arc_size).cast::<Arc<()>>();
+            let buf = crate::mem::buf_try_alloc(arc_size).cast::<Arc<()>>();
             assert!(!buf.is_null());
             std::ptr::write(buf, Arc::clone(&observed));
             // The clone is now owned by `buf`; observed strong = 2.

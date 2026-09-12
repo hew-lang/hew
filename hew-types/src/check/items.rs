@@ -44,12 +44,6 @@ impl Checker {
             }
             Item::Const(cd) => self.check_const(cd, span),
             Item::Impl(id) => self.check_impl(id, span),
-            Item::Machine(md) => {
-                if !crate::ty::is_reserved_type_name(&md.name) {
-                    self.check_machine_exhaustiveness(md, span);
-                    self.check_machine_state_resource_payloads(&md.name, span);
-                }
-            }
             Item::Trait(td) => {
                 if !crate::ty::is_reserved_type_name(&td.name) {
                     self.check_trait_defaults(td);
@@ -59,10 +53,13 @@ impl Checker {
             // and require no second-pass body checking.  Record declarations
             // specifically are registered by `register_record_decl`; they have
             // no method bodies, variants, or wire attributes in v0.5.
+            // Machines are normalized into ordinary declarations before this
+            // pass runs, so no machine declaration reaches item checking.
             Item::Record(_)
             | Item::Import(_)
             | Item::TypeDecl(_)
             | Item::TypeAlias(_)
+            | Item::Machine(_)
             | Item::ExternBlock(_) => {}
             Item::Supervisor(sd) => self.check_supervisor(sd, span),
         }
@@ -83,6 +80,13 @@ impl Checker {
     ///   (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     /// - Any other strategy rejects `pool` decls (`E_SUPERVISOR_STRATEGY_POOL_MISMATCH`).
     pub(super) fn check_supervisor(&mut self, sd: &SupervisorDecl, span: &Span) {
+        let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
+        let bounds = self
+            .type_defs
+            .get(&sd.name)
+            .map_or_else(HashMap::new, |definition| definition.bounds.clone());
+        self.current_type_param_bounds
+            .push(TypeParamScope::new(bounds, HashMap::new()));
         // A dotted child type (`child a: bank.Account`) references the
         // module's actor; mark the import used so the program does not get a
         // spurious unused-import warning when the supervisor is the only
@@ -99,9 +103,6 @@ impl Checker {
             }
         }
 
-        // ── 1. Child actor identity ──────────────────────────────────────────
-        self.check_supervisor_child_actor_types(sd, span);
-
         // ── 2. Duplicate child names ─────────────────────────────────────────
         self.check_supervisor_duplicate_children(sd, span);
 
@@ -114,103 +115,68 @@ impl Checker {
         // ── 5. Dependency cycle detection ────────────────────────────────────
         self.check_supervisor_wired_to_cycles(sd, span);
 
-        // ── 6. Permanent children must not have owned-heap state fields ──────
-        self.check_supervisor_permanent_owned_heap(sd, span);
-
         // ── 7. Intensity restart-budget sanity ──────────────────────────────
         self.check_supervisor_intensity(sd, span);
 
-        // ── 8. Children must not declare #[every] periodic handlers ──────────
-        self.check_supervisor_periodic_children(sd, span);
-
-        // ── 9. Type-check child init-arg expressions against the config
-        //       params, then validate the resolved arg types (byte-copy wall).
-        //       Step 9 binds `sd.params` (the construction-time config params,
-        //       `supervisor App(config: T)`) in a fresh scope and synthesises
-        //       the type of each child init-arg EXPRESSION so a `config.field`
-        //       read resolves through the config struct's record layout and
-        //       lands in `expr_types`. HIR/MIR lowering reads those resolved
-        //       types (`object.ty = Named{config_ty}`, `source_expr.ty = field
-        //       type`) to emit the init-closure thunk; without this step the
-        //       init-arg exprs are never type-checked and `config.field` carries
-        //       no resolved type. The resolved arg type is also what the
-        //       BitCopy wall now validates (a scalar `config.field` passes; an
-        //       owned one is still walled until the owned init thunk lands).
+        // Child construction uses the ordinary spawn contract with retained
+        // config parameters in scope. Each restart repeats this construction.
         self.check_supervisor_init_args(sd, span);
+        self.current_type_param_bounds.pop();
+        self.exit_primary_sig_scope(scope);
     }
 
-    /// Resolve every child through lexical actor authority before HIR/MIR.
-    ///
-    /// This is the fail-closed boundary for unsupported spellings: package
-    /// actors must arrive through a whole-module qualifier or an exact
-    /// named/aliased binding. Merely loading another module that exports the
-    /// same leaf never grants authority, and a local non-actor declaration
-    /// shadows an import instead of silently selecting the foreign actor.
-    fn check_supervisor_child_actor_types(&mut self, sd: &SupervisorDecl, span: &Span) {
-        for child in &sd.children {
-            let child_span = if child.span.is_empty() {
-                span.clone()
-            } else {
-                child.span.clone()
-            };
-            let Some(identity) = self.resolve_supervisor_child_type(&child.actor_type) else {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::UnknownChildActor,
-                    },
-                    child_span,
-                    format!(
-                        "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references \
-                         unknown actor `{}`; import a public actor into this scope or qualify it \
-                         through a module binding",
-                        sd.name, child.name, child.actor_type
-                    ),
-                ));
-                continue;
-            };
-            match self.type_defs.get(&identity) {
-                Some(type_def) if type_def.kind == TypeDefKind::Actor => {}
-                None if self.supervisor_children.contains_key(&identity) => {}
-                Some(_) => self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::ChildNotSupervisable,
-                    },
-                    child_span,
-                    format!(
-                        "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names \
-                         `{}`; the selected declaration `{identity}` is neither an actor nor a \
-                         supervisor",
-                        sd.name, child.name, child.actor_type
-                    ),
-                )),
-                None => self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::UnknownChildActor,
-                    },
-                    child_span,
-                    format!(
-                        "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references \
-                         unknown actor `{}`; import a public actor into this scope or qualify it \
-                         through a module binding",
-                        sd.name, child.name, child.actor_type
-                    ),
-                )),
-            }
+    /// Prove lexical child authority before publishing a typed child handle.
+    fn resolve_checked_supervisor_child(
+        &mut self,
+        supervisor: &SupervisorDecl,
+        child: &hew_parser::ast::ChildSpec,
+        span: &Span,
+    ) -> Option<String> {
+        let child_span = if child.span.is_empty() {
+            span.clone()
+        } else {
+            child.span.clone()
+        };
+        let identity = self.resolve_supervisor_child_type(&child.actor_type);
+        let definition = identity.as_ref().and_then(|name| self.type_defs.get(name));
+        if definition.is_some_and(|definition| {
+            matches!(
+                definition.kind,
+                TypeDefKind::Actor | TypeDefKind::Supervisor
+            )
+        }) || identity
+            .as_ref()
+            .is_some_and(|name| definition.is_none() && self.supervisor_children.contains_key(name))
+        {
+            return identity;
         }
+        let (subkind, message) = if let Some(identity) = identity.filter(|_| definition.is_some()) {
+            (
+                SupervisorErrorKind::ChildNotSupervisable,
+                format!(
+                    "E_SUPERVISOR_CHILD_NOT_SUPERVISABLE: supervisor `{}` child `{}` names `{}`; the selected declaration `{identity}` is neither an actor nor a supervisor",
+                    supervisor.name, child.name, child.actor_type,
+                ),
+            )
+        } else {
+            (
+                SupervisorErrorKind::UnknownChildActor,
+                format!(
+                    "E_SUPERVISOR_UNKNOWN_CHILD_ACTOR: supervisor `{}` child `{}` references unknown actor `{}`; import a public actor into this scope or qualify it through a module binding",
+                    supervisor.name, child.name, child.actor_type,
+                ),
+            )
+        };
+        self.errors.push(TypeError::new(
+            TypeErrorKind::SupervisorError { subkind },
+            child_span,
+            message,
+        ));
+        None
     }
 
-    /// Bind the supervisor's construction-time config params in scope, type-
-    /// check every child's init-arg expressions, and validate the resolved arg
-    /// types against the byte-copy wall.
-    ///
-    /// The config params (`supervisor App(config: T)`) are in scope only for
-    /// the child init-arg expressions (`child cache: Cache(capacity:
-    /// config.size)`), mirroring the actor `init(params)` shape. Each init-arg
-    /// expression is synthesised so `config.field` resolves through the config
-    /// struct's record layout to the field's type and `expr_types` carries both
-    /// the field-access result type and the config-param identifier type — the
-    /// resolved discriminators HIR stamps onto the HIR exprs and MIR reads to
-    /// lower the `ConfigField` init arg.
+    /// Check child construction with the supervisor's retained config in scope.
+    /// Store each complete child handle at its source site for HIR to consume.
     fn check_supervisor_init_args(&mut self, sd: &SupervisorDecl, span: &Span) {
         self.env.push_scope();
 
@@ -233,25 +199,27 @@ impl Checker {
             );
         }
 
-        // Synthesise the type of every child's init-arg expressions so the
-        // resolved types land in `expr_types` (the discriminator HIR/MIR read).
-        // Surfacing real errors here (`config.nonexistent_field`, a config-field
-        // / actor-param type mismatch) is a new user-facing diagnostic.
-        //
-        // Pool children now route their per-member init args through the same
-        // init-closure thunk path as static children (one shared template,
-        // re-run per member), so their init-arg exprs are type-checked here too.
-        // Pool arity is not an init arg at all — it is the `count:` clause,
-        // synthesised by `check_supervisor_pool_count` below.
         for child in &sd.children {
-            for (_arg_name, arg_expr) in &child.args {
-                self.synthesize(&arg_expr.0, &arg_expr.1);
+            let Some(identity) = self.resolve_checked_supervisor_child(sd, child, span) else {
+                continue;
+            };
+            let target = (Expr::Identifier(identity), child.span.clone());
+            let handle = self.check_spawn(&target, &child.type_args, &child.args, &child.span);
+            self.record_type(&child.span, &handle);
+            if let Some(child_ty) = handle.as_actor_handle() {
+                if let Some(children) = self.supervisor_children.get_mut(&sd.name) {
+                    let entries = if child.is_pool {
+                        &mut children.pools
+                    } else {
+                        &mut children.statics
+                    };
+                    if let Some((_, ty)) = entries.iter_mut().find(|(name, _)| name == &child.name)
+                    {
+                        *ty = child_ty.clone();
+                    }
+                }
             }
         }
-
-        // Validate the resolved init-arg types against the byte-copy wall while
-        // the config params are still in scope.
-        self.check_supervisor_init_args_bitcopy(sd, span);
 
         // Validate every pool child's `count:` clause (presence, integer type,
         // positive literal) while config params are still in scope so a
@@ -363,118 +331,6 @@ impl Checker {
         }
     }
 
-    /// Reject supervisor children whose actor type declares `#[every(duration)]`
-    /// periodic receive handlers.
-    ///
-    /// WHY: periodic timers are armed by spawn-site codegen
-    /// (`emit_periodic_handler_arming`, hew-codegen-rs/src/llvm.rs), but
-    /// supervisor children are spawned — and restarted — by the runtime from
-    /// a `HewChildSpec`, a path that never reaches the codegen spawn site.
-    /// The child's timers would silently never fire, and even spawn-site
-    /// arming could not survive a restart (`hew_actor_free` cancels all
-    /// timers for the crashed instance). Fail-closed: reject at check time
-    /// rather than ship a silent no-op.
-    /// WHEN-OBSOLETE: when `HewChildSpec` carries a periodic-handler table
-    /// (`msg_type` + interval per handler) and the runtime arms timers in the
-    /// child-start path AND re-arms them on restart.
-    /// WHAT: extend `HewChildSpec` + the supervisor child-start/restart paths
-    /// in `hew-runtime/src/supervisor.rs` with that table, then delete this
-    /// check and flip its tests to accept.
-    fn check_supervisor_periodic_children(&mut self, sd: &SupervisorDecl, span: &Span) {
-        for child in &sd.children {
-            if let Some(handler) = self.actors_with_periodic_handlers.get(&child.actor_type) {
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::PeriodicChild,
-                    },
-                    span.clone(),
-                    format!(
-                        "E_SUPERVISOR_PERIODIC_CHILD: supervisor `{}` child `{}` (actor `{}`) \
-                         declares #[every] periodic handler `{}`; periodic handlers are not yet \
-                         armed for supervisor-spawned children — spawn the actor directly, or \
-                         drive `{}` with explicit sends",
-                        sd.name, child.name, child.actor_type, handler, handler
-                    ),
-                ));
-            }
-        }
-    }
-
-    /// Reject supervised child init args unless the actor init-parameter type is
-    /// reproducible by the init-closure restart thunk.
-    ///
-    /// The v0.6 init-closure restart model re-runs every init arg on each
-    /// incarnation: a scalar `config.field` is re-loaded and an owned
-    /// `string`/`bytes` field is deep-cloned per restart, so each child gets a
-    /// fresh, unaliased owned value. After transparent aliases are expanded,
-    /// `ty_is_supervisor_init_reproducible` admits scalars together with
-    /// `string` and `bytes` (the types the thunk has a per-field clone for).
-    /// Owned collections, records, enums, generic, user-defined, and
-    /// `#[resource]` handle types stay walled (fail-closed): their clone-in-thunk
-    /// codegen is not wired (collections/records) or is structurally forbidden
-    /// (re-cloning a handle would alias a live resource).
-    fn check_supervisor_init_args_bitcopy(&mut self, sd: &SupervisorDecl, _span: &Span) {
-        for child in &sd.children {
-            // Only children with explicit init args carry init-arg types.
-            if child.args.is_empty() {
-                continue;
-            }
-
-            // Look up the actor's init parameter list.  Unknown actors are
-            // handled elsewhere; skip here to avoid duplicate diagnostics.
-            // The registry is keyed by canonical actor identity; a package-
-            // module child stores the alias-prefixed spelling, so canonicalize
-            // before the lookup or this reproducibility wall silently skips.
-            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
-            let Some(init_params) = self.actor_init_params.get(&child_identity).cloned() else {
-                continue;
-            };
-
-            for (arg_name, _arg_expr) in &child.args {
-                // Find the matching init parameter by name.
-                let Some(param) = init_params.iter().find(|param| param.name == *arg_name) else {
-                    // Missing-param errors are reported elsewhere (wired_to check
-                    // or MIR lowering); skip here.
-                    continue;
-                };
-
-                // The wall is keyed on the actor init-PARAMETER type: that type
-                // is what the child's state field stores, so it is what the
-                // init-closure thunk must re-produce per incarnation. A scalar
-                // param (`capacity: i64`) is reproducible by a load; an owned
-                // `string`/`bytes` by a per-field deep-clone; everything else
-                // stays walled (fail-closed). The arg-EXPRESSION typing that
-                // `config.field` requires happens in `check_supervisor_init_args`'
-                // synthesis pass; this is the param-type gate.
-                let resolved_param_ty = self.normalize_for_use(&param.ty);
-                if !ty_is_supervisor_init_reproducible(&resolved_param_ty) {
-                    self.errors.push(TypeError::new(
-                        TypeErrorKind::SupervisorError {
-                            subkind: SupervisorErrorKind::InitArgNonBitcopy,
-                        },
-                        param.span.clone(),
-                        format!(
-                            "E_SUPERVISOR_INIT_ARG_NON_BITCOPY: supervisor `{}` child `{}` \
-                             (actor `{}`) passes init arg `{}` of type `{}`; supervised actor \
-                             init args are re-produced by the init-closure restart model on \
-                             every restart. Scalar primitives (`i8`..`u64`, `f32`, `f64`, \
-                             `bool`, `char`) and owned `string` / `bytes` are admitted (the \
-                             thunk loads or deep-clones them per incarnation). Owned \
-                             collections, records, enums, generic, alias, user-defined, and \
-                             `#[resource]` handle types are rejected — their clone-in-thunk \
-                             codegen is not wired (or is structurally forbidden for handles)",
-                            sd.name,
-                            child.name,
-                            child.actor_type,
-                            arg_name,
-                            param.ty.user_facing()
-                        ),
-                    ));
-                }
-            }
-        }
-    }
-
     /// Validate the `intensity: N within <duration>` restart budget: the
     /// restart count must be non-negative and the window must parse to a
     /// positive duration. The parser already guarantees the window is a real
@@ -521,104 +377,6 @@ impl Checker {
                     sd.name, intensity.window
                 ),
             )),
-        }
-    }
-
-    /// Guard against C1 UAF: a supervisor with a permanent restart policy will
-    /// byte-copy `spec.init_state` into the fresh actor on restart.  If the
-    /// actor's state contains an owned-heap field (Vec, String, `HashMap`,
-    /// `HashSet`, Bytes), that byte-copy aliases the pointer from the crashed
-    /// actor, and the next `state_drop_fn` call produces a use-after-free.
-    ///
-    /// This check is a hard compile error per R89 ("stop the compile until we
-    /// can address it").  Full fix (`init_state_clone_fn`) is tracked as
-    /// v0.5.0.1 P0.
-    ///
-    /// EXEMPTION (v0.6 init-closure restart model): a child whose owned field is
-    /// supplied by a REPRODUCIBLE init arg (`name: config.label` where `name` is
-    /// a `string`) takes the init-thunk path — codegen produces the field by a
-    /// per-incarnation deep-clone, not a byte-copy template. That is exactly the
-    /// structural fix this wall flags as deferred, so such a field is no longer a
-    /// UAF hazard and is exempt. Owned fields NOT covered by a reproducible init
-    /// arg still byte-copy and stay walled.
-    fn check_supervisor_permanent_owned_heap(&mut self, sd: &SupervisorDecl, span: &Span) {
-        for child in &sd.children {
-            // Pool children are dynamically spawned, not restarted from a
-            // fixed spec, so they are exempt from this check.
-            if child.is_pool {
-                continue;
-            }
-
-            // RestartPolicy::None defaults to permanent per llvm.rs:3013.
-            let is_permanent = child.restart.is_none_or(|p| p == RestartPolicy::Permanent);
-            if !is_permanent {
-                continue;
-            }
-
-            // Look up the actor's TypeDef.  If the type is unknown or is not
-            // an actor, a separate diagnostic already covers it. The registry is
-            // keyed by canonical actor identity; canonicalize the package-module
-            // child's alias-prefixed spelling before the lookup so the owned-heap
-            // wall does not silently skip.
-            let child_identity = self.canonical_supervisor_child_type(&child.actor_type);
-            let Some(type_def) = self.type_defs.get(&child_identity).cloned() else {
-                continue;
-            };
-            if type_def.kind != TypeDefKind::Actor {
-                continue;
-            }
-
-            // Init params for the child's actor, used to resolve whether an init
-            // arg covering an owned field is reproducible (init-thunk path).
-            let init_params = self.actor_init_params.get(&child_identity).cloned();
-
-            for (field_name, field_ty) in &type_def.fields {
-                if !ty_is_known_owned_heap(field_ty) {
-                    continue;
-                }
-                // Exempt the field if the child supplies a reproducible init arg
-                // for it: the init thunk deep-clones it per incarnation, so the
-                // byte-copy aliasing hazard does not apply. An arg `name`
-                // resolves either to a state field of the same name or to an
-                // init param of that name; both route the value into the field.
-                let covered_by_reproducible_init = child.args.iter().any(|(arg_name, _)| {
-                    if arg_name != field_name {
-                        return false;
-                    }
-                    // The arg names this field. It is reproducible if the field
-                    // type itself is reproducible (state-field arg) or the
-                    // matching init param type is (init-param arg).
-                    if ty_is_supervisor_init_reproducible(field_ty) {
-                        return true;
-                    }
-                    init_params.as_ref().is_some_and(|params| {
-                        params
-                            .iter()
-                            .find(|p| p.name == *arg_name)
-                            .is_some_and(|p| ty_is_supervisor_init_reproducible(&p.ty))
-                    })
-                });
-                if covered_by_reproducible_init {
-                    continue;
-                }
-                self.errors.push(TypeError::new(
-                    TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::PermanentOwnedHeap,
-                    },
-                    span.clone(),
-                    format!(
-                        "E_SUPERVISOR_PERMANENT_OWNED_HEAP: supervisor `{}` child `{}` \
-                         (actor `{}`) has field `{}` of type `{}` which is an owned-heap \
-                         type; restarting a permanent child byte-copies init_state, \
-                         aliasing the heap pointer from the crashed actor and causing a \
-                         use-after-free on the next state_drop_fn call — use \
-                         `restart: transient` or `restart: temporary`, or remove owned-heap \
-                         fields from the actor state; full fix (init_state_clone_fn) tracked \
-                         as v0.5.0.1 P0",
-                        sd.name, child.name, child.actor_type, field_name, field_ty
-                    ),
-                ));
-            }
         }
     }
 
@@ -761,7 +519,7 @@ impl Checker {
 
                 // ── Type compatibility ──────────────────────────────────────
                 // The dependent child's actor init must have a param named `param_key`
-                // with type `LocalPid<sibling_type>`.
+                // typed as `sibling_type`'s own actor-handle type.
                 let dependent_identity = self.canonical_supervisor_child_type(&child.actor_type);
                 self.check_supervisor_wired_to_type_compat(
                     &sd.name,
@@ -776,7 +534,8 @@ impl Checker {
     }
 
     /// Verify that `dependent_actor`'s init has a parameter `param_key` typed
-    /// `LocalPid<sibling_type>`. Emits `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
+    /// as `sibling_type`'s own actor-handle type. Emits
+    /// `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH` on failure.
     ///
     /// If the actor type is completely unknown (not registered at all), the check
     /// is skipped — a separate undefined-type diagnostic covers that case.
@@ -829,7 +588,7 @@ impl Checker {
                     "E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: in supervisor `{supervisor_name}`, \
                      child `{dependent_child_name}` wires `{param_key}` to sibling of type \
                      `{expected_sibling_type}`, but `{dependent_actor_type}.init` parameter \
-                     `{param_key}` has type `{}` (expected `LocalPid<{expected_sibling_type}>`)",
+                     `{param_key}` has type `{}` (expected `{expected_sibling_type}`)",
                     param.ty.user_facing()
                 ),
             ));
@@ -957,10 +716,63 @@ impl Checker {
         block_expected: Option<&Ty>,
     ) -> Ty {
         let prev_tail_ok_armed = self.tail_ok_armed;
+        if self.current_fails {
+            self.tail_ok_armed = false;
+            let actual = self.check_block(&fd.body, block_expected);
+            if !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+                if let Some(tail) = &fd.body.trailing_expr {
+                    self.tail_ok_coercions
+                        .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
+                } else if actual == Ty::Unit {
+                    if let Some(annotation) = &fd.return_type {
+                        self.result_return_coercions.insert(
+                            SpanKey::in_module(&annotation.1, self.current_module_idx),
+                            super::ResultReturnKind::Success,
+                        );
+                    }
+                }
+            }
+            self.tail_ok_armed = prev_tail_ok_armed;
+            return actual;
+        }
         self.tail_ok_armed = !fd.is_generator && resolved_expected_ret.as_result().is_some();
         let actual = self.check_block(&fd.body, block_expected);
         self.tail_ok_armed = prev_tail_ok_armed;
+        if let Some(tail) = &fd.body.trailing_expr {
+            self.reject_borrowed_return_transfer(tail, resolved_expected_ret);
+        }
         actual
+    }
+
+    /// Bind parameters and establish independent mutable parameter values.
+    fn bind_function_parameters(&mut self, fd: &FnDecl, in_actor: bool) {
+        // Only the first parameter can be the receiver.
+        for (i, p) in fd.params.iter().enumerate() {
+            let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
+            let private_copy = p.is_mutable
+                && !p.is_consume
+                && !is_receiver
+                && self.parameter_has_independent_clone(&ty);
+            if in_actor {
+                self.check_shadowing(&p.name, &p.ty.1);
+            }
+            if is_receiver {
+                self.env.define_receiver_param_with_span(
+                    p.name.clone(),
+                    ty,
+                    p.is_mutable,
+                    p.ty.1.clone(),
+                );
+            } else {
+                self.env
+                    .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            }
+            self.env
+                .set_parameter_consume(&p.name, p.is_consume || (is_receiver && fd.consumes_self));
+            if private_copy {
+                self.env.reinit_place(&p.name, &[]);
+            }
+        }
     }
 
     /// Check a function body using `fn_name` for the `fn_sigs` lookup.
@@ -969,6 +781,29 @@ impl Checker {
     /// but `FnDecl::name` is bare (e.g. `close`). Using the qualified name prevents
     /// collisions with builtins or inlined functions from other modules.
     pub(super) fn check_function_as(&mut self, fd: &FnDecl, fn_name: &str) {
+        let body = self
+            .identity
+            .declaration_by_path(fn_name)
+            .cloned()
+            .or_else(|| self.impl_method_declaration_ids.get(fn_name).cloned())
+            .map(|id| {
+                let creator = super::effects::EffectBody::Declaration(id.clone());
+                if fd.is_generator {
+                    self.effect_graph.bodies.entry(creator).or_default();
+                    super::effects::EffectBody::Generator(id)
+                } else {
+                    creator
+                }
+            });
+        let previous = std::mem::replace(&mut self.effect_graph.current_body, body.clone());
+        if let Some(body) = body {
+            self.effect_graph.bodies.entry(body).or_default();
+        }
+        self.check_function_body_as(fd, fn_name);
+        self.effect_graph.current_body = previous;
+    }
+
+    fn check_function_body_as(&mut self, fd: &FnDecl, fn_name: &str) {
         // Functions marked `#[intrinsic("key")]` are typed declaration stubs
         // whose bodies are empty placeholders; the real semantics live in the
         // catalog. Skip body type-checking entirely — the signature was already
@@ -1001,26 +836,7 @@ impl Checker {
             self.env.push_scope();
         }
 
-        // Bind params — only the first parameter can be the receiver
-        for (i, p) in fd.params.iter().enumerate() {
-            let (ty, is_receiver) = self.resolve_param_binding_ty(i, p);
-            self.reject_ineffective_mutable_value_param(p, &ty, is_receiver);
-            // If inside an actor, check that params don't shadow actor fields
-            if in_actor {
-                self.check_shadowing(&p.name, &p.ty.1);
-            }
-            if is_receiver {
-                self.env.define_receiver_param_with_span(
-                    p.name.clone(),
-                    ty,
-                    p.is_mutable,
-                    p.ty.1.clone(),
-                );
-            } else {
-                self.env
-                    .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
-            }
-        }
+        self.bind_function_parameters(fd, in_actor);
 
         // Use the return type from the already-registered fn signature so that
         // TypeExpr::Infer (-> _) reuses the same Ty::Var that call sites see.
@@ -1048,11 +864,12 @@ impl Checker {
         };
         // Generator bodies don't return the declared type — they yield it.
         // The body itself should return Unit (falls off the end).
-        let expected_ret = if fd.is_generator {
-            Ty::Unit
-        } else {
-            declared_ret.clone()
-        };
+        let prev_fails = self.current_fails;
+        self.current_fails = matches!(
+            fd.return_type.as_ref().map(|ty| &ty.0),
+            Some(TypeExpr::Fallible { .. })
+        );
+        let expected_ret = self.function_body_return_type(fd, &declared_ret);
         // Store the declared yields type so Expr::Yield can check against it.
         self.current_return_type = Some(declared_ret);
         let prev_in_generator = self.in_generator;
@@ -1076,7 +893,7 @@ impl Checker {
         let actual =
             self.check_body_with_tail_ok_coercion(fd, &resolved_expected_ret, block_expected);
         // A completely empty body on a method whose `Self` is a compiler
-        // builtin (`LocalPid`, `RemotePid`, `Vec`, …) is a fail-closed
+        // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
         // handle or an abstract `T`, a self-call would stack-overflow, and the
         // real value is produced by codegen / the runtime. The placeholder body
@@ -1126,6 +943,7 @@ impl Checker {
         self.classify_stack_hints(fd);
 
         self.in_generator = prev_in_generator;
+        self.current_fails = prev_fails;
         self.current_return_type = None;
         self.current_function = prev_function;
         if pushed_body_bounds {
@@ -1135,6 +953,18 @@ impl Checker {
             self.env.pop_scope();
         }
         self.emit_scope_warnings();
+    }
+
+    fn function_body_return_type(&self, fd: &FnDecl, declared: &Ty) -> Ty {
+        if self.current_fails {
+            declared
+                .as_result()
+                .map_or(Ty::Error, |(success, _)| success.clone())
+        } else if fd.is_generator {
+            Ty::Unit
+        } else {
+            declared.clone()
+        }
     }
 
     /// Check trait default method bodies to populate authority side-tables
@@ -1147,8 +977,8 @@ impl Checker {
             if let TraitItem::Method(method) = trait_item {
                 if let Some(body) = &method.body {
                     let fn_decl = FnDecl {
+                        origin: hew_parser::ast::DeclarationOrigin::Authored,
                         attributes: vec![],
-                        is_async: false,
                         is_generator: false,
                         visibility: Visibility::Private,
                         name: method.name.clone(),
@@ -1214,9 +1044,52 @@ impl Checker {
         let actor_ty = Ty::Named {
             builtin: None,
             name: identity.clone(),
-            args: vec![],
+            args: ad
+                .type_params
+                .iter()
+                .map(|parameter| Ty::Named {
+                    builtin: None,
+                    name: parameter.name.clone(),
+                    args: Vec::new(),
+                })
+                .collect(),
         };
+        let generic_bindings: HashMap<_, _> = ad
+            .type_params
+            .iter()
+            .map(|parameter| {
+                (
+                    parameter.name.clone(),
+                    Ty::Named {
+                        builtin: None,
+                        name: parameter.name.clone(),
+                        args: Vec::new(),
+                    },
+                )
+            })
+            .collect();
+        let has_parameters = !generic_bindings.is_empty();
+        if has_parameters {
+            self.generic_ctx.push(generic_bindings);
+            let bounds = self
+                .type_defs
+                .get(&identity)
+                .map_or_else(HashMap::new, |definition| definition.bounds.clone());
+            self.current_type_param_bounds
+                .push(TypeParamScope::new(bounds, HashMap::new()));
+        }
         let prev_actor_type = self.current_actor_type.replace(actor_ty);
+        let deferred_fields = self
+            .actor_deferred_fields
+            .get(&identity)
+            .cloned()
+            .unwrap_or_default();
+        for field in &ad.fields {
+            if deferred_fields.contains(&field.name) {
+                self.actor_deferred_field_decls
+                    .insert(SpanKey::in_module(&field.ty.1, self.current_module_idx));
+            }
+        }
         let prev_actor_fields = std::mem::replace(
             &mut self.current_actor_fields,
             ad.fields
@@ -1225,6 +1098,7 @@ impl Checker {
                     name: f.name.clone(),
                     is_mutable: f.is_mutable,
                     decl_span: f.ty.1.clone(),
+                    deferred: deferred_fields.contains(&f.name),
                 })
                 .collect(),
         );
@@ -1238,7 +1112,9 @@ impl Checker {
             self.actor_max_heap.insert(identity.clone(), cap);
         }
 
+        let previous_function = self.current_function.replace(format!("{identity}::init"));
         self.check_actor_field_defaults(ad);
+        self.current_function = previous_function;
 
         // Type-check init body if present
         if let Some(init) = &ad.init {
@@ -1260,6 +1136,10 @@ impl Checker {
         // run order — see HEW-SPEC-2026 §9.1.2).
         self.check_actor_methods(ad, &identity);
 
+        if has_parameters {
+            self.current_type_param_bounds.pop();
+            self.generic_ctx.pop();
+        }
         self.current_actor_type = prev_actor_type;
         self.current_actor_fields = prev_actor_fields;
     }
@@ -1514,8 +1394,104 @@ impl Checker {
     pub(super) fn bind_actor_fields_for_init(&mut self, fields: &[FieldDecl]) {
         for field in fields {
             let field_ty = self.resolve_type_expr(&field.ty);
-            self.env.define(field.name.clone(), field_ty, true);
+            let deferred = self
+                .current_actor_fields
+                .iter()
+                .any(|info| info.name == field.name && info.deferred);
+            if deferred {
+                self.env.define_deferred_field(&field.name, field_ty);
+            } else {
+                self.env.define(field.name.clone(), field_ty, true);
+            }
         }
+    }
+
+    /// Every deferred field must hold a value when init finishes normally
+    /// (D447): a normal exit publishes the state to the actor.
+    pub(super) fn require_deferred_fields_initialized(&mut self, exit: &str) {
+        let missing: Vec<_> = self
+            .current_actor_fields
+            .iter()
+            .filter(|field| field.deferred && self.env.deferred_field_uninitialized(&field.name))
+            .map(|field| (field.name.clone(), field.decl_span.clone()))
+            .collect();
+        for (name, decl_span) in missing {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &decl_span,
+                format!(
+                    "E_ACTOR_FIELD_UNINITIALIZED: `init` can {exit} without initializing state \
+                     field `{name}`; assign it on every path before init finishes"
+                ),
+            );
+        }
+    }
+
+    /// A plain actor method binds every state field as initialized, so `init`
+    /// may call one only after every deferred field holds a value (D447).
+    pub(super) fn require_deferred_fields_initialized_for_call(
+        &mut self,
+        method_key: &str,
+        span: &Span,
+    ) {
+        let missing: Vec<_> = self
+            .current_actor_fields
+            .iter()
+            .filter(|field| field.deferred && self.env.deferred_field_uninitialized(&field.name))
+            .map(|field| field.name.clone())
+            .collect();
+        let method = method_key.rsplit("::").next().unwrap_or(method_key);
+        for name in missing {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "E_ACTOR_FIELD_UNINITIALIZED: `init` calls `{method}` before initializing \
+                     state field `{name}`; assign it first"
+                ),
+            );
+        }
+    }
+
+    /// A branch or loop join left a deferred field initialized on some paths
+    /// only (D447). Every arm must initialize it, or none may.
+    pub(super) fn report_deferred_init_conflicts(
+        &mut self,
+        conflicts: &[crate::env::TypeBindingId],
+    ) {
+        if conflicts.is_empty() {
+            return;
+        }
+        let conflicting: Vec<_> = self
+            .current_actor_fields
+            .iter()
+            .filter(|field| {
+                field.deferred
+                    && self
+                        .env
+                        .deferred_field_id(&field.name)
+                        .is_some_and(|id| conflicts.contains(&id))
+            })
+            .map(|field| (field.name.clone(), field.decl_span.clone()))
+            .collect();
+        for (name, decl_span) in conflicting {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                &decl_span,
+                format!(
+                    "E_ACTOR_FIELD_CONDITIONAL_INIT: state field `{name}` is initialized on \
+                     only some paths of a branch or loop in `init`; initialize it in every \
+                     arm, or before the branch"
+                ),
+            );
+        }
+    }
+
+    /// Close the innermost loop boundary and report deferred fields whose
+    /// initialization differs between its entry and its exits.
+    pub(super) fn exit_loop_checked(&mut self) {
+        let conflicts = self.env.exit_loop();
+        self.report_deferred_init_conflicts(&conflicts);
     }
 
     /// Type-check an actor's `init()` block. The init body runs once when
@@ -1538,8 +1514,15 @@ impl Checker {
         // their initial values). Hew uses bare names, not `self.field`.
         self.bind_actor_fields_for_init(fields);
 
+        // Push a separate scope for parameters so shadowing checks can
+        // detect collisions with actor field names in the outer scope,
+        // exactly as `check_receive_fn` does (D458): an init parameter
+        // named like a field is refused, not a silent alias for it.
+        self.env.push_scope();
+
         // Bind init parameters
         for p in &init.params {
+            self.check_shadowing(&p.name, &p.ty.1);
             let ty = self.resolve_annotation_with_holes(
                 &p.ty,
                 format!("init parameter `{}` of actor `{actor_name}`", p.name),
@@ -1550,12 +1533,18 @@ impl Checker {
 
         // Init returns unit — no meaningful return type
         self.current_return_type = Some(Ty::Unit);
-        self.check_block(&init.body, None);
+        let previous_init = std::mem::replace(&mut self.checking_actor_init, true);
+        let body_ty = self.check_block(&init.body, None);
+        self.checking_actor_init = previous_init;
+        if !matches!(body_ty, Ty::Never) {
+            self.require_deferred_fields_initialized("finish");
+        }
         self.current_return_type = None;
 
         self.current_function = prev_function;
+        self.env.pop_scope(); // params scope
         self.reject_unplugged_actor_state_fields(fields);
-        self.env.pop_scope();
+        self.env.pop_scope(); // fields scope
     }
 
     /// Type-check an actor lifecycle hook (`#[on(start)]` or `#[on(stop)]`).
@@ -2168,6 +2157,10 @@ impl Checker {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "receive body checking establishes actor and callable contexts"
+    )]
     pub(super) fn check_receive_fn(
         &mut self,
         actor_name: &str,
@@ -2192,6 +2185,16 @@ impl Checker {
         let qualified_name = format!("{}::{}", actor_name, rf.name);
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
+        let effect_body = self
+            .identity
+            .declaration_by_path(&qualified_name)
+            .cloned()
+            .map(super::effects::EffectBody::Declaration);
+        let previous_effect_body =
+            std::mem::replace(&mut self.effect_graph.current_body, effect_body.clone());
+        if let Some(body) = effect_body {
+            self.effect_graph.bodies.entry(body).or_default();
+        }
 
         let mut generic_bindings = std::collections::HashMap::new();
         if let Some(type_params) = &rf.type_params {
@@ -2223,6 +2226,10 @@ impl Checker {
             self.reject_opaque_message_payload(&ty, &p.ty.1, &qualified_name);
             self.env
                 .define_param_with_span(p.name.clone(), ty, p.is_mutable, p.ty.1.clone());
+            // The receiving handler owns the delivered message. Its fields
+            // may move out of an aggregate parameter just as they may from a
+            // local owner; ordinary function parameters retain borrow semantics.
+            self.env.set_parameter_consume(&p.name, true);
         }
 
         let declared_ret = if let Some(sig) = self.fn_sigs.get(&qualified_name) {
@@ -2239,8 +2246,22 @@ impl Checker {
                 .as_ref()
                 .map_or(Ty::Unit, |annotation| self.resolve_type_expr(annotation))
         };
+        // A `fails` handler spells failure exactly as every `fails` fn does:
+        // `return error e`, `?`, and a bare success tail the compiler wraps.
+        // The body is checked against the success type, and the declared
+        // `Result` stays in `current_return_type` for `return` and `?`.
+        let prev_fails = self.current_fails;
+        self.current_fails = !rf.is_generator
+            && matches!(
+                rf.return_type.as_ref().map(|ty| &ty.0),
+                Some(TypeExpr::Fallible { .. })
+            );
         let expected_ret = if rf.is_generator {
             Ty::Unit
+        } else if self.current_fails {
+            declared_ret
+                .as_result()
+                .map_or(Ty::Error, |(success, _)| success.clone())
         } else {
             declared_ret.clone()
         };
@@ -2271,7 +2292,25 @@ impl Checker {
         } else {
             Some(&expected_ret)
         };
+        let prev_tail_ok_armed = self.tail_ok_armed;
+        if self.current_fails {
+            self.tail_ok_armed = false;
+        }
         let actual = self.check_block(&rf.body, block_expected);
+        if self.current_fails && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error) {
+            if let Some(tail) = &rf.body.trailing_expr {
+                self.tail_ok_coercions
+                    .insert(SpanKey::in_module(&tail.1, self.current_module_idx));
+            } else if actual == Ty::Unit {
+                if let Some(annotation) = &rf.return_type {
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(&annotation.1, self.current_module_idx),
+                        super::ResultReturnKind::Success,
+                    );
+                }
+            }
+        }
+        self.tail_ok_armed = prev_tail_ok_armed;
         if !matches!(self.subst.resolve(&expected_ret), Ty::Error) {
             self.expect_type(
                 &expected_ret,
@@ -2283,11 +2322,13 @@ impl Checker {
             );
         }
 
+        self.current_fails = prev_fails;
         self.in_generator = prev_in_generator;
         self.in_receive_fn = prev_in_receive_fn;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.current_return_type = None;
         self.current_function = prev_function;
+        self.effect_graph.current_body = previous_effect_body;
         if rf.type_params.as_ref().is_some_and(|tp| !tp.is_empty()) {
             self.generic_ctx.pop();
         }
@@ -2388,12 +2429,48 @@ impl Checker {
         self.record_root_value_binding(&cd.name);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one body-check pass over an impl block: drop-impl gate, orphan-rule check, \
-                  generic-param binding, then per-method receiver-mutability/signature checks — \
-                  each step is a few lines and splitting them would only add indirection"
-    )]
+    /// A trait's supertraits are part of its obligation: `trait Error: Display`
+    /// means `impl Error for X` promises `X` renders. Report the missing impl
+    /// where the promise is made, not at some later call that needs it.
+    fn require_supertrait_impls(&mut self, type_name: &str, trait_name: &str, span: &Span) {
+        let declared_key = self.trait_defs_key_for_bound(trait_name);
+        let mut stack = self
+            .trait_super
+            .get(&declared_key)
+            .cloned()
+            .unwrap_or_default();
+        let mut visited = std::collections::HashSet::new();
+        let type_identity = self.trait_impl_type_identity(type_name);
+        while let Some(super_trait) = stack.pop() {
+            let super_key = self.trait_defs_key_for_bound(&super_trait);
+            if !visited.insert(super_key.clone()) {
+                continue;
+            }
+            if let Some(nested) = self.trait_super.get(&super_key) {
+                stack.extend(nested.iter().cloned());
+            }
+            if self
+                .trait_impls_set
+                .contains(&(type_identity.clone(), super_key))
+            {
+                continue;
+            }
+            let super_display = crate::short_name(&super_trait);
+            let trait_display = crate::short_name(trait_name);
+            self.report_error_with_suggestions(
+                TypeErrorKind::BoundsNotSatisfied,
+                span,
+                format!(
+                    "`impl {trait_display} for {type_name}` requires its supertrait \
+                     `{super_display}`, which `{type_name}` does not implement"
+                ),
+                vec![format!(
+                    "write `impl {super_display} for {type_name}` as well"
+                )],
+            );
+        }
+    }
+
     pub(super) fn check_impl(&mut self, id: &ImplDecl, span: &Span) {
         if Self::impl_decl_is_drop_impl(id) {
             // The registration pass already emitted the fail-closed diagnostic.
@@ -2406,9 +2483,6 @@ impl Checker {
             type_args: _,
         } = &id.target_type.0
         {
-            let target_is_struct = self
-                .lookup_type_def(type_name)
-                .is_some_and(|td| td.kind == TypeDefKind::Struct);
             if let Some(tb) = &id.trait_bound {
                 let type_is_local = self.local_type_defs.contains(type_name)
                     || self.intrinsic_type_is_local_to_builtin_surface(type_name);
@@ -2440,6 +2514,7 @@ impl Checker {
                         source_module: self.current_module.clone(),
                     });
                 }
+                self.require_supertrait_impls(type_name, &tb.name, span);
             }
 
             // Bind impl-level type params (e.g. T in `impl<T> Wrapper<T>`)
@@ -2468,7 +2543,25 @@ impl Checker {
             // identity for the receiver binding: a source-defined `Option<T>`
             // must not later be reconstructed as builtin `Option<T>`, while a
             // builtin `Vec<T>` must retain its builtin discriminator.
+            // The impl's own parameter bounds are what satisfy the target
+            // type's declared bounds, so resolve the target inside that scope
+            // rather than before it: `impl<T: Clone> St<T>` for a
+            // `St<T: Clone>` proves its argument from the impl header.
+            let target_bounds = self.collect_type_param_scope_with_bounds(
+                id.type_params.as_ref(),
+                id.where_clause.as_ref(),
+            );
+            let pushed_target_bounds = !target_bounds.is_empty();
+            if pushed_target_bounds {
+                self.current_type_param_bounds.push(TypeParamScope::new(
+                    target_bounds,
+                    std::collections::HashMap::new(),
+                ));
+            }
             let resolved_self_binding_ty = self.resolve_type_expr(&id.target_type);
+            if pushed_target_bounds {
+                self.current_type_param_bounds.pop();
+            }
             let prev_self_type = self.current_self_type.take();
             let self_type_args = match &resolved_self_binding_ty {
                 Ty::Named { args, .. } => args.clone(),
@@ -2481,55 +2574,6 @@ impl Checker {
             let scope_pushed = self.enter_impl_scope(id, span, Some(type_name.as_str()), true);
 
             for method in &id.methods {
-                // Inherent (non-trait) struct impl methods still reject a
-                // mutable receiver: there is no trait contract that a `var
-                // self` receiver could satisfy, so mutations on a by-value
-                // receiver in an inherent method would be local to the
-                // callee's stack frame with no path to the caller.
-                //
-                // Trait impl methods (the `trait_bound.is_some()` arm) lift
-                // this gate: the trait declaration is the authoritative
-                // contract for receiver mutability, and the impl-vs-trait
-                // signature equivalence check (Q004, see
-                // `check_impl_method_against_trait`) enforces that the
-                // impl's receiver mutability matches what the trait
-                // declared. Callers receive a separate "receiver requires
-                // mutable binding" diagnostic at the call site when they
-                // try to dispatch through a non-`var` binding.
-                //
-                // LESSONS row `diagnostic-trust`: keep the diagnostic
-                // surface alive on the inherent-impl path; do not silently
-                // accept what was previously rejected on the trait-impl
-                // path — the trait-impl arm now relies on the trait
-                // declaration + the equivalence check + the call-site
-                // gate to cover the cases this diagnostic used to flag.
-                if target_is_struct && id.trait_bound.is_none() {
-                    // Only the first parameter can be the receiver; checking all
-                    // params would false-positive on a non-receiver whose type
-                    // happens to match the impl target.
-                    if let Some(self_param) = method
-                        .params
-                        .first()
-                        .filter(|param| self.is_receiver_param(param) && param.is_mutable)
-                    {
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::MutabilityError,
-                            &self_param.ty.1,
-                            "`var self` on an inherent impl method has no effect — \
-                             inherent methods receive self by value with no trait contract \
-                             to make the mutation observable to the caller"
-                                .to_string(),
-                            vec![
-                                "return a modified copy of the receiver instead".to_string(),
-                                "declare the method on a trait whose receiver is `var self`, \
-                                 then implement that trait for this type"
-                                    .to_string(),
-                                "convert this type to an actor if you need mutable shared state"
-                                    .to_string(),
-                            ],
-                        );
-                    }
-                }
                 self.env.push_scope();
                 // Use qualified name (e.g. Connection::close) so the fn_sigs
                 // lookup finds the impl method, not a same-named builtin or
@@ -2566,54 +2610,6 @@ impl Checker {
     }
 }
 
-/// Fail-closed scalar allowlist for supervised child init args.
-///
-/// Authority: this enumerates the scalar `Ty` variants from the checker-owned
-/// primitive set in `hew-types/src/ty.rs` (`PRIMITIVE_ALIASES` and
-/// `Ty::from_canonical_primitive_name`): fixed-width ints, floats, `bool`, and
-/// `char`. Other primitive variants in that set (`isize`, `usize`, `string`,
-/// `bytes`, `duration`, unit, never) are deliberately not admitted.
-fn ty_is_supervisor_init_bitcopy_scalar(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::F32
-            | Ty::F64
-            | Ty::Bool
-            | Ty::Char
-    )
-}
-
-/// Whether a supervised child init-param type can be re-produced by the
-/// init-closure restart thunk on every incarnation.
-///
-/// Admits:
-/// - every scalar `BitCopy` primitive (re-produced by a plain load), and
-/// - the owned heap types the init thunk has a per-field deep-clone for:
-///   `string` (allocating clone) and `bytes` (refcounted clone). A restarted
-///   child gets a fresh, unaliased owned value per incarnation.
-///
-/// Rejects (stays walled, fail-closed):
-/// - owned collections (`Vec`/`HashMap`/`HashSet`), user records, enums, and
-///   tuples — their per-field clone-in-thunk codegen is not yet wired, so
-///   admitting them would reach a codegen path that cannot deep-clone;
-/// - `#[resource]` handle types — re-cloning a handle per restart would alias a
-///   live resource (double-close / UAF). Handles are never reproducible.
-///
-/// WHEN-OBSOLETE: when the init thunk grows per-field clone for collections /
-/// records / enums (reusing the actor state-clone spine), widen this predicate
-/// to those kinds; `#[resource]` handles stay rejected permanently.
-fn ty_is_supervisor_init_reproducible(ty: &Ty) -> bool {
-    ty_is_supervisor_init_bitcopy_scalar(ty) || matches!(ty, Ty::String | Ty::Bytes)
-}
-
 impl Checker {
     fn resolve_param_binding_ty(&mut self, index: usize, param: &Param) -> (Ty, bool) {
         let is_receiver = index == 0 && self.is_receiver_param(param);
@@ -2641,186 +2637,18 @@ impl Checker {
         });
         (receiver_ty, true)
     }
-
-    fn reject_ineffective_mutable_value_param(
-        &mut self,
-        param: &Param,
-        ty: &Ty,
-        is_receiver: bool,
-    ) {
-        let resolved_param_ty = self.subst.resolve(ty);
-        if !is_receiver && self.param_ty_has_caller_visible_projection(&resolved_param_ty) {
-            self.caller_visible_param_projections
-                .insert(SpanKey::in_module(&param.ty.1, self.current_module_idx));
-        }
-        if !param.is_mutable
-            || is_receiver
-            || !self.param_var_has_no_caller_visible_effect(&resolved_param_ty)
-        {
-            return;
-        }
-        self.report_error_with_suggestions(
-            TypeErrorKind::MutabilityError,
-            &param.ty.1,
-            format!(
-                "`var {}` on a by-value parameter of type `{}` has no caller-visible effect",
-                param.name,
-                resolved_param_ty.user_facing()
-            ),
-            vec![
-                "return the modified value to the caller".to_string(),
-                "move the mutation into an actor or a mutable receiver method".to_string(),
-            ],
-        );
-    }
-
-    /// Whether every mutable projection of this by-value parameter is private
-    /// to the callee.
-    ///
-    /// Value aggregates are walked structurally. `Option` and `Result` are
-    /// inline sum wrappers, not handles, so their payloads are inspected just
-    /// like tuple elements, array elements, record fields, and enum payloads.
-    /// This closes the one-wrapper-deep form of the #2810 trap: replacing an
-    /// `Option<Account>` or `Result<Account, E>` mutates only the callee's copy.
-    ///
-    /// A compiler-proven caller-visible handle is a shared storage or process
-    /// boundary. The exact authority is
-    /// [`crate::BuiltinType::is_caller_visible_shared_handle`]: collections,
-    /// `Rc`/`Weak`, channel and stream handles, actor handles, and
-    /// `SupervisorPool`. A value aggregate containing one is therefore not
-    /// rejected wholesale: `holder.items[0] = value` reaches storage the caller
-    /// still references, and `holder.pid.send(value)` reaches actor state. The
-    /// assignment checker separately validates the concrete projection, so
-    /// `holder.count = value` and replacing `holder.items` are still diagnosed
-    /// as private-copy writes.
-    ///
-    /// Unknown leaves, opaque builtins, bare type parameters, pointers,
-    /// functions, and scalars are not guessed to be aggregates or shared
-    /// storage. This is deliberately fail-closed when descending through a
-    /// value wrapper: only the compiler-known shared-handle authority proves a
-    /// caller-visible projection. Recursive nominal types are cycle-broken by
-    /// definition identity; other fields and variants are still inspected.
-    ///
-    /// Copy-ness remains irrelevant. A `Copy` aggregate is more certainly a
-    /// private copy, not less (#2810).
-    pub(super) fn param_var_has_no_caller_visible_effect(&self, ty: &Ty) -> bool {
-        self.param_ty_is_value_aggregate(ty) && !self.param_ty_has_caller_visible_projection(ty)
-    }
-
-    /// Whether `ty` itself is an inline value aggregate whose binding carries
-    /// private storage at the call boundary.
-    fn param_ty_is_value_aggregate(&self, ty: &Ty) -> bool {
-        match self.subst.resolve(ty) {
-            Ty::Named {
-                builtin: None,
-                name,
-                ..
-            } => self.lookup_type_def(&name).is_some(),
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
-                ..
-            }
-            | Ty::Tuple(_)
-            | Ty::Array(_, _) => true,
-            _ => false,
-        }
-    }
-
-    /// Whether some projection from `ty` reaches compiler-proven storage shared
-    /// with the caller. This is a possibility query; an actual assignment is
-    /// checked against its concrete projection in `statements.rs`.
-    pub(super) fn param_ty_has_caller_visible_projection(&self, ty: &Ty) -> bool {
-        self.param_ty_has_caller_visible_projection_inner(
-            &self.subst.resolve(ty),
-            &mut std::collections::HashSet::new(),
-        )
-    }
-
-    fn param_ty_has_caller_visible_projection_inner(
-        &self,
-        ty: &Ty,
-        visiting_nominals: &mut std::collections::HashSet<String>,
-    ) -> bool {
-        match self.subst.resolve(ty) {
-            // Hew's CoW descriptor values are borrowed across an ordinary
-            // function boundary. A bytes mutator can replace the descriptor's
-            // backing representation, so the positive checker fact must
-            // survive even though String/Bytes are not `BuiltinType` handles.
-            Ty::String | Ty::Bytes => true,
-            Ty::Named {
-                builtin: Some(builtin),
-                args: _,
-                ..
-            } if builtin.is_caller_visible_shared_handle() => true,
-            Ty::Named {
-                builtin: Some(crate::BuiltinType::Option | crate::BuiltinType::Result),
-                args,
-                ..
-            } => args.iter().any(|arg| {
-                self.param_ty_has_caller_visible_projection_inner(arg, visiting_nominals)
-            }),
-            Ty::Named {
-                builtin: None,
-                name,
-                args,
-            } => {
-                let Some(def) = self.lookup_type_def(&name) else {
-                    return false;
-                };
-                if !visiting_nominals.insert(name.clone()) {
-                    return false;
-                }
-
-                let substitutions: std::collections::HashMap<String, Ty> =
-                    def.type_params.iter().cloned().zip(args).collect();
-                let mut projected_tys = def
-                    .fields
-                    .values()
-                    .map(|field| field.substitute_named_params_parallel(&substitutions))
-                    .collect::<Vec<_>>();
-                for variant in def.variants.values() {
-                    match variant {
-                        VariantDef::Unit => {}
-                        VariantDef::Tuple(fields) => {
-                            projected_tys.extend(fields.iter().map(|field| {
-                                field.substitute_named_params_parallel(&substitutions)
-                            }));
-                        }
-                        VariantDef::Struct(fields) => {
-                            projected_tys.extend(fields.iter().map(|(_, field)| {
-                                field.substitute_named_params_parallel(&substitutions)
-                            }));
-                        }
-                    }
-                }
-                let has_shared = projected_tys.iter().any(|projected| {
-                    self.param_ty_has_caller_visible_projection_inner(projected, visiting_nominals)
-                });
-                visiting_nominals.remove(&name);
-                has_shared
-            }
-            Ty::Tuple(items) => items.iter().any(|item| {
-                self.param_ty_has_caller_visible_projection_inner(item, visiting_nominals)
-            }),
-            Ty::Array(item, _) => {
-                self.param_ty_has_caller_visible_projection_inner(&item, visiting_nominals)
-            }
-            _ => false,
-        }
-    }
 }
 
 fn supervisor_local_pid_target(ty: &Ty) -> Option<&str> {
     match ty {
         Ty::Named {
+            name,
             args,
             builtin: Some(builtin),
-            ..
-        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorLocalPid) => {
-            match args.as_slice() {
-                [Ty::Named { name, args, .. }] if args.is_empty() => Some(name.as_str()),
-                _ => None,
-            }
+        } if builtin.has_role(crate::builtin_type::BuiltinTypeRole::SupervisorHandle)
+            && args.is_empty() =>
+        {
+            Some(name.as_str())
         }
         _ => None,
     }
@@ -2862,30 +2690,6 @@ fn is_canonical_lifecycle_source_type(ty: &Ty, source_identity: &str) -> bool {
             builtin: None,
         } if args.is_empty() && name == source_identity
     )
-}
-
-/// Returns `true` for types that carry owned heap allocations and therefore
-/// cannot be safely byte-copied as `init_state` for a permanent supervisor
-/// child restart (C1 UAF guard — v0.5.0.1 P0).
-///
-/// Covers `String`, `Bytes`, and the three generic collections `Vec<_>`,
-/// `HashMap<_,_>`, `HashSet<_>`.  Nested ownership (e.g. `Vec<Vec<i64>>`) is
-/// detected at the outer level.  Fields typed as user-defined records that
-/// *contain* owned-heap types are a known residual gap; see the
-/// `KNOWN-RESIDUAL` test in check/tests.rs.
-fn ty_is_known_owned_heap(ty: &Ty) -> bool {
-    matches!(ty, Ty::String | Ty::Bytes)
-        || matches!(
-            ty,
-            Ty::Named {
-                builtin: Some(
-                    crate::BuiltinType::Vec
-                        | crate::BuiltinType::HashMap
-                        | crate::BuiltinType::HashSet
-                ),
-                ..
-            }
-        )
 }
 
 #[cfg(test)]

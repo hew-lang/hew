@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use serde_json::Value;
 
+mod core_acceptance;
 mod nextest_ratchet;
 
 const SANDBOX_PROFILE: &str = "sandbox-vm-export";
@@ -64,6 +65,7 @@ fn run() -> Result<()> {
             run_sandbox_fixtures(&options)
         }
         Some("nextest-ratchet") => nextest_ratchet::run(&args[1..]),
+        Some("core-acceptance") => core_acceptance::run(&args[1..]),
         Some("--help" | "-h") => {
             print_usage();
             Ok(())
@@ -80,6 +82,7 @@ fn usage() -> String {
         "commands:",
         "  sandbox-fixtures  update or validate sandbox bytecode fixtures",
         "  nextest-ratchet   validate nextest JUnit against an exact failure ledger",
+        "  core-acceptance   run audited native cases at O0 and O2",
     ]
     .join("\n")
 }

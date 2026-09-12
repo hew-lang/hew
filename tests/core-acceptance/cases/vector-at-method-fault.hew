@@ -1,0 +1,6 @@
+fn main() {
+    let words = ["owned".to_upper()];
+    let retained = words.at(0);
+    words.at(-1);
+    println(retained);
+}

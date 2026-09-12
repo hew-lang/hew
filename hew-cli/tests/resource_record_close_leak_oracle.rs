@@ -30,9 +30,11 @@
 //!
 //! - **No double-close on an explicit `close()`.** An explicit `o.close()`
 //!   consumes the record (the move-checker removes it from the scope-exit drop
-//!   set), so `close` fires EXACTLY once — the explicit call — and the thunk
-//!   close does NOT also run. A regression that ran the thunk close on a
-//!   consumed value would print the close side-effect twice.
+//!   set), so the record's OWN `close` fires EXACTLY once — the explicit call —
+//!   and the thunk close does NOT also run. The consumed value's fields still
+//!   drop afterwards, so a nested `#[resource]` field's `close` fires once
+//!   through its own thunk. A regression that ran the thunk close on a consumed
+//!   value would print a close side-effect twice.
 //!
 //! - **No double-free under the poisoned-allocator triple (any unix).** A
 //!   field-bearing `#[resource]` whose heap field is solely record-owned: the
@@ -68,10 +70,10 @@ use support::{describe_output, require_codegen};
 /// `Inner::close`. Pre-fix: only `before-scope-exit` printed. Post-fix: outer
 /// then inner close fire (§10(d) order).
 const NESTED_CLOSE_SOURCE: &str = "\
-#[resource] type Inner { fd: i64; }\n\
-impl Inner { fn close(self) { println(\"inner-closed\"); } }\n\
-#[resource] type Outer { inner: Inner; tag: i64; }\n\
-impl Outer { fn close(self) { println(\"outer-closed\"); } }\n\
+#[resource] type Inner { fd: i64, }\n\
+impl Inner { fn close(consume self) { println(\"inner-closed\"); } }\n\
+#[resource] type Outer { inner: Inner, tag: i64, }\n\
+impl Outer { fn close(consume self) { println(\"outer-closed\"); } }\n\
 fn make_inner() -> Inner { Inner { fd: 3 } }\n\
 fn main() {\n\
 \x20   let o = Outer { inner: make_inner(), tag: 7 };\n\
@@ -84,16 +86,16 @@ fn main() {\n\
 const NESTED_CLOSE_EXPECTED: &str = "before-scope-exit\nouter-closed\ninner-closed\n";
 
 /// Explicit-consume control: `o.close()` consumes `o`, so the scope-exit thunk
-/// drop is suppressed (no double-close). `outer-closed` prints EXACTLY once.
-/// `inner` is owned by the consumed value; the user `close(self)` chose not to
-/// close it, so `inner-closed` does NOT print (no thunk teardown on a consumed
-/// value) — leaking `inner`'s (here scalar) storage is acceptable; a
-/// double-close / double-free is not.
+/// close is suppressed and `outer-closed` prints EXACTLY once. The consumed
+/// value's fields still drop after the user close returns, so `inner`'s own
+/// `close` fires once through its thunk — the explicit and the scope-exit paths
+/// now agree on field teardown, and only the outer close differs in who runs
+/// it. Each line appearing exactly once is the no-double-close pin.
 const EXPLICIT_CONSUME_SOURCE: &str = "\
-#[resource] type Inner { fd: i64; }\n\
-impl Inner { fn close(self) { println(\"inner-closed\"); } }\n\
-#[resource] type Outer { inner: Inner; tag: i64; }\n\
-impl Outer { fn close(self) { println(\"outer-closed\"); } }\n\
+#[resource] type Inner { fd: i64, }\n\
+impl Inner { fn close(consume self) { println(\"inner-closed\"); } }\n\
+#[resource] type Outer { inner: Inner, tag: i64, }\n\
+impl Outer { fn close(consume self) { println(\"outer-closed\"); } }\n\
 fn make_inner() -> Inner { Inner { fd: 3 } }\n\
 fn main() {\n\
 \x20   let o = Outer { inner: make_inner(), tag: 7 };\n\
@@ -101,9 +103,10 @@ fn main() {\n\
 \x20   println(\"after-explicit\");\n\
 }\n";
 
-/// Expected: exactly one `outer-closed` (the explicit call), then the marker.
-/// A second `outer-closed` would mean the thunk close ran on a consumed value.
-const EXPLICIT_CONSUME_EXPECTED: &str = "outer-closed\nafter-explicit\n";
+/// Expected: exactly one `outer-closed` (the explicit call), then the nested
+/// field's own close from the consumed value's teardown, then the marker. A
+/// second `outer-closed` would mean the thunk close ran on a consumed value.
+const EXPLICIT_CONSUME_EXPECTED: &str = "outer-closed\ninner-closed\nafter-explicit\n";
 
 /// Heap-field resource loop, the shared source for both the double-free scribble
 /// pin and the per-iteration leak slope. `Box { payload: Vec<i64>; fd: i64 }` is
@@ -118,10 +121,10 @@ const EXPLICIT_CONSUME_EXPECTED: &str = "outer-closed\nafter-explicit\n";
 fn heap_field_loop_source(frames: usize) -> String {
     let expected_total = frames * frames.saturating_sub(1) / 2;
     format!(
-        "#[resource] type Box {{ payload: Vec<i64>; fd: i64; }}\n\
-         impl Box {{ fn close(self) {{ }} }}\n\
+        "#[resource] type Box {{ payload: Vec<i64>, fd: i64, }}\n\
+         impl Box {{ fn close(consume self) {{ }} }}\n\
          fn build(n: i64) -> i64 {{\n\
-         \x20   let v: Vec<i64> = Vec.new();\n\
+         \x20   var v: Vec<i64> = Vec.new();\n\
          \x20   v.push(n);\n\
          \x20   v.push(n + 1);\n\
          \x20   let b = Box {{ payload: v, fd: n }};\n\

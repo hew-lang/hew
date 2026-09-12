@@ -1,0 +1,1076 @@
+use hew_hir::{lower_program_host_target, ResolutionCtx};
+use hew_sir::{
+    lower_module, verify_module, BoundaryDecision, SemOpKind, SemParamPassing, SemTerminator,
+    SirDiagnosticKind, SirLoweringStatus,
+};
+use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
+
+fn lower_source(source: &str) -> hew_sir::LoweredModule {
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:#?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+    let facts = checker.check_program(&parsed.program);
+    assert!(facts.errors.is_empty(), "type errors: {:#?}", facts.errors);
+    let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+    assert!(
+        hir.diagnostics.is_empty(),
+        "HIR errors: {:#?}",
+        hir.diagnostics
+    );
+    lower_module(&hir.module, &facts)
+}
+
+fn assert_main_lowered(lowered: &hew_sir::LoweredModule) {
+    assert!(
+        matches!(
+            lowered.statuses.iter().find(|status| status.name == "main"),
+            Some(status) if matches!(status.status, SirLoweringStatus::Lowered)
+        ),
+        "main must lower: {:#?}",
+        lowered.statuses
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "variant source must produce verified SIR: {:#?}",
+        verify_module(&lowered.module)
+    );
+}
+
+#[test]
+fn empty_enum_vectors_and_exhaustive_empty_matches_lower() {
+    let lowered = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/empty-enum-values.hew"
+    ));
+    assert_main_lowered(&lowered);
+    let impossible = lowered
+        .module
+        .functions
+        .iter()
+        .find(|f| f.declaration.full_path() == "impossible")
+        .unwrap_or_else(|| panic!("empty-match body did not lower: {:#?}", lowered.statuses));
+    assert!(impossible.blocks.iter().any(|block| {
+        matches!(&block.terminator, SemTerminator::SwitchVariant { arms, .. } if arms.is_empty())
+    }));
+    let shape = lowered
+        .module
+        .variant_shapes
+        .iter()
+        .find(|shape| shape.variants.is_empty())
+        .unwrap();
+    assert!(
+        hew_sir::variant_field_recipes(
+            shape.id,
+            0,
+            &shape.enum_ty,
+            &lowered.module.variant_shapes,
+            &lowered.module.type_facts,
+        )
+        .is_err(),
+        "an empty enum has no payload to construct or extract"
+    );
+    let mut forged = lowered.module.clone();
+    forged.functions[0].blocks[0].ops.insert(
+        0,
+        hew_sir::SemOp {
+            id: hew_sir::OpId(u32::MAX),
+            kind: SemOpKind::VariantMake {
+                shape: shape.id,
+                variant: 0,
+                fields: Vec::new(),
+            },
+            results: vec![hew_sir::ValueDef {
+                id: hew_sir::ValueId(u32::MAX),
+                ty: shape.enum_ty.clone(),
+                own: hew_sir::OwnKind::None,
+            }],
+            provenance: hew_sir::Provenance::Synthesized,
+        },
+    );
+    assert!(verify_module(&forged).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidOperation { reason, .. }
+            if reason.contains("variant 0 is out of bounds")
+    )));
+}
+
+#[test]
+fn empty_enum_cannot_be_constructed_as_a_record_or_variant() {
+    for expression in [
+        "QuietOutput {}",
+        "QuietOutput.Missing",
+        "QuietOutput.Missing()",
+    ] {
+        let parsed = hew_parser::parse(&format!(
+            "enum QuietOutput {{}} fn main() {{ let output = {expression}; }}"
+        ));
+        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(Vec::new()));
+        let facts = checker.check_program(&parsed.program);
+        assert!(
+            !facts.errors.is_empty(),
+            "admitted impossible constructor {expression}"
+        );
+    }
+}
+
+#[test]
+fn user_enum_call_borrows_caller_and_match_consumes_a_copy() {
+    let lowered = lower_source(
+        r#"
+        enum Choice { Text(string), Empty }
+
+        fn keep_text(value: string) {}
+        fn inspect(value: Choice) -> i64 {
+            match value {
+                .Text(text) => { keep_text(text); 1 },
+                .Empty => 0,
+            }
+        }
+
+        fn main() {
+            let original = Choice.Text("hello");
+            inspect(original);
+            inspect(original);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let [shape] = lowered.module.variant_shapes.as_slice() else {
+        panic!("one demanded user enum must publish exactly one variant shape")
+    };
+    assert_eq!(shape.enum_ty.user_facing().to_string(), "Choice");
+    assert_eq!(shape.variants[0].name, "Text");
+    assert_eq!(shape.variants[0].fields[0].ty, ResolvedTy::String);
+
+    let inspect = lowered
+        .module
+        .callables
+        .iter()
+        .find(|callable| callable.declaration.full_path() == "inspect")
+        .expect("inspect must have an exact callable header");
+    assert_eq!(inspect.signature.params[0].passing, SemParamPassing::Borrow);
+    let body = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.callable == inspect.id)
+        .expect("inspect must have a demanded body");
+    assert!(body.blocks.iter().flat_map(|block| &block.ops).any(|op| {
+        matches!(op.kind, SemOpKind::CopyValue { .. })
+            && op
+                .results
+                .first()
+                .is_some_and(|result| result.ty == shape.enum_ty)
+    }));
+    assert!(body.blocks.iter().any(|block| {
+        matches!(
+            &block.terminator,
+            SemTerminator::SwitchVariant { arms, .. }
+                if arms.len() == 2
+                    && arms[0].fields.len() == 1
+                    && arms[1].fields.is_empty()
+        )
+    }));
+
+    let main = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "main")
+        .expect("main must have a body");
+    assert_eq!(
+        main.blocks
+            .iter()
+            .filter_map(|block| match &block.terminator {
+                SemTerminator::Call { callee, args, .. } if *callee == inspect.id => Some(args),
+                _ => None,
+            })
+            .filter(|args| { args.len() == 1 && args[0].decision == BoundaryDecision::Borrow })
+            .count(),
+        2,
+        "both ordinary calls must borrow the same caller-owned enum"
+    );
+}
+
+#[test]
+fn result_constructor_return_and_exhaustive_match_transfer_owned_payloads() {
+    let lowered = lower_source(
+        r#"
+        fn make() -> Result<string, string> {
+            Ok("accepted")
+        }
+
+        fn choose(value: Result<string, string>) -> string {
+            match value {
+                .Ok(text) => text,
+                .Err(reason) => reason,
+            }
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            let original = make();
+            let first = choose(original);
+            let second = choose(original);
+            keep_text(first);
+            keep_text(second);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let result_shape = lowered
+        .module
+        .variant_shapes
+        .iter()
+        .find(|shape| shape.enum_ty.user_facing().to_string() == "Result<string, string>")
+        .expect("Result<string, string> must have one exact descriptor");
+    assert_eq!(result_shape.variants.len(), 2);
+    assert!(result_shape
+        .variants
+        .iter()
+        .all(|variant| variant.fields.len() == 1 && variant.fields[0].ty == ResolvedTy::String));
+    assert!(lowered
+        .module
+        .functions
+        .iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, SemOpKind::VariantMake { .. })));
+}
+
+#[test]
+fn fresh_option_match_accounts_for_unbound_owned_payload() {
+    let lowered = lower_source(
+        r#"
+        fn classify(value: Option<string>) -> i64 {
+            match value {
+                .Some(_) => 1,
+                .None => 0,
+            }
+        }
+
+        fn main() {
+            classify(Some("temporary"));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let classify = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "classify")
+        .expect("classify must have a body");
+    let some_block = classify
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            SemTerminator::SwitchVariant { arms, .. } => arms
+                .iter()
+                .find(|arm| arm.variant == 0)
+                .map(|arm| arm.target.target),
+            _ => None,
+        })
+        .expect("Some arm must have a payload block");
+    let some_field = classify
+        .blocks
+        .iter()
+        .find(|block| block.id == some_block)
+        .and_then(|block| block.args.first())
+        .map(|field| field.value)
+        .expect("Some arm target must materialize its owned payload");
+    assert!(
+        classify
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|op| {
+                matches!(
+                    &op.kind,
+                    SemOpKind::DestroyValue { value } if value.value == some_field
+                )
+            }),
+        "an unbound owned payload must still be destroyed on its selected arm"
+    );
+}
+
+#[test]
+fn bitcopy_record_and_option_use_exact_descriptors_without_owner_glue() {
+    let lowered = lower_source(
+        r"
+        type Point { x: i64, y: i64 }
+
+        fn point_x(point: Point) -> i64 { point.x }
+        fn option_value(value: Option<i64>) -> i64 {
+            match value {
+                .Some(number) => number,
+                .None => 0,
+            }
+        }
+
+        fn main() {
+            let point = Point { x: 2, y: 3 };
+            point_x(point);
+            point_x(point);
+            let optional = Some(5);
+            option_value(optional);
+            option_value(optional);
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+
+    let point = lowered
+        .module
+        .aggregate_shapes
+        .iter()
+        .find(|shape| shape.aggregate_ty.user_facing().to_string() == "Point")
+        .expect("Point must retain its exact record descriptor");
+    let optional = lowered
+        .module
+        .variant_shapes
+        .iter()
+        .find(|shape| shape.enum_ty.user_facing().to_string() == "Option<i64>")
+        .expect("Option<i64> must retain its exact variant descriptor");
+    for ty in [&point.aggregate_ty, &optional.enum_ty] {
+        let facts = lowered
+            .module
+            .type_facts
+            .get(&hew_types::TypeInstanceKey((*ty).clone()))
+            .expect("descriptor type must retain its checker facts");
+        assert_eq!(facts.class, hew_types::ValueClass::BitCopy);
+        assert_eq!(facts.clone, hew_types::CloneKind::Bits);
+    }
+}
+
+#[test]
+fn guarded_variant_match_lowers_explicit_predicate_cfg() {
+    let lowered = lower_source(
+        r#"
+        fn choose(value: Option<string>) -> i64 {
+            match value {
+                .Some(text) if text == "special" => 1,
+                .Some(_) => 2,
+                .None => 0,
+            }
+        }
+
+        fn main() {
+            choose(Some("ordinary"));
+        }
+        "#,
+    );
+
+    assert_main_lowered(&lowered);
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    assert!(choose.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::RtCall {
+            family: hew_types::RuntimeCallFamily::StringEquals,
+            ..
+        }
+    )));
+    assert!(choose
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::Branch { .. })));
+}
+
+#[test]
+fn scalar_literal_payloads_use_their_exact_sir_constants() {
+    let lowered = lower_source(
+        r"
+        enum Token { Value(f64, char), Empty }
+
+        fn classify(value: Token) -> i64 {
+            match value {
+                .Value(1.5, 'x') => 1,
+                .Value(_, _) => 2,
+                .Empty => 0,
+            }
+        }
+
+        fn main() {
+            classify(Token.Value(1.5, 'x'));
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+
+    let classify = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "classify")
+        .expect("classify must have a body");
+    let operations = classify
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .collect::<Vec<_>>();
+    assert!(operations
+        .iter()
+        .any(|operation| matches!(operation.kind, SemOpKind::ConstFloat(value) if value.to_bits() == 1.5_f64.to_bits())));
+    assert!(operations
+        .iter()
+        .any(|operation| matches!(operation.kind, SemOpKind::ConstChar('x'))));
+}
+
+#[test]
+fn verifier_refuses_scalar_literals_with_forged_result_types() {
+    let mut lowered = lower_source(
+        r"
+        enum Token { Value(f64, char), Empty }
+
+        fn classify(value: Token) -> i64 {
+            match value {
+                .Value(1.5, 'x') => 1,
+                .Value(_, _) => 2,
+                .Empty => 0,
+            }
+        }
+
+        fn main() {
+            classify(Token.Value(1.5, 'x'));
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+
+    for operation in lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.ops)
+    {
+        if matches!(operation.kind, SemOpKind::ConstFloat(_)) {
+            operation.results[0].ty = ResolvedTy::Char;
+        } else if matches!(operation.kind, SemOpKind::ConstChar(_)) {
+            operation.results[0].ty = ResolvedTy::F64;
+        }
+    }
+
+    let diagnostics = verify_module(&lowered.module);
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidConstType {
+            expected: "floating-point type",
+            actual,
+            ..
+        } if actual == "char"
+    )));
+    assert!(diagnostics.iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidConstType {
+            expected: "char",
+            actual,
+            ..
+        } if actual == "f64"
+    )));
+}
+
+#[test]
+fn match_payload_can_move_while_an_outer_fallback_remains_live() {
+    let lowered = lower_source(
+        r#"
+        fn keep_text(value: string) {}
+        fn choose(value: Option<string>) -> string {
+            let fallback = "fallback";
+            let selected = match value {
+                .Some(text) => text,
+                .None => fallback,
+            };
+            keep_text(fallback);
+            selected
+        }
+
+        fn main() {
+            keep_text(choose(None));
+            keep_text(choose(Some("chosen")));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    let fallback = choose
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "fallback")
+        .expect("choose must define its fallback string")
+        .target;
+    let hew_sir::BindingTarget::Place(fallback) = fallback else {
+        panic!("fallback must have local storage")
+    };
+    assert!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|operation| matches!(
+                &operation.kind,
+                SemOpKind::LoadCopy { place } if *place == fallback
+            )),
+        "the None arm must copy its outer fallback instead of consuming it"
+    );
+}
+
+#[test]
+fn ordered_guards_thread_mutation_into_later_same_variant_arms() {
+    let lowered = lower_source(
+        r"
+        enum Number { Some(i64), None }
+
+        fn classify(value: Number) -> i64 {
+            var attempts = 0;
+            match value {
+                .Some(number) if { attempts = attempts + 1; number < 0 } => attempts,
+                .Some(number) if { attempts = attempts + 1; number > 0 } => attempts,
+                .Some(0) => attempts,
+                .Some(_) => attempts,
+                .None => attempts,
+            }
+        }
+
+        fn main() {
+            classify(Number.Some(5));
+        }
+        ",
+    );
+    assert_main_lowered(&lowered);
+
+    let classify = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "classify")
+        .expect("classify must have a body");
+    assert!(
+        classify
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::Branch { .. }))
+            .count()
+            >= 3,
+        "two guards and one literal predicate must remain ordered CFG decisions"
+    );
+}
+
+#[test]
+fn nested_match_and_failed_string_guard_preserve_the_later_payload() {
+    let lowered = lower_source(
+        r#"
+        fn choose(value: Result<Option<string>, string>) -> string {
+            match value {
+                .Ok(.Some(text)) if text == "skip" => "wrong",
+                .Ok(.Some(text)) => text,
+                .Ok(.None) => "none",
+                .Err(reason) => reason,
+            }
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            let original = Ok(Some("kept"));
+            keep_text(choose(original));
+            keep_text(choose(original));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    assert_eq!(
+        choose
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. }))
+            .count(),
+        1,
+        "only the outer Result is consumed; the nested Option is probed in place"
+    );
+    assert!(
+        choose
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .any(|op| matches!(op.kind, SemOpKind::VariantIs { .. })),
+        "the nested Option tag test must be an explicit non-consuming probe"
+    );
+    assert!(choose.blocks.iter().any(|block| matches!(
+        block.terminator,
+        SemTerminator::RtCall {
+            family: hew_types::RuntimeCallFamily::StringEquals,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn unit_match_allows_a_selected_divergent_handler() {
+    let lowered = lower_source(
+        r#"
+        fn report(value: string) {}
+        fn handle(value: Result<string, string>) {
+            match value {
+                .Ok(text) => report(text),
+                .Err(error) => { report(error); return; },
+            }
+        }
+
+        fn main() {
+            handle(Ok("ok"));
+            handle(Err("error"));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let handle = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "handle")
+        .expect("handle must have a body");
+    assert!(handle
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. })));
+    assert!(
+        handle
+            .blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::Return { value: None }))
+            .count()
+            >= 2,
+        "both the selected divergent handler and ordinary continuation must return explicitly"
+    );
+}
+
+#[test]
+fn result_propagation_lowers_expression_return_without_a_fake_value() {
+    let lowered = lower_source(
+        r#"
+        fn pair(value: Result<string, string>) -> Result<(string, string), string> {
+            let first = value?;
+            Ok((first, "second"))
+        }
+
+        fn main() {
+            pair(Ok("first"));
+            pair(Err("failure"));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let pair = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "pair")
+        .unwrap_or_else(|| panic!("pair must have a body: {:#?}", lowered.statuses));
+    assert_eq!(
+        pair.blocks
+            .iter()
+            .filter(|block| matches!(block.terminator, SemTerminator::Return { value: Some(_) }))
+            .count(),
+        2,
+        "the propagated Err and ordinary Ok each terminate with their real Result value"
+    );
+}
+
+#[test]
+fn never_typed_return_initializer_stops_before_binding_or_sibling_work() {
+    let lowered = lower_source(
+        r#"
+        fn stop() -> Result<string, string> {
+            let unreachable = return Err("stopped");
+            Ok(unreachable)
+        }
+
+        fn main() {
+            stop();
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let stop = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "stop")
+        .unwrap_or_else(|| panic!("stop must have a body: {:#?}", lowered.statuses));
+    assert!(stop
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::Return { value: Some(_) })));
+    assert!(stop
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| { matches!(op.kind, SemOpKind::VariantMake { .. }) }));
+    assert!(!stop
+        .bindings
+        .iter()
+        .any(|binding| binding.name == "unreachable"));
+    assert!(
+        stop.blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .all(|op| !matches!(op.kind, SemOpKind::CopyValue { .. })),
+        "unreachable binding work must not be emitted after the return"
+    );
+}
+
+#[test]
+fn let_else_binds_the_success_payload_into_the_enclosing_scope() {
+    let lowered = lower_source(
+        r#"
+        fn choose(value: Option<string>) -> string {
+            let .Some(text) = value else { return "missing"; };
+            text
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            let original = Some("present");
+            keep_text(choose(original));
+            keep_text(choose(original));
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let choose = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "choose")
+        .unwrap_or_else(|| panic!("choose must have a body: {:#?}", lowered.statuses));
+    assert!(choose
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::SwitchVariant { .. })));
+    assert!(choose.bindings.iter().any(|binding| binding.name == "text"));
+}
+
+#[test]
+fn owning_if_expression_joins_independent_string_values() {
+    let lowered = lower_source(
+        r#"
+        enum Setting { Small(bool), Missing }
+
+        fn describe(value: Setting) -> string {
+            match value {
+                .Small(enabled) => if enabled { "small" } else { "disabled" },
+                .Missing => "missing",
+            }
+        }
+
+        fn discard(enabled: bool) {
+            let ignored = if enabled { "unused" } else { "also unused" };
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            keep_text(describe(Setting.Small(true)));
+            keep_text(describe(Setting.Small(false)));
+            discard(true);
+        }
+        "#,
+    );
+    assert_main_lowered(&lowered);
+
+    let describe = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "describe")
+        .unwrap_or_else(|| panic!("describe must have a body: {:#?}", lowered.statuses));
+    assert!(describe.blocks.iter().any(|block| {
+        block
+            .args
+            .iter()
+            .any(|argument| argument.ty == ResolvedTy::String)
+    }));
+}
+
+const NESTED_AFFINE_SOURCE: &str = r#"
+    enum Choice { Values(Generator<string, ()>, i64), Empty }
+
+    gen fn words() -> string { yield "word"; }
+
+    fn drive(consume choice: Option<Choice>) -> string {
+        match choice {
+            .Some(.Values(_, 0)) => "zero",
+            .Some(.Values(values, weight)) if weight > 10 => "heavy",
+            .Some(.Values(values, weight)) => { let _kept = values; "kept" }
+            .Some(.Empty) => "empty",
+            .None => "none",
+        }
+    }
+
+    fn keep_text(value: string) {}
+    fn main() {
+        keep_text(drive(Some(Choice.Values(words(), 7))));
+    }
+"#;
+
+fn drive_function(lowered: &hew_sir::LoweredModule) -> &hew_sir::SemFunction {
+    lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| function.declaration.full_path() == "drive")
+        .unwrap_or_else(|| panic!("drive must have a body: {:#?}", lowered.statuses))
+}
+
+#[test]
+fn nested_affine_payloads_are_probed_without_consuming_their_enum() {
+    let lowered = lower_source(NESTED_AFFINE_SOURCE);
+    assert_main_lowered(&lowered);
+    let drive = drive_function(&lowered);
+    let ops = || drive.blocks.iter().flat_map(|block| &block.ops);
+    let probes = ops()
+        .filter(|op| matches!(op.kind, SemOpKind::VariantIs { .. }))
+        .count();
+    assert_eq!(
+        probes, 4,
+        "each nested candidate tests the Choice tag in place"
+    );
+    let loans = ops()
+        .filter(|op| matches!(op.kind, SemOpKind::VariantProjectBorrow { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        loans.len(),
+        3,
+        "each candidate borrows the generator payload"
+    );
+    assert!(
+        loans
+            .iter()
+            .all(|op| op.results[0].own == hew_sir::OwnKind::Guaranteed),
+        "a probed affine payload is a loan, never a second owner"
+    );
+    assert!(
+        ops().any(|op| matches!(op.kind, SemOpKind::VariantProjectCopy { .. })),
+        "the scalar weight is copied for its literal and guard tests"
+    );
+    assert!(
+        !ops().any(|op| matches!(op.kind, SemOpKind::CopyValue { .. })
+            && op.results[0]
+                .ty
+                .user_facing()
+                .to_string()
+                .contains("Choice")),
+        "the affine Choice is never copied"
+    );
+    let takes = ops()
+        .filter(|op| matches!(op.kind, SemOpKind::VariantDestructure { .. }))
+        .count();
+    assert_eq!(
+        takes, 4,
+        "each selected candidate transfers its payload exactly once"
+    );
+}
+
+#[test]
+fn probe_cannot_consume_its_enum_while_a_payload_loan_is_live() {
+    let mut lowered = lower_source(NESTED_AFFINE_SOURCE);
+    assert_main_lowered(&lowered);
+    let drive = lowered
+        .module
+        .functions
+        .iter_mut()
+        .find(|function| function.declaration.full_path() == "drive")
+        .unwrap();
+    let block = drive
+        .blocks
+        .iter_mut()
+        .find(|block| {
+            block
+                .ops
+                .iter()
+                .any(|op| matches!(op.kind, SemOpKind::VariantDestructure { .. }))
+        })
+        .expect("a selected candidate takes its payload");
+    let take = block
+        .ops
+        .iter()
+        .position(|op| matches!(op.kind, SemOpKind::VariantDestructure { .. }))
+        .unwrap();
+    let loan_end = block.ops[..take]
+        .iter()
+        .rposition(|op| matches!(op.kind, SemOpKind::EndBorrow { .. }))
+        .expect("the probe loan ends before the take");
+    let ended = block.ops.remove(loan_end);
+    block.ops.insert(take, ended);
+
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::OwnershipLifetime { reason, .. }
+                if reason.contains("dependent borrow is live")
+        )),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn variant_projection_requires_an_exact_case_and_field() {
+    let mut lowered = lower_source(NESTED_AFFINE_SOURCE);
+    assert_main_lowered(&lowered);
+    let mut forged = 0;
+    for operation in lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .flat_map(|block| &mut block.ops)
+    {
+        match &mut operation.kind {
+            SemOpKind::VariantProjectBorrow { field, .. } if forged == 0 => {
+                *field = 7;
+                forged += 1;
+            }
+            SemOpKind::VariantIs { variant, .. } if forged == 1 => {
+                *variant = 9;
+                forged += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(forged, 2);
+    let diagnostics = verify_module(&lowered.module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("variant.project_borrow field 7 is out of bounds")
+        )),
+        "{diagnostics:#?}"
+    );
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("variant 9 is out of bounds")
+        )),
+        "{diagnostics:#?}"
+    );
+}
+
+#[test]
+fn guard_cannot_consume_a_candidate_binding() {
+    let lowered = lower_source(
+        r#"
+        enum Choice { Values(Generator<string, ()>, i64), Empty }
+
+        gen fn words() -> string { yield "word"; }
+
+        fn drain(consume values: Generator<string, ()>) -> bool { true }
+
+        fn drive(consume choice: Choice) -> string {
+            match choice {
+                .Values(values, weight) if drain(values) => "drained",
+                .Values(_, weight) => "kept",
+                .Empty => "empty",
+            }
+        }
+
+        fn keep_text(value: string) {}
+        fn main() {
+            keep_text(drive(Choice.Values(words(), 1)));
+        }
+        "#,
+    );
+    assert!(
+        lowered.statuses.iter().any(|status| status.name == "drive"
+            && matches!(&status.status, SirLoweringStatus::Unsupported { reason }
+                if reason.contains("E_OWN_GUARD_CONSUME") && reason.contains("`values`"))),
+        "{:#?}",
+        lowered.statuses
+    );
+}
+
+#[test]
+fn wire_schema_rejects_a_field_codec_for_another_value_type() {
+    let mut lowered = lower_source(
+        r#"
+        #[wire]
+        type WireRecordProbe { label: string @7, code: u8 @2 }
+        fn main() {
+            let message = WireRecordProbe { label: "owned", code: 7 };
+            let encoded = message.encode();
+            let decoded = WireRecordProbe.decode(encoded);
+            println(decoded.label);
+        }
+    "#,
+    );
+    assert_main_lowered(&lowered);
+    let mut changed = false;
+    for term in lowered
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .map(|block| &mut block.terminator)
+    {
+        if let SemTerminator::WireCodec { plan, .. } = term {
+            let plan = std::sync::Arc::make_mut(plan);
+            let hew_sir::SemWireKind::Record { fields, .. } = &mut plan.kind else {
+                panic!("record codec");
+            };
+            std::sync::Arc::make_mut(&mut fields[0].value).ty = ResolvedTy::String;
+            changed = true;
+            break;
+        }
+    }
+    assert!(changed);
+    assert!(verify_module(&lowered.module)
+        .iter()
+        .any(|diagnostic| matches!(
+            &diagnostic.kind, SirDiagnosticKind::InvalidOperation { reason, .. }
+                if reason.contains("wire child type disagrees with checked shape")
+        )));
+}
+
+#[test]
+fn text_wire_names_cannot_discard_another_field() {
+    let lowered = lower_source(
+        r#"
+        #[wire]
+        type Ambiguous { first: string @1 json("same"), second: string @2 json("same") }
+        fn main() { let text = Ambiguous { first: "first", second: "second" }.to_json(); }
+    "#,
+    );
+    assert!(lowered.statuses.iter().any(|status| matches!(&status.status,
+        SirLoweringStatus::Unsupported { reason } if reason.contains("wire JSON field name `same` is ambiguous")
+    )));
+}

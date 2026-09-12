@@ -1,0 +1,13 @@
+[[case]]
+id = "resource_nonreceiver_method_arg_drops_once"
+intent = "RAII-2 (#1295): a `#[resource]` passed as a NON-RECEIVER argument to an `impl` method drops exactly once."
+source = "../vertical-slice/accept/resource_nonreceiver_method_arg_drops_once.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "7\n3\n"
+exit = 0

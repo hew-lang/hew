@@ -4,11 +4,11 @@
 import std.iter;
 
 type MapBox {
-    m: HashMap<i64, i64>;
+    m: HashMap<i64, i64>,
 }
 
 fn make_box() -> MapBox {
-    let m: HashMap<i64, i64> = HashMap.new();
+    var m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);

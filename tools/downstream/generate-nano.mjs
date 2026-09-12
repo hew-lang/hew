@@ -125,16 +125,13 @@ emit(`color brightmagenta ${nanoKeywordRegex(booleans)}`);
 blank();
 
 // Control flow keywords
-// Actor keywords that serve as control flow are mixed in. `cooperate` is
-// deliberately NOT here — syntax-data.json classifies it under
-// reserved_unused (a compiler-internal safepoint token, not a source
-// expression); it is supplied via the reserved_unused category instead.
-// `await_restart` is not repeated here either — it is already emitted
+// Actor keywords that serve as control flow are mixed in.
+// `await_restart` is not repeated here — it is already emitted
 // wholesale via kw.actors (the actors category, below).
 emit('# Control flow keywords');
 const controlFlow = [...new Set([
   ...kw.control_flow,
-  'select', 'join', 'yield', 'after', 'from', 'await',
+  'select', 'race', 'yield', 'after', 'from', 'await', 'await_restart',
   'scope',
 ])];
 // Split across multiple lines for readability if needed
@@ -153,9 +150,19 @@ for (const chunk of declChunks) {
 }
 blank();
 
-// Actor & concurrency
+// Callable qualifiers and private capture prefixes remain contextual.
+emit('# Callable qualifiers and private capture prefixes');
+emit('color green "\\<fn[[:space:]]*\\[(clone|var|once)([[:space:]]*,[[:space:]]*(clone|var|once))?\\]"');
+emit('color green "\\<capture[[:space:]]*\\([[:space:]]*var\\>"');
+blank();
+
+// Actor & concurrency. Control-like actor words are emitted with the control
+// group above so one token has one colour in the generated syntax.
 emit('# Actor & concurrency');
-const actorChunks = chunkArray([...kw.actors], 10);
+const actorChunks = chunkArray(
+  kw.actors.filter(k => !['scope', 'select', 'race', 'after', 'await', 'await_restart'].includes(k)),
+  10,
+);
 for (const chunk of actorChunks) {
   emit(`color brightgreen ${nanoKeywordRegex(chunk)}`);
 }
@@ -182,11 +189,6 @@ blank();
 // Other keywords
 emit('# Other keywords');
 emit(`color green ${nanoKeywordRegex(kw.other)}`);
-blank();
-
-// Reserved keywords
-emit('# Reserved keywords');
-emit(`color green ${nanoKeywordRegex(kw.reserved_unused)}`);
 blank();
 
 // Types — primitives
@@ -240,7 +242,7 @@ blank();
 
 // Operators
 emit('# Operators');
-emit('color white "->|=>|<-|\\.\\.[ =]?"');
+emit('color white "->|=>|\\.\\.[ =]?"');
 emit('color white "==[^=]|!=|<=|>="');
 emit('color white "<<=|>>=|&=|\\|=|\\^=|\\+=|-=|\\*=|/=|%="');
 emit('color white "<<|>>"');
@@ -268,7 +270,7 @@ emit('color brightyellow,cyan "\\<(TODO|FIXME|XXX|NOTE|HACK)\\>"');
 
 const coveredKeywords = new Set([
   ...kw.control_flow, ...kw.declarations, ...kw.actors, ...kw.supervisor_config,
-  ...kw.wire, ...kw.machine, ...kw.other, ...kw.reserved_unused, ...kw.logical,
+  ...kw.wire, ...kw.machine, ...kw.other, ...kw.logical,
 ]);
 const missingKeywords = syntaxData.all_keywords.filter(k => !coveredKeywords.has(k));
 if (missingKeywords.length > 0) {

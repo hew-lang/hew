@@ -1,7 +1,10 @@
-// node_namespace_smoke.hew — exercises all four Node. namespace builtins (A7 S1).
+// node_namespace_smoke.hew — exercises the Node. namespace builtins (A7 S1).
 //
-// Validates that Node.set_transport, Node.start, Node.connect, and
-// Node.shutdown resolve in HIR (no UnresolvedSymbol) and run without panicking.
+// Validates that Node.start (with a NodeConfig record), Node.connect, and
+// Node.shutdown resolve in HIR (no UnresolvedSymbol) and run without
+// panicking. The granular set_transport/load_keys/allow_peer free functions
+// were retired in favour of one complete NodeConfig record consumed by
+// Node.start.
 //
 // Node.connect targets a loopback address with no listener; the underlying
 // hew_node_api_connect returns -1 and sets the last-error string, but since
@@ -11,8 +14,11 @@
 // Run:
 //   hew run examples/quic_mesh/node_namespace_smoke.hew
 fn main() {
-    Node.set_transport("tcp");
-    Node.start("127.0.0.1:0");
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: "tcp", key: "node-namespace-smoke.key", trust: "pinned", peers: [], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
     Node.connect("127.0.0.1:9001");
     Node.shutdown();
     println("node_namespace_smoke: ok");

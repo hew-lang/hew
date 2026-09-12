@@ -24,7 +24,7 @@
 /// Yields three strings in sequence: "keep", "keep2", "skip_me".
 /// The predicate will accept "keep" and "keep2", reject "skip_me".
 type StringSeq {
-    idx: i64;
+    idx: i64,
 }
 
 impl Iterator for StringSeq {
@@ -47,8 +47,8 @@ impl Iterator for StringSeq {
 }
 
 type Filter<I, A> {
-    iter: I;
-    pred: fn(A) -> bool;
+    iter: I,
+    pred: fn(A) -> bool,
 }
 
 impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
@@ -78,7 +78,7 @@ impl<I, A> Iterator for Filter<I, A> where I: Iterator<Item = A> {
 }
 
 /// Construct a lazy `Filter` adapter (mirrors `std::iter::filter`).
-fn mk_filter<I, A>(it: I, pred: fn(A) -> bool) -> Filter<I, A>
+fn mk_filter<I, A>(consume it: I, consume pred: fn(A) -> bool) -> Filter<I, A>
 where
     I: Iterator<Item = A>,
 {
@@ -86,7 +86,7 @@ where
 }
 
 /// Count items in a fixed-`string` iterator (mirrors `std::iter::count`).
-fn count_str<I>(it: I) -> i64
+fn count_str<I>(consume it: I) -> i64
 where
     I: Iterator<Item = string>,
 {

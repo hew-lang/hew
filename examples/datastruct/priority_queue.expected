@@ -1,0 +1,10 @@
+PASS: new pq is empty
+PASS: peek min after insert
+PASS: extract_min returns 10
+PASS: next extract_min is 20
+PASS: last extract_min is 30
+PASS: duplicates handled
+PASS: ascending insert order
+PASS: descending insert order
+8/8 tests passed
+ALL PASS

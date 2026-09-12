@@ -6,6 +6,9 @@
 // data_start, data_len: range in a separate data Vec for leaf nodes
 // Internal nodes have data_len = 0
 
+// A parameter is the callee's own copy, so every helper that grows the node
+// pool returns it alongside the index it allocated, and the caller reassigns.
+
 // Node field offsets
 fn node_left(nodes: Vec<i64>, node: i64) -> i64 {
     nodes[node * 5]
@@ -31,24 +34,24 @@ fn is_leaf(nodes: Vec<i64>, node: i64) -> bool {
     node_data_len(nodes, node) > 0
 }
 
-// Add a new node, return its index
-fn add_node(nodes: Vec<i64>, left: i64, right: i64, weight: i64, dstart: i64, dlen: i64) -> i64 {
+// Add a new node, returning the pool and the node's index
+fn add_node(var nodes: Vec<i64>, left: i64, right: i64, weight: i64, dstart: i64, dlen: i64) -> (Vec<i64>, i64) {
     let idx = nodes.len() / 5;
     nodes.push(left);
     nodes.push(right);
     nodes.push(weight);
     nodes.push(dstart);
     nodes.push(dlen);
-    idx
+    (nodes, idx)
 }
 
 // Create a leaf node from data[start..start+len]
-fn make_leaf(nodes: Vec<i64>, start: i64, len: i64) -> i64 {
+fn make_leaf(var nodes: Vec<i64>, start: i64, len: i64) -> (Vec<i64>, i64) {
     add_node(nodes, 0 - 1, 0 - 1, len, start, len)
 }
 
 // Concat two rope subtrees: create internal node
-fn rope_concat(nodes: Vec<i64>, left: i64, right: i64) -> i64 {
+fn rope_concat(var nodes: Vec<i64>, left: i64, right: i64) -> (Vec<i64>, i64) {
     let left_total = rope_length(nodes, left);
     add_node(nodes, left, right, left_total, 0, 0)
 }
@@ -83,10 +86,10 @@ fn rope_index(nodes: Vec<i64>, data: Vec<i64>, node: i64, idx: i64) -> i64 {
     }
 }
 
-// Collect all elements in order into a result Vec
-fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, result: Vec<i64>) -> i64 {
+// Collect all elements in order, appending to the accumulator that is returned
+fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, var result: Vec<i64>) -> Vec<i64> {
     if node < 0 {
-        return 0;
+        return result;
     }
     if is_leaf(nodes, node) {
         let start = node_data_start(nodes, node);
@@ -94,20 +97,20 @@ fn rope_collect(nodes: Vec<i64>, data: Vec<i64>, node: i64, result: Vec<i64>) ->
         for i in 0 .. len {
             result.push(data[start + i]);
         }
-        return 0;
+        return result;
     }
     let left = node_left(nodes, node);
     let right = node_right(nodes, node);
-    rope_collect(nodes, data, left, result);
-    rope_collect(nodes, data, right, result);
-    0
+    result = rope_collect(nodes, data, left, result);
+    result = rope_collect(nodes, data, right, result);
+    result
 }
 
 fn main() {
     var passed = 0;
     var failed = 0;
     // Data array: [10, 20, 30, 40, 50, 60, 70, 80]
-    let data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new();
     data.push(10);
     data.push(20);
     data.push(30);
@@ -116,12 +119,12 @@ fn main() {
     data.push(60);
     data.push(70);
     data.push(80);
-    let nodes: Vec<i64> = Vec.new();
+    let pool: Vec<i64> = Vec.new();
     // Create leaves: [10,20,30] and [40,50] and [60,70,80]
-    let leaf1 = make_leaf(nodes, 0, 3); // data[0..3] = [10,20,30]
-    let leaf2 = make_leaf(nodes, 3, 2); // data[3..5] = [40,50]
-    let leaf3 = make_leaf(nodes, 5, 3); // data[5..8] = [60,70,80]
-
+    let (pool1, leaf1) = make_leaf(pool, 0, 3); // data[0..3] = [10,20,30]
+    let (pool2, leaf2) = make_leaf(pool1, 3, 2); // data[3..5] = [40,50]
+    let (pool3, leaf3) = make_leaf(pool2, 5, 3); // data[5..8] = [60,70,80]
+    var nodes = pool3;
     // Test 1: Leaf length
     if rope_length(nodes, leaf1) == 3 {
         if rope_length(nodes, leaf2) == 2 {
@@ -154,7 +157,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 3: Concat two leaves
-    let ab = rope_concat(nodes, leaf1, leaf2);
+    let (nodes_ab, ab) = rope_concat(nodes, leaf1, leaf2);
+    nodes = nodes_ab;
     // ab = [10,20,30,40,50], length 5
     if rope_length(nodes, ab) == 5 {
         println("PASS: concat length");
@@ -186,7 +190,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 5: Concat three (nested): (ab, leaf3)
-    let abc = rope_concat(nodes, ab, leaf3);
+    let (nodes_abc, abc) = rope_concat(nodes, ab, leaf3);
+    nodes = nodes_abc;
     // abc = [10,20,30,40,50,60,70,80], length 8
     if rope_length(nodes, abc) == 8 {
         println("PASS: triple concat length");
@@ -217,8 +222,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 7: Collect all elements in order
-    let collected: Vec<i64> = Vec.new();
-    rope_collect(nodes, data, abc, collected);
+    let empty: Vec<i64> = Vec.new();
+    let collected = rope_collect(nodes, data, abc, empty);
     var col_ok = 1;
     if collected.len() != 8 {
         col_ok = 0;
@@ -239,8 +244,8 @@ fn main() {
         failed = failed + 1;
     }
     // Test 8: Build rope with different tree shape (right-heavy)
-    let nodes2: Vec<i64> = Vec.new();
-    let data2: Vec<i64> = Vec.new();
+    let pool_b: Vec<i64> = Vec.new();
+    var data2: Vec<i64> = Vec.new();
     data2.push(1);
     data2.push(2);
     data2.push(3);
@@ -248,11 +253,11 @@ fn main() {
     data2.push(5);
     data2.push(6);
     // Build: leaf[1] concat (leaf[2,3] concat leaf[4,5,6])
-    let la = make_leaf(nodes2, 0, 1);
-    let lb = make_leaf(nodes2, 1, 2);
-    let lc = make_leaf(nodes2, 3, 3);
-    let bc = rope_concat(nodes2, lb, lc);
-    let abc2 = rope_concat(nodes2, la, bc);
+    let (pool_b1, la) = make_leaf(pool_b, 0, 1);
+    let (pool_b2, lb) = make_leaf(pool_b1, 1, 2);
+    let (pool_b3, lc) = make_leaf(pool_b2, 3, 3);
+    let (pool_b4, bc) = rope_concat(pool_b3, lb, lc);
+    let (nodes2, abc2) = rope_concat(pool_b4, la, bc);
     var shape_ok = 1;
     if rope_length(nodes2, abc2) != 6 {
         shape_ok = 0;
@@ -277,10 +282,10 @@ fn main() {
         failed = failed + 1;
     }
     // Test 9: Single element rope
-    let nodes3: Vec<i64> = Vec.new();
-    let data3: Vec<i64> = Vec.new();
+    let pool_c: Vec<i64> = Vec.new();
+    var data3: Vec<i64> = Vec.new();
     data3.push(99);
-    let single = make_leaf(nodes3, 0, 1);
+    let (nodes3, single) = make_leaf(pool_c, 0, 1);
     if rope_length(nodes3, single) == 1 {
         if rope_index(nodes3, data3, single, 0) == 99 {
             println("PASS: single element rope");
@@ -294,16 +299,16 @@ fn main() {
         failed = failed + 1;
     }
     // Test 10: Concat single elements
-    let nodes4: Vec<i64> = Vec.new();
-    let data4: Vec<i64> = Vec.new();
+    let pool_d: Vec<i64> = Vec.new();
+    var data4: Vec<i64> = Vec.new();
     data4.push(100);
     data4.push(200);
     data4.push(300);
-    let s1 = make_leaf(nodes4, 0, 1);
-    let s2 = make_leaf(nodes4, 1, 1);
-    let s3 = make_leaf(nodes4, 2, 1);
-    let c12 = rope_concat(nodes4, s1, s2);
-    let c123 = rope_concat(nodes4, c12, s3);
+    let (pool_d1, s1) = make_leaf(pool_d, 0, 1);
+    let (pool_d2, s2) = make_leaf(pool_d1, 1, 1);
+    let (pool_d3, s3) = make_leaf(pool_d2, 2, 1);
+    let (pool_d4, c12) = rope_concat(pool_d3, s1, s2);
+    let (nodes4, c123) = rope_concat(pool_d4, c12, s3);
     var cs_ok = 1;
     if rope_length(nodes4, c123) != 3 {
         cs_ok = 0;

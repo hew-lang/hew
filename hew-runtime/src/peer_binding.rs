@@ -478,7 +478,7 @@ impl PeerAuthConfig {
     pub fn validate_public(&self) -> Result<(), String> {
         if self.node_identity.is_none() || self.identity_path.is_none() {
             return Err(
-                "Node::start: protocol v2 requires Node::load_keys before start \
+                "Node::start: protocol v2 requires a key file in `NodeConfig.key` \
                  (authenticated identity and durable session are mandatory)"
                     .to_string(),
             );

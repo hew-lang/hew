@@ -1,0 +1,41 @@
+import std.stream;
+
+type Bag { input: Stream<string>, label: string }
+
+fn open() -> Stream<string> {
+    match stream.from_file("resource-read.bin") {
+        .Ok(input) => input,
+        .Err(_) => panic("fixture open failed"),
+    }
+}
+
+/// `bag` is consumed here: its label is borrowed before a division that can
+/// trap, and its stream is released after. Both the normal exit and the
+/// checked-fault exit release the stream exactly once.
+fn drain(consume bag: Bag, divisor: i64) -> string {
+    let head = bag.label;
+    let share = 100 / divisor;
+    bag.input.close();
+    head + ":" + f"{share}"
+}
+
+actor Splitter {
+    var seen: i64 = 0,
+    receive fn split(label: string, divisor: i64) -> string {
+        seen = seen + 1;
+        drain(Bag { input: open(), label: label }, divisor)
+    }
+}
+
+fn main() {
+    let splitter = spawn Splitter();
+    match splitter.split("one", 5) {
+        .Ok(text) => println(text),
+        .Err(_) => println("one failed"),
+    }
+    match splitter.split("two", 0) {
+        .Ok(text) => println(text),
+        .Err(_) => println("two failed"),
+    }
+    println("released");
+}

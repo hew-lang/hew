@@ -1,0 +1,7 @@
+import "sock.hew";
+
+fn main() {
+    let s = Sock { fd: 7 };
+    println(s.fd());
+    s.close();
+}

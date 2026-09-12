@@ -1,0 +1,21 @@
+// Both sides of a branch join preserve the live reassigned string.
+fn main() -> i64 {
+    var label = "cold".to_upper();
+    let take_hot = true;
+    if take_hot {
+        label = "hot".to_upper();
+    }
+    if label != "HOT" {
+        return 1;
+    }
+
+    let keep_label = false;
+    if keep_label {
+        label = "wrong".to_upper();
+    }
+    if label != "HOT" {
+        return 2;
+    }
+    println(label);
+    0
+}

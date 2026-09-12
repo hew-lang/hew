@@ -51,7 +51,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Import
         | Token::Pub
         | Token::Package
-        | Token::Super
         | Token::Indirect
         | Token::Enum
         | Token::Trait
@@ -60,39 +59,29 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Supervisor
         | Token::Child
         | Token::Restart
-        | Token::Budget
         | Token::Strategy
         | Token::Scope
         | Token::Fork
         | Token::Spawn
-        | Token::Async
         | Token::Await
         | Token::AwaitRestart
         | Token::Receive
         | Token::Init
         | Token::Type
-        | Token::This
         | Token::Dyn
         | Token::Move
-        | Token::Try
         | Token::Reserved
         | Token::Optional
         | Token::Deprecated
-        | Token::Default
         | Token::Unsafe
         | Token::Extern
-        | Token::Foreign
         | Token::In
         | Token::Select
         | Token::Race
-        | Token::Join
-        | Token::From
         | Token::After
         | Token::Gen
         | Token::Yield
         | Token::Where
-        | Token::Cooperate
-        | Token::Catch
         | Token::Defer
         | Token::As
         | Token::Machine
@@ -102,7 +91,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::When
         | Token::Entry
         | Token::Exit
-        | Token::Emit
         | Token::Is => KW,
 
         // ── Constants (strategy values + booleans) ────────────────────
@@ -114,7 +102,6 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::OneForAll
         | Token::RestForOne
         | Token::SimpleOneForOne
-        | Token::Pool
         | Token::True
         | Token::False => CONST,
 
@@ -163,6 +150,7 @@ fn token_color(tok: &Token<'_>) -> &'static str {
         | Token::Less
         | Token::Greater
         | Token::Question
+        | Token::QuestionQuestion
         | Token::Pipe
         | Token::Ampersand
         | Token::Caret

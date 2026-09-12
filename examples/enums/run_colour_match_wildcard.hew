@@ -5,9 +5,9 @@
 //   2. The wildcard branch's body is the result for both Green and Blue.
 //   3. Earlier explicit arms still win for their named variants.
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn describe(c: Colour) {

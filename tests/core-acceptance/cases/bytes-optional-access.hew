@@ -1,0 +1,32 @@
+fn expect_byte(value: Option<u8>, expected: u8) {
+    match value {
+        .Some(byte) => assert(byte == expected),
+        .None => panic("expected byte"),
+    }
+}
+fn expect_none(value: Option<u8>) {
+    match value {
+        .Some(_) => panic("unexpected byte"),
+        .None => {},
+    }
+}
+fn main() {
+    var value = bytes.new();
+    expect_none(value.get(0));
+    value.push(0);
+    value.push(255);
+    expect_byte(value.get(0), 0);
+    expect_byte(value.get(1), 255);
+    expect_none(value.get(-1));
+    expect_none(value.get(2));
+    assert(value.contains(0));
+    assert(value.contains(255));
+    assert(!value.contains(42));
+    let tail = value[1..];
+    expect_byte(tail.get(0), 255);
+    expect_none(tail.get(1));
+    value.clear();
+    expect_byte(tail.get(0), 255);
+    assert(value.is_empty());
+    println("optional bytes passed");
+}

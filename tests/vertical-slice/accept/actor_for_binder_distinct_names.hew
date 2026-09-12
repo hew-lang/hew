@@ -10,7 +10,7 @@
 // Reading through the receiver in the same loops pins the value: the state
 // field is the storage every access reaches.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn go() {
         let step = 100;
@@ -32,8 +32,8 @@ actor Counter {
 
 fn main() {
     let counter = spawn Counter(count: 0);
-    counter.go();
-    match await counter.total() {
+    let _ = counter.go();
+    match counter.total() {
         .Ok(total) => println(total),
         .Err(_) => println("ask failed"),
     }

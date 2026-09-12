@@ -6,14 +6,14 @@
 
 // === Type Declarations ===
 type Point {
-    x: i32;
-    y: i32;
+    x: i32,
+    y: i32,
 }
 
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 // === Helper Functions ===
@@ -189,7 +189,11 @@ fn test_strings() -> i32 {
     if len == 5 {
         if hello == hello {
             if hello != world {
-                1
+                if combined == "HelloWorld" {
+                    1
+                } else {
+                    0
+                }
             } else {
                 0
             }

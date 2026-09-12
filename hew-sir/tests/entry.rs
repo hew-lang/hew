@@ -1,12 +1,15 @@
-//! Entry selection is a join on HIR's resolved entry declaration.
+//! Entry selection is a join on the checker-authored plan's declaration.
 //!
 //! These tests move the fact away from the declaration spelled `main` and
 //! prove SIR follows the fact, then remove the fact entirely and prove SIR
 //! does not fall back to a name.
 
 use hew_hir::{lower_program_host_target, HirItem, HirModule, ResolutionCtx};
-use hew_sir::{lower_module, verify_module};
-use hew_types::{module_registry::ModuleRegistry, Checker, DefId};
+use hew_sir::{lower_module, lower_module_with_roots, verify_module};
+use hew_types::{
+    module_registry::ModuleRegistry, Checker, DefId, EntryExitAction, EntryExitPlan,
+    EntryIntegerType,
+};
 
 fn lower_hir(source: &str) -> (HirModule, hew_types::TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
@@ -39,6 +42,13 @@ fn declaration_of(module: &HirModule, name: &str) -> DefId {
         .unwrap_or_else(|| panic!("source must define `{name}`"))
 }
 
+fn integer_entry(entry: DefId) -> EntryExitPlan {
+    EntryExitPlan {
+        entry,
+        action: EntryExitAction::Integer(EntryIntegerType::I64),
+    }
+}
+
 const TWO_ROOT_FUNCTIONS: &str = r"
     fn start() -> i64 {
         7
@@ -50,10 +60,10 @@ const TWO_ROOT_FUNCTIONS: &str = r"
     ";
 
 #[test]
-fn hir_publishes_the_root_entry_declaration_once() {
+fn hir_carries_the_checker_entry_plan_once() {
     let (hir, _type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
     assert_eq!(
-        hir.entry_declaration.as_ref(),
+        hir.entry_exit_plan.as_ref().map(|plan| &plan.entry),
         Some(&declaration_of(&hir, "main")),
         "HIR applies the language entry rule and publishes the resolved declaration"
     );
@@ -62,7 +72,7 @@ fn hir_publishes_the_root_entry_declaration_once() {
 #[test]
 fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable() {
     let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
-    hir.entry_declaration = Some(declaration_of(&hir, "start"));
+    hir.entry_exit_plan = Some(integer_entry(declaration_of(&hir, "start")));
 
     let lowered = lower_module(&hir, &type_facts);
     let entry = lowered
@@ -74,7 +84,7 @@ fn an_entry_fact_naming_a_non_main_declaration_selects_and_lowers_that_callable(
             .module
             .callable(entry)
             .map(|callable| callable.symbol.as_str()),
-        Some("start"),
+        Some("__hew_fn_start"),
         "entry selection must follow the HIR fact, not the `main` spelling"
     );
     assert!(
@@ -106,25 +116,31 @@ fn the_unmodified_entry_fact_still_selects_main() {
             .module
             .callable(entry)
             .map(|callable| callable.symbol.as_str()),
-        Some("main")
+        Some("__hew_fn_main")
     );
 }
 
 /// Fail-closed control: a module with no entry fact has no entry callable even
 /// though a root declaration spelled `main` is right there in the table.
+///
+/// `main` is selected as a root so the table genuinely holds it — without the
+/// entry fact nothing demands it, and the control would otherwise pass on an
+/// empty table.
 #[test]
 fn removing_the_entry_fact_leaves_no_entry_callable_to_rediscover_by_name() {
     let (mut hir, type_facts) = lower_hir(TWO_ROOT_FUNCTIONS);
-    hir.entry_declaration = None;
+    let main = declaration_of(&hir, "main");
+    hir.entry_exit_plan = None;
 
-    let lowered = lower_module(&hir, &type_facts);
+    let lowered = lower_module_with_roots(&hir, &type_facts, &[main])
+        .expect("an exact monomorphic declaration is selectable as a root");
     assert!(
         lowered
             .module
             .callables
             .iter()
-            .any(|callable| callable.symbol == "main"),
-        "the fixture must still contain a callable whose symbol is `main`"
+            .any(|callable| callable.declaration.full_path() == "main"),
+        "the fixture must still contain a callable whose declaration is `main`"
     );
     assert_eq!(
         lowered.module.entry_callable, None,
@@ -147,7 +163,7 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
         })
         .expect("source must define `start`");
     hir.root_item_ids.remove(&start_item);
-    hir.entry_declaration = Some(start);
+    hir.entry_exit_plan = Some(integer_entry(start));
 
     let lowered = lower_module(&hir, &type_facts);
     assert!(
@@ -161,5 +177,101 @@ fn an_entry_fact_naming_a_non_root_declaration_is_rejected_by_the_verifier() {
             hew_sir::SirDiagnosticKind::InvalidEntryCallable { .. }
         )),
         "a non-root entry callable must be rejected: {diagnostics:#?}"
+    );
+}
+
+const RESULT_ENTRY: &str = r#"
+    enum AppError {
+        Failed(string),
+    }
+
+    impl Display for AppError {
+        fn fmt(self) -> string {
+            match self {
+                AppError.Failed(message) => message,
+            }
+        }
+    }
+
+    impl Error for AppError {}
+
+    fn main() -> Result<(), AppError> {
+        let held = "held";
+        println(held);
+        Err(AppError.Failed("displayed failure"))
+    }
+    "#;
+
+/// A `Result` entry exits through a synthesized adapter: the adapter is the
+/// module's entry, the checker's action is consumed and the physical-facing
+/// plan is the integer status the adapter returns.
+#[test]
+fn a_result_entry_exits_through_the_sir_entry_adapter() {
+    let (hir, type_facts) = lower_hir(RESULT_ENTRY);
+    assert!(
+        matches!(
+            hir.entry_exit_plan.as_ref().map(|plan| &plan.action),
+            Some(EntryExitAction::Result { .. })
+        ),
+        "the checker selects a Result exit action for this entry"
+    );
+    let lowered = lower_module(&hir, &type_facts);
+    let entry = lowered
+        .module
+        .entry_callable
+        .expect("the Result entry selects an adapter callable");
+    let adapter = lowered.module.callable(entry).expect("adapter header");
+    assert_eq!(adapter.symbol, "__hew_entry");
+    assert_eq!(adapter.instance, hew_sir::CallableInstance::EntryAdapter);
+    assert_eq!(adapter.declaration, declaration_of(&hir, "main"));
+    assert_eq!(
+        lowered
+            .module
+            .entry_exit_plan
+            .as_ref()
+            .map(|plan| &plan.action),
+        Some(&EntryExitAction::Integer(EntryIntegerType::I64))
+    );
+    let index = lowered.module.function_index();
+    assert!(index.function(entry).is_some(), "the adapter has a body");
+    let main = lowered
+        .module
+        .callable_for_declaration(&declaration_of(&hir, "main"))
+        .expect("the source entry keeps its own callable");
+    assert!(
+        index.function(main.id).is_some(),
+        "the source entry body is demanded by the adapter"
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "the adapter must verify: {:#?}",
+        verify_module(&lowered.module)
+    );
+}
+
+/// Negative control: a `Result` action that reaches the verifier was never
+/// realized, so the module is refused instead of leaving the exit to codegen.
+#[test]
+fn a_result_action_reaching_the_verifier_is_rejected() {
+    let (hir, type_facts) = lower_hir(RESULT_ENTRY);
+    let checker_action = hir
+        .entry_exit_plan
+        .as_ref()
+        .map(|plan| plan.action.clone())
+        .expect("checker plan");
+    let mut module = lower_module(&hir, &type_facts).module;
+    module
+        .entry_exit_plan
+        .as_mut()
+        .expect("lowered plan")
+        .action = checker_action;
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics.iter().any(|diagnostic| matches!(
+            &diagnostic.kind,
+            hew_sir::SirDiagnosticKind::InvalidEntryCallable { reason, .. }
+                if reason.contains("entry adapter")
+        )),
+        "an unrealized Result action must be rejected: {diagnostics:#?}"
     );
 }

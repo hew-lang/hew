@@ -1,0 +1,58 @@
+// An actor handle is an ordinary value of the actor's own type: it lives in a
+// record field, a `Vec` element and a `HashMap` value, travels through a
+// function by that type and comes back out of one.
+
+actor Worker {
+    let id: i64,
+    receive fn work(n: i64) -> i64 { n * id }
+}
+
+type Crew {
+    lead: Worker,
+    label: string,
+}
+
+fn ask(worker: Worker, n: i64) -> i64 {
+    match worker.work(n) {
+        .Ok(v) => v,
+        .Err(_) => panic("work failed"),
+    }
+}
+
+fn lead_of(crew: Crew) -> Worker {
+    crew.lead
+}
+
+fn main() {
+    let one = spawn Worker(id: 2);
+    let two = spawn Worker(id: 5);
+
+    // A record field holds the actor by its own type.
+    let crew = Crew { lead: one, label: "alpha" };
+    println(f"{crew.label} {ask(crew.lead, 3)}");
+
+    // The field reads back out through a function return.
+    println(ask(lead_of(crew), 4));
+
+    // A Vec of actors, walked by iteration.
+    var team: Vec<Worker> = Vec.new();
+    team.push(one);
+    team.push(two);
+    var total = 0;
+    for member in team {
+        total = total + ask(member, 10);
+    }
+    println(total);
+
+    // A HashMap value holds the actor by its own type.
+    var roster: HashMap<string, Worker> = HashMap.new();
+    roster.insert("first", one);
+    roster.insert("second", two);
+    match roster.get("second") {
+        .Some(found) => println(ask(found, 6)),
+        .None => panic("roster lost its member"),
+    }
+
+    close(one);
+    close(two);
+}

@@ -26,8 +26,6 @@
 //! 16-shard `LiveActors` reduces hot-path contention.
 
 use std::collections::HashMap;
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 use crate::actor::HewActor;
@@ -84,10 +82,9 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
 
 /// Runtime-owned actor-liveness state.
 ///
-/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` +
-/// `lambda_actor::ACTIVE_LAMBDA_DISPATCH` globals; now a field of
-/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map, any
-/// still-pending teardown join handles, and the lambda drain counter.
+/// Was the `LIVE_ACTORS` + `DEFERRED_TEARDOWN_THREADS` globals; now a field of
+/// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map and
+/// any still-pending teardown join handles.
 ///
 /// Native only: the WASM runtime is single-threaded and has no `RuntimeInner`,
 /// so it backs the registry with a module-private static (`LIVE_ACTORS_WASM`)
@@ -102,9 +99,6 @@ pub(crate) struct LiveActors {
     /// they still reference, or the sweep races an in-flight teardown into a
     /// use-after-free / double-free.
     deferred_teardown_threads: PoisonSafe<Vec<std::thread::JoinHandle<()>>>,
-    /// Count of currently-running lambda-actor dispatch threads owned by this
-    /// runtime. Used by `hew_lambda_drain_all`.
-    active_lambda_dispatch: AtomicUsize,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -114,20 +108,7 @@ impl LiveActors {
         Self {
             map: PoisonSafe::new(None),
             deferred_teardown_threads: PoisonSafe::new(Vec::new()),
-            active_lambda_dispatch: AtomicUsize::new(0),
         }
-    }
-
-    pub(crate) fn lambda_dispatch_fetch_add(&self, value: usize, ordering: Ordering) -> usize {
-        self.active_lambda_dispatch.fetch_add(value, ordering)
-    }
-
-    pub(crate) fn lambda_dispatch_fetch_sub(&self, value: usize, ordering: Ordering) -> usize {
-        self.active_lambda_dispatch.fetch_sub(value, ordering)
-    }
-
-    pub(crate) fn lambda_dispatch_load(&self, ordering: Ordering) -> usize {
-        self.active_lambda_dispatch.load(ordering)
     }
 }
 
@@ -320,6 +301,11 @@ pub(crate) fn has_drain_blocking_suspended_actor(
                     != crate::internal::types::HewActorState::Suspended as i32
                 {
                     return false;
+                }
+                if !a.checked_invocation.load(Ordering::Acquire).is_null() {
+                    // An abandoned reply cannot release the checked turn's
+                    // state or children before cooperative cleanup completes.
+                    return true;
                 }
                 let gate = a.parked_ask_channel.load(Ordering::Acquire);
                 if gate.is_null() {

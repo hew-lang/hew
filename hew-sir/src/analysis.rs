@@ -168,84 +168,145 @@ fn visit_reachable_postorder(
     postorder.push(block);
 }
 
+/// Dominance over the reachable CFG of one semantic function.
+///
+/// The relation is stored as the immediate-dominator tree, labelled with one
+/// interval per block, so the whole structure costs one entry per block and a
+/// query costs two comparisons. The equivalent dominator *sets* are quadratic
+/// in the block count, which a body with hundreds of suspensions cannot pay on
+/// every verification pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dominators {
-    pub sets: BTreeMap<BlockId, BTreeSet<BlockId>>,
+    known: BTreeSet<BlockId>,
+    /// Dominator-tree preorder interval per reachable block. A block dominates
+    /// another exactly when its interval contains the other's entry number.
+    intervals: BTreeMap<BlockId, (u32, u32)>,
 }
 
+impl Dominators {
+    /// Whether every executable path from the entry to `block` passes through
+    /// `dominator`. A block dominates itself.
+    ///
+    /// A block the entry cannot reach is vacuously dominated by every block of
+    /// the function: no executable path reaches it, so no definition it names
+    /// can be non-dominating. This matters after CFG rewrites, where dead
+    /// blocks can still point at a live join until compaction removes them.
+    /// A block that is not part of the function dominates nothing and is
+    /// dominated by nothing.
+    #[must_use]
+    pub fn dominates(&self, dominator: BlockId, block: BlockId) -> bool {
+        match self.intervals.get(&block) {
+            Some(&(enter, _)) => self
+                .intervals
+                .get(&dominator)
+                .is_some_and(|&(first, last)| first <= enter && enter <= last),
+            None => self.known.contains(&block) && self.known.contains(&dominator),
+        }
+    }
+}
+
+/// A block the immediate-dominator fixed point has not yet decided. The entry
+/// is its own immediate dominator, which anchors every `intersect` walk.
+const UNDECIDED: usize = usize::MAX;
+
+/// Build the dominance relation for one semantic function.
+///
+/// This is the Cooper-Harvey-Kennedy immediate-dominator fixed point over the
+/// CFG index's reverse postorder, followed by a preorder walk of the resulting
+/// tree that labels each block with the interval its subtree occupies.
+///
+/// Dominance is a property of paths that can execute from the entry, so a
+/// structurally present predecessor in an unreachable block contributes
+/// nothing: it has no reverse-postorder position and is skipped.
 #[must_use]
-///
-/// # Panics
-///
-/// Panics only if a caller supplies a CFG whose predecessor relation names a
-/// block that is absent from the function. `verify_module` reports that shape
-/// before any valid SIR pipeline consumes the analysis.
 pub fn compute_dominators(function: &SemFunction) -> Dominators {
-    let all = function
+    let known = function
         .blocks
         .iter()
         .map(|b| b.id)
         .collect::<BTreeSet<_>>();
     let cfg = build_cfg_index(function);
-    let mut sets = function
-        .blocks
+    let rpo = cfg.rpo();
+    let mut dominators = Dominators {
+        known,
+        intervals: BTreeMap::new(),
+    };
+    if rpo.is_empty() {
+        return dominators;
+    }
+    let order = rpo
         .iter()
-        .map(|block| {
-            let initial = if block.id == function.entry {
-                [function.entry].into_iter().collect()
-            } else {
-                all.clone()
-            };
-            (block.id, initial)
-        })
+        .enumerate()
+        .map(|(position, block)| (*block, position))
         .collect::<BTreeMap<_, _>>();
+
+    let mut idom = vec![UNDECIDED; rpo.len()];
+    idom[0] = 0;
     let mut changed = true;
     while changed {
         changed = false;
-        for block in &function.blocks {
-            if block.id == function.entry {
-                continue;
-            }
-            if !cfg.is_reachable(block.id) {
-                // No executable path reaches this block, so every known block
-                // vacuously dominates it. Leaving its initial `all` set intact
-                // keeps verifier-after-rewrite valid until the following CFG
-                // compaction removes the dead block.
-                continue;
-            }
-            // Dominance is a property of paths that can execute from the
-            // entry. A structurally present predecessor from an unreachable
-            // block must not invalidate a definition that dominates this
-            // reachable block on every executable path. This matters after
-            // CFG rewrites, where dead blocks can still point at a live join
-            // until compaction removes them.
-            let reachable_predecessors = cfg
-                .predecessors_of(block.id)
-                .iter()
-                .filter(|predecessor| cfg.is_reachable(predecessor.source));
-            let mut next = if reachable_predecessors.clone().next().is_none() {
-                BTreeSet::new()
-            } else {
-                let mut result = all.clone();
-                for predecessor in reachable_predecessors {
-                    result = result
-                        .intersection(
-                            sets.get(&predecessor.source)
-                                .expect("reachable predecessor must be a block"),
-                        )
-                        .copied()
-                        .collect();
+        for (position, block) in rpo.iter().enumerate().skip(1) {
+            let mut candidate = UNDECIDED;
+            for edge in cfg.predecessors_of(*block) {
+                let Some(&predecessor) = order.get(&edge.source) else {
+                    continue;
+                };
+                if idom[predecessor] == UNDECIDED {
+                    continue;
                 }
-                result
-            };
-            next.insert(block.id);
-            if sets.get(&block.id) != Some(&next) {
-                sets.insert(block.id, next);
+                candidate = if candidate == UNDECIDED {
+                    predecessor
+                } else {
+                    intersect(&idom, predecessor, candidate)
+                };
+            }
+            if candidate != UNDECIDED && idom[position] != candidate {
+                idom[position] = candidate;
                 changed = true;
             }
         }
     }
-    Dominators { sets }
+
+    let mut children = vec![Vec::new(); rpo.len()];
+    for position in 1..rpo.len() {
+        if idom[position] != UNDECIDED {
+            children[idom[position]].push(position);
+        }
+    }
+    let mut entered = vec![0_u32; rpo.len()];
+    let mut clock = 1_u32;
+    let mut stack = vec![(0_usize, 0_usize)];
+    while let Some(&(node, next_child)) = stack.last() {
+        if let Some(&child) = children[node].get(next_child) {
+            if let Some(top) = stack.last_mut() {
+                top.1 = next_child + 1;
+            }
+            entered[child] = clock;
+            clock += 1;
+            stack.push((child, 0));
+        } else {
+            dominators
+                .intervals
+                .insert(rpo[node], (entered[node], clock - 1));
+            stack.pop();
+        }
+    }
+    dominators
+}
+
+/// Walk two dominator-tree nodes up to their nearest common ancestor. Reverse
+/// postorder numbers decrease towards the entry, so the deeper node is always
+/// the one with the larger number.
+fn intersect(idom: &[usize], mut left: usize, mut right: usize) -> usize {
+    while left != right {
+        while left > right {
+            left = idom[left];
+        }
+        while right > left {
+            right = idom[right];
+        }
+    }
+    left
 }
 
 /// Def-use facts for one SIR function.
@@ -428,10 +489,10 @@ pub fn replace_all_uses(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
 
     use hew_hir::ItemId;
-    use hew_types::{DefId, ResolvedTy};
+    use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 
     use super::{build_cfg_index, compute_dominators, EdgeRef};
     use crate::{
@@ -489,7 +550,32 @@ mod tests {
     /// so a function that has parameters is verified against the callable table
     /// that names those slots rather than context-free.
     fn module(function: SemFunction) -> SemModule {
+        let mut fact_service =
+            TypeFactService::new(TypeFactContext::default(), BTreeMap::default());
+        for ty in function
+            .params
+            .iter()
+            .map(|value| &value.ty)
+            .chain(std::iter::once(&function.return_ty))
+            .chain(function.blocks.iter().flat_map(|block| {
+                block.args.iter().map(|value| &value.ty).chain(
+                    block
+                        .ops
+                        .iter()
+                        .flat_map(|op| op.results.iter().map(|value| &value.ty)),
+                )
+            }))
+        {
+            let _ = fact_service.require(ty);
+        }
         SemModule {
+            actors: Vec::new(),
+            supervisors: Vec::new(),
+            resources: BTreeMap::new(),
+            regex_patterns: Vec::new(),
+            closures: Vec::new(),
+            vtables: Vec::new(),
+            value_capabilities: BTreeMap::new(),
             callables: vec![SemCallable {
                 id: function.callable,
                 function: function.id,
@@ -514,9 +600,12 @@ mod tests {
             }],
             generic_templates: Vec::new(),
             root_unit_callables: Vec::new(),
+            entry_exit_plan: None,
             entry_callable: None,
             functions: vec![function],
-            type_facts: std::collections::BTreeMap::new(),
+            aggregate_shapes: Vec::new(),
+            variant_shapes: Vec::new(),
+            type_facts: fact_service.into_rows(),
             string_literals: std::collections::BTreeMap::new(),
             bytes_literals: std::collections::BTreeMap::new(),
         }
@@ -676,9 +765,71 @@ mod tests {
         assert!(!index.is_reachable(BlockId(2)));
 
         let dominators = compute_dominators(&function);
-        assert_eq!(
-            dominators.sets.get(&BlockId(1)),
-            Some(&BTreeSet::from([BlockId(0), BlockId(1)]))
-        );
+        assert!(dominators.dominates(BlockId(0), BlockId(1)));
+        assert!(dominators.dominates(BlockId(1), BlockId(1)));
+        assert!(!dominators.dominates(BlockId(2), BlockId(1)));
+        // The dead block is vacuously dominated by every block, including one
+        // it cannot reach.
+        assert!(dominators.dominates(BlockId(1), BlockId(2)));
+        assert!(!dominators.dominates(BlockId(9), BlockId(1)));
+        assert!(!dominators.dominates(BlockId(0), BlockId(9)));
+    }
+
+    /// A loop and a diamond are where the immediate-dominator fixed point has
+    /// to iterate: the back edge reaches the header before the header's own
+    /// dominators are settled, and the join below the diamond must keep only
+    /// what both arms share.
+    #[test]
+    fn dominance_over_a_loop_and_a_diamond() {
+        let function = function(vec![
+            block(0, SemTerminator::Goto(edge(1))),
+            block(
+                1,
+                SemTerminator::Branch {
+                    condition: read(0),
+                    then_target: edge(2),
+                    else_target: edge(5),
+                },
+            ),
+            block(
+                2,
+                SemTerminator::Branch {
+                    condition: read(0),
+                    then_target: edge(3),
+                    else_target: edge(4),
+                },
+            ),
+            block(3, SemTerminator::Goto(edge(5))),
+            block(4, SemTerminator::Goto(edge(5))),
+            block(
+                5,
+                SemTerminator::Branch {
+                    condition: read(0),
+                    then_target: edge(1),
+                    else_target: edge(6),
+                },
+            ),
+            block(6, SemTerminator::Return { value: None }),
+        ]);
+        assert!(crate::verify_function_in_module(&module(function.clone()), &function).is_empty());
+
+        let dominators = compute_dominators(&function);
+        for id in 0..7 {
+            assert!(dominators.dominates(BlockId(0), BlockId(id)));
+            assert!(dominators.dominates(BlockId(id), BlockId(id)));
+        }
+        // bb1 is the loop header: the back edge from bb5 does not let bb5
+        // dominate it.
+        assert!(dominators.dominates(BlockId(1), BlockId(5)));
+        assert!(!dominators.dominates(BlockId(5), BlockId(1)));
+        // The join below the diamond is reachable without either arm.
+        assert!(!dominators.dominates(BlockId(2), BlockId(5)));
+        assert!(!dominators.dominates(BlockId(3), BlockId(5)));
+        assert!(!dominators.dominates(BlockId(4), BlockId(5)));
+        // Siblings inside the diamond dominate neither each other nor the exit.
+        assert!(dominators.dominates(BlockId(2), BlockId(3)));
+        assert!(!dominators.dominates(BlockId(3), BlockId(4)));
+        assert!(!dominators.dominates(BlockId(3), BlockId(6)));
+        assert!(dominators.dominates(BlockId(5), BlockId(6)));
     }
 }

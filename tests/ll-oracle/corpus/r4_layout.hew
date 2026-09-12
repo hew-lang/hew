@@ -4,14 +4,14 @@
 // HashMap<string, record> source shapes for compiler checking and raw-MIR
 // parity. Focused layout/codegen tests own emitted ABI invariants.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 enum Color {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn make_point(x: i64, y: i64) -> Point {
@@ -29,12 +29,12 @@ fn color_code(c: Color) -> i64 {
 fn main() -> i64 {
     let p = make_point(3, 4);
     println(p.x + p.y);
-    let xs: Vec<Point> = Vec.new();
+    var xs: Vec<Point> = Vec.new();
     xs.push(Point { x: 10, y: 20 });
     xs.push(Point { x: 5, y: 5 });
     let q = xs[0];
     println(q.x);
-    let tbl: HashMap<string, Point> = HashMap.new();
+    var tbl: HashMap<string, Point> = HashMap.new();
     tbl.insert("origin", Point { x: 0, y: 0 });
     match tbl.get("origin") {
         .Some(v) => println(v.x + v.y),

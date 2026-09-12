@@ -10,11 +10,11 @@
 use std::collections::VecDeque;
 use std::io;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::os::raw::{c_char, c_int};
+use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use quinn::{ClientConfig, Connection, Endpoint, RecvStream, SendStream, ServerConfig};
 
 type BytesTriple = hew_runtime::bytes::BytesTriple;
@@ -348,10 +348,6 @@ fn endpoint_local_addr_string(endpoint: &Endpoint) -> String {
         .map_or_else(|_| String::new(), |addr| addr.to_string())
 }
 
-fn empty_c_string() -> *mut c_char {
-    str_to_malloc("")
-}
-
 fn to_i64_count(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
@@ -552,17 +548,12 @@ pub extern "C" fn hew_quic_new_client() -> *mut HewQuicEndpoint {
 ///
 /// # Safety
 ///
-/// If `ca_pem` is non-null, it must point to a valid NUL-terminated UTF-8
-/// string for the duration of this call.
+/// `ca_pem` must be null (canonical empty) or a live managed string handle.
 pub unsafe extern "C" fn hew_quic_new_client_with_ca(
-    ca_pem: *const c_char,
+    ca_pem: *const HewString,
 ) -> *mut HewQuicEndpoint {
-    // SAFETY: if non-null, `ca_pem` points to a caller-owned C string that
-    // remains valid for the duration of this call.
-    let Some(ca_pem) = (unsafe { cstr_to_str(ca_pem) }) else {
-        set_constructor_last_error("invalid CA bundle");
-        return std::ptr::null_mut();
-    };
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    let ca_pem = unsafe { string_as_str(ca_pem) };
     let client_config = match client_config_with_ca(ca_pem) {
         Ok(client_config) => client_config,
         Err(err) => {
@@ -588,15 +579,10 @@ pub unsafe extern "C" fn hew_quic_new_client_with_ca(
 ///
 /// # Safety
 ///
-/// If `addr` is non-null, it must point to a valid NUL-terminated UTF-8 string
-/// for the duration of this call.
-pub unsafe extern "C" fn hew_quic_new_server(addr: *const c_char) -> *mut HewQuicEndpoint {
-    // SAFETY: if non-null, `addr` points to a caller-owned C string that
-    // remains valid for the duration of this call.
-    let Some(addr_str) = (unsafe { cstr_to_str(addr) }) else {
-        set_constructor_last_error("invalid bind address");
-        return std::ptr::null_mut();
-    };
+/// `addr` must be null (canonical empty) or a live managed string handle.
+pub unsafe extern "C" fn hew_quic_new_server(addr: *const HewString) -> *mut HewQuicEndpoint {
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    let addr_str = unsafe { string_as_str(addr) };
     let bind_addr = match resolve_bind_addr(addr_str) {
         Ok(bind_addr) => bind_addr,
         Err(err) => {
@@ -628,30 +614,20 @@ pub unsafe extern "C" fn hew_quic_new_server(addr: *const c_char) -> *mut HewQui
 ///
 /// # Safety
 ///
-/// If non-null, `addr`, `cert_pem`, and `key_pem` must each point to valid
-/// NUL-terminated UTF-8 strings for the duration of this call.
+/// `addr`, `cert_pem` and `key_pem` must each be null (canonical empty) or a
+/// live managed string handle.
 pub unsafe extern "C" fn hew_quic_new_server_with_tls(
-    addr: *const c_char,
-    cert_pem: *const c_char,
-    key_pem: *const c_char,
+    addr: *const HewString,
+    cert_pem: *const HewString,
+    key_pem: *const HewString,
 ) -> *mut HewQuicEndpoint {
-    // SAFETY: if non-null, `addr` points to a caller-owned C string that
-    // remains valid for the duration of this call.
-    let Some(addr_str) = (unsafe { cstr_to_str(addr) }) else {
-        set_constructor_last_error("invalid bind address");
-        return std::ptr::null_mut();
-    };
-    // SAFETY: if non-null, `cert_pem` points to a caller-owned C string that
-    // remains valid for the duration of this call.
-    let Some(cert_pem) = (unsafe { cstr_to_str(cert_pem) }) else {
-        set_constructor_last_error("invalid TLS certificate PEM");
-        return std::ptr::null_mut();
-    };
-    // SAFETY: if non-null, `key_pem` points to a caller-owned C string that
-    // remains valid for the duration of this call.
-    let Some(key_pem) = (unsafe { cstr_to_str(key_pem) }) else {
-        set_constructor_last_error("invalid TLS private key PEM");
-        return std::ptr::null_mut();
+    // SAFETY: the caller keeps every managed owner alive for these borrows.
+    let (addr_str, cert_pem, key_pem) = unsafe {
+        (
+            string_as_str(addr),
+            string_as_str(cert_pem),
+            string_as_str(key_pem),
+        )
     };
     let bind_addr = match resolve_bind_addr(addr_str) {
         Ok(bind_addr) => bind_addr,
@@ -681,8 +657,8 @@ pub unsafe extern "C" fn hew_quic_new_server_with_tls(
 
 #[no_mangle]
 /// Return this actor's last constructor/setup error.
-pub extern "C" fn hew_quic_last_error() -> *mut c_char {
-    str_to_malloc(&get_constructor_last_error())
+pub extern "C" fn hew_quic_last_error() -> *mut HewString {
+    string_from_str(&get_constructor_last_error())
 }
 
 // ── Endpoint methods ──────────────────────────────────────────────────────────
@@ -692,13 +668,13 @@ pub extern "C" fn hew_quic_last_error() -> *mut c_char {
 ///
 /// # Safety
 ///
-/// `ep` must be null or a live endpoint pointer returned by this module. If
-/// non-null, `addr` and `server_name` must point to valid NUL-terminated UTF-8
-/// strings for the duration of this call.
+/// `ep` must be null or a live endpoint pointer returned by this module.
+/// `addr` and `server_name` must each be null (canonical empty) or a live
+/// managed string handle.
 pub unsafe extern "C" fn hew_quic_endpoint_connect(
     ep: *mut HewQuicEndpoint,
-    addr: *const c_char,
-    server_name: *const c_char,
+    addr: *const HewString,
+    server_name: *const HewString,
 ) -> *mut HewQuicConn {
     if ep.is_null() {
         return std::ptr::null_mut();
@@ -706,24 +682,8 @@ pub unsafe extern "C" fn hew_quic_endpoint_connect(
     // SAFETY: `ep` is non-null and must come from this module per caller
     // contract.
     let endpoint = unsafe { &*ep };
-    // SAFETY: if non-null, `addr` points to a caller-owned C string that
-    // remains valid for the duration of this call.
-    let Some(addr_str) = (unsafe { cstr_to_str(addr) }) else {
-        update_endpoint(endpoint, |state| {
-            state.last_error = String::from("invalid remote address");
-        });
-        let _ = endpoint.events.push(EVENT_ERROR);
-        return std::ptr::null_mut();
-    };
-    // SAFETY: if non-null, `server_name` points to a caller-owned C string
-    // that remains valid for the duration of this call.
-    let Some(server_name) = (unsafe { cstr_to_str(server_name) }) else {
-        update_endpoint(endpoint, |state| {
-            state.last_error = String::from("invalid server name");
-        });
-        let _ = endpoint.events.push(EVENT_ERROR);
-        return std::ptr::null_mut();
-    };
+    // SAFETY: the caller keeps both managed owners alive for these borrows.
+    let (addr_str, server_name) = unsafe { (string_as_str(addr), string_as_str(server_name)) };
     let remote = match resolve_connect_addr(addr_str) {
         Ok(remote) => remote,
         Err(err) => {
@@ -839,14 +799,16 @@ pub unsafe extern "C" fn hew_quic_endpoint_on_event(ep: *mut HewQuicEndpoint) ->
 }
 
 #[no_mangle]
-/// Return the endpoint's bound local address as a malloc-backed C string.
+/// Return the endpoint's bound local address as an owned managed string.
 ///
 /// # Safety
 ///
 /// `ep` must be null or a live endpoint pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_endpoint_local_addr(ep: *const HewQuicEndpoint) -> *mut c_char {
+pub unsafe extern "C" fn hew_quic_endpoint_local_addr(
+    ep: *const HewQuicEndpoint,
+) -> *mut HewString {
     if ep.is_null() {
-        return empty_c_string();
+        return std::ptr::null_mut();
     }
     // SAFETY: `ep` is non-null and must come from this module per caller
     // contract.
@@ -856,7 +818,7 @@ pub unsafe extern "C" fn hew_quic_endpoint_local_addr(ep: *const HewQuicEndpoint
         .lock()
         .ok()
         .map_or_else(String::new, |state| state.local_addr.clone());
-    str_to_malloc(&value)
+    string_from_str(&value)
 }
 
 #[no_mangle]
@@ -880,14 +842,16 @@ pub unsafe extern "C" fn hew_quic_endpoint_accepted_connections(ep: *const HewQu
 }
 
 #[no_mangle]
-/// Return the endpoint's last observed error as a malloc-backed C string.
+/// Return the endpoint's last observed error as an owned managed string.
 ///
 /// # Safety
 ///
 /// `ep` must be null or a live endpoint pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_endpoint_last_error(ep: *const HewQuicEndpoint) -> *mut c_char {
+pub unsafe extern "C" fn hew_quic_endpoint_last_error(
+    ep: *const HewQuicEndpoint,
+) -> *mut HewString {
     if ep.is_null() {
-        return empty_c_string();
+        return std::ptr::null_mut();
     }
     // SAFETY: `ep` is non-null and must come from this module per caller
     // contract.
@@ -897,7 +861,7 @@ pub unsafe extern "C" fn hew_quic_endpoint_last_error(ep: *const HewQuicEndpoint
         .lock()
         .ok()
         .map_or_else(String::new, |state| state.last_error.clone());
-    str_to_malloc(&value)
+    string_from_str(&value)
 }
 
 // ── Connection methods ────────────────────────────────────────────────────────
@@ -1005,14 +969,14 @@ pub unsafe extern "C" fn hew_quic_conn_on_event(conn: *mut HewQuicConn) -> *mut 
 }
 
 #[no_mangle]
-/// Return the connection's local address as a malloc-backed C string.
+/// Return the connection's local address as an owned managed string.
 ///
 /// # Safety
 ///
 /// `conn` must be null or a live connection pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_conn_local_addr(conn: *const HewQuicConn) -> *mut c_char {
+pub unsafe extern "C" fn hew_quic_conn_local_addr(conn: *const HewQuicConn) -> *mut HewString {
     if conn.is_null() {
-        return empty_c_string();
+        return std::ptr::null_mut();
     }
     // SAFETY: `conn` is non-null and must come from this module per caller
     // contract.
@@ -1022,18 +986,18 @@ pub unsafe extern "C" fn hew_quic_conn_local_addr(conn: *const HewQuicConn) -> *
         .lock()
         .ok()
         .map_or_else(String::new, |state| state.local_addr.clone());
-    str_to_malloc(&value)
+    string_from_str(&value)
 }
 
 #[no_mangle]
-/// Return the remote peer address as a malloc-backed C string.
+/// Return the remote peer address as an owned managed string.
 ///
 /// # Safety
 ///
 /// `conn` must be null or a live connection pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_conn_peer_addr(conn: *const HewQuicConn) -> *mut c_char {
+pub unsafe extern "C" fn hew_quic_conn_peer_addr(conn: *const HewQuicConn) -> *mut HewString {
     if conn.is_null() {
-        return empty_c_string();
+        return std::ptr::null_mut();
     }
     // SAFETY: `conn` is non-null and must come from this module per caller
     // contract.
@@ -1042,7 +1006,7 @@ pub unsafe extern "C" fn hew_quic_conn_peer_addr(conn: *const HewQuicConn) -> *m
         || conn.conn.remote_address().to_string(),
         |state| state.peer_addr.clone(),
     );
-    str_to_malloc(&value)
+    string_from_str(&value)
 }
 
 #[no_mangle]
@@ -1150,19 +1114,19 @@ pub unsafe extern "C" fn hew_quic_conn_is_closed(conn: *const HewQuicConn) -> bo
 }
 
 #[no_mangle]
-/// Return the connection's last observed error as a malloc-backed C string.
+/// Return the connection's last observed error as an owned managed string.
 ///
 /// # Safety
 ///
 /// `conn` must be null or a live connection pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_conn_last_error(conn: *const HewQuicConn) -> *mut c_char {
+pub unsafe extern "C" fn hew_quic_conn_last_error(conn: *const HewQuicConn) -> *mut HewString {
     if conn.is_null() {
-        return empty_c_string();
+        return std::ptr::null_mut();
     }
     // SAFETY: `conn` is non-null and must come from this module per caller
     // contract.
     let conn = unsafe { &*conn };
-    str_to_malloc(&connection_last_error(conn))
+    string_from_str(&connection_last_error(conn))
 }
 
 // ── Stream methods ────────────────────────────────────────────────────────────
@@ -1721,14 +1685,16 @@ pub unsafe extern "C" fn hew_quic_stream_recv_closed(stream: *const HewQuicStrea
 }
 
 #[no_mangle]
-/// Return the stream's last observed error as a malloc-backed C string.
+/// Return the stream's last observed error as an owned managed string.
 ///
 /// # Safety
 ///
 /// `stream` must be null or a live stream pointer returned by this module.
-pub unsafe extern "C" fn hew_quic_stream_last_error(stream: *const HewQuicStream) -> *mut c_char {
+pub unsafe extern "C" fn hew_quic_stream_last_error(
+    stream: *const HewQuicStream,
+) -> *mut HewString {
     if stream.is_null() {
-        return empty_c_string();
+        return std::ptr::null_mut();
     }
     // SAFETY: `stream` is non-null and must come from this module per caller
     // contract.
@@ -1738,7 +1704,7 @@ pub unsafe extern "C" fn hew_quic_stream_last_error(stream: *const HewQuicStream
         .lock()
         .ok()
         .map_or_else(String::new, |state| state.last_error.clone());
-    str_to_malloc(&value)
+    string_from_str(&value)
 }
 
 // ── Event methods ─────────────────────────────────────────────────────────────
@@ -1784,8 +1750,13 @@ mod string_result_retention;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
     use std::thread;
+
+    /// What the bind resolver reports for the canonical empty address.
+    const EMPTY_BIND_ADDRESS_ERROR: &str =
+        "could not resolve bind address ``: parse failure: missing port separator";
 
     use hew_runtime::bytes::hew_bytes_drop;
 
@@ -1840,17 +1811,12 @@ mod tests {
         owned
     }
 
-    unsafe fn take_string(ptr: *mut c_char) -> String {
-        if ptr.is_null() {
-            return String::new();
-        }
-        // SAFETY: ptr is a valid NUL-terminated string allocated by str_to_malloc.
-        let value = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: ptr was allocated header-aware by str_to_malloc.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (take_string test helper frees str_to_malloc output; header-aware in S1)
-        value
+    unsafe fn take_string(value: *mut HewString) -> String {
+        // SAFETY: the producer transferred one owner; null is canonical empty.
+        let text = unsafe { string_as_str(value) }.to_string();
+        // SAFETY: this test holds the only owner of `value`.
+        unsafe { string_release(value) };
+        text
     }
 
     fn assert_resolver_error(
@@ -2038,8 +2004,8 @@ mod tests {
         // SAFETY: last error getter returns malloc-backed strings.
         assert!(unsafe { take_string(hew_quic_endpoint_last_error(client_ep_ptr)) }.is_empty());
 
-        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("valid address string");
-        let sn = c"localhost";
+        let addr = ManagedString::new(format!("127.0.0.1:{server_port}"));
+        let sn = ManagedString::new("localhost");
         // SAFETY: addr, sn, and client_ep_ptr are valid.
         let conn_ptr =
             unsafe { hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr()) };
@@ -2223,8 +2189,8 @@ mod tests {
 
     #[test]
     fn new_server_returns_non_null() {
-        let addr = c":0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new(":0");
+        // SAFETY: `addr` owns a live managed string for this call.
         let ep = unsafe { hew_quic_new_server(addr.as_ptr()) };
         assert!(!ep.is_null(), "expected non-null endpoint for server");
         // SAFETY: ep was just created.
@@ -2328,17 +2294,19 @@ mod tests {
         assert!(unsafe { take_string(hew_quic_last_error()) }.is_empty());
     }
 
+    /// The canonical empty address is a managed null, so it reaches the
+    /// resolver and reports the resolver's own diagnostic.
     #[test]
-    fn new_server_null_addr_sets_constructor_last_error() {
+    fn empty_addr_sets_constructor_last_error() {
         clear_constructor_last_error();
 
-        // SAFETY: null is explicitly handled.
+        // SAFETY: null is the canonical empty managed string.
         let ep = unsafe { hew_quic_new_server(std::ptr::null()) };
         assert!(ep.is_null());
         assert_eq!(
-            // SAFETY: the getter returns an owned malloc string for this thread.
+            // SAFETY: the getter transfers one managed owner to this thread.
             unsafe { take_string(hew_quic_last_error()) },
-            "invalid bind address"
+            EMPTY_BIND_ADDRESS_ERROR
         );
     }
 
@@ -2346,8 +2314,8 @@ mod tests {
     fn new_client_with_ca_invalid_pem_sets_constructor_last_error() {
         clear_constructor_last_error();
 
-        let pem = c"not a pem bundle";
-        // SAFETY: pem is a valid C string literal.
+        let pem = ManagedString::new("not a pem bundle");
+        // SAFETY: `pem` owns a live managed string for this call.
         let ep = unsafe { hew_quic_new_client_with_ca(pem.as_ptr()) };
         assert!(ep.is_null());
         // SAFETY: the getter returns an owned malloc string for this thread.
@@ -2362,8 +2330,8 @@ mod tests {
     fn successful_constructor_clears_constructor_last_error() {
         clear_constructor_last_error();
 
-        let bad_addr = c"not-an-address";
-        // SAFETY: bad_addr is a valid C string literal.
+        let bad_addr = ManagedString::new("not-an-address");
+        // SAFETY: `bad_addr` owns a live managed string for this call.
         let ep = unsafe { hew_quic_new_server(bad_addr.as_ptr()) };
         assert!(ep.is_null());
         // SAFETY: the getter returns an owned malloc string for this thread.
@@ -2371,8 +2339,8 @@ mod tests {
         assert!(error.contains("could not resolve bind address"));
         assert!(error.contains("parse failure"));
 
-        let good_addr = c":0";
-        // SAFETY: good_addr is a valid C string literal.
+        let good_addr = ManagedString::new(":0");
+        // SAFETY: `good_addr` owns a live managed string for this call.
         let ep = unsafe { hew_quic_new_server(good_addr.as_ptr()) };
         assert!(
             !ep.is_null(),
@@ -2447,7 +2415,7 @@ mod tests {
 
             let result = handle.join().expect("thread B panicked");
             assert_eq!(
-                result, "invalid bind address",
+                result, EMPTY_BIND_ADDRESS_ERROR,
                 "run {run}: QUIC constructor error recorded on thread A must be visible on thread B for the same actor"
             );
 
@@ -2464,8 +2432,8 @@ mod tests {
 
     #[test]
     fn endpoint_connect_null_ep() {
-        let addr = c"127.0.0.1:4433";
-        let sn = c"localhost";
+        let addr = ManagedString::new("127.0.0.1:4433");
+        let sn = ManagedString::new("localhost");
         // SAFETY: null ep is explicitly handled.
         let conn =
             unsafe { hew_quic_endpoint_connect(std::ptr::null_mut(), addr.as_ptr(), sn.as_ptr()) };
@@ -2477,9 +2445,9 @@ mod tests {
         let ep = hew_quic_new_client();
         assert!(!ep.is_null(), "expected non-null endpoint for client");
 
-        let bad_addr = c"not-an-address";
-        let sn = c"localhost";
-        // SAFETY: ep is live and both strings are valid C string literals.
+        let bad_addr = ManagedString::new("not-an-address");
+        let sn = ManagedString::new("localhost");
+        // SAFETY: ep is live and both fixtures own live managed strings.
         let conn = unsafe { hew_quic_endpoint_connect(ep, bad_addr.as_ptr(), sn.as_ptr()) };
         assert!(conn.is_null(), "invalid address must fail to connect");
         // SAFETY: error getter returns a malloc-backed string.
@@ -2584,8 +2552,8 @@ mod tests {
 
     #[test]
     fn loopback_send_recv() {
-        let addr = c":0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new(":0");
+        // SAFETY: `addr` owns a live managed string for this call.
         let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
         let client_ep_ptr = hew_quic_new_client();
         run_loopback(server_ep_ptr, client_ep_ptr);
@@ -2599,8 +2567,8 @@ mod tests {
     /// The call must return -2 well within 2 s.
     #[test]
     fn quic_stream_recv_timeout_fires() {
-        let addr = c":0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new(":0");
+        // SAFETY: `addr` owns a live managed string for this call.
         let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
         let client_ep_ptr = hew_quic_new_client();
         assert!(!server_ep_ptr.is_null() && !client_ep_ptr.is_null());
@@ -2638,8 +2606,8 @@ mod tests {
             }
         });
 
-        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("addr cstring");
-        let sn = c"localhost";
+        let addr = ManagedString::new(format!("127.0.0.1:{server_port}"));
+        let sn = ManagedString::new("localhost");
         // SAFETY: addr, sn, and client_ep_ptr are valid.
         let conn_ptr =
             unsafe { hew_quic_endpoint_connect(client_ep_ptr, addr.as_ptr(), sn.as_ptr()) };
@@ -2698,8 +2666,8 @@ mod tests {
     /// `status=0` with a non-empty out vec.
     #[test]
     fn quic_stream_recv_timeout_zero_means_no_deadline() {
-        let addr = c":0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new(":0");
+        // SAFETY: `addr` owns a live managed string for this call.
         let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
         let client_ep_ptr = hew_quic_new_client();
         assert!(!server_ep_ptr.is_null() && !client_ep_ptr.is_null());
@@ -2738,8 +2706,8 @@ mod tests {
             }
         });
 
-        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("addr cstring");
-        let sn = c"localhost";
+        let addr = ManagedString::new(format!("127.0.0.1:{server_port}"));
+        let sn = ManagedString::new("localhost");
         // SAFETY: client-side FFI with valid pointers; ownership documented
         // at each free.
         let (status, out, stream_ptr, conn_ptr) = unsafe {
@@ -2784,8 +2752,8 @@ mod tests {
     /// -2 well within 2 s.
     #[test]
     fn quic_stream_send_timeout_fires() {
-        let addr = c":0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new(":0");
+        // SAFETY: `addr` owns a live managed string for this call.
         let server_ep_ptr = unsafe { hew_quic_new_server(addr.as_ptr()) };
         let client_ep_ptr = hew_quic_new_client();
         assert!(!server_ep_ptr.is_null() && !client_ep_ptr.is_null());
@@ -2815,8 +2783,8 @@ mod tests {
             }
         });
 
-        let addr = CString::new(format!("127.0.0.1:{server_port}")).expect("addr cstring");
-        let sn = c"localhost";
+        let addr = ManagedString::new(format!("127.0.0.1:{server_port}"));
+        let sn = ManagedString::new("localhost");
         // 8 MiB payload — comfortably exceeds the default flow-control
         // window so write_all blocks waiting for the peer to advance it.
         let big_payload = vec![0xAB_u8; 8 * 1024 * 1024];
@@ -2857,16 +2825,15 @@ mod tests {
     fn tls_configured_loopback() {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()])
             .expect("self-signed test certificate");
-        let cert_pem = CString::new(cert.cert.pem()).expect("certificate PEM must be NUL-free");
-        let key_pem =
-            CString::new(cert.signing_key.serialize_pem()).expect("key PEM must be NUL-free");
-        let addr = c":0";
+        let cert_pem = ManagedString::new(cert.cert.pem());
+        let key_pem = ManagedString::new(cert.signing_key.serialize_pem());
+        let addr = ManagedString::new(":0");
 
-        // SAFETY: all C strings are valid and NUL-terminated.
+        // SAFETY: every fixture owns a live managed string for this call.
         let server_ep_ptr = unsafe {
             hew_quic_new_server_with_tls(addr.as_ptr(), cert_pem.as_ptr(), key_pem.as_ptr())
         };
-        // SAFETY: cert_pem is a valid C string.
+        // SAFETY: `cert_pem` owns a live managed string for this call.
         let client_ep_ptr = unsafe { hew_quic_new_client_with_ca(cert_pem.as_ptr()) };
         run_loopback(server_ep_ptr, client_ep_ptr);
     }

@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_statement_tail"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/scope_statement_tail.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "guarded=7\nannounce=8\n"
+exit = 0

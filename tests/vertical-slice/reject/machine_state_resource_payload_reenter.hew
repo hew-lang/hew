@@ -1,44 +1,34 @@
-// A machine state payload may not hold a `#[resource]` value: the machine's
-// tag-aware drop elaboration is a later slice, so a handle carried through a
-// `reenter` has no wired release on transition or scope exit. Compiling this
-// would leak the `close` silently; the declaration is rejected instead.
-//
-// Expected diagnostic:
-//   machine `Session` state `Active` holds `#[resource]`/`#[linear]` value `Handle`
+// Machines are pure value evaluators and cannot carry resource identity.
 #[resource]
 type Handle {
-    fd: i64;
+    fd: i64,
 }
 
 impl Handle {
-    fn close(self) {
+    fn close(consume self) {
         println(f"CLOSE fd={self.fd}");
     }
 }
 
 machine Session {
     events {
-        Open;
-        UseIt;
+        Open,
+        UseIt,
     }
 
-    state Idle;
-    state Active { h: Handle; }
+    state Idle,
+    state Active { h: Handle, },
 
-    on Open: Idle => Active {
-        Active { h: Handle { fd: 42 } }
-    }
-    on UseIt: Active => Active reenter {
-        Active { h: self.h }
-    }
+    on Open: Idle => Active { h: Handle { fd: 42 } }
+    on UseIt: Active => Active reenter { h: state.h }
 
     default { state }
 }
 
 fn main() {
     var s = Session.Idle;
-    s.step(SessionEvent.Open);
+    let _ = s.step(SessionEvent.Open);
     for i in 0 .. 3 {
-        s.step(SessionEvent.UseIt);
+        let _ = s.step(SessionEvent.UseIt);
     }
 }

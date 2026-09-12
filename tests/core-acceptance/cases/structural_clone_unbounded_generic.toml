@@ -1,0 +1,13 @@
+[[case]]
+id = "structural_clone_unbounded_generic"
+intent = "The fixture is refused, and the refusal names UndefinedMethod."
+source = "../vertical-slice/reject/structural_clone_unbounded_generic.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+line = 2
+column = 5
+message = "type `Option<T>` cannot be cloned because member `Some` of type `T` has no Clone capability"

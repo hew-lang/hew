@@ -1,0 +1,49 @@
+// `..base` inside a record literal supplies every field the literal does not
+// name, wherever it sits in the field list. A named field wins over the base,
+// a base with a resource field transfers that field once, and the closes are
+// observed exactly once per constructed value.
+//
+// Harness verb: hew run
+
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+}
+
+type Point { x: i64, y: i64, }
+type Line { start: Point, end: Point, }
+type Holder { token: Token, tag: i64, }
+
+fn seed() -> Holder {
+    Holder { token: Token { label: "s", id: 1 }, tag: 1 }
+}
+
+fn main() {
+    let base = Point { x: 1, y: 1 };
+
+    // Base first is the spelling the spec teaches; a base at the end names the
+    // same value, because the base fills only what the literal leaves unnamed.
+    let moved = Point { ..base, y: 2 };
+    let trailing = Point { y: 2, ..base };
+    println(f"moved={moved.x}:{moved.y} trailing={trailing.x}:{trailing.y}");
+
+    // The base is copied here, so it stays usable.
+    println(f"base={base.x}:{base.y}");
+
+    // A nested record base: the inner literal spreads the same value again.
+    let line = Line { start: base, end: Point { ..base, x: 4 } };
+    let redrawn = Line { ..line, end: Point { ..line.end, y: 9 } };
+    println(f"line={line.end.x}:{line.end.y} redrawn={redrawn.start.x}:{redrawn.end.x}:{redrawn.end.y}");
+
+    // A resource field cannot be copied, so the spread transfers it out of the
+    // temporary and only the retagged holder closes it.
+    let retagged = Holder { ..seed(), tag: 5 };
+    println(f"retagged={retagged.token.id}:{retagged.tag}");
+}

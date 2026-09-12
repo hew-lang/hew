@@ -1,0 +1,10 @@
+[[case]]
+id = "map-value-copy"
+intent = "Map insertion borrows its inputs, copies stay independent, and nested selected values outlive clear and replacement."
+source = "cases/map-value-copy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first\n2\nreplacement\n0\n0\n"
+exit = 0

@@ -1,7 +1,7 @@
 import std.iter;
 
 fn values(seed: i64) -> Vec<i64> {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(seed);
     xs.push(seed + 1);
     xs

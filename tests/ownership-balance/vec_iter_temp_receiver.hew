@@ -9,14 +9,14 @@ import std.iter;
 // reaches the same callees through a named receiver, whose relinquish the
 // checker's `Consume` intent already authored.
 fn terminal_on_temporary(k: i64) -> i64 {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(k);
     xs.push(k + 1);
     xs.into_iter().fold(0, |acc: i64, x: i64| acc + x)
 }
 
 fn adapter_on_temporary(k: i64) -> i64 {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(k);
     xs.push(k + 1);
     xs.push(k + 2);
@@ -24,8 +24,8 @@ fn adapter_on_temporary(k: i64) -> i64 {
     iter.count(evens)
 }
 
-fn terminal_on_let_bound(k: i64) -> i64 {
-    let xs: Vec<i64> = Vec.new();
+fn terminal_on_named_binding(k: i64) -> i64 {
+    var xs: Vec<i64> = Vec.new();
     xs.push(k);
     xs.push(k + 1);
     let cursor = xs.into_iter();
@@ -40,7 +40,7 @@ fn main() {
     while k < 200000 {
         total = total + terminal_on_temporary(k);
         total = total + adapter_on_temporary(k);
-        total = total + terminal_on_let_bound(k);
+        total = total + terminal_on_named_binding(k);
         k = k + 1;
     }
     println(total);

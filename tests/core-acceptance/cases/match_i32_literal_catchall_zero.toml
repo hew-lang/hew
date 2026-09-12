@@ -1,0 +1,13 @@
+[[case]]
+id = "match_i32_literal_catchall_zero"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/match_i32_literal_catchall_zero.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "utf8-decode-valid"
+intent = "Validating decoding propagates an ordinary typed result and preserves Unicode, NUL and empty strings beyond source-byte scope and independent mutation."
+source = "cases/utf8-decode-valid.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Aé中🙂\na\u0000b\n4:10:0\n"
+exit = 0

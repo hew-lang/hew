@@ -1,27 +1,37 @@
 // Two-Stack Queue - Queue implemented with two stacks
 // inbox: push here, outbox: pop from here
 // When outbox empty, transfer all from inbox to outbox (reverses order = FIFO)
-fn transfer(inbox: Vec<i64>, outbox: Vec<i64>) {
-    while inbox.len() > 0 {
+//
+// A parameter is the callee's own copy, so every operation that moves elements
+// hands both stacks back and the caller reassigns.
+fn transfer(var inbox: Vec<i64>, var outbox: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    while !inbox.is_empty() {
         let val = inbox.pop();
         outbox.push(val);
     }
+    (inbox, outbox)
 }
 
-fn tsq_enqueue(inbox: Vec<i64>, val: i64) {
+fn tsq_enqueue(var inbox: Vec<i64>, val: i64) -> Vec<i64> {
     inbox.push(val);
+    inbox
 }
 
-fn tsq_dequeue(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
-    if outbox.len() == 0 {
-        transfer(inbox, outbox);
+fn tsq_dequeue(var inbox: Vec<i64>, var outbox: Vec<i64>) -> (Vec<i64>, Vec<i64>, i64) {
+    if outbox.is_empty() {
+        let (drained, filled) = transfer(inbox, outbox);
+        inbox = drained;
+        outbox = filled;
     }
-    outbox.pop()
+    let val = outbox.pop();
+    (inbox, outbox, val)
 }
 
-fn tsq_peek(inbox: Vec<i64>, outbox: Vec<i64>) -> i64 {
-    if outbox.len() == 0 {
-        transfer(inbox, outbox);
+// Peek only reports the front element, so it transfers into its own copies.
+fn tsq_peek(inbox: Vec<i64>, var outbox: Vec<i64>) -> i64 {
+    if outbox.is_empty() {
+        let (_drained, filled) = transfer(inbox, outbox);
+        outbox = filled;
     }
     outbox[outbox.len() - 1]
 }
@@ -50,8 +60,8 @@ fn run_test(name: string, passed: i64) -> i64 {
 fn main() {
     var total = 0;
     var passed = 0;
-    let inbox: Vec<i64> = Vec.new();
-    let outbox: Vec<i64> = Vec.new();
+    var inbox: Vec<i64> = Vec.new();
+    var outbox: Vec<i64> = Vec.new();
     // Test 1: empty
     total = total + 1;
     let r1 = if tsq_is_empty(inbox, outbox) == 1 {
@@ -63,9 +73,10 @@ fn main() {
 
     // Test 2: enqueue and size
     total = total + 1;
-    tsq_enqueue(inbox, 10);
-    tsq_enqueue(inbox, 20);
-    tsq_enqueue(inbox, 30);
+    let seeds: Vec<i64> = [10, 20, 30];
+    for seed in seeds {
+        inbox = tsq_enqueue(inbox, seed);
+    }
     let r2 = if tsq_size(inbox, outbox) == 3 {
         1
     } else {
@@ -84,9 +95,11 @@ fn main() {
 
     // Test 4: dequeue FIFO order
     total = total + 1;
-    let d1 = tsq_dequeue(inbox, outbox);
-    let d2 = tsq_dequeue(inbox, outbox);
-    let d3 = tsq_dequeue(inbox, outbox);
+    let (in_d1, out_d1, d1) = tsq_dequeue(inbox, outbox);
+    let (in_d2, out_d2, d2) = tsq_dequeue(in_d1, out_d1);
+    let (in_d3, out_d3, d3) = tsq_dequeue(in_d2, out_d2);
+    inbox = in_d3;
+    outbox = out_d3;
     var r4 = 0;
     if d1 == 10 {
         if d2 == 20 {
@@ -108,12 +121,16 @@ fn main() {
 
     // Test 6: interleaved enqueue/dequeue
     total = total + 1;
-    tsq_enqueue(inbox, 1);
-    tsq_enqueue(inbox, 2);
-    let id1 = tsq_dequeue(inbox, outbox); // should be 1
-    tsq_enqueue(inbox, 3);
-    let id2 = tsq_dequeue(inbox, outbox); // should be 2
-    let id3 = tsq_dequeue(inbox, outbox); // should be 3
+    let pair: Vec<i64> = [1, 2];
+    for value in pair {
+        inbox = tsq_enqueue(inbox, value);
+    }
+    let (in_i1, out_i1, id1) = tsq_dequeue(inbox, outbox); // should be 1
+    inbox = tsq_enqueue(in_i1, 3);
+    let (in_i2, out_i2, id2) = tsq_dequeue(inbox, out_i1); // should be 2
+    let (in_i3, out_i3, id3) = tsq_dequeue(in_i2, out_i2); // should be 3
+    inbox = in_i3;
+    outbox = out_i3;
     var r6 = 0;
     if id1 == 1 {
         if id2 == 2 {
@@ -126,14 +143,16 @@ fn main() {
 
     // Test 7: many elements
     total = total + 1;
-    let in2: Vec<i64> = Vec.new();
-    let out2: Vec<i64> = Vec.new();
+    var in2: Vec<i64> = Vec.new();
+    var out2: Vec<i64> = Vec.new();
     for i in 0 .. 50 {
-        tsq_enqueue(in2, i);
+        in2 = tsq_enqueue(in2, i);
     }
     var r7 = 1;
     for i in 0 .. 50 {
-        let val = tsq_dequeue(in2, out2);
+        let (next_in, next_out, val) = tsq_dequeue(in2, out2);
+        in2 = next_in;
+        out2 = next_out;
         if val != i {
             r7 = 0;
         }

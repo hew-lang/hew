@@ -1,0 +1,10 @@
+[[case]]
+id = "callable-aggregate-private-parameter"
+intent = "Mutable record and tuple parameters privately copy callable fields and owned labels; conditional and loop calls retain local state while caller environments remain unchanged."
+source = "cases/callable-aggregate-private-parameter.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "PRIVATE RECORD\n12\n11\nPRIVATE TUPLE\n13\n12\n12\nPRIVATE RECORD\nPRIVATE TUPLE\n"
+exit = 0

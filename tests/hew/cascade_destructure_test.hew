@@ -10,8 +10,8 @@
 import std.testing;
 
 type Vec2 {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 /// Destructuring a two-field record into separate bindings yields the correct

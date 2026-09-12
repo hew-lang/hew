@@ -1,0 +1,13 @@
+[[case]]
+id = "trait_mut_receiver_impl_immut"
+intent = "S1-V3: trait declares `var self` receiver, impl declares plain `self` — Q004 impl-vs-trait equivalence checker rejects on receiver-mutability axis."
+source = "../vertical-slice/reject/trait_mut_receiver_impl_immut.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "TraitImplSignatureMismatch"
+line = 11
+column = 8
+message = "impl method `Box.bump` declares `self` (by-value receiver) but trait `MutOnly` requires `var self` (mutable receiver)"

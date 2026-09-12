@@ -15,12 +15,12 @@ actor Echo {
 pub fn main() -> i64 {
     let e = spawn Echo();
     let c = {
-        let v: Vec<i64> = Vec.new();
+        var v: Vec<i64> = Vec.new();
         v.push(40);
         v.push(2);
         v.iter()
     };
-    let _ = await e.ping();
+    let _ = e.ping();
     var sum: i64 = 0;
     for x in c {
         sum = sum + x;

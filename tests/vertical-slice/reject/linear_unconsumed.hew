@@ -2,9 +2,9 @@
 // (`MustConsume`). The must-consume wall must hold even though the consuming
 // method now dispatches via the sibling inherent impl.
 #[linear]
-type Tx { id: i64; }
+type Tx { id: i64, }
 impl Tx {
-    fn commit(consuming self) { println(f"commit {self.id}"); }
+    fn commit(consume self) { println(f"commit {self.id}"); }
 }
 
 fn main() {

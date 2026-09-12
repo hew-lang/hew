@@ -1,4 +1,0 @@
-fn main() {
-    let s = "a\0b";
-    println(s);
-}

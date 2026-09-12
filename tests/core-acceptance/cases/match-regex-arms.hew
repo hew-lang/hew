@@ -1,0 +1,81 @@
+//! Regex-literal match arms on a string scrutinee. Each `re"..."` literal is
+//! compiled once into the module's handle array, so an arm only tests the
+//! borrowed scrutinee against its slot. Arms are ordered: the first matching
+//! predicate wins, a guard can reject a matching pattern and hand the value to
+//! a later arm, and literal and regex arms mix freely. The repetition loop
+//! turns a borrow the arm forgot to release into a leak signal.
+
+// First match wins: `"42"` matches both the digit pattern and the
+// any-character pattern, and the digit arm is written first.
+fn classify(text: string) -> string {
+    match text {
+        re"^[0-9]+$" => "digits",
+        re"^[a-z]+$" => "lower",
+        re"^.+$" => "mixed",
+        _ => "empty",
+    }
+}
+
+// A literal arm placed before a regex arm that would also match: the literal
+// is tested first, so `"0"` never reaches the digit pattern.
+fn mixed(text: string) -> string {
+    match text {
+        "0" => "zero",
+        re"^[0-9]+$" => "number",
+        _ => "other",
+    }
+}
+
+// A guard on a regex arm. The pattern matches every short lowercase word, but
+// the guard rejects the ones under three characters, which then fall through
+// to the later arms with the scrutinee intact.
+fn guarded(text: string) -> string {
+    match text {
+        re"^[a-z]+$" if text.len() >= 3 => "word",
+        re"^[a-z]+$" => "short",
+        _ => "not a word",
+    }
+}
+
+// The scrutinee is borrowed for the test, so a built string is still whole
+// afterwards and is released exactly once on every path.
+fn built(k: i64) -> string {
+    let text = f"item{k}";
+    match text {
+        re"^item[0-9]+$" => text + "/tagged",
+        _ => text + "/plain",
+    }
+}
+
+fn churn() -> i64 {
+    var i = 0;
+    var seen = 0;
+    while i < 5000 {
+        seen = seen + classify("42").len();
+        seen = seen + classify("abc").len();
+        seen = seen + classify("a1").len();
+        seen = seen + classify("").len();
+        seen = seen + mixed("0").len();
+        seen = seen + mixed("77").len();
+        seen = seen + guarded("hey").len();
+        seen = seen + guarded("hi").len();
+        seen = seen + built(i % 3).len();
+        i = i + 1;
+    }
+    seen
+}
+
+fn main() {
+    println(classify("42"));
+    println(classify("abc"));
+    println(classify("a1"));
+    println(classify(""));
+    println(mixed("0"));
+    println(mixed("77"));
+    println(mixed("x"));
+    println(guarded("hey"));
+    println(guarded("hi"));
+    println(guarded("Hey"));
+    println(built(7));
+    println(f"churn {churn()}");
+}

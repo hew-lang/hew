@@ -1,8 +1,8 @@
-// Reject fixture: field access on a plain actor LocalPid, not a supervisor.
+// Reject fixture: field access on a plain actor handle, not a supervisor.
 //
-// `w.child` on a `LocalPid<Worker>` — `Worker` is a plain actor, not a
+// `w.child` on a `Worker` — `Worker` is a plain actor, not a
 // supervisor.  The checker must emit `UndefinedField` with a message that
-// includes "no field `child`" because `LocalPid` has no user-visible fields
+// includes "no field `child`" because an actor handle has no user-visible fields
 // and is not in the supervisor_children map.
 actor Worker {
     receive fn ping(n: i64) -> i64 {

@@ -68,7 +68,7 @@ actor Calculator {
 fn main() {
     let before: i64 = 41;
     let calculator = spawn Calculator;
-    let reply = await calculator.value(before);
+    let reply = calculator.value(before);
     let after = before + 1;
     println(after);
     match reply {
@@ -87,11 +87,11 @@ actor Source {
 }
 
 actor Handler {
-    let source: LocalPid<Source>;
+    let source: Source,
 
     receive fn run() -> i64 {
         let before: i64 = 7;
-        let reply = await source.value();
+        let reply = source.value();
         let after = before + 1;
         println(after);
         match reply {
@@ -104,7 +104,7 @@ actor Handler {
 fn main() {
     let source = spawn Source;
     let handler = spawn Handler(source: source);
-    let _ = await handler.run();
+    let _ = handler.run();
 }
 ";
 
@@ -126,7 +126,7 @@ actor Worker {
 
 fn main() {
     let worker = spawn Worker;
-    match await worker.compute(7) {
+    match worker.compute(7) {
         .Ok(value) => println(value),
         .Err(_) => println(-1),
     }
@@ -157,7 +157,7 @@ actor Worker {
 
 fn main() {
     let worker = spawn Worker;
-    match await worker.compute(7) {
+    match worker.compute(7) {
         .Ok(value) => println(value),
         .Err(_) => println(-1),
     }
@@ -188,7 +188,7 @@ actor Worker {
 
 fn main() {
     let worker = spawn Worker;
-    match await worker.compute(7) {
+    match worker.compute(7) {
         .Ok(value) => println(value),
         .Err(_) => println(-1),
     }
@@ -202,8 +202,8 @@ type Payload {
 }
 
 enum Status {
-    Idle;
-    Packet(Payload);
+    Idle,
+    Packet(Payload),
 }
 
 fn main() {

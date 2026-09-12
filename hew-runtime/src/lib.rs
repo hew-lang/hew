@@ -305,6 +305,7 @@ pub mod xnode_serial;
 /// CBOR `bstr` payload slot unchanged.
 pub mod cbor_serial;
 
+pub mod wire_native;
 /// Text wire-body codec: the CBOR↔JSON/YAML bridge the compiler's
 /// `__hew_wire_to_json_*` / `__hew_wire_from_json_*` (and yaml) thunks drive.
 /// Reuses the binary CBOR walk above and transcodes its value tree to/from text
@@ -572,7 +573,7 @@ pub mod profiler {
 
 // Global allocator — only on native targets. On WASM, the default Rust
 // allocator is used (via wasi-libc's malloc).
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(all(not(target_arch = "wasm32"), not(test)))]
 #[global_allocator]
 static GLOBAL: profiler::allocator::ProfilingAllocator = profiler::allocator::ProfilingAllocator;
 
@@ -586,6 +587,7 @@ pub use auto_mutex::{
     HewAutoMutex,
 };
 pub mod cabi;
+pub mod callable;
 /// Stackless continuation substrate: `HewCont` heap-frame + C ABI (W6.007).
 /// The runtime side of the unified suspension representation — the coro frame
 /// allocator and the resume/done/poll/destroy verbs the poll/resume executor
@@ -596,6 +598,17 @@ pub mod cont;
 /// resume vs destroy on a parked `HewCont`. Target-agnostic; drives the
 /// `cont` ABI, holds no scheduler queue state.
 pub mod coro_exec;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coro_state;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coro_sleep;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod coro_root;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod generator_checked;
 pub mod hashmap;
 pub mod hashset;
 pub mod layout_intrinsics;
@@ -603,6 +616,7 @@ pub mod mem;
 pub mod print;
 pub mod random;
 pub mod rc;
+pub(crate) mod release_walker;
 pub mod string;
 pub mod trait_object;
 pub mod vec;
@@ -812,6 +826,9 @@ pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod fault;
+pub mod host_api;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod mailbox;
 /// Mailbox envelope payload classification and cross-node send guards.
 pub mod mailbox_envelope;
@@ -855,7 +872,11 @@ pub mod signal;
 pub mod actor;
 pub mod actor_balance;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod actor_call_native;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_group;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod actor_native;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod arena;
 #[cfg(target_arch = "wasm32")]
@@ -864,7 +885,6 @@ pub mod arena;
 // Expose arena_wasm as a distinct module in native test builds so its unit
 // tests run under CI.  The #[cfg_attr(target_arch = "wasm32", no_mangle)]
 // guard in arena_wasm.rs prevents duplicate symbol collisions with arena.rs.
-pub(crate) mod alloc_tracker;
 #[cfg(all(not(target_arch = "wasm32"), test))]
 pub mod arena_wasm;
 #[cfg(not(target_arch = "wasm32"))]
@@ -875,8 +895,6 @@ mod channel_wasm;
 pub mod duplex;
 pub mod execution_context;
 #[cfg(not(target_arch = "wasm32"))]
-pub mod lambda_actor;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod read_slot;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
@@ -885,6 +903,8 @@ pub mod reply_channel_wasm;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod async_io;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
@@ -895,6 +915,8 @@ pub mod task_scope;
 pub mod timer_periodic;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod timer_periodic_wasm;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod wake;
 // timer_wheel compiles on every target: native uses it with the background
 // ticker thread (timer_periodic); WASM uses it with a host-driven tick
 // (scheduler_wasm + timer_periodic_wasm).
@@ -909,6 +931,8 @@ pub mod hew_node;
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod transport_checked;
 // Deterministic in-process SimTransport — gated behind `cfg(test)` for unit
 // tests inside the crate and the `sim-transport` feature for integration
 // tests. Never compiled into a release runtime; the module's own attribute
@@ -1167,3 +1191,9 @@ mod exit_code_resolution_tests {
         crate::exit_status::reset_process_exit_status();
     }
 }
+
+#[cfg(test)]
+mod test_string;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod value_close;

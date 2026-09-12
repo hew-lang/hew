@@ -13,19 +13,22 @@
 // on the early-return path the first two lines would be absent.)
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64,
 }
+
 impl Conn {
-    fn close(c: Conn) {
+    fn close(consume self) {
         println("closing");
-        print(c.fd);
+        print(self.fd);
         println("");
     }
 }
 
 fn run(flag: bool) -> i64 {
     let c: Conn = Conn { fd: 1 };
-    if flag { return 42; }
+    if flag {
+        return 42;
+    }
     99
 }
 

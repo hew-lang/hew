@@ -1,12 +1,13 @@
-# Exact per-file ownership-verifier expectations for the direct-call carrier
-# corpus. Columns: fixture, under-release findings, other blocking MIR findings,
-# `hew check` exit code, runtime mode. Every finding is blocking.
+# Exact per-file ownership expectations for the direct-call carrier corpus.
+# Columns: fixture, blocking diagnostics, `hew check` exit code, runtime mode.
+# A blocking diagnostic is one `hew check --format json` entry with severity
+# `error`; advisory severities are counted by nothing here.
 #
 # Runtime modes and what each one proves:
 #   check   the fixture is checked only (no `main` to execute, or a module root).
 #   clean   the fixture is BUILT at -O2 and executed under the platform leak
 #           oracle, and must report ZERO leaks.
-#   refuse  the fixture must produce a blocking MIR finding and a non-zero exit.
+#   refuse  the fixture must produce a blocking diagnostic and a non-zero exit.
 #
 # Every executed fixture drives its shape at least 200,000 times. A per-call
 # residue of one allocation is invisible at a single iteration, and refcounted
@@ -26,29 +27,29 @@
 # call transfers it to the callee.
 #
 # fixture	under_release	other_blocking_mir	exit_code	runtime
-cross_module_result/main.hew	0	0	0	check
-direct_call_terminal_carriers.hew	0	0	0	clean
-e_generation_ended.hew	0	0	0	check
-escaping_direct_call_binding.hew	0	0	0	check
-g_rearm_no_predecessor.hew	0	0	0	check
-j_join_successor.hew	0	0	0	check
-many_return_blocks.hew	0	0	0	check
-pF.hew	0	0	0	check
-pG.hew	0	0	0	check
-pH.hew	0	0	0	check
-pJ.hew	0	0	0	check
-pK.hew	0	0	0	check
-pL.hew	0	0	0	clean
-pM.hew	0	0	0	clean
-pN.hew	0	0	0	clean
-pO_alias.hew	0	0	0	clean
-rA.hew	0	0	0	clean
-rC.hew	0	0	0	clean
-rG_inline.hew	0	0	0	clean
-rG_let.hew	0	0	0	clean
-rJ_noerr.hew	0	0	0	clean
-rK_noloop.hew	0	0	0	clean
-retained_call_carriers/main.hew	0	0	0	check
-retained_hard_refusal.hew	0	1	1	refuse
-vec_iter_later_arg_exit.hew	0	0	0	clean
-vec_iter_temp_receiver.hew	0	0	0	clean
+cross_module_result/main.hew	0	0	check
+direct_call_terminal_carriers.hew	0	0	clean
+e_generation_ended.hew	0	0	check
+escaping_direct_call_binding.hew	0	0	check
+g_rearm_no_predecessor.hew	0	0	check
+j_join_successor.hew	0	0	check
+many_return_blocks.hew	0	0	check
+pF.hew	0	0	check
+pG.hew	0	0	check
+pH.hew	0	0	check
+pJ.hew	0	0	check
+pK.hew	0	0	check
+pL.hew	0	0	clean
+pM.hew	0	0	clean
+pN.hew	0	0	clean
+pO_alias.hew	0	0	clean
+rA.hew	0	0	clean
+rC.hew	0	0	clean
+rG_inline.hew	0	0	clean
+rG_let.hew	0	0	clean
+rJ_noerr.hew	0	0	clean
+rK_noloop.hew	0	0	clean
+retained_call_carriers/main.hew	0	0	check
+retained_hard_refusal.hew	1	1	refuse
+vec_iter_later_arg_exit.hew	0	0	clean
+vec_iter_temp_receiver.hew	0	0	clean

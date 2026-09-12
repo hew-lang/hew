@@ -1,0 +1,17 @@
+import std.text.regex;
+
+fn main() -> i64 {
+    let re = regex.new("([a-z]+)([0-9]+)");
+    println(re.is_match("abc123"));
+    println(re.find("xx abc123 yy"));
+    match re.capture("xx abc123 yy", 1) {
+        .Some(group) => println(group),
+        .None => println("no group"),
+    }
+    println(re.replace("abc123", "ok"));
+    re.close();
+
+    let scoped = regex.new("^[0-9]+$");
+    println(scoped.is_match("42"));
+    0
+}

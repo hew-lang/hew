@@ -1,0 +1,14 @@
+fn choose(value: Option<string>, uppercase: bool) -> string {
+    let text = value else { return "missing".to_upper(); };
+    let selected = if uppercase { text.to_upper() } else { text };
+    selected
+}
+
+fn main() -> i64 {
+    let original = Some("present");
+    let first = choose(original, true);
+    let second = choose(original, false);
+    let absent = choose(None, false);
+    println(f"{first}:{second}:{absent}");
+    0
+}

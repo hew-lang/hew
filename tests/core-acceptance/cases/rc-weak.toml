@@ -1,0 +1,10 @@
+[[case]]
+id = "rc-weak"
+intent = "`Weak<T>` observes without owning: downgrade and weak clone raise the weak count, upgrade answers Some while a strong reference is live and None after the last one is released, and the allocation outlives the payload for as long as a weak handle names it."
+source = "cases/rc-weak.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "weak=2 strong=1\nupgrade while live=2\nafter upgrade strong=1 weak=2\nalive weak=1 upgraded=2\nclose 2\nupgrade after release=0\nmain about to release\nclose 1\n"
+exit = 0

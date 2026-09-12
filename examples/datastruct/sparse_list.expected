@@ -1,0 +1,10 @@
+=== Sparse List Tests ===
+PASS: set and get
+PASS: get missing
+PASS: update
+PASS: sorted order
+PASS: sparse pattern
+PASS: iterate
+
+Passed: 6/6
+OVERALL: PASS

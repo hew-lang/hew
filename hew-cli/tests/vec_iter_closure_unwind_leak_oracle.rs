@@ -18,7 +18,7 @@ const TRAPPING_VEC_ITER_CLOSURE: &str = r#"
 actor VecIterCrasher {
     receive fn boom() {
         let root = Rc.new(41);
-        let values: Vec<Rc<i64>> = Vec.new();
+        var values: Vec<Rc<i64>> = Vec.new();
         values.push(root);
 
         let crash = |incoming: VecIter<Rc<i64>>| {

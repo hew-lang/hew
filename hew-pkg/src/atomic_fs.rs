@@ -566,7 +566,7 @@ struct FileLock {
 impl FileLock {
     fn unlock(&mut self) {
         if let Some(file) = self.file.take() {
-            os_unlock(&file);
+            let _ = file.unlock();
         }
     }
 }
@@ -632,105 +632,41 @@ fn lock_file_with_create(
             format!("lock path is not a regular file: {}", path.display()),
         ));
     }
-    if os_lock(&file, mode, nonblocking)? {
+    if lock_file_handle(&file, mode, nonblocking)? {
         Ok(Some(FileLock { file: Some(file) }))
     } else {
         Ok(None)
     }
 }
 
-#[cfg(unix)]
-fn os_lock(file: &File, mode: LockMode, nonblocking: bool) -> io::Result<bool> {
-    use std::os::fd::AsRawFd as _;
-
-    let operation = match mode {
-        LockMode::Shared => libc::LOCK_SH,
-        LockMode::Exclusive => libc::LOCK_EX,
-    } | if nonblocking { libc::LOCK_NB } else { 0 };
-    loop {
-        // SAFETY: the descriptor belongs to `file` and remains open throughout
-        // the call.
-        if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
-            return Ok(true);
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() == io::ErrorKind::Interrupted {
-            continue;
-        }
-        if nonblocking && error.kind() == io::ErrorKind::WouldBlock {
-            return Ok(false);
-        }
-        return Err(error);
-    }
-}
-
-#[cfg(unix)]
-fn os_unlock(file: &File) {
-    use std::os::fd::AsRawFd as _;
-
-    // SAFETY: the descriptor belongs to `file` and remains open for this call.
-    let _ = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
-}
-
-#[cfg(windows)]
-fn os_lock(file: &File, mode: LockMode, nonblocking: bool) -> io::Result<bool> {
-    use std::mem::zeroed;
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::{
-        LockFileEx, LOCKFILE_EXCLUSIVE_LOCK, LOCKFILE_FAIL_IMMEDIATELY,
-    };
-    use windows_sys::Win32::System::IO::OVERLAPPED;
-
-    let mut flags = match mode {
-        LockMode::Shared => 0,
-        LockMode::Exclusive => LOCKFILE_EXCLUSIVE_LOCK,
-    };
+fn lock_file_handle(file: &File, mode: LockMode, nonblocking: bool) -> io::Result<bool> {
     if nonblocking {
-        flags |= LOCKFILE_FAIL_IMMEDIATELY;
+        loop {
+            let result = match mode {
+                LockMode::Shared => file.try_lock_shared(),
+                LockMode::Exclusive => file.try_lock(),
+            };
+            match result {
+                Ok(()) => return Ok(true),
+                Err(std::fs::TryLockError::WouldBlock) => return Ok(false),
+                Err(std::fs::TryLockError::Error(error))
+                    if error.kind() == io::ErrorKind::Interrupted => {}
+                Err(std::fs::TryLockError::Error(error)) => return Err(error),
+            }
+        }
     }
-    // SAFETY: zero is a valid OVERLAPPED value for a synchronous whole-file
-    // lock, and the file handle remains open while the lock is held.
-    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
-    let result = unsafe {
-        LockFileEx(
-            file.as_raw_handle(),
-            flags,
-            0,
-            u32::MAX,
-            u32::MAX,
-            &raw mut overlapped,
-        )
-    };
-    if result != 0 {
-        return Ok(true);
-    }
-    let error = io::Error::last_os_error();
-    if nonblocking && error.raw_os_error() == Some(ERROR_LOCK_VIOLATION.cast_signed()) {
-        Ok(false)
-    } else {
-        Err(error)
-    }
-}
 
-#[cfg(windows)]
-fn os_unlock(file: &File) {
-    use std::mem::zeroed;
-    use std::os::windows::io::AsRawHandle as _;
-    use windows_sys::Win32::Storage::FileSystem::UnlockFileEx;
-    use windows_sys::Win32::System::IO::OVERLAPPED;
-
-    // SAFETY: this unlocks the same whole-file byte range used by `os_lock`;
-    // the file handle remains open throughout the call.
-    let mut overlapped: OVERLAPPED = unsafe { zeroed() };
-    let _ = unsafe {
-        UnlockFileEx(
-            file.as_raw_handle(),
-            0,
-            u32::MAX,
-            u32::MAX,
-            &raw mut overlapped,
-        )
-    };
+    loop {
+        let result = match mode {
+            LockMode::Shared => file.lock_shared(),
+            LockMode::Exclusive => file.lock(),
+        };
+        match result {
+            Ok(()) => return Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[derive(Debug)]

@@ -31,7 +31,7 @@ actor TlsEchoActor {
 }
 
 // Structural probe that the typed attach surface lowers correctly.
-fn _probe_attach_typechecks(stream: tls.TlsStream, handler: LocalPid<TlsEchoActor>) {
+fn _probe_attach_typechecks(stream: tls.TlsStream, handler: TlsEchoActor) {
     stream.attach(handler);
 }
 

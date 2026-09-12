@@ -1,0 +1,13 @@
+[[case]]
+id = "loop_break_in_match_scrutinee"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/loop_break_in_match_scrutinee.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 8
+column = 34
+message = "type mismatch"

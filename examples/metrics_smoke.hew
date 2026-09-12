@@ -11,7 +11,10 @@ import std.observe;
 
 fn main() {
     // Counter: register, increment five times, add four more → 9.
-    let requests = metrics.counter("app.requests");
+    let requests = match metrics.counter("app.requests") {
+        .Ok(counter) => counter,
+        .Err(error) => panic(to_string(error)),
+    };
     requests.inc();
     requests.inc();
     requests.inc();
@@ -24,20 +27,25 @@ fn main() {
     requests.add(-100);
 
     // Gauge: set to 10, then +1 -1 -1 → 9.
-    let active = metrics.gauge("app.active_connections");
+    let active = match metrics.gauge("app.active_connections") {
+        .Ok(gauge) => gauge,
+        .Err(error) => panic(to_string(error)),
+    };
     active.set(10);
     active.inc();
     active.dec();
     active.dec();
 
     // Histogram: three observations against the running count.
-    let durations = metrics.histogram("app.request_duration");
+    let durations = match metrics.histogram("app.request_duration") {
+        .Ok(histogram) => histogram,
+        .Err(error) => panic(to_string(error)),
+    };
     durations.observe(5.0);
     durations.observe(42.0);
     durations.observe(500.0);
 
-    // try_* recovers a structured error instead of panicking. Re-registering
-    // an existing name returns a handle to the same slot.
+    // Re-registering an existing name returns a handle to the same slot.
     match metrics.counter("app.requests") {
         .Ok(again) => again.inc(), // app.requests → 10
         .Err(_) => println("unexpected counter rejection"),

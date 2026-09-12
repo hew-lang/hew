@@ -42,12 +42,12 @@ fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) 
 #[test]
 fn dotted_static_paths_lower_without_a_runtime_receiver() {
     let (lower_output, tc_output) = typecheck_and_lower(
-        r#"
+        r"
             fn main() {
                 let values: Vec<i64> = Vec.new();
-                Node.start("127.0.0.1:0");
+                let key = Node.identity_key();
             }
-        "#,
+        ",
     );
     assert!(
         tc_output.errors.is_empty(),
@@ -75,8 +75,14 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
         .iter()
         .filter_map(|stmt| match &stmt.kind {
             HirStmtKind::Let(_, Some(expr)) | HirStmtKind::Expr(expr) => match &expr.kind {
-                HirExprKind::Call { callee, args, .. } => match &callee.kind {
-                    HirExprKind::BindingRef { name, .. } => Some((name.as_str(), args.len())),
+                HirExprKind::Call {
+                    target,
+                    callee,
+                    args,
+                } => match &callee.kind {
+                    HirExprKind::BindingRef { name, .. } => {
+                        Some((target, name.as_str(), args.len()))
+                    }
                     _ => None,
                 },
                 _ => None,
@@ -84,10 +90,20 @@ fn dotted_static_paths_lower_without_a_runtime_receiver() {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert!(calls.contains(&("Vec::new", 0)), "Vec.new call: {calls:#?}");
     assert!(
-        calls.contains(&("Node::start", 1)),
-        "Node.start call: {calls:#?}"
+        calls.iter().any(|(target, _, arity)| matches!(
+            target,
+            hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(
+                hew_types::VecValueOp::New
+            ))
+        ) && *arity == 0),
+        "Vec.new call: {calls:#?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|(_, name, arity)| *name == "Node::identity_key" && *arity == 0),
+        "Node.identity_key call: {calls:#?}"
     );
 }
 
@@ -147,8 +163,8 @@ fn dotted_rc_constructor_uses_the_intrinsic_identity() {
 fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
         r"
-            enum Choice { Present(i64); Absent }
-            fn main() -> Choice { Choice.Present(42) }
+            enum Choice { Present(i64), Absent }
+            fn sample() -> Choice { Choice.Present(42) }
         ",
     );
     assert!(
@@ -161,17 +177,17 @@ fn dotted_tuple_variant_lowers_from_checker_selected_owner() {
         "lowering diagnostics: {:#?}",
         lower_output.diagnostics
     );
-    let main = lower_output
+    let sample = lower_output
         .module
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            hew_hir::HirItem::Function(function) if function.name == "sample" => Some(function),
             _ => None,
         })
-        .expect("main function must lower");
+        .expect("sample function must lower");
     assert!(matches!(
-        main.body.tail.as_deref().map(|expr| &expr.kind),
+        sample.body.tail.as_deref().map(|expr| &expr.kind),
         Some(HirExprKind::MachineVariantCtor {
             machine_name,
             payload: Some(payload),
@@ -185,7 +201,7 @@ fn dotted_struct_variant_lowers_from_checker_selected_owner() {
     let (lower_output, tc_output) = typecheck_and_lower(
         r"
             enum Choice { Named { value: i64 } }
-            fn main() -> Choice { Choice.Named { value: 7 } }
+            fn sample() -> Choice { Choice.Named { value: 7 } }
         ",
     );
     assert!(
@@ -198,17 +214,17 @@ fn dotted_struct_variant_lowers_from_checker_selected_owner() {
         "lowering diagnostics: {:#?}",
         lower_output.diagnostics
     );
-    let main = lower_output
+    let sample = lower_output
         .module
         .items
         .iter()
         .find_map(|item| match item {
-            hew_hir::HirItem::Function(function) if function.name == "main" => Some(function),
+            hew_hir::HirItem::Function(function) if function.name == "sample" => Some(function),
             _ => None,
         })
-        .expect("main function must lower");
+        .expect("sample function must lower");
     assert!(matches!(
-        main.body.tail.as_deref().map(|expr| &expr.kind),
+        sample.body.tail.as_deref().map(|expr| &expr.kind),
         Some(HirExprKind::MachineVariantCtor {
             machine_name,
             payload: Some(payload),

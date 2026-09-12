@@ -18,12 +18,15 @@
     reason = "test harness conventions; see hashmap_layout_drop_overwrite.rs"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -45,31 +48,61 @@ extern "C" fn v_drop_count(_blob: *mut c_void) {
     V_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    let v = unsafe { *key.cast::<i64>() };
-    (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        let v = unsafe { *key.cast::<i64>() };
+        (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<i64>() };
-    let r = unsafe { *rhs.cast::<i64>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        let l = unsafe { *lhs.cast::<i64>() };
+        let r = unsafe { *rhs.cast::<i64>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-fn make_descriptors() -> (HewMapKeyLayout, HewMapValueLayout) {
+fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(k_drop_count as HewValueDropThunk),
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: Some(k_drop_count as HewMapValueDropThunk),
     };
-    let vl = HewMapValueLayout {
+    let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(v_drop_count as HewMapValueDropThunk),
+        drop_fn: Some(v_drop_count as HewValueDropThunk),
         clone_fn: None,
     };
     (kl, vl)
@@ -87,11 +120,15 @@ fn free_drops_every_occupied_kv_exactly_once() {
         let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
         for i in 0..N {
             let v = i.wrapping_mul(2);
-            hew_hashmap_insert_layout(
-                m,
-                (&raw const i).cast::<c_void>(),
-                (&raw const v).cast::<c_void>(),
-            );
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    m,
+                    (&raw const i).cast::<c_void>(),
+                    (&raw const v).cast::<c_void>(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         assert_eq!(K_DROP_COUNT.load(Ordering::SeqCst), 0);
         assert_eq!(V_DROP_COUNT.load(Ordering::SeqCst), 0);
@@ -114,17 +151,23 @@ fn free_skips_tombstoned_slots() {
         let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
         for i in 0..N {
             let v = i.wrapping_mul(2);
-            hew_hashmap_insert_layout(
-                m,
-                (&raw const i).cast::<c_void>(),
-                (&raw const v).cast::<c_void>(),
-            );
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    m,
+                    (&raw const i).cast::<c_void>(),
+                    (&raw const v).cast::<c_void>(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         // Remove some entries: each removal increments {K,V} drop counters
         // by 1 (verified by the dedicated remove test). After all removals
         // the K/V counters should equal REMOVED.
         for i in 0..REMOVED {
-            let removed = hew_hashmap_remove_layout(m, (&raw const i).cast::<c_void>());
+            let removed = map_status::success(|result_out, fault_out| {
+                hew_hashmap_remove_layout(m, (&raw const i).cast::<c_void>(), result_out, fault_out)
+            });
             assert!(removed);
         }
         assert_eq!(K_DROP_COUNT.load(Ordering::SeqCst), REMOVED as usize);
@@ -153,14 +196,19 @@ fn free_plain_descriptor_invokes_no_drops() {
     K_DROP_COUNT.store(0, Ordering::SeqCst);
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
-    let vl = HewMapValueLayout {
+    let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -171,11 +219,15 @@ fn free_plain_descriptor_invokes_no_drops() {
         let m = hew_hashmap_new_with_layout(&raw const kl, &raw const vl);
         for i in 0..4i64 {
             let v = i;
-            hew_hashmap_insert_layout(
-                m,
-                (&raw const i).cast::<c_void>(),
-                (&raw const v).cast::<c_void>(),
-            );
+            map_status::success(|result_out, fault_out| {
+                hew_hashmap_insert_layout(
+                    m,
+                    (&raw const i).cast::<c_void>(),
+                    (&raw const v).cast::<c_void>(),
+                    result_out,
+                    fault_out,
+                )
+            });
         }
         hew_hashmap_free_layout(m);
     }

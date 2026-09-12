@@ -1,0 +1,142 @@
+// A `match` arm binder that names a heap-owning payload can be moved into a
+// new owner, whatever the scrutinee expression looks like. The move reaches
+// the scrutinee's real storage, so the new owner's release is the sole free:
+// each payload closes exactly once, at the arm's scope exit, and the
+// scrutinee's own drop afterwards adds nothing.
+#[resource]
+type Tag {
+    id: i64,
+}
+
+impl Tag {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+enum Box {
+    Full(Tag),
+    Empty,
+}
+
+type Holder {
+    b: Box,
+}
+
+type Inner {
+    b: Box,
+}
+
+type Outer {
+    inner: Inner,
+}
+
+fn mk(id: i64) -> Box {
+    Box.Full(Tag { id: id })
+}
+
+// A bare owning binding: the scrutinee is the binding itself.
+fn bare_binding() {
+    let b = mk(1);
+    match b {
+        Box.Full(v) => {
+            let w = v;
+            println(f"binding {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after binding");
+}
+
+// An ephemeral producer: the scrutinee is a fresh sole-owner temp.
+fn ephemeral_call() {
+    match mk(2) {
+        Box.Full(v) => {
+            let w = v;
+            println(f"ephemeral {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after ephemeral");
+}
+
+// A record field place: the move has to reach `h.b`, not a copy of it.
+fn field_place() {
+    let h = Holder { b: mk(3) };
+    match h.b {
+        Box.Full(v) => {
+            let w = v;
+            println(f"field {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after field");
+}
+
+// A projection chain: the same, through two record fields.
+fn nested_field_place() {
+    let o = Outer { inner: Inner { b: mk(4) } };
+    match o.inner.b {
+        Box.Full(v) => {
+            let w = v;
+            println(f"nested-field {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after nested-field");
+}
+
+// A tuple index place.
+fn tuple_place() {
+    let pair = (mk(5), 0);
+    match pair.0 {
+        Box.Full(v) => {
+            let w = v;
+            println(f"tuple {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after tuple");
+}
+
+// The place hidden behind a block wrapper.
+fn block_wrapped_place() {
+    let h = Holder { b: mk(6) };
+    match {
+        h.b
+    } {
+        Box.Full(v) => {
+            let w = v;
+            println(f"block {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after block");
+}
+
+// The place hidden behind an `if` wrapper, where both tails are places.
+fn if_wrapped_place(flag: bool) {
+    let h = Holder { b: mk(7) };
+    match if flag {
+        h.b
+    } else {
+        h.b
+    } {
+        Box.Full(v) => {
+            let w = v;
+            println(f"if {w.id}");
+        },
+        Box.Empty => {},
+    }
+    println("after if");
+}
+
+fn main() {
+    bare_binding();
+    ephemeral_call();
+    field_place();
+    nested_field_place();
+    tuple_place();
+    block_wrapped_place();
+    if_wrapped_place(true);
+}

@@ -1,0 +1,19 @@
+type Entry { label: string, payload: bytes }
+fn main() {
+    var entries: Vec<Entry> = Vec.new();
+    entries.push(Entry { label: "first".to_upper(), payload: "one".to_bytes() });
+    entries.push(Entry { label: "middle".to_upper(), payload: "two".to_bytes() });
+    entries.push(Entry { label: "last".to_upper(), payload: "three".to_bytes() });
+    let snapshot = entries;
+    let middle = entries.remove(1);
+    assert(entries.len() == 2);
+    assert(entries[1].label == "LAST");
+    assert(snapshot.len() == 3);
+    assert(snapshot[1].label == "MIDDLE");
+    let first = entries.remove(0);
+    let last = entries.remove(0);
+    assert(entries.len() == 0);
+    assert(middle.payload.len() == 3);
+    assert(last.payload.len() == 5);
+    println(first.label + " " + middle.label + " " + last.label);
+}

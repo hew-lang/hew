@@ -1,14 +1,14 @@
 import std.encoding.xml;
 
 type ParseError {
-    message: string;
-    offset: i64;
+    message: string,
+    offset: i64,
 }
 
 enum ParseOutcome {
-    Parsed(xml.Node);
-    Failed(ParseError);
-    Skipped(string);
+    Parsed(xml.Node),
+    Failed(ParseError),
+    Skipped(string),
 }
 
 fn classify(s: string) -> ParseOutcome {

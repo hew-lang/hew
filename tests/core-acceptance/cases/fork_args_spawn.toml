@@ -1,0 +1,13 @@
+[[case]]
+id = "fork_args_spawn"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/fork_args_spawn.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\nhello world!\n"
+exit = 0

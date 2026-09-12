@@ -1,0 +1,13 @@
+[[case]]
+id = "for_range_step_by"
+intent = "`(0..10).step_by(2)` strides the half-open range: 0 2 4 6 8."
+source = "../vertical-slice/accept/for_range_step_by.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "0\n2\n4\n6\n8\n"
+exit = 0

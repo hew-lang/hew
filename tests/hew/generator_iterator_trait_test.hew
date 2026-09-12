@@ -1,4 +1,4 @@
-//! Regression for #2352: `Generator<Y, R>` and `AsyncGenerator<Y>` formally
+//! Regression for #2352: `Generator<Y, R>` formally
 //! implement `Iterator` via `std/builtins.hew`, replacing three checker-level
 //! special cases that made bare `for`-in work without a real trait impl.
 //! These fixtures pin the two things that must survive the special-case
@@ -23,14 +23,6 @@ gen fn counter(n: i64) -> i64 {
     }
 }
 
-async gen fn async_counter(n: i64) -> i64 {
-    var i: i64 = 0;
-    while i < n {
-        yield i;
-        i = i + 1;
-    }
-}
-
 #[test]
 fn test_generator_bare_for_in_accumulates() {
     var total: i64 = 0;
@@ -38,14 +30,5 @@ fn test_generator_bare_for_in_accumulates() {
         total = total + x;
     }
     // Yields 0,1,2,3 -> sum 6.
-    testing.assert_eq(total, 6);
-}
-
-#[test]
-fn test_async_generator_bare_for_in_accumulates() {
-    var total: i64 = 0;
-    for x in async_counter(4) {
-        total = total + x;
-    }
     testing.assert_eq(total, 6);
 }

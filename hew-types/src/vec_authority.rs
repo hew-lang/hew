@@ -17,7 +17,8 @@ use crate::extern_symbol::{ExternSymbolTemplate, TemplateSegment};
 use crate::ty::Ty;
 
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../std/builtins.hew");
-const RUNTIME_SYMBOL_CATALOG: &str = include_str!("../../scripts/jit-symbol-classification.toml");
+const RUNTIME_SYMBOL_CATALOG: &str =
+    include_str!("../../scripts/runtime-export-classification.toml");
 
 /// The runtime ABI class of one `Vec<T>` element.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -447,21 +448,20 @@ pub fn resolve_runtime_symbol(
 ) -> VecSymbolResolution {
     let spec = method_spec(method);
 
-    // A `Ptr`-token element (a heap-boxed indirect enum node, a `LocalPid`
+    // A `Ptr`-token element (a heap-boxed indirect enum node, an actor
     // handle, a closure/function value, ...) never selects the owned Vec
-    // family, even when an upstream owned-admissibility check reports it as
-    // owned. A recursive `indirect enum` element satisfies every shape
-    // `vec_owned_element_admissible` requires (registered record/enum kind and
-    // no unowned-container field) because that admissibility check
-    // is blind to indirection — but its runtime representation is a bare
+    // family, even when the element's value class reports an ownership
+    // obligation. A recursive `indirect enum` element classes `CowValue` —
+    // the class rule reads the declaration's members, not its indirection —
+    // but its runtime representation is a bare
     // pointer slot built by `hew_vec_new_ptr`, not the owned family's
-    // `HewVecElemLayout`-descriptor buffer. Honouring `is_owned` here would
+    // `HewValueLayout`-descriptor buffer. Honouring `is_owned` here would
     // route `push`/`pop`/`get`/... to `hew_vec_*_owned` against a buffer the
     // constructor built pointer-plain, corrupting the ABI the moment
     // construction is ever admitted for that element. Pinning the exclusion
     // at the authority (not as a codegen-side special case) keeps
     // construction and every element op congruent by construction, mirroring
-    // the existing `LocalPid` precedent
+    // the existing actor-handle precedent
     // (`BuiltinType::lowers_as_pointer_vec_element`).
     let is_owned = profile.is_owned && profile.abi != Some(VecElementToken::Ptr);
 
@@ -776,10 +776,10 @@ mod tests {
 
     #[test]
     fn ptr_token_element_never_selects_owned_family_even_if_reported_owned() {
-        // Pins the exact latent-bug shape from CAP-01: `vec_owned_element_
-        // admissible` is blind to indirection, so a recursive `indirect enum`
+        // Pins the exact latent-bug shape from CAP-01: the value class is
+        // blind to indirection, so a recursive `indirect enum`
         // element (e.g. `indirect enum RedisReply { Array(Vec<RedisReply>);
-        // ... }`) can report `is_owned: true` even though `classify_element`
+        // ... }`) reports `is_owned: true` even though `classify_element`
         // correctly tokens it `Ptr` — its Vec buffer is one heap-boxed
         // pointer per slot, built by `hew_vec_new_ptr`, never the owned
         // family's element-layout descriptor. `resolve_runtime_symbol` MUST

@@ -266,7 +266,7 @@ mod tests {
         assert_eq!(classify("fn foo() {}"), InputKind::Item);
         assert_eq!(classify("const LIMIT: i64 = 10;"), InputKind::Item);
         assert_eq!(classify("type UserId = i64;"), InputKind::Item);
-        assert_eq!(classify("enum Colour { Red; Green; }"), InputKind::Item);
+        assert_eq!(classify("enum Colour { Red, Green, }"), InputKind::Item);
         assert_eq!(
             classify("actor Counter { receive fn increment() {} }"),
             InputKind::Item

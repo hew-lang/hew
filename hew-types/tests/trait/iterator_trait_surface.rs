@@ -184,8 +184,8 @@ fn impl_iterator_for_fake_counter_typechecks() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type FakeCounter {{
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }}
 
 impl Iterator for FakeCounter {{
@@ -217,7 +217,7 @@ fn impl_iterator_missing_associated_type_errors_loudly() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type BadCounter {{
-    n: i64;
+    n: i64,
 }}
 
 impl Iterator for BadCounter {{

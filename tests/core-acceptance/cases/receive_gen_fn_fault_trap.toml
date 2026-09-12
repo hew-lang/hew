@@ -1,0 +1,14 @@
+[[case]]
+id = "receive_gen_fn_fault_trap"
+intent = "A `receive gen fn` producer that crashes mid-stream must fault-close the stream — never a silent, clean EOF."
+source = "../vertical-slice/accept/receive_gen_fn_fault_trap.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1\nunreached-eof\n"
+stderr = "hew: failure: DivideByZero (202)\nhew: actor crash in Emitter.ticks (actor 1): DivideByZero\n"
+exit = 1

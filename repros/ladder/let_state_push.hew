@@ -1,5 +1,5 @@
 actor Example {
-    let items: Vec<i64> = Vec.new();
+    var items: Vec<i64> = Vec.new(),
     receive fn demo() {
         items.push(1);
         println(items.len());
@@ -7,5 +7,5 @@ actor Example {
 }
 fn main() {
     let e = spawn Example();
-    e.demo();
+    let _ = e.demo();
 }

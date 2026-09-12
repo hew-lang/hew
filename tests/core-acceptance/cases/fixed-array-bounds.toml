@@ -1,0 +1,11 @@
+[[case]]
+id = "fixed-array-bounds"
+intent = "An array replacement past the end retains and releases the array and incoming owned value on its checked failure edge."
+source = "cases/fixed-array-bounds.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

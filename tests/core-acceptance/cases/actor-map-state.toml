@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-map-state"
+intent = "Actor map insertion, replacement and removal publish updated owners, preserve caller snapshots and safely copy arguments borrowed from another state field."
+source = "cases/actor-map-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "actor map updates preserve state ownership\n"
+stderr = ""
+exit = 0

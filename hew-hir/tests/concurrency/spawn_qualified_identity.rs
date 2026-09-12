@@ -3,7 +3,7 @@
 //! A module-qualified spawn (`spawn bank.Account(...)`) lowers a
 //! `HirExprKind::Spawn` whose `actor_name` is the checker-resolved dotted
 //! identity (`bank.Account`), and the expression type is the dotted
-//! `LocalPid<bank.Account>` — the same key the MIR actor-layout registry
+//! `bank.Account` — the same key the MIR actor-layout registry
 //! uses. Root-actor spawns keep the bare name (zero churn).
 
 use hew_hir::{
@@ -14,7 +14,7 @@ use hew_parser::module::{Module, ModuleGraph, ModuleId};
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeCheckOutput};
 
 const BANK_SRC: &str = "pub actor Account {\n\
-                        \x20   var balance: i64 = 0;\n\
+                        \x20   var balance: i64 = 0,\n\
                         \x20   receive fn deposit(n: i64) -> i64 { balance = balance + n; balance }\n\
                         }\n";
 
@@ -42,7 +42,7 @@ fn build_program(root_src: &str) -> Program {
             selection_trailing_comma: false,
             module_alias: None,
             file_path: None,
-            resolved_items: Some(imported.program.items.clone()),
+            resolved_items: Some(imported.program.items.clone().into()),
             resolved_item_source_paths: Vec::new(),
             resolved_source_paths: Vec::new(),
         }),
@@ -115,22 +115,18 @@ fn collect_spawns(expr: &HirExpr, spawns: &mut Vec<(String, ResolvedTy)>) {
     }
 }
 
-fn local_pid_inner(ty: &ResolvedTy) -> Option<&str> {
-    match ty {
-        ResolvedTy::Named { name, args, .. } if name == "LocalPid" && args.len() == 1 => {
-            match &args[0] {
-                ResolvedTy::Named { name: inner, .. } => Some(inner.as_str()),
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+/// The actor's own dotted name, if `ty` is that actor's handle type (D489:
+/// an actor is the type of its handle, so the handle carries the actor's
+/// nominal identity directly rather than wrapping it in a separate carrier).
+fn actor_handle_name(ty: &ResolvedTy) -> Option<String> {
+    ty.actor_handle_instance()
+        .map(|instance| instance.nominal.full_path().to_string())
 }
 
 /// `spawn bank.Account()` carries the dotted identity on both the lowered
-/// `Spawn` node and its `LocalPid<T>` type.
+/// `Spawn` node and its handle type.
 #[test]
-fn qualified_spawn_lowers_dotted_actor_name_and_pid_type() {
+fn qualified_spawn_lowers_dotted_actor_name_and_handle_type() {
     let program = build_program(
         "fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
@@ -147,19 +143,19 @@ fn qualified_spawn_lowers_dotted_actor_name_and_pid_type() {
         "lowered spawn must carry the canonical dotted actor identity"
     );
     assert_eq!(
-        local_pid_inner(ty),
-        Some("hew.bank.Account"),
-        "spawn result type must be LocalPid<hew.bank.Account>, got {ty:?}"
+        actor_handle_name(ty),
+        Some("hew.bank.Account".to_string()),
+        "spawn result type must be hew.bank.Account, got {ty:?}"
     );
 }
 
 /// A root actor spawn stays bare — no qualification churn for the
 /// single-module common case.
 #[test]
-fn root_spawn_keeps_bare_actor_name_and_pid_type() {
+fn root_spawn_keeps_bare_actor_name_and_handle_type() {
     let program = build_program(
         "actor Local {\n\
-         \x20   var total: i64 = 0;\n\
+         \x20   var total: i64 = 0,\n\
          \x20   receive fn poke() { total = total + 1; }\n\
          }\n\
          fn main() {\n\
@@ -173,5 +169,5 @@ fn root_spawn_keeps_bare_actor_name_and_pid_type() {
     assert_eq!(spawns.len(), 1, "expected one spawn, got {spawns:?}");
     let (actor_name, ty) = &spawns[0];
     assert_eq!(actor_name, "Local");
-    assert_eq!(local_pid_inner(ty), Some("Local"));
+    assert_eq!(actor_handle_name(ty), Some("Local".to_string()));
 }

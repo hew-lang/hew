@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-tcp-io"
+intent = "TCP connections transfer into independently owned stream and sink halves that exchange NUL-containing bytes through native readiness on one scheduler worker."
+source = "cases/stream-tcp-io.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "TCP streams use native readiness\n"
+exit = 0

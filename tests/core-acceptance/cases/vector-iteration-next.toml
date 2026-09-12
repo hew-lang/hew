@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-next"
+intent = "Copied cursors keep independent positions and items after source mutation and exhaustion."
+source = "cases/vector-iteration-next.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "first\nfirst\nsecond\nempty\nempty\n"
+exit = 0
+stderr = ""

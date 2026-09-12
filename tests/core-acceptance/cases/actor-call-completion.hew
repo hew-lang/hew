@@ -1,0 +1,32 @@
+// A call on an actor handle waits for the handler to finish, so the handler's
+// own output always precedes the caller's line after it. A one-way submission
+// would print "returned first" before "handler FIRST".
+actor Worker {
+    var count: i64 = 0,
+
+    receive fn work(label: string) {
+        sleep(20ms);
+        count = count + 1;
+        println("handler " + label);
+    }
+
+    receive fn count_now() -> i64 { count }
+}
+
+fn main() {
+    let worker = spawn Worker();
+    match worker.work("first".to_upper()) {
+        .Ok(_) => println("returned first"),
+        .Err(_) => panic("completion call failed"),
+    }
+    match worker.work("second".to_upper()) {
+        .Ok(_) => println("returned second"),
+        .Err(_) => panic("completion call failed"),
+    }
+    match worker.count_now() {
+        .Ok(n) => println(n),
+        .Err(_) => panic("count query failed"),
+    }
+    close(worker);
+    println("closed");
+}

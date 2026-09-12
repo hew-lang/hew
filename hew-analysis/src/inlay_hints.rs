@@ -5,7 +5,8 @@
 //! than LSP positions.
 
 use hew_parser::ast::{
-    Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem, TypeExpr,
+    condition_exprs, Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey};
@@ -259,8 +260,12 @@ fn collect_inlay_hints_from_stmt(
             collect_inlay_hints_from_expr(source, &condition.0, tc, hints);
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
             collect_inlay_hints_from_block(source, body, tc, hints);
         }
         Stmt::For { iterable, body, .. } => {
@@ -285,15 +290,16 @@ fn collect_inlay_hints_from_stmt(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            for expr in condition_exprs(conditions) {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
             collect_inlay_hints_from_block(source, body, tc, hints);
-            if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, block, tc, hints);
+            if let Some(else_expr) = else_body {
+                collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -364,11 +370,17 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &base.0, tc, hints);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             collect_inlay_hints_from_expr(source, &left.0, tc, hints);
             collect_inlay_hints_from_expr(source, &right.0, tc, hints);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             collect_inlay_hints_from_expr(source, &operand.0, tc, hints);
         }
         Expr::Lambda {
@@ -420,15 +432,16 @@ fn collect_inlay_hints_from_expr(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            for expr in condition_exprs(conditions) {
+                collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
             collect_inlay_hints_from_block(source, body, tc, hints);
-            if let Some(block) = else_body {
-                collect_inlay_hints_from_block(source, block, tc, hints);
+            if let Some(else_expr) = else_body {
+                collect_inlay_hints_from_expr(source, &else_expr.0, tc, hints);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -464,9 +477,14 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             for expr in exprs {
                 collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                collect_inlay_hints_from_expr(source, &element.expr().0, tc, hints);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -499,10 +517,6 @@ fn collect_inlay_hints_from_expr(
                 collect_inlay_hints_from_expr(source, &timeout_clause.duration.0, tc, hints);
                 collect_inlay_hints_from_expr(source, &timeout_clause.body.0, tc, hints);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            collect_inlay_hints_from_expr(source, &expr.0, tc, hints);
-            collect_inlay_hints_from_expr(source, &duration.0, tc, hints);
         }
         Expr::FieldAccess { object, .. } => {
             collect_inlay_hints_from_expr(source, &object.0, tc, hints);
@@ -541,7 +555,6 @@ fn collect_inlay_hints_from_expr(
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)
@@ -685,10 +698,7 @@ mod tests {
         );
         TypeCheckOutput {
             expr_types,
-            caller_visible_param_projections: HashSet::new(),
             resolved_expr_types: HashMap::new(),
-            produced_value_ownership: HashMap::new(),
-            produced_value_dependencies: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -720,21 +730,15 @@ mod tests {
             lowering_facts: HashMap::new(),
             method_call_rewrites: HashMap::new(),
             wire_layouts: HashMap::new(),
-            numeric_method_lowerings: HashMap::new(),
             width_cast_lowerings: HashMap::new(),
             try_width_cast_lowerings: HashMap::new(),
             actor_method_dispatch: HashMap::new(),
             actor_protocol_descriptors: HashMap::new(),
             machine_method_dispatch: HashMap::new(),
-            conn_await_reads: HashMap::new(),
-            listener_await_accepts: std::collections::HashSet::new(),
             tail_ok_coercions: std::collections::HashSet::new(),
             pattern_resolutions: HashMap::new(),
             pattern_plans: HashMap::new(),
             lang_items: hew_types::LangItemRegistry::new(),
-            hashmap_layout_facts: HashMap::new(),
-            hashset_layout_facts: HashMap::new(),
-            actor_spawn_type_args: HashMap::new(),
             resolved_calls: HashMap::new(),
             vec_generic_element_abi: HashMap::new(),
             user_clone_record_seeds: vec![],

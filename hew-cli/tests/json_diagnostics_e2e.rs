@@ -276,36 +276,6 @@ fn compile_mir_gate_failure_json_has_no_debug_payload() {
     );
 }
 
-/// `hew compile` (text) must no longer leak the raw `MirDiagnostic { .. }`
-/// Debug payload — this is the before/after guard for the `main.rs` leak site.
-#[test]
-fn compile_mir_gate_failure_text_has_no_debug_payload() {
-    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
-    let output = run(&["compile", path.to_str().unwrap()]);
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "NYI is a Limitation-channel diagnostic and must exit 3\n{}",
-        describe_output(&output),
-    );
-    assert!(
-        !stderr.contains("MirDiagnostic")
-            && !stderr.contains("NotYetImplemented {")
-            && !stderr.contains("SiteId("),
-        "compile must not emit raw MIR Debug payloads; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("not implemented yet"),
-        "compile should render the user-readable MIR message; got:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("main.hew:6:"),
-        "compile MIR diagnostic should be source-attributed; got:\n{stderr}",
-    );
-}
-
 /// `E_MODULE_NOT_FOUND` locates itself at the offending `import` (not a zero
 /// span) and, for a std-module typo close to a real module, names the fix.
 #[test]

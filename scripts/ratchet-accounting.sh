@@ -13,10 +13,7 @@ make_command="${RATCHET_ACCOUNTING_MAKE:-${MAKE:-make}}"
 families=(
     test
     test-hew-ratchet
-    test-core-matrix
-    test-stdlib-ratchet
-    test-doc-examples
-    fuzz-oracle
+    core-acceptance
     hew-check-all
 )
 

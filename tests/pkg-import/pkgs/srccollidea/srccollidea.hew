@@ -8,12 +8,12 @@
 
 /// Error type returned on the failure arm of `Source::close`.
 pub type ErrA {
-    code: i64;
+    code: i64,
 }
 
 /// Success payload returned by `Source::close`.
 pub type Payload {
-    code: i64;
+    code: i64,
 }
 
 /// A closable source whose `close` surfaces a structured `Result`.

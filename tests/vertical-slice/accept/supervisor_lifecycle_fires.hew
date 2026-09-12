@@ -3,33 +3,30 @@
 // restart -- the lifecycle-under-supervision contract.
 //
 // Distinguishing-from-garbage design (the load-bearing test property):
-//   - The child is spawned with `value: 7`, so the byte-copy init_state
-//     TEMPLATE seeds `value = 7`. A value of 100 is reachable ONLY by RUNNING
-//     init(), which OVERWRITES the template seed (`value = 100`).
+//   - `value` has no default and `init` assigns it, so under D447 it is a
+//     deferred field: the supervisor's child declaration cannot name it and
+//     100 is reachable only by RUNNING init().
 //   - #[on(start)] then adds 10 -> 110. So `get()` returns:
 //       * 110 only if BOTH init() and #[on(start)] ran,
-//       * 100 if init ran but on_start did not,
-//       * 7  if neither ran (the PRE-FIX behaviour: init never fired under
-//         supervision, so the field kept its template-seeded spawn value).
-//   The sibling supervised_actor_init_block.hew has an EMPTY init() and reads
-//   its value straight from the spawn-arg template, so it cannot tell
-//   init-firing from template-seeding. This fixture's init() OVERWRITES the
-//   seed, so it can: 7 (template) and 110 (hooks ran) are different numbers.
+//       * 100 if init ran but on_start did not.
+//   The sibling supervised_actor_init_block.hew has an EMPTY init(), so it
+//   cannot tell init-firing from spawn-argument seeding. This fixture's init()
+//   is the only writer of `value`, so it can.
 //
-// Determinism: the restart is observed via hew_supervisor_wait_restart, the C
-// ABI barrier that blocks until the supervisor's restart counter reaches the
-// target. The counter increments only AFTER restart_child_from_spec +
+// Determinism: the restart is observed with `await_restart`, the cooperative
+// barrier that suspends until the named child's slot is Live again. The
+// supervisor's restart counter advances only AFTER restart_child_from_spec +
 // store_child_slot complete, and the lifecycle wrapper fires inside
 // restart_child_from_spec (before store_child_slot), so when the barrier
-// returns the restarted child has already run init()/#[on(start)] and is Live.
+// resumes the restarted child has already run init()/#[on(start)] and is Live.
 // No sleep_ms; no race.
 //
 // Exit code 220 (= 110 initial + 110 after restart) proves init()+#[on(start)]
 // fired on the initial supervised spawn AND again on the restarted incarnation.
-// A pre-fix run reads 7 + 7 = 14 (init never fires) -- a distinct, visible
-// failure, never a false pass.
+// A run where either hook is skipped reads a different number -- a distinct,
+// visible failure, never a false pass.
 actor Counter {
-    var value: i64;
+    var value: i64,
     init() {
         value = 100;
     }
@@ -46,20 +43,16 @@ actor Counter {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child counter: Counter(value: 7);
-}
-
-extern "C" {
-    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+    child counter: Counter,
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let c = sup.counter;
-    let initial = match await c.get() {
+    let initial = match c.get() {
         .Ok(v) => v,
         .Err(_) => {
             return 1;
@@ -68,15 +61,10 @@ fn main() -> i64 {
     if initial != 110 {
         return initial;
     }
-    c.crash_me();
-    let restarted = unsafe {
-        hew_supervisor_wait_restart(sup, 1, 5000)
-    };
-    if restarted == 0 {
-        return 2;
-    }
+    let _ = c.crash_me();
+    let _ = await_restart sup.counter;
     let c2 = sup.counter;
-    let after = match await c2.get() {
+    let after = match c2.get() {
         .Ok(v) => v,
         .Err(_) => {
             return 3;

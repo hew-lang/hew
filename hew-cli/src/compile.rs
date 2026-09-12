@@ -25,18 +25,6 @@ use hew_parser::ast::{ImportDecl, Item, Spanned};
 
 use crate::target::TargetSpec;
 
-/// Selects how the Semantic IR lane participates in a compilation.
-///
-/// `Lower` is the strict cutover lane for its admitted domain: it lowers a
-/// closed SIR direct-call graph into fresh raw/checked MIR and rejects every
-/// reachable unsupported callee instead of mixing legacy function bodies.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum SirMode {
-    #[default]
-    Disabled,
-    Lower,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct CompileOptions {
     pub no_typecheck: bool,
@@ -49,6 +37,10 @@ pub struct CompileOptions {
     pub project_dir: Option<PathBuf>,
     /// Exact standard-library and global-module roots for synthetic sources.
     pub module_search_paths: Option<Vec<PathBuf>>,
+    /// Exact source occurrence selected as the process entry by `hew test`.
+    pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// Canonical `<stem>.hew` production peer for a selected test root.
+    pub companion: Option<PathBuf>,
     /// Compile a synthetic `hew eval` REPL fragment rather than a finished
     /// program, suppressing the whole-program completeness lints. See
     /// [`hew_compile::FrontendOptions::repl_fragment`]. Only the eval paths
@@ -59,10 +51,6 @@ pub struct CompileOptions {
     /// [`hew_compile::FrontendOptions::lint_levels`]. Defaults to every lint's
     /// built-in level.
     pub lint_levels: hew_types::LintLevels,
-    /// Experimental SIR execution mode. Kept in compile options rather than
-    /// only the `compile` command so the test runner can exercise the same
-    /// lane through the in-process native compiler.
-    pub sir_mode: SirMode,
 }
 
 pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) -> FrontendOptions {
@@ -73,8 +61,11 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
+        entry_selection: options.entry_selection,
+        companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+        documents: hew_compile::DocumentSet::new(),
     }
 }
 
@@ -92,8 +83,11 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         pkg_path: options.pkg_path.clone(),
         project_dir: options.project_dir.clone(),
         module_search_paths: options.module_search_paths.clone(),
+        entry_selection: options.entry_selection,
+        companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+        documents: hew_compile::DocumentSet::new(),
     }
 }
 
@@ -188,13 +182,23 @@ pub(crate) fn render_frontend_diagnostics(
                     diagnostic.filename.as_deref(),
                 ) {
                     (Some(span), Some(source), Some(filename)) => {
+                        let notes: Vec<crate::diagnostic::DiagnosticNote<'_>> = inner
+                            .notes
+                            .iter()
+                            .map(|note| crate::diagnostic::DiagnosticNote {
+                                source: note.source.as_ref(),
+                                filename: &note.filename,
+                                span: &note.span,
+                                message: &note.message,
+                            })
+                            .collect();
                         crate::diagnostic::render_diagnostic(
                             source,
                             filename,
                             span,
                             &inner.message,
-                            &[],
-                            &[],
+                            &notes,
+                            &inner.help,
                         );
                     }
                     _ => crate::diagnostic::emit_plain_diagnostic_line(&inner.message),
@@ -609,6 +613,7 @@ fn main() {
         let root_label = root_path.display().to_string();
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -618,6 +623,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
 
         let module_graph = build_module_graph(
@@ -697,6 +703,7 @@ fn main() {
         let root_label = root_path.display().to_string();
         let root_source = fs::read_to_string(&root_path).expect("root fixture should be readable");
         let mut program = parse_source(&root_source, &root_label).expect("fixture should parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -706,6 +713,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
 
         let module_graph = build_module_graph(
@@ -753,6 +761,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -762,6 +771,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -811,6 +821,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -820,6 +831,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -871,6 +883,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -880,6 +893,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,
@@ -929,6 +943,7 @@ fn main() {
         let root_source = fs::read_to_string(&root_path).expect("root fixture must be readable");
 
         let mut program = parse_source(&root_source, &root_label).expect("fixture must parse");
+        let documents = hew_compile::DocumentSet::new();
         let mut ctx = ImportResolutionContext {
             in_progress_imports: HashSet::new(),
             resolved_imports: HashMap::new(),
@@ -938,6 +953,7 @@ fn main() {
             package_name: None,
             project_dir: &fixture.path,
             module_search_paths: None,
+            documents: &documents,
         };
         let module_graph = build_module_graph(
             &root_path,

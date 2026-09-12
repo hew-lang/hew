@@ -8,8 +8,8 @@
 // correctly suppressed; releasing the destructured arm binding per iteration
 // is the match-arm consume-side discipline, tracked separately).
 enum Note {
-    Text(string);
-    Number(i64);
+    Text(string),
+    Number(i64),
 }
 
 actor Maker {
@@ -22,7 +22,7 @@ actor Maker {
 
 fn main() {
     let m = spawn Maker;
-    for await n in m.notes() {
+    for n in m.notes() {
         match n {
             Note.Text(s) => println(f"text {s}"),
             Note.Number(v) => println(f"number {v}"),

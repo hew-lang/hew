@@ -1,0 +1,13 @@
+[[case]]
+id = "cross_module_private_enum"
+intent = "Verifies that a private enum returned from a cross-module pub fn compiles and runs correctly."
+source = "../vertical-slice/accept/cross_module_private_enum/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "not found\n"
+exit = 0

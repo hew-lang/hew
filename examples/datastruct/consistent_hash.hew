@@ -1,6 +1,9 @@
 // Consistent Hash Ring
 // Maps keys to nodes. Adding/removing nodes moves minimal keys.
 // Ring positions stored in sorted Vec<i64>, node IDs in parallel Vec<i64>.
+//
+// A parameter is the callee's own copy, so every helper that writes the ring
+// returns both levels in parameter order and the caller reassigns each one.
 fn hash_pos(key: i64, ring_size: i64) -> i64 {
     let h = key * 2654435761 % ring_size;
     if h < 0 {
@@ -16,25 +19,25 @@ fn node_hash(node_id: i64, replica: i64, ring_size: i64) -> i64 {
 }
 
 // Insert position into sorted arrays, maintaining sort order
-fn sorted_insert(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64) {
+fn sorted_insert(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64) -> (Vec<i64>, Vec<i64>) {
     let len = positions.len();
     // Find insertion point
     var insert_at = len;
     for i in 0 .. len {
         if positions[i] > pos {
             insert_at = i;
-            // break out by setting i to len (no break in for)
+            // break out by returning (no break in for)
             return sorted_insert_at(positions, nodes, pos, node_id, insert_at);
         }
         if positions[i] == pos {
             // Duplicate position, skip
-            return;
+            return (positions, nodes);
         }
     }
-    sorted_insert_at(positions, nodes, pos, node_id, insert_at);
+    sorted_insert_at(positions, nodes, pos, node_id, insert_at)
 }
 
-fn sorted_insert_at(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64, insert_at: i64) {
+fn sorted_insert_at(var positions: Vec<i64>, var nodes: Vec<i64>, pos: i64, node_id: i64, insert_at: i64) -> (Vec<i64>, Vec<i64>) {
     let len = positions.len();
     // Add placeholder at end
     positions.push(0);
@@ -48,16 +51,20 @@ fn sorted_insert_at(positions: Vec<i64>, nodes: Vec<i64>, pos: i64, node_id: i64
     }
     positions.set(insert_at, pos);
     nodes.set(insert_at, node_id);
+    (positions, nodes)
 }
 
-fn add_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64, ring_size: i64, replicas: i64) {
+fn add_node(var positions: Vec<i64>, var nodes: Vec<i64>, node_id: i64, ring_size: i64, replicas: i64) -> (Vec<i64>, Vec<i64>) {
     for r in 0 .. replicas {
         let pos = node_hash(node_id, r, ring_size);
-        sorted_insert(positions, nodes, pos, node_id);
+        let (grown_positions, grown_nodes) = sorted_insert(positions, nodes, pos, node_id);
+        positions = grown_positions;
+        nodes = grown_nodes;
     }
+    (positions, nodes)
 }
 
-fn remove_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64) {
+fn remove_node(var positions: Vec<i64>, var nodes: Vec<i64>, node_id: i64) -> (Vec<i64>, Vec<i64>) {
     // Remove all entries for this node (compact in place)
     let len = positions.len();
     var write = 0;
@@ -75,6 +82,7 @@ fn remove_node(positions: Vec<i64>, nodes: Vec<i64>, node_id: i64) {
         let _ = nodes.pop();
         to_remove = to_remove - 1;
     }
+    (positions, nodes)
 }
 
 fn lookup(positions: Vec<i64>, nodes: Vec<i64>, key: i64, ring_size: i64) -> i64 {
@@ -98,12 +106,14 @@ fn main() {
     var failed = 0;
     let ring_size = 10000;
     let replicas = 3;
-    let positions: Vec<i64> = Vec.new();
-    let nodes: Vec<i64> = Vec.new();
+    var positions: Vec<i64> = Vec.new();
+    var nodes: Vec<i64> = Vec.new();
     // Test 1: Add nodes and verify lookup returns valid node
-    add_node(positions, nodes, 1, ring_size, replicas);
-    add_node(positions, nodes, 2, ring_size, replicas);
-    add_node(positions, nodes, 3, ring_size, replicas);
+    for node_id in 1 .. 4 {
+        let (ring_positions, ring_nodes) = add_node(positions, nodes, node_id, ring_size, replicas);
+        positions = ring_positions;
+        nodes = ring_nodes;
+    }
     let n1 = lookup(positions, nodes, 100, ring_size);
     let n2 = lookup(positions, nodes, 200, ring_size);
     let n3 = lookup(positions, nodes, 300, ring_size);
@@ -160,15 +170,17 @@ fn main() {
         failed = failed + 1;
     }
     // Record mappings before adding a node
-    let before: Vec<i64> = Vec.new();
-    var num_keys = 100;
+    var before: Vec<i64> = Vec.new();
+    let num_keys = 100;
     for k in 0 .. num_keys {
         let key = k * 37;
         let node = lookup(positions, nodes, key, ring_size);
         before.push(node);
     }
     // Add a 4th node
-    add_node(positions, nodes, 4, ring_size, replicas);
+    let (with_fourth_positions, with_fourth_nodes) = add_node(positions, nodes, 4, ring_size, replicas);
+    positions = with_fourth_positions;
+    nodes = with_fourth_nodes;
 
     // Test 4: After adding node, most keys stay on same node
     var same_count = 0;
@@ -211,7 +223,9 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: Remove a node, keys redistribute
-    remove_node(positions, nodes, 2);
+    let (pruned_positions, pruned_nodes) = remove_node(positions, nodes, 2);
+    positions = pruned_positions;
+    nodes = pruned_nodes;
     var node2_count = 0;
     for k in 0 .. num_keys {
         let key = k * 37;

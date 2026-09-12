@@ -1,0 +1,11 @@
+[[case]]
+id = "collection-parent-argument"
+intent = "Inserting an owning parent into its own collection field snapshots the input before reconstructing the parent and preserves independent copies."
+source = "cases/collection-parent-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\nROOT\n0\nROOT\n0\n"
+stderr = ""
+exit = 0

@@ -1,0 +1,33 @@
+// A record hands one owned field away and then reads that same field back.
+// The storage behind `booking.ticket` has a new owner, so the second read
+// would give the ticket two release paths; the checker refuses it and names
+// the moved field.
+//
+// Harness verb: hew check (must fail)
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closing ticket {self.id}");
+    }
+}
+
+type Booking {
+    ticket: Ticket,
+    label: string,
+}
+
+fn redeem(consume ticket: Ticket) -> i64 {
+    ticket.id
+}
+
+fn main() {
+    let booking = Booking { ticket: Ticket { id: 7 }, label: "seat-1" };
+    let redeemed = redeem(booking.ticket);
+    println(f"redeemed {redeemed}");
+    let again = redeem(booking.ticket);
+    println(f"redeemed {again}");
+}

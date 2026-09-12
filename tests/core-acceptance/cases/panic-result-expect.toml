@@ -1,0 +1,11 @@
+[[case]]
+id = "panic-result-expect"
+intent = "A failed Result `expect` releases its owned error and caller siblings before propagating a reason-bearing panic through the checked call boundary."
+source = "cases/panic-result-expect.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER OWNER\nCALLEE OWNER\n"
+stderr = "hew: failure: UserPanic (212): expect failed: the request had already failed\n"
+exit = 1

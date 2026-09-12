@@ -1,0 +1,13 @@
+[[case]]
+id = "match_destructure_guarded_tuple"
+intent = "Accept: a guard on a tuple match-destructure arm."
+source = "../vertical-slice/accept/match_destructure_guarded_tuple.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "b-payload\n"
+exit = 0

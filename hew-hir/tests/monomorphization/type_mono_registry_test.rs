@@ -179,7 +179,7 @@ fn generic_record_at_same_type_dedupes() {
 #[test]
 fn two_param_record_at_two_arg_sets_produces_two_entries() {
     let source = r#"
-        pub type Pair<A, B> { first: A; second: B }
+        pub type Pair<A, B> { first: A, second: B }
 
         fn main() {
             let p: Pair<i64, string> = Pair { first: 1, second: "s" };
@@ -322,7 +322,7 @@ fn generic_in_generic_box_vec_int_produces_one_entry_for_box_only() {
 #[test]
 fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
     let source = r"
-        pub type Grow<T> { tag: i64; sub: Grow<Grow<i64>> }
+        pub type Grow<T> { tag: i64, sub: Grow<Grow<i64>> }
 
         fn main() {
             let g: Grow<i64> = Grow { tag: 1, sub: hole };
@@ -375,7 +375,7 @@ fn recursive_polymorphic_self_emits_diagnostic_and_skips_entry() {
 #[test]
 fn monomorphic_record_does_not_appear_in_registry() {
     let source = r"
-        pub type Point { x: i64; y: i64 }
+        pub type Point { x: i64, y: i64 }
 
         fn main() {
             let p: Point = Point { x: 1, y: 2 };

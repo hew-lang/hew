@@ -97,6 +97,51 @@ fn run_native_compile_error_exits_one() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn run_native_signal_prints_typed_failure() {
+    require_codegen();
+    let dir = support::tempdir();
+    let path = dir.path().join("signal_run.hew");
+    // SIGKILL cannot be intercepted by the runtime's fault handlers. This
+    // exercises the parent CLI's diagnostic without invalid memory access.
+    std::fs::write(
+        &path,
+        format!(
+            "extern \"C\" {{ fn raise(signal: i32) -> i32; }}\nfn main() {{ unsafe {{ raise({}); }} }}\n",
+            libc::SIGKILL
+        ),
+    )
+    .unwrap();
+    for timeout in [false, true] {
+        let mut command = Command::new(hew_binary());
+        command.arg("run");
+        if timeout {
+            command.args(["--timeout", "10s"]);
+        }
+        command.arg(&path).current_dir(dir.path());
+        let output = support::run_bounded_command(command, "native signal diagnostic");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("hew: failure: UnknownFault"), "{stderr}");
+        assert!(stderr.contains("SIGKILL"), "{stderr}");
+        assert!(!stderr.contains("timed out"), "{stderr}");
+    }
+}
+
+#[test]
+fn run_native_preserves_explicit_exit() {
+    require_codegen();
+    let dir = support::tempdir();
+    let path = dir.path().join("explicit_exit.hew");
+    std::fs::write(&path, "fn main() -> i32 { 37 }\n").unwrap();
+    let mut command = Command::new(hew_binary());
+    command.arg("run").arg(&path).current_dir(dir.path());
+    let output = support::run_bounded_command(command, "native explicit exit");
+    assert_eq!(output.status.code(), Some(37));
+    assert!(output.stderr.is_empty(), "{:?}", output.stderr);
+}
+
 #[test]
 fn run_compile_error_exit_matches_check() {
     let dir = support::tempdir();
@@ -253,7 +298,7 @@ fn qualified_variant_tuple_payload_binds_nested_values() {
     std::fs::write(
         &path,
         r"
-enum Pair { Both((i64, i64)); None }
+enum Pair { Both((i64, i64)), None }
 
 fn main() {
     let pair = Pair.Both((19, 23));
@@ -291,24 +336,29 @@ import std.net;
 
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
-        let conn = net.connect("{addr}");
-        conn.write_string("client-ping:r319");
-        let reply = conn.read_string();
+        let conn = match net.connect("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
+        let _ = conn.write_string("client-ping:r319");
+        let reply = match conn.read_string() {{ .Ok(text) => text, .Err(error) => panic("client read is not valid UTF-8"), }};
         println(f"client-read={{reply}}");
         conn.close();
     }}
 }}
 
+// The client handler runs forked: a `receive fn` call from `main` completes the
+// handler before it returns, so calling it inline would block `main` short of
+// `accept()` while the handler blocks on its own read.
 fn main() {{
-    let listener = net.listen("{addr}");
+    let listener = match net.listen("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
     let client = spawn EchoServer;
-    client.connect_send_and_read(0);
+    scope {{
+        let _client_turn = fork client.connect_send_and_read(0);
 
-    let conn = listener.accept();
-    let request = conn.read_string();
-    println(f"server-read={{request}}");
-    conn.write_string("tcp-echo:hew-net-r319");
-    conn.close();
+        let conn = listener.accept();
+        let request = match conn.read_string() {{ .Ok(text) => text, .Err(error) => panic("server read is not valid UTF-8"), }};
+        println(f"server-read={{request}}");
+        let _ = conn.write_string("tcp-echo:hew-net-r319");
+        conn.close();
+    }}
     listener.close();
 }}
 "#,
@@ -408,11 +458,11 @@ fn run_float_comparison_branches_for_f64_and_f32() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "28\n");
 }
 
-/// CAP-12: `Node::load_keys` / `Node::allow_peer` compile and run on the native
-/// QUIC mesh. `load_keys` mints and persists this node's TLS identity (the
-/// keyfile must exist after the run and survive unchanged on a second run);
-/// `allow_peer` pins a peer SPKI in the fail-closed allowlist; the node then
-/// starts, registers, and shuts down. Native quic-mesh; no parity on WASM.
+/// CAP-12: a `NodeConfig` with a `key` and a pinned `peers` entry mints and
+/// persists this node's TLS identity (the keyfile must exist after the run
+/// and survive unchanged on a second run) and pins a peer SPKI in the
+/// fail-closed allowlist through `Node::start`; the node then starts,
+/// registers, and shuts down. Native quic-mesh; no parity on WASM.
 #[test]
 fn run_node_peer_auth_surface_persists_keys_and_runs() {
     require_codegen();
@@ -423,19 +473,27 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
         &path,
         r#"
         actor Counter {
-            var count: i64;
+            var count: i64,
             receive fn increment(n: i64) { count = count + n; }
         }
 
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.load_keys("node.key");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "node.key",
+                trust: "pinned",
+                peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"],
+                seeds: [],
+            };
+            match Node.start(config) {
+                .Ok(_) => {},
+                .Err(_) => panic("node start failed"),
+            }
             let me = Node.identity_key();
-            Node.allow_peer(2, "3059301306072a8648ce3d020106082a8648ce3d030107");
-            Node.start("127.0.0.1:0");
             let counter = spawn Counter(count: 0);
             Node.register("counter", counter);
-            counter.increment(5);
+            let _ = counter.increment(5);
             Node.shutdown();
             println(f"peer-auth ok id={me}");
         }
@@ -486,11 +544,13 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
     );
 }
 
-/// F6 fail-closed: a bad-hex `Node::allow_peer` argument is rejected and
-/// surfaced (`hew_last_error` + a `hew:` stderr diagnostic), and the subsequent
-/// `Node::start` refuses to bind a listener (fail-closed) rather than silently
-/// coming up with an incomplete peer allowlist. The Hew call form discards the
-/// `-1`, so the operator-visible signal is the stderr diagnostic.
+/// F6 fail-closed: a bad-hex peer credential in `NodeConfig.peers` is rejected
+/// and surfaced (`hew_last_error` + a `hew:` stderr diagnostic) while staging
+/// the config; `Node::start` never reaches the low-level bind because the
+/// staged config transaction short-circuits on the first failing field,
+/// rather than silently coming up with an incomplete peer allowlist. The Hew
+/// call form discards the returned `Result`, so the operator-visible signal
+/// is the stderr diagnostic.
 #[test]
 fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     require_codegen();
@@ -501,10 +561,18 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.allow_peer(2, "zznothexzz");
-            Node.start("127.0.0.1:0");
-            println("after-start");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "",
+                trust: "pinned",
+                peers: ["zznothexzz"],
+                seeds: [],
+            };
+            match Node.start(config) {
+                .Ok(_) => println("started"),
+                .Err(_) => println("refused"),
+            }
         }
         "#,
     )
@@ -515,22 +583,21 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
 
     assert!(
-        stderr.contains("Node::allow_peer") && stderr.contains("hex-encoded SPKI"),
-        "bad-hex allow_peer must be surfaced on stderr; stderr: {stderr}"
+        stderr.contains("Node::allow_peer")
+            && stderr.contains("hex-encoded SPKI")
+            && stderr.contains("fail-closed"),
+        "bad-hex allow_peer must be surfaced on stderr, fail-closed; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Node::start: refusing to bind listener") && stderr.contains("fail-closed"),
-        "Node::start must refuse after a failed allow_peer (fail-closed); stderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("after-start"),
-        "program continues past the Unit-returning start; stdout: {stdout}"
+        stdout.contains("refused") && !stdout.contains("started"),
+        "Node::start must refuse (fail-closed), never silently succeed; stdout: {stdout}"
     );
 }
 
-/// F6 fail-closed: a corrupt keyfile makes `Node::load_keys` fail and surface
-/// the error, and `Node::start` then refuses to bind a listener rather than
-/// silently presenting an ephemeral self-signed identity (the operator's pinned
+/// F6 fail-closed: a corrupt keyfile named by `NodeConfig.key` makes
+/// `Node::load_keys` fail and surface the error while staging the config;
+/// `Node::start` never reaches the low-level bind, rather than silently
+/// presenting an ephemeral self-signed identity (the operator's pinned
 /// identity failed to load).
 #[test]
 fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
@@ -545,10 +612,18 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
         &path,
         r#"
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.load_keys("node.key");
-            Node.start("127.0.0.1:0");
-            println("after-start");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "node.key",
+                trust: "pinned",
+                peers: [],
+                seeds: [],
+            };
+            match Node.start(config) {
+                .Ok(_) => println("started"),
+                .Err(_) => println("refused"),
+            }
         }
         "#,
     )
@@ -560,22 +635,19 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
 
     assert!(
         stderr.contains("Node::load_keys") && stderr.contains("fail-closed"),
-        "a corrupt keyfile must be surfaced on stderr; stderr: {stderr}"
+        "a corrupt keyfile must be surfaced on stderr, fail-closed; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Node::start: refusing to bind listener"),
-        "Node::start must refuse after a failed load_keys (fail-closed); stderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("after-start"),
-        "program continues past the Unit-returning start; stdout: {stdout}"
+        stdout.contains("refused") && !stdout.contains("started"),
+        "Node::start must refuse (fail-closed), never silently succeed; stdout: {stdout}"
     );
 }
 
-/// F6 fail-closed: when the keyfile path cannot establish an identity (here, a
-/// parent directory that does not exist, so the fresh identity cannot be
-/// persisted), `Node::load_keys` fails and `Node::start` refuses to bind a
-/// listener — fail-closed without any identity, never an ephemeral fallback.
+/// F6 fail-closed: when the `NodeConfig.key` path cannot establish an
+/// identity (here, a parent directory that does not exist, so the fresh
+/// identity cannot be persisted), `Node::load_keys` fails while staging the
+/// config and `Node::start` never reaches the low-level bind — fail-closed
+/// without any identity, never an ephemeral fallback.
 #[test]
 fn run_node_start_fails_closed_when_identity_cannot_be_established() {
     require_codegen();
@@ -586,10 +658,18 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         &path,
         r#"
         fn main() {
-            Node.set_transport("quic-mesh");
-            Node.load_keys("no_such_dir/node.key");
-            Node.start("127.0.0.1:0");
-            println("after-start");
+            let config = NodeConfig {
+                bind: "127.0.0.1:0",
+                transport: "quic-mesh",
+                key: "no_such_dir/node.key",
+                trust: "pinned",
+                peers: [],
+                seeds: [],
+            };
+            match Node.start(config) {
+                .Ok(_) => println("started"),
+                .Err(_) => println("refused"),
+            }
         }
         "#,
     )
@@ -604,12 +684,8 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
         "an unestablishable identity must be surfaced on stderr; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Node::start: refusing to bind listener"),
-        "Node::start must refuse without an identity (fail-closed); stderr: {stderr}"
-    );
-    assert!(
-        stdout.contains("after-start"),
-        "program continues past the Unit-returning start; stdout: {stdout}"
+        stdout.contains("refused") && !stdout.contains("started"),
+        "Node::start must refuse (fail-closed), never silently succeed; stdout: {stdout}"
     );
 }
 
@@ -633,7 +709,7 @@ fn run_generic_vec_into_iter_static_dispatch_outputs_first_value() {
         }
 
         fn main() {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(42);
             println(first_or_zero(v.into_iter()));
         }
@@ -662,8 +738,8 @@ fn run_generic_user_iterator_static_dispatch_outputs_first_value() {
         &path,
         r"
         type Counter {
-            cur: i64;
-            end: i64;
+            cur: i64,
+            end: i64,
         }
 
         impl Iterator for Counter {
@@ -736,7 +812,7 @@ fn run_generic_vec_element_methods_roundtrip_scalar_abis() {
 
 /// #1929 Stage 1: the pointer-ABI element. A `Vec<T>` `push`/`get` under a type
 /// parameter instantiated with the Copy pointer-identity handle
-/// `LocalPid<Counter>` re-resolves to `hew_vec_push_ptr` / `hew_vec_get_ptr`,
+/// `Counter` re-resolves to `hew_vec_push_ptr` / `hew_vec_get_ptr`,
 /// and the retrieved handle drives the SAME actor (bump then report → "1").
 #[test]
 fn run_generic_vec_element_methods_roundtrip_ptr_abi() {
@@ -940,15 +1016,20 @@ fn compile_generic_vec_for_in_resource_instantiation_fails_closed() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    let rejected_instantiations = combined.matches("MIR kind: NotYetImplemented").count();
+    // `for item in items` binds the element as a borrow, so counting no longer
+    // makes a shallow clone and there is nothing to refuse there. The
+    // fail-closed property moved to the escape: a borrowed element whose type
+    // has no copy operation cannot be transferred out of the loop. Lowering
+    // stops at the first refusing instantiation, so the per-instantiation count
+    // the old wording asserted is no longer observable. The refusal still
+    // arrives wrapped in the semantic-lowering limitation channel rather than as
+    // a source diagnostic; that is #3377.
     assert!(
-        combined.contains("E_NOT_YET_IMPLEMENTED")
-            && combined.contains("drop-only `Vec` element operation `get`")
-            && combined.contains("no semantic clone")
-            && combined.contains("would create a second owner")
-            && rejected_instantiations >= 4,
-        "expected every resource-bearing Vec instantiation to fail closed before a shallow clone; \
-         got {rejected_instantiations} canonical rejection(s): {combined}"
+        combined.contains("E_OWN_CONSUME_BORROWED")
+            && combined.contains("`item` is borrowed here")
+            && combined.contains("transfers only from an owning binding"),
+        "expected a resource-bearing Vec element to fail closed when it escapes the \
+         loop borrow: {combined}"
     );
 }
 
@@ -1170,7 +1251,7 @@ fn var_self_countdown_loop_writes_receiver_back() {
     std::fs::write(
         &source,
         r"
-pub type Countdown { n: i64; }
+pub type Countdown { n: i64, }
 
 impl Iterator for Countdown {
     type Item = i64;
@@ -1222,7 +1303,7 @@ fn var_self_direct_second_next_observes_mutated_receiver() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64; }
+pub type Counter { n: i64, }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -1267,7 +1348,7 @@ fn var_self_cowvalue_receiver_survives_storeback_without_double_drop() {
         &source,
         r#"
 fn main() {
-    let words: Vec<string> = Vec.new();
+    var words: Vec<string> = Vec.new();
     words.push("first");
     words.push("second");
     var it = words.into_iter();
@@ -1302,7 +1383,7 @@ fn var_self_nested_block_value_does_not_get_abi_wrapped() {
     std::fs::write(
         &source,
         r"
-pub type Counter { n: i64; }
+pub type Counter { n: i64, }
 
 impl Iterator for Counter {
     type Item = i64;
@@ -1392,7 +1473,7 @@ fn var_self_generic_impl_direct_second_next_resolves_monomorphized_callee() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T; n: i64; }
+pub type Slot<T> { x: T, n: i64, }
 
 trait Tick {
     type Item;
@@ -1441,7 +1522,7 @@ fn var_self_generic_method_direct_resolves_impl_and_method_type_args() {
     std::fs::write(
         &source,
         r"
-pub type Slot<T> { x: T; }
+pub type Slot<T> { x: T, }
 
 trait Tick {
     fn take<U>(var self, u: U) -> U;
@@ -1489,7 +1570,7 @@ fn second_or_zero<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
 }
 
 fn main() {
-    let values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new();
     values.push(1);
     values.push(2);
     println(second_or_zero(values.into_iter()));
@@ -2043,123 +2124,6 @@ fn check_dual_module_same_type_name_impl_resource_qualified_compiles() {
     );
 }
 
-/// Fail-closed boundary: match-destructure wildcard on a CLOSURE-typed
-/// field. Neither discharge path can place it — no leaf release symbol
-/// (`project_field_inline_drop_symbol` returns `None`) and the in-place
-/// classifier (`field_drop_in_place_admissible`) refuses closure shapes
-/// (the env box hides behind a non-owning `fn` surface). The pre-flight
-/// emits `E_NOT_YET_IMPLEMENTED: MIR lowering for match-destructure
-/// wildcard on owned aggregate field`, guaranteeing no silent leak or
-/// wrong-ABI free for shapes without a proven in-place release.
-#[test]
-fn check_match_destructure_wildcard_closure_field_fails_closed() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/reject/match_destructure_wildcard_closure_field.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("match-destructure wildcard on owned aggregate field"),
-        "expected fail-closed diagnostic; got: {combined}"
-    );
-}
-
-/// Fail-closed boundary (#2359 / #2647): a generator yielding
-/// `Vec<indirect-enum>` is rejected at check time. The element's per-element
-/// node free is unwired, so the consuming body's per-frame release could only
-/// be the buffer-only `hew_vec_free` — a per-frame element-node leak
-/// (previously 2 nodes x N iterations, compiling clean). As of #2647 the
-/// `Vec<indirect-enum>` construction is rejected at the type-checker boundary
-/// (the earliest fail-closed point), which preempts the generator yield-seam
-/// release-verdict refusal for this fixture; the yield/recv seam refusal
-/// remains in MIR as a backstop for any shape that reaches it without local
-/// construction.
-#[test]
-fn check_gen_yield_vec_indirect_enum_fails_closed() {
-    require_codegen();
-
-    let source = repo_root().join("tests/vertical-slice/reject/gen_yield_vec_indirect_enum.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("indirect enum whose per-element release protocol is not yet wired"),
-        "expected the #2647 checker-boundary release-protocol reject; got: {combined}"
-    );
-}
-
-/// Known limitation (#2352): `Generator`/`AsyncGenerator` formally implement
-/// `Iterator`, so a generator value type-checks against `std::iter`'s
-/// generic adapters (`iter::map`, `iter::filter`, ...). Passing one in
-/// aggregates the owned handle into the adapter's own struct, and the drop
-/// analysis cannot yet prove the handle is freed exactly once after that
-/// aggregate extraction — full aggregate-extraction support for owned
-/// handles is separately tracked ownership work, not part of Iterator trait
-/// completion. The compiler must refuse cleanly rather than emit a
-/// double-free or crash.
-#[test]
-fn check_generator_iter_map_owned_handle_aggregate_fails_closed() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/reject/generator_iter_map_owned_handle_aggregate.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("MIR kind: OwnedHandleAggregateExtractionUnsupported")
-            && combined.contains("not yet supported"),
-        "expected the owned-handle aggregate-extraction fail-closed diagnostic; got: {combined}"
-    );
-}
-
 /// Guard (#2359, recv leg): `Channel<Vec<indirect-enum>>` stays rejected
 /// UPSTREAM by the channel element-layout witness — the existing check-time
 /// diagnostic, not a new one. No recv surface can type this element class
@@ -2332,83 +2296,6 @@ fn run_match_record_full_extraction_unused_binder_drops_once() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Fail-closed: post-match read of a `BindingRef` scrutinee whose owned
-/// fields were destructured. The destructure consumes the scrutinee's
-/// storage (per-binding
-/// loads hand off ownership; partial-extraction wildcards drop fields IN
-/// PLACE). MIR emits a follow-up `Use { intent: Consume }` for the
-/// scrutinee binding so the dataflow checker transitions it to
-/// `Consumed(site)`; any post-match `BindingRef` use then fires
-/// `E_MIR_CHECK: UseAfterConsume`, catching the UAF at check time.
-#[test]
-fn check_match_destructure_use_after_consume_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/match_destructure_use_after_consume.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("UseAfterConsume"),
-        "expected UseAfterConsume diagnostic; got: {combined}"
-    );
-}
-
-/// Fail-closed: non-BitCopy match destructure on a projection scrutinee
-/// (`FieldAccess` / `TupleIndex` / `Index` / `Slice` or captured
-/// `BindingRef`).
-/// The projection's source storage is re-readable through the same shape
-/// after the match, and there is no binding for the dataflow checker to
-/// mark `Consumed`. MIR refuses fail-closed with
-/// `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure
-/// on projection scrutinee` and instructs the user to bind the scrutinee
-/// to a local first so the consume mark has a target.
-#[test]
-fn check_match_destructure_projection_scrutinee_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/match_destructure_projection_scrutinee.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("non-BitCopy match destructure on projection scrutinee"),
-        "expected fail-closed diagnostic; got: {combined}"
-    );
-}
-
 /// Non-BitCopy record match destructure — FULL extraction of an owned
 /// `Vec<i64>` field with a wildcarded `BitCopy` sibling. The arm
 /// `Pair { a: _, b: v } => v` moves the vector into `v`, which enters
@@ -2515,200 +2402,8 @@ fn run_match_record_wildcard_scrutinee_reusable() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Fail-closed: non-BitCopy match destructure on a TEMPORARY (fresh-value)
-/// scrutinee with an all-wildcard arm (`match make() { Outer { .. } => 0 }`).
-/// A temporary has no composite drop — nothing in the surrounding scope frees
-/// it at scope exit — and an all-wildcard arm emits no per-field drops, so
-/// every owned field of the discarded aggregate would leak. The
-/// scrutinee-shape gate refuses this fail-closed with
-/// `E_NOT_YET_IMPLEMENTED: MIR lowering for non-BitCopy match destructure on
-/// temporary scrutinee` and instructs the user to bind the scrutinee to a
-/// local first so its composite drop frees the discarded fields. Without the
-/// gate covering the zero-binding arm, this shape would `check` green and
-/// leak on every evaluation.
-#[test]
-fn check_match_destructure_temporary_scrutinee_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/match_destructure_temporary_scrutinee.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("non-BitCopy match destructure on temporary scrutinee"),
-        "expected temporary-scrutinee fail-closed diagnostic; got: {combined}"
-    );
-}
-
-/// Fail-closed: non-BitCopy match destructure on a TEMPORARY scrutinee with a
-/// binding arm (`match make() { Pair { a: x, b: _ } => x }`). The same
-/// scrutinee-shape gate that covers the all-wildcard temporary also covers
-/// the partial-extraction temporary: with no binding for the scrutinee, there
-/// is no consume mark to untaint the extracted binder, so the temporary's
-/// owned payload would leak. Refused fail-closed with the same
-/// temporary-scrutinee diagnostic; binding the scrutinee to a local first
-/// routes through the consume-mark + binder-untaint path that drops every
-/// field exactly once.
-#[test]
-fn check_match_destructure_temporary_scrutinee_bound_fails_closed() {
-    require_codegen();
-
-    let source = repo_root()
-        .join("tests/vertical-slice/reject/match_destructure_temporary_scrutinee_bound.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("non-BitCopy match destructure on temporary scrutinee"),
-        "expected temporary-scrutinee fail-closed diagnostic; got: {combined}"
-    );
-}
-
-/// Fail-closed: a guard on a record match-destructure arm. A record project
-/// pattern is irrefutable, so `lower_match_project` lowers exactly the first
-/// arm's body with no ordered fallthrough chain. An arm guard
-/// (`Pattern if <cond>`) has no fallthrough target, so a `false` guard cannot
-/// retry a later arm — the guarded arm would run anyway and consume the
-/// scrutinee out from under the intended arm, a silent miscompile. This is the
-/// exact shape `match p { Pair { a: x, b: _ } if false => x, Pair { a: _, b: y }
-/// => y }`, which must print `b-payload` but would wrongly bind `x`. MIR
-/// refuses fail-closed with
-/// `E_NOT_YET_IMPLEMENTED: guarded record/tuple match destructure` and steers
-/// the user to move the condition into the arm body or match on an enum.
-#[test]
-fn check_match_destructure_guarded_record_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/match_destructure_guarded_record.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("guarded record/tuple match destructure"),
-        "expected guarded-destructure fail-closed diagnostic; got: {combined}"
-    );
-}
-
-/// Fail-closed: a guard on a tuple match-destructure arm. A tuple project
-/// pattern is irrefutable exactly like the record case, so the same gate
-/// applies — `match p { (a, _) if false => a, (_, b) => b }` would silently
-/// take the guarded first arm. MIR refuses fail-closed with the same
-/// `guarded record/tuple match destructure` diagnostic, confirming the gate is
-/// unconditional across record and tuple projection scrutinees.
-#[test]
-fn check_match_destructure_guarded_tuple_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/match_destructure_guarded_tuple.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("guarded record/tuple match destructure"),
-        "expected guarded-destructure fail-closed diagnostic; got: {combined}"
-    );
-}
-
-/// Fail-closed: an owned call-carrier consumed by a project match on one
-/// path to a `return` another path reaches with the carrier still whole.
-/// The shared exit is reachable both through the match (a terminal
-/// snapshot drop would double-free the discharged fields) and around it
-/// (skipping the drop leaks the whole carrier), so no per-path release
-/// plan covers it. MIR refuses with `E_NOT_YET_IMPLEMENTED: owned
-/// call-carrier ... conditionally consumed before a shared exit` instead
-/// of shipping either memory bug.
-#[test]
-fn check_carrier_conditional_consume_shared_exit_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/carrier_conditional_consume_shared_exit.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("conditionally consumed before a shared exit"),
-        "expected conditional-consume fail-closed diagnostic; got: {combined}"
-    );
-}
+// The conditional carrier-consumption paths run in the carrier-conditional-consume
+// acceptance and safety case. The former checker refusal no longer applies.
 
 /// A last-use string sent to an actor moves into the prepared outbound carrier
 /// and neutralizes the sender slot. The fixture's handler consumes that string
@@ -2927,7 +2622,7 @@ fn run_fstring_dispatches_user_defined_display() {
         &hew_src,
         "import std.io;\n\
          \n\
-         type Point { x: i64; }\n\
+         type Point { x: i64, }\n\
          \n\
          impl Display for Point {\n\
          \x20   fn fmt(p: Point) -> string { f\"Point({p.x})\" }\n\
@@ -3948,11 +3643,11 @@ fn check_closure_shared_across_records_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_shared_across_records.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `h`"),
         "expected use-after-move diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("binding consumed here"),
+        combined.contains("value was consumed here"),
         "expected the diagnostic to name the move site; got: {combined}"
     );
 }
@@ -3964,7 +3659,7 @@ fn check_closure_double_vec_push_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_double_vec_push.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`") && combined.contains("value was consumed here"),
         "expected use-after-move diagnostic; got: {combined}"
     );
 }
@@ -3976,7 +3671,7 @@ fn check_closure_vec_push_then_record_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_vec_push_then_record.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`") && combined.contains("value was consumed here"),
         "expected use-after-move diagnostic; got: {combined}"
     );
 }
@@ -3989,8 +3684,12 @@ fn check_closure_move_then_invoke_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_move_then_invoke.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`"),
         "expected use-after-move diagnostic; got: {combined}"
+    );
+    assert!(
+        combined.contains("cannot invoke consumed callable `f`"),
+        "expected the invocation itself to be refused; got: {combined}"
     );
 }
 
@@ -4007,11 +3706,11 @@ fn check_closure_borrowed_element_store_fails_closed() {
     );
 }
 
-/// A forwarded fn-typed parameter's closure env is provably heap (the checker
-/// Escapes-classifies a closure crossing a call boundary as an argument), so
-/// storing it into an owning record field transfers env ownership into the
-/// record. The record becomes the sole owner that frees the env once at its
-/// drop, and the stored closure stays callable through the field.
+/// A `consume` fn-typed parameter stored into an owning record field transfers
+/// env ownership into the record. The record becomes the sole owner that frees
+/// the env once at its drop, and the stored closure stays callable through the
+/// field. Ownership comes from the declaration, not from the body: a borrowed
+/// parameter stored this way is `E_OWN_CONSUME_BORROWED`.
 /// `make_handler(make_adder(7))` then `h.action(35)` dispatches 35 + 7 = 42.
 #[test]
 fn closure_param_field_store_runs() {
@@ -4029,27 +3728,27 @@ fn closure_param_field_store_runs() {
     );
 }
 
-/// Storing a forwarded fn-typed parameter into a record field is the
+/// Storing a `consume` fn-typed parameter into a record field is the
 /// parameter's single consumption (the record becomes the sole env owner);
 /// using the parameter AFTER that store is a use-after-consume, rejected by
-/// the dataflow checker — never a silent miscompile or a runtime double-free.
-/// The diagnostic is `UseAfterConsume`, not the old `ClosurePairBorrowedStore`
-/// (the store itself is now legal; the later use is the error).
+/// the checker — never a silent miscompile or a runtime double-free. The
+/// declared store is legal, so the error names the later use and points back
+/// at the store, not a borrowed-store refusal.
 #[test]
 fn check_closure_param_use_after_store_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_param_use_after_store.hew");
     assert!(
-        combined.contains("is used after it was consumed"),
+        combined.contains("use of moved value `f`"),
         "expected use-after-consume diagnostic; got: {combined}"
     );
     assert!(
-        combined.contains("UseAfterConsume"),
-        "expected UseAfterConsume MIR kind; got: {combined}"
+        combined.contains("value was consumed here"),
+        "expected the note pointing at the consuming store; got: {combined}"
     );
     assert!(
         !combined.contains("ClosurePairBorrowedStore"),
-        "store is now legal; the error must be the later use, not a borrowed-store: {combined}"
+        "the declared store is legal; the error must be the later use: {combined}"
     );
 }
 
@@ -4135,8 +3834,8 @@ fn owned_record_string_field_by_value_round_trips() {
         &path,
         r#"
         type CommandOutput {
-            stdout: string;
-            code: i64;
+            stdout: string,
+            code: i64,
         }
 
         fn run() -> CommandOutput {
@@ -4175,12 +3874,12 @@ fn owned_record_vec_field_by_value_round_trips() {
         &path,
         r"
         type Histogram {
-            counts: Vec<i64>;
-            total: i64;
+            counts: Vec<i64>,
+            total: i64,
         }
 
         fn build() -> Histogram {
-            let v: Vec<i64> = Vec.new();
+            var v: Vec<i64> = Vec.new();
             v.push(10);
             v.push(20);
             Histogram { counts: v, total: 30 }
@@ -4218,12 +3917,12 @@ fn owned_nested_record_by_value_round_trips() {
         &path,
         r#"
         type User {
-            name: string;
+            name: string,
         }
 
         type Boxed {
-            user: User;
-            tag: i64;
+            user: User,
+            tag: i64,
         }
 
         fn wrap(n: i64) -> Boxed {
@@ -4257,7 +3956,7 @@ fn owned_nested_record_by_value_round_trips() {
 /// fail-closed sentinel ("Named/user type `json.Value` reached the LLVM
 /// emitter"). The fix matches the short name in codegen's opaque-ptr decision
 /// (`hew-codegen-rs/src/llvm.rs`). Exercises a trivial pass-through handle
-/// method (`get_int`) and `free`, asserting the runtime round-trip.
+/// method (`get_int`) and the implicit close, asserting the runtime round-trip.
 #[test]
 fn run_imports_json_opaque_handle_round_trips() {
     require_codegen();
@@ -4270,8 +3969,7 @@ fn run_imports_json_opaque_handle_round_trips() {
          \n\
          fn main() -> i32 {\n\
          \x20   let v = json.from_int(42);\n\
-         \x20   let n = v.get_int();\n\
-         \x20   v.free();\n\
+         \x20   let n = match v.get_int() { .Ok(value) => value, .Err(_) => return 1, };\n\
          \x20   println(f\"n={n}\");\n\
          \x20   0\n\
          }\n",
@@ -4289,10 +3987,10 @@ fn run_imports_json_opaque_handle_round_trips() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "n=42\n");
 }
 
-/// `import std::encoding::json` then chaining the fluent builder methods.
-/// Guards the regression where non-trivial imported impl methods (a void C
-/// call followed by `return self`, e.g. `with_int` / `push_int`) were absent
-/// from `fn_registry` and the lowered item list because imported impl-method
+/// `import std.encoding.json` then building an object and an array through the
+/// mutating `set` / `push` methods. Guards the regression where non-trivial
+/// imported impl methods (a void C call plus a status result) were absent from
+/// `fn_registry` and the lowered item list because imported impl-method
 /// registration was gated on per-method `pub` visibility (which impl methods
 /// never carry). Across the import boundary they surfaced as
 /// `IndirectCallUnsupported` / `CallableUnsupportedInMir`. The fix drops the
@@ -4310,20 +4008,25 @@ fn run_imports_json_fluent_builders_round_trip() {
         "import std.encoding.json;\n\
          \n\
          fn main() -> i32 {\n\
-         \x20   let obj = json.object()\n\
-         \x20       .with_string(\"name\", \"Hew\")\n\
-         \x20       .with_int(\"version\", 1);\n\
-         \x20   let s = obj.stringify();\n\
+         \x20   var obj = json.object();\n\
+         \x20   match obj.set(\"name\", json.from_string(\"Hew\")) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   match obj.set(\"version\", json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   let s = match obj.stringify() { .Ok(text) => text, .Err(_) => return 1, };\n\
          \x20   println(s);\n\
-         \x20   let parsed = json.parse(s);\n\
-         \x20   let field = parsed.get_field(\"version\");\n\
-         \x20   println(f\"version={field.get_int()}\");\n\
-         \x20   field.free();\n\
-         \x20   parsed.free();\n\
-         \x20   obj.free();\n\
-         \x20   let arr = json.array().push_int(1).push_int(2).push_int(3);\n\
-         \x20   println(f\"len={arr.array_len()}\");\n\
-         \x20   arr.free();\n\
+         \x20   let parsed = match json.parse(s) { .Ok(value) => value, .Err(_) => return 1, };\n\
+         \x20   let field = match parsed.get_field(\"version\") {\n\
+         \x20       .Ok(.Some(value)) => value,\n\
+         \x20       .Ok(.None) => return 1,\n\
+         \x20       .Err(_) => return 1,\n\
+         \x20   };\n\
+         \x20   let version = match field.get_int() { .Ok(value) => value, .Err(_) => return 1, };\n\
+         \x20   println(f\"version={version}\");\n\
+         \x20   var arr = json.array();\n\
+         \x20   match arr.push(json.from_int(1)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   match arr.push(json.from_int(2)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   match arr.push(json.from_int(3)) { .Ok(_) => {}, .Err(_) => return 1, }\n\
+         \x20   let len = match arr.array_len() { .Ok(value) => value, .Err(_) => return 1, };\n\
+         \x20   println(f\"len={len}\");\n\
          \x20   0\n\
          }\n",
     )
@@ -4371,7 +4074,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
         "import std.stream.{ Sink, Stream };\n\
          \n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   stream.pipe(8)\n\
+         \x20   match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), }\n\
          }\n\
          \n\
          fn main() {\n\
@@ -4411,7 +4114,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
         "import std.stream.{ Sink, Stream };\n\
          \n\
          fn main() {\n\
-         \x20   let pair = stream.pipe(8);\n\
+         \x20   let pair = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   println(\"whole-ok\");\n\
          }\n",
     )
@@ -4428,553 +4131,6 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "whole-ok\n");
 }
 
-// ---------------------------------------------------------------------------
-// W5.021 defect #1 — returned-aggregate member drop spine.
-//
-// The exactly-once ORACLE these tests use is the cheap authoritative one the
-// independent review used: a callee that RETURNS an aggregate of owned
-// handles must elaborate an EMPTY drop-plan for that return — no
-// `Stream.close` / `Sink.close` — because the caller (who received the
-// byte-copied aggregate) now owns the members. A non-empty plan IS the
-// double-free: two `Box::from_raw` of one allocation (the runtime close is an
-// unguarded free; see the codegen Stream/Sink drop comment). `leaks --atExit`
-// does NOT flag an un-closed handle Box and exit-success does not prove
-// no-double-free, so this dump-mir assertion is the real oracle; the paired
-// `hew run` success is the runtime negative-control. These shapes (let-bound
-// return, if/match tails, nested) all SIGSEGV'd before the value-flow
-// `derive_returned_aggregate_member_bindings` fix.
-// ---------------------------------------------------------------------------
-
-/// Compile `source` with `--dump-mir elab` and return the number of
-/// `kind=duplex_half_close` drops in `callee`'s elaborated body. The
-/// oracle: a callee returning an owned-handle aggregate must report ZERO.
-fn callee_handle_close_drops(source: &str, callee: &str) -> usize {
-    let dir = support::tempdir();
-    let hew_src = dir.path().join("oracle.hew");
-    std::fs::write(&hew_src, source).unwrap();
-    let out = support::run_hew_in(
-        repo_root(),
-        &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
-    );
-    assert!(
-        out.status.success(),
-        "dump-mir elab must succeed; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    let dump = String::from_utf8_lossy(&out.stdout);
-    // Slice the dump to the named callee function (from its `fn <name> ->` header
-    // to the next function header) so closes belonging to `main` (which
-    // legitimately closes its own destructured handles) are not counted.
-    // The structured MIR renderer emits `fn {name} -> {ret}` (not `name: "{name}"`).
-    let header = format!("fn {callee} ->");
-    let start = dump
-        .find(&header)
-        .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
-    let rest = &dump[start + header.len()..];
-    // Next function starts with `\nfn ` in the structured renderer.
-    let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
-    let body = &rest[..end];
-    // Structured renderer emits `kind=duplex_half_close(recv)` for Stream drops
-    // and `kind=duplex_half_close(send)` for Sink drops.
-    body.matches("duplex_half_close").count()
-}
-
-/// Compile `source` with `--dump-mir elab` and return the number of owned
-/// HANDLE-place releases (`Duplex::close` `drop_fn` / `LambdaActorRelease` drop
-/// kind) in `callee`'s *return plans*. The oracle: a callee returning an
-/// aggregate of owned handle-place members (`Duplex`/lambda-actor handles) must
-/// report ZERO on the successful return path — the members are handed to the
-/// caller. Other plans, such as an exhaustiveness-fallthrough panic, correctly
-/// release still-live handles.
-///
-/// A separate counter from `callee_handle_close_drops` because handle-place
-/// members register in `binding_locals` as their handle Place (not a `Local`),
-/// elaborate a `kind=lambda_actor_release`/`kind=duplex_close` drop (not
-/// `kind=duplex_half_close`), AND fail closed at codegen-front (the
-/// `SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is unwired), so
-/// the runtime negative-control the Stream/Sink shapes use is impossible — this
-/// dump-mir assertion is the only oracle.
-fn return_plan_marker_count(body: &str, marker: &str) -> usize {
-    let mut in_return_plan = false;
-    let mut count = 0;
-    for line in body.lines() {
-        if line.starts_with("    return[") {
-            in_return_plan = true;
-        } else if line.starts_with("    ") && line.contains("] ->") {
-            in_return_plan = false;
-        }
-        if in_return_plan {
-            count += line.matches(marker).count();
-        }
-    }
-    count
-}
-
-#[test]
-fn return_plan_marker_count_excludes_required_panic_cleanup() {
-    let body = "  drop_plans:\n    return[bb1] ->\n      (none)\n    panic[bb2] ->\n      drop lambda1 kind=lambda_actor_release\n    return[bb3] ->\n      drop lambda2 kind=lambda_actor_release\n";
-    assert_eq!(return_plan_marker_count(body, "lambda_actor_release"), 1);
-    assert_eq!(
-        return_plan_marker_count(
-            "  drop_plans:\n    return[bb1] ->\n      drop lambda1 kind=lambda_actor_release\n      drop lambda2 kind=lambda_actor_release\n",
-            "lambda_actor_release",
-        ),
-        2,
-        "counterfactual: a second successful-return release must remain visible"
-    );
-}
-
-fn callee_handle_release_drops(source: &str, callee: &str) -> usize {
-    let dir = support::tempdir();
-    let hew_src = dir.path().join("oracle.hew");
-    std::fs::write(&hew_src, source).unwrap();
-    let out = support::run_hew_in(
-        repo_root(),
-        &["compile", "--dump-mir", "elab", hew_src.to_str().unwrap()],
-    );
-    assert!(
-        out.status.success(),
-        "dump-mir elab must succeed; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    let dump = String::from_utf8_lossy(&out.stdout);
-    // Structured renderer emits `fn {name} -> {ret}` (not `name: "{name}"`).
-    let header = format!("fn {callee} ->");
-    let start = dump
-        .find(&header)
-        .unwrap_or_else(|| panic!("callee `{callee}` not found in MIR dump:\n{dump}"));
-    let rest = &dump[start + header.len()..];
-    // Next function starts with `\nfn ` in the structured renderer.
-    let end = rest.find("\nfn ").map_or(rest.len(), |i| i);
-    let body = &rest[..end];
-    // Structured renderer emits `kind=lambda_actor_release` (not `LambdaActorRelease`).
-    return_plan_marker_count(body, "lambda_actor_release")
-}
-
-/// Oracle: a `(Sink, Stream)` tuple let-bound then returned BY NAME
-/// (`let pair = (s, r); pair`) — the most ordinary form — must leave the callee
-/// with an empty return drop-plan. The syntactic move-out missed this (it only
-/// saw the tail `BindingRef(pair)`), so `s`/`r` stayed drop-eligible and the
-/// callee double-freed. Value-flow follows the constructed tuple into `ReturnSlot`.
-#[test]
-fn returned_let_bound_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
-         \x20   let pair = (s, r);\n\
-         \x20   pair\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (sink, input) = make_pair();\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a let-bound tuple of handles must not drop its members \
-         (double-free); got {closes} handle closes in its drop-plan"
-    );
-}
-
-/// Oracle: a `(Sink, Stream)` returned from an `if`-expression tail. `If` is a
-/// distinct `HirExprKind` the syntactic walk never matched → double-free.
-#[test]
-fn returned_if_tail_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
-         \x20   if c { (s, r) } else { (s, r) }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (sink, input) = make_pair(true);\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a tuple from an if-tail must not drop its members; \
-         got {closes} handle closes"
-    );
-}
-
-/// Oracle: a `(Sink, Stream)` returned from a `match`-expression tail.
-#[test]
-fn returned_match_tail_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
-         \x20   match c {\n\
-         \x20       true => (s, r),\n\
-         \x20       false => (s, r),\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (sink, input) = make_pair(true);\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a tuple from a match-tail must not drop its members; \
-         got {closes} handle closes"
-    );
-}
-
-/// Return the `--dump-mir checked` text for `source`.
-///
-/// Runs the compiler from the repo root so that stdlib imports (`std::stream`,
-/// `std::net`, etc.) are resolvable; the source file is written to a tempdir
-/// and passed by absolute path.
-fn mir_checked_dump(source: &str) -> String {
-    let dir = support::tempdir();
-    let hew_src = dir.path().join("oracle.hew");
-    std::fs::write(&hew_src, source).unwrap();
-    let out = support::run_hew_in(
-        repo_root(),
-        &[
-            "compile",
-            "--dump-mir",
-            "checked",
-            hew_src.to_str().unwrap(),
-        ],
-    );
-    assert!(
-        out.status.success(),
-        "dump-mir checked must succeed; stderr: {}",
-        String::from_utf8_lossy(&out.stderr),
-    );
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-/// NEW-7 oracle: `await stream.recv()` / `await sink.send(x)` over a
-/// `Stream<bytes>` / `Sink<bytes>` in an actor handler (an execution-context
-/// caller) flip to the suspending terminators; a context-free caller (`main`,
-/// free fn) keeps the blocking `hew_stream_next_layout` / `hew_sink_write_bytes`
-/// call.
-#[test]
-fn suspending_stream_recv_send_flip_in_execution_context() {
-    let dump = mir_checked_dump(
-        // The stream externs are scaffolding for the suspend-lowering subject,
-        // so they must restate the shipped contract exactly: the pair handle is
-        // `stream.StreamPair`, not a private opaque, and the free consumes it.
-        // A private handle type or a borrowing free is a real contract
-        // disagreement and the checker rejects it.
-        "import std.stream.{ Sink, Stream };\n\
-         extern \"C\" {\n\
-         \x20   fn hew_stream_channel(capacity: i64) -> stream.StreamPair;\n\
-         \x20   fn hew_stream_pair_sink_bytes(pair: stream.StreamPair) -> Sink<bytes>;\n\
-         \x20   fn hew_stream_pair_stream_bytes(pair: stream.StreamPair) -> Stream<bytes>;\n\
-         \x20   fn hew_stream_pair_free(consume pair: stream.StreamPair);\n\
-         \x20   fn hew_string_to_bytes(s: string) -> bytes;\n\
-         }\n\
-         actor Runner {\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let pair = unsafe { hew_stream_channel(4) };\n\
-         \x20       let sink = unsafe { hew_stream_pair_sink_bytes(pair) };\n\
-         \x20       let input = unsafe { hew_stream_pair_stream_bytes(pair) };\n\
-         \x20       unsafe { hew_stream_pair_free(pair); }\n\
-         \x20       await sink.send(unsafe { hew_string_to_bytes(\"a\") });\n\
-         \x20       sink.close();\n\
-         \x20       let item = await input.recv();\n\
-         \x20       match item { .Some(v) => {}, .None => {}, }\n\
-         \x20   }\n\
-         }\n\
-         fn main() { let r = spawn Runner(); r.go(0); }\n",
-    );
-    // After the SuspendKind side-table collapse the old carrier-spelled
-    // terminators (`SuspendingStreamNext`, `SuspendingStreamSend`) no longer
-    // exist as Terminator variants; both lower to the bare `Terminator::Suspend`
-    // (rendering: `suspend is_final=...`).  The actor body has two await sites
-    // (recv + send), so two bare suspend terminators must be present.
-    let suspend_count = dump.matches("suspend is_final=").count();
-    assert!(
-        suspend_count >= 2,
-        "actor `await stream.recv()` + `await sink.send()` must each lower to \
-         a bare `suspend is_final=` terminator (expected >=2, found {suspend_count}):\n{dump}"
-    );
-}
-
-/// NEW-2 oracle: `await listener.accept()` in an actor handler (an
-/// execution-context caller) flips to the `SuspendingAccept` terminator; a
-/// context-free caller (`main`, free fn) keeps the blocking `hew_tcp_accept`
-/// call. The listener-readiness sibling of the conn-read flip.
-#[test]
-fn suspending_listener_accept_flip_in_execution_context() {
-    let dump = mir_checked_dump(
-        "import std.net;\n\
-         actor Acceptor {\n\
-         \x20   let addr: string;\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let listener = net.listen(addr);\n\
-         \x20       let conn = await listener.accept();\n\
-         \x20       let _ = conn.close();\n\
-         \x20       let _ = listener.close();\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let a = spawn Acceptor(addr: \"127.0.0.1:0\");\n\
-         \x20   a.go(0);\n\
-         }\n",
-    );
-    // After the SuspendKind side-table collapse `SuspendingAccept` no longer
-    // exists as a Terminator variant; it lowers to the bare `Terminator::Suspend`
-    // (rendering: `suspend is_final=...`).
-    assert!(
-        dump.contains("suspend is_final="),
-        "actor `await listener.accept()` must lower to a bare `suspend is_final=` \
-         terminator (SuspendKind::Accept in the side-table):\n{dump}"
-    );
-}
-
-/// NEW-2 negative: a context-free caller (`fn main`) keeps the BLOCKING accept
-/// (`hew_tcp_accept`); the caller-conv flip must NOT emit `SuspendingAccept`
-/// where there is no parkable continuation (mirrors the conn-read negative).
-#[test]
-fn blocking_listener_accept_in_main_keeps_blocking_call() {
-    let dump = mir_checked_dump(
-        "import std.net;\n\
-         fn main() {\n\
-         \x20   let listener = net.listen(\"127.0.0.1:0\");\n\
-         \x20   let conn = await listener.accept();\n\
-         \x20   let _ = conn.close();\n\
-         \x20   let _ = listener.close();\n\
-         }\n",
-    );
-    assert!(
-        !dump.contains("SuspendingAccept") && !dump.contains("suspend.accept"),
-        "`await listener.accept()` from main must NOT flip to SuspendingAccept:\n{dump}"
-    );
-    assert!(
-        dump.contains("hew_tcp_accept"),
-        "`await listener.accept()` from main must keep the blocking hew_tcp_accept:\n{dump}"
-    );
-}
-
-/// NEW-5 oracle: a cross-node `peer.ask(msg, timeout)` in an actor handler (an
-/// execution-context caller) flips to the `SuspendingRemoteAsk` terminator — the
-/// caller parks its coroutine on the wire reply instead of blocking a worker; a
-/// context-free caller (`main`, free fn) keeps the blocking `RemoteAsk`. The
-/// cross-node sibling of the local-ask flip.
-#[test]
-fn suspending_remote_ask_flip_in_execution_context() {
-    let dump = mir_checked_dump(
-        "actor Echo {\n\
-         \x20   receive fn handle(req: i64) -> i64 { req }\n\
-         }\n\
-         impl ActorMsg for Echo {\n\
-         \x20   type Msg = i64;\n\
-         \x20   type Reply = i64;\n\
-         }\n\
-         actor Client {\n\
-         \x20   receive fn go(unused: i64) {\n\
-         \x20       let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
-         \x20       match found {\n\
-         \x20           .Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
-         \x20           .Err(_) => {},\n\
-         \x20       }\n\
-         \x20   }\n\
-         }\n\
-         fn main() { let c = spawn Client(); c.go(0); }\n",
-    );
-    // After the SuspendKind side-table collapse `SuspendingRemoteAsk` no longer
-    // exists as a Terminator variant; it lowers to the bare `Terminator::Suspend`
-    // (rendering: `suspend is_final=...`).
-    assert!(
-        dump.contains("suspend is_final="),
-        "actor-handler `peer.ask()` must lower to a bare `suspend is_final=` \
-         terminator (SuspendKind::RemoteAsk in the side-table):\n{dump}"
-    );
-}
-
-/// NEW-5 negative: a context-free caller (`fn main`) keeps the BLOCKING remote
-/// ask (`RemoteAsk`); the caller-conv flip must NOT emit `SuspendingRemoteAsk`
-/// where there is no parkable continuation (mirrors the local-ask negative).
-#[test]
-fn blocking_remote_ask_in_main_keeps_blocking_terminator() {
-    let dump = mir_checked_dump(
-        "actor Echo {\n\
-         \x20   receive fn handle(req: i64) -> i64 { req }\n\
-         }\n\
-         impl ActorMsg for Echo {\n\
-         \x20   type Msg = i64;\n\
-         \x20   type Reply = i64;\n\
-         }\n\
-         fn main() {\n\
-         \x20   let found: Result<RemotePid<Echo>, LookupError> = Node.lookup(\"echo\");\n\
-         \x20   match found {\n\
-         \x20       .Ok(peer) => { let _ = peer.ask(7, 1000); },\n\
-         \x20       .Err(_) => {},\n\
-         \x20   }\n\
-         }\n",
-    );
-    assert!(
-        !dump.contains("SuspendingRemoteAsk") && !dump.contains("suspend.remote_ask"),
-        "`peer.ask()` from main must NOT flip to SuspendingRemoteAsk:\n{dump}"
-    );
-    assert!(
-        dump.contains("RemoteAsk") || dump.contains("remote_ask"),
-        "`peer.ask()` from main must keep the blocking RemoteAsk terminator:\n{dump}"
-    );
-}
-
-/// Oracle: a NESTED owned aggregate `((Sink,), Stream)` returned by name. The
-/// value-flow decomposition must recurse through the inner `TupleConstruct`.
-#[test]
-fn returned_nested_tuple_callee_does_not_drop_members() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         fn make_nested() -> ((Sink<string>,), Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
-         \x20   let inner = (s,);\n\
-         \x20   let pair = (inner, r);\n\
-         \x20   pair\n\
-         }\n\
-         fn main() {\n\
-         \x20   let ((sink,), input) = make_nested();\n\
-         \x20   sink.close();\n\
-         \x20   input.close();\n\
-         }\n",
-        "make_nested",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a nested tuple of handles must not drop any member \
-         (the value-flow walk recurses into the inner tuple); got {closes} closes"
-    );
-}
-
-/// Oracle: a RECORD of owned handles let-bound then returned by name — the
-/// record analogue of the let-bound-tuple double-free. `RecordInit` element
-/// sources must be followed into the return.
-#[test]
-fn returned_record_of_handles_callee_does_not_drop_fields() {
-    require_codegen();
-    let closes = callee_handle_close_drops(
-        "import std.stream.{ Sink, Stream };\n\
-         type Pipe { sink: Sink<string>, input: Stream<string> }\n\
-         fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
-         \x20   let p = Pipe { sink: s, input: r };\n\
-         \x20   p\n\
-         }\n\
-         fn main() {\n\
-         \x20   let p = make_pipe();\n\
-         \x20   p.sink.close();\n\
-         \x20   p.input.close();\n\
-         }\n",
-        "make_pipe",
-    );
-    assert_eq!(
-        closes, 0,
-        "callee returning a record of handles must not drop its fields; \
-         got {closes} handle closes"
-    );
-}
-
-/// Oracle: a tuple of owned HANDLE-place members (lambda-actor `LambdaPid` handles)
-/// returned by a direct tail. Handle members register in `binding_locals` as
-/// their handle Place, so they surface as `TupleConstruct` elements as that
-/// handle Place; the value-flow pass originally gated member sources on
-/// `Place::Local(_)` and dropped the handle members on the floor, leaving the
-/// callee to double-release them after the caller received the tuple. The pass
-/// must now admit owned handle places — callee Return drop-plan empty.
-///
-/// No `require_codegen` / runtime control: handle-place lowering fails closed at
-/// codegen-front (`SendHalf`/`RecvHalf`/`LambdaActorHandle` Place lowering is
-/// unwired), so the native binary cannot be produced. The dump-mir Return-plan
-/// assertion is the only oracle. Non-tautological: the pre-fix binary emits
-/// `LambdaActorRelease` drops here.
-#[test]
-fn returned_handle_tuple_callee_does_not_drop_members() {
-    let releases = callee_handle_release_drops(
-        "fn make_pair() -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
-         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
-         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
-         \x20   (a, b)\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (a, b) = make_pair();\n\
-         \x20   a.send(1);\n\
-         \x20   println(\"done\");\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        releases, 0,
-        "callee returning a tuple of owned handle members must not release them \
-         (double-free); got {releases} LambdaActorRelease drops in its drop-plan"
-    );
-}
-
-/// Oracle: a tuple of owned handle members returned through a let-bound rebind
-/// tail (`let pair = (a, b); pair`). The value-flow pass must follow the
-/// whole-value rebind into `ReturnSlot` and decompose the `TupleConstruct`'s
-/// handle-place elements. Callee Return drop-plan empty.
-#[test]
-fn returned_let_bound_handle_tuple_callee_does_not_drop_members() {
-    let releases = callee_handle_release_drops(
-        "fn make_pair() -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
-         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
-         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
-         \x20   let pair = (a, b);\n\
-         \x20   pair\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (a, b) = make_pair();\n\
-         \x20   a.send(1);\n\
-         \x20   println(\"done\");\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        releases, 0,
-        "callee returning a let-bound tuple of owned handle members must not \
-         release them; got {releases} LambdaActorRelease drops"
-    );
-}
-
-/// Oracle: a tuple of owned handle members returned from a `match`-expression
-/// tail (two `TupleConstruct`s flowing to one `ReturnSlot`). The pass must admit
-/// the handle-place members of every flowing construct. Callee Return drop-plan
-/// empty.
-#[test]
-fn returned_match_tail_handle_tuple_callee_does_not_drop_members() {
-    let releases = callee_handle_release_drops(
-        "fn make_pair(c: bool) -> (LambdaPid<i64, ()>, LambdaPid<i64, ()>) {\n\
-         \x20   let a = actor |x: i64| { println(f\"a {x}\"); };\n\
-         \x20   let b = actor |x: i64| { println(f\"b {x}\"); };\n\
-         \x20   match c {\n\
-         \x20       true => (a, b),\n\
-         \x20       false => (a, b),\n\
-         \x20   }\n\
-         }\n\
-         fn main() {\n\
-         \x20   let (a, b) = make_pair(true);\n\
-         \x20   a.send(1);\n\
-         \x20   println(\"done\");\n\
-         }\n",
-        "make_pair",
-    );
-    assert_eq!(
-        releases, 0,
-        "callee returning a tuple of owned handle members from a match-tail must \
-         not release them; got {releases} LambdaActorRelease drops"
-    );
-}
-
 /// Runtime negative-control: the let-bound-return shape (p7) must RUN to a clean
 /// exit. Before the fix this SIGSEGV'd (exit 139) on the callee's double-free.
 /// The caller destructures and explicitly closes both handles (the success
@@ -4988,7 +4144,7 @@ fn run_let_bound_tuple_return_no_double_free() {
         &hew_src,
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let pair = (s, r);\n\
          \x20   pair\n\
          }\n\
@@ -5022,7 +4178,7 @@ fn run_if_tail_tuple_return_no_double_free() {
         &hew_src,
         "import std.stream.{ Sink, Stream };\n\
          fn make_pair(c: bool) -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   if c { (s, r) } else { (s, r) }\n\
          }\n\
          fn main() {\n\
@@ -5059,7 +4215,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
         "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
          \x20   p\n\
          }\n\
@@ -5100,7 +4256,7 @@ fn run_record_of_handles_return_without_explicit_close_exits_clean() {
         "import std.stream.{ Sink, Stream };\n\
          type Pipe { sink: Sink<string>, input: Stream<string> }\n\
          fn make_pipe() -> Pipe {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   let p = Pipe { sink: s, input: r };\n\
          \x20   p\n\
          }\n\
@@ -5144,7 +4300,7 @@ fn run_bound_tuple_field_close_drops_each_handle_once() {
         &hew_src,
         "import std.stream.{ Sink, Stream };\n\
          fn make_pipe() -> (Sink<string>, Stream<string>) {\n\
-         \x20   let (s, r) = stream.pipe(8);\n\
+         \x20   let (s, r) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   (s, r)\n\
          }\n\
          fn main() {\n\
@@ -5185,7 +4341,7 @@ extern \"C\" {\n\
 #[resource]\n\
 type Slot { addr: i64 }\n\
 impl Slot {\n\
-    fn close(self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
+    fn close(consume self) { println(\"close\"); unsafe { free(self.addr) }; }\n\
 }\n\
 fn acquire() -> Slot { Slot { addr: unsafe { malloc(64) } } }\n\
 type Two { a: Slot, b: Slot }\n";
@@ -5252,13 +4408,10 @@ fn run_record_resource_fields_untouched_close_once_each() {
     );
 }
 
-/// The documented leak edge: closing ONE of two resource fields retires the
-/// whole root, so the untouched sibling is never closed. Pre-fix this program
-/// closed `a` twice; the trade is a leak, and this pins which side of it we are
-/// on so a future per-field retirement is a deliberate change.
-///
-/// KNOWN FAILURE (#3070): on the current lowerer this double-frees `a` instead
-/// of leaking `b`. See `scripts/nextest-expected-failures.tsv`.
+/// Per-field retirement: closing ONE of two resource fields retires only that
+/// field, so the untouched sibling still closes on scope exit. The earlier
+/// whole-root retirement leaked `b`; before that the program closed `a` twice.
+/// Exactly two `close` lines and no abort is the pin on both sides.
 #[test]
 fn run_record_resource_field_partial_close_leaks_the_sibling() {
     require_codegen();
@@ -5278,8 +4431,8 @@ fn run_record_resource_field_partial_close_leaks_the_sibling() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        "close\ndone\n",
-        "exactly one close: `a` through the program, `b` leaked by the whole-root retirement"
+        "close\ndone\nclose\n",
+        "exactly two closes: `a` through the program, `b` on scope exit"
     );
 }
 
@@ -5297,7 +4450,7 @@ const RESOURCE_PAYLOAD_PRELUDE: &str = "\
 #[resource]\n\
 type Handle { id: i64 }\n\
 impl Handle {\n\
-    fn close(self) { println(f\"close {self.id}\"); }\n\
+    fn close(consume self) { println(f\"close {self.id}\"); }\n\
 }\n\
 fn acquire(ok: bool) -> Result<Handle, string> {\n\
     if ok { Ok(Handle { id: 7 }) } else { Err(\"declined\") }\n\
@@ -5468,12 +4621,12 @@ fn clone_string_survives_consuming_send() {
     let path = dir.path().join("clone_string_send.hew");
     std::fs::write(
         &path,
-        "actor ProbeSink { let id: i64; receive fn take(s: string) -> i64 { s.len() } }\n\
+        "actor ProbeSink { let id: i64, receive fn take(s: string) -> i64 { s.len() } }\n\
          fn main() {\n\
          \x20   let s: string = \"hello\";\n\
          \x20   let dup = clone s;\n\
          \x20   let sink = spawn ProbeSink(id: 0);\n\
-         \x20   let n = await sink.take(dup);\n\
+         \x20   let n = sink.take(dup);\n\
          \x20   match n { .Ok(len) => println(f\"len={len}\"), .Err(_) => println(\"ask failed\") }\n\
          \x20   println(f\"original still usable: {s}\");\n\
          }\n",
@@ -5537,9 +4690,9 @@ fn clone_vec_is_independent_copy() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec.new();\n\
+         \x20   var xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
-         \x20   let dup = clone xs;\n\
+         \x20   var dup = clone xs;\n\
          \x20   dup.push(99);\n\
          \x20   println(f\"original_len={xs.len()} dup_len={dup.len()}\");\n\
          }\n",
@@ -5569,9 +4722,9 @@ fn existing_vec_method_clone_still_runs() {
     std::fs::write(
         &path,
         "fn main() {\n\
-         \x20   let xs: Vec<i64> = Vec.new();\n\
+         \x20   var xs: Vec<i64> = Vec.new();\n\
          \x20   xs.push(1); xs.push(2);\n\
-         \x20   let b = xs.clone();\n\
+         \x20   var b = xs.clone();\n\
          \x20   b.push(99);\n\
          \x20   println(f\"a={xs.len()} b={b.len()}\");\n\
          }\n",
@@ -5679,7 +4832,7 @@ fn run_file_imported_actor_spawns_and_calls() {
     std::fs::write(
         dir.path().join("counter.hew"),
         "pub actor Counter {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn bump() -> i64 {\n\
          \x20       n = n + 1;\n\
          \x20       n\n\
@@ -5693,7 +4846,7 @@ fn run_file_imported_actor_spawns_and_calls() {
         "import \"counter.hew\";\n\
          fn main() {\n\
          \x20   let c = spawn Counter();\n\
-         \x20   match await c.bump() {\n\
+         \x20   match c.bump() {\n\
          \x20       .Ok(v) => println(f\"bumped: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5735,7 +4888,7 @@ fn run_selectively_imported_const_binds_bare_like_fn() {
     let main = dir.path().join("main.hew");
     std::fs::write(
         &main,
-        "import src.reasons.reasons.{MAX_RETRIES, retries_label};\n\
+        "import src.reasons.{MAX_RETRIES, retries_label};\n\
          fn main() {\n\
          \x20   println(retries_label());\n\
          \x20   println(f\"max: {MAX_RETRIES}\");\n\
@@ -5836,7 +4989,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
     std::fs::write(
         dir.path().join("summer.hew"),
         "pub actor Summer {\n\
-         \x20   var total: i64 = 0;\n\
+         \x20   var total: i64 = 0,\n\
          \x20   receive fn add_doubled(n: i64) -> i64 {\n\
          \x20       let f = |x: i64| -> i64 { x * 2 };\n\
          \x20       var sum: i64 = 0;\n\
@@ -5855,7 +5008,7 @@ fn run_file_imported_actor_closure_and_range_body_runs() {
         "import \"summer.hew\";\n\
          fn main() {\n\
          \x20   let s = spawn Summer();\n\
-         \x20   match await s.add_doubled(4) {\n\
+         \x20   match s.add_doubled(4) {\n\
          \x20       .Ok(v) => println(f\"sum: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -5907,7 +5060,7 @@ fn run_package_module_actor_spawns_and_calls() {
          }\n\
          \n\
          pub actor Account {\n\
-         \x20   var balance: i64 = 0;\n\
+         \x20   var balance: i64 = 0,\n\
          \x20   init(opening: i64) {\n\
          \x20       balance = clamp_nonneg(opening);\n\
          \x20   }\n\
@@ -5934,20 +5087,17 @@ fn run_package_module_actor_spawns_and_calls() {
         &main,
         "import hew.bank;\n\
          \n\
-         fn report(label: string, r: Result<i64, AskError>) {\n\
-         \x20   match r {\n\
-         \x20       .Ok(v) => println(f\"{label}={v}\"),\n\
-         \x20       .Err(_) => println(f\"{label}=ERR\"),\n\
-         \x20   }\n\
+         fn report(label: string, value: i64) {\n\
+         \x20   println(f\"{label}={value}\");\n\
          }\n\
          \n\
          fn main() {\n\
          \x20   let acct = spawn bank.Account(opening: 100);\n\
-         \x20   report(\"after_open\", await acct.peek());\n\
-         \x20   report(\"after_deposit\", await acct.deposit(50));\n\
-         \x20   report(\"after_overdraw\", await acct.withdraw(1000));\n\
-         \x20   report(\"after_withdraw\", await acct.withdraw(30));\n\
-         \x20   report(\"final\", await acct.peek());\n\
+         \x20   match acct.peek() { .Ok(v) => report(\"after_open\", v), .Err(_) => println(\"after_open=ERR\"), }\n\
+         \x20   match acct.deposit(50) { .Ok(v) => report(\"after_deposit\", v), .Err(_) => println(\"after_deposit=ERR\"), }\n\
+         \x20   match acct.withdraw(1000) { .Ok(v) => report(\"after_overdraw\", v), .Err(_) => println(\"after_overdraw=ERR\"), }\n\
+         \x20   match acct.withdraw(30) { .Ok(v) => report(\"after_withdraw\", v), .Err(_) => println(\"after_withdraw=ERR\"), }\n\
+         \x20   match acct.peek() { .Ok(v) => report(\"final\", v), .Err(_) => println(\"final=ERR\"), }\n\
          }\n",
     )
     .unwrap();
@@ -5971,12 +5121,12 @@ fn run_package_module_actor_spawns_and_calls() {
 
 /// Regression for named-import actor identity in actor-state annotations: inside
 /// an imported actor body, `let inner: Inner;` is an actor reference and must
-/// lower to `LocalPid<conn.Inner>`, just like the local-module shorthand. Before
+/// lower to `conn.Inner`, just like the local-module shorthand. Before
 /// the fix, HIR left it as bare `Inner`, so MIR's state-clone classifier tried
 /// to resolve it as a nested user record and failed with
 /// `ActorStateCloneClassificationFailed` before codegen.
 #[test]
-fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
+fn run_imported_actor_state_bare_actor_field_canonicalizes_to_the_actor_type() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -5989,9 +5139,9 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
          }\n\
          \n\
          pub actor Outer {\n\
-         \x20   let inner: Inner;\n\
+         \x20   let inner: Inner,\n\
          \x20   receive fn go() -> i64 {\n\
-         \x20       match await inner.ping() {\n\
+         \x20       match inner.ping() {\n\
          \x20           .Ok(v) => v + 1,\n\
          \x20           .Err(_) => -1,\n\
          \x20       }\n\
@@ -6006,7 +5156,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
          fn main() {\n\
          \x20   let i = spawn Inner();\n\
          \x20   let o = spawn Outer(inner: i);\n\
-         \x20   match await o.go() {\n\
+         \x20   match o.go() {\n\
          \x20       .Ok(v) => println(f\"v={v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -6017,7 +5167,7 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
     let output = run_bounded_hew_run(&main, dir.path());
     assert!(
         output.status.success(),
-        "named-import actor field should canonicalize to a LocalPid; stdout: {}\nstderr: {}",
+        "named-import actor field should canonicalize to the actor's own handle type; stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
     );
@@ -6029,9 +5179,9 @@ fn run_imported_actor_state_bare_actor_field_canonicalizes_to_localpid() {
 /// must keep its local identity. `canonicalize_actor_ref_field_ty` used to
 /// canonicalize any bare field name that uniquely matched an actor's short
 /// name ANYWHERE in the program (a global sweep over `actor_type_names`),
-/// which silently hijacked this local record field into `LocalPid<m.Inner>`
+/// which silently hijacked this local record field into `m.Inner`
 /// and rejected the program with `E_NOT_YET_IMPLEMENTED: field access on
-/// unregistered record type LocalPid$$Inner`. The fix scopes bare-name
+/// unregistered record type ActorHandle$$Inner`. The fix scopes bare-name
 /// resolution to `{decl_module}.{name}` (the actor decl's own module), so a
 /// root-declared `Holder` referencing a root-declared `type Inner` never
 /// consults `m`'s actor at all — local definitions win, per LESSONS
@@ -6058,13 +5208,13 @@ fn run_local_record_shadows_imported_actor_short_name() {
          type Inner { x: i64 }\n\
          \n\
          actor Holder {\n\
-         \x20   let inner: Inner;\n\
+         \x20   let inner: Inner,\n\
          \x20   receive fn get() -> i64 { inner.x }\n\
          }\n\
          \n\
          fn main() {\n\
          \x20   let h = spawn Holder(inner: Inner { x: 7 });\n\
-         \x20   match await h.get() {\n\
+         \x20   match h.get() {\n\
          \x20       .Ok(v) => println(f\"v={v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -6099,7 +5249,7 @@ fn run_non_pub_imported_actor_fails_closed() {
     std::fs::write(
         pkg_dir.join("secret.hew"),
         "actor Hidden {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn bump() -> i64 {\n\
          \x20       n = n + 1;\n\
          \x20       n\n\
@@ -6113,7 +5263,7 @@ fn run_non_pub_imported_actor_fails_closed() {
         "import hew.secret;\n\
          fn main() {\n\
          \x20   let c = spawn secret.Hidden();\n\
-         \x20   match await c.bump() {\n\
+         \x20   match c.bump() {\n\
          \x20       .Ok(v) => println(f\"bumped: {v}\"),\n\
          \x20       .Err(_) => println(\"err\"),\n\
          \x20   }\n\
@@ -6142,7 +5292,7 @@ fn run_non_pub_imported_actor_fails_closed() {
 /// Qualified actor identity (a): two imported packages each exporting a
 /// `pub actor` with the same bare name (`Account`) coexist in one program.
 /// Identity is the qualified (module, name) pair end-to-end — the checker
-/// types `spawn bank.Account()` as `LocalPid<bank.Account>`, MIR layouts key
+/// types `spawn bank.Account()` as `bank.Account`, MIR layouts key
 /// on the dotted name, and native symbols mangle through `bank$Account` — so
 /// each spawn binds its own handlers/state/drop glue and the asks route to
 /// the right actor.
@@ -6158,7 +5308,7 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0;\n\
+                 \x20   var n: i64 = 0,\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  }}\n"
             ),
@@ -6173,11 +5323,11 @@ fn run_two_packages_same_actor_name_both_spawn_and_ask() {
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
          \x20   let s = spawn store.Account();\n\
-         \x20   match await a.who() {\n\
+         \x20   match a.who() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   match await s.who() {\n\
+         \x20   match s.who() {\n\
          \x20       .Ok(v) => println(f\"s={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -6214,7 +5364,7 @@ fn run_root_and_package_same_actor_name_route_independently() {
     std::fs::write(
         pkg_dir.join("bank.hew"),
         "pub actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn who() -> i64 { 999 }\n\
          }\n",
     )
@@ -6224,17 +5374,17 @@ fn run_root_and_package_same_actor_name_route_independently() {
         &main,
         "import hew.bank;\n\
          actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn who() -> i64 { 111 }\n\
          }\n\
          fn main() {\n\
          \x20   let a = spawn bank.Account();\n\
          \x20   let l = spawn Account();\n\
-         \x20   match await a.who() {\n\
+         \x20   match a.who() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   match await l.who() {\n\
+         \x20   match l.who() {\n\
          \x20       .Ok(v) => println(f\"l={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -6275,7 +5425,7 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
             pkg_dir.join(format!("{pkg}.hew")),
             format!(
                 "pub actor Account {{\n\
-                 \x20   var n: i64 = 0;\n\
+                 \x20   var n: i64 = 0,\n\
                  \x20   receive fn who() -> i64 {{ {tag} }}\n\
                  \x20   receive fn boom() {{ panic(\"{pkg} crash\"); }}\n\
                  }}\n"
@@ -6289,34 +5439,34 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
         "import hew.bank;\n\
          import hew.store;\n\
          supervisor Pair {\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 5 within 60s;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 5 within 60s,\n\
          \n\
-         \x20   child b: bank.Account;\n\
-         \x20   child s: store.Account;\n\
+         \x20   child b: bank.Account,\n\
+         \x20   child s: store.Account,\n\
          }\n\
          fn main() {\n\
          \x20   let p = spawn Pair;\n\
          \x20   sleep(50ms);\n\
          \x20   let b = p.b;\n\
          \x20   let s = p.s;\n\
-         \x20   match await b.who() {\n\
+         \x20   match b.who() {\n\
          \x20       .Ok(v) => println(f\"b={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   match await s.who() {\n\
+         \x20   match s.who() {\n\
          \x20       .Ok(v) => println(f\"s={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
-         \x20   b.boom();\n\
+         \x20   let _ = b.boom();\n\
          \x20   sleep(200ms);\n\
          \x20   let b2 = p.b;\n\
-         \x20   match await b2.who() {\n\
+         \x20   match b2.who() {\n\
          \x20       .Ok(v) => println(f\"b2={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
          \x20   let s2 = p.s;\n\
-         \x20   match await s2.who() {\n\
+         \x20   match s2.who() {\n\
          \x20       .Ok(v) => println(f\"s2={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -6344,9 +5494,10 @@ fn run_supervisor_two_same_named_module_actor_children_restart_routes() {
 }
 
 /// A fungible child binding survives a deterministically observed restart and
-/// feeds two sequential joins through the replacement incarnation. Distinct
-/// recursive payload tags make branch order and indirect-enum ownership part of
-/// the runtime oracle rather than merely proving that submission did not trap.
+/// feeds two sequential batch forks through the replacement incarnation.
+/// Distinct recursive payload tags make branch order and indirect-enum
+/// ownership part of the runtime oracle rather than merely proving that
+/// submission did not trap.
 #[test]
 fn run_fungible_child_binding_joins_after_observed_restart() {
     require_codegen();
@@ -6357,8 +5508,8 @@ fn run_fungible_child_binding_joins_after_observed_restart() {
         &main,
         r#"
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn tree_sum(tree: Tree) -> i64 {
@@ -6371,42 +5522,37 @@ fn tree_sum(tree: Tree) -> i64 {
 actor Worker {
     receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
     receive fn boom() {
-        // Keep the crash beyond the 250 ms contextless-await grace while
-        // remaining well inside the restart barrier's bounded timeout.
+        // Keep the crash beyond the 250 ms contextless-await grace so the
+        // restart barrier parks rather than resolving on the pre-park check.
         sleep(500ms);
         panic("restart");
     }
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child worker: Worker;
-}
-
-extern "C" {
-    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child worker: Worker,
 }
 
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
-    worker.boom();
-    let restarted = unsafe {
-        hew_supervisor_wait_restart(sup, 1, 5000)
-    };
-    if restarted == 0 {
-        return 1;
-    }
-    let (a, b) = join {
+    let _ = worker.boom();
+    let _ = await_restart sup.worker;
+    let (a, b) = await fork (
         worker.score(11, .Node(.Leaf(1), .Leaf(2))),
         worker.score(22, .Node(.Leaf(3), .Leaf(4))),
-    };
-    let (c, d) = join {
+    );
+    let (c, d) = await fork (
         worker.score(33, .Node(.Leaf(5), .Leaf(6))),
         worker.score(44, .Node(.Leaf(7), .Leaf(8))),
-    };
-    print(f"{a},{b},{c},{d}");
+    );
+    let ra = match a { .Ok(v) => v, .Err(_) => -1, };
+    let rb = match b { .Ok(v) => v, .Err(_) => -1, };
+    let rc = match c { .Ok(v) => v, .Err(_) => -1, };
+    let rd = match d { .Ok(v) => v, .Err(_) => -1, };
+    print(f"{ra},{rb},{rc},{rd}");
     supervisor_stop(sup);
     0
 }
@@ -6417,7 +5563,7 @@ fn main() -> i64 {
     let output = run_bounded_hew_run(&main, dir.path());
     assert!(
         output.status.success(),
-        "two sequential joins through the pre-crash role binding must use the replacement child; \
+        "two sequential batch forks through the pre-crash role binding must use the replacement child; \
          stdout: {}\nstderr: {}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
@@ -6425,63 +5571,7 @@ fn main() -> i64 {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "14,29,44,59",
-        "both joins must preserve exact branch order and recursive payload values"
-    );
-}
-
-/// A join branch whose handler traps mid-dispatch fails CLOSED with a
-/// status-bearing diagnostic: the classified cause ("handler trapped") and the
-/// branch index reach stderr, and the process exits by the canonical
-/// `JoinBranchFailed` trap — never the pre-fix empty-output abort that carried
-/// no evidence of which branch died or why.
-#[test]
-fn run_join_branch_handler_trap_names_cause() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let main = dir.path().join("main.hew");
-    std::fs::write(
-        &main,
-        r#"
-actor Worker {
-    receive fn ok(x: i64) -> i64 { x }
-    receive fn boom() -> i64 {
-        panic("kaboom");
-        0
-    }
-}
-
-fn main() -> i64 {
-    let w = spawn Worker;
-    let (a, b) = join {
-        w.ok(5),
-        w.boom(),
-    };
-    print(f"{a},{b}");
-    0
-}
-"#,
-    )
-    .unwrap();
-
-    let output = run_bounded_hew_run(&main, dir.path());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "a trapped join branch must fail the program; stdout: {stdout}\nstderr: {stderr}"
-    );
-    assert!(
-        !stdout.contains("5,"),
-        "the join must not bind a tuple from a trapped branch; stdout: {stdout}"
-    );
-    assert!(
-        stderr.contains("join branch 1 failed") && stderr.contains("handler trapped"),
-        "the failure must name the branch and the classified cause; stderr: {stderr}"
-    );
-    assert!(
-        stderr.contains("JoinBranchFailed"),
-        "the trap must carry the canonical JoinBranchFailed kind; stderr: {stderr}"
+        "both forks must preserve exact branch order and recursive payload values"
     );
 }
 
@@ -6504,7 +5594,7 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
     std::fs::write(
         pkg_dir.join("secret.hew"),
         "actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn id() -> i64 { 999 }\n\
          }\n",
     )
@@ -6514,12 +5604,12 @@ fn run_private_imported_actor_does_not_route_to_root_actor() {
         &main,
         "import hew.secret;\n\
          actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn id() -> i64 { 111 }\n\
          }\n\
          fn main() {\n\
          \x20   let a = spawn secret.Account();\n\
-         \x20   match await a.id() {\n\
+         \x20   match a.id() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -6579,12 +5669,12 @@ fn run_non_actor_export_does_not_route_to_root_actor() {
         &main,
         "import hew.secret;\n\
          actor Account {\n\
-         \x20   var n: i64 = 0;\n\
+         \x20   var n: i64 = 0,\n\
          \x20   receive fn id() -> i64 { 111 }\n\
          }\n\
          fn main() {\n\
          \x20   let a = spawn secret.Account();\n\
-         \x20   match await a.id() {\n\
+         \x20   match a.id() {\n\
          \x20       .Ok(v) => println(f\"a={v}\"),\n\
          \x20       .Err(_) => println(\"e\"),\n\
          \x20   }\n\
@@ -6657,66 +5747,6 @@ fn run_fork_args_spawn_scribbled_no_freed_read() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Init-closure wall: a supervised child whose actor init-parameter type is not
-/// reproducible by the init-closure restart thunk must be rejected at `hew
-/// check` with `E_SUPERVISOR_INIT_ARG_NON_BITCOPY` before reaching codegen.
-///
-/// Admitted types (the thunk can reproduce them on every restart):
-///   - scalar `BitCopy` primitives (loaded directly)
-///   - owned `string` / `bytes` (deep-cloned per incarnation)
-///
-/// Rejected types (clone-in-thunk codegen not wired, or structurally
-/// forbidden for handles):
-///   - owned collections (`Vec`, `HashMap`, `HashSet`)
-///   - user records, enums, tuples, type aliases, generic types
-///   - `#[resource]` handle types
-#[test]
-fn check_supervisor_init_arg_non_bitcopy_rejected() {
-    require_codegen();
-    let combined = check_fails("tests/vertical-slice/reject/supervisor_init_arg_non_bitcopy.hew");
-    assert!(
-        combined.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"),
-        "expected E_SUPERVISOR_INIT_ARG_NON_BITCOPY diagnostic; got: {combined}"
-    );
-    assert!(
-        combined.contains("Vec<i64>"),
-        "diagnostic must name the rejected type; got: {combined}"
-    );
-    assert!(
-        combined.contains("init args are re-produced by the init-closure restart model"),
-        "diagnostic must describe the init-closure model; got: {combined}"
-    );
-}
-
-#[test]
-fn check_supervisor_init_arg_non_bitcopy_evasions_rejected() {
-    require_codegen();
-    let combined =
-        check_fails("tests/vertical-slice/reject/supervisor_init_arg_non_bitcopy_evasions.hew");
-    assert!(
-        combined.contains("E_SUPERVISOR_INIT_ARG_NON_BITCOPY"),
-        "expected E_SUPERVISOR_INIT_ARG_NON_BITCOPY diagnostic; got: {combined}"
-    );
-    // Each still-walled type must appear in the combined diagnostic output.
-    // `string` (now admitted via deep-clone in the init thunk) is not listed.
-    for expected_type in [
-        "Option<string>",
-        "(string, i64)",
-        "Wrapper",
-        "HashMap<string, i64>",
-        "HashSet<i64>",
-    ] {
-        assert!(
-            combined.contains(expected_type),
-            "diagnostic must name rejected type `{expected_type}`; got: {combined}"
-        );
-    }
-    assert!(
-        combined.contains("init args are re-produced by the init-closure restart model"),
-        "diagnostic must describe the init-closure model; got: {combined}"
-    );
-}
-
 #[test]
 fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
     require_codegen();
@@ -6729,7 +5759,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          #[opaque]\n\
          type Marker {}\n\
          impl Marker {\n\
-         \x20   fn close(self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
+         \x20   fn close(consume self) { unsafe { hew_deque_free(self) }; println(\"closed\"); }\n\
          }\n\
          extern \"C\" {\n\
          \x20   fn hew_deque_new() -> Marker;\n\
@@ -6737,8 +5767,8 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          \x20   fn hew_actor_self_stop();\n\
          }\n\
          actor Child {\n\
-         \x20   let label: string;\n\
-         \x20   let marker: Marker;\n\
+         \x20   let label: string,\n\
+         \x20   let marker: Marker,\n\
          \x20   receive fn stop() { unsafe { hew_actor_self_stop() }; }\n\
          }\n\
          actor Maker {\n\
@@ -6751,7 +5781,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          \x20               label: label.clone(),\n\
          \x20               marker: unsafe { hew_deque_new() },\n\
          \x20           );\n\
-         \x20           child.stop();\n\
+         \x20           let _ = child.stop();\n\
          \x20           i = i + 1;\n\
          \x20       }\n\
          \x20       println(\"maker-done\");\n\
@@ -6759,7 +5789,7 @@ fn suspended_actor_fresh_state_handoff_closes_each_child_once() {
          }\n\
          fn main() {\n\
          \x20   let maker = spawn Maker;\n\
-         \x20   maker.go();\n\
+         \x20   let _ = maker.go();\n\
          \x20   sleep(200ms);\n\
          }\n",
     )

@@ -6,8 +6,66 @@
     reason = "grammar-area submodules share the parent parser namespace via the split"
 )]
 use super::*;
+use crate::ast::{CallableCallMode, CallableCapabilities};
 
 impl Parser<'_> {
+    fn parse_callable_capabilities(&mut self) -> Option<CallableCapabilities> {
+        let mut capabilities = CallableCapabilities::default();
+        if !self.eat(&Token::LeftBracket) {
+            return Some(capabilities);
+        }
+        let mut call_seen = false;
+        loop {
+            let span = self.peek_span();
+            match self.peek() {
+                Some(Token::Var | Token::Identifier("once")) => {
+                    if call_seen {
+                        self.error_at(
+                            "callable type permits only one of `var` and `once`".into(),
+                            span,
+                        );
+                        return None;
+                    }
+                    call_seen = true;
+                    capabilities.call = if self.eat(&Token::Var) {
+                        CallableCallMode::Var
+                    } else {
+                        self.advance();
+                        CallableCallMode::Once
+                    };
+                }
+                Some(Token::Identifier("clone")) => {
+                    if capabilities.clone {
+                        self.error_at("duplicate callable `clone` qualifier".into(), span);
+                        return None;
+                    }
+                    self.advance();
+                    capabilities.clone = true;
+                }
+                Some(Token::Identifier("suspends")) => {
+                    if capabilities.suspends {
+                        self.error_at("duplicate callable `suspends` qualifier".into(), span);
+                        return None;
+                    }
+                    self.advance();
+                    capabilities.suspends = true;
+                }
+                _ => {
+                    self.error_at(
+                        "expected callable qualifier `var`, `once`, `clone` or `suspends`".into(),
+                        span,
+                    );
+                    return None;
+                }
+            }
+            if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBracket) {
+                break;
+            }
+        }
+        self.expect(&Token::RightBracket)?;
+        Some(capabilities)
+    }
+
     // ── Types ──
     pub(crate) fn parse_syntactic_path(&mut self) -> Option<Path> {
         let mut segments = vec![self.expect_ident()?];
@@ -219,8 +277,31 @@ impl Parser<'_> {
                 };
                 TypeExpr::TraitObject(bounds)
             }
+            Some(Token::Actor) => {
+                // `actor(M) -> R` — the handle type of an anonymous actor.
+                self.advance();
+                self.expect(&Token::LeftParen)?;
+                let mut params = Vec::new();
+                while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+                    params.push(self.parse_type_with_context(context)?);
+                    if !self.eat(&Token::Comma) {
+                        break;
+                    }
+                }
+                self.expect(&Token::RightParen)?;
+                let return_type = if self.eat(&Token::Arrow) {
+                    Box::new(self.parse_type_with_context(context)?)
+                } else {
+                    Box::new((TypeExpr::Tuple(Vec::new()), 0..0))
+                };
+                TypeExpr::ActorFn {
+                    params,
+                    return_type,
+                }
+            }
             Some(Token::Fn) => {
                 self.advance();
+                let capabilities = self.parse_callable_capabilities()?;
                 self.expect(&Token::LeftParen)?;
 
                 let mut params = Vec::new();
@@ -240,6 +321,7 @@ impl Parser<'_> {
                 };
 
                 TypeExpr::Function {
+                    capabilities,
                     params,
                     return_type,
                 }
@@ -440,7 +522,30 @@ impl Parser<'_> {
         context: TypeParseContext,
     ) -> Option<Option<Spanned<TypeExpr>>> {
         if self.eat(&Token::Arrow) {
-            Some(Some(self.parse_type_with_context(context)?))
+            let success = self.parse_type_with_context(context)?;
+            if matches!(self.peek(), Some(Token::Identifier("fails"))) {
+                if matches!(context, TypeParseContext::ExternSignature) {
+                    self.error_at(
+                        "`fails` is a Hew callable return clause, not a foreign ABI declaration"
+                            .to_string(),
+                        self.peek_span(),
+                    );
+                    return None;
+                }
+                let start = success.1.start;
+                self.advance();
+                let error = self.parse_type_with_context(context)?;
+                let end = error.1.end;
+                Some(Some((
+                    TypeExpr::Fallible {
+                        success: Box::new(success),
+                        error: Box::new(error),
+                    },
+                    start..end,
+                )))
+            } else {
+                Some(Some(success))
+            }
         } else {
             Some(None)
         }
@@ -640,9 +745,12 @@ impl Parser<'_> {
                 // make the surface unreachable from valid programs.
                 if allow_implicit_self && params.is_empty() && self.peek() != Some(&Token::Colon) {
                     if is_consume {
+                        // A first-position `consume self` is eaten by
+                        // `eat_consume_self_receiver` wherever a receiver is
+                        // allowed; reaching here means the surrounding item
+                        // has no receiver to consume.
                         self.errors.push(ParseError {
-                            message: "`consume self` is not valid; a by-move receiver is \
-                                      written `consuming self`"
+                            message: "`consume self` is only valid as the receiver of a method"
                                 .to_string(),
                             span: span.clone(),
                             hint: None,
@@ -713,49 +821,49 @@ impl Parser<'_> {
         params
     }
 
-    /// Parse a parameter list, optionally accepting a `consuming self` receiver.
+    /// Parse a parameter list, optionally accepting a `consume self` receiver.
     ///
-    /// When `allow_consuming_self` is true (type-body method context), the first
-    /// token pair `consuming self` is recognised as a consuming-self receiver.
-    /// The receiver does not appear in the returned `Vec<Param>`; instead the
-    /// boolean return indicates its presence so the caller can record it in
+    /// When `allow_consume_self` is true (type-body method context), a leading
+    /// `consume self` is recognised as a consuming-self receiver. The receiver
+    /// does not appear in the returned `Vec<Param>`; instead the boolean return
+    /// indicates its presence so the caller can record it in
     /// `TypeDecl.consuming_methods`.
     ///
-    /// `consuming self` is only valid at the first-parameter position. If it
-    /// appears elsewhere (or `allow_consuming_self` is false), it falls through
+    /// `consume self` is only valid at the first-parameter position. If it
+    /// appears elsewhere (or `allow_consume_self` is false), it falls through
     /// to the regular error path.
     pub(crate) fn parse_params_with_receiver(
         &mut self,
-        allow_consuming_self: bool,
+        allow_consume_self: bool,
     ) -> (Vec<Param>, bool) {
-        // Check for `consuming self` at the first-parameter position.
-        let has_consuming_self = allow_consuming_self && self.eat_consuming_self_receiver();
+        // Check for `consume self` at the first-parameter position.
+        let has_consume_self = allow_consume_self && self.eat_consume_self_receiver();
 
         // Parse remaining ordinary parameters.
         let params = self.parse_params();
-        (params, has_consuming_self)
+        (params, has_consume_self)
     }
 
-    /// Recognise and consume a `consuming self` receiver at the current
+    /// Recognise and consume a `consume self` receiver at the current
     /// (first-parameter) position, returning `true` when one was eaten.
     ///
-    /// `consuming` lexes as `Token::Identifier("consuming")`, so the receiver is
-    /// the two-token sequence `consuming self`. The optional trailing comma is
-    /// also consumed so the following ordinary parameters parse cleanly. When the
-    /// current position is not a `consuming self` receiver, no tokens are
-    /// consumed and `false` is returned — the caller proceeds to parse ordinary
-    /// parameters (which rejects a stray `consuming` elsewhere in the list).
+    /// One receiver token carries every mode: `self` borrows, `var self`
+    /// mutates and `consume self` consumes. The retired `consuming self`
+    /// spelling is recognised here only to refuse it with the fix-it, then
+    /// treated as the consuming receiver so the rest of the item still parses.
+    /// The optional trailing comma is also consumed so the following ordinary
+    /// parameters parse cleanly.
     ///
     /// Shared by `parse_params_with_receiver` (type-body methods) and
     /// `parse_function` (inherent-impl methods) so both surfaces recognise the
     /// receiver identically.
-    pub(crate) fn eat_consuming_self_receiver(&mut self) -> bool {
+    pub(crate) fn eat_consume_self_receiver(&mut self) -> bool {
         if self.at_end() || self.peek() == Some(&Token::RightParen) {
             return false;
         }
-        let is_consuming_kw =
+        let retired_spelling =
             matches!(self.peek(), Some(Token::Identifier(s)) if *s == "consuming");
-        if !is_consuming_kw {
+        if !retired_spelling && !self.peek_is_consume_param_modifier() {
             return false;
         }
         let next_is_self = matches!(
@@ -765,19 +873,21 @@ impl Parser<'_> {
         if !next_is_self {
             return false;
         }
-        self.advance(); // consuming
+        if retired_spelling {
+            let span = self.peek_span();
+            self.error_at_with_hint(
+                "`consuming self` is not valid".to_string(),
+                span,
+                "write `consume self`",
+            );
+        }
+        self.advance(); // consume
         self.advance(); // self
         self.eat(&Token::Comma); // optional trailing comma before further params
         true
     }
 
     /// Returns true if the expression is a block-like construct that doesn't need a trailing semicolon.
-    ///
-    /// `Expr::Scope` is deliberately absent: `scope { .. }` is a statement, not
-    /// a `Primary` (HEW-SPEC-2026 §4.2), so it never reaches an expression
-    /// position this predicate gates — a block tail or a match-arm body are
-    /// both value positions. `parse_stmt` owns the statement spelling and its
-    /// optional trailing `;`.
     pub(crate) fn is_block_expr(expr: &Expr) -> bool {
         matches!(
             expr,
@@ -785,6 +895,7 @@ impl Parser<'_> {
                 | Expr::If { .. }
                 | Expr::IfLet { .. }
                 | Expr::Match { .. }
+                | Expr::Scope { .. }
                 | Expr::ForkBlock { .. }
                 | Expr::ScopeDeadline { .. }
                 | Expr::UnsafeBlock(_)
@@ -806,27 +917,17 @@ impl Parser<'_> {
             // `if` → Expr::If / Expr::IfLet, `match` → Expr::Match,
             // `unsafe` → Expr::UnsafeBlock, `select` → Expr::Select. Each of
             // these openers has exactly one expression form, so the token alone
-            // settles it. `scope` is absent for the reason `is_block_expr`
-            // gives: it opens a statement, and every caller of this predicate
-            // is asking about a value position.
-            Some(Token::If | Token::Match | Token::Unsafe | Token::Select) => true,
+            // settles it. Scope may optionally carry a deadline.
+            Some(Token::If | Token::Match | Token::Unsafe | Token::Select | Token::Scope) => true,
             // Expr::Block — but a `{` that opens a map literal is not a block,
             // and `parse_primary` splits the two on exactly this lookahead.
             Some(Token::LeftBrace) => {
                 !(matches!(self.peek_at(self.pos + 1), Some(Token::StringLit(_)))
                     && self.peek_at(self.pos + 2) == Some(&Token::Colon))
             }
-            // Expr::ForkBlock only when a brace follows; bare `fork` and
-            // `fork name = expr` build Expr::ForkChild, which is not block-like.
+            // Only a brace-delimited fork body is block-like.
             Some(Token::Fork) => self.peek_at(self.pos + 1) == Some(&Token::LeftBrace),
-            // Expr::ScopeDeadline
-            Some(Token::After) => self.looks_like_scope_deadline(),
             _ => false,
         }
-    }
-
-    pub(crate) fn fork_starts_child_binding(&self) -> bool {
-        self.peek().is_some_and(Self::is_ident_token)
-            && self.peek_at(self.pos + 1) == Some(&Token::Equal)
     }
 }

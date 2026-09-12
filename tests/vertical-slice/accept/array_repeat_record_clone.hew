@@ -1,8 +1,8 @@
 // Owned-element array-repeat with a record element: [r; 3] must produce 3
 // independent record clones. Each slot must hold independent data.
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() -> i64 {

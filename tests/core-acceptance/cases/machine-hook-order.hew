@@ -1,0 +1,54 @@
+fn mark(label: string, suffix: string) -> string {
+    label + suffix
+}
+
+machine Cycle {
+    events { Tick, Bounce, Stop }
+    emits { Trace { text: string } }
+    state Ready {
+        label: string,
+        entry {
+            emit Trace { text: "entry:" + state.label };
+            state.label = mark(state.label, "E");
+        }
+        exit {
+            emit Trace { text: "exit:" + state.label };
+            state.label = mark(state.label, "X");
+        }
+    },
+    state Done { label: string },
+    on Tick: Ready => Ready {
+        emit Trace { text: "body:" + state.label };
+        Ready { label: mark(state.label, "T") }
+    }
+    on Bounce: Ready => Ready reenter {
+        emit Trace { text: "body:" + state.label };
+        Ready { label: mark(state.label, "B") }
+    }
+    on Stop: Ready => Done {
+        emit Trace { text: "body:" + state.label };
+        Done { label: state.label }
+    }
+    default { state }
+}
+
+fn show(report: CycleStep) {
+    match report.disposition {
+        .Taken => {},
+        .Ignored => panic("transition ignored"),
+    }
+    for output in report.outputs {
+        match output { .Trace { text } => println(text), }
+    }
+}
+
+fn main() {
+    var cycle: Cycle = .Ready { label: "a".to_upper() };
+    show(cycle.step(.Tick));
+    show(cycle.step(.Bounce));
+    show(cycle.step(.Stop));
+    match cycle {
+        .Done { label } => println(label),
+        _ => panic("wrong final state"),
+    }
+}

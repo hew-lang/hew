@@ -1,0 +1,51 @@
+// A Vec whose element type has no clone iterates by borrow: the loop binding
+// is a loan of the slot the vector still owns. The vector is walked twice,
+// each element is read and its borrowing method called, and the owning removal
+// drains it afterwards. Every element is released exactly once.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+fn total(tokens: Vec<Token>) -> i64 {
+    var sum = 0;
+    for token in tokens {
+        sum = sum + token.id;
+    }
+    return sum
+}
+
+fn main() -> i64 {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "t", id: 1 });
+    tokens.push(Token { label: "t", id: 2 });
+    tokens.push(Token { label: "t", id: 3 });
+
+    for token in tokens {
+        token.show();
+    }
+    for token in tokens {
+        println(token.id);
+    }
+    println(f"len={tokens.len()}");
+    println(f"sum={total(tokens)}");
+
+    // The owning drain moves each element out; the borrowed passes above left
+    // every slot in place.
+    for token in tokens.into_iter() {
+        token.show();
+    }
+    println("drained");
+    0
+}

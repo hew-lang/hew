@@ -1,0 +1,8 @@
+// The length is outside the valid index range, even for a nonempty value.
+fn main() -> i64 {
+    let live_owner = "upper-cleanup".to_upper();
+    let value = "A".to_bytes();
+    value[1];
+    println(live_owner);
+    0
+}

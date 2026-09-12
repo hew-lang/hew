@@ -3,9 +3,9 @@
 
 // Enum and Option/Result type test
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn colour_name(c: Colour) -> i32 {

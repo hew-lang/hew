@@ -1,0 +1,12 @@
+PASS: insert multiple values
+PASS: get all values
+PASS: separate key lists
+PASS: remove one value
+PASS: removed value absent
+PASS: remove non-existent
+PASS: count non-existent key
+PASS: duplicate values allowed
+---
+Passed: 8
+Failed: 0
+ALL PASS

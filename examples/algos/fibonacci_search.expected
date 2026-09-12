@@ -1,0 +1,11 @@
+Test 1 - find 85: PASS
+Test 2 - find first: PASS
+Test 3 - find last: PASS
+Test 4 - not found: PASS
+Test 5 - empty array: PASS
+Test 6 - single found: PASS
+Test 7 - single not found: PASS
+Test 8 - two elem second: PASS
+
+8 passed, 0 failed
+ALL PASS

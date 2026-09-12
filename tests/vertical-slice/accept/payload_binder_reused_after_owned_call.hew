@@ -2,12 +2,12 @@
 // handed by value to a callee that owns its parameter stays usable in the
 // caller afterwards, on every arm.
 type Bag {
-    items: Vec<string>;
+    items: Vec<string>,
 }
 
 enum Source {
-    Named(string);
-    Packed(Bag);
+    Named(string),
+    Packed(Bag),
 }
 
 fn count(b: Bag) -> i64 {
@@ -32,7 +32,7 @@ fn describe(s: Source) -> string {
 }
 
 fn main() {
-    let items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new();
     items.push("a");
     items.push("b");
     println(describe(Source.Packed(Bag { items: items })));

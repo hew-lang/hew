@@ -1,0 +1,34 @@
+// An owned element handed to `HashSet.insert` is gone whichever path the set
+// takes: the vacant path stores it, and the already-present path keeps the
+// stored element and releases the caller's duplicate. A borrowed element is
+// cloned instead, so the caller's binding survives the call.
+fn label(index: i64) -> string {
+    f"entry-{index % 3}"
+}
+
+fn main() {
+    var seen: HashSet<string> = HashSet.new();
+    // Nine inserts over three distinct freshly built elements: six of them
+    // land on the already-present path with an owned duplicate in hand.
+    for i in 0..9 {
+        seen.insert(label(i));
+    }
+    println(f"distinct={seen.len()}");
+
+    // A live binding is borrowed, so the set clones and the caller keeps its
+    // own value for the reads that follow.
+    let kept = f"kept-{1}";
+    seen.insert(kept);
+    seen.insert(kept);
+    println(f"kept={kept} present={seen.contains(kept)} len={seen.len()}");
+
+    // Removing an element releases the stored owner, and the set releases
+    // whatever is left when it goes out of scope.
+    let removed = seen.remove(kept);
+    println(f"removed={removed} len={seen.len()}");
+
+    var drained: HashSet<string> = HashSet.new();
+    drained.insert(f"only-{0}");
+    drained.insert(f"only-{0}");
+    println(f"drained={drained.len()}");
+}

@@ -1,0 +1,48 @@
+fn choose(use_if: bool, enabled: bool, guarded: bool, fail: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {
+    let count = 10;
+    if use_if {
+        if enabled {
+            .Ok(.Some(capture(var count) || {
+                count += 1;
+                count
+            }))
+        } else {
+            .Ok(.None)
+        }
+    } else {
+        match enabled {
+            true if guarded => .Ok(.Some(capture(var count) || {
+                count += 2;
+                count
+            })),
+            true => .Ok(.Some(capture(var count) || {
+                count += 3;
+                count
+            })),
+            false if fail => .Err("unavailable".to_upper()),
+            false => .Ok(.None),
+        }
+    }
+}
+
+fn report(value: Result<Option<fn[var, clone]() -> i64>, string>) {
+    match value {
+        .Ok(.Some(callback)) => {
+            var next = callback;
+            println(next());
+            println(next());
+        },
+        .Ok(.None) => println("none"),
+        .Err(reason) => println(reason),
+    }
+}
+
+fn main() -> i64 {
+    report(choose(true, true, false, false));
+    report(choose(true, false, false, false));
+    report(choose(false, true, true, false));
+    report(choose(false, true, false, false));
+    report(choose(false, false, false, true));
+    report(choose(false, false, false, false));
+    0
+}

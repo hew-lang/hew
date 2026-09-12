@@ -1,15 +1,15 @@
 // Test 7: Enums and pattern matching
 // Testing enum definitions and match expressions
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 enum Status {
-    Active;
-    Inactive;
-    Pending;
+    Active,
+    Inactive,
+    Pending,
 }
 
 fn colour_to_int(c: Colour) -> i64 {

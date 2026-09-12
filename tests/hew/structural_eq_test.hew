@@ -3,19 +3,19 @@
 import std.testing;
 
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 type Line {
-    a: Point;
-    b: Point;
+    a: Point,
+    b: Point,
 }
 
 enum Shape {
-    Circle(i64);
-    Rect(i64, i64);
-    Empty;
+    Circle(i64),
+    Rect(i64, i64),
+    Empty,
 }
 
 #[test]
@@ -70,7 +70,7 @@ fn tuple_equality_is_member_wise_and_recursive() {
 
 #[test]
 fn vec_contains_copy_record_stays_structural() {
-    let points: Vec<Point> = Vec.new();
+    var points: Vec<Point> = Vec.new();
     points.push(Point { x: 1, y: 2 });
     points.push(Point { x: 3, y: 4 });
     testing.assert_true(points.contains(Point { x: 1, y: 2 }));

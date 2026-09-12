@@ -10,7 +10,7 @@ import hew.multitrait.{ Proc as P, Tally, ProcErr };
 import hew.multitraitb;
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl P for W {

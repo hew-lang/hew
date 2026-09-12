@@ -1,0 +1,17 @@
+fn double(x: i64) -> i64 { x * 2 }
+fn triple(x: i64) -> i64 { x * 3 }
+
+fn apply(f: fn(i64) -> i64, v: i64) -> i64 { f(v) }
+
+type Ops {
+    op: fn(i64) -> i64,
+    name: string,
+}
+
+fn main() {
+    let f = double;
+    let fs: Vec<fn(i64) -> i64> = [f, triple];
+    let ops = Ops { op: double, name: "double" };
+    let anon: fn(i64) -> i64 = |x| x + 1;
+    println(f"a={fs[0](2)} b={apply(triple, 3)} c={(ops.op)(5)} d={anon(1)} n={ops.name}");
+}

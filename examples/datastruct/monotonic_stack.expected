@@ -1,0 +1,14 @@
+PASS: monotonic decreasing
+PASS: push pops smaller
+PASS: equal no pop
+PASS: NGE basic
+PASS: NGE increasing
+PASS: NGE decreasing
+PASS: NGE single
+PASS: NGE duplicates
+PASS: empty stack
+PASS: mono push sequence
+---
+Passed: 10
+Failed: 0
+ALL PASS

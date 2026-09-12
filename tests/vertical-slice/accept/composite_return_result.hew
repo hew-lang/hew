@@ -2,8 +2,8 @@
 // Exercises two-type-parameter generic enum composite return.
 // Exit 106 = Ok(7) + Err(99) proves both arms dispatch correctly.
 enum Outcome<T, E> {
-    Ok(T);
-    Err(E);
+    Ok(T),
+    Err(E),
 }
 
 fn success() -> Outcome<i64, i64> {

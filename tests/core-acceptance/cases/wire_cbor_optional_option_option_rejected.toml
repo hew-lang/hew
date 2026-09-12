@@ -1,0 +1,13 @@
+[[case]]
+id = "wire_cbor_optional_option_option_rejected"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/wire_cbor_optional_option_option_rejected.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0
+message = "Option<Option<_>> is ambiguous under the null encoding"

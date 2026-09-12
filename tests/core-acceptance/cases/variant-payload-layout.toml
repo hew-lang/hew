@@ -1,0 +1,10 @@
+[[case]]
+id = "variant-payload-layout"
+intent = "Variant payloads with different sizes and alignment preserve full-width integers and owned fields across copies."
+source = "cases/variant-payload-layout.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "4294967297:WIDE/4294967297:WIDE/small:1/empty\n"
+exit = 0

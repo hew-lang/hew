@@ -1,0 +1,20 @@
+fn make_counter(count: i64) -> fn[var, clone]() -> i64 {
+    move capture(var count) || {
+        count += 1;
+        count
+    }
+}
+
+fn main() -> i64 {
+    let count = 40;
+    var first: fn[var, clone]() -> i64 = make_counter(count);
+    println(first());
+    var second: fn[var, clone]() -> i64 = clone first;
+    println(first());
+    println(first());
+    println(second());
+    println(second());
+    println(first());
+    println(count);
+    0
+}

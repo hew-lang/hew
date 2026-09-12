@@ -40,9 +40,9 @@ use hew_parser::ast::{BinaryOp, Expr, Literal, Spanned, UnaryOp};
 
 /// Module-level constexpr environment threaded into the integer evaluators.
 ///
-/// Values deliberately use `i128`: the parser admits `i64` literals while
-/// arithmetic may need one wider signed carrier to distinguish a typed
-/// arithmetic overflow from a literal that is simply outside its declaration.
+/// Values use the same `i128` carrier as parser literals (D421), which holds
+/// every Hew integer type exactly and lets arithmetic distinguish a typed
+/// overflow from a literal that is simply outside its declaration.
 /// The machine-const wrapper below still exposes its historical `u64`/`usize`
 /// contract unchanged.
 #[derive(Debug, Default, Clone)]
@@ -211,7 +211,7 @@ fn eval_inner(
         reason = "explicit variants preserve exhaustive-traversal posture (LESSONS)"
     )]
     match expr {
-        Expr::Literal(Literal::Integer { value, .. }) => Ok(i128::from(*value)),
+        Expr::Literal(Literal::Integer { value, .. }) => Ok(*value),
         Expr::Unary {
             op: UnaryOp::Negate,
             operand,
@@ -243,6 +243,8 @@ fn eval_inner(
         // fails the build here rather than being silently treated as
         // NotConstant.
         Expr::Clone(_)
+        | Expr::Coalesce { .. }
+        | Expr::Handle { .. }
         | Expr::Literal(_)
         | Expr::ContextVariant(_)
         | Expr::GenericApplySuffix { .. }
@@ -268,12 +270,11 @@ fn eval_inner(
         | Expr::MethodCall { .. }
         | Expr::StructInit { .. }
         | Expr::Select { .. }
-        | Expr::Join(_)
-        | Expr::Timeout { .. }
+        | Expr::Race(_)
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
         | Expr::Return(_)
-        | Expr::This
+        | Expr::ReturnError(_)
         | Expr::FieldAccess { .. }
         | Expr::Index { .. }
         | Expr::Cast { .. }
@@ -359,7 +360,7 @@ mod tests {
         (e, 0..0)
     }
 
-    fn int(n: i64) -> Spanned<Expr> {
+    fn int(n: i128) -> Spanned<Expr> {
         span(Expr::Literal(Literal::Integer {
             value: n,
             radix: IntRadix::Decimal,
@@ -611,16 +612,10 @@ mod tests {
             (crate::ResolvedTy::U32, 0, i128::from(u32::MAX)),
         ] {
             let target = target(&ty);
-            let min = i64::try_from(min).expect("fixed-width boundary fits parser literal");
-            let max = i64::try_from(max).expect("fixed-width boundary fits parser literal");
-            assert_eq!(
-                eval_integer_const_expr(&int(min), &env, target),
-                Ok(i128::from(min))
-            );
-            assert_eq!(
-                eval_integer_const_expr(&int(max), &env, target),
-                Ok(i128::from(max))
-            );
+            // The parser literal carrier and the evaluator share `i128`, so
+            // every fixed-width boundary is expressible as written.
+            assert_eq!(eval_integer_const_expr(&int(min), &env, target), Ok(min));
+            assert_eq!(eval_integer_const_expr(&int(max), &env, target), Ok(max));
         }
     }
 

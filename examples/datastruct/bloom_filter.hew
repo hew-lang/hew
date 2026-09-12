@@ -1,5 +1,8 @@
 // Bloom Filter using Vec<i64> as bit array
 // 3 hash functions for probabilistic membership testing
+//
+// A parameter is the callee's own copy, so bloom_add returns the filter and
+// the caller reassigns.
 fn h1(key: i64, m: i64) -> i64 {
     let h = key % m;
     if h < 0 {
@@ -28,18 +31,19 @@ fn h3(key: i64, m: i64) -> i64 {
 }
 
 fn make_bloom(size: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     for i in 0 .. size {
         v.push(0);
     }
     v
 }
 
-fn bloom_add(filter: Vec<i64>, key: i64) {
+fn bloom_add(var filter: Vec<i64>, key: i64) -> Vec<i64> {
     let m = filter.len();
     filter.set(h1(key, m), 1);
     filter.set(h2(key, m), 1);
     filter.set(h3(key, m), 1);
+    filter
 }
 
 fn bloom_might_contain(filter: Vec<i64>, key: i64) -> bool {
@@ -60,13 +64,13 @@ fn main() {
     var passed = 0;
     var failed = 0;
     let m = 64;
-    let filter = make_bloom(m);
+    var filter = make_bloom(m);
     // Add elements
-    bloom_add(filter, 10);
-    bloom_add(filter, 20);
-    bloom_add(filter, 30);
-    bloom_add(filter, 40);
-    bloom_add(filter, 50);
+    filter = bloom_add(filter, 10);
+    filter = bloom_add(filter, 20);
+    filter = bloom_add(filter, 30);
+    filter = bloom_add(filter, 40);
+    filter = bloom_add(filter, 50);
 
     // Test 1: No false negatives - all inserted elements must be found
     var all_found = true;
@@ -129,15 +133,15 @@ fn main() {
         failed = failed + 1;
     }
     // Test 4: Adding more elements increases false positive rate
-    let small = make_bloom(16);
-    bloom_add(small, 1);
-    bloom_add(small, 2);
-    bloom_add(small, 3);
-    bloom_add(small, 4);
-    bloom_add(small, 5);
-    bloom_add(small, 6);
-    bloom_add(small, 7);
-    bloom_add(small, 8);
+    var small = make_bloom(16);
+    small = bloom_add(small, 1);
+    small = bloom_add(small, 2);
+    small = bloom_add(small, 3);
+    small = bloom_add(small, 4);
+    small = bloom_add(small, 5);
+    small = bloom_add(small, 6);
+    small = bloom_add(small, 7);
+    small = bloom_add(small, 8);
     // Count how many bits are set
     var bits_set = 0;
     for i in 0 .. 16 {
@@ -155,10 +159,10 @@ fn main() {
     }
     // Test 5: False positive demonstration
     // Use a very small filter (8 bits) with several inserts
-    let tiny = make_bloom(8);
-    bloom_add(tiny, 100);
-    bloom_add(tiny, 200);
-    bloom_add(tiny, 300);
+    var tiny = make_bloom(8);
+    tiny = bloom_add(tiny, 100);
+    tiny = bloom_add(tiny, 200);
+    tiny = bloom_add(tiny, 300);
     // Count false positives among 100 non-inserted keys
     var fp_count = 0;
     for i in 0 .. 100 {
@@ -178,10 +182,10 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: Large filter has fewer false positives
-    let big = make_bloom(256);
-    bloom_add(big, 100);
-    bloom_add(big, 200);
-    bloom_add(big, 300);
+    var big = make_bloom(256);
+    big = bloom_add(big, 100);
+    big = bloom_add(big, 200);
+    big = bloom_add(big, 300);
     var big_fp = 0;
     for i in 0 .. 100 {
         let key = 5000 + i;

@@ -1,0 +1,55 @@
+//! A regex arm, a literal arm, a whole-string binding arm and a wildcard in
+//! one ordered string match. A guard that rejects a matching pattern hands
+//! the scrutinee whole to the later arms, and a binding arm whose guard fails
+//! releases the value it bound before the wildcard runs. The repetition loop
+//! turns a missed release into a leak signal.
+
+// Ordered selection across three predicate kinds. The digit pattern matches
+// "7", but its guard rejects the short input, so the literal arm written after
+// it still sees the scrutinee whole.
+fn classify(text: string) -> string {
+    match text {
+        re"^[0-9]+$" if text.len() >= 3 => "long digits",
+        "7" => "seven",
+        re"^[0-9]+$" => "short digits",
+        s if s.len() >= 6 => s + "!",
+        _ => "other",
+    }
+}
+
+// An owned scrutinee. The regex arm only borrows it, so the arm body still
+// owns the built string; the binding arm owns its own value and consumes it.
+fn built(k: i64) -> string {
+    let text = f"key{k}";
+    match text {
+        re"^key[0-9]+$" if k % 2 == 0 => text + "/even",
+        s if s.len() >= 4 => s + "/odd",
+        _ => "short",
+    }
+}
+
+fn churn() -> i64 {
+    var i = 0;
+    var seen = 0;
+    while i < 5000 {
+        seen = seen + classify("1234").len();
+        seen = seen + classify("7").len();
+        seen = seen + classify("42").len();
+        seen = seen + classify("abcdef").len();
+        seen = seen + classify("ab").len();
+        seen = seen + built(i % 3).len();
+        i = i + 1;
+    }
+    seen
+}
+
+fn main() {
+    println(classify("1234"));
+    println(classify("7"));
+    println(classify("42"));
+    println(classify("abcdef"));
+    println(classify("ab"));
+    println(built(4));
+    println(built(7));
+    println(f"churn {churn()}");
+}

@@ -1,5 +1,5 @@
 actor LossyWorker {
-    mailbox 1 overflow drop_new;
+    mailbox 1 overflow drop_new,
 
     receive fn work() {}
 }

@@ -3,7 +3,7 @@
 // own hash-derived discriminant when the actor lowers from a spliced
 // file-import module, and dispatch must route each message to its handler.
 pub actor Register {
-    var total: i64 = 0;
+    var total: i64 = 0,
 
     receive fn add(n: i64) -> i64 {
         total = total + n;

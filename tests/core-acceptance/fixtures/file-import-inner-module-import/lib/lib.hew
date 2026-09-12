@@ -1,0 +1,9 @@
+pub const LIB_K: i64 = 5;
+
+pub type Widget {
+    id: i64,
+}
+
+pub fn bump(n: i64) -> i64 {
+    return n + 1;
+}

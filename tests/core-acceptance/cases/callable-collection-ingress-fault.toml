@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-collection-ingress-fault"
+intent = "Bounds failure cleans a capability-coerced callable argument, its retained source, and the collection's existing captured owner."
+source = "cases/callable-collection-ingress-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

@@ -559,17 +559,13 @@ pub unsafe extern "C" fn hew_timer_wheel_schedule_handle(
 /// Schedule a timer at an absolute monotonic deadline.
 ///
 /// A deadline already behind the wheel cursor is treated as immediately due
-/// and fires on the next tick. This is the scheduling form used by cooperative
-/// WASM callers, whose wheel cursor advances only when the host drives it.
+/// and fires on the next tick. Coroutine sleeps and cooperative WASM callers
+/// use this form so a lagging wheel cursor cannot shorten their wait.
 ///
 /// # Safety
 ///
 /// `tw` must be a valid pointer returned by [`hew_timer_wheel_new`]. `cb` and
 /// `data` must remain valid until the timer fires or is cancelled.
-#[allow(
-    dead_code,
-    reason = "used by wasm32 scheduler modules and their native-host tests"
-)]
 pub(crate) unsafe fn timer_wheel_schedule_at_handle(
     tw: *mut HewTimerWheel,
     deadline_ms: u64,

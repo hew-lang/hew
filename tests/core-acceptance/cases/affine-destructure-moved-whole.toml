@@ -1,0 +1,14 @@
+[[case]]
+id = "affine-destructure-moved-whole"
+intent = "A match binder moving a resource field prevents subsequent use of the whole record."
+source = "cases/affine-destructure-moved-whole.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+severity = "error"
+line = 10
+column = 13
+message = "use of `booking` after its field `booking.ticket` was moved out"

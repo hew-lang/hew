@@ -1,0 +1,22 @@
+// Repro: `std.arena.Arena::insert` as a generic direct callee over a
+// `#[resource]` carrier. The arena owns the token; `main` must not close it.
+import std.arena;
+
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"closing token id={self.id}");
+    }
+}
+
+fn main() -> i64 {
+    var store: arena.Arena<Token> = arena.new();
+    println("before insert");
+    let _key = store.insert(Token { id: 41 });
+    println("after insert");
+    0
+}

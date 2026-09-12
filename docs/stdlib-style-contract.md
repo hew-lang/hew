@@ -1,112 +1,48 @@
-# Stdlib Type-Surface Style Contract
+# Stdlib surface conventions
 
-> **Audience:** anyone writing or reviewing a stdlib module (`std/**/*.hew`).
+Use these conventions when writing or reviewing a standard-library module.
+The [language guide](hew-language-guide.md) describes the current surface;
+module declarations remain the reference for individual APIs.
 
----
+## Types and declarations
 
-## Why this contract exists
+Use explicit-width integers such as `i64` and `u32`; choose a width that matches
+the operation and any external ABI. Use `isize` or `usize` where target-sized
+arithmetic is intended. Preserve the declared index and length types of an API.
 
-v0.5 adopts an explicit-width-only integer naming policy. The `int` and `uint`
-aliases (formerly compiler aliases for `i64` and `u64`) are removed. Stdlib
-modules must use explicit widths on all public surfaces, removing the ambiguity
-that led readers to assume Go/Swift platform-sized semantics.
+Declare Hew records with `type`, comma-separated fields and ordinary `impl`
+methods. Use `self`, `var self` or `consume self` according to the operation.
+Module paths are dotted, such as `std.fs` and `std.encoding.json`.
 
----
+## Results and absence
 
-## The invariants
+A fallible operation returns `Result<T, E>` with a readable error. Its ordinary
+name is the primary operation; do not create a panicking twin and a `try_`
+alias just to distinguish error handling. A nonblocking probe may use `try_`
+when it denotes a different operation.
 
-### 1. Public API integer width
+Use `Option<T>` for expected absence, not sentinel integers or empty strings.
+Callers propagate with `?`, recover with expression-local `handle error { ... }`,
+or supply an absence default with `??`. `expect(reason)` is for an invariant.
 
-Every `pub fn` parameter, return type, trait-method signature, and struct field
-**must** use an explicit-width integer:
+## Values and resources
 
-- Signed: `i8`, `i16`, `i32`, `i64`
-- Unsigned: `u8`, `u16`, `u32`, `u64`
-- Platform-sized (pointer math only): `isize`, `usize`
+Ordinary values clean up automatically. Do not require manual free/close calls
+for strings, collections or JSON values. Collection mutations need a `var`
+binding; adapters consume the iterators they retain.
 
-The removed aliases `int` / `Int` / `uint` are **not valid type names** and will
-produce a compile error with a suggestion to use `i64` or `isize`.
+External resources declare `close(consume self)` returning unit. Scope cleanup
+invokes it automatically; explicit close consumes the value. Keep fallible
+finish, flush or commit separate so the caller can handle its outcome.
+Borrowed parameters remain borrowed; transfer parameters spell `consume`.
 
-Choose `i64` by default for general-purpose integer values. Choose `usize` for
-collection lengths and indices. Choose narrower widths only when the external
-ABI requires it (e.g. C errno is `i32`, file descriptors are `i32`).
+## Calls and ABI boundaries
 
-### 2. Internal ABI seams
+Ordinary calls may suspend without an await prefix. Fork creates a task and
+await joins a task or vector of tasks. A scope is a value whose structured
+cleanup finishes before its result or recovery is returned.
 
-`i32`/`i64` inside `extern "C" { ... }` blocks must match the runtime symbol
-table exactly. Narrowing casts at the call site (`x as i32`) happen inside
-`unsafe`, not in the public signature:
-
-```hew
-pub fn len(dq: Deque) -> i64 { unsafe { hew_deque_len(dq) } }
-
-extern "C" {
-    fn hew_deque_len(dq: Deque) -> i64;
-}
-```
-
-### 3. Fallible conversion
-
-The sole parse-to-integer shape is:
-
-```hew
-pub fn string_to_int(s: string) -> i64 { ... }
-```
-
-No sentinel returns (`-1` meaning "missing"). Express absence with
-`Option<i64>` or `Result<i64, E>`.
-
-### 4. Handle lifetime
-
-Handle types must expose `close()` and/or `free()` as explicit trait methods.
-Automatic drop is permitted, but the explicit release API must also exist.
-
-### 5. Naming convention
-
-Fallible variants are named `try_*`. Non-fallible variants either panic or
-return a documented default. Dual variants come in pairs (`read`/`try_read`).
-
-### 6. Wire annotations
-
-`#[wire]`-annotated types use explicit-width integer fields. Choose the width
-that matches the schema contract — `i64` for general counters, narrower widths
-only when the wire protocol requires them.
-
----
-
-## Canonical example
-
-```hew
-trait DequeMethods {
-    fn push_front(dq: Deque, value: i64);
-    fn pop_front(dq: Deque) -> i64;
-    fn len(dq: Deque) -> i64;
-}
-
-impl DequeMethods for Deque {
-    fn push_front(dq: Deque, value: i64) { unsafe { hew_deque_push_front(dq, value) }; }
-    fn pop_front(dq: Deque) -> i64 { unsafe { hew_deque_pop_front(dq) } }
-    fn len(dq: Deque) -> i64 { unsafe { hew_deque_len(dq) } }
-}
-
-extern "C" {
-    fn hew_deque_push_front(dq: Deque, value: i64);
-    fn hew_deque_pop_front(dq: Deque) -> i64;
-    fn hew_deque_len(dq: Deque) -> i64;
-}
-```
-
----
-
-## Migration from `int`
-
-If you encounter `int` or `uint` in a `.hew` file, replace with `i64` or `u64`
-respectively. The compiler will suggest the replacement:
-
-```
-error: unknown type `int`; use `i64` for fixed 64-bit integers or `isize` for
-       pointer-sized integers
-```
-
-The `scripts/lint-stdlib-int-surface.sh` script may still reference the old
-`int` surface contract — it should be updated or removed.
+Extern declarations must match the actual ABI, including width, ownership,
+layout and release pairing. Do not infer an ABI from a similar symbol's name.
+For wire types, use explicit field tags and widths appropriate to the schema;
+never reuse a retired field tag for a different meaning.

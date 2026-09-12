@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-at-method-fault"
+intent = "The Index.at method reports bounds failure and releases the vector and earlier owned result."
+source = "cases/vector-at-method-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

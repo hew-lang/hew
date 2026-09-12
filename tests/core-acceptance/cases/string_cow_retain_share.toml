@@ -1,0 +1,13 @@
+[[case]]
+id = "string_cow_retain_share"
+intent = "String retain-on-share coverage for every remaining co-owner mint."
+source = "../vertical-slice/accept/string_cow_retain_share.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

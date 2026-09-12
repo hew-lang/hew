@@ -397,7 +397,7 @@ fn init_actor_scaffold_with_let_field_fails_to_check() {
     let broken =
         fs::read_to_string(&main_path)
             .unwrap()
-            .replacen("var count: i32;", "let count: i32;", 1);
+            .replacen("var count: i32,", "let count: i32,", 1);
     fs::write(&main_path, broken).unwrap();
 
     let check_out = run_hew(&project_dir, &["check", "main.hew"]);

@@ -46,8 +46,8 @@ fn impl_with_correct_signature_typechecks_clean() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }}
 
 impl Iterator for Counter {{
@@ -75,7 +75,7 @@ pub trait Source {
 }
 
 pub type Counter {
-    n: i64;
+    n: i64,
 }
 
 impl Source for Counter {
@@ -133,7 +133,7 @@ pub trait Pairing {
 }
 
 pub type Counter {
-    n: i64;
+    n: i64,
 }
 
 impl Pairing for Counter {
@@ -160,7 +160,7 @@ pub trait Container {
 }
 
 pub type Boxed<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Container for Boxed<T> {
@@ -187,7 +187,7 @@ pub trait Container {
 }
 
 pub type Counter {
-    n: i64;
+    n: i64,
 }
 
 impl Container for Counter {
@@ -238,8 +238,8 @@ fn impl_with_wrong_return_type_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }}
 
 impl Iterator for Counter {{
@@ -278,8 +278,8 @@ fn impl_with_wrong_receiver_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }}
 
 impl Iterator for Counter {{
@@ -305,8 +305,8 @@ fn impl_with_extra_parameter_rejected_at_impl_site() {
         "{ITER_TRAIT_PRELUDE}
 
 pub type Counter {{
-    n: i64;
-    limit: i64;
+    n: i64,
+    limit: i64,
 }}
 
 impl Iterator for Counter {{
@@ -338,7 +338,7 @@ pub trait Lookup {
 }
 
 pub type Bag {
-    val: i64;
+    val: i64,
 }
 
 impl Lookup for Bag {
@@ -374,7 +374,7 @@ pub trait Lift {
 }
 
 pub type Box {
-    inner: i64;
+    inner: i64,
 }
 
 impl Lift for Box {

@@ -1,0 +1,13 @@
+[[case]]
+id = "match_record_full_extraction_unused_binder"
+intent = "Non-BitCopy record match destructure — FULL extraction with a non-escaping bound owned field."
+source = "../vertical-slice/accept/match_record_full_extraction_unused_binder.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

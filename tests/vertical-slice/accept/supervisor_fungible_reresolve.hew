@@ -13,11 +13,11 @@
 // HELD handle reaches the FRESH child — no UAF, no trap.
 //
 // This test BINDS the handle BEFORE the crash and holds it ACROSS the restart,
-// then asks through the same binding AFTER. The barrier (hew_supervisor_wait_restart)
-// makes the ordering deterministic — no sleep_ms race. Exit 7 proves the held,
+// then asks through the same binding AFTER. The barrier (`await_restart`) makes
+// the ordering deterministic — no sleep_ms race. Exit 7 proves the held,
 // pre-crash handle re-resolved to the restarted child whose init value is 7.
 actor Worker {
-    var value: i64;
+    var value: i64,
     receive fn get_value() -> i64 {
         value
     }
@@ -27,14 +27,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child w1: Worker(value: 7);
-}
-
-extern "C" {
-    fn hew_supervisor_wait_restart(sup: LocalPid<App>, target: i64, timeout_ms: i64) -> i64;
+    child w1: Worker(value: 7),
 }
 
 fn main() -> i64 {
@@ -42,18 +38,13 @@ fn main() -> i64 {
     // Bind the fungible reference BEFORE the crash and hold it across the restart.
     let w = sup.w1;
     // Crash the worker through the SAME held handle (fire-and-forget tell).
-    w.crash_me();
-    // Wait for the supervisor to complete exactly one restart cycle.
-    let restarted = unsafe {
-        hew_supervisor_wait_restart(sup, 1, 5000)
-    };
-    if restarted == 0 {
-        // Timed out — supervisor did not complete a restart within 5 s.
-        return 0;
-    }
+    let _ = w.crash_me();
+    // Wait for the supervisor to complete the restart cycle. The handle the
+    // barrier re-fetches is discarded: the ask below goes through `w`.
+    let _ = await_restart sup.w1;
     // Ask through the PRE-CRASH held handle. The fungible reference re-resolves
     // to the restarted child; a snapshot would reach the freed actor and trap.
-    match await w.get_value() {
+    match w.get_value() {
         .Ok(v) => v,
         .Err(_) => 0,
     }

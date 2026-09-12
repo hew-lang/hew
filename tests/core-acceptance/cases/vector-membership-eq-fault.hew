@@ -1,0 +1,24 @@
+type Key {
+    label: string,
+    divisor: i64,
+}
+
+type Holder {
+    values: Vec<Key>,
+    sibling: Vec<string>,
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        let local = other.label.to_upper();
+        let bytes = local.to_bytes();
+        bytes.len() / self.divisor == 1
+    }
+}
+
+fn main() {
+    let holder = Holder { values: [Key { label: "stored".to_upper(), divisor: 0 }], sibling: ["sibling".to_upper()] };
+    let wanted = Key { label: "wanted".to_upper(), divisor: 1 };
+    println(holder.values.contains(wanted));
+    println("unreachable");
+}

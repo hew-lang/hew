@@ -1,0 +1,20 @@
+import std.link_monitor.{DownNotification};
+
+actor Peer { receive fn fail() { panic("linked peer failed"); } }
+actor Linked {
+    var value: string = "owned linked state",
+    #[on(down)] fn down(_note: DownNotification) { panic("EXIT reached the DOWN hook"); }
+    receive fn arm(peer: Peer) {
+        value = value.to_upper();
+        link(peer).expect("link peer");
+    }
+    receive fn ping() -> string { value }
+}
+fn main() {
+    let peer = spawn Peer;
+    let linked = spawn Linked;
+    linked.arm(peer).expect("arm linked actor");
+    let _ = peer.fail();
+    while linked.ping().is_ok() {}
+    println("unhandled EXIT terminated linked actor");
+}

@@ -1,0 +1,10 @@
+PASS: new buffer empty, cap=5
+PASS: push 3 items, count=3
+PASS: peek returns first
+PASS: pop FIFO order
+PASS: fill to capacity
+PASS: push when full fails
+PASS: wraparound works
+PASS: pop values after fill
+8/8 tests passed
+ALL PASS

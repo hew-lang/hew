@@ -1,0 +1,13 @@
+[[case]]
+id = "file-import-not-transitive"
+intent = "A file import publishes into the importing file only: the root imported `b.hew`, so the name `c.hew` published into `b.hew` is not one the root can call."
+source = "fixtures/file-import-not-transitive/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UndefinedFunction"
+line = 7
+column = 13
+message = "undefined function `from_c`"

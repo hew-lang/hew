@@ -107,8 +107,8 @@ pub const JSON: i64 = 1;
 /// }
 /// ```
 pub type Logger {
-    level: i64;
-    format: i64;
+    level: i64,
+    format: i64,
 }
 
 /// Construct a Logger with the given level threshold and output format.
@@ -121,17 +121,14 @@ pub fn new_logger(level: i64, format: i64) -> Logger {
 
 /// Return the level threshold of a Logger.
 ///
-/// Because the `Logger` record's fields are not directly accessible from
-/// outside this module (cross-module record field access is not yet
-/// supported by the MIR), use this accessor when the level needs to be
-/// inspected — for example, in tests.
+/// Use this accessor to inspect the logger's level filter.
 pub fn logger_level(lg: Logger) -> i64 {
     lg.level
 }
 
 /// Return the output format of a Logger.
 ///
-/// See `logger_level` for why an explicit accessor is provided.
+/// Returns the logger's configured format constant.
 pub fn logger_format(lg: Logger) -> i64 {
     lg.format
 }

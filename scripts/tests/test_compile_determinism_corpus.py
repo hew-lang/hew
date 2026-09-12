@@ -4,7 +4,7 @@
 The gate's whole value is that it goes red on output that varies between two
 identical compiles.  A harness that only ever sees a deterministic compiler
 cannot demonstrate that, so each assertion here is paired with a stub compiler
-that breaks exactly one of them: EdgeCarry ordering, stderr, exit status.  The
+that breaks exactly one of them: the physical dump, stderr, exit status.  The
 deterministic stub is the control — the same corpus, the same runs, green.
 """
 
@@ -21,7 +21,7 @@ SCRIPT = ROOT / "scripts" / "compile-determinism-corpus.sh"
 FIXTURE_COUNT = 16
 
 STUB = r"""#!/usr/bin/env bash
-# Stub compiler: accepts `compile --dump-mir raw <fixture>` and varies its
+# Stub compiler: accepts `compile --dump-mir physical <fixture>` and varies its
 # output across repeated invocations according to $STUB_MODE.
 set -u
 fixture="${!#}"
@@ -34,23 +34,23 @@ printf '%s' "$count" >"$counter"
 
 case "$STUB_MODE" in
     deterministic)
-        printf 'ownership EdgeCarry a\nownership EdgeCarry b\n'
+        printf 'fn physical a\nfn physical b\n'
         printf 'note: compiled %s\n' "$name" >&2
         ;;
     reorder)
         if (( count == 1 )); then
-            printf 'ownership EdgeCarry a\nownership EdgeCarry b\n'
+            printf 'fn physical a\nfn physical b\n'
         else
-            printf 'ownership EdgeCarry b\nownership EdgeCarry a\n'
+            printf 'fn physical b\nfn physical a\n'
         fi
         printf 'note: compiled %s\n' "$name" >&2
         ;;
     diagnostics)
-        printf 'ownership EdgeCarry a\nownership EdgeCarry b\n'
+        printf 'fn physical a\nfn physical b\n'
         printf 'note: compiled %s (attempt %s)\n' "$name" "$count" >&2
         ;;
     status)
-        printf 'ownership EdgeCarry a\n'
+        printf 'fn physical a\n'
         printf 'note: compiled %s\n' "$name" >&2
         if (( count > 1 )); then exit 1; fi
         ;;
@@ -112,7 +112,7 @@ class DeterminismGateTests(unittest.TestCase):
     def test_reordered_edge_carry_facts_fail_the_gate(self) -> None:
         result = self.run_gate("reorder")
         self.assertEqual(result.returncode, 1)
-        self.assertIn("reordered EdgeCarry facts", result.stderr)
+        self.assertIn("changed the physical MIR dump", result.stderr)
 
     def test_a_changed_diagnostic_stream_fails_the_gate(self) -> None:
         result = self.run_gate("diagnostics")

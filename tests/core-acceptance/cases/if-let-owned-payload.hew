@@ -1,0 +1,26 @@
+//! `if let` over an owned enum payload, in statement and expression position,
+//! with the else branch taken on the fallthrough arm.
+
+fn lookup(key: i64) -> Option<string> {
+    if key > 0 { .Some(("value-" + "x")) } else { .None }
+}
+
+fn main() -> i64 {
+    if let .Some(found) = lookup(1) {
+        println(found);
+    } else {
+        println("missing-statement");
+    }
+
+    if let .Some(found) = lookup(0) {
+        println(found);
+    } else {
+        println("missing-statement");
+    }
+
+    let chosen = if let .Some(found) = lookup(1) { found } else { "missing-expression" };
+    println(chosen);
+    let absent = if let .Some(found) = lookup(0) { found } else { "missing-expression" };
+    println(absent);
+    0
+}

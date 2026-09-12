@@ -276,8 +276,8 @@ impl Checker {
     /// is not handler-style (it can never be satisfied by receive fns; the
     /// conservative empty-trait rule applies).
     ///
-    /// This gate is what keeps the `LocalPid<Actor>` → `LocalPid<Handler>`
-    /// coercion honest: for a handler trait, only the structural receive-fn
+    /// This gate is what keeps the `Actor`'s own actor-handle type →
+    /// `Handler`'s coercion honest: for a handler trait, only the structural receive-fn
     /// satisfaction is lowerable, so an explicit `impl` must not admit the
     /// coercion.
     pub(super) fn trait_is_handler_style(&self, trait_name: &str) -> bool {
@@ -327,6 +327,9 @@ impl Checker {
                 return common_ty;
             }
         }
+        if then_resolved.contains_callable() || else_resolved.contains_callable() {
+            return self.join_callable_values(&then_resolved, &else_resolved, span);
+        }
         self.expect_type(then_ty, else_ty, span);
         self.subst.resolve(then_ty)
     }
@@ -352,17 +355,15 @@ impl Checker {
         if !self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
             return false;
         }
+        let (expected_label, actual_label) =
+            disambiguate_mismatch_labels(&expected_resolved, &actual_resolved);
         self.report_error(
             TypeErrorKind::Mismatch {
-                expected: expected_resolved.user_facing().to_string(),
-                actual: actual_resolved.user_facing().to_string(),
+                expected: expected_label.clone(),
+                actual: actual_label.clone(),
             },
             span,
-            format!(
-                "type mismatch: expected `{}`, found `{}`",
-                expected_resolved.user_facing(),
-                actual_resolved.user_facing()
-            ),
+            format!("type mismatch: expected `{expected_label}`, found `{actual_label}`"),
         );
         true
     }
@@ -375,10 +376,39 @@ impl Checker {
     pub(super) fn try_unify_with_owner_identity(&mut self, expected: &Ty, actual: &Ty) -> bool {
         let expected_resolved = self.normalize_for_use(expected);
         let actual_resolved = self.normalize_for_use(actual);
+        if self.nominal_owner_conflict(&expected_resolved, &actual_resolved)
+            || self.callable_erasure_loses_obligation(&expected_resolved, &actual_resolved)
+        {
+            return false;
+        }
+        crate::unify::coerce(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
+    }
+
+    /// Run invariant unification against an isolated substitution while
+    /// retaining the checker's nominal-owner authority.
+    ///
+    /// Callable joins use a trial substitution spanning every parameter and
+    /// the return type. A failed relation restores the trial to its state at
+    /// entry, so this helper is safe for other speculative invariant probes.
+    pub(super) fn try_unify_invariant_with_owner_identity(
+        &self,
+        subst: &mut crate::ty::Substitution,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> bool {
+        let expected_resolved = subst.resolve(expected);
+        let actual_resolved = subst.resolve(actual);
         if self.nominal_owner_conflict(&expected_resolved, &actual_resolved) {
             return false;
         }
-        unify(&mut self.subst, &expected_resolved, &actual_resolved).is_ok()
+
+        let snapshot = subst.snapshot();
+        if crate::unify::unify(subst, &expected_resolved, &actual_resolved).is_ok() {
+            true
+        } else {
+            subst.restore(snapshot);
+            false
+        }
     }
 
     /// Commit an inference unification without losing the source inference
@@ -404,6 +434,43 @@ impl Checker {
         unify(&mut self.subst, &expected_resolved, actual).is_ok()
     }
 
+    /// Coerce `actual` into `expected`; a closure or named function entering a
+    /// written callable type owes that type its suspension contract.
+    fn coerce_with_obligations(&mut self, expected: &Ty, actual: &Ty, span: &Span) -> bool {
+        let coerced = crate::unify::coerce(&mut self.subst, expected, actual).is_ok();
+        if coerced {
+            self.record_suspension_obligations(expected, actual, span);
+        }
+        coerced
+    }
+
+    /// Two closure literals never share a type; a binding that holds either
+    /// needs the written callable type.
+    fn report_type_mismatch(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
+        let (expected_label, actual_label) = disambiguate_mismatch_labels(expected, actual);
+        let kind = TypeErrorKind::Mismatch {
+            expected: expected_label.clone(),
+            actual: actual_label.clone(),
+        };
+        if matches!((expected, actual), (Ty::Closure { .. }, Ty::Closure { .. })) {
+            self.report_error_with_suggestions(
+                kind,
+                span,
+                "type mismatch: each closure literal has its own type".to_string(),
+                vec![format!(
+                    "write the binding type as `{}` to hold either closure",
+                    expected.user_facing()
+                )],
+            );
+        } else if *expected != Ty::Error && *actual != Ty::Error {
+            self.report_error(
+                kind,
+                span,
+                format!("type mismatch: expected `{expected_label}`, found `{actual_label}`"),
+            );
+        }
+    }
+
     pub(super) fn expect_type(&mut self, expected: &Ty, actual: &Ty, span: &Span) {
         // Re-project any `Ty::AssocType` carriers whose `base` has become
         // concrete via prior substitution. Carriers with still-abstract
@@ -414,12 +481,14 @@ impl Checker {
         let actual = &actual_projected;
         // Reject the issue #2651 nominal collision at the type boundary before
         // unification would silently accept it; see `reject_nominal_owner_conflict`.
-        if self.reject_nominal_owner_conflict(expected, actual, span) {
+        if self.reject_nominal_owner_conflict(expected, actual, span)
+            || self.reject_callable_erasure(expected, actual, span)
+        {
             return;
         }
         // Snapshot substitution so partial bindings are rolled back on failure
         let snapshot = self.subst.snapshot();
-        if let Err(_e) = unify(&mut self.subst, expected, actual) {
+        if !self.coerce_with_obligations(expected, actual, span) {
             // Restore substitution to avoid partial corruption
             self.subst.restore(snapshot);
             let expected_resolved = self.subst.resolve(expected);
@@ -442,13 +511,13 @@ impl Checker {
                     }
                 }
             }
-            // `LocalPid<C>` → `LocalPid<T>` coercion when `C: T`.
+            // Actor-handle narrowing `C` → `T` when `C: T`.
             //
             // The active-mode `conn.attach(this)` surface needs a concrete
-            // actor pid (`LocalPid<EchoConn>`) to satisfy an extern that takes
-            // the trait-typed handler pid (`LocalPid<ConnectionHandler>`). A
-            // `LocalPid<T>` is an opaque actor-ref pointer (`*mut HewActor`);
-            // the inner type parameter is purely a compile-time tag used for
+            // actor handle (`EchoConn`) to satisfy an extern that takes the
+            // handler-trait handle (`ConnectionHandler`). An actor handle is an
+            // opaque actor-ref pointer (`*mut HewActor`); its nominal
+            // identity is purely a compile-time tag used for
             // `.send`/`.ask` message typing and (for handler traits) for
             // msg_id synthesis. Narrowing a concrete-actor pid to a
             // handler-trait pid is therefore pointer-identical at runtime — no
@@ -460,8 +529,8 @@ impl Checker {
             // `attach` call site), so the trait erasure carries no runtime
             // payload here.
             if let (Some(expected_inner), Some(actual_inner)) = (
-                expected_resolved.as_local_pid(),
-                actual_resolved.as_local_pid(),
+                expected_resolved.as_actor_handle(),
+                actual_resolved.as_actor_handle(),
             ) {
                 if let (
                     Ty::Named {
@@ -549,20 +618,7 @@ impl Checker {
                 );
                 return;
             }
-            if expected_resolved != Ty::Error && actual_resolved != Ty::Error {
-                self.report_error(
-                    TypeErrorKind::Mismatch {
-                        expected: expected_resolved.user_facing().to_string(),
-                        actual: actual_resolved.user_facing().to_string(),
-                    },
-                    span,
-                    format!(
-                        "type mismatch: expected `{}`, found `{}`",
-                        expected_resolved.user_facing(),
-                        actual_resolved.user_facing()
-                    ),
-                );
-            }
+            self.report_type_mismatch(&expected_resolved, &actual_resolved, span);
         }
     }
 
@@ -607,8 +663,26 @@ impl Checker {
         //   1. No generic methods.
         //   2. No `Self`-returning methods.
         // Both are rejected with `E_TRAIT_NOT_OBJECT_SAFE`.
-        if !self.validate_dyn_object_safety(&trait_lookup_key, &trait_info, span) {
-            return None;
+        // Every trait whose methods reach the vtable must be object safe,
+        // including the supertraits whose slots this bound publishes.
+        let declaring_keys: Vec<String> = {
+            let mut seen = std::collections::HashSet::new();
+            std::iter::once(trait_lookup_key.clone())
+                .chain(
+                    self.dyn_vtable_slots(trait_name)
+                        .into_iter()
+                        .map(|(key, _, _)| key),
+                )
+                .filter(|key| seen.insert(key.clone()))
+                .collect()
+        };
+        for key in declaring_keys {
+            let Some(info) = self.trait_defs.get(&key).cloned() else {
+                continue;
+            };
+            if !self.validate_dyn_object_safety(&key, &info, span) {
+                return None;
+            }
         }
 
         // Build the method-table. Prefer the nominal impl registries; fall
@@ -648,25 +722,31 @@ impl Checker {
                 .canonical_nominal_name(concrete_type_name)
                 .unwrap_or_else(|| concrete_type_name.to_string()),
         };
-        let mut table: Vec<DynVtableEntry> = Vec::with_capacity(trait_info.methods.len());
-        for method in &trait_info.methods {
-            let impl_fn_key = format!("{canonical_type_name}::{}", method.name);
-            let Some(mut signature) = self.lookup_trait_method(&trait_lookup_key, &method.name)
-            else {
-                // JUSTIFIED: `trait_info` is cloned from `trait_defs[trait_name]`,
-                // and this loop iterates its own `methods`. If lookup fails,
-                // the checker metadata is internally inconsistent; fabricating
-                // an empty signature would poison the vtable.
+        // One authority for the slot layout: the bound's own methods in
+        // declaration order, then its supertraits' methods. `trait Error:
+        // Display` therefore publishes `Display::fmt` at the slot every
+        // dispatch site computes from the same list.
+        let slots = self.dyn_vtable_slots(trait_name);
+        let mut table: Vec<DynVtableEntry> = Vec::with_capacity(slots.len());
+        for (declaring_key, declaring_spelling, method_name) in slots {
+            let impl_fn_key = format!("{canonical_type_name}::{method_name}");
+            let Some(mut signature) = self.lookup_trait_method(&declaring_key, &method_name) else {
+                // JUSTIFIED: the slot list is built from `trait_defs`, so a
+                // method it names is resolvable. Fabricating an empty
+                // signature would poison the vtable.
                 unreachable!(
-                    "trait method `{trait_name}.{}` is listed in trait_defs but is not resolvable",
-                    method.name
+                    "trait method `{declaring_key}.{method_name}` is listed in trait_defs but is not resolvable"
                 );
             };
             self.apply_trait_object_bound_substitutions(&mut signature, bound);
+            let impl_method = self
+                .trait_impl_method_declaration(concrete_type, &declaring_spelling, &method_name)
+                .map(|(declaration, _)| declaration);
             table.push(DynVtableEntry {
-                trait_name: trait_name.to_string(),
-                method_name: method.name.clone(),
+                trait_name: declaring_spelling,
+                method_name,
                 impl_fn_key,
+                impl_method,
                 signature,
             });
         }
@@ -806,15 +886,22 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
                 .is_some_and(|args| args.iter().any(|a| type_expr_mentions_self(&a.0)))
         }
         TypeExpr::QualifiedAssocPath(path) => type_expr_mentions_self(&path.base.0),
-        TypeExpr::Result { ok, err } => {
-            type_expr_mentions_self(&ok.0) || type_expr_mentions_self(&err.0)
-        }
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => type_expr_mentions_self(&ok.0) || type_expr_mentions_self(&err.0),
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) | TypeExpr::Borrow(inner) => {
             type_expr_mentions_self(&inner.0)
         }
         TypeExpr::Tuple(elems) => elems.iter().any(|e| type_expr_mentions_self(&e.0)),
         TypeExpr::Array { element, .. } => type_expr_mentions_self(&element.0),
         TypeExpr::Function {
+            params,
+            return_type,
+            ..
+        }
+        | TypeExpr::ActorFn {
             params,
             return_type,
         } => {
@@ -832,4 +919,33 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
         }),
         TypeExpr::Infer => false,
     }
+}
+
+/// Render a mismatched pair so the two sides can be told apart.
+///
+/// A builtin the catalog presents under a bare spelling - the channel endpoints
+/// `Sender` and `Receiver` - can collide with a user declaration of the same
+/// name, and the plain rendering then repeats one spelling on both sides. When
+/// the two render alike, name the substrate side by the module that declares it.
+fn disambiguate_mismatch_labels(expected: &Ty, actual: &Ty) -> (String, String) {
+    let expected_label = expected.user_facing().to_string();
+    let actual_label = actual.user_facing().to_string();
+    if expected_label != actual_label {
+        return (expected_label, actual_label);
+    }
+    let qualify = |ty: &Ty, label: &str| {
+        let Ty::Named {
+            builtin: Some(kind),
+            ..
+        } = ty
+        else {
+            return label.to_string();
+        };
+        kind.source_declaration_path()
+            .map_or_else(|| label.to_string(), |owner| format!("{owner}.{label}"))
+    };
+    (
+        qualify(expected, &expected_label),
+        qualify(actual, &actual_label),
+    )
 }

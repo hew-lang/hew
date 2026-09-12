@@ -1,0 +1,57 @@
+// `for` over a string walks codepoints and over bytes walks bytes. Multi-byte
+// codepoints are single steps, an embedded NUL is an ordinary element, and the
+// source stays usable after the loop.
+fn count_to(text: string, wanted: char) -> i64 {
+    var seen = 0;
+    for c in text {
+        if c == wanted {
+            return seen
+        }
+        seen = seen + 1;
+    }
+    return -1
+}
+
+fn main() -> i64 {
+    for c in "Aé中🙂" {
+        println(c);
+    }
+
+    var codepoints = 0;
+    for c in "a\0b" {
+        codepoints = codepoints + 1;
+        if c == '\0' {
+            println("nul");
+        }
+    }
+    println(codepoints);
+
+    let raw = "abc".to_bytes();
+    var total = 0;
+    for b in raw {
+        total = total + (b as i64);
+    }
+    println(total);
+    println(raw.len());
+
+    println(count_to("hello", 'l'));
+
+    var kept = 0;
+    for c in "abcd" {
+        if c == 'b' {
+            continue;
+        }
+        if c == 'd' {
+            break;
+        }
+        kept = kept + 1;
+    }
+    println(kept);
+
+    let owned = "hold".to_upper();
+    for c in owned {
+        println(c);
+    }
+    println(owned);
+    0
+}

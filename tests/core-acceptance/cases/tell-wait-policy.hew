@@ -1,0 +1,40 @@
+// `mailbox(target, on_full: .Wait)` is the only suspending submission policy:
+// a call through that one-way view parks the sender until the bounded mailbox
+// has room, so every message arrives instead of being refused. The checker
+// takes the suspension effect from the view's type, not from the handler.
+actor Sink {
+    mailbox 1 overflow fail,
+    var count: i64 = 0,
+
+    receive fn take(n: i64) { count = count + 1; }
+
+    receive fn total() -> i64 { count }
+}
+
+actor Driver {
+    receive fn run(sink: Sink) -> i64 {
+        let reliable = mailbox(sink, on_full: .Wait);
+        for i in 0..5 {
+            match reliable.take(i) {
+                .Ok(_) => {},
+                .Err(_) => println("UNEXPECTED_REFUSAL"),
+            }
+        }
+        println("all submitted");
+        0
+    }
+}
+
+fn main() {
+    let sink = spawn Sink();
+    let driver = spawn Driver();
+    match driver.run(sink) {
+        .Ok(_) => {},
+        .Err(_) => panic("driver ask failed"),
+    }
+    sleep(50ms);
+    match sink.total() {
+        .Ok(n) => println(f"delivered {n}"),
+        .Err(_) => panic("count ask failed"),
+    }
+}

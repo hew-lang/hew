@@ -18,12 +18,12 @@ runtime.
 Hew tracks **two version axes** that move independently:
 
 - **Compiler version** is SemVer on the binary (`hew --version` → `hew
-  0.5.x`). Patch releases for soundness and codegen fixes; minor releases
+  0.6.0`). Patch releases for soundness and codegen fixes; minor releases
   for new stdlib surfaces and new language editions; the major release is
   the v1.0 stability event.
 - **Spec edition** is a year-shaped identifier declared once per package in
-  `Hew.toml` as `edition = "2026"`. The first stabilised edition is
-  **2026**. Editions are cadence-free: the next edition lands when
+  `hew.toml` as `edition = "2026"`. **2026** is the edition being developed;
+  it has not yet stabilized. Editions are cadence-free: the next edition lands when
   accumulated breaking changes are worth a migration, expected every two
   to three years.
 
@@ -35,12 +35,15 @@ $ hew --supported-editions
 2026
 ```
 
-A package on edition 2026 continues to compile under future compiler
-versions for as long as `2026` remains in the supported list. Inside a
-single edition, the language is **additive** — new stdlib modules and new
-type-system features that compile old code unchanged land in minor
-compiler releases. Anything that would reject previously-accepted code is
-an edition-breaking change and waits for the next edition.
+Before stabilization, the native compiler cutover may make breaking changes
+within edition 2026. Superseded syntax and APIs can be removed as the compiler,
+standard library and documentation converge on the agreed design; selecting
+edition 2026 is not yet a compatibility freeze.
+
+After stabilization, the intended edition contract is compatibility for as
+long as that edition remains supported. Additive features can land within an
+edition; incompatible language changes require a later edition. This future
+contract does not prevent the current pre-stability redesign.
 
 Hew does not adopt per-file edition pragmas. The edition stamp is
 package-level. Migration tooling (`hew migrate --edition <year>`) is
@@ -79,7 +82,8 @@ Changelog at the end of this document for historical context.
 - **Actor**: isolated, single-threaded state machine with a mailbox.
 - **Task**: structured concurrent work _within_ an actor, cancellable via scope.
 
-**Implementation note:** The Rust runtime (`hew-runtime`) provides actor mailboxes using pthread-based synchronization internally. The final link step requires `-lpthread`.
+The native runtime supplies platform-specific scheduling and synchronization;
+the compiler links the libraries required by its target.
 
 Rules:
 
@@ -89,51 +93,122 @@ Rules:
 
 **Stopping an actor (normative).**
 
-Stopping is a method, and it has one signature. Inside an actor body `self`
-is the actor handle, and `self.stop()` finishes the current handler, runs the
-`#[on(stop)]` hook, and stops the actor. From outside, `pid.stop()` on a
-`LocalPid<A>` requests the same stop and returns `()`. It is idempotent: a
-`stop()` addressed to an actor that has already stopped or crashed is a
-no-op, not an error, so a caller that must know whether it was the one to end
-the actor takes a monitor instead. There is no free-function `stop`, and
-`this` is not a receiver token in Hew.
+`close(actor)` requests cooperative stop and waits for terminal cleanup.
+`closed(actor)` waits for termination without requesting it. `fork close(actor)`
+starts the same operation concurrently and returns a `Task<()>`; it does not
+remove the task's cleanup obligation. These calls return unit and are
+idempotent for an actor that is already terminal (§4.10).
 
-Messages queued behind a stop are dropped, and the drop is disclosed rather
-than silent. The stopped actor's `DOWN` record carries the count as
-`dropped: n`, and the runtime counts the same drops in
-`mailbox.dropped_on_stop_total{actor}`, so a delivery whose send already
-returned `Ok(())` still has a typed event and a series behind it. A sender
-that needs per-message certainty asks rather than tells. A send that arrives
-after the stop has latched reports `SendError.Dead` (§5.6).
+Inside a named actor body, bare `self` is the actor's own handle, so
+`registry.register(self)` passes that identity. `self.field` still accesses
+actor state. `this` is not a receiver token.
 
-`stop` is a reserved handler name. A user-declared `receive fn stop()` is
-`E_RESERVED_HANDLER_NAME`, whose fix-it is to rename the handler or to call
-`self.stop()`.
-
-> **Implementation status.** The shipped compiler registers a free-function
-> `stop(actor)` builtin and rejects both `self.stop()` and `pid.stop()`. The
-> method surface, the reserved-name refusal, and the enumeration of every
-> registered builtin against its lowering target are tracked in
-> hew-lang/hew#3193.
+Acceptance of a mailbox submission is not proof that its handler completed.
+Stopping can discard queued work. Use a completion call when the caller needs
+to know whether a handler finished; handle its failure envelope (§2.1.1).
 
 ### 2.1.1 Actor Message Protocol
 
 Actors expose message handlers using `receive fn`. Named actor `receive fn` methods are callable directly — no `.send()` or `.ask()` required.
 
-Named actor `receive fn` methods are called directly — there is no `.send()` or `.ask()` call site. The distinguishing axes are the callee's signature and its actor's declared mailbox policy. A `receive fn` with a return type `R` produces a request-reply call (type `Result<R, AskError>`). A `receive fn` without a return type is fire-and-forget: at v0.6.0 its call has type `()` for an unbounded mailbox or bounded `block` mailbox, and `Result<(), SendError>` for a `drop_new`, `drop_old`, `fail`, or `coalesce` mailbox — a split the frozen rule of §5.6 closes by widening every send to `Result<(), SendError>`. Because `LocalPid<T>` preserves the actor's nominal identity, this policy-sensitive result is visible in the handle's inferred method surface without adding a caller-side send keyword.
+**An actor is the type of its handle (normative).** `spawn Orders(...)` has
+type `Orders`. A field, parameter, return, collection element or record field
+that holds an actor is written with the actor's own name, `self` inside an
+actor body is `Self` which is that actor, and a supervisor is addressed by its
+own name the same way. There is no separate handle type to write and no second
+surface handle for a remote actor: location is a runtime fact. An anonymous
+actor's handle mirrors an `fn` type and is written `actor(M) -> R`.
+`ChildRef<A>` stays distinct because it names a supervised *role* rather than
+an incarnation, and re-resolves on every call (§5.6).
 
-The token `ask` does not appear at actor call sites. Request-reply against a named actor is written `await <ref>.<method>(<args>)` and has result type `Result<R, AskError>`. Fire-and-forget is written `<ref>.<method>(<args>)` (no `await`) and has the policy-derived type above. `ask` is not lexer-recognised at any position in edition 2026 (reserved for a future syntactic marker; see §4.11.1 and HEW-FUTURE).
+**Completion calls.** A call on a `receive fn` through an actor handle waits
+for the handler to finish, exactly as a call on a function does.
+`<pid>.<method>(<args>)` has type `Result<R, ActorError<E, Req>>`, where `R` is
+the handler's return type and `()` when it declares none, and `E` is its
+declared `fails` type and `Never` when it declares none. Written bare,
+`ActorError` means `ActorError<Never, Never>`. `ActorError<E>` defaults only
+`Req` to `Never`. A rejecting completion view infers a concrete sealed request
+type; an ordinary waiting call uses `Never` because it cannot reject admission. `fork <pid>.<method>(<args>)` starts the same call concurrently
+as a `Task<Result<R, ActorError<E, Req>>>` that `await` then joins. The call carries no
+operator: an ordinary call waits, `fork` starts concurrent work, and `await`
+joins a task. The handler does not run locally; the call returns when the
+handler's turn has finished, which means processed, not durable.
+
+One-way delivery is a separate, explicit surface: `mailbox(target, on_full:
+...)` yields a view whose calls submit and return as soon as the message is
+accepted, with the value `Result<Delivery, SendFailure<Req>>`. `Delivery`
+reports `.Accepted` or an explicitly chosen `.Discarded`. A value-returning
+handler cannot be called through a mailbox view; the diagnostic names
+`fork target.m(..)` for concurrency. A `fails` handler that returns no value
+may be submitted this way: with no caller to receive its declared error, an
+`Err(e)` becomes the actor's own fault, carrying the error's `Display` text
+into the diagnostic and reaching its supervisor. The error type must therefore
+render — `string`, or a type with an `impl Display` body — or the submission
+is refused.
+
+A completion call chooses its own admission through the other view:
+`policy(target, on_full: ...)` yields a view whose calls complete exactly as a
+call on the handle does, with `Result<R, ActorError<E, Req>>`. `.Wait` is
+the bare-handle behaviour and parks the caller while the destination mailbox is
+full; `.Reject` refuses instead, and the call reports
+`ActorError.Rejected(failure)`, with `failure.reason == SendError.Full`.
+The owned request remains in `failure.message`; `.retry()` consumes it and
+resubmits to the original actor, while `.to(other)` consumes it and resubmits
+to a compatible handler. Both return the handler completion result. The
+checker requires the same handler name, parameter types and reply contract.
+Dropping the request releases its payload. Rejection is the only outcome
+from which the same request may safely be resubmitted: every other variant means the request
+was accepted or its fate is unknown. One view type per kind — `policy`
+completes, `mailbox` submits — and both are immutable.
+
+**Rejected requests.** A rejected completion or
+submission returns `SendFailure<Req>`, which retains the unaccepted request
+and exposes its `reason`. The payload stays sealed. Consuming retry resubmits
+to the original target; consuming redirection checks the new target against
+the request's handler and parameter types before resubmitting. A program
+cannot manufacture or open a sealed request. This contract preserves an
+affine payload on refusal. The request's type information survives storing
+and later matching the failure, without relying on the original call site.
+
+The outcome composes like any other `Result`: propagate with `?`, recover
+with `handle` or `match`, or discard deliberately with `let _ = pid.m();`.
+An accidentally discarded actor-call or submission Result is
+`E_SEND_RESULT_DROPPED`. Neither an unbounded mailbox nor a unit-returning
+handler removes the obligation to handle the outcome.
+
+**Mailbox policy at the sender.** `mailbox(worker, on_full: .Wait)` yields an
+immutable typed one-way view of the same actor and mailbox; a receive call
+through that view submits under that policy. It mutates nothing and grants no
+authority over other senders' work; it selects what *this* sender does when
+the mailbox is full. The mailbox-view default is `.Reject`, which fails
+immediately and hands the unaccepted payload back — transferred resources
+included — so the caller can retry, redirect, or discard. `.Wait` parks until
+the message is accepted, cancelled, closed, or timed out, and is the one
+policy under which a submission suspends. `.DropNewest` drops the submitted
+message and reports that disposition distinctly. Coalescing requires the
+actor's own mailbox support for its key policy (§6.3). Capacity and queue-wide
+eviction belong to the actor and its supervisor, never to a sender view.
+
+No token marks an actor call site: an unmarked call on a handle waits for
+completion, and the receiver type — handle or mailbox view — decides whether
+the call waits or only submits. There is no actor-call operator or `send` keyword.
+
+If the receiving handler faults before replying, the ask resolves to
+`.Err(ActorError.Trapped)`. The receiving actor retains ownership of the
+fault and its supervision policy; the caller may handle the error and continue.
+Calling an actor does not join its lifetime to the caller's task scope. Caller
+cancellation still follows the caller's own cancellation and cleanup edges.
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
 
-    // Fire-and-forget: no return type, caller does not await
+    // No return type: the call still waits until the handler has finished
     receive fn increment(n: i64) {
         count += n;
     }
 
-    // Request-response: has return type, caller must await
+    // Request-response: has a return type, the call waits for the reply
     receive fn get() -> i64 {
         count
     }
@@ -147,106 +222,130 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → fire-and-forget. The caller does not use `await`. At v0.6.0 unbounded and bounded-`block` calls return `()` and policy-sensitive calls return `Result<(), SendError>`; §5.6's frozen rule widens all four to `Result<(), SendError>` (see *Fire-and-forget delivery*, below).
-- **`receive fn` with return type** → request-response. The call produces `R` and waits for the reply. Inside `select`/`join`, the actor call is treated as an implicit concurrent reply source; writing `await` there is accepted but redundant.
+- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), ActorError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, SendFailure<Req>>`.
+- **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, ActorError>`. Inside a `select` arm the call is the arm's source, so the arm's `from` clause is what waits.
 
 **Calling named actors:**
+
+<!-- doctest: skip -->
 
 ```hew
 let counter = spawn Counter(count: 0);
 
-// Fire-and-forget: no return type, no await needed
-counter.increment(10);
+// No return type: the call waits until the handler has finished
+counter.increment(10)?;
 
-// Request-response: has return type, requires await
-let n = await counter.get();
+// One-way: submit without waiting
+mailbox(counter, on_full: .Reject).increment(10)?;
+
+// Request-response: has return type, the call waits for the reply
+let n = counter.get()?;
 ```
 
 **Sending messages:**
 
 Lambda actors receive messages via call-syntax. Named actors expose typed receive methods:
 
+<!-- doctest: skip -->
+
 ```hew
 // Lambda actor: call the handle directly
 let worker = actor |msg: i64| { println(msg * 2); };
-worker.send(42);                // fire-and-forget
+let _ = worker(42);             // wait for completion
 
-// Named actor: use the receive method
-counter.increment(10);
+// Named actor: the call waits, and the outcome is not discardable
+let _ = counter.increment(10);
 ```
 
 **Message payloads (normative):**
 
 A `receive fn` parameter is a **value** (snapshotted on send, §3.4.4), a **pid
-handle** (`LocalPid`, `RemotePid`, `ChildRef` — copied, both sides address the
+handle** (`Pid`, `ChildRef` — copied, both sides address the
 one actor), or an **opaque or resource handle** on a local send. A handle
 payload is a move: the send consumes it and the sender's binding is dead
 afterwards (`E_USE_AFTER_SEND`, §3.9.6). Such a handle may also be an actor's
 init field, moved in at `spawn` and closed by the actor's drop glue at stop, so
 one actor can own one connection and serve many requests over it. Across nodes
 the rule is the wire rule: a remote payload must be CBOR-serializable, and a
-handle is not (`E_OPAQUE_MESSAGE_PAYLOAD`). Counted handles (`Rc`, `Weak`,
-`LambdaPid`) are never payloads, local or remote, because an actor's heap is its
+handle is not (`E_OPAQUE_MESSAGE_PAYLOAD`). Counted handles (`Rc`, `Weak`, an
+anonymous actor's handle) are never payloads, local or remote, because an actor's heap is its
 own; closures, generators, and tasks are never payloads either
 (`E_CALLABLE_MESSAGE_PAYLOAD`).
 
-**Fire-and-forget delivery (normative):**
+**Delivery outcomes (normative).**
 
-A fire-and-forget send enqueues a logical snapshot of the message. On enqueue
-the recipient's mailbox takes ownership of that snapshot. Its source-level
-result is chosen from the actor declaration, so a caller can tell from the code
-and handle type whether the declared policy can lose work:
+A mailbox view returns `Result<Delivery, SendFailure<Req>>` for every
+submission, whether the mailbox is bounded or unbounded. `Delivery.Accepted`
+means the mailbox accepted responsibility for the message; it does not mean
+that the handler has run. A policy that explicitly discards this submission
+reports `Delivery.Discarded`. Refusal returns the unaccepted request and its
+reason under the intended sealed-request contract above.
 
-- An unbounded mailbox returns `()` and does not lose work to overflow.
-- A bounded `block` mailbox returns `()`. If full, the sending continuation
-  suspends at a real scheduler yield point until capacity exists; it MUST NOT
-  park an OS scheduler-worker thread.
-- A `drop_new`, `drop_old`, or `coalesce` mailbox returns
-  `Result<(), SendError>`. `Ok(())` means this send caused no policy loss;
-  `Err(SendError.MessageLost)` means it discarded, evicted, replaced, or
-  coalesced a message.
-- A `fail` mailbox returns `Result<(), SendError>`. Full-mailbox rejection is
-  `Err(SendError.Full)` and transfers no message ownership.
+A direct handle call or a completion-policy view returns the completion
+envelope. A handler's `fails E` result maps to `ActorError.Failed(E)`; a
+handler without `fails` cannot produce that variant. A terminal destination
+reports a lifecycle failure, never a successful no-op. Capacity and overflow
+policy do not change these result types (§6).
 
-That split is the v0.6.0 typing. The frozen dead-target rule of §5.6 widens
-every send to `Result<(), SendError>`, so the `()` rows above become
-`Result<(), SendError>` whose only `Err` inhabitant is `SendError.Dead`; the
-policy rows keep the variants listed here and gain `Dead`. A statement-position
-send or ask whose `Result` is discarded is `E_SEND_RESULT_DROPPED`, a compile
-error; there is no `must_use` lint tier below that widening (hew-lang/hew#3254).
+**Current implementation limitations (informative).**
 
-A bare statement that discards any send or ask result is
-`E_SEND_RESULT_DROPPED`, a compile error. The caller MUST handle it with
-`match` or `?`, or explicitly acknowledge the decision with the fix-it
-`_ = pid.m();`. This explicit discard exists for metrics/sampling workloads,
-but loss can no longer be introduced by changing an actor declaration while
-leaving an ordinary bare send apparently successful.
+The following are gaps in the current native cutover, not alternative
+language contracts:
 
-A send to an actor that is already terminal — stopped or crashed — is not a
-no-op and does not trap. It reports `Err(SendError.Dead)`, the value a send to
-a dead target returns; §5.6 gives the `E_SEND_RESULT_DROPPED` rule in full.
-Nothing is enqueued and the payload is released at the send site, but the
-caller is told. Other unit-surface runtime failures trap the sender.
+- A handle obtained from a node lookup is still written `RemotePid<A>`. A
+  remote handle has its own runtime representation, so unifying it under the
+  actor's own type waits on the location-aware delivery path.
+- There is no abandon or unjoin primitive. `fork orders.log(line)` without a
+  later `await` is the one-shot send, and it still joins at the enclosing
+  scope's exit like every fork. Whether Hew needs a true fire-and-forget send
+  is an open question: it would make resources, cleanup and control flow less
+  deterministic, and nothing in this specification promises it.
+- `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
+  forms, but native supervisor lowering has not adopted them. The current
+  internal stop entry point is not the public language spelling (§5.6).
+- Native `select` realizes task, timer and channel-receive sources. Actor-call
+  registration remains pending (§4.11.1). Stream-next selection is not in the
+  current classified source set.
+- Stream codec adapters remain incomplete on the final path; ordinary
+  Stream values and iteration are separate from that gap (§6.5).
+- Native coalescing and ReplaceLatest realization require a checked key
+  projection and remain pending (§6.3).
+- Native supervision supports declared children and pools of them; a literal
+  `count:` is required, and sibling wiring and parts of the shutdown-deadline
+  contract remain incomplete (§5).
+- Captured WASI execution can still expose an internal trap tag as its exit
+  status. This does not change the exit-1 rule for unrecovered faults (§5.8).
+- Resource-close checking covers inherent methods; trait-method checking has
+  not yet established the same blanket close rule in every form (§3.7.8).
+- `into_iter()` consumes its vector, but the current cursor can clone
+  cloneable elements. It is not a universal clone-free drain (§3.8.1).
 
-> **Implementation status.** Today a unit-typed send to a terminal actor is a
-> silent no-op and a policy-sensitive send reports `Err(SendError.Closed)`. The
-> `Dead` shape and the widened send type land with the v0.7.0 mechanism
-> (hew-lang/hew#3254).
-
-Named-actor request-response uses `await` on the receive method (see §2.1.4); an
-`ask` of a terminal actor is NOT a no-op — it yields `Err`, because the caller
-asked for a reply that can never arrive.
+These limitations do not establish sandbox or cross-platform execution parity.
 
 **Actor instantiation:**
 
 Actors are instantiated using the `spawn` keyword with constructor arguments matching the actor's `init` block parameters:
 
 ```hew
-// Spawn with named field arguments
-let counter = spawn Counter(count: 0);
+actor Counter {
+    var count: i64,
+    receive fn value() -> i64 { count }
+}
 
-// Spawn with no arguments (if actor has no-arg init or no init block)
-let worker = spawn WorkerActor();
+actor WorkerActor {
+    receive fn ping() {}
+}
+
+fn main() {
+    // Spawn with named field arguments
+    let counter = spawn Counter(count: 0);
+
+    // Spawn with no arguments (if actor has no-arg init or no init block)
+    let worker = spawn WorkerActor();
+
+    close(counter);
+    close(worker);
+}
 ```
 
 > **Note:** Named actor spawn always uses parenthesized arguments, even when empty. This is distinct from lambda actor syntax, which uses `actor |params| { body }`.
@@ -271,8 +370,8 @@ Receive handlers can be annotated with `#[every(duration)]` to create periodic t
 
 ```hew
 actor HealthChecker {
-    let endpoint: string;
-    var failures: i64;
+    let endpoint: string,
+    var failures: i64,
 
     #[every(5s)]
     receive fn check() {
@@ -289,7 +388,7 @@ actor HealthChecker {
 **Rules:**
 - The `#[every]` attribute takes a single duration literal argument (e.g. `5s`, `100ms`, `1m`)
 - Periodic handlers must not have parameters (they receive no message payload)
-- Periodic handlers must not have a return type (fire-and-forget)
+- Periodic handlers have unit success; the timer submits their turns without a reply consumer
 - The timer starts when the actor is spawned and repeats until the actor stops
 - Periodic handlers run within the actor's message loop, preserving single-threaded semantics
 
@@ -306,16 +405,21 @@ shutdown.
 Lambda actors provide lightweight, inline actor definitions:
 
 ```hew
-// Basic lambda actor
-let worker = actor |msg: i64| {
-    println(msg * 2);
-};
+fn main() {
+    // Basic lambda actor
+    let worker = actor |msg: i64| {
+        println(msg * 2);
+    };
 
-// With state capture (move semantics)
-let factor = 2;
-let multiplier = actor move |x: i64| {
-    println(x * factor);
-};
+    // With state capture (move semantics)
+    let factor = 2;
+    let multiplier = actor move |x: i64| {
+        println(x * factor);
+    };
+
+    close(worker);
+    close(multiplier);
+}
 ```
 
 **Syntax:**
@@ -327,71 +431,80 @@ ActorSpawn      = "spawn" Ident TypeArgs? "(" FieldInitList? ")" ;  (* spawn Cou
 
 **Type system:**
 
-A lambda actor expression evaluates to a `LambdaPid<M, R>` handle — a PID-like
-handle in the same family as `LocalPid` / `RemotePid` ("a pid you ask, `M` in →
+A lambda actor expression evaluates to an `actor(M) -> R` handle — a PID-like
+handle in the same family as `Pid` ("a pid you ask, `M` in →
 `R` out"), where:
 
 - `M` is the message type (from the parameter list: a single param's type, a
   tuple of the param types for multiple params, or `()` for no params)
 - `R` is the reply type (from the `-> R` annotation, or `()` when omitted)
 
-`LambdaPid<M, ()>` is send-shaped (fire-and-forget); `LambdaPid<M, R>` with a
-non-unit `R` is ask-shaped (request-response). `LambdaPid` is a move-only
-resource handle: it is `Send`/`Sync` iff both `M` and `R` are `Send`, and the
-runtime stops the actor when the last strong handle drops.
+Both unit-returning and value-returning lambda actors use completion calls.
+`handle(msg)` waits for the handler and yields the actor completion envelope
+from §2.1.1. A unit-returning lambda can also receive one-way submissions via
+`mailbox(handle, on_full: .Reject)(msg)`. `policy(handle, on_full: .Reject)(msg)`
+selects completion admission. There is no lambda-specific `.send()` operation.
 
-A lambda actor is an actor, not a channel: `LambdaPid` exposes only the actor
-surface (`handle(msg)` call-syntax, `.send(msg)`, `.close()`). It deliberately
-has no `.recv()` / `.send_half()` / `.recv_half()` surface — the caller never
-reads the actor's mailbox, and an actor handle cannot be split in two. The reply
-for an ask-shaped actor is delivered through the call-site `Result`, never a
-separate receive.
+A lambda actor lowers to an ordinary actor declaration: captures become state
+fields and its body becomes one receive handler. Its handle supports
+`close(handle)` and `closed(handle)`. A handle can be stored in a record or
+collection and called through that place; it cannot be split into channel
+halves. Copies retain the same actor identity rather than duplicating its state.
+
+A lambda that names the binding holding its own handle is refused. Use a named
+actor for recursive protocols, keeping actor state separate from the handle
+that addresses it.
 
 **Spawning:**
 
 ```hew
-// Named actor spawn returns LocalPid<ActorType>
-let counter: LocalPid<Counter> = spawn Counter(count: 0);
+actor Counter {
+    var count: i64,
+    receive fn value() -> i64 { count }
+}
 
-// Lambda actor expression returns LambdaPid<M, R>
-let worker: LambdaPid<i64, ()> = actor |msg: i64| { println(msg); };   // send
-let adder: LambdaPid<i64, i64> = actor |x: i64| -> i64 { x + 1 };      // ask
+fn main() {
+    // Spawn a named actor
+    let counter = spawn Counter(count: 0);
+
+    // A lambda actor expression has the type `actor(M) -> R`
+    let worker: actor(i64) = actor |msg: i64| { println(msg); };          // unit reply
+    let adder: actor(i64) -> i64 = actor |x: i64| -> i64 { x + 1 };       // value reply
+    close(counter);
+    close(worker);
+    close(adder);
+}
 ```
 
 **Capture semantics:**
 
-- Variables from enclosing scope can be captured
-- Captured values must implement the `Send` trait
-- Use `move` keyword to transfer ownership of captures
-- Without `move`, copyable values are copied, non-copyable values cause an error
+Captures follow the value and transfer rules of §3.4.5. Ordinary data is
+captured as an independent value; resource transfer consumes the source.
+Captured values must satisfy the actor boundary's sendability requirements.
+`move` requests transfer explicitly. It is not needed merely to capture a
+string or another ordinary value.
 
 **Operations:**
 
 ```hew
-// Fire-and-forget send
-worker.send(42);
-
-// Named actor request-response
-let result = await counter.get();
+fn main() {
+    let worker = actor |msg: i64| { println(msg); };
+    let _ = worker(42);                              // wait for completion
+    let _ = mailbox(worker, on_full: .Reject)(43);    // observe submission
+    close(worker);                                  // wait for terminal cleanup
+}
 ```
 
-**Integration with `scope` blocks (normative):**
+**Interaction with `scope`:**
 
-Lambda actors spawned within a `scope` block are **scope-owned** by that block, but are NOT integrated with the block's task cancellation or trap propagation:
+An actor remains a separate failure domain. A lambda-actor fault does not
+become a sibling task's fault merely because its handle was created in a
+`scope`. A completion caller receives the actor error envelope. Structured
+child tasks created with `fork` retain their own scope obligations.
 
-```hew
-scope {
-    let worker = actor |x: i64| { ... };
-    worker.send(1);
-}  // worker stopped when the scope-block exits
-```
-
-Specifically:
-
-- When a scope-block exits, all lambda actors spawned within it are sent a stop signal (equivalent to `actor_stop`).
-- Sibling-cancellation triggered by a child failure does NOT cancel lambda actors — it only cancels structured child tasks (`fork name = expr`).
-- A trap within a lambda actor does NOT propagate to sibling tasks or the enclosing scope-block — the actor fails independently.
-- For failure propagation across actors, use supervision trees (Section 5), not structured concurrency.
+Handles follow ordinary ownership cleanup. Use `close(worker)` when the code
+requires the actor's terminal cleanup to complete at a particular point; use
+`closed(worker)` to observe termination without requesting it.
 
 **Limitations:**
 
@@ -410,25 +523,81 @@ Specifically:
 
 Actors may declare `#[max_heap(N)]` to cap their per-actor arena. If an arena allocation would exceed that cap, the runtime fails closed with the `ExitReason::HeapExceeded` crash variant and the `HEW_TRAP_HEAP_EXCEEDED` trap-kind discriminator. Supervisors receive that heap-exhaustion payload through the same crash-report routing path as other traps, so restart policy, escalation, and `#[on(crash)]` observation all see the cap breach as an unrecoverable actor failure rather than a recoverable `Result`.
 
-> **Error propagation:** `Result<T, E>` and `Option<T>` are first-class. User functions may return either type and use `?` for propagation. The `?` operator is available in any function whose return type is `Result` or `Option` with the same error type, or with `dyn Error` (§2.2.1).
+> **Error propagation:** `Result<T, E>` and `Option<T>` are first-class. `?` propagates absence only into an enclosing `Option` return, and errors only into an enclosing `Result` return with a compatible error type (§2.2.1). It never converts absence into an error or discards an error as absence.
 
 ### 2.2.1 Error Propagation
+
+**Fallible functions.** `fn read() -> T fails E` declares success type `T` and
+one error type `E`; its call produces the same `Result<T, E>` value representation
+used elsewhere. Ordinary returns and the function tail produce exactly `T`.
+`return error problem;` returns an `E` failure. There is no implicit forwarding
+of a complete Result at a success boundary: use `?` or `handle` explicitly.
+This distinction also holds when `T` is itself a Result, tuple or record.
+
+`error` remains an ordinary binding name. Member access, calls, indexing,
+propagation and operators take priority after `return`: `return error.fmt();`
+returns that method's result, and `return error + 1;` returns the sum. For an
+ambiguous failure payload, use a named local or a block, such as
+`return error { -1 };` or `return error { .Invalid };`.
+
+```hew
+fn pair() -> (i64, string) fails string {
+    return (10, "hello");
+}
+
+fn unavailable() -> i64 fails string {
+    return error "not available";
+}
+```
+
+An error return targets its enclosing fallible function, not an enclosing
+handler. A nested closure has its own return context. Error returns do not
+trigger supervision or convert runtime faults and cancellation into Results.
+
+**Local recovery.** `optional_value ?? fallback` evaluates its left operand
+once. A present value supplies its payload; only absence evaluates `fallback`.
+The fallback must have the payload type (or diverge). `??` accepts only
+`Option`, never `Result`; it associates right and binds below logical operators.
+
+`result_value handle problem { recovery }` evaluates its Result operand once.
+Success supplies the success payload. Only an error runs the block, with
+`problem` bound to the error payload. The block must produce the success
+payload type or diverge. `handle` is contextual, and the error binder is
+user-named and scoped to the block. It is not a surrounding exception handler:
+an inner `?` in the operand retains its enclosing function's return edge.
+
+Handler blocks are ordinary lexical blocks: `return`, `break`, `continue`,
+`await`, captures and sends retain their usual contexts and contracts. There
+is no implicit task, retry or asynchronous continuation. Errors produced in a
+handler still require handling. Typed Result recovery does not intercept
+runtime faults or clear cancellation. A handler attached directly to a scope
+is the separate structured-failure boundary described in §4.2.
+
+`let value = optional_value else { divergent_block };` requires a present
+optional payload and binds it for the rest of the enclosing scope. A type
+annotation describes that payload. The else block cannot see the new binding
+and must diverge. Without `else`, an ordinary `let` preserves the Option value.
+Explicit variant-pattern let-else remains available for other patterns.
 
 The `?` operator propagates errors from `Result` and `Option` types:
 
 ```hew
-fn read_file(path: string) -> Result<string, string> {
-    let handle = open(path)?;  // Early return on error
-    let content = read(handle)?;
+import std.fs;
+
+fn read_file(path: string) -> Result<string, fs.IoError> {
+    let content = fs.read(path)?;  // Early return on error
+    fs.write("copy.txt", content)?;
     Ok(content)
 }
 ```
 
-When a `receive fn` message handler returns `Err`, the error is:
-
-1. Logged to the actor's supervision context
-2. Returned to the caller (if request-response pattern)
-3. May cause trap if unhandled and configured to do so
+A `receive fn ... -> T fails E` uses the same `return error e` and `?`
+rules as a fallible function. A completion caller receives `Failed(e)` in its
+actor envelope. If the handler's success type is unit and it is submitted
+through a mailbox view, there is no reply consumer: its declared failure
+becomes an actor fault with the error's `Display` text (§2.1.1). A handler
+that explicitly returns `Result<T, E>` without `fails` returns that Result as
+an ordinary reply value; it is not implicitly flattened or logged.
 
 **`?` is exact (normative).** The error type of the operand must be the error
 type of the enclosing function. Two concrete error enums never convert into one
@@ -443,7 +612,7 @@ declared in `std/builtins.hew`:
 trait Error: Display {}
 ```
 
-Every public error enum in `std` and in a `hew::` package implements `Display`
+Every public error enum in `std` and in a `hew.` package implements `Display`
 and `Error`. When the enclosing function's error type is `dyn Error`, `?`
 applies the ordinary `dyn Trait` coercion the language already performs in any
 `dyn Trait` value position — the concrete error is erased into the trait
@@ -463,61 +632,17 @@ an absent value becomes an error, through methods the caller writes:
 | --- | --- |
 | `Result<T, E>.map_err(f)` | `f: fn(E) -> F` applied to the `Err` payload, yielding `Result<T, F>` |
 | `Option<T>.ok_or(e)` | `Some(v)` becomes `Ok(v)`; `None` becomes `Err(e)` |
-| `Result<T, E>.expect(msg)` | the `Ok` payload, or a trap carrying `msg` |
-| `Result<T, E>.unwrap()` | the `Ok` payload, or a trap naming the error |
+| `Result<T, E>.expect(reason)` | the `Ok` payload, or a trap carrying `reason` |
+
+`expect(reason)` is the one deliberate crash-on-failure form. There is no
+`unwrap()`: a crash whose message is the error text tells a reader what
+happened but never why the author expected it not to. `expect` requires the
+reason, so an invariant assertion is written as one.
 
 **`main` returning a `Result`.** `fn main() -> Result<(), E>` requires
 `E: Error`. On `Err(e)` the runtime writes `error: {e}` to stderr using the
 error's `Display` text and exits with `user_code` 1 (§5.8). On `Ok(())` it
 exits 0.
-
-### 2.2.2 Bind-and-Propagate Sugar (`let r? = expr`)
-
-The `?`-suffix on a `let` binding is syntactic sugar for placing `?` on the
-right-hand side:
-
-```
-let r? = expr;          ≡  let r = expr?;
-let r?: T = expr;       ≡  let r: T = expr?;
-```
-
-**Rules:**
-
-- The binding name must be a simple identifier. Complex patterns such as
-  `let (a, b)? = …` or `let Some(x)? = …` are not valid — the sugar requires
-  a single name to anchor the unwrapped value.
-- An initialiser is required. `let r?;` with no `= expr` is a parse error.
-- The expression `expr` must evaluate to `Result<T, E>` or `Option<T>`.
-  Any other type is a type error (`InvalidOperation`), identical to the
-  diagnostic produced by a bare `expr?` on a non-Result/Option expression.
-- The enclosing function must return `Result<_, E>` or `Option<_>` with the
-  same error type, or with `dyn Error` (§2.2.1). If it does not, the checker
-  reports the same "`?` cannot be used in a function returning …`" diagnostic
-  as for bare `?`.
-- The type annotation `T` in `let r?: T = expr` describes the *unwrapped*
-  Ok-payload (type of `r` after propagation), not the Result itself — the
-  same convention as `let r: T = expr?;`.
-
-**Desugaring is canonical.** The form `let r = expr?;` is the lowered
-representation. A formatter may rewrite `let r? = expr;` to the desugared
-form; both representations carry identical semantics.
-
-**Motivation.** The common `let x = (await call())?;` pattern requires
-disambiguating parentheses because `await call()?` would parse as
-`await (call()?)`, yielding a doubly-wrapped type. The sugar eliminates the
-paren cluster and places the propagation marker next to the binding name,
-where the reader's eye is focused:
-
-```hew
-// Before
-let reply = (await server.compute(input))?;
-
-// After
-let reply? = await server.compute(input);
-```
-
-Both `let r? = expr;` and `let r = expr?;` remain valid; existing code is
-unaffected.
 
 ---
 
@@ -539,7 +664,7 @@ to use `type`.
 - **Value types** (copy): integers, floats, bool, char, small fixed aggregates.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
-- **Actor references**: `LocalPid<A>` is sendable.
+- **Actor references**: an actor handle is sendable.
 - **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
 
 #### Variant spelling (normative)
@@ -570,6 +695,54 @@ program is rewritten rather than hand-edited.
 State names inside a `machine` declaration are not variants at the surface,
 and this rule does not reach them (§3.11.3).
 
+#### Spread in literals (normative)
+
+`..expr` inside a literal splices a value, and the spelling is the same
+wherever splicing makes sense.
+
+In a bracket literal, `..operand` contributes the operand's elements at the
+position it is written. Each operand has type `Vec<T>` for the literal's
+element type `T`, and the result is a `Vec<T>`:
+
+```hew
+fn main() {
+    let low: Vec<i64> = [1, 2];
+    let high: Vec<i64> = [8, 9];
+    let all = [..low, 5, ..high];   // [1, 2, 5, 8, 9]
+    println(all.len());
+}
+```
+
+A fixed-size `[T; N]` literal takes no spread: `N` is part of the type and a
+spread operand's length is a run-time value.
+
+In a record literal, `..base` supplies every field the literal does not name.
+`base` has the literal's own type, a literal takes at most one base, and a
+named field takes precedence over the base regardless of where the base
+appears in the field list. The base written first is the taught spelling:
+
+```hew
+type Point { x: i64, y: i64, label: string, }
+fn main() {
+    let origin = Point { x: 0, y: 0, label: "origin" };
+    let shifted = Point { ..origin, x: 3 };
+    println(shifted.label);
+}
+```
+
+Spread reads its operand rather than consuming it, so the operand remains
+usable afterwards; the ownership of each carried value is the ownership of
+passing that value — a transfer at the operand's last use, a copy otherwise.
+A `Vec` spread is therefore a retain plus the appended pushes.
+
+Spread performs no effects of its own, so it is admitted anywhere a literal
+is, including a machine transition body (§3.11.3).
+
+The same dots spell the rest of a record pattern, `Point { x, .. }`: on the
+pattern side they stand for the fields the pattern does not name, as on the
+expression side they stand for the fields or elements the literal does not
+write.
+
 ### 3.2 Mutability
 
 - Bindings are immutable by default: `let`.
@@ -592,14 +765,26 @@ all take `var self` — so `let v: Vec<i64> = Vec.new(); v.push(1)` is refused
 and `var v` accepts it. There is no separate "interior mutability" rule for
 collections.
 
-Handles are the exception by category, not by syntax (§3.4.3). A method on a
-handle is declared `self` and acts through the handle, so `let pid`, `let rc`,
-and `let d = deque.new()` remain legal receivers of `send`, `set`, and
-`push_back` — the binding is not what changes.
+Handle operations act on a resource or actor identity (§3.4.3). Their
+declared receiver still controls access: a borrowing method may use a `let`
+handle, a `var self` method requires mutable access, and `consume self`
+ends the owner's lifetime. Actor calls do not mutate the handle binding.
 
 The "declared mutable but never reassigned" warning reads "declared `var` but
 never mutated; use `let`" and counts a `var self` call as a mutation, so
 `var v: Vec<i64> = Vec.new(); v.push(1)` warns nothing.
+
+A vector can own elements that have no copy operation, including generators.
+`push` and `set` copy copyable elements and consume non-copyable elements.
+`pop` transfers an element out. Indexing and `get` copy a cloneable element
+or borrow a clone-free element; a borrowed read does not grant ownership.
+A vector of non-copyable elements cannot itself be copied. Generic unbounded
+elements are always borrowed (§3.8.1).
+
+Replacing, clearing or dropping elements completes their cleanup before
+execution continues. A failed bounds check leaves the receiver and any new
+element owned by the caller's fault-cleanup path; neither is lost or transferred
+into an invalid slot.
 
 ### 3.3 Sendability / isolation rule
 
@@ -610,7 +795,7 @@ A value may cross an actor boundary only if it satisfies **Send**.
 - the value is a value type (integers, floats, bool, char), or
 - the value is **owned** and transferred (move) with no remaining aliases, or
 - the value is `Frozen` (deeply immutable), or
-- the value is an actor reference (`LocalPid<A>`)
+- the value is an actor reference
 
 This is the central compile-time guarantee: **no data races without locks**, aligning with capability-based actor safety in Pony. ([tutorial.ponylang.io][1])
 
@@ -624,7 +809,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ---------------------------------- | ------------------------------------------ |
 | Value types (i32, f64, bool, char, isize, usize) | Always `Send`                |
 | `string`                           | Always `Send` (immutable-shareable owned type; alias-shared by refcount retain on send — not deep-copied) |
-| `LocalPid<A>`                      | Always `Send`                              |
+| an actor handle               | Always `Send`                              |
 | `type S { f1: T1; f2: T2; ... }`   | All fields are `Send`                      |
 | `enum E { V1(T1), V2(T2), ... }`   | All variant payloads are `Send`            |
 | `Vec<T>`                           | `T` is `Send`                              |
@@ -639,11 +824,11 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 > and `fn f(xs: [T])` both type-check and lower as `Vec<T>`, so an `[T; N]`
 > value does not satisfy an `[T]` annotation (``expected `Vec<i64>`, found
 > `[i64; 3]` ``). Prefer the explicit `Vec<T>` spelling for dynamically-sized
-> sequences. `.len()` reads an array's length through the `Vec<T>` method
-> surface, so it is available on an inferred or `[T]`-annotated binding; a
-> binding annotated `[T; N]` does not resolve methods and is refused
-> (``no method `len` on `[i64; 3]` ``). Removing that asymmetry is a
-> checker fix, not a surface change.
+> sequences. Fixed arrays support `.len()`, indexing and replacement through a
+> mutable binding. Their length remains part of the type through calls, returns
+> and nested values. The compiler chooses storage; the source type does not
+> promise stack allocation. `[seed; N]` evaluates `seed` once, even when `N` is
+> zero, and requires a cloneable element when `N` exceeds one.
 
 **Frozen derivation:**
 
@@ -651,7 +836,7 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 | ----------------------------- | ----------------------------------------- |
 | Value types                   | Always `Frozen`                           |
 | `string`                      | NOT `Frozen` (mutable content)            |
-| `LocalPid<A>`                 | Always `Frozen` (identity reference only) |
+| an actor handle          | Always `Frozen` (identity reference only) |
 | `type S` where all field types are `Frozen` | `Frozen` (recursive over field types) |
 | `type S` where any field type is not `Frozen` | NOT `Frozen`                        |
 | `enum E`                      | All variant payloads are `Frozen`         |
@@ -665,24 +850,29 @@ The compiler automatically determines `Send` and `Frozen` for user-defined types
 `bytes` is a built-in compiler type with stdlib-registered methods: a mutable, heap-allocated byte buffer — semantically a `Vec<u8>` — but with a dedicated type name:
 
 ```hew
-let buf: bytes = bytes.new();
-buf.push(0x48);    // push a byte value (i64)
-buf.push(72);      // same as 'H' in ASCII
-let n = buf.len(); // i64
-let b = buf.get(0); // Option<u8> — first byte, or None when out of range
-buf.set(1, 0xFF);   // overwrite byte at index 1
-let last = buf.pop(); // i64 — removes and returns last byte
-println(buf.is_empty()); // bool
-println(buf.contains(72)); // bool — linear scan
+fn main() {
+    var buf: bytes = bytes.new();
+    buf.push(0x48);    // push a byte value (i64)
+    buf.push(72);      // same as 'H' in ASCII
+    let n = buf.len(); // i64
+    let b = buf.get(0); // Option<u8> — first byte, or None when out of range
+    buf.set(1, 0xFF);   // overwrite byte at index 1
+    let last = buf.pop(); // Option<u8> — removes and returns last byte, None when empty
+    println(buf.is_empty()); // bool
+    println(buf.contains(72)); // bool — linear scan
+    println(n);
+    println(last.unwrap_or(0));
+    println(b.unwrap_or(0));
+}
 ```
 
 **Methods on `bytes`:**
 
 | Method         | Signature          | Description                     |
 | -------------- | ------------------ | ------------------------------- |
-| `bytes::new()` | `() -> bytes`      | Create an empty byte buffer     |
+| `bytes.new()` | `() -> bytes`      | Create an empty byte buffer     |
 | `.push(b)`     | `(i64) -> ()`      | Append a byte                   |
-| `.pop()`       | `() -> i64`        | Remove and return the last byte |
+| `.pop()`       | `() -> Option<u8>` | Remove and return the last byte; `None` when empty |
 | `.get(i)`      | `(i64) -> Option<u8>` | Byte at index `i`; `None` out of range |
 | `.set(i, b)`   | `(i64, i64) -> ()` | Overwrite the byte at index `i` |
 | `.len()`       | `() -> i64`        | Number of bytes                 |
@@ -742,10 +932,13 @@ Rust's approach is overkill for single-threaded code. Pony's capability system i
 `let` and `var` are **binding modes**, not ownership annotations:
 
 ```hew
-let x = 5;       // immutable binding - cannot reassign x
-var y = 5;       // mutable binding - can reassign y
-y = 10;          // ok
-// x = 10;       // compile error: cannot reassign immutable binding
+fn main() {
+    let x = 5;       // immutable binding - cannot reassign x
+    var y = 5;       // mutable binding - can reassign y
+    y = 10;          // ok
+    // x = 10;       // compile error: cannot reassign immutable binding
+    println(f"{x} {y}");
+}
 ```
 
 The closest analogue is Swift's `let`/`var` paired with `mutating func`: the
@@ -757,41 +950,48 @@ For type fields:
 
 ```hew
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
-var p = Point { x: 0, y: 0 };
-p.x = 10;        // OK — p is var-bound, so field mutation is allowed
+fn main() {
+    var p = Point { x: 0, y: 0 };
+    p.x = 10;        // OK — p is var-bound, so field mutation is allowed
 
-let q = Point { x: 0, y: 0 };
-// q.x = 10;     // compile error — q is let-bound
+    let q = Point { x: 0, y: 0 };
+    // q.x = 10;     // compile error — q is let-bound
+
+    println(f"{p.x} {q.x}");
+}
 ```
 
 **Type field syntax:**
 
-Type fields do NOT require a `let`/`var` prefix. Fields are immutable and use semicolons as terminators:
+Type fields do NOT require a `let`/`var` prefix. Commas separate the fields:
 
 ```hew
 type Point {
-    x: f64;          // field declaration
-    y: f64;          // field declaration
-    label: string;   // field declaration
+    x: f64,          // field declaration
+    y: f64,          // field declaration
+    label: string,   // field declaration
 }
 ```
 
 **Actor field syntax:**
 
-Actor fields require a `let` or `var` prefix and use semicolons as terminators:
+Actor fields use `let` or `var` to distinguish immutable and mutable state.
+Commas separate these structural members, just as in a type declaration:
 
 ```hew
 actor Counter {
-    var count: i64 = 0;     // mutable field with default
-    let name: string;        // immutable field, set by init
+    var count: i64 = 0,     // mutable field with default
+    let name: string,       // immutable field, set by init
 }
 ```
 
 A `let` (or bare) actor field is immutable after construction: it may be assigned only inside the `init { }` block, where its initial value is established. Any assignment to a `let` field from a `receive fn`, a plain actor method, or a lifecycle hook is rejected at check time with a diagnostic that names the field and suggests declaring it with `var`. A `var` field is mutable and may be assigned anywhere in the actor body.
+
+**Who initializes a field (normative, D447).** Each state field has exactly one initializer, fixed at the declaration. A field with a default is initialized by that default, and `init` may replace it. A field without a default that `init` assigns is deferred to `init`: a `spawn` cannot name it, `init` must assign it on every path before it finishes (including every `return`), `init` may read it or call an actor method only after that assignment, and a branch that assigns it must do so in every arm (a loop body cannot be its first store). Every other field without a default is a required `spawn` argument. An `init` parameter follows the actor-field shadowing rule of the variables section: a parameter with a field's name is rejected, not bound over it. A fault inside `init` releases the deferred fields it has stored and the init arguments; the spawn releases the spawn-supplied fields and the unpublished state, and no handler or hook ever observes partial state.
 
 This distinction exists because actor fields are stateful (they change over the actor's lifetime) and use initialization syntax similar to variable declarations, while type fields are data layout declarations.
 
@@ -802,19 +1002,20 @@ the binding mode and not the spelling of the type — decides what a second
 binding means, what a send does, whether `is` admits the type, and how the
 value closes.
 
-| Category | Members | `let b = a` | send | `is` | close |
-| --- | --- | --- | --- | --- | --- |
-| value | scalars, `string`, `bytes`, records, enums, tuples, arrays, `Vec`, `HashMap`, `HashSet`, `dyn Trait` objects | a second value: copy-on-write, `==` structural | a snapshot; a `dyn Trait` value is sendable only when its concrete type is `#[wire]` (`E_LIMIT_DYN_SEND`, Limitation, until the object-type work lands) | `E_IS_VALUE_TYPE` (User) | none |
-| `#[linear]` value | user types marked `#[linear]` | a move: `a` is consumed | a move, the same wall | `E_IS_VALUE_TYPE` | must be consumed by a `consume self` method before scope exit; no drop glue |
-| pid handle | `LocalPid`, `RemotePid`, `ChildRef` | a second name for one actor | the pid is copied; both sides address the same actor | identity | none; an actor stops |
-| counted handle | `Rc`, `Weak`, `LambdaPid` | a second name; the count rises (a `LambdaPid` copy is a refcounted retain) | refused: an actor's heap is its own (`E_OPAQUE_MESSAGE_PAYLOAD`, User) | identity | the count falls; drop glue releases the last (for `LambdaPid`, the last release drops the captured environment) |
-| opaque handle | plain `#[opaque]` types (channel `Sender`/`Receiver`) | a second name for one resource; methods act on the resource | local: a move, and the sender's binding is dead (`E_USE_AFTER_SEND`, User, §3.9.6); remote: `E_OPAQUE_MESSAGE_PAYLOAD` (User) | identity | `close(consume self)` where the type declares it |
-| resource handle | `#[resource]` wrappers (`http.Server`, `http.Request`, `Deque`, `Arena`, `process.Child`, `Semaphore`, `regex.Pattern`, `MonitorRef`, `json.Value`) and `Stream`/`Sink` (move-only, §6.5) | a move: `a` is dead, and a later use is the consume wall | local: a move; remote: `E_OPAQUE_MESSAGE_PAYLOAD` | identity | drop glue closes at scope exit, or `close(consume self)` early |
-| callable | closures, generators, tasks | a value (a `move` closure consumes its captures) | refused, `E_CALLABLE_MESSAGE_PAYLOAD` (User) | `E_IS_VALUE_TYPE` | none; a task must be awaited |
+| Category | Examples | A second binding | Actor boundary | Cleanup |
+| --- | --- | --- | --- | --- |
+| ordinary data | scalars, strings, bytes, cloneable records/enums and collections | an independent logical value | snapshot when sendable | automatic recursive release |
+| affine composite | an aggregate containing a non-copyable owner, or `dyn Trait` without a clone contract | transfers ownership | requires a valid transfer contract | automatic release of owned members |
+| linear value | a type marked `#[linear]` | transfers ownership | transfers ownership when sendable | must be explicitly consumed |
+| pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `close` to request actor termination |
+| counted handle | `Rc`, `Weak`, `actor(M) -> R` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
+| opaque/resource handle | channel endpoints, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
+| callable | closure | copies independent state or transfers affine captures, according to its capabilities | subject to callable boundary restrictions | releases captures |
+| task/generator | `Task<T>`, `Generator<Y, R>` | transfers ownership | not an actor message payload | structured completion or cooperative close |
 
-`LambdaPid` is a counted handle, not a pid handle: its release is the captured
-environment's release, so a copy retains and the last release drops the
-environment.
+A lambda handle retains the same synthesized actor; its capture storage follows
+the ordinary actor lifetime. It is not a separate closure-runtime ownership
+mechanism.
 
 `#[resource]` and `#[linear]` are two disciplines, affine and linear, and both
 stay (§3.7.8): a resource may be dropped and its drop glue closes it; a linear
@@ -824,19 +1025,19 @@ token.
 `is` admits handles only. It answers "are these two names the same actor,
 count, or resource?" — see §12.2. There is no `expr is TypeName` form.
 
-> **Limitation at edition 2026 (`E_LIMIT_COLLECTION_COPY`, Limitation
-> channel).** The rule above says a second binding of a value-category type is a
-> copy-on-write copy and both names stay live. Today the whole-binding copy of a
-> value-category type consumes the source, so `let b = a;` followed by a use of
-> `a` is refused where the rule says retain. The refusal is reported against the
-> consuming bind. It is a limit of the current lowering, not the rule, and it
-> lifts when the ownership ladder derives copies from the ownership event
-> stream. The same refusal on a resource handle is **not** a limitation: a
-> `#[resource]` copy is a move and the later use is the wall.
+Ordinary data copies preserve both bindings. If a value contains an affine
+owner without a copy contract, it must be transferred instead. Loans inferred
+for collection reads prevent mutation or transfer of the borrowed owner while
+the read remains live; no lifetime syntax is required.
 
 #### 3.4.4 The Boundary Rule: Snapshot on Send
 
-The **only** ownership constraint is at actor boundaries. When a value crosses an actor boundary (via method call or `.send()`), the receiver observes a **logical snapshot** — an independent value — and the sender's binding stays valid:
+When ordinary data crosses an actor boundary through a completion call or
+mailbox submission, the receiver observes a **logical snapshot** — an
+independent value — and the sender's binding stays valid. An affine resource
+instead transfers its sole ownership and cannot be reused by the sender:
+
+<!-- doctest: skip -->
 
 ```hew
 type Message { body: string }
@@ -848,30 +1049,27 @@ actor Handler {
 }
 
 actor Forwarder {
-    receive fn forward(message: Message, target: LocalPid<Handler>) {
-        target.process(message);  // target receives a snapshot of message
+    receive fn forward(message: Message, target: Handler) {
+        let _ = target.process(message);  // target receives a snapshot of message
     }
 }
 
 fn main() {
     let handler = spawn Handler();
     let forwarder = spawn Forwarder();
-    forwarder.forward(Message { body: "hello" }, handler);
+    let _ = forwarder.forward(Message { body: "hello" }, handler);
 }
 ```
 
-> **Note:** Throughout this specification, "sending a message" refers to invoking a `receive fn` method on an actor (for named actors) or calling `.send()` on a lambda actor handle.
+Throughout this specification, sending describes transport across an actor
+boundary. It is not a source keyword. Named actors use receive-method calls;
+lambda actors use handle calls. A `mailbox(...)` view selects submission.
 
-> **Send semantics (language vs runtime):**
->
-> - **Language level**: A method call or `.send()` delivers a logical snapshot to the receiver. The sender's binding remains valid after the send; reuse after send — including fan-out sends in a loop — is ordinary code with no `clone` ceremony.
-> - **Runtime level** (gated): the snapshot mechanism is selected based on the value's admissibility class:
->   - **Provably-unique values** (refcount 1 at the send, with no later use): transferred by pointer — zero copy.
->   - **Immutable-shareable** types (`string`, `bytes`): alias-shared by **refcount retain** — the receiver gets a retained reference to the same backing buffer; no byte copy occurs; a COW write-barrier (`ensure_unique`) forks the buffer before any subsequent mutation, preserving actor isolation.
->   - **Mutable collections** (`Vec<T>`, `HashMap<K,V>`, `HashSet<T>`): **deep-copied** into the receiver's per-actor heap.
->   - **Consumed-linear (`iso`/Linear) values**: zero-copy **ownership move** (P6 — not yet surfaced in edition 2026).
-> - The send-admissibility gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Note: bare `copy` does **not** imply sendability — a type may derive `Copy` yet hold non-send internals (`copy ⊥ sendable`, B-INV-3). Foreign-view syntax is not legal in ordinary message declarations, so it cannot cross an actor boundary.
-> - Each mechanism is indistinguishable from the others at the source level: the receiver observes an independent value and the sender keeps a valid, independent value. A surface move survives only as the pointer-transfer fast path for provably-unique values — a runtime optimization, never a rule the programmer must reason about.
+The runtime may copy, retain immutable storage, use copy-on-write, or transfer
+unique storage where those choices preserve the language's value semantics.
+Those optimizations do not change an ordinary argument into a consuming one.
+Affine resources and explicitly consumed values follow their transfer contract.
+Foreign views cannot escape in ordinary message payloads.
 
 **Why snapshot semantics?**
 
@@ -890,8 +1088,10 @@ Hew provides two syntactic forms for duplication:
   literal); otherwise `clone` is a plain identifier, so `clone(args)` and
   `x.clone()` are unaffected.
 
-Cloning is never required to keep using a value after a send — the sender's
-binding stays valid. Fan-out to multiple receivers is ordinary code:
+Cloning is not required to keep using ordinary sendable data after a call or
+submission. Fan-out to multiple receivers is ordinary code:
+
+<!-- doctest: skip -->
 
 ```hew
 type Message { body: string }
@@ -903,9 +1103,9 @@ actor Handler {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: LocalPid<Handler>, second: LocalPid<Handler>) {
-        first.process(message);
-        second.process(message);   // message still valid — each send snapshots
+    receive fn broadcast(message: Message, first: Handler, second: Handler) {
+        let _ = first.process(message);
+        let _ = second.process(message);   // message still valid — each send snapshots
     }
 }
 
@@ -913,61 +1113,44 @@ fn main() {
     let first = spawn Handler();
     let second = spawn Handler();
     let broadcaster = spawn Broadcaster();
-    broadcaster.broadcast(Message { body: "hello" }, first, second);
+    let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 
-// Lambda actor .send() uses the same snapshot-on-send rule.
+// Lambda handle calls use the same message value rules.
 ```
 
 #### 3.4.5 Capturing Values in Lambda Actors
 
-When spawning a lambda actor, captured variables follow these rules:
-
-**Without `move` keyword:**
-
-- Values implementing `Copy` are copied
-- Non-`Copy` values cause a compile error
-
-**With `move` keyword:**
-
-- All captured values are moved into the actor
-- Values must implement `Send` (see §3.3)
+A lambda actor acquires its captures before it starts. Ordinary data is an
+independent snapshot; capturing an affine resource transfers its owner. An
+explicit `move` requests transfer. The parent cannot reuse a transferred
+resource, and no capture creates shared mutable actor state.
 
 ```hew
-let config = load_config();        // Config is not Copy
-
-// Without move: compile error (config cannot be copied)
-// let worker = actor |msg: Msg| { use(config); };
-
-// With move: config is moved into the actor
-let worker = actor move |msg: Msg| {
-    use(config);   // ok - config now owned by this actor
-};
-// config invalid here - it was moved
-
-// Alternative: clone first
-let config2 = config.clone();
-let worker2 = actor move |msg: Msg| {
-    use(config2);
-};
+fn main() {
+    let prefix = "received: ";
+    let worker = actor |message: string| {
+        println(prefix + message);
+    };
+    println(prefix);                 // the ordinary value remains usable
+    let _ = worker("hello");
+    close(worker);
+}
 ```
 
-**Non-Send values cannot be captured:**
-
-```hew
-let local_ref = get_local_resource();  // returns a non-Send reference
-
-// Compile error: local_ref does not implement Send
-// let worker = actor |msg: Msg| { use(local_ref); };
-```
-
-This is enforced at compile time: any captured value in a `spawn` expression must satisfy the `Send` trait.
+Captured types must satisfy the actor boundary's sendability rules. A borrowed
+view cannot outlive its owner by being captured. See §3.8.6 for ordinary
+closure capabilities and private mutable captures.
 
 #### 3.4.6 What IS Allowed (Within an Actor)
 
 ```hew
+fn process(items: Vec<i64>) {
+    let _ = items.len();
+}
+
 actor Example {
-    var data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new(),
 
     receive fn demo(incoming: Vec<i64>) {
         // Mutating the actor's own state - ALLOWED, no locks, no ceremony
@@ -988,18 +1171,19 @@ actor Example {
 A second binding of a value-category type is a **copy**, not an alias:
 `var copy = incoming;` gives two independent values, and pushing to one does not
 change the other (§3.4.3). There is no way to obtain two mutable names for one
-value, so the question of aliased mutation does not arise; what the absence of a
-borrow checker buys is that calls borrow, so a value stays usable after being
-passed, and mutation inside an actor needs no annotation beyond `var`.
+value, so the question of aliased mutation does not arise; ordinary borrowing calls preserve their arguments. Consuming calls and live
+collection loans still enforce ownership boundaries. Mutation uses `var`.
 
 #### 3.4.7 What is NOT Allowed
 
+<!-- doctest: skip -->
+
 ```hew
 actor Example {
-    receive fn bad_examples(other: LocalPid<Other>) {
+    receive fn bad_examples(other: Other) {
         // Sending a non-Send value - ERROR
         let local_handle: RawPointer = get_handle();
-        other.process(local_handle);  // compile error: RawPointer is not Send
+        let _ = other.process(local_handle);  // compile error: RawPointer is not Send
 
         // Capturing non-Send value - ERROR
         let worker = actor |x: i64| {
@@ -1019,7 +1203,7 @@ containing one — is a fail-closed compile error, never a silent copy.
 | Within actor  | Values copy; handles alias      | Through a `var` binding or `var self` | None         |
 | Across actors | Not allowed                     | N/A                               | Snapshot on send |
 
-**Hew's guarantee:** No data races between actors, enforced at compile time through `Send` and snapshot-on-send semantics. No borrow checker complexity for local code.
+**Hew's guarantee:** No data races between actors, enforced at compile time through `Send` and snapshot-on-send semantics. The compiler infers local loans and enforces their lifetime without source lifetime annotations.
 
 ---
 
@@ -1030,31 +1214,36 @@ Hew uses a file-based module system inspired by Rust:
 - **File = module**: Each `.hew` file is a module. The file name is the module name.
 - **Directory = namespace**: Directories create nested namespaces.
 - **Visibility**: All declarations are private by default. Use `pub` to export.
+- **Imports form a DAG (normative)**: a module may not import itself, directly or through other modules, whatever the imported declarations are. The compiler reports the cycle with every import on its path; break it by moving the shared declarations into a module both sides import.
 
 ```hew
 // src/network/tcp.hew
 // This is module network.tcp
 
 pub type Connection {
-    address: string;       // public fields via pub keyword on type
-    internal_state: i64;   // fields are named, terminated with semicolons
+    address: string,       // public fields via pub keyword on type
+    internal_state: i64,   // named fields are separated by commas
 }
 
-pub fn connect(addr: string) -> Result<Connection, Error> {
-    // ...
+pub enum ConnectError {
+    Refused,
+    TimedOut,
+}
+
+pub fn connect(addr: string) -> Result<Connection, ConnectError> {
+    Ok(Connection { address: addr, internal_state: 0 })
 }
 
 fn helper() {  // private to this module
-    // ...
 }
 ```
 
 **Import syntax:**
 
 ```hew
-import network.tcp;                    // Import module
-import network.tcp.Connection;        // Import specific symbol
-import network.tcp.{Connection, connect};  // Import multiple
+import std.net;                    // Import module
+import std.net.{Connection};        // Import specific symbol
+import std.net.{Connection, connect};  // Import multiple
 ```
 
 Glob imports are rejected. Import the specific symbols required by the module
@@ -1070,20 +1259,22 @@ import std.fs;            // Available as "fs"
 import std.io;            // Available as "io"
 import std.text.regex;   // Available as "regex"
 
-// Call module functions with dot-syntax: module.function(args)
-match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
-    .Ok(server) => {
-        println(f"HTTP server listening on port {http.server_port(server)}");
-        server.close(); // Explicitly release the listener on every success path.
-    },
-    .Err(_err) => println(f"listen failed: {http.listen_error()}"),
+fn main() {
+    // Call module functions with dot-syntax: module.function(args)
+    match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
+        .Ok(server) => {
+            println(f"HTTP server listening on port {http.server_port(server)}");
+            server.close(); // Explicitly release the listener on every success path.
+        },
+        .Err(error) => println(error),
+    }
+    let content = fs.read("config.toml").expect("config.toml must be readable");
+    let exists = fs.exists("output.txt");       // Returns bool
+    let line = io.read_line();                  // Preferred stdin surface
+    let re = regex.new("[a-z]+");
+    let matched = re.is_match("example");      // Returns bool
+    re.close();
 }
-let content = fs.read("config.toml");
-let exists = fs.exists("output.txt");       // Returns bool
-let line = io.read_line();                  // Preferred stdin surface
-let re = regex.new("[a-z]+");
-let matched = regex.is_match(re, input);    // Returns bool
-re.close();
 ```
 
 This provides clean, namespaced access to stdlib functionality. The module name acts as a qualifier, avoiding verbose function names like `hew_http_server_new()`.
@@ -1141,6 +1332,8 @@ myapp/
 
 `main.hew`:
 
+<!-- doctest: skip: needs the sibling `greeting/` directory module shown below; the single-file doc-fence harness cannot resolve it -->
+
 ```hew
 import greeting;
 
@@ -1173,6 +1366,10 @@ statements.
 
 - The entry file is identified by `dir_name == file_stem` (e.g.
   `greeting/greeting.hew`). If no such file exists, import resolution fails.
+- The directory is the module's only import spelling. The entry file
+  (`import greeting.greeting;`) is refused as `E_ENTRY_FILE_IMPORT`; a user
+  package's peer file imported directly is refused as `E_PEER_IMPORT`. Both
+  name `greeting` as the fix.
 - All other `.hew` files at the **top level** of the directory are peer files.
   Sub-directories are not automatically included; they must be imported
   explicitly.
@@ -1231,6 +1428,8 @@ Types defined in different modules are distinct even if they share a name. A
 types; the qualified names `geometry.Point` and `graphics.Point` disambiguate
 them everywhere — in type annotations, `match` patterns, and aggregate literals.
 
+<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
+
 ```hew
 import geometry;
 import graphics;
@@ -1240,6 +1439,8 @@ let sp: graphics.Point = graphics.Point { x: 0,   y: 0   };
 ```
 
 **Import aliasing** resolves ambiguity at the module level:
+
+<!-- doctest: skip: illustrates cross-module resolution; `geometry` and `graphics` are illustrative module names, not real modules the single-file doc-fence harness can resolve -->
 
 ```hew
 import geometry as geo;
@@ -1283,7 +1484,7 @@ trait PointRenderer {
     fn fmt(self) -> string;
 }
 
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 
 impl PointRenderer for Point {
     fn fmt(self) -> string {
@@ -1298,7 +1499,7 @@ impl PointRenderer for Point {
   - Value types (integers, floats, bool, char)
   - Owned types transferred by move
   - `Frozen` types (deeply immutable)
-  - `LocalPid<A>`
+  - an actor handle
 
 - `Sync` - Type is safe to share across concurrent actors without synchronisation. Derived structurally from field types; the compiler determines this automatically. A type is `Sync` if all its fields are `Sync`. Value types are always `Sync`; mutable containers (`Vec<T>`, `HashMap<K,V>`) are not.
 
@@ -1318,6 +1519,12 @@ to for that type.
 
 - Records and enums are `Eq` and `Hash` structurally: field by field, variant by
   variant, with no declaration.
+- `bytes` is ordinary data and carries `Eq` and `Hash` like `string` (D451):
+  both are valid `HashMap` keys on their own, and a record or enum with a
+  `bytes` field derives `Eq`/`Hash` over it structurally like any other field.
+  A user alias over a primitive (`type Name = string;`) accepts trait `impl`s
+  written on the alias, and those impls may still call the primitive's own
+  methods.
 - `Ord` and `PartialOrd` are derived lexicographically by field order when every
   field is itself ordered. Primitive numeric types (`i8`–`i64`, `u8`–`u64`,
   `f32`, `f64`, `isize`, `usize`, `char`) are ordered.
@@ -1349,7 +1556,7 @@ one member each:
 | `consume self` | consumes the receiver | is dead after the call |
 
 ```hew
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 
 trait Formattable {
     fn fmt(self) -> string;
@@ -1378,9 +1585,23 @@ collection methods.
 **Calling methods:**
 
 ```hew
-let p = Point { x: 1.0, y: 2.0 };
-p.fmt();    // `self` borrows: p is still valid
-p.fmt();    // and may be called again
+type Point { x: f64, y: f64 }
+
+trait Formattable {
+    fn fmt(self) -> string;
+}
+
+impl Formattable for Point {
+    fn fmt(self) -> string {
+        f"({self.x}, {self.y})"
+    }
+}
+
+fn main() {
+    let p = Point { x: 1.0, y: 2.0 };
+    p.fmt();    // `self` borrows: p is still valid
+    p.fmt();    // and may be called again
+}
 ```
 
 A `var self` method needs a `var` binding. `let c = Counter { n: 0 }; c.bump()`
@@ -1388,15 +1609,9 @@ is refused with "requires a mutable binding receiver" and the `let`→`var`
 fix-it (§3.2). A `consume self` method takes the value: any later use of the
 binding is a use-after-consume diagnostic.
 
-> **Limitation at edition 2026 (`E_LIMIT_INHERENT_VAR_SELF`, Limitation
-> channel).** On a **user type**, `var self` is available on trait methods but
-> refused on an inherent `impl` method, because an inherent method receives the
-> receiver by value and the mutation would not be observable to the caller. The
-> fix-it is to declare the method on a trait whose receiver is `var self` and
-> implement that trait for the type, so a user type gets its trait-mediated
-> in-place method now and its inherent one when the ownership ladder lands the
-> borrow-mutate receiver. The builtin collections (§3.10.3) are unaffected: their
-> inherent `var self` methods are compiler-provided and mutate in place today.
+The consuming receiver is spelled `consume self`, matching a consuming
+parameter such as `consume value: T`. Both inherent and trait methods use the
+same borrowing, mutable and consuming receiver contracts.
 
 **In actor bodies (bare fields, `self` is the handle):**
 
@@ -1405,7 +1620,7 @@ parameter — and the actor persists across handler invocations:
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment() {
         count += 1;  // bare field access — actor persists after handler returns
     }
@@ -1413,14 +1628,15 @@ actor Counter {
 ```
 
 Inside an actor body, `self` is the **actor handle**: a read-only value of type
-`LocalPid<Self>` naming the enclosing actor. This is the one meaning `self`
-carries in an actor body — it is not a prefix for fields, and `self.count` is
-not how actor state is read.
+`Self` naming the enclosing actor (the actor's own type on the current
+native surface). A projection such as `self.count` still names the actor's
+state field; bare `count` is the same state access.
 
 - Available in `receive fn` and `fn` methods and in lifecycle hooks
 - Sendable: it may be passed as a message argument or stored in a field
 - Read-only: assignment to `self` is rejected at check time
-- `self.stop()` stops the enclosing actor (§9.1)
+- Actor termination uses the close/closed contract (§4.10); a completion
+  call that waits on its own handler is a wait cycle, not a stop primitive.
 
 `this` is not a keyword and carries no actor meaning; the handle is `self`
 everywhere.
@@ -1434,7 +1650,7 @@ slot: from outside the actor it is unreachable, and naming it there is
 
 ```hew
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn next() -> i64 { count + 1 }
     receive fn increment() { count = next(); }
 }
@@ -1457,7 +1673,7 @@ Hew distinguishes three cases of variable shadowing:
 
   ```hew
   actor Example {
-      var count: i64 = 0;
+      var count: i64 = 0,
 
       receive fn update(count: i64) {
           // compile error: variable `count` shadows a binding in an outer scope
@@ -1482,6 +1698,8 @@ Hew distinguishes three cases of variable shadowing:
 
 **Trait bounds on generics:**
 
+<!-- doctest: skip -->
+
 ```hew
 type Message { body: string }
 
@@ -1492,9 +1710,9 @@ actor Receiver {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: LocalPid<Receiver>, second: LocalPid<Receiver>) {
-        first.accept(message.clone());
-        second.accept(message.clone());
+    receive fn broadcast(message: Message, first: Receiver, second: Receiver) {
+        let _ = first.accept(message.clone());
+        let _ = second.accept(message.clone());
     }
 }
 
@@ -1502,7 +1720,7 @@ fn main() {
     let first = spawn Receiver();
     let second = spawn Receiver();
     let broadcaster = spawn Broadcaster();
-    broadcaster.broadcast(Message { body: "hello" }, first, second);
+    let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -1526,7 +1744,9 @@ Hew uses **per-actor ownership** with RAII-style deterministic destruction. Ther
 #### 3.7.1 Ownership Model
 
 **Principle 1: Actors own their heaps.**
-Each actor has a private heap. No memory is shared between actors. When an actor terminates, its entire heap is freed in one operation.
+Each actor owns its mutable state. Immutable backing storage may be shared
+by reference count without sharing mutation. Terminal cleanup releases owned
+resources and state before reclaiming their storage.
 
 **Principle 2: Ownership within actors.**
 Within an actor, values follow Hew ownership semantics:
@@ -1538,7 +1758,7 @@ Within an actor, values follow Hew ownership semantics:
 
 ```hew
 #[resource]
-type Connection { fd: i64; }
+type Connection { fd: i64, }
 
 impl Connection {
     fn open(host: string) -> Connection { Connection { fd: 0 } }
@@ -1560,49 +1780,10 @@ Hew guarantees no GC pauses. Memory reclamation is entirely deterministic:
 
 #### 3.7.2 Message Passing Semantics
 
-At the **language level**, `send()` delivers a **logical snapshot** — the receiver observes an independent value and the sender's binding remains valid after the send (see §3.4.4). At the **runtime level**, the snapshot mechanism is **gated** on the value's admissibility class (D355):
-
-| Admissibility class | Runtime mechanism | Examples |
-| ------------------- | ----------------- | -------- |
-| **Immutable-shareable** (`is_immutable_shareable`) | **Alias-shared by refcount retain** — no byte copy | `string`, `bytes` |
-| **Mutable owned collections** | **Deep-copied** into the receiver's per-actor heap | `Vec<T>`, `HashMap<K,V>`, `HashSet<T>` |
-| **Consumed-linear (`iso`/Linear)** | Zero-copy **ownership move** (P6 — not surfaced in edition 2026) | — |
-
-The gate is `is_immutable_shareable || consumed-Linear || deep-copy`. Bare `copy` does **not** imply sendability (`copy ⊥ sendable`, B-INV-3). Foreign-view syntax is not legal in ordinary message declarations, so it cannot cross an actor boundary.
-
-This hybrid gives actor isolation (no shared mutable state between actors) with none of the ceremony of surface move semantics: there is no use-after-send error to avoid.
-
-> **Immutable-shareable alias sharing:** `string` and `bytes` are immutable-shareable owned heap types. When sent, the runtime retains a reference to the same backing buffer for the receiver rather than copying it. The sender's retained binding and the receiver's retained alias both resolve to the same buffer with a shared refcount; the buffer is freed once the last reference drops. The backing buffer is never mutated in place through a shared alias — if a mutation targets a shared (`rc>1`) buffer, the COW write-barrier (`ensure_unique`) forks a private copy before the write, preserving actor isolation. An immutable `let`-bound sendable value is alias-shared with no barrier (never mutated in place).
-
-> **Programmer indistinguishability preserved:** From the programmer's perspective the gated model is indistinguishable from deep-copy-then-independent-value. The receiver observes an independent value; the sender keeps its own valid, independent value. Alias-sharing is a runtime optimization valid precisely because immutable-shareable values are never mutated in place through shared aliases.
-
-**Snapshot-on-send:**
-
-- When a message is sent to an actor (via method call or `.send()`), the receiver gets a logical snapshot and the sender's binding stays valid. At runtime, the mechanism is gated: provably-unique values are transferred by pointer; immutable-shareable values (`string`, `bytes`) are alias-shared by retain; mutable collections are deep-copied; `iso`/Linear values are moved (P6).
-- The receiver observes an independent value (alias-sharing is an optimization invisible to program semantics)
-- No user-visible references or borrows cross actor boundaries: ordinary message declarations cannot contain foreign-view syntax. The runtime retain optimization applies only to admissible immutable-shareable **owned** values, and the receiver always observes an independent owned value at the language level, never a view into the sender's heap.
-
-```hew
-type Message { body: string }
-
-actor Handler {
-    receive fn process(message: Message) {
-        println(message.body);
-    }
-}
-
-actor Forwarder {
-    receive fn forward(message: Message, target: LocalPid<Handler>) {
-        target.process(message);  // target receives a snapshot; message stays valid
-    }
-}
-
-fn main() {
-    let handler = spawn Handler();
-    let forwarder = spawn Forwarder();
-    forwarder.forward(Message { body: "hello" }, handler);
-}
-```
+Message calls and mailbox submissions obey §3.4.4. Ordinary data arrives as
+an independent logical value; affine resource payloads transfer ownership.
+Actor identities still name the same destination. Physical copying, retaining
+or moving is the runtime's concern and must preserve these contracts.
 
 **The `Send` trait:**
 
@@ -1617,20 +1798,32 @@ trait Send {}  // Marker trait — no methods
 - The value is a value type (integers, floats, bool, char)
 - The value is owned and transferred by move with no remaining aliases
 - The value is `Frozen` (deeply immutable)
-- The value is a `LocalPid<A>`
+- The value is an actor handle
 - The value is a type/enum where all fields/variants satisfy `Send`
 
-> **Implementation note:** `Send` means send-admissible; the runtime selects the send mechanism based on the value's admissibility class (immutable-shareable → alias-shared by retain; mutable collections → deep-copied; `iso`/Linear → ownership move, P6). The `Send` marker tells the compiler that a type's structure is send-admissible; it does **not** mandate a particular runtime copy strategy. User-defined types do NOT need to implement `Send` explicitly — the compiler derives it automatically based on field types.
+`Send` describes whether a boundary is safe; it does not prescribe a copy
+strategy. The compiler derives it from the type's fields and capabilities.
 
-**Move semantics within actors:**
-Within a single actor, values can be moved (ownership transferred) without copying:
+**Local value transfer:**
 
 ```hew
 fn process(data: Vec<u8>) {
-    let owned = data;  // move, not copy
-    // data is no longer valid
+    let independent = data;     // ordinary value copy
+    println(data.len());       // the borrowed argument is still usable
+    println(independent.len());
 }
 ```
+
+A parameter declared `consume` instead accepts ownership. Non-copyable values
+can only be transferred, never implicitly duplicated.
+
+**Consumption is declared, never implied (normative, D450).** The checker
+never infers a consuming call from how a callee's body uses its parameter.
+Passing a value reached through a borrowed (non-`consume`) parameter of the
+current function to a callee that consumes it is `E_OWN_CONSUME_BORROWED`; the
+fix is to declare that parameter `consume` too, not a change to the callee —
+consumption then flows from whoever calls the current function, one
+`consume` declaration at a time.
 
 #### 3.7.3 Deterministic Cleanup
 
@@ -1652,7 +1845,7 @@ etc.):
 ```hew
 #[resource]
 type FileHandle {
-    fd: i32;
+    fd: i32,
 }
 
 impl FileHandle {
@@ -1667,9 +1860,9 @@ calls `close()` at scope exit as the single release path, guaranteeing that the
 resource is released exactly once.
 
 **Automatic field-wise drop** — for plain data types, the compiler emits a
-recursive drop that frees heap storage (strings, `Vec`, `HashMap`, nested
-types) in **reverse declaration order (LIFO)**. No annotation or `impl`
-is needed.
+release that walks the whole value and frees its heap storage (strings,
+`Vec`, `HashMap`, nested types) in **reverse declaration order (LIFO)**. No
+annotation or `impl` is needed.
 
 **Cleanup guarantees:**
 
@@ -1686,9 +1879,9 @@ Enum types cannot normally reference themselves because inline storage would req
 
 ```hew
 indirect enum Expr {
-    Lit(i64);
-    Add(Expr, Expr);
-    Neg(Expr);
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
 }
 ```
 
@@ -1698,17 +1891,32 @@ indirect enum Expr {
 - All variant payloads are heap-allocated; the enum value itself is a pointer
 - Construction and pattern matching syntax are identical to regular enums
 - Memory is automatically freed when the value goes out of scope (RAII)
-- The compiler generates a recursive drop function that walks the data structure
+- The compiler generates a drop function that walks the data structure
 
 **Construction** works identically to regular enums:
 
 ```hew
-let e = Expr.Add(Expr.Lit(1), Expr.Neg(Expr.Lit(2)));
+indirect enum Expr {
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
+fn main() {
+    let e = Expr.Add(Expr.Lit(1), Expr.Neg(Expr.Lit(2)));
+    let _ = e;
+}
 ```
 
 **Pattern matching** works identically to regular enums:
 
 ```hew
+indirect enum Expr {
+    Lit(i64),
+    Add(Expr, Expr),
+    Neg(Expr),
+}
+
 fn eval(e: Expr) -> i64 {
     match e {
         .Lit(n) => n,
@@ -1730,16 +1938,25 @@ fn eval(e: Expr) -> i64 {
 - Non-atomic refcount (fast, single-threaded)
 - Cannot cross actor boundaries (does not implement `Send`)
 - Use for shared ownership within one actor
-- `Rc.new(value)` consumes `value`; `.clone()` creates another strong owner
+- `Rc.new(value)` takes ownership of `value`: an affine payload moves, and a
+  payload with a copy recipe is retained, so the caller's binding stays valid.
+  `.clone()` creates another strong owner
 - `.get()` copies the payload and therefore requires `T: Copy`
-- `.set(value)` consumes and replaces the entire shared payload; every strong alias observes the replacement
+- `.set(value)` takes ownership of `value` the same way and replaces the entire
+  shared payload; every strong alias observes the replacement, and the displaced
+  payload is released
 - `.downgrade()` creates a `Weak<T>`; `.strong_count()`, `.weak_count()`, and `.is_unique()` inspect the allocation
 - Supported payloads include scalars, `string`, `bytes`, `Rc`, `Weak`, tuples,
-  arrays, `Option`, `Result`, records, enums, and supported owned collections;
-  clone/drop synthesis recursively follows aggregate fields
-- `Vec<Rc<T>>`, `Vec<Weak<T>>`, and records containing these handles use
-  semantic field clone/drop operations; map and set shapes retain their own
-  independent key, value, `Eq`, `Hash`, and ABI restrictions
+  arrays, `Option`, `Result`, records, enums, `#[resource]` values, and supported
+  owned collections; clone/drop synthesis recursively follows aggregate fields.
+  A `#[resource]` payload releases through its own `close`, which the allocation
+  installs as its destructor. `#[linear]` payloads are refused: a shared handle
+  can outlive every path that would consume one
+- `Vec<Rc<T>>`, `Vec<Weak<T>>`, and records, tuples and map values containing
+  these handles use semantic field clone/drop operations: ingress retains and
+  the composite drop releases, so cloning such an aggregate is balanced. Map and
+  set shapes retain their own independent key, value, `Eq`, `Hash`, and ABI
+  restrictions
 
 ```hew
 let data: Rc<string> = Rc.new(expensive_computation());
@@ -1753,7 +1970,8 @@ let alias = data.clone();  // refcount++, no data copy
 - `weak.clone()` creates another weak owner
 - `weak.upgrade()` returns exactly `Some(Rc<T>)` while a strong owner exists,
   and exactly `None` after the last strong owner is released
-- `Weak<T>` is affine and is neither `Send` nor `Sync`
+- Rebinding a `Weak<T>` retains it, the way rebinding an `Rc<T>` does; it is
+  neither `Send` nor `Sync`
 - A weak handle keeps the allocation header alive but does not keep its payload alive
 
 ```hew
@@ -1791,7 +2009,7 @@ payload, and cross-actor transfer are not supported in edition 2026.
 |------|--------------|----------------|----------|
 | Immutable-shareable `T` (`string`, `bytes`) | Yes | Alias-shared by refcount retain | Owned heap types with immutable backing; no byte copy on send |
 | Mutable collection `T` (`Vec`, `HashMap`, `HashSet`) | Yes | Deep-copied | Receiver gets an independent copy; sender mutation cannot corrupt receiver |
-| `iso`/Linear `T` | Yes (P6) | Zero-copy ownership move | Consumed-linear values; not yet surfaced in edition 2026 |
+| admitted affine/linear `T` | by its transfer contract | ownership move | the sender cannot reuse the consumed owner |
 | `Rc<T>` | No | N/A | Shared within actor only |
 
 #### 3.7.6 Compiler Optimizations (Implementation Details)
@@ -1851,46 +2069,38 @@ impl File {
 
 Semantics:
 
-1. **Required `close` method in sibling `impl`.** The compiler errors at
-   HIR if `#[resource] T` has no `fn close` in an inherent `impl` block
-   (`ResourceMissingClose`). Declaring `close` inline in the type body
-   is rejected (`ResourceCloseSourceUnsupported`). The `close` method
-   must return unit (`ResourceCloseMustReturnUnit`).
-2. **Implicit drop calls `close`.** When the value goes out of scope
-   without an explicit close, the compiler emits a drop site that calls
-   `close(value)` and discards the returned `Result`. The discard is
-   intentional — there is nowhere for the error to propagate at drop time.
-3. **Early close is a normal method call.** `f.close()?` consumes `f` and
-   surfaces the error via `?` like any other method. Any subsequent use
-   of `f` is a use-after-consume diagnostic from Checked MIR.
-4. **Affine in the move-checker.** Sends, moves, and method calls declared
-   `consume self` all consume the value; the move-checker tracks the single
-   live binding.
+1. **One consuming close.** A resource declares `fn close(consume self)` in
+   an inherent `impl`. The return type is unit; a borrowing receiver or
+   fallible return is rejected (§3.7.8.5).
+2. **Automatic cleanup.** Scope exit calls close if the owner is still live.
+   Normal return, structured cancellation and recoverable fault cleanup use
+   the same obligation. Explicit process exit is different (§5.8).
+3. **Early close.** `resource.close();` consumes the owner. There is no `?`
+   on this unit result, and a later use of the resource is a compile error.
+4. **Fallible completion is separate.** A resource may expose a `finish`,
+   `flush` or `commit` operation returning `Result`. Call it explicitly when
+   its outcome matters. Cleanup does not manufacture or silently discard a
+   fallible completion result.
 
-Typical example — file I/O with implicit cleanup (illustrative; no `File` type
-exists in stdlib — for file reading use `fs::read`):
-
-<!-- doctest: skip -->
 ```hew
-fn read_config(path: string) -> Result<Config, IoError> {
-    let f = File.open(path)?;
-    let bytes = f.read_all()?;
-    parse(bytes)
-    // f drops at scope exit; the fd is closed automatically.
+#[resource]
+type Session { label: string, }
+
+impl Session {
+    fn close(consume self) {
+        println("closing " + self.label);
+    }
+}
+
+fn main() {
+    let session = Session { label: "example" };
+    session.close();            // early release; no second close at scope exit
 }
 ```
 
-Early close, surfacing the I/O error to the caller (illustrative):
-
-<!-- doctest: skip -->
-```hew
-fn read_and_process(path: string) -> Result<Summary, AppError> {
-    let f = File.open(path)?;
-    let bytes = f.read_all()?;
-    f.close()?;                 // close early; the error is visible.
-    Ok(crunch(bytes))           // do CPU work after the fd is released.
-}
-```
+For example, a file-like resource may have `finish() -> Result<(), E>` to
+report a failed flush and a unit-returning close to release its descriptor.
+That is a resource API contract, not a second language cleanup mechanism.
 
 ##### 3.7.8.2 `#[linear]` — single-owner with no implicit drop
 
@@ -1898,18 +2108,23 @@ fn read_and_process(path: string) -> Result<Summary, AppError> {
 consuming methods. There is no implicit drop. Letting a `#[linear]` value
 go out of scope without consuming it is a compile error.
 
-```hew
+```text
 #[linear]
-type Transaction {
-    fn commit(consume self) -> Result<(), DbError>
-    fn rollback(consume self) -> Result<(), DbError>
+type Transaction { ... }
+
+impl Transaction {
+    fn commit(consume self) -> Result<(), DbError> { ... }
+    fn rollback(consume self) -> Result<(), DbError> { ... }
 }
 ```
+
+This declaration sketch separates the product's fields from its consuming
+methods; bodies depend on the transaction API.
 
 Semantics:
 
 1. **No implicit drop.** The compiler does not synthesise a drop call.
-   Scope exit with an unconsumed `@linear` value is a
+   Scope exit with an unconsumed `#[linear]` value is a
    `MustConsumeAtScopeExit` diagnostic.
 2. **Consumption discharges the obligation.** Calling any declared
    consuming method (one whose receiver is `consume self`) is enough to
@@ -1918,7 +2133,7 @@ Semantics:
    valid consumers. `Transaction` requires `commit` or `rollback`; a
    capability token might require `revoke`; a GPU command buffer might
    require `submit` or `discard`.
-4. **Affine in the move-checker.** Same as `@resource`: the move-checker
+4. **Affine in the move-checker.** Same single-owner tracking as `#[resource]`: the move-checker
    tracks the single live binding and rejects any use after the consuming
    method call.
 
@@ -1931,8 +2146,9 @@ fn transfer(db: Database, from: AccountId, to: AccountId, amount: Money)
     -> Result<(), DbError>
 {
     let tx = db.begin_transaction()?;
-    tx.debit(from, amount)?;
-    tx.credit(to, amount)?;
+    // This example assumes debit/credit are infallible staging operations.
+    tx.debit(from, amount);
+    tx.credit(to, amount);
     tx.commit()                 // tx is consumed here.
 }
 ```
@@ -1954,10 +2170,10 @@ fn forgot_to_commit(db: Database) -> Result<(), DbError> {
 
 | Question                                                          | Pick           |
 | ----------------------------------------------------------------- | -------------- |
-| Is "close and discard the error" a sensible default at scope exit? | `#[resource]` |
+| Can a unit-returning close release the resource at scope exit? | `#[resource]` |
 | Must the caller surface the cleanup result, every time?            | `#[linear]`   |
 | Are there multiple distinct ways to consume (commit / rollback / ...)? | `#[linear]`   |
-| Is there exactly one cleanup action, and is it idempotent?         | `#[resource]` |
+| Is there one automatic release obligation?                         | `#[resource]` |
 
 File descriptors, sockets, allocator handles, regex compiled patterns,
 HTTP server/request handles — `#[resource]`. Database transactions,
@@ -1966,80 +2182,33 @@ must be acknowledged, GPU command buffers — `#[linear]`.
 
 ##### 3.7.8.4 Interaction with cancellation and supervision
 
-`#[resource]` and `#[linear]` differ in how their obligations interact with
-each of the four teardown paths the language exposes. The rules below
-are normative; the move-checker (for `#[linear]`) and drop elaboration
-(for `#[resource]`) enforce them at the cited stage.
+Structured cleanup ends users of a resource before releasing it. Normal scope
+exit waits for children; fault and cancellation paths cancel and drain them
+before releasing parent-owned state. A resource transferred to a child is
+released by that child, including when cancellation prevents an explicit close.
 
-**Path 1 — Lexical task cancellation.** A `scope {}` child is cancelled
-at a safepoint (§4.5) while holding the value:
+Graceful actor termination runs its stop hook before releasing live state
+fields. A fault may bypass the stop hook, but does not turn resource ownership
+into a second close obligation. Field and local cleanup follow the same
+exactly-once rules as ordinary execution.
 
-- `#[resource]`: implicit `close()` runs on the cancellation-unwind edge
-  of the CFG, in reverse construction order. The result is discarded as
-  with any other implicit drop. The cancellation continues to propagate.
-- `#[linear]`: the consuming method must appear on every reachable exit
-  path including the cancellation-unwind edge. The move-checker reports
-  the missing consume at the cancellation site (in practice, at
-  definition time of the surrounding function), so the diagnostic fires
-  before the program ever runs. There is no "cancellation forgives the
-  obligation" rule.
+A linear value requires an explicit consuming operation on the relevant exit
+paths. A transfer into cancellable work does not waive that obligation; code
+whose consumption cannot be established is refused. `#[resource]` supplies
+automatic release when that is the intended lifetime contract.
 
-**Path 2 — Graceful actor drain.** The actor's supervisor or
-`actor.shutdown()` call runs the actor's terminating handler (`#[on(stop)]`
-hooks, or the supervised shutdown handler):
+Deferred cleanup is block-scoped and LIFO, including each loop iteration. A
+deferred action cannot escape with `return` or `?` or suspend. It may inspect a
+fallible operation locally, but a result that must reach the caller belongs in
+an explicit completion operation before cleanup. A secondary cleanup fault
+must not replace the primary fault.
 
-- `#[resource]` fields: each field's implicit `close()` runs in
-  **reverse declaration order** after the terminating handler returns. The
-  handler may also close them explicitly via `f.close()?` to surface
-  errors; an already-closed `#[resource]` is a use-after-consume
-  diagnostic on any subsequent reference.
-- `#[linear]` fields: the move-checker requires that every reachable exit
-  path of the terminating handler consume each `#[linear]` field via one
-  of its declared consuming methods. The check runs at actor-declaration
-  time; an actor whose declared terminating handler cannot statically
-  consume every `#[linear]` field is a compile error.
-
-**Path 3 — Supervised actor crash (handler trap that bypasses the
-terminating handler).** A trap raised by any handler restarts the
-actor under the supervisor's policy. The terminating handler is *not*
-guaranteed to run on this path; only heap teardown is:
-
-- `#[resource]` fields: implicit `close()` runs as part of heap teardown
-  during the restart. Errors are discarded per the `#[resource]` contract.
-- `#[linear]` fields: a crash bypasses the consume path the move-checker
-  relied on in Path 2. Edition 2026 resolves this conservatively: a
-  `#[linear]` field is admitted on an actor only when the field's type
-  *also* satisfies `#[resource]` semantics, so heap teardown invokes the
-  implicit drop on the crash path. A bare `#[linear]` field whose consume
-  path can be bypassed by a supervised restart is a compile error at
-  actor-declaration time. A future edition may relax this with an
-  explicit consuming-handler attribute that the runtime guarantees to
-  invoke on crash (see HEW-FUTURE.md §1.7).
-
-**Path 4 — Outer trap propagation.** A trap unwinds through stack
-frames holding the value (distinct from cooperative cancellation,
-which respects safepoints):
-
-- `#[resource]`: implicit `close()` runs best-effort on the unwind edge;
-  drop elaboration places the call on the trap-cleanup path the same
-  way it places it on the normal cleanup path. Trap unwind continues.
-- `#[linear]`: the consume obligation cannot be satisfied on a trap path
-  because a trap is, by definition, unrecoverable. The move-checker
-  does not require `#[linear]` consume on trap-only edges; instead, the
-  value's storage is reclaimed by the runtime without invoking any
-  consuming method. A `#[linear]` type whose author needs trap-safe
-  cleanup must additionally satisfy `#[resource]` so its implicit close
-  runs on the trap edge.
-
-These four paths are the only teardown paths edition 2026 commits to.
-Any new teardown surface added by a future edition (for example,
-checkpoint snapshots, hot-swap upgrades) must extend this table before
-it is admitted.
+Explicit `exit(code)` and process abort are not graceful cleanup paths. They
+do not promise deferred actions, consuming methods or actor stop hooks (§5.8).
 
 ##### 3.7.8.5 `#[resource]` close discipline
 
-Two HIR-boundary constraints govern the `close` method on a `#[resource]`
-type, and fail closed before any subsequent stage can silently miss a drop:
+The resource close contract has three requirements:
 
 1. **Inherent-impl-only `close` body.** The body of `close` on a
    `#[resource]` type must be declared in a sibling inherent `impl`
@@ -2055,26 +2224,28 @@ type, and fail closed before any subsequent stage can silently miss a drop:
    ```
 
    Declaring `close` as an inline method inside the type body is rejected
-   at HIR with `ResourceCloseSourceUnsupported`. A future edition may
-   relax this once inline-method lowering is wired.
+   with `ResourceCloseSourceUnsupported`.
 
 2. **Unit return required.** The inherent-impl `close` body must return
    unit. A `close` declared to return `Result<(), E>` (or any non-unit
    type) is rejected at HIR with `ResourceCloseMustReturnUnit`. The
    implicit drop contract dispatches `close` on every scope-exit path
    including `Trap` and `Cancel`; propagating a value off those edges has
-   no defined semantics. Fallible cleanup composes through `defer`, where
-   the value can be inspected on the success path and surfaced via `?`.
+   no defined semantics. Report fallible completion separately before cleanup;
+   a deferred body cannot propagate with `?`.
+
+3. **Consuming receiver.** `close` on a `#[resource]` or `#[opaque]` type
+   declares `consume self`. This ends its ownership exactly once; a borrowing
+   `close(self)` is not the cleanup contract. See §2.1.1 for the current
+   trait-method enforcement limitation.
 
 A `#[resource]` declaration with no inherent-impl `close` is rejected at
 HIR with `ResourceMissingClose` — the implicit drop contract has no method
 to dispatch.
 
-Once these constraints pass, codegen's typed `DropDispatch::{RuntimeSymbol,
-UserFn}` dispatcher routes the drop through one of exactly two arms
-(runtime substrate symbol or user inherent-impl method); a third path is
-rejected by the codegen verifier. The `close` body runs on every exit path
-that the unified `ScopeExitPlan` enumerates (per §3.7.8.4 above).
+Ownership SIR records the release obligation and cleanup edges. Physical MIR
+and codegen realize that checked contract. A consuming close body releases any
+members it has not transferred; its caller must not release those members again.
 
 ---
 
@@ -2091,10 +2262,12 @@ fn max<T: Ord>(a: T, b: T) -> T {
     if a > b { a } else { b }
 }
 
-// Each call generates distinct machine code:
-max(42, 17);           // max$i32
-max("hello", "world"); // max$string
-max(3.14, 2.71);       // max$f64
+fn main() {
+    // Each call generates distinct machine code:
+    max(42, 17);           // max$i64
+    max("hello", "world"); // max$string
+    max(true, false);      // max$bool
+}
 ```
 
 **Benefits:**
@@ -2107,6 +2280,25 @@ max(3.14, 2.71);       // max$f64
 
 - Increased binary size (N instantiations → N copies)
 - Longer compile times for heavily generic code
+
+**Generic collection elements.** In an unbounded generic `Vec<T>` body,
+`for element in values` and `values[index]` borrow each element at every
+instantiation. The body cannot move such a loan out, mutate its owner while
+the loan is live, or assume an implicit clone merely because one particular
+instantiation is copyable.
+
+Ownership is obtained through `into_iter()` or an explicit `clone` under
+`T: Clone`. `into_iter()` consumes the vector and owns its remaining elements,
+including cleanup on early termination. The current clone-proven cursor path
+can still clone elements; consuming the container does not yet promise
+clone-free element extraction. A `Clone` bound also permits the current
+compiler to select copying element reads (§2.1.1).
+
+Borrowed `get` returns an optional loan. Let-bound reads keep the source
+borrowed until their last permitted use. Loan ending is conservative across
+branches and loops; mutation or draining is refused when the compiler cannot
+prove the loan has ended. HashMap `get` similarly borrows clone-free values;
+`remove` transfers a value out.
 
 #### 3.8.2 Type-Erased Dispatch with `dyn Trait`
 
@@ -2124,14 +2316,17 @@ associated-type bounds and higher-ranked trait bounds in `dyn` position. See
 `Vec<dyn Trait>` type-checks, accepts `push` of any concrete implementor
 (including a heterogeneous mix), and dispatches through the runtime vtable
 when the elements are drained with `into_iter()`. Because a trait object has
-no clone path, `into_iter()` is the only iteration form — there is no
-non-consuming `iter()` snapshot. An enum of the concrete variants
-(`enum Shape { Circle(Circle); Square(Square); }`, `Vec<Shape>`) remains the
-alternative when you need to iterate without draining.
+no clone path, it cannot use a copying `iter()` snapshot. Borrowed reads and
+plain iteration follow the clone-free element contract (§3.8.1); `into_iter()`
+provides owning extraction. An enum of concrete variants, such as
+`enum Shape { Circle(Circle), Square(Square), }`, is an alternative when the
+program needs an exhaustive set of concrete cases.
 
 #### 3.8.3 Trait Bounds
 
 **Inline bounds:**
+
+<!-- doctest: skip -->
 
 ```hew
 type Message { body: string }
@@ -2143,9 +2338,9 @@ actor Receiver {
 }
 
 actor Broadcaster {
-    receive fn broadcast(message: Message, first: LocalPid<Receiver>, second: LocalPid<Receiver>) {
-        first.accept(message.clone());
-        second.accept(message.clone());
+    receive fn broadcast(message: Message, first: Receiver, second: Receiver) {
+        let _ = first.accept(message.clone());
+        let _ = second.accept(message.clone());
     }
 }
 
@@ -2153,7 +2348,7 @@ fn main() {
     let first = spawn Receiver();
     let second = spawn Receiver();
     let broadcaster = spawn Broadcaster();
-    broadcaster.broadcast(Message { body: "hello" }, first, second);
+    let _ = broadcaster.broadcast(Message { body: "hello" }, first, second);
 }
 ```
 
@@ -2165,7 +2360,11 @@ where
     K: Hash + Eq + Send,
     V: Clone + Send,
 {
-    // implementation
+    var result = a;
+    for k in b.keys() {
+        result.insert(k, b.get(k).expect("key from keys() is present"));
+    }
+    result
 }
 ```
 
@@ -2184,12 +2383,17 @@ a promise kept by nothing. See HEW-FUTURE.md §2.2.
 Traits can declare associated types that implementors must specify:
 
 ```hew
-trait Iterator {
+trait Sequence {
     type Item;
     fn next(var self) -> Option<Self.Item>;
 }
 
-impl Iterator for RangeIter {
+type RangeIter {
+    current: i32,
+    end: i32,
+}
+
+impl Sequence for RangeIter {
     type Item = i32;
 
     fn next(var self) -> Option<i32> {
@@ -2214,14 +2418,14 @@ The `Send` and `Frozen` marker traits have special rules for generic types:
 
 ```hew
 // Compiler derives: Point is Send + Frozen + Copy (all fields are)
-type Point { x: f64; y: f64 }
+type Point { x: f64, y: f64 }
 
 // Compiler derives: Container<T> is Send if T is Send
-type Container<T> { value: T; }
+type Container<T> { value: T, }
 
 // MutableContainer has a mutable binding semantics determined by usage
 type MutableContainer<T> {
-    value: T;
+    value: T,
 }
 ```
 
@@ -2239,15 +2443,17 @@ The runtime also has internal `Arc` support, but those `Send`/`Frozen` rules are
 
 **Actor boundary enforcement:**
 
+<!-- doctest: skip -->
+
 ```hew
 // Error: T might not be Send
-receive fn forward_unsafe<T>(message: T, target: LocalPid<Handler<T>>) {
-    target.process(message);    // Compile error: T not bounded by Send
+receive fn forward_unsafe<T>(message: T, target: Handler<T>) {
+    let _ = target.process(message);    // Compile error: T not bounded by Send
 }
 
 // Correct: T is bounded by Send
-receive fn forward<T: Send>(message: T, target: LocalPid<Handler<T>>) {
-    target.process(message);    // OK: T: Send verified at instantiation
+receive fn forward<T: Send>(message: T, target: Handler<T>) {
+    let _ = target.process(message);    // OK: T: Send verified at instantiation
 }
 ```
 
@@ -2270,15 +2476,19 @@ Hew employs **bidirectional type inference** to minimize explicit type annotatio
 ```hew
 fn apply(f: fn(i64, i64) -> i64, a: i64, b: i64) -> i64 { f(a, b) }
 
-// Closure parameters infer i64 from apply's signature
-let sum = apply(|x, y| x + y, 3, 4);      // x: i64, y: i64 inferred
-let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
+fn main() {
+    // Closure parameters infer i64 from apply's signature
+    let sum = apply(|x, y| x + y, 3, 4);      // x: i64, y: i64 inferred
+    let product = apply(|x, y| x * y, 3, 4);  // types flow from apply's signature
 
-// Method chaining with inference
-numbers
-    .filter(|x| x > 0)              // x: i64 inferred from Vec<i64>
-    .map(|x| x * 2)                 // x: i64, result: i64
-    .reduce(|a, b| a + b, 0)        // a: i64 (accumulator), b: i64 (element); seed last
+    // Method chaining with inference
+    let numbers: Vec<i64> = [-2, -1, 1, 2, 3];
+    let total = numbers
+        .filter(|x| x > 0)              // x: i64 inferred from Vec<i64>
+        .map(|x| x * 2)                 // x: i64, result: i64
+        .reduce(|a, b| a + b, 0);       // a: i64 (accumulator), b: i64 (element); seed last
+    println(f"{sum} {product} {total}");
+}
 ```
 
 `Vec.reduce` takes the combining closure first and the seed second
@@ -2294,18 +2504,105 @@ Hew refuses to invent one.
 Hew uses pipe-delimited closure syntax for first-class function values:
 
 ```hew
-let doubled = transform(|x| x * 2, 21);
-let sum = numbers.reduce(|a, b| a + b, 0);
-let checked = |x: i64| -> i64 { x + 1 };
+fn transform(f: fn(i64) -> i64, x: i64) -> i64 { f(x) }
+
+fn main() {
+    let numbers: Vec<i64> = [1, 2, 3];
+    let doubled = transform(|x| x * 2, 21);
+    let sum = numbers.reduce(|a, b| a + b, 0);
+    let checked = |x: i64| -> i64 { x + 1 };
+    println(f"{doubled} {sum} {checked(1)}");
+}
 ```
+
+Captured values are independent immutable snapshots. To mutate private capture
+state, name existing bindings in a `capture(var name, ...)` prefix:
+
+```hew
+fn main() {
+    let count: i64 = 0;
+    var next = capture(var count) || { count = count + 1; count };
+    var independent = next;
+    println(f"{next()} {independent()}");
+}
+```
+
+The original binding may be immutable. The prefix grants mutation only to the
+closure's private field; invoking a mutable closure requires a mutable callable
+place. Duplicate capture names, capture initializers, aliases and names that
+conflict with lambda parameters are errors. `capture` remains an ordinary
+identifier outside this prefix.
+
+`move` precedes the capture prefix (`move capture(var count) || ...`) and
+transfers captured ownership. It does not itself grant mutation or require
+call-once invocation. A capture without an independent snapshot operation
+requires `move`. Consuming a captured owner during invocation, including
+returning it or transferring it into another value, requires call-once.
+
+Written function types specify invocation and duplication guarantees:
+
+| Type | Invocation | Independent copies |
+|---|---|---|
+| `fn(...) -> T` | Repeated, read-only | Not guaranteed |
+| `fn[clone](...) -> T` | Repeated, read-only | Guaranteed |
+| `fn[var](...) -> T` | Repeated, mutable place | Not guaranteed |
+| `fn[var, clone](...) -> T` | Repeated, mutable place | Guaranteed |
+| `fn[once](...) -> T` | Consumes the callable | Not guaranteed |
+| `fn[once, clone](...) -> T` | Each copy is consumed by its call | Guaranteed |
+
+`suspends` is the fourth qualifier and occupies the same bracket. A written
+callable type is non-suspending unless it carries it: `fn[suspends](...) -> T`
+accepts a callable whose body may suspend, and `fn[once, suspends](...) -> T`
+combines the two. Suspension is the one qualifier that is inferred rather than
+declared on a named function or a closure literal; the bracket exists so a data
+boundary — a parameter, a return type, a field, an element type, an annotated
+binding — can state the fact. The rules are §4.0.
+
+Qualifiers are lowercase. `clone` refers to independent logical duplication,
+not bitwise copying or shared mutable state. Resource-bearing captures cannot
+claim it. Value coercion may weaken read-only invocation to mutable invocation
+to consuming invocation, and may forget `clone`; it cannot invent guarantees.
+A non-suspending callable coerces into a `fn[suspends]` slot; a callable whose
+body suspends does not coerce into a slot written without the qualifier, and
+the error is reported at the site that supplies the value, naming the call in
+the body that suspends.
+Parameter and result signatures remain invariant, and coercion cannot erase
+linear ownership duties. Unannotated expressions retain proved guarantees.
+Explicit annotations, assignments, arguments, returns and conditional joins
+use the same directional rules, including nested `Option` and `Result` types.
+
+Calling a once callable stored in an owned plain-record or tuple field consumes
+that field and preserves its siblings. The same partial transfer applies to
+other non-copyable fields. Remaining fields retain their usual cleanup rules:
+automatic cleanup releases initialized contents, and linear fields retain their
+explicit-consumption duties. A consumed field cannot be read again until assigned
+a replacement through a mutable binding. Whole-value uses require every field to be initialized. Nested partial
+moves may cross plain record and tuple fields, but not resource, linear or opaque
+declaration boundaries. Borrowed aggregate parameters cannot supply a consuming
+field; use an explicit `consume` parameter to acquire the owner.
+
+Generic function declarations can be used as values with explicit type
+arguments (`identity<i64>`) or arguments inferred from an expected function
+type or a later call through the binding. Each reference is instantiated
+independently and must satisfy the declaration's generic bounds. Function
+values retain the read and clone guarantees of the selected declaration.
 
 **Untyped parameters when context provides types:**
 
 ```hew
-fn map<T, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> { /* ... */ }
+fn map<T: Clone, U>(items: Vec<T>, transform: fn(T) -> U) -> Vec<U> {
+    var result: Vec<U> = Vec.new();
+    for item in items {
+        result.push(transform(item.clone()));
+    }
+    result
+}
 
-// T=i64, U=string inferred from usage
-let strings = map([1, 2, 3], |x| x.to_string());  // x: i64 inferred
+fn main() {
+    // T=i64, U=string inferred from usage
+    let strings = map([1, 2, 3], |x| f"{x}");  // x: i64 inferred
+    println(f"{strings.len()}");
+}
 ```
 
 **Actor message type inference:**
@@ -2314,7 +2611,7 @@ Actor message handlers provide rich typing context:
 
 ```hew
 actor Calculator {
-    var result: i64 = 0;
+    var result: i64 = 0,
 
     // receive fn signature provides context for message arguments
     receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
@@ -2354,15 +2651,22 @@ fn process<T: Send + Clone>(items: Vec<T>, transform: fn(T) -> T) -> Vec<T>
 where
     T: Display,
 {
-    items.map(transform)
+    var result: Vec<T> = Vec.new();
+    for item in items {
+        result.push(transform(item.clone()));
+    }
+    result
 }
 
-// All constraints automatically verified:
-// - i64: Send ✓, Clone ✓, Display ✓
-let results = process([1, 2, 3], |x| {
-    print(f"Processing: {x}");  // Display bound allows this
-    x * 2
-});
+fn main() {
+    // All constraints automatically verified:
+    // - i64: Send ✓, Clone ✓, Display ✓
+    let results = process([1, 2, 3], |x| {
+        print(f"Processing: {x}");  // Display bound allows this
+        x * 2
+    });
+    println(f"{results.len()}");
+}
 ```
 
 **Error messages with inference context:**
@@ -2390,6 +2694,93 @@ help: or annotate the lambda parameters directly
 **Practical elegance**: This system achieves the design goal of "elegant simplicity" — minimal annotations paired with maximum type safety. Types propagate naturally from function signatures and calling contexts, while the monomorphization backend generates specialized, optimized code for each concrete instantiation.
 
 ---
+
+#### 3.8.7 Generic Actors and Supervisors
+
+Actors and supervisors take type parameters like records. An instantiation is
+keyed by its concrete type arguments: state layout, `init`, handlers, hooks,
+methods, mailbox message types and reply types are monomorphized per
+instantiation, and `Latest<i64>` and `Latest<string>` are
+distinct handle types. Two instantiations never share a dispatch table, a
+mailbox protocol or a restart budget.
+
+```hew
+actor Latest<T> {
+    var value: Option<T> = .None,
+    receive fn put(next: T) { value = .Some(next); }
+    receive fn get() -> Option<T> { value }
+}
+
+fn main() {
+    let numbers = spawn Latest<i64>();
+    let names = spawn Latest<string>();
+    numbers.put(41).expect("put succeeds");
+    names.put("hew").expect("put succeeds");
+    println(f"{numbers.get().expect("get succeeds").expect("set")} {names.get().expect("get succeeds").expect("set")}");
+    close(numbers);
+    close(names);
+}
+```
+
+`spawn Latest<i64>()` instantiates explicitly. When the init arguments fix the
+parameters, they are inferred the way record type arguments are:
+
+```hew
+actor Cache<K: Hash + Eq, V: Clone> {
+    var entries: HashMap<K, V>,
+    var hits: i64 = 0,
+    receive fn insert(key: K, value: V) { entries.insert(key, value); }
+    receive fn lookup(key: K) -> Option<V> {
+        let found = entries.get(key);
+        if found.is_some() { hits = hits + 1; }
+        found
+    }
+}
+
+fn main() {
+    var seed: HashMap<string, i64> = HashMap.new();
+    seed.insert("answer", 42);
+    let cache = spawn Cache(entries: seed);   // K = string, V = i64
+    let found = cache.lookup("answer") handle error { None };
+    match found {
+        .Some(v) => println(v),
+        .None => println("miss"),
+    }
+    close(cache);
+}
+```
+
+Bounds on actor parameters are ordinary bounds. A type argument that cannot
+cross an actor boundary (an `Rc<T>`, a borrowed view) is refused at the
+instantiation site, naming the argument and the bound it fails, never at a
+later send. A message to the wrong instantiation is a type error at the send
+or ask site.
+
+A generic supervisor's child specs name the instantiated actor, so a restarted
+child has the same instantiation and `workers.worker` has type
+`ChildRef<Worker<Job>>`. Construction arguments can infer the supervisor's type
+arguments and the type arguments of its children. Each instance retains its own
+typed configuration and restart budget:
+
+```hew
+actor Worker<Job: Send> {
+    var done: i64 = 0,
+    receive fn run(job: Job) -> i64 { done = done + 1; done }
+}
+
+supervisor Pool<Job: Send> {
+    strategy: one_for_one,
+    intensity: 3 within 10s,
+    child worker: Worker<Job>(done: 0),
+}
+
+fn main() {
+    let workers = spawn Pool<string>();
+    let completed = workers.worker.run("parse").expect("the example worker completes");
+    println(completed);
+    close(workers);
+}
+```
 
 ### 3.9 Foreign Function Interface (FFI)
 
@@ -2432,6 +2823,12 @@ called: the compiler rejects the drift at declaration time, not at the call
 site. Identical re-declarations (for example, the same C header imported by
 two modules) are accepted and resolve to the one established contract.
 
+An `extern` callee consumes only the parameters its declaration marks
+`consume`; every other parameter is borrowed for the call, exactly as for a
+Hew function (D450). Forwarding a value reached through one of the current
+function's own borrowed parameters into an `extern` call that consumes it is
+the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
+
 #### 3.9.2 C-Compatible Struct Layout
 
 > **Not yet implemented.** `#[repr(C)]` is not recognised. Annotating a type
@@ -2445,16 +2842,16 @@ Use `#[repr(C)]` to ensure C-compatible memory layout:
 ```hew
 #[repr(C)]
 type Point {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
 #[repr(C)]
 type FileInfo {
-    size: u64;
-    mode: u32;
-    flags: u16;
-    padding: u16;  // Explicit padding for alignment
+    size: u64,
+    mode: u32,
+    flags: u16,
+    padding: u16,  // Explicit padding for alignment
 }
 ```
 
@@ -2559,7 +2956,7 @@ extern "C" {
 // Safe wrapper (public API)
 #[resource]
 pub type File {
-    fd: i32;
+    fd: i32,
 }
 
 impl File {
@@ -2582,7 +2979,7 @@ impl File {
 #### 3.9.6 `#[opaque]` handle types
 
 `#[opaque]` marks a type that is a **handle to something the FFI owns**. Its
-body is empty — an opaque handle has no fields and no struct-literal
+body is empty — an opaque handle has no fields and no record-literal
 constructor, so values come only from a foreign function
 (`E_OPAQUE_TYPE_SHAPE` rejects a non-empty body). Opaque handles are the
 opaque-handle category of §3.4.3: a second binding is a second name for one
@@ -2605,7 +3002,7 @@ This is a rule, not a limitation: a handle that is still live at the send cannot
 be snapshotted, because there is nothing to snapshot but the resource itself.
 It is the fourth wall of the ownership model, and it applies to handles only.
 
-A handle is never `#[wire]`, so sending one to a `RemotePid` stays
+A handle is never `#[wire]`, so sending one to a remote `Pid` stays
 `E_OPAQUE_MESSAGE_PAYLOAD` (User): a remote payload must be CBOR-serializable
 and a handle has no serializable layout.
 
@@ -2637,8 +3034,9 @@ Normative in edition 2026:
 
 - Core types and builtins: `Option<T>`, `Result<T, E>`, `Vec<T>`, `string`,
   `HashMap<string, V>`, `print`, `println`, `panic`.
-- Concurrency types: `Task<T>`, `Stream<T>`, `Sink<T>`, `ScopeError<E>`,
-  `TaskError`, `select` (§4), `after` (§4.11.3).
+- Concurrency: `Task<T>`, `Stream<T>`, `Sink<T>`, `ScopeFailure`, actor
+  completion and submission envelopes (§2.1.1), `scope`, `fork`, `await`,
+  `select` and `race` (§4); `after` is a select timer arm (§4.11.3).
 - System and I/O: `std.fs`, `std.io`, `std.path`, `std.os`,
   `std.time`.
 - Formatting: `std.fmt`.
@@ -2666,7 +3064,7 @@ else.
 
 The language supports user-defined traits, associated types, and the three
 receivers of §3.6. The current stdlib does **not** ship a full generic
-iterator-trait hierarchy; modules such as `std::iter` expose concrete helper
+iterator-trait hierarchy; modules such as `std.iter` expose concrete helper
 functions instead.
 
 `Eq`, `Ord`, `PartialOrd`, and `Hash` are derived by default and may be
@@ -2692,7 +3090,7 @@ trait Releasable {
 trait Error: Display {}
 ```
 
-Every public error enum in `std` and in a `hew::` package implements both
+Every public error enum in `std` and in a `hew.` package implements both
 `Display` and `Error`. An error type that cannot print itself is not a
 finished error type: `f"{e}"`, `println(e)`, a log line, and a JSON error body
 all reach the same `Display` text, and `dyn Error` (§2.2.1) is the type that
@@ -2709,6 +3107,8 @@ name is not conforming.
 
 **Option and Result** are first-class generic enums:
 
+<!-- doctest: skip: illustrates the built-in `Option`/`Result` shape; redeclaring them collides with the protected prelude bindings -->
+
 ```hew
 enum Option<T> {
     Some(T),
@@ -2722,14 +3122,16 @@ enum Result<T, E> {
 ```
 
 User-authored functions may return `Result<T, E>` or `Option<T>` and use `?`
-for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std::fs::IoError`:
+for propagation. Any error type `E` may be used with `Result<T, E>`. Each module defines its own structured error enum, as demonstrated by the canonical `std.fs.IoError`:
 
 ```hew
 pub enum IoError {
-    NotFound(i64);
-    PermissionDenied(i64);
-    AlreadyExists(i64);
-    Other(i64);
+    NotFound(i64),
+    PermissionDenied(i64),
+    AlreadyExists(i64),
+    TimedOut(i64),
+    Cancelled(i64),
+    Other(i64),
 }
 ```
 
@@ -2740,15 +3142,15 @@ failure in the type system or not at all. Three rules cover the whole surface:
 
 1. **Fallible is `Result<T, E>` with `E: Error`.** The bare name carries the
    `Result`; there is no `try_`-prefixed twin beside it. A caller that wants a
-   crash on failure writes `unwrap()` or `expect(msg)` at the call site, where
-   the decision is visible.
+   crash on failure writes `expect(reason)` at the call site, where the
+   decision and its reason are both visible.
 2. **Absence is `Option<T>`.** A lookup that can miss returns `None`, never a
    zero value, an empty string, or a designated "not found" variant of the
    success type.
 3. **Nothing returns a status integer or a sentinel.** A negative `i64`, a
    zero-length string standing for "unset", and an error enum variant meaning
    "no error" are all fail-open shapes: the caller who forgets to test them
-   runs on with wrong data. `AskError` has no `NoError` variant.
+   runs on with wrong data. `ActorError` has no `NoError` variant.
 
 The one stated exception is **indexing**. `v[i]`, `m[k]`, and `Vec.set` out of
 bounds trap ("Bracket indexing" below), because a bounds failure is a
@@ -2775,34 +3177,35 @@ rendering authority (§3.10.2). A module does not expose a `last_error()` poll
 backed by a thread-local slot: an error that is returned cannot be missed,
 while an error that must be fetched can. The `*_message` family is gone at
 edition 2026; the remaining `last_error()` polls and the slots behind them are
-deleted with the FFI ownership table at v0.7.0.
+implementation debt rather than an alternative error-return contract. Runtime
+FFI may use internal status channels, but they are not the public recovery API.
 
 **`string` and Vec** are built-in generic/runtime-backed types with dot-syntax
-methods:
+methods. Available `Vec<T>` methods:
 
-```hew
-type string {}
-type Vec<T> {}
+| Method                    | Returns    | Description                    |
+| ------------------------- | ---------- | ------------------------------- |
+| `Vec.new()`               | `Vec<T>`   | Create empty vector             |
+| `v.push(item)`            | `()`       | Append an element               |
+| `v.pop()`                 | `T`        | Remove and return the last element; traps on empty vec |
+| `v.len()`                 | `i64`      | Number of elements              |
+| `v.get(index)`            | `Option<T>`| Look up an element by index     |
+| `v.set(index, item)`      | `()`       | Overwrite an element; traps out of bounds |
+| `v.contains(item)`        | `bool`     | Test membership                 |
+| `v.clear()`               | `()`       | Remove all elements             |
+| `v.append(other)`         | `()`       | Move all elements of `other` onto the end |
 
-impl<T> Vec<T> {
-    fn new() -> Vec<T>;
-    fn push(var self, item: T);
-    fn pop(var self) -> T;                     // traps on empty vec
-    fn len(self) -> i64;
-    fn get(self, index: i64) -> Option<T>;
-    fn set(var self, index: i64, item: T);      // traps out of bounds
-    fn contains(self, item: T) -> bool;
-    fn clear(var self);
-    fn append(var self, other: Vec<T>);
-}
-```
+**Collection element contracts.** A vector may own ordinary data, resource
+handles, generators, tasks and supported callable values. Each admitted element
+needs its exact layout and lifetime contract; a clone recipe is required only
+for operations that copy it. A borrowed read and an owning removal are distinct
+operations (§3.8.1).
 
-**Current `Vec<T>` element restrictions** — the type checker rejects element types that the vec lowering cannot handle:
-
-- Owned elements must have a concrete semantic clone/drop descriptor. Direct
-  `Rc<U>` and `Weak<U>` elements and records containing them are supported;
-  unresolved, opaque, linear, task, function, and closure shapes fail closed
-- Element types that structurally contain a fixed-size array (`[T; N]`) are rejected; flatten such data before storing in a Vec
+Fixed-size arrays retain their exact element type and length on the native
+path, including when stored in a collection. They use the element's ordinary
+copy and cleanup contracts. Native storage currently uses a heap buffer;
+allocation geometry must fit the target address space and runtime length
+representation. There is no source size cap derived from a stack budget.
 
 Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 `.contains()`, `.trim()`, `.replace()`, `.split()`, `.lines()`,
@@ -2813,7 +3216,7 @@ Commonly used string operations include `+`, `==`, `!=`, `.len()`,
 **Bracket indexing** — a `HashMap<K, V>` supports `m[k]` subscript syntax keyed
 by the same `K: Hash + Eq` bound every HashMap method enforces. A read `m[k]`
 returns the bare value `V`, and traps at runtime
-(`hew: trap in main context: IndexOutOfBounds`, exit 1) when the key is
+(`hew: failure: IndexOutOfBounds (205)`, exit 1) when the key is
 absent — it is NOT sugar for `m.get(k)`. Use `m.get(k)`, which returns
 `Option<V>`, whenever the key may be missing. An assignment `m[k] = v` inserts
 or overwrites the entry (sugar for `m.insert(k, v)`). Indexing with a key of
@@ -2827,34 +3230,39 @@ let hit = m["answer"];   // i64 — 42
 let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
 ```
 
-**Current implementation boundary** — the shipped runtime/codegen ABI supports
-`K` of `string`, any integer type, any float type, `bool`, or `char`, and `V`
-of `string`, `bool`, `char`, any integer type, any float type, `duration`, a
-user-defined product `type`, or `Vec<T>`. A key may likewise be a
-field-bearing product `type` whose fields satisfy the layout-key rules; enums,
-resources, and unsupported owned shapes are rejected during type checking. Key and value
-positions remain subject to their independent fixed-layout, semantic
-clone/drop, `Hash`, and `Eq` requirements.
+**HashMap value ownership.** Keys must satisfy `Hash` and `Eq` as well as the
+supported layout contract. Values need a release contract. `get` may borrow a
+clone-free value, and `remove` transfers it; operations that return independent
+copies require a clone contract. A map containing an affine value cannot be
+implicitly copied. Admission is checked per operation, not by a fixed list of
+scalar value types.
 
 **Map literal syntax** — a `HashMap<K, V>` can be constructed inline with
 brace-colon syntax.  The parser disambiguates `{` as a map literal when the
 first token after `{` is a `StringLit` followed by `:`:
 
 ```hew
-// Inferred: HashMap<string, i64>
-let scores = {"alice": 10, "bob": 20};
+fn main() {
+    // Inferred: HashMap<string, i64>
+    let scores = {"alice": 10, "bob": 20};
 
-// Explicit type annotation drives checking; each value must match V
-let env: HashMap<string, string> = {
-    "HOST": "localhost",
-    "PORT": "8080",
-};
+    // Explicit type annotation drives checking; each value must match V
+    let env: HashMap<string, string> = {
+        "HOST": "localhost",
+        "PORT": "8080",
+    };
 
-// Trailing comma is allowed
-let flags = {"debug": true, "verbose": false,};
+    // Trailing comma is allowed
+    let flags = {"debug": true, "verbose": false,};
 
-// Empty block {} coerces to HashMap<K,V> when the expected type is known
-let empty: HashMap<string, i64> = {};
+    // Empty block {} coerces to HashMap<K,V> when the expected type is known
+    let empty: HashMap<string, i64> = {};
+
+    let _ = scores;
+    let _ = env;
+    let _ = flags;
+    let _ = empty;
+}
 ```
 
 Rules:
@@ -2908,20 +3316,22 @@ import std.math;
 import std.sort;
 import std.testing;
 
-let ints: Vec<i64> = Vec.new();
-let set: HashSet<i64> = HashSet.new();
-let dq = deque.new();
+fn main() {
+    let ints: Vec<i64> = Vec.new();
+    let set: HashSet<i64> = HashSet.new();
+    let dq = deque.new();
 
-println(math.abs(-5));
-println(fmt.to_hex(255));
-println(iter.sum(ints));
-testing.assert(true, "the set starts empty");
-println(io.read_all());
+    println(math.abs(-5));
+    println(fmt.to_hex(255));
+    println(iter.sum(ints.into_iter()));
+    testing.assert_true(set.len() == 0);
+    println(io.read_all());
+}
 ```
 
 Important current details:
 
-- `std::io` currently provides plain functions (`read_line`, `write`,
+- `std.io` currently provides plain functions (`read_line`, `write`,
   `write_err`, `read_all`), not `Read`/`Write`/`BufRead` traits
 - Built-in `HashSet<T>` currently lowers the supported surface forms
   `HashSet<i64>` and `HashSet<string>` through the typed-layout runtime;
@@ -2929,16 +3339,18 @@ Important current details:
   checking, including nested annotations, function signatures, and `#[wire] enum`
   payloads; admission follows the HashSet ABI and its independent element,
   `Hash`, and `Eq` requirements
-- `std::iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
+- `std.iter` exposes lazy adapters (`map`, `filter`, `take`, `skip`) over
   any `Iterator`, driven by terminal helpers (`fold`, `count`, `collect`,
   `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
-  `Vec<T>` through it via `.iter()` or `.into_iter()`
-- `std::sort` exposes generic helpers — one `sort<T: Ord>` and one
-  `reverse<T>` over `Vec<T>` — rather than a per-element-type family. Both
-  copy their input and leave the original unchanged; integer and string sorts
-  use iterative merge passes with O(n log n) comparisons, and float sorting
-  retains its total-order runtime implementation
-- `std::testing` is a pure-Hew assertion library layered on top of `panic()`.
+  `Vec<T>` through it via `.iter()` or `.into_iter()`. These adapters and
+  terminal helpers consume the iterator: constructors store it, and terminal
+  operations finish or release it. The iterator cannot be reused after the
+  call. Callable arguments retain their own declared consume/borrow contract
+- `std.sort` generic helpers — one `sort<T: Ord>` and one
+  `reverse<T>` over `Vec<T>` are the intended surface, preserving an
+  independent input value. The current std source still contains specialized
+  helpers; generic consolidation is pending, not an implemented API claim
+- `std.testing` is a pure-Hew assertion library layered on top of `panic()`.
   Its whole surface is `assert(cond, msg)`, `assert_eq<T: Eq + Display>`, and
   `assert_ne<T: Eq + Display>`; the monomorphic per-type assertion family
   (`assert_true`, `assert_eq_int`, and the rest) is deleted. A generic
@@ -2947,8 +3359,8 @@ Important current details:
   lands at v0.7.0
 
 **One form per operation (normative).** Where a generic form compiles, the
-monomorphic twins beside it do not exist: `std::vec`, `std::option`,
-`std::result`, `std::sort`, and `std::testing` expose the generic function and
+monomorphic twins beside it do not exist: `std.vec`, `std.option`,
+`std.result`, `std.sort`, and `std.testing` expose the generic function and
 nothing per element type. A module exposes an operation once — a method or a
 free function, never both — and a `#[resource]` type's release is its `close`
 method, so there is no `Closable` trait and no per-type `free` function
@@ -2964,11 +3376,16 @@ type-specific runtime intrinsics; that lowering is an implementation detail.
 F-strings support arbitrary expressions inside `{}`:
 
 ```hew
-let name = "world";
-let x = 10;
-let msg = f"hello {name}";
-let computed = f"result: {x + 1}";
-let nested = f"len: {name.len()}";
+fn main() {
+    let name = "world";
+    let x = 10;
+    let msg = f"hello {name}";
+    let computed = f"result: {x + 1}";
+    let nested = f"len: {name.len()}";
+    println(msg);
+    println(computed);
+    println(nested);
+}
 ```
 
 F-strings are the sole string interpolation syntax in Hew.
@@ -2976,24 +3393,47 @@ F-strings are the sole string interpolation syntax in Hew.
 **One string surface (normative).** String operations are methods on `string`.
 The `string_*` builtin family — the `string_*`-prefixed names, `substring`,
 the free `len`, and the four `*_to_string` conversions — is deleted, together
-with the free-function twins in `std::string` that shadowed the same methods
-and the aliases in `std::fmt` that shadowed them again. `s.len()`,
+with the free-function twins in `std.string` that shadowed the same methods
+and the aliases in `std.fmt` that shadowed them again. `s.len()`,
 `s.slice(a, b)`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
 second name for any of them. A type renders itself through `Display`
 (§3.10.2), never through a per-type `to_string` builtin.
+
+**Indexing and slicing (normative).** `string`, `bytes` and `Vec<T>` share one
+index and range-slice surface. `s[i]` reads the `i`th codepoint of a string,
+the `i`th byte of a `bytes` value, and the `i`th element of a vector.
+`x[a..b]`, `x[a..]`, `x[..b]` and `x[..]` select a range: a string slice is a
+fresh owned string of codepoints, a bytes slice is an independent handle onto
+the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each
+selected element. An index or endpoint outside the value reports
+`IndexOutOfBounds` and releases the live owners on the way out. Because a Vec
+slice copies its elements, a vector whose element type has no clone — a
+`#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
+generator — cannot be range-sliced; an owning removal moves those elements out
+instead. `for c in s` walks a string's codepoints and `for b in raw` walks a
+bytes value's bytes, in each case yielding the same element `s[i]` would.
+
+**Borrowed elements (normative).** When a `Vec<T>` element type has no clone,
+`for x in v` binds each element as a borrow of the slot the vector still owns,
+and `v[i]` reads one the same way. The body may read the element and call its
+borrowing methods; consuming it — moving it into another binding, passing it
+to a consuming parameter, calling a `consume self` method, or returning it —
+is refused, as is mutating or draining the vector while the loop holds it. An
+owning removal moves elements out. An element type with a clone keeps the
+per-iteration independent copy, so existing loops are unchanged.
 
 #### 3.10.6 Prelude (Automatically Imported)
 
 The following are automatically available in every Hew module:
 
-```hew
+```text
 // Types
 Option, Some, None
 Result, Ok, Err
 string, Vec, Box
 
 // Traits
-Clone, Copy, Drop
+Clone, Copy
 Send, Frozen
 Debug, Display, Error
 Iterator, IntoIterator
@@ -3018,48 +3458,65 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, body, len, type)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
-| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `await ln.accept() \| after d` → `Result<net.Connection, IoError>`, `.close()` |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `await conn.read_string() \| after d` → `Result<string, IoError>`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
+| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
+| `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
 | `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
 
 Handle types are opaque — their internal representation is not accessible.
 They can be stored in variables, passed as function arguments, and
-returned from functions. They are handles in the sense of §3.4.3, so a second
-binding is a second name for one resource, `is` compares them for identity, a
-method acts through the handle whether the binding is `let` or `var`, and the
-rules of §3.9.6 apply for holding one inside an actor.
+returned from functions. Opaque resource handles are affine: a second binding
+transfers ownership rather than creating another closer. `is` compares handle
+identity, and each method's declared receiver controls borrowing, mutation or
+consumption. The actor ownership rules of §3.9.6 still apply.
 
-`net.Listener.accept()` and `net.Connection.read()`'s plain (non-`await`)
-forms block the calling thread; inside an actor receive handler this stalls
-the scheduler worker (`hew check`'s `BlockingCallInReceiveFn` warning) — use
-the `await` form there instead. The plain forms remain the intended shape for
-a `main()`-body call outside any receive handler.
+`net.Listener.accept()` and `net.Connection.read()` are plain suspending
+calls (§4.0): they park the calling execution context rather than blocking
+its thread, and they carry no `await`. A deadline on one of them is the
+socket's own read and write timeouts, or a deadline on the enclosing scope;
+there is no expression timeout combinator.
 
 #### 3.10.8 Regular Expressions
 
-`std::text::regex` is shipped. It compiles patterns and supports matching,
+`std.text.regex` is shipped. It compiles patterns and supports matching,
 replacement, indexed and named captures, and multi-match capture tables.
 `regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
 `close()` releases early, and the implicit scope-exit drop covers the rest.
 Pattern construction is currently fail-fast: `regex.new()` panics for invalid
 syntax rather than returning a structured compile error.
 
+**A `re"..."` literal is also a match-arm pattern (normative, D469).** Each
+literal in a module compiles once, in that module's entry prologue, into a
+private compiled-pattern table; a match arm tests the scrutinee — a borrowed
+`string` — against its compiled handle. A module using a regex-literal arm
+must have an entry callable (`main` or an exported entry point) to host that
+prologue. Capture bindings in a regex arm are not yet admitted.
+
+```hew
+fn classify(s: string) -> i64 {
+    match s {
+        re"^[0-9]+$" => 0,
+        re"^[a-zA-Z]+$" => 1,
+        _ => 2,
+    }
+}
+
+fn main() {
+    println(classify("123"));
+    println(classify("abc"));
+    println(classify("a1b2"));
+}
+```
+
 ---
 
 ## 3.11 `machine` Types
 
-> **Implementation status:** The front-end (lexer keywords, parser, AST, HIR
-> lowering, static checks), the `hew machine diagram` visualisation subcommand,
-> and native code generation are implemented. Machine values are executable:
-> the compiler emits the tagged-union layout, companion event enum, `step()`,
-> `state_name()`, and enum-like pattern matching support described below.
-
-A `machine` is a **value type** that defines a closed set of named states, a
-closed set of named events, and transition rules mapping `(State, Event)` pairs
-to new states.  It compiles to a tagged union with a compiler-generated
-`step()` method.  Machines are not actors — they are pure data, like enums
-with per-state fields and compiler-checked transition logic.
+A `machine` is a **value type** holding one state from a closed set, with
+compiler-checked rules mapping a `(state, event)` pair to the next state. It
+compiles to a tagged union with a generated `step()` method. Machines are not
+actors: they are pure data, like enums with per-state fields, and a machine
+owns no thread, mailbox or output queue.
 
 > **Detailed specification:** See [`docs/specs/MACHINE-SPEC.md`](MACHINE-SPEC.md)
 > for the full normative reference.
@@ -3068,60 +3525,66 @@ with per-state fields and compiler-checked transition logic.
 
 - **Value semantics** — a machine is a tagged union (like `enum`), not a
   reference type.
-- **Exhaustiveness** — the compiler verifies that every `(State, Event)` pair
-  is handled (via an explicit transition, a wildcard, or a `default` handler).
-- **Zero-cost** — compiles to an integer tag plus a C-style union of state
-  structs. No heap allocations, no threads.
+- **Exhaustiveness** — every `(state, event)` pair is covered by an explicit
+  rule, a wildcard rule, or `default { state }`.
+- **Ordinary storage** — a state tag plus its payload, with normal ownership
+  for heap values and output collections.
 
 ### 3.11.1 Declaration Syntax
 
+A machine body is a comma-separated list of members: the mandatory `events`
+header, the optional `emits` header, the `state` declarations, the `on` rules,
+and an optional `default`. A rule whose body is braced is self-delimiting; one
+without a body ends with `,`, like every other structural member.
+
 ```hew
-machine Name {
-    // Input-event vocabulary — declared up front (mandatory header)
+machine Door {
     events {
-        EventX;                            // event with no payload
-        EventY { payload: Type; }          // event with payload
-        EventZ;
+        Open { by: string },
+        Close,
     }
 
-    // Output vocabulary — optional; lists events this machine may `emit`
     emits {
-        EventX;
+        Announce { text: string },
     }
 
-    // States — at least two required
-    state StateA;                          // unit state (no fields)
-    state StateB { field: Type; }         // state with data
+    state Shut,
+    state Ajar {
+        by: string,
+        entry {
+            emit Announce { text: "opened by " + state.by };
+        }
+    },
 
-    // Transitions: on Event: Source => Target { body }
-    on EventZ: StateB => StateA { .StateA } // explicit body returns target value
-    on EventY: StateA => StateB { .StateB { field: event.payload } }
+    on Open(by): Shut => Ajar { by: by }
+    on Close: Ajar => Shut,
 
-    // Head binding: name payload fields at the rule site
-    on EventY(payload): StateB => StateA { Name.StateA }
-
-    // Self-transition with reenter (runs exit/entry even when state is unchanged)
-    on EventX: StateB => StateB reenter { .StateB { field: self.field } }
-
-    // Wildcard — applies in all unhandled source states for this event
-    on EventX: _ => _ { state }           // _ => _ means "stay in current state"
-
-    // Depth-1 composite state (substate block; depth > 1 is reserved)
-    state Parent {
-        initial state Sub1;
-        state Sub2 { value: i64; }
-    }
-
-    // Default handler — fallback for ALL unmatched (state, event) pairs
     default { state }
 }
+
+fn main() {
+    var door: Door = .Shut;
+    let report = door.step(.Open { by: "sam" });
+    for output in report.outputs {
+        match output {
+            .Announce { text } => println(text),   // opened by sam
+        }
+    }
+    println(door.state_name());                    // Ajar
+}
 ```
+
+`events` declares the input vocabulary; `emits` declares a separate output
+vocabulary. A state is a unit (`state Shut,`) or carries named fields, and a
+fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
+`on Event: Source => Target`, optionally with a payload head binding
+(`on Open(by):`), `reenter`, and a `when` guard.
 
 **Surface spelling** (an illustration of what `hew-parser` accepts, not a
 normative grammar — see §12):
 
 ```ebnf
-MachineDecl    = "machine" Ident TypeParams? "{"
+MachineDecl    = "machine" Ident MachineParams? WhereClause? "{"
                    EventsHeader
                    [ EmitsHeader ]
                    { StateDecl }
@@ -3129,238 +3592,365 @@ MachineDecl    = "machine" Ident TypeParams? "{"
                    [ DefaultArm ]
                  "}" ;
 
-EventsHeader   = "events" "{" { EventDecl } "}" ;
-EventDecl      = Ident ( ";" | "{" { Ident ":" Type (";" | ",") } "}" ";"? ) ;
-EmitsHeader    = "emits" "{" { Ident ";" } "}" ;
+MachineParams  = "<" [ TypeParam { "," TypeParam } ]
+                     { "," "const" Ident ":" "usize" [ "=" ConstExpr ] } ">" ;
 
-StateDecl      = "state" Ident ( "{"
-                   { Ident ":" Type (";" | ",") }  (* field declarations *)
+EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
+EventDecl      = Ident [ "{" FieldList "}" ] ;
+FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
+EmitsHeader    = "emits" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
+
+StateDecl      = LeafState | CompositeState ;
+LeafState      = "state" Ident [ "{"
+                   { Ident ":" Type "," }          (* field declarations *)
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
-                   { CompositeMember }              (* depth-1 composite only *)
-                 "}" )? ";"? ;
-CompositeMember = [ "initial" ] StateDecl ;         (* exactly one "initial" required *)
+                 "}" ] "," ;
+CompositeState = "state" Ident "{"
+                   { Ident ":" Type "," }          (* shared fields *)
+                   [ "entry" Block ] [ "exit" Block ]
+                   { [ "initial" ] LeafState }     (* exactly one initial *)
+                   { TransitionDecl }               (* parent-level rules *)
+                 "}" "," ;
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  StatePattern "=>" StatePattern
                  [ "reenter" ] [ "when" Expr ] TransitionBody ;
-TransitionBody = ";" | "{" FieldInitList "}" | Block ;
+TransitionBody = "," | "{" FieldInitList "}" | Block ;
 StatePattern   = Ident | "_" ;
 DefaultArm     = "default" "{" "state" "}" ;
 
-(* Emit expression (usable inside transition bodies and entry/exit blocks): *)
+(* Emit expression, usable in transition bodies and entry/exit blocks: *)
 EmitExpr = "emit" Ident ( "{" FieldInitList "}" )? ;
 ```
 
-> **Depth > 1 nesting is reserved** — a substate body may not itself contain
-> substates.  Depth-1 composite state blocks are supported; deeper nesting
-> (`depth > 1`) is a parse error: `nested composite states (depth > 1) are reserved`.
-
-**Visualisation:** `hew machine diagram <file.hew>` renders any
-`machine` declaration as a Mermaid state diagram, Graphviz DOT, or JSON
-schema.  The command runs all HIR static checks before rendering, so it
-doubles as a structural validator.
+**Visualisation:** `hew machine diagram <file.hew>` renders any `machine`
+declaration as a Mermaid state diagram, Graphviz DOT, or JSON schema. The
+command runs the static checks before rendering, so it doubles as a structural
+validator.
 
 ```
 hew machine diagram traffic_light.hew                   # Mermaid (default)
 hew machine diagram traffic_light.hew --format graphviz # Graphviz DOT
 hew machine diagram traffic_light.hew --format json     # JSON schema
 hew machine diagram traffic_light.hew --machine Name    # filter one machine
-hew machine diagram traffic_light.hew --no-check        # skip HIR checks
+hew machine diagram traffic_light.hew --no-check        # skip the checks
 ```
 
 ### 3.11.2 Constraints
 
-| Constraint                                  | Checked at  | Error if violated                             |
-| ------------------------------------------- | ----------- | --------------------------------------------- |
-| At least two states                         | Types/HIR   | `machine_one_state` negative test             |
-| At least one event                          | Types/HIR   | `machine_no_events` negative test             |
-| No `state` nesting deeper than depth 1; depth-1 composite states are supported | Parse | diagnostic: nested composite states (depth > 1) are reserved |
-| No duplicate explicit transition per (S, E) | Parse/HIR   | `machine_dup_transition` negative test        |
-| No duplicate wildcard for same event        | Parse/HIR   | `machine_dup_wildcard` negative test          |
-| All referenced states/events must be declared | HIR       | `machine_unknown_state/event` negative tests  |
-| All (S, E) pairs covered (exhaustiveness)   | HIR         | `MachineExhaustivenessViolation` diagnostic   |
-| Effect parity: transition body writes ≡ entry writes | HIR  | `MachineEffectParityViolation` diagnostic     |
-| No direct self-emit (`emit E` in transition for event E) | HIR | `MachineEmitCycle` diagnostic          |
+A machine declares at least one state and one input event. Every state/input
+pair needs an explicit rule, a source wildcard or `default { state }`. Guarded
+rules require an unconditional fallback at the same or a lower priority. Rules
+after an unconditional fallback at the same priority are unreachable. A fixed
+target must be constructed on every normal path with all payload fields
+initialized.
 
-Exhaustiveness can be satisfied by: explicit `on` rules, wildcard (`_`-source)
-rules, or a `default` handler.  A `default` handler alone covers all pairs that
-have no other matching rule.
+Machine evaluation is synchronous and pure: guards, transition bodies, hooks
+and their transitive helpers may compute and mutate local value data, but
+cannot perform I/O, interact with actors, suspend, access unsafe memory or
+retain external resource identity. An unknown or indirect call has no purity
+proof and is rejected. Checked computation faults remain possible. Inputs,
+states and outputs must support independent value copies.
 
-**Effect parity:** when a transition body writes a state field (via
-`self.field = …`) and the target state's `entry` block also writes that same
-field, the compiler emits a `MachineEffectParityViolation` diagnostic.  This
-prevents silent shadowing between transition-side and entry-side field
-initialisation.
-
-**Emit-cycle detection:** a transition handling event `E` may not directly
-`emit E` — that would form an immediate re-entry cycle.  Indirect cycles
-(A emits B, B emits A) are not checked.
+The native evaluator admits ordinary concrete machines, const parameters and
+depth-1 composite state blocks (§3.11.9). An unclassified generic payload
+parses but is not admitted by this execution path; parser or diagram support
+for a form is not evidence of executable support.
 
 ### 3.11.3 Transition Bodies
 
-Inside a transition body the compiler binds two implicit names:
+Inside a rule the compiler binds two implicit names, and only these two:
 
-| Binding     | Type              | Meaning                                         |
-| ----------- | ----------------- | ----------------------------------------------- |
-| `state`     | source state type | Fields of the current (source) state            |
-| `event`     | event payload     | Payload fields of the incoming event (if any)   |
+| Binding | Type              | Meaning                                       |
+| ------- | ----------------- | --------------------------------------------- |
+| `state` | source state type | Fields of the current (source) state          |
+| `event` | event payload     | Payload fields of the incoming event (if any) |
+
+`self` is the receiver of an actor or a method. It is not bound in a machine
+body — writing it is refused with `E_MACHINE_SELF`, which names `state`.
+
+A rule head already says which state the transition produces, so the body says
+only what the head cannot. There are three forms.
+
+**A unit target takes no body.** The rule ends with `,`:
+
+```hew
+machine Switch {
+    events { Toggle }
+
+    state Off,
+    state On,
+
+    on Toggle: Off => On,
+    on Toggle: On => Off,
+}
+
+fn main() {
+    var switch: Switch = .Off;
+    let _ = switch.step(.Toggle);
+    println(switch.state_name());   // On
+}
+```
+
+**A fielded target takes the field list, with the target elided.** The braces
+hold field initializers, nothing else:
 
 ```hew
 machine Elevator {
-    state Stopped { floor: i64; }
-    state Moving  { from: i64; to: i64; }
-
-    event GoTo  { floor: i64; }
-    event Arrive;
-
-    on GoTo: Stopped => Moving {
-        Moving { from: state.floor, to: event.floor }   // state.floor, event.floor
+    events {
+        GoTo { floor: i64 },
+        Arrive,
     }
-    on Arrive: Moving => Stopped {
-        Stopped { floor: state.to }
-    }
+
+    state Stopped { floor: i64 },
+    state Moving { from: i64, to: i64 },
+
+    on GoTo: Stopped => Moving { from: state.floor, to: event.floor }
+    on Arrive: Moving => Stopped { floor: state.to }
 
     default { state }
 }
+
+fn main() {
+    var lift: Elevator = .Stopped { floor: 1 };
+    let _ = lift.step(.GoTo { floor: 4 });
+    println(lift.state_name());     // Moving
+    let _ = lift.step(.Arrive);
+    match lift {
+        .Stopped { floor } => println(f"stopped at {floor}"),   // stopped at 4
+        _ => println("moving"),
+    }
+}
 ```
 
-**Elided target state name** — when the target state is unambiguous, the
-`TargetState { ... }` wrapper may be omitted and only the field initialiser
-list is written:
+**The field list takes the record spread of §3.1**, so a transition writes only
+what it changes and `..state` carries the rest:
 
 ```hew
-on Work: Active => Active { count: state.count + event.amount }
-// equivalent to:
-// on Work: Active => Active { Active { count: state.count + event.amount } }
+machine Till {
+    events { Sale }
+
+    state Empty,
+    state Filled { count: i64, label: string },
+
+    on Sale: Empty => Filled { count: 1, label: "open" }
+    on Sale: Filled => Filled reenter { ..state, count: state.count + 1 }
+
+    default { state }
+}
+
+fn main() {
+    var till: Till = .Empty;
+    let _ = till.step(.Sale);
+    let _ = till.step(.Sale);
+    match till {
+        .Filled { count, label } => println(f"{label}={count}"),   // open=2
+        .Empty => println("empty"),
+    }
+}
 ```
 
-**Body-less shorthand** — when a transition has no body, the compiler
-constructs the target state's zero-field (unit) variant automatically:
+**An expression body computes the state value.** This is the form for a
+wildcard target (§3.11.4), for a rule that also emits outputs, and for the
+identity `{ state }` that keeps a fielded state unchanged. The body's final
+expression is the next state, and a state is named bare inside the machine that
+declares it:
 
 ```hew
-on Toggle: Off => On;   // equivalent to: on Toggle: Off => On { .On }
+machine Meter {
+    events { Reading { value: i64 } }
+    emits { Alarm { value: i64 } }
+
+    state Watching { peak: i64 },
+
+    on Reading: Watching => Watching when event.value > state.peak {
+        emit Alarm { value: event.value };
+        Watching { peak: event.value }
+    }
+    on Reading: Watching => Watching { state }
+}
+
+fn main() {
+    var meter: Meter = .Watching { peak: 0 };
+    let report = meter.step(.Reading { value: 7 });
+    for output in report.outputs {
+        match output {
+            .Alarm { value } => println(f"alarm at {value}"),   // alarm at 7
+        }
+    }
+    let quiet = meter.step(.Reading { value: 3 });
+    println(f"outputs={quiet.outputs.len()}");                  // outputs=0
+}
 ```
 
-**State names are not variants (normative).** The name after `=>` in a
-transition head is a state name in the machine's own namespace, resolved
-against the machine's `state` declarations. It is not an enum variant in
-expression position, so the variant-spelling rule of §3.1 does not reach it
-and `on Toggle: Off => On;` is well formed as written. A `;` body is legal in
-every transition form, guarded ones included. A machine's states desugar to
-an enum below the surface, and that desugar — not the source spelling — owns
+A body that is nothing but the target the head already named — `=> Ajar { Ajar
+{ by: by } }`, `=> Shut { .Shut }`, `=> Shut { Door.Shut }` — is refused with
+`E_MACHINE_REDUNDANT_TARGET`. Write the field list, or no body at all.
+
+**State names are not variants (normative).** The name after `=>` in a rule
+head is a state name in the machine's own namespace, resolved against the
+machine's `state` declarations. It is not an enum variant in expression
+position, so the variant-spelling rule of §3.1 does not reach it and
+`on Toggle: Off => On,` is well formed as written. A machine's states desugar
+to an enum below the surface, and that desugar — not the source spelling — owns
 their identity.
 
-### 3.11.4 Guard Conditions (`when`)
+### 3.11.4 Guards, Wildcards and Priority
 
-A transition may carry a boolean guard expression after the target state name:
+A rule may carry a boolean guard after the target, written `when <expr>`.
+Guards are evaluated in declaration order; the first rule whose event and
+source state match *and* whose guard passes fires.
+
+`_` in the source position matches any state. `_` in the target position means
+the body produces a value of the machine type — any state, not a fixed one. The
+identity rule `on E: _ => _ { state }` keeps the current state as a value.
 
 ```hew
-on Request: Allowing => Allowing when state.tokens > 1 {
-    Allowing { tokens: state.tokens - 1 }
+machine Conn {
+    events { Start, Bump, Kill }
+
+    state Idle,
+    state Live { hits: i64 },
+    state Dead,
+
+    on Start: Idle => Live { hits: 0 }
+    on Bump: Live => _ {
+        if state.hits + 1 >= 3 { Dead } else { Live { hits: state.hits + 1 } }
+    }
+    on Kill: _ => Dead,
+
+    default { state }
 }
-on Request: Allowing => Throttled when state.tokens <= 1;
+
+fn main() {
+    var conn: Conn = .Idle;
+    let _ = conn.step(.Start);
+    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Live
+    let _ = conn.step(.Bump);
+    println(conn.state_name());   // Dead
+}
 ```
-
-Guards are evaluated in declaration order.  The first transition whose event
-and source-state match *and* whose guard (if present) evaluates to `true` fires.
-If no guarded transition matches, evaluation falls through to wildcard rules and
-then to `default`.
-
-### 3.11.5 Wildcard Transitions and Priority
-
-`_` in the source position matches any state.  `_` in the target position means
-"return a value of the machine type" (any variant, not a specific one).  The
-conventional identity pattern `on E: _ => _ { state }` keeps the current state
-unchanged.
 
 Priority order (highest to lowest):
 
-1. Explicit transitions (specific source state, no wildcard)
-2. Wildcard/`_`-source transitions
-3. `default` handler
+1. Explicit rules (specific source state, no wildcard)
+2. Wildcard-source rules
+3. The `default` handler
 
-Specific transitions always win over wildcards for the same event.
+A specific rule always wins over a wildcard for the same event. Guard success
+selects a rule; guards alone never establish coverage.
+
+### 3.11.5 Hooks and Reentry
+
+A state may declare `entry` and `exit` blocks. They see the same `state` and
+`event` bindings as a transition body and may emit outputs and mutate the
+staged payload.
+
+For a fixed target that changes state, evaluation order is exit, transition
+body, entry. A fixed same-state target runs only its body, unless the rule says
+`reenter`, which runs exit and entry as well. A wildcard target **always** runs
+exit, body and entry, including when the body produces the source state's tag;
+`reenter` is allowed and redundant there. Hook selection therefore never
+speculates about, or repeats, an unevaluated body.
+
+Source exit mutations are visible to the transition body; destination entry
+mutations become part of the committed state. Output order follows evaluation
+order across hooks and body.
 
 ### 3.11.6 Generated API
 
-The compiler generates the following for every `machine Name { ... }`:
+Each `machine Name` becomes an ordinary state enum and methods, with these
+companion types:
 
-| Generated item              | Usage / behaviour                                                  |
-| ----------------------------| ------------------------------------------------------------------ |
-| State constructors          | `Name.State` (unit) or `Name.State { field: val }` (with data)  |
-| Companion event enum        | `NameEvent` with variants matching each `event` declaration        |
-| Event constructors          | `NameEvent.EventName` (unit) or `NameEvent.EventName { f: v }`  |
-| `m.step(event)`             | Mutates `m` in place; returns `()` — no return value              |
-| `m.state_name()`            | Returns the current state name as `string`                        |
-| Pattern-match support       | Machine values can be matched exactly like enum values             |
+| Generated item        | Behaviour                                                            |
+| --------------------- | -------------------------------------------------------------------- |
+| `NameEvent`           | Typed input variants from `events`                                   |
+| `NameOutput`          | Separate typed output variants from `emits`                          |
+| `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
+| `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |
+| `m.step(event)`       | Stages evaluation and returns `NameStep`, committing `m` on success  |
+| `m.state_name()`      | Returns the current state tag as a string                            |
 
-**Calling `step()`** — both unqualified and qualified event constructors are
-accepted:
+`emit` appends output data in evaluation order; it never feeds an input event
+back in or performs the represented work. Without an `emits` header,
+`NameOutput` is an empty enum and the report's vector is empty. There is no
+dummy output variant and no hidden queue.
 
-```hew
-var light = Light.Off;
-light.step(Toggle);                // unqualified (preferred for brevity)
-light.step(LightEvent.Toggle);   // fully qualified (also valid)
-```
+The step copies the current owning value into staged evaluation. A checked
+fault before commit leaves the caller's state unchanged and releases the
+candidate and any collected outputs. Successful output values remain valid
+independently of later state changes or the machine's lifetime.
 
-**Pattern matching** — machine values can be destructured in `match`, `if let`,
+**Pattern matching** — machine values destructure in `match`, `if let`,
 `while let`, and function parameters exactly like enums:
 
 ```hew
-match cb {
-    .Closed { failures } => println(f"failures = {failures}"),
-    .Open                => println("open"),
-    .HalfOpen            => println("half-open"),
+machine Breaker {
+    events { Trip, Reset }
+    state Closed { failures: i64 },
+    state Open,
+    on Trip: Closed => Open,
+    on Reset: Open => Closed { failures: 0 }
+    default { state }
+}
+
+fn describe(breaker: Breaker) -> string {
+    match breaker {
+        .Closed { failures } => f"failures = {failures}",
+        .Open => "open",
+    }
+}
+
+fn main() {
+    println(describe(.Closed { failures: 2 }));   // failures = 2
+    println(describe(.Open));                     // open
 }
 ```
 
 ### 3.11.7 Using Machines Inside Actors
 
-Machines are values — they are commonly embedded as actor fields:
+Machines are values, so they are commonly held as actor fields:
 
 ```hew
-actor ConnectionManager {
-    var tcp: TcpState = TcpState.Closed;
+machine Tcp {
+    events { Connect, Close }
 
-    receive fn handle(event: TcpStateEvent) {
-        tcp.step(event);
-        // React to the new state
+    state Closed,
+    state Established { port: i64 },
+
+    on Connect: Closed => Established { port: 8080 }
+    on Close: Established => Closed,
+
+    default { state }
+}
+
+actor ConnectionManager {
+    var tcp: Tcp = .Closed,
+
+    receive fn handle(event: TcpEvent) {
+        let _report = tcp.step(event);
         match tcp {
-            .Established { local_seq, remote_seq } => {
-                println(f"established seq={local_seq}/{remote_seq}");
-            },
-            _ => {},
+            .Established { port } => println(f"established on {port}"),
+            .Closed => println("closed"),
         }
     }
 }
+
+fn main() {
+    let manager = spawn ConnectionManager();
+    let _ = manager.handle(.Connect);   // established on 8080
+    let _ = manager.handle(.Close);     // closed
+}
 ```
 
-Because `machine` is a value type, assigning a machine variable copies it.
-The `step()` method mutates the variable in place — it does not return a new
-value.
-
-**Implementation status:** machine-typed actor state fields are
-supported, including heap-payload states (the field rides the enum
-clone/drop substrate; `step()` on a field stores back through the
-state-field overwrite-release path). Generic machine instantiations work for
-bit-copy type arguments (scalars such as `i64`/`f64`/`bool`, and records made
-only of bit-copy fields); a heap-owning type argument (`string`, `Vec<T>`, or
-a record with an owned field) is refused at codegen with a fail-closed
-diagnostic (`requires tag-aware drop`) because the generic machine substrate
-does not yet carry a tag-aware drop plan for an owned payload. Machine-state
-actors are not yet admitted as supervisor children (state constructors are
-not literal child-init values), so supervisor restart-clone of machine
-state is unreachable until that slice widens.
-
-Because there is no shared machine instance, transition OBSERVATION is a
-library pattern, not a language construct: the owner publishes
-transitions into a `std/channel` `Sender` and observers select on the
-receive arm with an `after` safety net. Machine values themselves can
-also travel as channel elements (state snapshots) and pattern-match on
-state variants at the receiver. See
-`examples/machine/select_on_transition.hew` and
-`examples/machine/transition_watch_baseline.hew`.
+Because `machine` is a value type, assigning a machine variable copies it. A
+successful `step()` updates its receiver and returns a report. Actor and
+supervisor composition satisfies its ordinary value ownership and lifecycle
+contracts; embedding a machine introduces no second runtime, and it does not
+move the surrounding actor's effects into `step`.
 
 ### 3.11.8 Type System Integration
 
@@ -3370,665 +3960,432 @@ state variants at the receiver. See
   (same rule as structs).
 - Machines can be used as type parameters wherever the bound permits.
 - A machine declaration may itself be generic (`machine Lifecycle<T> { ... }`);
-  see §3.11.7 for the type arguments the substrate admits.
+  see §3.11.2 for the type arguments the evaluator admits.
+
+### 3.11.9 Const Parameters and Composite States
+
+**Const parameters.** A machine may declare `usize` const parameters after its
+type parameters. A const parameter names a fixed value of the declaration,
+visible in guards, transition bodies and hooks like an immutable binding. Its
+value is its declared default; a type annotation cannot spell const arguments,
+so a const parameter without a default is refused where it is declared. A body
+binding that reuses a const parameter's name is refused rather than shading it.
+
+```hew
+machine Retry<const MAX: usize = 3> {
+    events {
+        Fail,
+    }
+
+    state Trying { attempts: usize },
+    state Exhausted,
+
+    on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+    on Fail: Trying => Exhausted,
+    on Fail: Exhausted => Exhausted reenter,
+}
+```
+
+**Composite states.** A `state` block that declares substates is a composite
+state: a grouping name, not a live state. It nests exactly one level; a
+substate that declares substates of its own is refused. Exactly one substate
+is marked `initial`.
+
+A composite flattens before checking. Every substate becomes a state of the
+machine, and the composite's own fields are stamped onto each of them.
+
+- A transition targeting the composite by name enters its `initial` substate.
+- A parent-level rule written inside the block applies from every substate. A
+  substate's own unguarded rule for the same event replaces it, wherever in
+  the machine that rule is written; a guarded one keeps the parent rule as its
+  fallback.
+- Entering the composite runs the composite's `entry` hook before the
+  substate's; leaving it runs the substate's `exit` hook before the
+  composite's. A move between two substates of the same composite runs neither
+  composite hook.
+
+```hew
+machine Session {
+    events {
+        Open,
+        Authed,
+        Close,
+    }
+
+    emits {
+        Trace { text: string },
+    }
+
+    state Closed,
+    state Kicked,
+
+    state Live {
+        entry {
+            emit Trace { text: "Live.entry" };
+        }
+        exit {
+            emit Trace { text: "Live.exit" };
+        }
+
+        initial state Authing,
+        state Active,
+
+        on Close: _ => Closed,
+    },
+
+    on Open: Closed => Live,          // enters Authing
+    on Authed: Authing => Active,     // no composite hook
+    on Close: Active => Kicked,       // beats the parent Close rule
+
+    default { state }
+}
+```
+
+`hew machine diagram` draws the flattened machine; its JSON form keeps the
+grouping in a `composites` array naming each composite, its members and its
+initial substate.
 
 ---
 
 ## 4. Effects, IO, and Async Semantics
 
-This section defines Hew's concurrency model within actors. Hew distinguishes between:
+Actors are independent failure domains. Structured tasks run concurrent work
+whose lifetime is bounded by its parent. Ordinary calls wait for their result;
+`fork` starts concurrent work and `await` joins tasks.
 
-- **Inter-actor concurrency**: Actors communicate via asynchronous message passing (Section 2.1)
-- **Intra-actor concurrency**: Tasks execute cooperatively within a single actor using structured concurrency
+### 4.0 Suspension (normative)
+
+Suspension is an inferred callable effect. A named function or closure that
+reaches a suspending operation suspends; the call is still written `f(x)`.
+There is no `async fn` declaration or `await` on an ordinary call.
+
+A written callable type specifies its effect at a data boundary. `fn(...) -> T`
+is non-suspending; `fn[suspends](...) -> T` permits suspension. This qualifier
+composes with the callable capabilities in §3.8.6. A non-suspending callable
+can fill a suspending slot, but the reverse is rejected.
+
+Parameters, return types, fields and explicitly annotated bindings carry these
+contracts. A function calling a `fn[suspends]` parameter itself suspends; it
+does not become effect-polymorphic.
+
+Waiting for actor completion, task results, channel or stream input, timers
+and suspending I/O uses the caller's execution context. For example,
+`sleep(1s)`, `fs.read(path)` and `rx.recv()` are plain calls. The compiler
+rejects suspension in a context that cannot support it, including a deferred
+body. `await` is reserved for `Task<T>` and `Vec<Task<T>>` (§4.4).
 
 ### 4.1 The Task Type
 
-A `Task<T>` represents a concurrent computation that will produce a value of type `T`. Tasks execute within their spawning actor's single-threaded context.
+`Task<T>` owns a concurrent computation whose ordinary result has type `T`.
+It is affine and cannot be sent as an actor message. Its owner may join it
+once. The task may be pending, running, completed with a value, cancelled or
+faulted; cancellation and faults are structured outcomes, not extra variants
+inserted into `T`.
 
-```
-Task<T>
-```
-
-**Type definition:**
-
-| Property  | Description                                               |
-| --------- | --------------------------------------------------------- |
-| `T`       | The result type of the task                               |
-| Ownership | Tasks are owned values, not `Send`                        |
-| Lifetime  | A task lives until awaited, cancelled, or its scope exits |
-
-**Task states:**
-
-```
-┌──────────┐   spawn    ┌─────────┐
-│ Pending  │ ─────────► │ Running │
-└──────────┘            └────┬────┘
-                             │
-           ┌─────────────────┼─────────────────┐
-           │                 │                 │
-           ▼                 ▼                 ▼
-    ┌────────────┐    ┌────────────┐    ┌────────────┐
-    │ Completed  │    │ Cancelled  │    │  Trapped   │
-    │  (value)   │    │            │    │  (fault)   │
-    └────────────┘    └────────────┘    └────────────┘
-```
-
-- **Pending**: Task created but not yet scheduled
-- **Running**: Task is executing or ready to execute
-- **Completed**: Task finished with a value of type `T`
-- **Cancelled**: Task was cooperatively cancelled
-- **Trapped**: Task encountered an unrecoverable error
-
-**Task methods:**
-
-| Method    | Signature                        | Description                                                 |
-| --------- | -------------------------------- | ----------------------------------------------------------- |
-| `is_done` | `fn is_done(t: Task<T>) -> bool` | Returns `true` if task has completed, cancelled, or trapped |
+Tasks do not share mutable parent state. Their captures must satisfy the
+owning transfer contracts of §4.3. Scheduling is an implementation detail;
+source code does not select an OS thread or a coroutine substrate.
 
 ### 4.2 Scope: Structured Concurrency Boundary
 
-> **Partially implemented.** The shipped surface is
-> `scope { fork { call(); } }` in suspendable contexts (actor handlers,
-> closures, task entries), where the forked call takes no arguments and the
-> scope joins all children at its closing brace. The name-bound form
-> `fork name = call(...)` described below parses and type-checks; what is
-> missing is the consuming half — awaiting the bound `Task<T>` in a value
-> position is refused at HIR (`AwaitOutOfPosition`), so the task binding
-> reaches its scope exit unconsumed and MIR refuses it
-> (`E_MIR_CHECK`, `MustConsume`). Argument-bearing forks, sibling cancellation
-> on child failure, and the `?` propagation sugar are specified here but not
-> yet accepted. Each of these refuses with a named diagnostic rather than
-> miscompiling.
-
-> **Execution context (normative).** Every Hew function may suspend. There is
-> no suspending-function colour: a function is never marked as one, and a
-> `scope { fork .. }` block is legal wherever a statement is legal, `fn main`
-> included. What carries the difference is the execution context the call
-> runs on. `fn main` runs on the process main thread with an
-> `ExecutionContext` whose park and unpark are that thread's parker; an actor
-> handler keeps its coroutine context; a free function inherits its caller's
-> context, so the same helper suspends one way when an actor calls it and
-> another way when `main` does. One mechanism serves every awaitable, so a
-> new awaitable is a new readiness source rather than a new lowering.
->
-> At v0.6.0 `main` has no execution context yet. A suspension point (§4.3)
-> reached from `main`, or from a free function `main` calls, is refused with
-> `E_LIMIT_MAIN_CONTEXT` (Limitation, exit 3) rather than parked on a
-> contextless wait. The refusal names the two shapes that work today: host the
-> request loop in an actor and park `main` on its ask, or use `join {}` for a
-> fan-out from `main`. The context lands at v0.7.0 (hew-lang/hew#3195,
-> hew-lang/hew#3196).
-
-A `scope` block creates a structured concurrency boundary. All child tasks
-forked within the block must complete before the block returns.
-
-**Syntax:**
+`scope { ... }` is an expression. Its tail supplies its value; no tail means
+unit. Before delivering the value, the scope drains its children and completes
+its cleanup. It can be used in a binding, return value or select-arm body.
 
 ```hew
-scope {
-    fork a = compute_a();   // child task: spawned + name-bound
-    fork b = compute_b();   // sibling child task
-    use_results(a?, b?);    // `?` propagates errors if a/b's return type is Result/Option;
-                            // the scope itself joins children on exit — no `await` needed.
+fn square(n: i64) -> i64 { n * n }
+
+fn main() {
+    let total = scope {
+        let first = fork square(3);
+        let second = fork square(4);
+        (await first) + (await second)
+    };
+    println(total);
 }
 ```
 
-**Semantics:**
+Every callable also supplies an implicit task lifetime. An explicit `scope`
+creates a narrower boundary; `fork` does not require a redundant explicit
+scope around every function body. A task cannot escape the lifetime that owns
+it, including through an aggregate returned as a scope's value.
 
-1. **Scope containment**: Child tasks cannot outlive their enclosing `scope` block.
-2. **Automatic join**: The block waits for every child task before returning.
-3. **Statement, not expression**: `scope { ... }` is a statement. It is not a
-   `Primary` and may not appear where a value is expected: `let r = scope { .. }`
-   is `E_SCOPE_IS_STATEMENT` (User), not a silent binding of `()`.
-   `scope` is the scope bracket; the `fork name = expr` children carry the values.
-   `scope` and `fork` are not synonyms — keeping them separate prevents confusing the
-   bracket role with the child-start role. Use `await` inside the scope body
-   to resolve child values, bind them to `let` or `var` bindings, and return them from the
-   enclosing function directly. The value-producing fan-out is `join { ... }`
-   (§4.11.2), which is an expression.
-4. **Nested scopes**: `scope` blocks may be nested; each manages its own children.
-5. **First-failure-cancels-siblings**: If any child returns `Err(E)` or traps, the runtime
-   cancels the remaining siblings at the next safepoint. The error surfaces via the `await`
-   expression for that child: `?` on `await task` propagates `Err` to the enclosing function;
-   an unhandled trap unwinds the scope and propagates to the enclosing context.
+Normal exit waits for unfinished children. A structured fault or cancellation
+cancels and drains affected children before releasing parent-owned resources.
+An ordinary child `Err(e)` is a value, not a scope-cancellation trigger.
 
-> **Design note.** `scope` is the scope bracket; `fork name = expr` is the child-start verb.
-> These are deliberately separate keywords so neither can be confused for the other. See the
-> Historical note in §4.9 for the earlier `scope |s| { s.spawn { … } }` surface.
+A handler attached directly to a scope recovers a structured failure:
 
-**Child form:**
+```hew
+fn main() {
+    let answer = scope within 20ms {
+        sleep(1s);
+        42
+    } handle failure {
+        0
+    };
+    println(answer);
+}
+```
 
-`fork name = expr` (or bare `fork expr`) is only legal dynamically inside a
-`scope` block. `scope { ... }` opens the structured-concurrency block;
-`fork` is exclusively the child-start verb. Today the runnable child form is
-the block form `fork { call(); }` with a zero-argument callee; the name-bound
-form is accepted by the checker and blocked further down the pipeline, at the
-`await` that would consume the task (see the callout above).
-Outside a scope-block, a child-form `fork` is a `ForkOutsideScopeBlock`
-error.
+The failure binding has type `ScopeFailure`, with `Deadline` and `Fault`
+cases. The handler runs after the scope's children and cleanup have settled
+and must produce the scope's value type or diverge. Cancellation inherited
+from a parent continues outward; an inner handler cannot clear it. It does not intercept an ordinary `Err` returned by the scope body.
+To handle that Result, first bind the scope's result and apply ordinary
+Result `handle` to the binding (§2.2.1).
 
 ### 4.3 Spawning Child Tasks
 
-```hew
-var result;
-scope {
-    fork a = compute_a();
-    fork b = compute_b();
-    result = combine(a?, b?);   // scope joins a and b on exit; `?` propagates Result/Option errors
-};
-result
-```
-
-**Syntax:**
-
 ```ebnf
-Scope     = "scope" Block ;                        (* structured-concurrency block *)
-ForkChild = "fork" ( Ident "=" )? Expr ;           (* child form, only inside a Scope block *)
+Scope     = "scope" [ "within" Expr ] Block ;
+ForkChild = "fork" ( CallExpr | Block | BatchCalls ) ;
 ```
 
-**`fork name = expr` — structured child task:**
+`fork call(args)` starts a call and produces `Task<T>` for the call's result
+`T`. `fork { ... }` starts a body with its own return context. Arguments and
+captures are acquired before the child uses them: ordinary data gets an
+independent value, while an affine owner transfers to the child. The child
+cannot retain a borrowed parent resource or view beyond its borrow.
 
-- Returns `Task<T>` where `T` is the type of `expr`.
-- Spawned task runs concurrently with its siblings.
-- Captured variables follow the same rules as actor sends and closures
-  (move semantics by default; explicit `move` to force a moving capture).
-- On `Err(E)` or trap, the enclosing `scope` block transitions to
-  cancelling: siblings are cancelled at their next safepoint and the
-  first error wins as `ScopeError::primary`.
+A resource transferred into a child receives automatic cleanup on normal,
+fault and cancellation paths. Its `close(consume self)` returns unit. Linear
+values retain their must-consume obligation; a child shape that cannot meet it
+is rejected (§3.7.8). Actor state is not shared mutable capture storage.
 
-**Capture rules for `@linear` and `@resource` values (normative):**
-
-The interaction between ownership-discipline markers (§3.4) and child
-tasks needs explicit rules, since a child may be cancelled at a
-safepoint before its body reaches a consuming or close call.
-
-1. **`@resource` capture.** A `@resource` value moved into a child task
-   has its drop discipline run on whichever exit path the child takes:
-   normal completion, recoverable `Err(E)`, trap, or cancellation. The
-   declared `close(consume self) -> Result<(), E>` is invoked through
-   the child's stack-unwind path (§4.5), and its returned error is
-   discarded per the §3.4 `@resource` semantics. This is the *same*
-   discipline a `@resource` would receive in a non-task context; the
-   child's cancellation safepoint is simply one more exit through which
-   stack unwinding runs cleanup.
-
-2. **`@linear` capture.** A `@linear` value moved into a child task
-   transfers the must-consume obligation to the child body. The parent
-   cannot use the value after the capture site; the child must reach a
-   declared consuming method on every path that does not trap. Because
-   edition-2026 cancellation is **scope-structural only** (no user
-   cancellation tokens, no preemption), the checker rejects the capture
-   if the child body has any cancel-reachable exit that does not pass
-   through a consuming call. The rejection diagnostic is
-   `LinearCaptureCancellable`, and it points at the binding, the
-   capture site, and the cancel-reachable exit that proves the gap.
-
-   The conservative rule keeps the language honest in edition 2026:
-   without cancellation tokens, the programmer has no way to consume a
-   `@linear` value along the cancellation path, so the only safe shape
-   is for the child's *only* exits-to-completion to be ones the
-   compiler can prove consume the value. Relaxation is tracked in
-   HEW-FUTURE.md §1.2 alongside the broader cancellation-token
-   vocabulary.
-
-3. **Value capture.** A child receives captured values by move, or by an
-   explicit `clone` when the parent must keep an independent value. Foreign
-   view syntax cannot occur in an ordinary child-task signature or capture.
-   Actor fields remain isolated from the child and cannot be captured as
-   shared mutable state.
-
-4. **Task<T> handle escape.** A `Task<T>` handle bound by `fork name =
-   expr` is usable only within the lexical scope-block that introduced
-   it. The handle cannot be returned from the scope-block, stored in a
-   field, captured by a closure that outlives the block, nor moved into
-   a sibling child unless that sibling is itself a `fork` form inside
-   the same block. The rejection is structural: `Task<T>` is not a
-   nameable type at the source level (§4.1) and the handle has no
-   surface syntax to escape through.
-
-**`fork expr` — bare child form:**
-
-A degenerate single-child form: `fork expr` evaluates `expr` as a child
-task. The enclosing scope block is still Unit-typed; to consume the child's
-result, bind it with `fork name = expr` and then `await name` inside the
-scope body, or simply fire-and-forget with the bare form when the value is
-not needed.
-
-**Substrate (informative):**
-
-The β surface lowers each child's execution to an OS-thread-per-task
-substrate (`hew-runtime/src/task_scope.rs`, `hew_task_spawn_thread`). The
-parent's `await` of a child lowers onto the same unified `llvm.coro`
-switched-resume continuation substrate (`hew-runtime/src/cont.rs`,
-`hew_cont_*`) used by generator `yield` and actor `await`; the source
-surface is a single `fork` child production whose scheduling discipline
-is the runtime's concern. The earlier drafts exposed two child verbs
-(`s.launch` for cooperative coroutines vs `s.spawn` for OS threads) on a
-`scope |s| { ... }` handle; that surface was removed entirely in the 2026
-edition — see "Historical note" at the end of §4.9.
-
-**Yield points (normative):**
-
-A child task MUST yield at:
-
-- `await` expressions — suspends until the awaited task or actor is ready.
-- compiler-inserted `cooperate` safepoints — reduction budget exhaustion;
-  the compiler inserts checks at function entry and loop back-edges.
-- IO operations — cancellation is observed at the syscall boundary.
-
-Yield points are also where cooperative cancellation is delivered (§4.5).
-
-**Suspension points (normative):**
-
-The suspension points of the language are a closed set: `await expr`,
-`await expr | after d`, `select`, a `scope { fork .. }` block, an
-`after(d) { }` scope deadline, a channel `recv`, a stream `recv`, a listener
-`accept`, and `sleep`. Each one suspends the execution context of the
-function it appears in (§4.2), and each one is legal in any function. In an
-actor handler, a task body, or a closure, the coroutine frame yields to the
-scheduler and the readiness source resumes it. In `fn main` the process main
-thread parks, and the reactor, the timer wheel, or a mailbox unparks it; no
-Hew scheduler worker waits on an OS condition variable on either path.
-
-At v0.6.0 only the coroutine half of that rule is implemented. Every
-suspension point in the set above is accepted in a suspendable context and
-refused with `E_LIMIT_MAIN_CONTEXT` when it is reached from `main` (§4.2).
+An unbound `fork` gives up direct access to the result, but its parent still
+drains the child. It is not detached work, and discarding its handle does not
+suppress a structured fault. If the child returns an ordinary Result, inspect
+that value when the application needs its error.
 
 ### 4.4 Awaiting Tasks
 
-The `await` operator blocks the current task until the awaited task completes, returning its result.
+`await` preserves the result type exactly:
 
-**Syntax:**
+```text
+await : Task<T> -> T
+await : Vec<Task<T>> -> Vec<T>
+```
+
+For a pending task it suspends until completion; for a completed task it
+extracts the value. It consumes the task's ownership. Vector await joins every
+task and returns values in vector order, not completion order.
+
+| Operand | Ordinary result |
+| --- | --- |
+| `Task<i64>` | `i64` |
+| `Task<Result<T, E>>` | `Result<T, E>` |
+| `Vec<Task<Result<T, E>>>` | `Vec<Result<T, E>>` |
+
+There is no implicit `Ok` wrapper and no automatic Result flattening.
+`(await task)?` is meaningful when `T` is an Option or Result accepted by
+`?`. It is not a cancellation-handling operator. Task faults and cancellation
+follow the structured scope path (§4.5).
 
 ```hew
-let result = await task;
-```
+fn square(n: i64) -> i64 { n * n }
 
-**Semantics (normative):**
-
-| Awaited Task State | `await` Behaviour                                           |
-| ------------------ | ----------------------------------------------------------- |
-| Completed          | Returns `Ok(value)` immediately                             |
-| Running/Pending    | Suspends current task until completion, returns `Ok(value)` |
-| Cancelled          | Returns `Err(...)`                                         |
-| Trapped            | Propagates the trap to the awaiting task                    |
-
-**Type:**
-
-```
-await : Task<T> -> Result<T, E>
-```
-
-Cancellation is an **expected** outcome (it is triggered automatically
-when a sibling child fails, or implicitly at scope-block exit) and MUST be
-modeled as a recoverable error, not a trap. The current release does not
-expose a named `CancellationError` type in source; callers should handle
-the `Err(...)` branch of the `await` result. Traps are reserved for
-unexpected, unrecoverable failures (Section 2.2).
-
-```hew
-// Cancellation returns Err, not a trap:
-let result = await task;
-match result {
-    .Ok(v) => use_value(v),
-    .Err(_) => handle_cancellation(),
+fn main() {
+    var tasks = [fork square(3)];
+    tasks.push(fork square(4));
+    let values = await tasks;
+    for value in values { println(value); }
 }
-
-// Use ? to propagate cancellation errors:
-let value = (await task)?;
 ```
 
-> **Note:** Only traps (panics) propagate as unrecoverable. Cancellation is always catchable via the `Result` return type.
+**Batch fork.** `fork [a(), b()]` starts homogeneous calls and returns
+`Task<Vec<T>>`. `fork (a(), b())` starts calls with a tuple result and returns
+one task over that tuple. `await fork [a(), b()]` joins that batch. This differs
+from a vector containing separate task handles, but both preserve their
+ordinary result values.
 
-**Examples:**
-
-```hew
-// Simple await — bind result before the scope, assign inside
-var value;
-scope {
-    fork x = expensive_compute();
-    value = await x;
-};
-
-// Concurrent tasks with sequential await
-var merged;
-scope {
-    fork a = fetch_user(id1);
-    fork b = fetch_user(id2);
-
-    // Both fetches run concurrently; await resolves them in order
-    let user1 = await a;
-    let user2 = await b;
-    merged = merge_users(user1, user2);
-};
-merged
-```
+Actor handles, actor-call results and stream operations are not await operands.
+A concurrent actor call is `fork worker.compute(x)`; the task result is the
+actor completion envelope. Actor termination uses `close` or `closed`, and
+stream iteration uses plain `for` (§4.10, §4.12).
 
 ### 4.5 Cancellation
 
-Cancellation in Hew is **automatic at safepoints**: when a scope-block is
-cancelled, running children are interrupted at the next safepoint without
-manual polling.
+Cancellation is cooperative. A scope cancels affected children when a child
+faults, an enclosing lifetime is cancelled, or its `within` deadline expires.
+A race also cancels its losing operands (§4.11.2). Ordinary `Err` values do not
+trigger these transitions.
 
-**Cancellation triggers:**
+Cancellation is observed at supported safepoints, including suspending calls
+and task waits. It is not preemption of an arbitrary instruction. The scope
+waits for cancelled children to drain before returning or running its attached
+failure handler. Nested lifetimes receive the cancellation; unrelated actors
+do not become children of that scope.
 
-A scope-block transitions to cancelling when:
+Cleanup follows explicit ownership edges. Deferred actions and resource closes
+run according to their contracts; Hew has no user-defined `Drop` implementation
+(§3.7.3). A deferred action cannot return from its enclosing function, propagate
+with `?`, or suspend. Secondary cleanup failures remain observable without
+replacing the primary failure.
 
-1. A child returns `Err(E)` — the first such `E` becomes `ScopeError::primary`.
-2. A child traps — siblings are cancelled and the trap propagates after join.
-3. An outer scope-block (or its enclosing actor) is itself cancelled.
-
-There is no user-level `cancel()` call against a scope-block from inside its
-own body; cancellation is event-driven from child outcomes.
-
-**Cancellation is automatic at safepoints:**
-
-The following points are safepoints where cancellation is checked automatically:
-
-- `await` expressions
-- compiler-inserted `cooperate` safepoints at function entry and loop back-edges
-- IO operations (file read/write, network operations)
-
-When cancellation fires at a safepoint, the runtime initiates **stack unwinding** with a `Cancelled` payload. All `defer` blocks and `Drop` implementations run during unwinding, ensuring deterministic resource cleanup.
-
-> Cancellation is scope-structural and has no opt-out attribute.
-> `#[noncancellable]` is removed (§12.6), and the cancellation-token
-> vocabulary it belonged to is refused rather than deferred
-> (HEW-FUTURE §1.2).
-
-**Cancellation propagation:**
-
-When a scope-block is cancelled:
-
-1. Pending child tasks that haven't started are immediately marked `Cancelled`.
-2. Running children are cancelled at their next safepoint (automatic — no polling needed).
-3. Stack unwinding runs `defer`/`Drop` blocks for deterministic cleanup.
-4. Nested scope-blocks receive the cancellation signal.
-
-**Cancellation does NOT:**
-
-- Forcibly terminate running code between safepoints.
-- Affect tasks in other scope-blocks or other actors.
-
-**Example with cleanup:**
-
-```hew
-receive fn download_files(urls: Vec<string>) -> Result<Vec<Data>, Error> {
-    var results: Vec<Data> = Vec.new();
-    scope {
-        for url in urls {
-            scope {
-                let data = http.get(url)?;  // Safepoint — cancellation checked here
-                results.push(process(data)); // If cancelled, stack unwinds; defer blocks run
-            };
-        }
-    };
-    Ok(results)
-}
-```
+There is no user cancellation-token API or cancellation opt-out attribute in
+this surface. Programs must not rely on prompt cancellation of code that never
+reaches a supported safepoint.
 
 ### 4.6 Error Handling in Tasks
 
-Tasks can fail in two ways:
+Application errors and structured failures are different:
 
-1. **Recoverable errors**: Return `Err(E)` from a `Result<T, E>`
-2. **Unrecoverable errors**: Trap (panic)
-
-**Recoverable errors:**
-
-When a child task returns a `Result`, errors can be handled directly by the
-awaiter inside the scope body:
+- A child returning `Result<T, E>` completes normally with that value, even
+  when it is `Err(e)`. `await` delivers it unchanged.
+- A child fault initiates structured cleanup and cancellation of its siblings.
+  It propagates unless a scope failure handler recovers it.
+- Cancellation does not create an `Err` variant in an arbitrary task's result
+  type. A scope handler can recover its own deadline or fault after cleanup;
+  inherited parent cancellation still propagates (§4.2).
 
 ```hew
-scope {
-    fork task = {
-        fallible_operation()?;
-        Ok(value)
+fn read_count(valid: bool) -> i64 fails string {
+    if !valid { return error "count unavailable"; }
+    7
+}
+
+fn main() {
+    let result = scope {
+        let task = fork read_count(false);
+        await task
     };
-
-    match await task {
-        .Ok(v) => use_value(v),
-        .Err(e) => handle_error(e),
-    }
+    let count = result handle problem { 0 };
+    println(count);
 }
 ```
 
-The scope block is Unit-typed; `await task` resolves the child's
-`Result<T, E>` inline. If multiple children can fail and you need to
-aggregate their errors, collect the `await` results into a `Vec` inside the
-scope body and inspect it after the scope block completes. `ScopeError<E>`
-(see `std/concurrency/scope_error.hew`) is the layout for aggregated
-per-child errors; it is produced by the `await` expressions, not by the
-scope block itself. Propagating the first error with `?` is written as `?`
-on the `await` expression for that child, which propagates to the enclosing
-function — not to the scope block's "value."
+To collect application errors, return the joined Result values from the scope
+and inspect them. The runtime does not synthesize a `ScopeError<E>` from child
+application errors. `?` still targets its enclosing function or child body;
+there is no scope-local implicit error return.
 
-**Traps (unrecoverable errors):**
-
-When a child task traps:
-
-1. The task transitions to `Trapped` state.
-2. Sibling children in the same scope-block are cancelled.
-3. The scope-block itself traps, propagating to its enclosing context.
-
-**Trap in a `receive fn` (normative):**
-
-When a trap propagates out of a `scope` block inside a `receive fn`:
-
-1. The current message handler terminates immediately
-2. The actor transitions to `Crashed` state (see §9.1)
-3. The actor's supervisor is notified with the trap reason
-4. The supervisor applies its restart policy (Section 5.1)
-
-This means a trap within a forked child inside a `receive fn` causes the entire actor to crash — it does NOT silently discard the error and proceed to the next message. This matches Erlang's "let it crash" philosophy: unexpected failures are handled by the supervision tree, not by application-level error recovery.
-
-**Trap propagation example:**
-
-```hew
-scope {
-    fork a = compute();        // Running
-    fork b = trap!("failed");  // Traps
-    // Task 'a' is cancelled
-    // Fork-block traps
-}
-// Code here never executes
-```
-
-**Isolating failures with nested scope-blocks:**
-
-```hew
-scope {
-    fork results = {
-        // Inner scope-block isolates failures; the fork child body is an
-        // ordinary block (not a scope block) that can carry a value.
-        var outcome: Result<Data, Error>;
-        scope {
-            fork task = risky_operation();
-            outcome = await task;   // captures Ok or Err
-        };
-        outcome                     // fork child returns the Result
-    };
-
-    // Outer scope-block continues even if results returned Err;
-    // inspect via `await results` inside this body.
-}
-```
+An unrecovered child fault escaping a receive handler faults that actor and
+reaches its supervision policy. A handled actor-call error is an ordinary
+Result in the caller; it does not transfer the callee's fault ownership.
 
 ### 4.7 IO and Effects
 
-All IO operations in Hew are explicit and return `Result` types. Use
-`fs::read` (not `fs::open`) for file reading; the stdlib has no `File`
-handle type — reads and writes are free functions:
+I/O uses ordinary calls and the operation's declared return type. For example,
+`fs.read(path)` returns a Result; no `await` marks the call. Failure types belong
+to each operation. Scope cancellation is not an implicit `Err(Cancelled)` added
+to every I/O API.
 
-<!-- doctest: skip -->
 ```hew
-fn read_config(path: string) -> Result<Config, string> {
-    let content = fs.read(path)?;
-    json.parse(content)
+import std.fs;
+
+fn read_config(path: string) -> string fails fs.IoError {
+    fs.read(path)?
 }
 ```
 
-**IO operations are cancellation-aware:**
-
-```hew
-// If the enclosing scope-block is cancelled while waiting for response,
-// http.get returns Err(Cancelled)
-let response = http.get(url)?;
-```
-
-**Blocking operations:**
-
-Hew runtime may offload blocking operations to a thread pool. From the task's perspective:
-
-- The task suspends at the blocking call
-- Other tasks in the actor may run
-- The task resumes when the operation completes
-
-**Actor isolation guarantees:**
-
-Actor isolation is preserved because every fork-child runs on its own OS
-thread (β substrate). Captured values must be sendable; `move` semantics
-apply at the child-spawn site just as they do at every other actor send
-boundary. The actor's own state remains owned by the actor's thread and
-is not shared into child tasks.
+A runtime may offload a blocking operation or park a continuation. This must
+preserve the source suspension and cleanup contracts. An execution substrate
+or readiness mechanism is not a separate public call spelling.
 
 ### 4.8 Interaction with Actor Messages
 
-Child tasks forked within a receive handler are isolated from the
-actor's mutable state: each runs on its own OS thread, captured values
-move (or clone) across the boundary, and the actor's fields are not
-reachable from inside a child body.
+An actor processes one receive handler at a time. Forked work cannot mutate
+its state through shared aliases. The handler's task lifetime drains before
+the next message turn begins. Results returned to the handler can be used to
+update its state after joining.
 
-> **§4.8 design unsettled** — the dynamic-fork-in-loop
-> idiom shown below is illustrative only. The ratified `fork name = expr;`
-> shape requires a binding name per child; collecting handles into
-> `Vec<Task<T>>` contradicts the `Task<T>` non-nameability rule (§4.3),
-> and `await t` is not a primitive. The settled idiom is one of:
-> (a) `fork[]` array form yielding `[T; N]` on scope exit;
-> (b) a `scope_par_map(items, |x| f(x))` stdlib op;
-> (c) actor-mailbox accumulation via an anonymous `fork _ = …;`.
-> The example below demonstrates value capture without accumulating child
-> results; a collection-returning form remains pending ratification.
-
-<!-- doctest: skip -->
 ```hew
-actor DataProcessor {
-    var cache: HashMap<string, Data> = HashMap.new();
+fn twice(n: i64) -> i64 { n * 2 }
 
-    receive fn prefetch(ids: Vec<string>) {
-        scope {
-            for id in ids {
-                // The child receives an independent value. Actor fields
-                // such as `cache` are not in scope inside the child body.
-                let child_id = clone id;
-                fork _ = fetch_data(child_id);
-            }
-        }
+actor Counter {
+    var total: i64 = 0,
+    receive fn add_twice(n: i64) {
+        let work = fork twice(n);
+        total += await work;
     }
+    receive fn get() -> i64 { total }
 }
 ```
 
-**Message-task interaction rules:**
-
-1. A `receive fn` handler executes on the actor's thread.
-2. Child tasks spawned by `fork name = expr` run on their own OS threads and are isolated from actor state.
-3. The actor does not process the next message until the current handler (and all its forked children) complete.
-4. If a handler's child task traps, the actor may trap (per failure model).
-5. Data captured into a child body must be moved or cloned (no implicit sharing of actor state).
-
-**Yielding to the scheduler:**
-
-For long-running computations, compiler-inserted `cooperate` safepoints yield the actor to the runtime scheduler. The compiler inserts these checks automatically at function entry and loop back-edges based on a reduction budget (see §9.0). `cooperate` is not a source-level expression:
-
-```hew
-fn heavy_computation() {
-    for i in 0..1000000 {
-        // cooperate is compiler-inserted on the loop back-edge
-        process(i);
-    }
-}
-```
+A call from that child to another actor still crosses an actor boundary. Its
+completion envelope follows §2.1.1; submission still requires a mailbox view.
 
 ### 4.9 Summary: Tasks vs Actors
 
-| Aspect        | `fork` child task                                   | Actors                           |
-| ------------- | --------------------------------------------------- | -------------------------------- |
-| Communication | Explicit data passing on spawn + `await` for result | Message passing                  |
-| Concurrency   | True parallelism (one OS thread per child)          | True parallelism (M:N scheduler) |
-| Isolation     | Complete (no shared mutable state with parent)      | Complete (mailbox only)          |
-| Failure       | First error becomes `ScopeError::primary`; siblings cancel | Traps isolated to actor   |
-| Lifetime      | Bound to enclosing `scope` block                     | Independent                      |
-| Cancellation  | Automatic at safepoints                             | Supervisor control               |
-| Scheduling    | OS thread per child (execution); `await`/join suspension via the `llvm.coro` continuation substrate | M:N work-stealing scheduler |
+| Aspect | Structured task | Actor |
+| --- | --- | --- |
+| Start | `fork call(...)` or `fork { ... }` | `spawn Actor(...)` or a lambda actor |
+| Result | `await` yields the declared `T` | a completion call yields the actor envelope |
+| Application error | an ordinary Result value | declared `fails` error reaches the completion envelope |
+| Fault | propagates through the owning scope | belongs to the actor and its supervisor |
+| Lifetime | bounded by its parent | independent actor lifetime |
+| Termination wait | task join | `close(actor)` or `closed(actor)` |
 
-**Design rationale:**
+**Historical note.** Earlier drafts exposed a scope handle with separate task
+launch methods. Those drafts are not source syntax for this edition. There is
+one `fork` operation; scheduling choices are not public aliases.
 
-Hew combines Go's lightweight spawn ergonomics with Erlang's actor
-isolation and Swift/Kotlin/Loom-grade structured concurrency:
+### 4.10 Actor Completion and Termination
 
-- **Like Go**: a pair of short keywords — `scope { ... }` for the scope boundary and `fork name = call(...)` for child-start — with no nursery/scope object to pass around.
-- **Like Erlang**: actors are isolated failure domains with supervisors; child tasks inside an actor cannot reach the actor's state.
-- **Like Swift / Kotlin / Loom**: every child has a known parent block, the first failure cancels siblings, and no child error is silently dropped — `?` propagates `ScopeError::primary`.
+`close(pid)` requests cooperative stop and waits for terminal cleanup.
+`closed(pid)` waits for termination without requesting it. Both return unit;
+closing an already terminal actor is idempotent. `fork close(pid)` returns a
+`Task<()>` and starts the same work concurrently.
 
-**Historical note.**
+A call on a receive handler waits for that handler's completion, not the
+actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
+then joins that task. `for item in pid.stream()` waits per item using ordinary
+iteration (§4.12).
 
-`scope { ... }` is the scope boundary; `fork name = call(...);` inside a
-scope is the child-start verb. These are not synonyms, and no
-`s.launch / s.spawn / s.cancel` methods exist. Child execution runs on
-the OS-thread-per-task runtime (`hew-runtime/src/task_scope.rs`); the
-parent's `await` of a child suspends on the same unified `llvm.coro`
-switched-resume continuation substrate (`hew-runtime/src/cont.rs`) used
-by generator `yield` and actor `await`. The source-level choice between
-spawn strategies is not user-visible.
+A supervisor uses the same `close`/`closed` forms, with `close(sup)` waiting for
+its children's terminal cleanup. That supervisor surface is decided but
+pending implementation; see §2.1.1 and §5.6.
 
-### 4.10 Actor Await and Synchronization
-
-> See HEW-FUTURE.md §1.3 for actor await, `await close(actor)`, and the
-> read-after-send barrier — targeted for v0.6, gated on the I/O
-> subsystem (#1236) settling and a re-audit of the mailbox protocol's
-> failure modes.
-
-### 4.11 Select and Join Expressions
+### 4.11 Select and Race Expressions
 
 Hew provides two built-in concurrency expressions for coordinating
 multiple asynchronous operations. They are expressions — they produce
 values — and integrate with structured concurrency and the actor model.
+The all-of counterpart is not a third construct: waiting for every operand
+is batch `fork` (§4.4).
 
 #### 4.11.1 `select` Expression
 
 `select { }` is a **sealed compiler-known construct** in edition 2026. It
-waits for the first of three named operation forms to complete, evaluates
-the corresponding arm, and cancels the losing arms. There is no user-
-implementable `Awaitable` trait — the three forms are exhaustive.
+waits for the first of four named operation forms to complete, evaluates
+the corresponding arm, and disarms the losing registrations. There is no
+user-implementable `Awaitable` trait — the four forms are exhaustive.
 
 **Canonical syntax:**
 
+<!-- doctest: skip: shows all four select arm forms together; native actor-call registration is pending (§2.1.1) -->
+
 ```hew
 select {
-    reply   from worker.call(x)        => use(reply),     // actor ask
+    reply   from worker.call(x)        => use(reply),     // actor call
     item    from inbox.recv()          => use(item),      // channel receive
+    value   from job                   => use(value),     // forked task
     after 5s                           => abort(),        // timer
 }
 ```
 
-The three arm-source discriminators are syntactic markers, recognised at
-HIR lowering:
+The checker classifies each source by its resolved type and operation; HIR
+consumes that classification:
 
 - `<actor-expr>.<method>(<args>)` — a method-call expression on an actor
-  expression. The `ask` keyword is reserved for a future syntactic marker
-  (see HEW-FUTURE) but is not lexer-recognised in edition 2026; the
-  sealed-form discriminator is the method-call shape itself.
+  expression. The receiver and handler identify a completion call; no `ask`
+  marker is used.
 - `<receiver-expr>.recv()` — a std/channel receive on a `Receiver<T>`.
+- `<task-expr>` — an expression of type `Task<T>`, the handle `fork`
+  produces (§4.4).
 - `after <duration-expr>` — the timer arm; carries no binding.
 
-> A stream-next arm (`<id> from <stream>.recv()` over a `Stream<T>`) and a
-> task-await arm (`<id> from await <task>`) are **not** part of edition 2026's
-> sealed set: neither has a usable first-class substrate today (no `Stream<T>`
-> handle is obtainable without aggregate-extraction that fails closed;
-> `Task<T>` is unnameable and `fork` is parser-only). They return with their
-> substrate — see HEW-FUTURE.
+An arm source never writes `await`: the `select` is what waits (§4.0). The
+spelling is refused at check time with a fix-it that deletes it, and a
+`select` with no arms at all is refused the same way.
 
-**The three forms (closed set).** Each form is fully specified by four
+A stream-next arm over `Stream<T>` is not in this sealed set. Streams remain
+usable through ordinary calls and `for`; the absence of a select arm does not
+make the Stream value itself unavailable. Current native realization of the
+four specified forms is listed in §2.1.1.
+
+**The four forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
 non-success outcome at the source, how the runtime cleans up *that* arm
 when a different arm wins (loser cleanup), and how the runtime cleans up
@@ -4038,13 +4395,14 @@ cleanup columns; the difference is which side initiates the teardown.
 
 | Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `<id> from <actor>.<method>(<args>)` | `id: <reply-type>` per ask | `AskError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, `Cancelled`, `LocalShutdown`, or `OrphanedAsk` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
+| `<id> from <actor>.<method>(<args>)` | `id: Result<R, ActorError<E>>` for a reply type `R` | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Receiver<T>` | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                              | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.                                             |
-| `after <duration>`         | no binding; arm type is `()`-shaped at the source | None. Timers cannot fail or trap in edition 2026.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+| `<id> from <task>`         | `id: T` for `Task<T>`             | The task's own outcome, exactly as `await` would deliver it.                                                                                                                                                | The handle is not consumed: the losing task keeps running and its handle stays owned by the enclosing scope, which must still join it. Its registration is disarmed, never cancelled.                     | The registration is disarmed; the task takes the enclosing scope's ordinary cancellation.                                                                  |
+| `after <duration>`         | no binding; arm type is `()`-shaped at the source | Timer expiry selects this arm; evaluating its duration follows ordinary expression rules.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
 **Semantics:**
 
-1. **Exhaustive arm set.** Each arm's source must be one of the three
+1. **Exhaustive arm set.** Each arm's source must be one of the four
    forms above. Anything else is `SelectArmInvalid` at parse or type-
    check time.
 2. **First-completion wins.** The first arm whose source completes (or
@@ -4068,79 +4426,81 @@ cleanup columns; the difference is which side initiates the teardown.
 
 ```
 select {
-    p1 from act.call(x)      => r1,         where act.call(x): B, r1: T
+    p1 from act.call(x)      => r1,         where p1: Result<B, ActorError<E>>, r1: T
     p2 from rx.recv()        => r2,         where rx: Receiver<D>, r2: T
-    after d                  => r3,         where d: Duration, r3: T
+    p3 from job              => r3,         where job: Task<C>, p3: C, r3: T
+    after d                  => r4,         where d: Duration, r4: T
 } : T
 ```
 
 The bound identifiers are in scope only inside their own `=>`
-expression. Their static types follow the table above: `p1: B` for the
-actor-ask arm, `p2: Option<D>` for the channel receive arm (so `None` is
-a legitimate winning value indicating the channel observed EOF on that
-call), and no binding for `after`.
+expression. Their static types follow the table above: `p1:
+Result<B, ActorError<E>>` for the actor-call arm, because an actor call
+completes with a `Result` whatever else happens; `p2: Option<D>` for the
+channel receive arm (so `None` is a legitimate winning value indicating
+the channel observed EOF on that call); `p3: C` for the task arm; and no
+binding for `after`.
 
 **Why sealed?**
 
 A user-implementable `Awaitable` trait would have to specify coherence
 rules, cancellation hooks, fairness rules, pinning constraints, and a
-loser-cleanup protocol — all unsettled in edition 2026. The three forms
+loser-cleanup protocol — all unsettled in edition 2026. The four forms
 above are the workloads `select` exists to serve. A user `Awaitable`
 surface may land in a future edition once trait lowering and generator
 cancellation are proven; see HEW-FUTURE.md.
 
-**Implementation status (informative, not normative).** Edition 2026's
-surface is the construct's contract. The three sealed arm forms — actor
-ask, channel `recv()`, and `after` — type-check, lower, and reach live
-codegen: the runtime substrate that decides the winner and runs each
-form's loser-cleanup is wired (see the channel-receive and actor-ask
-`select` vertical-slice fixtures, which compile and run). The arm set is
-restricted by the **type checker**, not by codegen: a stream-next arm
-(`<stream>.recv()` over `Stream<T>`) or a task-await arm
-(`await <task>`) is rejected at check time with a structural diagnostic
-("select arm source must be actor.method(args)"), because neither has a
-usable first-class substrate in edition 2026 (see the note under
-"Canonical syntax" above). They are not silently lowered and they never
-reach codegen.
+The source forms and cleanup table are the intended contract. The current
+native actor-call and stream-selection gaps are recorded in §2.1.1.
 
-#### 4.11.2 `join` Expression
+#### 4.11.2 `race` Expression
 
-The `join` expression runs all branches concurrently and waits for all to complete, collecting results into a tuple.
+`race { ... }` runs its operands concurrently and yields the first one to
+complete. Completion is completion: an operand that returns an ordinary
+`Err` wins the race exactly as an `Ok` does, because a result is a result.
+Every loser is cancelled and drained before the expression returns.
 
-**Static `join` (fixed number of branches):**
+<!-- doctest: skip -->
 
 ```hew
-let (a, b, c) = join {
-    actor1.compute(),
-    actor2.compute(),
-    actor3.compute(),
+let fastest = race {
+    primary.fetch(key),
+    replica.fetch(key),
 };
 ```
 
-Each branch must be an actor receive handler call with a return type. An explicit `await` is accepted but is redundant inside `join`.
+Operands are plain calls (§4.0). `await` is never written on a `race`
+operand; the `race` is what waits. The spelling is refused at check time
+with a fix-it that deletes it, matching `select`'s own arm-source rule
+(§4.11.1).
 
-**Type rules:**
+**Type rule:**
 
 ```
-join {
-    actor1.compute(),
-    actor2.compute(),
-    actor3.compute(),
-} : (T1, T2, T3)
-where actor1.compute(): T1, actor2.compute(): T2, actor3.compute(): T3
+race { e1, e2, ... } : T
+where e1: T, e2: T, ...
 ```
 
-Each branch may have a different result type. The result is a tuple of all branch results, in declaration order.
+All operands share one type and the expression has that type. There is no
+`Result` flattening: if the operands yield `Result<U, E>`, so does the
+`race`.
 
-Dynamic `join_all` remains reserved for future surface work; current Hew exposes static `join { ... }` for actor reply fan-out.
+**Loser cleanup.** A losing operand is cancelled by the same discipline the
+`select` table gives its form (§4.11.1): an in-flight ask is withdrawn from
+the target mailbox or its reply sink is tombstoned, a pending receive is
+withdrawn from the channel core, and a running child unwinds through its
+`defer` blocks. The `race` expression does not return until every loser has
+been drained. This does not retract work already dispatched to another actor
+or undo an external effect; cancelling a caller is not a transaction rollback.
 
-**Error propagation:** If any branch in a `join` traps, the remaining branches are cancelled and the trap propagates to the enclosing scope.
+**Traps.** A trapping operand is not a completion. The remaining operands
+are cancelled and the trap propagates to the enclosing context.
 
-#### 4.11.3 `after` Timeout
+#### 4.11.3 `after` and Deadlines
 
-The `after` keyword is used in two contexts:
+`after` marks the timer arm of a `select`:
 
-**1. As an arm in `select` expressions** (see above):
+<!-- doctest: skip -->
 
 ```hew
 select {
@@ -4149,24 +4509,30 @@ select {
 };
 ```
 
-**2. As a timeout combinator with `|`** for individual await expressions:
+That is its only position. A deadline over a region of code is a `scope`
+with a `within` clause:
+
+<!-- doctest: skip -->
 
 ```hew
-let result = await counter.get_count() | after 1s;
-// result: Result<i32, Timeout>
+let total = scope within 1s {
+    let count = fork counter.get_count();
+    await count
+} handle failure {
+    return;
+};
+let value = total handle error { 0 };
 ```
 
-The `| after` combinator wraps the result in `Result<T, Timeout>`:
+`scope within d { ... }` cancels affected work when `d` elapses. Its attached
+`handle failure` runs after structured cleanup and must produce the scope's
+ordinary value type or diverge. An application `Err` remains an ordinary
+result and is handled separately. A socket operation's own timeout is a
+parameter of that API, not a wrapper around the call.
 
-- If the operation completes before the deadline, returns `Ok(value)`.
-- If the timeout expires first, the operation is cancelled and returns `Err(Timeout)`.
-
-**Type rule:**
-
-```
-(e | after d) : Result<T, Timeout>
-where e: Task<T>, d: Duration
-```
+There is no timeout combinator. `expr | after d` is not Hew syntax; the
+three shapes above are the whole surface, and `|` is only the bitwise
+operator (§12.2).
 
 #### 4.11.4 `scope`/`fork` and `select` Composition
 
@@ -4176,10 +4542,10 @@ diagnostic pointing at the offending position.
 
 | Composition                                              | Legality        | Rationale                                                                                                                                                                                          |
 | -------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `select {}` inside a `scope {}` body or child             | Legal           | The three `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
-| `fork name = select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the binding is the `select` expression's result type.                                                                                      |
+| `select {}` inside a `scope {}` body or child             | Legal           | The `select` forms are single-await constructs and compose with the scope block's cancellation discipline at their safepoints.                                                                |
+| `let r = fork select { ... }`                             | Legal           | A child task's expression may be a `select` expression; the task's result type is the `select` expression's type.                                                                                  |
 | `scope {}` inside a `select` arm's `=>` result expression | Legal           | The arm has already won; its result expression runs in the surrounding scope as ordinary code that happens to contain a scope block.                                                               |
-| `scope { ... }` as a `select` arm source                  | **Rejected**    | The three sealed arm sources are exhaustive (§4.11.1). A scope block is a *lexical region*, not a pending operation, and starting one as a `select` competitor would create children whose scope is unclear if the arm loses. Hint: wrap the fork in a child task and `await` the task instead. |
+| `scope { ... }` as a `select` arm source                  | **Rejected**    | A scope produces a value and owns a lexical lifetime; it is not a select registration. Fork the work and use the resulting task as the arm source, without `await`. |
 
 **Cancellation propagation across the composition (normative):**
 
@@ -4192,14 +4558,13 @@ diagnostic pointing at the offending position.
   arms run their loser-cleanup. Sibling fork-children are not affected
   by the arm transition; their scope is bound to the enclosing scope
   block, not to the `select` site.
-- A child task failing (typed `Err(E)` or trap) while a `select` in the
+- A child task faulting while a `select` in the
   scope-block body is still pending cancels the scope block; the
   outer-cancellation rule applies to the in-flight `select`.
 
-The composition matrix is intentionally narrow in edition 2026. A
-future edition may relax the `scope`-as-arm-source rejection once a
-cancellation-token vocabulary (HEW-FUTURE.md §1.2) gives a scope block
-a callable cancel handle that `select` can hold as a source.
+The same distinction holds inside a select: ordinary Result values do not
+cancel the scope. The arm bodies must agree on their result type; their source
+values need not share an error or request type.
 
 ### 4.12 Generators
 
@@ -4215,13 +4580,16 @@ with `Y`. The handle type is what the caller receives; a declaration that
 names it says the body yields handles. A generator yielding `i64` is declared
 `gen fn counter() -> i64`, and its `yield` operands are `i64`.
 
-There is no `async gen fn`. A plain `gen fn` body may `await`, is consumed by
-`for`, and is consumed by `for await` when its producer is an actor, so the
-word marked nothing; `async` is not a keyword (§12) and `async gen fn` is
-`E_NO_ASYNC_GEN` (User) with a fix-it that deletes it. What `await` selects
-is the pull that crosses an actor boundary: `for` over a `Stream` is
-`E_FOR_STREAM_NEEDS_AWAIT` (User, fix-it adds the word) and `for await` over
-a generator or a collection is `E_AWAIT_NOT_STREAM` (User, fix-it drops it).
+There is no `async gen fn`. A plain `gen fn` body may suspend and is consumed
+by `for` wherever its producer lives, so the word marked nothing; `async` is
+not a keyword (§12) and `async gen fn` is `E_NO_ASYNC_GEN` (User) with a
+fix-it that deletes it. `gen.next()` and `for x in gen` are plain calls:
+pulling from a generator you own is a call into your own frame, and it carries
+the generator's inferred suspension effect like any other call (§4.0). The
+pull that crosses an actor boundary is written the same way:
+`for x in pid.stream()` waits per item with no marker on the loop. There is no
+`for await` spelling; `await` after `for` is an ordinary parse error where the
+pattern belongs.
 
 Generator construction snapshots every captured value into a heap-owned
 environment before the body ramp reaches its first `yield`. Bit-copy values and
@@ -4264,13 +4632,24 @@ Hew's supervision is modeled after OTP concepts with first-class language syntax
 ### 5.1 Supervisor Declaration
 
 ```hew
-supervisor MyPool {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+actor Worker {
+    var id: i64,
+    var count: i64,
+    receive fn work() {}
+}
 
-    child worker1: Worker(id: 1, count: 0);
-    child worker2: Worker(id: 2, count: 0) restart: transient;
-    child logger: Logger(level: 3) restart: temporary shutdown: 10s;
+actor Logger {
+    var level: i64,
+    receive fn log(msg: string) { let _ = msg; }
+}
+
+supervisor MyPool {
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+
+    child worker1: Worker(id: 1, count: 0),
+    child worker2: Worker(id: 2, count: 0) restart: transient,
+    child logger: Logger(level: 3) restart: temporary shutdown: 10s,
 }
 ```
 
@@ -4287,7 +4666,7 @@ supervisor MyPool {
 
 - `child <name>: <ActorType>(<field>: <expr>, ...)` — a static supervised child.
   Init args are named (positional args are rejected with a migration diagnostic).
-- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>;` — a pool of `N`
+- `pool <name>: <ActorType>(<field>: <expr>, ...) count: <N>,` — a pool of `N`
   fungible children (only under `simple_one_for_one`). The parenthesised args
   are the per-spawn template, exactly as for `child`; `count:` is the arity.
 - Per-child suffix clauses, accepted in any order:
@@ -4295,8 +4674,7 @@ supervisor MyPool {
     `permanent`). This is the only restart spelling — bare `T permanent` and
     `with restart:` are not accepted.
   - `shutdown: <duration> | brutal_kill | infinity` (optional) — the
-    graceful-stop deadline (default `5s`). `infinity` is accepted but not yet
-    enforced (no per-child deadline wheel).
+    graceful-stop deadline (default `5s`). See §2.1.1 for current limitations.
   - `count: <N>` — pool arity. Required on a `pool` child, rejected on a
     `child` declaration; it has no default, because a pool with a guessed size
     is a guess about capacity.
@@ -4319,7 +4697,7 @@ Let child exit reason be one of:
 - `normal`
 - `shutdown`
 - `{shutdown, term}`
-- `trap` (panic/abort or unrecovered error)
+- `trap` (a language panic or fault; process abort is not supervised recovery)
 
 Then:
 
@@ -4340,34 +4718,45 @@ Then:
 
 The supervisor's `intensity: N within <window>` budget caps restarts; exceeding it escalates failure to the parent supervisor. The runtime tracks restarts in a sliding window.
 
-**Exponential backoff** and **circuit breaker** are policy objects in `std::supervision`, not supervisor keywords — Hew leans on the standard library rather than the grammar for these tunable policies.
+Backoff and circuit-breaker policies are outside this section's core restart
+contract. Their presence in runtime code is not a claim that a corresponding
+source API is implemented; see HEW-FUTURE.md for additional supervision policy.
 
 ### 5.5 Nested Supervisors
 
-A `child` declaration whose target is itself a supervisor with children is
-implemented end-to-end. Dotted access to a nested supervisor (`root.sub`)
-returns a fully typed `LocalPid<Sub>` through
-`hew_supervisor_nested_get`. Chained actor access (`root.sub.worker`) then
-produces the leaf's stable `ChildRef<Worker>` through the same representation
-as a direct supervised actor.
+A child declaration can name another supervisor. Dotted access such as
+`root.sub` addresses that supervisor, and `root.sub.worker` addresses the
+leaf's stable `ChildRef<Worker>`. Each role resolves the currently supervised
+incarnation rather than preserving a stale child address.
 
 The shape is:
 
 ```hew
-supervisor Inner {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+actor Worker {
+    let id: i64,
+    var count: i64,
+    receive fn tick() { count += 1; }
+}
 
-    child w1: Worker(id: 1, count: 0);
-    child w2: Worker(id: 2, count: 0);
+actor CacheActor {
+    let capacity: i64,
+    receive fn size_limit() -> i64 { capacity }
+}
+
+supervisor Inner {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child w1: Worker(id: 1, count: 0),
+    child w2: Worker(id: 2, count: 0),
 }
 
 supervisor Root {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child pool: Inner;
-    child cache: CacheActor(capacity: 1000);
+    child workers: Inner(),
+    child cache: CacheActor(capacity: 1000),
 }
 ```
 
@@ -4375,59 +4764,58 @@ When a child supervisor's restart budget is exhausted, it escalates to its paren
 
 ### 5.6 Spawning and Accessing Supervised Children
 
+<!-- doctest: skip -->
+
 ```hew
 fn main() {
-    let pool = spawn MyPool;
+    let pool = spawn MyPool();
     sleep(50ms);
 
     // Access children by declared name
     let w = pool.worker1;              // ChildRef<Worker>
-    w.tick();
+    let _ = w.tick();
 
     let w2 = pool.worker2;             // ChildRef<Worker>
-    w2.tick();
+    let _ = w2.tick();
 
-    supervisor_stop(pool);              // Graceful shutdown
+    close(pool);              // Graceful shutdown
 }
 ```
 
-- `spawn SupervisorName` — creates and starts the supervisor with all declared children
+- `spawn SupervisorName(...)` — starts a supervisor with its declared children
 - `sup.child_name` — named actor-child access via field syntax. The compiler
   resolves the child name to a static slot and returns `ChildRef<Actor>`, which
   re-resolves the current incarnation on every ask or tell. The child name must
   match one of the `child` declarations in the supervisor definition.
-- `supervisor_stop(sup)` — gracefully stops the supervisor and all its children
+- `sup.pool_name` — a `pool` child's members, addressed by index. The members
+  are fungible: identical children in consecutive slots, each restarting on its
+  own. `len()` is the declared `count:`; `[i]` yields the member's
+  `ChildRef<Actor>` and traps out of range, matching `Vec[i]`; `get(i)` yields
+  `Option<ChildRef<Actor>>` instead. A negative index and one at or past the
+  count are both out of range.
+- `await_restart sup.child_name` / `await_restart sup.pool_name[i]` — resume
+  once that one slot is Live again after a crash, or is permanently gone, with
+  the same `ChildRef<Actor>`. A whole pool names many slots and has no single
+  restart signal, so it is not an operand.
+- `close(sup)` — requests cooperative stop and waits for every child's terminal cleanup.
+- `fork close(sup)` — starts that stop operation as a `Task<()>`.
+- `closed(sup)` — waits for termination without requesting it.
 
-**A dead target has one shape (normative).**
+These supervisor lifetime forms are decided but not implemented on the current
+native path (§2.1.1). They are not aliases for an internal runtime entry point.
 
-Resolution never hands back a dead address. A supervised role whose occupant is
-gone resolves closed, not open: a `ChildRef` send reports `Dead`,
-`whereis(name)` is `None`, and `Node.lookup(name)` is
-`Err(LookupError.NotFound)`. A `ChildRef` re-resolves the current incarnation
-on every ask or tell precisely so that this is decidable at the call and not
-guessed from a stale address.
+**Terminal destinations (normative).**
 
-A handle that is already held reports the same fact at the send. Every send
-expression has type `Result<(), SendError>`. For an unbounded mailbox the only
-inhabitant of `Err` is `SendError.Dead`; for a bounded or policy-sensitive
-mailbox `Dead` joins the policy variants of §9.3. A send to a dead target never
-traps, and it never returns `Ok(())`.
+A `ChildRef` names a supervised role and resolves its current incarnation for
+each call or submission. Once the role is permanently unavailable, such as
+when its restart budget is spent, a completion call reports `ActorError.Dead`.
+A mailbox submission reports a `SendFailure` with a lifecycle reason. Neither
+can report successful acceptance of work that cannot be delivered.
 
-Discarding that result is `E_SEND_RESULT_DROPPED`, a compile error, matching
-§2.1.1: a statement-position send or ask whose `Result` is discarded is an
-error, with the fix-it `_ = pid.m()`. There is no `must_use` lint tier — the
-rule is the same for an unbounded mailbox and a policy-sensitive one, because
-both can now report `Dead`.
-
-`AskError` carries `Dead` and `StaleRef` for the same reason, so a remote ask's
-failure kinds are one enum rather than a split between the ask path and the
-send path.
-
-> **Implementation status.** Today an unbounded send is unit-typed, `SendError`
-> spells the closed case `Closed`, and a send to a supervised child whose
-> restart budget is exhausted returns normally from `main` and from an actor
-> holding a `ChildRef`. The `Dead` shape lands with the v0.7.0 mechanism and is
-> tracked in hew-lang/hew#3254.
+Completion and submission retain their distinct envelopes (§2.1.1). Ordinary
+`Err` recovery does not turn a dead target into a live one. Accidental Result
+discard is rejected for both forms; `let _ = ...;` is the deliberate discard.
+The current sealed-request limitation remains as recorded in §2.1.1.
 
 ### 5.7 Crash Isolation
 
@@ -4490,15 +4878,29 @@ A Hew program's exit code is:
 
 ```text
 final = user_code                    if user_code != 0
-      = 1                            if an actor fault went unrecovered
+      = 1                            if a language fault went unrecovered
       = 0                            otherwise
 ```
 
 `user_code` is the value `main` returns (0 for a unit `main`) or the argument to
 `exit`. A non-zero code the program chose is never overwritten: it is already a
 failure and carries more information than `1`. A zero never masks a fault. This
-rule applies on EVERY termination path — returning from `main`, and an explicit
-`exit(code)` anywhere — so `exit(0)` cannot report success over a crashed actor.
+rule combines the chosen code with faults already recorded on termination.
+An explicit `exit(0)` does not erase an already recorded unrecovered fault.
+
+**Orderly return and explicit exit differ.** Returning from `main` completes
+its structured task lifetime and cleanup. `exit(code)` terminates immediately:
+it does not run lexical cleanup, deferred actions, child draining or actor
+stop hooks. Use orderly return when that cleanup is required. Hardware faults
+and process abort are also outside graceful cleanup (§5.7).
+
+**Traps and panics are faults under this rule.** A trap or a `panic()` that no
+supervisor recovers ends the process with status 1, wherever it was raised,
+`main` included. It first writes one line to stderr: `hew: failure: ` followed
+by the trap kind and its code, and, for a panic, `: ` and the panic text — for
+example `hew: failure: IndexOutOfBounds (205)`. The code in that line is the
+runtime's internal fault tag and names the failure for a reader; it is never
+the process exit status.
 
 **`fn main() -> Result<(), E>`** requires `E: Error` (§2.2.1). Returning
 `Ok(())` sets `user_code` to 0. Returning `Err(e)` writes one line to stderr —
@@ -4554,191 +4956,171 @@ supervisor recovers what it supervises, and nothing else.
 
 ## 6. Backpressure and bounded queues
 
-An actor with no `mailbox` declaration has an unbounded mailbox. A `mailbox N`
-declaration opts into a bounded capacity and an overflow policy that determines
-behaviour when the mailbox is full. The policy is part of the typed actor
-surface, not an invisible runtime setting.
+An actor with no `mailbox` declaration has unbounded capacity. `mailbox N`
+sets a bounded capacity. Capacity and queue-wide overflow support belong to
+the actor; a sender view selects admission for that sender's own request.
+Neither changes a completion call into a submission or makes its result unit.
 
 ### 6.1 Mailbox Declaration
 
-<!-- doctest: skip -->
 ```hew
-actor MyActor {
-    mailbox 1024;                              // default: capacity=1024, overflow=block
-    mailbox 100 overflow drop_new;             // explicit policy
-    mailbox 100 overflow coalesce(request_id); // coalesce with key
-    mailbox 100 overflow coalesce(request_id) fallback drop_new; // explicit fallback
+actor Worker {
+    mailbox 1024,
+    receive fn record(value: i64) { println(value); }
 }
 ```
 
-### 6.2 Overflow Policies
+An actor declares at most one mailbox configuration. `mailbox N` defaults to
+`overflow block`. Other declaration policies are `drop_new`, `drop_old`,
+`fail` and `coalesce(key)` with its supported fallback. These describe the
+queue's permitted behaviour; public delivery outcomes follow §2.1.1.
 
-| Policy               | Behaviour when mailbox is full                                                                 |
-| -------------------- | ---------------------------------------------------------------------------------------------- |
-| `block`              | Cooperatively suspend the sender until space is available (cancellable). **Bounded default.**   |
-| `drop_new`           | Discard the incoming message and return `Err(SendError.MessageLost)`.                            |
-| `drop_old`           | Evict the oldest message, enqueue the incoming message, and return `Err(SendError.MessageLost)`. |
-| `fail`               | Reject the incoming message and return `Err(SendError.Full)`.                                   |
-| `coalesce(key_expr)` | Replace matching queued work or apply its fallback; every loss returns `MessageLost` (§6.3).     |
+### 6.2 Admission and Overflow Policies
 
-Default:
+| Call surface | Full-mailbox behaviour | Result |
+| --- | --- | --- |
+| actor handle | wait for admission, then handler completion | completion envelope |
+| `policy(actor, on_full: .Wait)` | same as the handle | completion envelope |
+| `policy(actor, on_full: .Reject)` | refuse without accepting the request | completion envelope with rejection |
+| `mailbox(actor, on_full: .Wait)` | wait for admission | submission envelope |
+| `mailbox(actor, on_full: .Reject)` | refuse without accepting the request | submission envelope |
+| `mailbox(actor, on_full: .DropNewest)` | explicitly discard this submission | `Delivery.Discarded` on that disposition |
+| `mailbox(actor, on_full: .ReplaceLatest)` | use the actor's opted-in coalescing protocol | submission envelope |
 
-- No `mailbox` declaration: unbounded, with the ordinary unit-typed send surface.
-- `mailbox N` without `overflow`: capacity `N`, `overflow_policy=block`.
-- Network ingress is always result-bearing. A transport MAY choose a different
-  admission policy, but it MUST report rejection or policy loss through its
-  `SendError`; it MUST NOT fabricate success for discarded work.
+Completion views admit only Wait and Reject: a caller cannot wait for the
+completion of a request the policy intentionally discards. A sender cannot
+unilaterally evict other senders' work. ReplaceLatest requires actor-declared
+coalescing support. Write `on_full` explicitly when constructing a view.
 
-`block` is a scheduler suspension, not a condition-variable wait by a language
-actor. Dequeue admits waiting producers in FIFO order and makes their
-continuations runnable. A target without the cooperative suspension substrate
-MUST reject bounded `block` mailboxes at compile time; it MUST NOT substitute a
-lossy policy. Foreign C callers that are not runtime continuations may use a
-thread-blocking ABI, because they do not occupy a Hew scheduler worker.
-
-The compiler enforces that **all channels are bounded** (no accidental unbounded memory growth).
+Waiting for capacity suspends the calling execution context. It must not
+silently become dropping or a blocking wait on a scheduler worker. A terminal
+destination reports failure irrespective of capacity. Unbounded capacity
+removes the Full condition, not lifecycle or transport failures.
 
 ### 6.3 Coalesce Overflow Policy
 
-The `coalesce(key_expr)` policy replaces an existing queued message that has the same coalesce key as the incoming message, rather than dropping or blocking.
+Coalescing is an actor-owned protocol for replacing queued work with a newer
+message of the same handler and key. An example declaration is
+`mailbox 100 overflow coalesce(request_id),`. The actor must define the key
+on the relevant payload; a sender view cannot invent a key or replacement
+policy for an unrelated protocol.
 
-**Syntax:**
+Matching work is replaced in its queue position and the old payload is
+released. With no match, the declared fallback governs admission; the default
+fallback is `drop_new`. `drop_old` and `fail` are explicit alternatives.
+Replacement or discard must be represented as a policy disposition, not
+misreported as handler completion. Submission and completion retain the
+result envelopes defined in §2.1.1.
 
-```hew
-actor PriceTracker {
-    mailbox 100 overflow coalesce(symbol);
+Current native coalescing requires a checked key-projection contract and is
+not yet realized. See the implementation limitations in §2.1.1; this section
+specifies its intended queue behaviour, not a passing execution claim.
 
-    receive fn update_price(symbol: string, price: f64) {
-        prices.insert(symbol, price);
-    }
-}
-```
+### 6.4 Channels
 
-**Semantics:**
+Channels have explicit bounded capacity and separately owned sender and
+receiver endpoints. `tx.send(value)` and `rx.recv()` are ordinary calls;
+full send and empty receive can suspend. Receive returns `Option<T>`: `None`
+means the sender side has closed and buffered values have drained. Empty
+strings or bytes remain data.
 
-The compiler generates a **coalesce key function** for each actor that uses the `coalesce` policy:
-
-```
-coalesce_key_fn: (msg_type: i32, data: *void, data_size: usize) -> u64
-```
-
-This function extracts the key expression value from the message payload and returns it as a `u64` hash.
-
-When the mailbox is full and a new message arrives:
-
-1. The runtime computes the coalesce key for the incoming message.
-2. The runtime scans the queue for an existing message with the same `msg_type` AND the same coalesce key.
-3. **If a match is found:** The existing message is replaced in-place (preserving its queue position). The old message data is freed and replaced with the new message data. The send returns `Err(SendError.MessageLost)` because queued work was replaced.
-4. **If no match is found:** The **fallback policy** is applied. The default fallback is `drop_new`. An explicit fallback can be specified: `coalesce(key) fallback drop_old`.
-
-**Key matching:**
-
-- Keys are compared as `u64` integer equality.
-- The coalesce key function is generated by the compiler based on the field expression in `coalesce(field_name)`.
-- For integer fields, the key is the field value directly (zero-extended to u64).
-- For string fields, the key is a hash of the string content.
-
-**Evaluation timing:**
-
-- The spec defines **observable semantics** only: messages with matching coalesce keys are replaced in-place; when no match exists, the fallback policy applies.
-- The runtime MAY defer coalesce evaluation to message processing time (consumer-side) rather than send-time (producer-side). This permits lock-free mailbox implementations.
-- The mailbox capacity is a **logical** bound. The runtime MAY temporarily accept messages beyond capacity if coalesce evaluation is deferred. After coalesce processing, the effective queue length MUST NOT exceed capacity.
-
-> **Note:** Implementations using lock-free message queues MAY allow a transient overshoot of at most one message between producer enqueue and consumer coalesce scan. This transient state is not observable to the sending actor (the send returns `Ok(())`, `MessageLost`, or the fallback error according to the final policy decision) and is resolved before the next message is dispatched to the receiving actor.
-
-**Coalesce fallback policy:**
-
-When the mailbox is full, no coalesce match exists, and the fallback must be applied:
-
-| Fallback             | Behaviour                                                                 |
-| -------------------- | ------------------------------------------------------------------------- |
-| `drop_new` (default) | Discard incoming message; return `SendError.MessageLost`                  |
-| `drop_old`           | Evict oldest and enqueue incoming message; return `SendError.MessageLost` |
-| `fail`               | Reject incoming message; return `SendError.Full`                          |
-
-> **Note:** `coalesce` and `block` cannot be fallbacks. `block` is available as
-> a top-level overflow policy with a unit-typed cooperative send surface;
-> combining it with coalesce's result-bearing loss surface is rejected rather
-> than falling back to a worker-thread park.
+Endpoints are affine. Transferring or closing one consumes its owner, and
+scope cleanup releases a live endpoint. A failed transfer or cancellation must
+not duplicate or lose the element's cleanup obligation. A receiver may be
+used as a select source under §4.11.1's intended contract; current native
+select registration remains a limitation (§2.1.1).
 
 ### 6.5 First-Class Streams (`Stream<T>` and `Sink<T>`)
 
 Hew provides two generic, move-only types for sequential I/O that can be passed between functions and stored in actor fields:
 
 ```
-Stream<T>   // readable sequential source (analogous to an iterator that blocks)
-Sink<T>     // writable sequential destination (blocks when backing buffer is full)
+Stream<T>   // readable sequential source
+Sink<T>     // writable sequential destination with backpressure
 ```
 
-The contract frozen in this stage is intentionally small:
+The stream contract is intentionally small:
 
 - `Stream<bytes>` / `Sink<bytes>` are the canonical first-class streaming foundation.
 - `Stream<string>` / `Sink<string>` are convenience text ABI wrappers over the same bounded channel contract.
-- Core `.recv()` / `.write()` operations are blocking and backpressured; this section makes no nonblocking promises.
+- Core `.recv()` / `.write()` calls wait for their operation and respect backpressure; they carry no `await`.
 - EOF means **end-of-stream only**. Zero-length `bytes` values and empty `string` values are valid data items.
 - `sink.close()` or dropping a sink produces graceful EOF after buffered items drain.
 - `stream.close()` or dropping a stream is local cancel/discard of unread items.
-- Stage-1 errors cover constructor/open failures only. Transport/runtime read/write errors after open remain wrapper-specific and out of scope here.
+- Each operation retains its declared error type. Current post-open error
+  reporting still varies by wrapper and is not a uniform transport-error API.
 
-Codec adapters are **not** part of this shipped stream runtime surface. The
-compiler currently fails closed on `Stream.decode()` and `Sink.encode()` as an
-unlowerable stream-codec boundary rather than exposing them as available
-runtime features.
+Codec adapters remain a current implementation limitation (§2.1.1). No codec
+method is presented here as an available streaming operation.
 
 Both handle types are `Send` (safe to pass to other actors), opaque (backed by a vtable), and not `Clone`.
 
-#### 6.5.1 Current `std::stream` surface
+#### 6.5.1 `std.stream` surface
 
 ```hew
 import std.stream;
+import std.fs;
 
-// Canonical in-memory bounded bytes pipe
-let (bytes_sink, bytes_stream) = stream.bytes_pipe(16);
+fn main() -> Result<(), fs.IoError> {
+    // Canonical in-memory bounded bytes pipe
+    let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
-// Convenience text pipe
-let (text_sink, text_stream) = stream.pipe(16);
+    // Convenience text pipe
+    let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
 
-// Current file helpers remain text-only in this slice
-let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, string>
-let file_out = stream.to_file("out.txt")?;      // Result<Sink<string>, string>
+    // Current file helpers remain text-only in this slice
+    let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, fs.IoError>
+    let file_out = stream.to_file("out.txt")?;      // Result<Sink<string>, fs.IoError>
+    Ok(())
+}
 ```
 
-`from_file()` / `to_file()` are intentionally unchanged in this slice: they
-remain `Stream<string>` / `Sink<string>`. No file-adapter migration is implied
-by this contract freeze.
+`from_file()` and `to_file()` currently return text endpoints. Their open
+errors are `fs.IoError`; this does not promise a bytes-file adapter.
 
 #### 6.5.2 Current operations
 
 ```hew
-// Pull items
-match bytes_stream.recv() {
-    .Some(chunk) => { ... },
-    .None => { /* EOF only */ },
+import std.stream;
+
+fn main() {
+    let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
+
+    // Empty items are valid data, not EOF
+    text_sink.write("");
+    bytes_sink.write(b"");
+
+    // Pull items
+    match bytes_stream.recv() {
+        .Some(chunk) => { println(f"{chunk.len()} bytes"); },
+        .None => { /* EOF only */ },
+    }
+
+    // Close semantics
+    bytes_sink.close();   // graceful EOF for the paired reader
+    bytes_stream.close(); // local cancel / discard unread items
+    text_sink.close();
+    text_stream.close();
 }
-
-// Empty items are valid data, not EOF
-text_sink.write("");
-bytes_sink.write(b"");
-
-// Close semantics
-bytes_sink.close();   // graceful EOF for the paired reader
-bytes_stream.close(); // local cancel / discard unread items
 ```
 
-`for await` is the usual way to drain a stream. The only adapter point frozen in
-this slice is that `lines()` remains `Stream<string> -> Stream<string>` today;
-no `Stream<bytes>` `lines()` surface is promised here.
+`for` is the usual way to drain a stream. The text `lines()` adapter returns
+a `Stream<string>`; it does not define an implicit bytes-to-text decoder.
 
 #### 6.5.3 Lifecycle Rules
 
 - Closing or dropping a `Sink` signals graceful EOF to the paired `Stream`.
 - Closing or dropping a `Stream` discards unread local data and releases the underlying handle.
-- Streams and sinks implement `Resource`/`Drop` and **auto-close on scope exit** (RAII). Explicit `.close()` is available for early release but is not required.
-- Types holding OS resources (streams, sinks, file handles) implement `Resource`/`Drop` and are **never arena-allocated**.
+- Streams and sinks have affine release contracts and auto-close on scope exit.
+  Explicit `.close()` consumes the endpoint for early release; there is no
+  user `Resource` or `Drop` implementation to write.
+- Resource users finish or are cancelled and drained before their owning
+  endpoint is released (§3.7.8).
 
 #### 6.5.4 Bidirectional connections
 
-A bidirectional network connection (such as a TCP socket from `std::net`)
+A bidirectional network connection (such as a TCP socket from `std.net`)
 splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
 
 <!-- doctest: skip -->
@@ -4757,17 +5139,11 @@ may be passed to separate actors. See `std/net/net.hew` for the full API.
 
 #### 6.5.5 Relation to Actor Streams
 
-`receive gen fn` produces a `Stream<Y>` backed by the actor mailbox protocol.
-First-class `Stream<T>` values from `std::stream` are bounded handles that may
-be moved across actor boundaries. Both are consumed with `for await`, but they
-have different implementations:
-
-|                     | Actor stream (`receive gen fn`) | `std::stream::Stream<T>`                   |
-| ------------------- | ------------------------------- | ------------------------------------------ |
-| Created by          | `receive gen fn` call           | `bytes_pipe()`, `pipe()`, `from_file()`, etc. |
-| Backed by           | Actor mailbox protocol          | Bounded channel / wrapper-specific handle  |
-| Passable as value   | No (tied to the spawned actor)  | Yes (move-only, `Send`)                    |
-| Use in actor fields | No                              | Yes                                        |
+`receive gen fn` produces a `Stream<Y>` through the actor's producer turn.
+That stream is an owned value with the same move-only read/close contract as
+other Stream values. Plain `for` waits per item. The producer's actor remains
+a separate failure domain, and closing the stream does not promise rollback
+of work the producer has already performed.
 
 ---
 
@@ -4806,7 +5182,7 @@ Hew supports multiple encoding formats. The runtime envelope (actor-to-actor tra
 #### 7.3.1 CBOR — Default Binary Encoding
 
 CBOR is the shipped binary encoding for Hew wire types and actor transport.
-`#[wire]` struct bodies are maps keyed by unsigned field tags; enum bodies are
+`#[wire]` record bodies are maps keyed by unsigned field tags; enum bodies are
 bare tags or map-of-one payloads. The exact schema is
 `hew-runtime/schemas/wire-body.cddl`.
 
@@ -4836,9 +5212,9 @@ integer keys, and values use the table above.
 ```hew
 #[wire]
 type User {
-    id: u64 @1;
-    name: string @2;
-    email: Option<string> @3 optional;
+    id: u64 @1,
+    name: string @2,
+    email: Option<string> @3 optional,
 }
 
 // User { id: 42, name: "alice", email: Some("alice@example.com") } encodes as:
@@ -4866,7 +5242,7 @@ emitted alongside the wire type codec path, unified on the CBOR body format.
 
 ```hew
 #[wire]
-enum Status { Pending; Active; Completed; }
+enum Status { Pending, Active, Completed, }
 
 // Status.Pending   -> CBOR integer: 0
 // Status.Active    -> CBOR integer: 1
@@ -4880,8 +5256,8 @@ Field presence is independent of `Option<T>`'s null/value representation:
 ```hew
 #[wire]
 type Config {
-    timeout_ms: u64 @1;
-    proxy_url: Option<string> @2 optional;
+    timeout_ms: u64 @1,
+    proxy_url: Option<string> @2 optional,
 }
 
 // Config { timeout_ms: 5000, proxy_url: None } encodes as:
@@ -4908,8 +5284,8 @@ Lists are encoded as CBOR **arrays**. Each element is encoded according to the e
 ```hew
 #[wire]
 type Data {
-    values: [i64] @1;
-    tags: [string] @2;
+    values: [i64] @1,
+    tags: [string] @2,
 }
 
 // Data { values: [1, 2, 3], tags: ["a", "b"] } encodes as:
@@ -4925,9 +5301,9 @@ Nested `#[wire]` types are encoded recursively as CBOR maps:
 
 ```hew
 #[wire]
-type Inner { x: i32 @1; }
+type Inner { x: i32 @1, }
 #[wire]
-type Outer { inner: Inner @1; nested_list: [Inner] @2; }
+type Outer { inner: Inner @1, nested_list: [Inner] @2, }
 
 // Outer { inner: Inner { x: 150 }, nested_list: [Inner { x: 200 }] } encodes as:
 // CBOR map: {
@@ -4990,9 +5366,9 @@ Per-field override always wins over the type-level convention.
 #[json(camelCase)]
 #[wire]
 type User {
-    user_name: string @1;                       // JSON: "userName"
-    email_address: string @2;                   // JSON: "emailAddress"
-    internal_id: string @3 json("id");          // JSON: "id"  (override wins)
+    user_name: string @1,                       // JSON: "userName"
+    email_address: string @2,                   // JSON: "emailAddress"
+    internal_id: string @3 json("id"),          // JSON: "id"  (override wins)
 }
 ```
 
@@ -5011,8 +5387,8 @@ Without the type-level attribute, names are preserved exactly:
 ```hew
 #[wire]
 type User {
-    user_name: string @1;
-    email_address: string @2;
+    user_name: string @1,
+    email_address: string @2,
 }
 ```
 
@@ -5029,7 +5405,7 @@ Wire enums encode as the string name of the variant:
 
 ```hew
 #[wire]
-enum Status { Pending; Active; Completed; }
+enum Status { Pending, Active, Completed, }
 ```
 
 ```json
@@ -5053,7 +5429,7 @@ Enum variant names are used as-is by default. Apply `#[json(camelCase)]` (or ano
 ```hew
 #[json(camelCase)]
 #[wire]
-enum Status { PendingReview; ActiveNow; Completed; }
+enum Status { PendingReview, ActiveNow, Completed, }
 ```
 
 ```json
@@ -5062,7 +5438,7 @@ enum Status { PendingReview; ActiveNow; Completed; }
 
 #### 7.3.2a YAML Encoding
 
-`std::encoding::yaml` is shipped for parsing, constructing, inspecting, and
+`std.encoding.yaml` is shipped for parsing, constructing, inspecting, and
 stringifying YAML values. Wire types can also serialize to and from YAML using
 the helper surface below.
 
@@ -5085,18 +5461,41 @@ Encoders select format based on context:
 Explicit format selection:
 
 ```hew
-let msg = MyMessage { ... };
-let binary = msg.encode();       // CBOR bytes
-let json_str = msg.to_json();    // JSON string
-let yaml_str = msg.to_yaml();    // YAML string
+#[wire]
+type MyMessage {
+    id: u64 @1,
+    text: string @2,
+}
+
+fn main() {
+    let msg = MyMessage { id: 1, text: "hello" };
+    let binary = msg.encode();       // CBOR bytes
+    let json_str = msg.to_json();    // JSON string
+    let yaml_str = msg.to_yaml();    // YAML string
+    println(f"{binary.len()} {json_str} {yaml_str}");
+}
 ```
 
 Decoding:
 
 ```hew
-let msg1 = MyMessage.decode(binary);
-let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
-let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
+#[wire]
+type MyMessage {
+    id: u64 @1,
+    text: string @2,
+}
+
+fn main() {
+    let msg = MyMessage { id: 1, text: "hello" };
+    let binary = msg.encode();
+    let json_str = msg.to_json();
+    let yaml_str = msg.to_yaml();
+
+    let msg1 = MyMessage.decode(binary);
+    let msg2 = MyMessage.from_json(json_str); // Result<MyMessage, string>
+    let msg3 = MyMessage.from_yaml(yaml_str); // Result<MyMessage, string>
+    println(f"{msg1.id} {msg2.expect("json").id} {msg3.expect("yaml").id}");
+}
 ```
 
 Current shipped helper surface, as registered by the type checker:
@@ -5126,67 +5525,57 @@ A Hew compiler accepts source files and produces native object code and
 WASM modules. Between source and machine code, the compiler maintains
 the following named intermediate representations:
 
+```text
+source → lexer → parser → type checker → typed HIR
+                                         ↓
+                                    ownership SIR
+                                     ↙         ↘
+                          sandbox backend    physical MIR
+                                                 ↓
+                                                LLVM
+                                                 ↓
+                                         object + runtime
+                                                 ↓
+                                            executable
 ```
-Source (.hew)
-    │  lex + parse
-    ▼
-AST                       — concrete syntax, no name resolution
-    │  resolve
-    ▼
-Resolved HIR              — names, scopes, capabilities resolved;
-    │  type check          stable BindingId / SiteId carriage;
-    ▼                       every expression carries its concrete type
-SIR                       — semantic SSA: typed values, effects, CFG;
-    │  lower               monomorphisation and trait-dispatch done
-    ▼
-Raw MIR                   — real CFG, real Places, real terminators
-    │  check
-    ▼
-Checked MIR               — fail-closed boundary: use-after-consume,
-    │  elaborate           aliasing, init/use-after-move,
-    ▼                       generator-borrow-across-yield,
-Elaborated MIR              actor-send escape analysis
-    │  emit                 (drops elaborated into the CFG)
-    ▼
-LLVM IR                   — emitted via inkwell; LLVM's own passes,
-    │  llvm                 coroutine intrinsics, and target machine
-    ▼
-Native object / WASM
-```
+
+The sandbox consumes the same verified semantics before native layout. This
+is the shared compiler architecture, not a statement that sandbox execution
+parity is complete.
 
 **What each stage guarantees:**
 
 - **AST.** Concrete syntactic structure. No name resolution; no type
   information. Comments and whitespace stripped.
-- **Resolved HIR.** Every name binding has a stable identifier; every
+- **Typed HIR.** Every name binding has a stable identifier; every
   use site resolves to a binding or to a `NameNotFound` diagnostic.
   Capabilities (Send, Frozen, Copy) attach here. Module structure is
   fully resolved.
-- **SIR.** Semantic SSA: typed values, effects, and the CFG. No `Ty::Var`
-  survives Resolved HIR — the boundary is fail-closed before SIR is built.
-  Generic functions are monomorphised at use sites; trait dispatch resolves
-  to concrete implementations; closure signatures are explicit; aggregate
-  initialiser type arguments are carried.
-- **Raw MIR.** The function body is a control-flow graph of basic
-  blocks with real terminators (`Goto`, `Branch`, `Return`, `Drop`,
-  `Call`, `Unreachable`). Local variables are `Place`s. The
-  `return;`-inside-an-`if` case has a CFG terminator, not a soft
-  flag. Generator handles are typed `Place`s, not name-registry
-  entries.
-- **Checked MIR.** The semantic fail-closed boundary. Every program
-  that survives this stage is guaranteed to be free of:
+- **Ownership SIR.** Semantic SSA: typed values, effects, and the CFG.
+  Concrete instances have resolved types. Generic functions are specialized
+  under substitution; static trait dispatch resolves to concrete implementations,
+  while dynamic dispatch retains its checked trait-object contract. Closure signatures are
+  explicit; aggregate initialiser type arguments are carried.
+
+  SIR is the ownership authority, and it is where the semantic
+  fail-closed boundary sits. Every program that survives it is
+  guaranteed to be free of:
   - Use after consume (affine value moved and then used).
   - Aliasing violations (read-shared XOR mutate-unique).
   - Use after move.
-  - Generator borrow across yield.
+  - Invalid owner lifetimes across generator suspension.
   - Actor-send escape (a value captured into an outgoing message that
     aliases live state in the sending actor).
-  `@linear` must-consume obligations are discharged here; unconsumed
-  `@linear` values surface as `MustConsumeAtScopeExit`.
-- **Elaborated MIR.** Drops are first-class basic blocks in the CFG.
-  Cleanup edges (panic, cancellation) are real edges. Every CFG exit
-  runs the right destructor sequence in the right order. `@resource`
-  types' implicit `close()` calls are emitted here.
+  `#[linear]` must-consume obligations are discharged here; unconsumed
+  `#[linear]` values surface as `MustConsumeAtScopeExit`. No later stage
+  re-derives an ownership decision; each one consumes SIR's facts.
+- **Checked physical MIR.** The function body is a control-flow graph of
+  basic blocks, concrete storage, call carriers and transfer operations.
+  Cleanup edges (fault,
+  cancellation) are real edges; every CFG exit runs the right destructor
+  sequence in the right order, and `#[resource]` types' implicit `close()`
+  calls are emitted here. MIR verifies its own contract against the
+  ownership facts it is given rather than deciding ownership itself.
 - **LLVM IR.** Produced via the `inkwell` Rust binding to LLVM. LLVM's
   coroutine intrinsics handle generator state machines; LLVM's target
   machine handles native and WASM emission; LLVM's pass manager
@@ -5194,8 +5583,10 @@ Native object / WASM
 
 The compiler may collapse adjacent stages into a single in-memory
 representation as an implementation detail, but the **responsibilities**
-above are structural: a Hew compiler that skips a checked-MIR pass is
-not a conforming compiler.
+above are structural: a Hew compiler that skips the ownership check is
+not a conforming compiler. `hew tool compile --dump-sir` and
+`--dump-mir physical` are the inspection points for the two middle
+stages.
 
 ### 8.2 WASM target capabilities
 
@@ -5277,22 +5668,22 @@ Hew uses an **M:N work-stealing scheduler** inspired by Go, Tokio, and BEAM:
 - Idle workers steal from busy workers' queues
 - Actors are scheduled as units (process messages until yield/await)
 
-**Fairness guarantees (3-level preemption hierarchy):**
+**Fairness and suspension:**
 
-1. **Message budget (256 msgs/activation):** Coarse scheduler preemption — after processing 256 messages, the actor yields to the scheduler so other actors can run.
-2. **Reduction budget (4000/dispatch) — v0.7.0.** The intended second level is a reduction counter decremented per operation, with compiler-inserted `cooperate` safepoints at function entry and loop back-edges, so a compute-bound actor yields without an `await`. Edition 2026 ships the message budget and the cooperative yield below; safepoint preemption lands with the coroutine work at v0.7.0.
-3. **Cooperative task yield:** `await` and compiler-inserted `cooperate` safepoints suspend on the `llvm.coro` switched-resume continuation substrate (see §4.3 "Substrate" — internal to `hew-runtime`, not a source-level distinction), parking the current coroutine so the actor's executor can resume the next ready one.
-
-- Round-robin within priority levels
-- Starvation prevention through queue aging
+The scheduler bounds an activation's message work and resumes parked
+continuations when their readiness source fires. Suspending calls, task waits
+and timer operations use this mechanism without a public yield keyword.
+Compute-only cancellation and fairness depend on the safepoints actually
+inserted; this specification does not promise a future reduction budget as a
+current execution guarantee (§4.5).
 
 **Memory management:**
 
-- Per-actor heaps for isolation (no shared memory between actors)
+- Per-actor ownership of mutable state; immutable storage may be retained safely
 - RAII with deterministic destruction (no garbage collector)
 - User-facing `Rc<T>` and `Weak<T>` provide single-actor shared ownership and
   cycle-breaking; neither can cross an actor boundary
-- Bulk deallocation on actor termination (entire heap freed)
+- Terminal cleanup releases state and resources before their storage is reclaimed
 
 **I/O integration:**
 
@@ -5318,7 +5709,7 @@ Runnable ──► Running        scheduler picks actor for execution on a worke
 Running ───► Idle           message budget exhausted or no more messages; yields to scheduler
 Running ───► Suspended      dispatch suspends at a non-final coro.suspend (slice-4 executor)
 Suspended ─► Running        readiness source fires; executor resumes the continuation
-Running ───► Stopping       supervisor requests shutdown, or actor calls self.stop()
+Running ───► Stopping       cooperative close or supervisor shutdown is requested
 Running ───► Sleeping       actor parks in the cooperative WASM sleep queue
 Sleeping ──► Runnable       sleep timer fires
 Stopping ──► Stopped        cleanup finished, normal exit
@@ -5331,10 +5722,9 @@ Actors start `Idle` after spawn. There is no separate `Blocked` state — actors
 for messages are `Idle` (or `Suspended` during a cooperative suspension) and become
 `Runnable` when a message arrives.
 
-The `Running ──► Stopping` edge has exactly two sources: the supervisor, and
-the actor's own `self.stop()`. `pid.stop()` from outside requests the same
-edge; because `Stopped` and `Crashed` are terminal, a request that arrives
-once the actor is already there changes nothing and returns `()` (§2.1).
+Cooperative termination is requested through `close(pid)` or supervision.
+`closed(pid)` observes that transition without requesting it. A repeated
+close of a terminal actor changes nothing and returns unit (§2.1).
 
 **Key distinctions from task states (§4.1):**
 
@@ -5349,48 +5739,15 @@ Supervisor observes actor terminal states `Stopped` or `Crashed`.
 
 #### 9.1.1 Actor Dispatch Interface
 
-The runtime invokes actor message handlers through a **dispatch function pointer** with the following normative signature (from `hew-runtime/src/internal/types.rs` `HewDispatchFn`):
+Actor dispatch is a compiler/runtime ABI, defined by `HewDispatchFn` in
+`hew-runtime/src/internal/types.rs`. It carries execution context, actor state,
+message identity, payload, size and transfer mode, and returns a continuation
+pointer when execution suspends. It is not a Hew source-call signature.
 
-```c
-void (*dispatch)(HewExecutionContext* ctx, void* state, i32 msg_type,
-                 void* data, size_t data_size, i32 borrow_mode);
-```
-
-| Parameter     | Type                   | Description                                                                           |
-| ------------- | ---------------------- | ------------------------------------------------------------------------------------- |
-| `ctx`         | `HewExecutionContext*` | Pointer to the current execution context (scheduler, coroutine state)                 |
-| `state`       | `void*`                | Pointer to the actor's private state (heap-allocated)                                 |
-| `msg_type`    | `i32`                  | Integer discriminant identifying the message type (corresponds to `receive fn` index) |
-| `data`        | `void*`                | Pointer to the serialized message payload                                             |
-| `data_size`   | `size_t`               | Size in bytes of the message payload                                                  |
-| `borrow_mode` | `i32`                  | Admissibility class for the payload (owned move, refcount retain, or deep copy)       |
-
-**Requirements:**
-
-- The dispatch function MUST be called with exactly 6 parameters. Implementations with fewer parameters are non-conforming.
-- The `state` pointer MUST point to memory owned exclusively by the actor. No other actor or thread may access this memory during dispatch.
-- The `data_size` parameter is REQUIRED for:
-  - Safe deep-copy of message data into the actor's heap
-  - Wire serialization (TLV encoding requires payload size)
-  - Memory accounting per actor
-- The `msg_type` value MUST correspond to the zero-based index of the `receive fn` declarations within the actor definition, in declaration order.
-- `msg_type` is `i32`, not `i64`.
-
-**Compiler-generated dispatch:**
-
-For each actor, the compiler generates a dispatch function that switches on `msg_type` and deserializes `data` into the appropriate parameter types:
-
-```c
-// Generated for: actor Counter { receive fn increment(n: i32) { ... } receive fn get() -> i32 { ... } }
-void Counter_dispatch(HewExecutionContext* ctx, void* state, i32 msg_type,
-                      void* data, size_t data_size, i32 borrow_mode) {
-    CounterState* self = (CounterState*)state;
-    switch (msg_type) {
-        case 0: Counter_increment(self, *(i32*)data); break;
-        case 1: Counter_get(self, /* reply channel */); break;
-    }
-}
-```
+The compiler's actor descriptor supplies dispatch and payload cleanup together.
+State access is exclusive for the turn, and the message payload has one checked
+lifetime. A resumed turn retains the same state and ownership contracts; the
+actor cannot dispatch another message over that live state seat.
 
 #### 9.1.2 Lifecycle Hooks
 
@@ -5405,7 +5762,7 @@ added in later editions without growing the annotation vocabulary.
 | Annotation       | Signature                                 | Runs when                                                                                       |
 | ---------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `#[on(start)]`   | `fn name()`                               | Once, after the actor's fields are initialized and before any message is dispatched.            |
-| `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on normal exit, cancellation by an enclosing `fork{}`, or supervisor `Shutdown`. |
+| `#[on(stop)]`    | `fn name()`                               | Once per actor instance, on cooperative actor termination or supervisor shutdown. |
 | `#[on(crash)]`   | `fn name(info: CrashInfo) -> CrashAction` | After a child trap is classified and before restart-policy handling.                            |
 
 `#[on(exit)]` and `#[on(down)]` are the two further accepted kinds; they
@@ -5413,6 +5770,12 @@ deliver link and monitor notifications and their payload types are not
 specified in this section.
 
 Unknown hook kinds (e.g. `#[on(restart)]`, `#[on(upgrade)]`) are rejected with a diagnostic listing the valid set. `upgrade` is not among them: hot code upgrade is refused permanently, so the hook list holds no place for it.
+
+`#[on(crash)]` runs on the crashing incarnation's last valid state, before
+that state's cleanup. Completed changes from earlier turns and valid changes
+made before the current turn's failure remain visible to the hook. A subsequent
+restart constructs fresh state from the supervisor's configuration; the hook
+does not run on that restart state.
 
 `#[on(crash)]` is a defined hook. The handler ABI is `(CrashInfo) -> CrashAction`;
 the returned `CrashAction` is currently side-effects-only — supervisors honour each
@@ -5432,15 +5795,15 @@ reserved (HEW-FUTURE).
 
 **Cancellation and resource ordering (normative):**
 
-8. Cancellation by an enclosing `fork{}` scope triggers `#[on(stop)]` for each cancelled actor before its task ends. This is the common path under structured concurrency, not an exceptional one.
+8. Task-scope cancellation does not itself make an independent actor a child task. Actor terminal cleanup follows its own stop or supervision protocol.
 9. The runtime sequence at terminal transition is:
-   - (a) actor body exits or is cancelled;
+   - (a) the actor reaches cooperative termination;
    - (b) the `#[on(stop)]` hook runs with field access live, if present;
-   - (c) `#[linear]` consumed-checks fire (unconsumed linear values surface as diagnostics);
+   - (c) cleanup follows the ownership plan, whose linear obligations were checked at compile time;
    - (d) `#[resource]` field `close()` methods run in reverse declaration order.
    Hooks therefore run BEFORE `#[resource]` `close()`, so user logic in a hook can still use resources for goodbye flushes.
 10. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
-11. The default `#[on(stop)]` timeout budget is 5 seconds; future editions MAY introduce `#[on(stop, timeout = <duration>)]` to override per actor.
+11. A supervisor shutdown deadline belongs to its child specification (§5.1), not an invented hook argument. Current deadline limitations are listed in §2.1.1.
 
 **Compilation:** `#[on(start)]` bodies are appended to the synthesized `_init`
 function after any `init { ... }` block. `#[on(stop)]` lowers to the actor's
@@ -5467,50 +5830,22 @@ Transitions:
 - `Healthy --RestartBudgetExceeded--> Escalating`
 - `Escalating -> Stopped` if no parent; otherwise parent receives escalation
 
-### 9.3 Actor mailbox send state machine
+### 9.3 Actor mailbox delivery state machine
 
-For a bounded actor mailbox with capacity `N`:
+A bounded mailbox is open with space, open and full, or terminal. Dequeueing
+work creates capacity and wakes registered admission waiters. Closure ends
+admission; queued and in-flight requests retain their cleanup obligations.
 
-States: `HasSpace`, `Full`, `Closed`, `Dead`
+- A handle call waits for admission and then completion.
+- A completion-policy view may reject instead of waiting for admission.
+- A mailbox view reports acceptance, an explicitly chosen discard or failure.
+- A completed handler returns its success value or declared failure. A trapped
+  handler produces the corresponding completion error without transferring
+  its actor's fault ownership to the caller.
 
-Events:
-
-- `Send(item)`
-- `Recv()`
-- `Close()`
-
-Behaviour:
-
-- In `Full`, overflow policy decides:
-  - `block`: register the message and suspend the producer continuation;
-    `Recv()` admits one FIFO waiter and schedules that continuation. No Hew
-    scheduler worker waits on an OS condition variable.
-  - `drop_new`: discard new item and return `SendError.MessageLost`.
-  - `drop_old`: evict oldest, enqueue new item, and return `SendError.MessageLost`.
-  - `fail`: reject the item and return `SendError.Full`.
-  - `coalesce(field_name)`: replace existing work or apply a non-blocking
-    fallback, reporting every discard/replacement as `SendError.MessageLost`
-    (see §6.3 for full semantics).
-- `Dead` is terminal and is reached whenever the destination actor has stopped
-  or crashed, or the supervised role addressed has no live occupant. Every send
-  to a `Dead` target returns `Err(SendError.Dead)`, whatever the mailbox
-  capacity or overflow policy: the policy table above decides only what a live
-  mailbox does with a message it cannot hold, and is never consulted for a
-  target that cannot receive at all (§5.6). An unbounded mailbox has no `Full`
-  state, so `Dead` is the only `Err` a send to it can produce.
-
-**Coalesce syntax example:**
-
-```hew
-// Mailbox with coalescing based on request_id field
-mailbox 100 overflow coalesce(request_id);
-
-// When mailbox is full and a new message arrives:
-// - If existing message has same request_id, replace it in-place
-// - Otherwise apply fallback policy (default: drop_new)
-```
-
-> See §6.3 for the complete coalesce specification including key function generation, matching rules, and fallback policy configuration.
+Capacity, coalescing and overflow follow §6. The result types and sealed-request
+contract are defined once in §2.1.1; there is no unit-typed delivery variant of
+this state machine.
 
 ---
 
@@ -5527,10 +5862,10 @@ mailbox 100 overflow coalesce(request_id);
 
 ## 11. Distributed computing
 
-The cross-node actor surface is shipped and is the default
-runtime mode when a Hew program runs as a cluster node. The normative
-specification is [`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md); this section
-summarises what is shipped and stable.
+The distributed contract is specified in
+[`HEW-DIST-SPEC.md`](./HEW-DIST-SPEC.md). The intended source surface below
+uses the same calls and error rules as local actors. Runtime transport support
+does not by itself establish final-core source support or execution parity.
 
 **Node setup (normative).** Starting a node is one call, and it reports failure
 in the type system:
@@ -5551,7 +5886,7 @@ in the type system:
   `Node.shutdown()` stays `()`.
 
 **The registry knows the actor's type (normative).**
-`Node.register(name, pid: LocalPid<A>) -> Result<(), RegisterError>` records
+`Node.register(name, actor: A) -> Result<(), RegisterError>` records
 `A`'s declaration identity beside the location, and `Node.lookup<A>(name)`
 compares the two, answering `Err(LookupError.TypeMismatch)` when they
 disagree. Without that record a lookup's type argument is the reader's wish and
@@ -5560,17 +5895,18 @@ the handle it produces is an unchecked cast.
 `Node.register` is the one registration verb: it registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
 `Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
-Result<LocalPid<A>, LookupError>` is the local view of the same registry, and
+Result<A, LookupError>` is the local view of the same registry, and
 carries the same identity comparison.
 
-**Shipped cross-node surface:**
+**Distributed operations:**
 
-- Remote `send` and `ask` (`<- actor.method()` / `<id> from actor.method()`)
-  with typed `SendError` and `AskError` result envelopes.
+- Remote actor completion calls and explicit mailbox submissions use the
+  envelopes of §2.1.1; there is no remote-only call operator. In a select,
+  `reply from actor.method()` is a completion source.
 - Cross-node actor monitoring (`monitor` / `demonitor`) with exactly-once
   `DOWN` delivery; pruning on watcher-node death.
 - Explicit cross-node links with `CrashLinked` cascade semantics.
-- `PartitionPolicy::FailFast` and partition-detected-dead resolution for
+- `PartitionPolicy.FailFast` and partition-detected-dead resolution for
   pending remote asks.
 - SWIM-based membership with quarantine and incarnation-gated readmission.
 - Two-process CI harness covering cross-node send/ask, monitor/link
@@ -5579,37 +5915,83 @@ carries the same identity comparison.
 
 Authentication tokens and supervisor-capability enforcement are not yet
 runtime-enforced; see `HEW-DIST-SPEC.md` §rc1-notes for the current
-status. The SWIM quarantine/readmission surface is stable and in the
-proving gate.
+status. The transport's own evidence must be distinguished from source-language
+execution evidence.
 
-> **Implementation status.** The shipped surface is still the call sequence:
-> `Node.set_transport`, `Node.load_keys`, `Node.allow_peer`, then
-> `Node.start(addr)`, whose refusal prints to stderr and lets the program run
-> on; `Node.register` returns `i32`; `Node.lookup<T>` is registered with `T`
-> free and the registry entry is name to location, so no identity is compared;
-> and `Node.unregister` is hand-declared `extern "C"` where it is used.
-> `NodeConfig`, `NodeError`, `RegisterError`, and `LookupError.TypeMismatch`
-> are tracked in hew-lang/hew#3256. At v0.6.0 the declaration identity is
-> recorded and compared on the registering node; the gossiped identity rides
-> the wire-version bump, and the cluster-wide comparison is v0.8.0.
+**Current implementation limitation.** Node configuration and registry APIs
+have not completed the single-configuration, typed-error and identity-checking
+contracts above. Older runtime entry points and transport harnesses are not
+canonical source examples for those contracts. Node startup, registration and
+lookup must reach their intended types together; this specification does not
+promise that the final native path already realizes every distributed operation.
+Authentication and capability enforcement remain subject to the limitations
+in HEW-DIST-SPEC.md.
 
 ---
 
 ## 12. Syntax (edition 2026)
 
-**The grammar authority is the parser.** `hew-parser` defines the accepted
-surface of edition 2026; `tree-sitter-hew/grammar.js` is its mirror, carried
-in the `tree-sitter-hew` repository and pinned by version for the downstream
-highlighters. There is no separate normative grammar file: a standalone
-grammar is a second authority that drifts, and the one this specification
-used to carry asserted productions the compiler refuses and omitted
-productions that ship. When this specification and the parser disagree, the
-parser is the source of truth and the specification text is the defect.
+**Accepted syntax and intended semantics.** `hew-parser` defines the syntax
+accepted by the current compiler. This specification states the edition's
+intended contracts; explicitly labelled implementation limitations, such as
+supervisor close, remain pending even when their
+design is settled. A parser limitation is not permission to implement a
+superseded spelling as the language's permanent public surface.
 
-Grammar fragments appear throughout this document in `ebnf` blocks. They are
-illustrations of the surface spelling for the construct under discussion,
-written to be read beside the prose; they are not a grammar in their own
-right and are not normative where they and the parser differ.
+Grammar fragments illustrate the source forms beside their semantic rules.
+The parser and downstream grammars must converge on that same surface. They
+do not establish separate language variants when an implementation lags.
+
+### Structural punctuation
+
+Commas separate structural data members: type and wire fields, enum variants
+and variant fields, record values and patterns, actor state and mailbox config,
+machine events, states and bodyless routes, and supervisor config and children.
+A trailing comma is accepted before a closing brace. Adjacent members require
+a comma; a newline is whitespace, not a separator.
+
+Semicolons terminate statements and bodyless declarations, including trait
+method signatures and extern function signatures. Function, method, lifecycle
+and executable blocks do not acquire a terminator just because they occur
+beside structural members. An array's `[T; N]` size syntax is not a member list
+and retains its semicolon.
+
+```hew
+type Point { x: i64, y: i64 }
+enum Reply { Ready, Value { label: string, count: i64 }, Failed(string) }
+
+actor Counter {
+    var count: i64 = 0,
+    mailbox 64 overflow drop_new,
+    receive fn bump() { count += 1; }
+}
+
+machine Switch {
+    events { Toggle }
+    state Off,
+    state On,
+    on Toggle: Off => On,
+    on Toggle: On => Off,
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+    child counter: Counter() restart: permanent,
+}
+
+trait Reader { fn read(self) -> i64; }
+extern "C" { fn read_value() -> i64; }
+```
+
+Declaration context distinguishes an actor's `var count: i64 = 0,` state
+member from an executable block's `var count = 0;` local statement. A machine
+state with a body is still a structural member (`state Active { n: i64 },`);
+its `entry` and `exit` blocks contain ordinary statements. A bodyless route
+ends with a comma, whereas `on Toggle: Off => On { ... }` is self-delimiting.
+The `events { ... }`, `emits { ... }` and `default { ... }` blocks do not take
+an extra terminator. Supervisor child clauses such as `restart:` and
+`shutdown:` remain parts of one child member, whose final separator is a comma.
 
 **Implementation note:** pipe closures lower through `Expr::Lambda`; captured closure environment records are the current substrate direction. Generic `<T>(...) => ...` is not a valid source syntax; type-parameterized lambdas are not supported in this edition (see §3.8.6).
 
@@ -5624,13 +6006,13 @@ downstream highlighters generate from it, not from this section.
 | --- | --- |
 | Control flow | `if`, `else`, `match`, `loop`, `for`, `while`, `break`, `continue`, `return`, `in`, `yield`, `defer` |
 | Declarations | `let`, `var`, `const`, `fn`, `gen`, `pub`, `import`, `package`, `extern`, `where`, `type`, `indirect`, `enum`, `trait`, `impl`, `as` |
-| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `join`, `after`, `from`, `await`, `await_restart` |
+| Actors and concurrency | `actor`, `supervisor`, `spawn`, `receive`, `init`, `scope`, `fork`, `move`, `select`, `race`, `after`, `await`, `await_restart` |
 | Wire | `reserved`, `optional`, `deprecated` |
 | Supervision | `child`, `restart`, `strategy`, `permanent`, `transient`, `temporary`, `brutal_kill`, `one_for_one`, `one_for_all`, `rest_for_one`, `simple_one_for_one` |
 | Machines | `machine`, `state`, `event`, `on`, `when`, `entry`, `exit` |
 | Literals | `true`, `false` |
 | Other | `dyn`, `unsafe`, `is` |
-| Reserved | `mut` (foreign pointer types, §3.9.3), `budget` |
+| Reserved | `mut` (foreign pointer types, §3.9.3) |
 
 **Contextual keywords** are words the lexer produces as identifiers and the
 parser recognises only in the position that gives them meaning. Using one as
@@ -5642,26 +6024,30 @@ an ordinary name is legal everywhere else:
 | `emit` | a machine transition body's emit statement |
 | `pool` | a supervisor body's pool clause |
 | `events`, `emits`, `reenter`, `initial` | machine declaration headers and transition modifiers |
-| `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses |
+| `mailbox`, `overflow`, `intensity`, `within`, `shutdown`, `infinity` | actor and supervisor configuration clauses, and `within` a scope deadline (§4.11.3) |
+| `handle` | the error-recovery and scope-failure clause (§2.2.1, §4.11.3) |
+| `policy`, `on_full` | a sender's mailbox-policy view (§2.1.1) |
+| `suspends` | the suspension qualifier in a written callable type (§4.0) |
 | `self`, `consume` | receiver and transfer positions (§3.6, §3.9) |
 | `clone` | the prefix-clone expression (§3.4.4) |
 | `resource`, `linear`, `opaque`, `wire`, `json`, `yaml` | attribute names (§12.6) |
 | `wired_to` | a supervisor child spec's sibling-handle clause (§5.1) |
 | `export` | the `#[export]` attribute name (§3.9.4, §12.6) |
 
-**Words that are not keywords.** `try`, `catch`, `race`, `cooperate`,
-`foreign`, `super`, and `async` are ordinary identifiers. Each was reserved
+**Words that are not keywords.** `try`, `catch`, `join`, `cooperate`,
+`foreign`, `super`, `send`, and `async` are ordinary identifiers. Each was reserved
 against a surface that either shipped under another spelling or was refused:
 
-- `async` marked nothing. Functions are colourless — every function may
-  suspend (§4.2, §4.3) and `await` marks a mailbox suspension point and
-  nothing else. `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
+- `async` marked nothing. Functions are colourless — suspension is inferred
+  from the body and written only on a callable type (§4.0), and `await`
+  joins a Task or vector of Tasks (§4.4). `async fn` is `E_NO_ASYNC_FN` (User) with a fix-it that
   deletes the word, and `async gen fn` is `E_NO_ASYNC_GEN` (User) with the
   same fix-it (§4.12).
 - `try` and `catch` have no construct: fallible operations return `Result`
   and propagate with `?` (§2.2.1). `catch` never reached the parser at all.
-- `race` is refused permanently. First-completion-wins is `select` over
-  task-await arms, which returns with its substrate (HEW-FUTURE §1.4).
+- `join` is retired. Waiting for every operand is batch `fork`
+  (`await fork [ .. ]`, `await fork ( .. )`, §4.4), which needs no keyword
+  of its own.
 - `cooperate` names a compiler-inserted safepoint (§4.7, §9.0), not a
   source-level expression.
 - `foreign` is spelled `extern` (§3.9.1).
@@ -5677,16 +6063,12 @@ replacement rather than a bare parse error.
 carrying the `var` fix-it, not a parse cascade. Mutable bindings are `var`
 (§3.2).
 
-> **Edition 2026 enforcement.** The lexer has not yet closed to this table.
-> `try`, `catch`, `race`, `cooperate`, `foreign`, `super`, `async`,
-> `default`, `emit`, and `pool` are still lexed as reserved words, so
-> `docs/syntax-data.json` carries them and `let default = 1` is refused with
-> "`default` is a reserved word and cannot be used as a binding name". That
-> is a defect against this table, not a second reading of it
-> (hew-lang/hew#3262). `this` is absent from the table because the receiver
-> rule deletes it from the language; §3.6 still carries its actor
-> self-reference text and the lexer still reserves it, and the receiver
-> change removes both (hew-lang/hew#3075).
+**Current lexer limitation.** Some words intended as ordinary or contextual
+identifiers remain reserved by the lexer, including `try`, `catch`, `default`,
+`emit` and `pool`. This does not reinstate their retired constructs.
+`send` has no keyword role, `this` has no receiver role, and neither `join` nor
+`for await` is a language construct. Parser diagnostics for old spellings do
+not make them recommended alternatives.
 
 ### 12.1 Built-in Numeric Types
 
@@ -5715,37 +6097,49 @@ Integer literals default to `i64`. Float literals default to `f64`.
 that mix distinct integer widths without a cast. Example:
 
 ```hew
-let x: i32 = 1;
-let y: i64 = x + 1;          // ERROR: i32 vs i64 width mismatch; use x as i64 + 1
-let z: i64 = x as i64 + 1;   // OK
+fn main() {
+    let x: i32 = 1;
+    // let y: i64 = x + 1;       // ERROR: i32 vs i64 width mismatch; use x as i64 + 1
+    let z: i64 = x as i64 + 1;   // OK
+    println(f"{z}");
+}
 ```
 
 `isize` and `usize` are also distinct from each other and from any fixed-width type:
 
 ```hew
-let n: usize = v.len();
-let i: i32 = n as i32;       // explicit conversion required
-let j: i64 = n as i64;       // explicit conversion required
+fn main() {
+    let v: Vec<i64> = [1, 2, 3];
+    let n: usize = v.len() as usize;
+    let i: i32 = n as i32;       // explicit conversion required
+    let j: i64 = n as i64;       // explicit conversion required
+    println(f"{i} {j}");
+}
 ```
 
 All numeric types support `as` casts to every other numeric type:
 
 ```hew
-// Integer → f64
-let x: i32 = 42;
-let f: f64 = x as f64;        // 42.0
+fn main() {
+    // Integer → f64
+    let x: i32 = 42;
+    let f: f64 = x as f64;        // 42.0
 
-// Float → integer (saturating)
-let pi: f64 = 3.14;
-let n: i32 = pi as i32;       // 3 (truncates toward zero for in-range values)
+    // Float → integer (saturating)
+    let pi: f64 = 3.14;
+    let n: i32 = pi as i32;       // 3 (truncates toward zero for in-range values)
 
-// Out-of-range and non-finite values saturate instead of producing poison:
-let big: f64 = 1.0e30;
-let clamped: i32 = big as i32;      // positive overflow clamps to 2147483647
-let neg_big: f64 = -1.0e30;
-let neg_clamped: i32 = neg_big as i32; // negative overflow clamps to -2147483648
-let nan: f64 = 0.0 / 0.0;
-let nan_as_int: i32 = nan as i32;       // NaN converts to zero
+    // Out-of-range and non-finite values are meant to saturate instead of
+    // producing poison (see the known-bug note below the table):
+    let big: f64 = 1.0e30;
+    let clamped: i32 = big as i32;      // intended: positive overflow clamps to 2147483647
+    let neg_big: f64 = -1.0e30;
+    let neg_clamped: i32 = neg_big as i32; // negative overflow clamps to -2147483648
+    let nan: f64 = 0.0 / 0.0;
+    let nan_as_int: i32 = nan as i32;       // intended: NaN converts to zero
+
+    println(f"{f} {n} {clamped} {neg_clamped} {nan_as_int}");
+}
 ```
 
 **`as` conversion semantics:**
@@ -5769,6 +6163,8 @@ let nan_as_int: i32 = nan as i32;       // NaN converts to zero
 | `NaN`           | `0`                | `0`                        |
 
 These semantics are guaranteed on all Hew targets (x86_64, aarch64, wasm32). The underlying LLVM lowering uses `llvm.fptosi.sat` / `llvm.fptoui.sat`, which produce defined behaviour for all input values. Plain `fptosi` / `fptoui` (which produce LLVM poison for out-of-range inputs) are never emitted.
+
+> **Known bug (#3367).** Positive overflow and `NaN` both currently produce the target integer's `MIN` instead of `MAX` and `0`; only negative overflow lowers correctly today. The table above states the intended, normative contract.
 
 All numeric types also support exact fallible conversion methods:
 
@@ -5802,9 +6198,8 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
-13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered)
-14. Timeout: `| after`
-15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered). `..` cannot begin an expression, so `..expr` at the start of a literal item is the spread of §3.1 and no range spelling is shadowed
+14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
 
 > **Overflow behaviour:** the plain `+`, `-`, `*` operators on integer types are checked — they lower to the `llvm.{s,u}{add,sub,mul}.with.overflow.iN` intrinsics and trap with `TrapKind::IntegerOverflow` on overflow. `&+`, `&-`, `&*` are the two's-complement **wrapping** versions of `+`, `-`, `*`: they lower directly to the plain `IntAdd`/`IntSub`/`IntMul` instructions (no overflow check; LLVM integers wrap by default) and exist as explicit source forms for opting into wraparound. All three wrapping operators have the same precedence as their plain counterparts. `.checked_*`/`.saturating_*`/`.wrapping_*` methods (see the language guide) provide the same three overflow policies as callable methods.
 
@@ -5814,13 +6209,16 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 
 ### 12.3 Duration Literals
 
-Duration literals provide a concise syntax for time values. They compile to `i64` values representing nanoseconds:
+Duration literals have source type `duration`; their native carrier stores
+nanoseconds in an `i64`:
 
 ```hew
-let timeout = 100ms;     // i64: 100_000_000 nanoseconds
-let interval = 5s;       // i64: 5_000_000_000 nanoseconds
-let period = 1m;         // i64: 60_000_000_000 nanoseconds
-let precise = 500us;     // i64: 500_000 nanoseconds
+fn main() {
+    let timeout = 100ms;     // duration: 100_000_000 nanoseconds
+    let interval = 5s;       // duration: 5_000_000_000 nanoseconds
+    let period = 1m;         // duration: 60_000_000_000 nanoseconds
+    let precise = 500us;     // duration: 500_000 nanoseconds
+}
 ```
 
 **Supported suffixes:**
@@ -5855,29 +6253,37 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 `.secs()`, `.mins()`, `.hours()`. `duration` implements `Display` (`5s`
 prints as `5000000000ns`).
 
-> **Instant arithmetic is not usable yet.** `instant::now()` parses,
-> type-checks, and links (no import required), but it evaluates to a constant
-> `0` rather than a real clock reading, and subtracting two instants fails
-> during lowering with ``E_MIR: unsupported HIR node reached MIR lowering:
-> integer binary result `duration` disagrees with common operand type `i64` ``.
-> Measure elapsed time through `std::time` until the `instant` substrate
-> lands.
+**`instant`:** a monotonic timestamp in nanoseconds read with
+`instant.now()` (no import required). `instant + duration` and
+`instant - duration` produce an `instant`, `instant - instant` produces a
+`duration`, and `.elapsed()` and `.duration_since(earlier)` return the
+`duration` since an earlier stamp.
 
-**Timeouts:**
+**Suspension:** `sleep(d)` waits a span and `sleep_until(t)` waits until a
+monotonic deadline; both suspend the calling task or actor handler instead of
+blocking its worker, so sibling work continues while the timer runs and a
+deadline already in the past returns immediately.
 
-Duration values are required for timeout expressions (`| after`) and `select` timeouts:
+**Deadlines:**
+
+A select timer and `scope within d` use `duration`. Socket timeout setters
+use their declared API units; current `net.Connection` setters accept an
+integer count of milliseconds. Neither form adds a timeout operator to calls.
+
+<!-- doctest: skip -->
 
 ```hew
-let result = await task | after 5s;        // Timeout after 5 seconds
+let result = scope within 5s {
+    let task = fork calculate(input);
+    await task
+} handle failure {
+    fallback
+};
 ```
 
-`await task | after 5s` is a suspension point (§4.3), so the rule that governs
-it is the execution-context rule of §4.2 and not a rule about `after` itself:
-it is legal in any function, and it parks whichever context the call runs on.
-At v0.6.0 that context exists only inside an actor handler, a task body, or a
-closure; written in `main`, or in a free function `main` calls, the deadline
-form is `E_LIMIT_MAIN_CONTEXT` until `main` gains its execution context at
-v0.7.0.
+The scope and recovery body produce the same type (or recovery diverges).
+The deadline covers the region; its structured failure is separate from an
+ordinary Result returned by `calculate` (§4.2).
 
 ```ebnf
 DurationLit = IntLit ("ns" | "us" | "ms" | "s" | "m" | "h") ;
@@ -5890,13 +6296,18 @@ Loops (`loop`, `while`, `for`) may carry an optional **label** prefixed with `@`
 **Syntax:**
 
 ```hew
-@outer: loop {
-    @inner: while condition {
-        if done {
-            break @outer;
-        }
-        if skip {
-            continue @outer;
+fn main() {
+    let condition = true;
+    let done = false;
+    let skip = false;
+    @outer: loop {
+        @inner: while condition {
+            if done {
+                break @outer;
+            }
+            if skip {
+                continue @outer;
+            }
         }
     }
 }
@@ -5909,14 +6320,19 @@ Labels are scoped to the loop they annotate.
 `loop`, `while`, and `for` are statements — they do not produce a value. To carry a result out of a loop, declare a `var` binding before the loop and assign to it inside the body:
 
 ```hew
-var result: i64 = 0;
-loop {
-    if found {
-        result = computed_value;
-        break;
+fn main() {
+    let found = true;
+    let computed_value: i64 = 42;
+    var result: i64 = 0;
+    loop {
+        if found {
+            result = computed_value;
+            break;
+        }
     }
+    // use result here
+    println(f"{result}");
 }
-// use result here
 ```
 
 `break` and `continue` are pure control-flow statements. A `break` carries no
@@ -5947,7 +6363,7 @@ Label          = "@" Ident ":" ;
 LoopStmt       = "loop" Block ;
 WhileStmt      = "while" Expr Block ;
 WhileLetStmt   = "while" "let" Pattern "=" Expr Block ;
-ForStmt        = "for" "await"? Pattern "in" Expr Block ;
+ForStmt        = "for" Pattern "in" Expr Block ;
 BreakStmt      = "break" ("@" Ident)? ";" ;
 ContinueStmt   = "continue" ("@" Ident)? ";" ;
 ```
@@ -5955,48 +6371,95 @@ ContinueStmt   = "continue" ("@" Ident)? ";" ;
 The lexer tokenizes `@outer`-style labels as a dedicated label token; the
 fragment above shows their surface spelling.
 
-### 12.5 `if let` and `while let`
+### 12.5 `if let`, `while let` and `let … else`
 
-`if let` and `while let` are first-class single-branch pattern-matching
-constructs. They work on any type that supports pattern matching, including
-`Option<T>`, `Result<T, E>`, enums, and `machine` values.
+`if let`, `while let` and `let … else` are pattern-matching constructs that
+bind the parts of one value without a full `match`. They work on any type
+`match` accepts: `Option<T>`, `Result<T, E>`, enums, records, tuples, literals
+and `machine` values.
 
-**`if let`** — execute a block only when a pattern matches, binding the
-extracted value:
+**`if let`** — execute a block when a pattern matches, binding what it
+extracts. The `else` arm is any `if`-shaped expression, exactly as for `if`,
+so `if let`, `if` and blocks chain freely and are formatted as written:
 
 ```hew
-let opt: Option<string> = .Some("hello");
-
-if let .Some(s) = opt {
-    println(s);      // prints "hello"
-}
-
-// With else:
-if let .Some(s) = opt {
-    println(s);
-} else {
-    println("nothing");
+fn describe(first: Option<i64>, second: Result<string, string>, flag: bool) -> string {
+    if let .Some(n) = first {
+        f"first {n}"
+    } else if let .Ok(text) = second {
+        text
+    } else if flag {
+        "flagged"
+    } else {
+        "nothing"
+    }
 }
 ```
 
-**`while let`** — loop as long as a pattern matches:
+**Chained conditions (normative).** A condition may join `let` patterns and
+boolean expressions with `&&`. Each `let` binds its names for the operands to
+its right and for the then block; nothing bound in the condition is visible in
+the `else` arm. `||` cannot join a `let` pattern with anything. The condition
+is evaluated left to right and stops at the first operand that fails.
 
 ```hew
-var m: HashMap<string, i64> = {"a": 1, "b": 2};
-
-while let .Some(v) = m.get("a") {
-    println(f"{v}");
-    break;
+fn describe_chain(first: Option<i64>, second: Result<string, string>) {
+    if let .Some(n) = first && n > 10 && let .Ok(text) = second {
+        println(f"{n}: {text}");
+    } else if let .None = first {
+        println("empty");
+    }
 }
 ```
 
-Both forms are semantically equivalent to the corresponding `match` form; they are compiled through dedicated IR paths rather than being desugared at the AST level. `if let P = expr { body }` corresponds to `match expr { P => { body }, _ => {} }`, but the lowering is a first-class HIR node, not a transformation.
+**`while let`** — loop as long as the condition holds; the same chaining rules
+apply:
 
-> **Supported patterns:** Only payload-bearing constructor patterns (e.g. `.Some(x)`, `.Ok(v)`, `.Err(e)`) and literal patterns work in `if let`/`while let`. Unit-variant, record, tuple, and or-patterns fail closed at HIR time. The variant spelling is the one rule of §3.1: a bare `Some(x)` pattern is `E_BARE_VARIANT_PATTERN`.
+```hew
+fn main() {
+    let m: HashMap<string, i64> = {"a": 1, "b": 2};
+
+    while let .Some(v) = m.get("a") {
+        println(f"{v}");
+        break;
+    }
+}
+```
+
+**`let … else` (normative).** A `let` statement with a refutable pattern takes
+an `else` block that runs when the pattern does not match. The block must
+diverge: it ends in `return`, `break`, `continue`, `panic` or a call that
+returns `Never`; a block that can fall through is `E_LET_ELSE_FALLTHROUGH`.
+The bindings of the pattern are in scope after the statement.
+
+```hew
+import std.string;
+
+fn port(config: HashMap<string, string>) -> Result<i64, string> {
+    let .Some(raw) = config.get("port") else {
+        return Err("port missing");
+    };
+    let .Ok(port) = string.to_int(raw) else {
+        return Err(f"port is not a number: {raw}");
+    };
+    Ok(port)
+}
+```
+
+**Patterns (normative).** Every pattern `match` accepts is accepted here:
+payload and unit variants, records, tuples, literals, or-patterns and `_`, with
+the variant spelling rule of §3.1 (a bare `Some(x)` pattern is
+`E_BARE_VARIANT_PATTERN`). A refutable pattern in a plain `let` without `else`
+is `E_REFUTABLE_LET`. All three forms lower through the same pattern path as
+`match`; `if let P = expr { body }` has the meaning of
+`match expr { P => { body }, _ => {} }`.
 
 ```ebnf
-IfLetExpr   = "if" "let" Pattern "=" Expr Block ("else" Block)? ;
-WhileLetStmt = "while" "let" Pattern "=" Expr Block ;
+LetCondition = "let" Pattern "=" Expr ;
+Condition    = (LetCondition | Expr) ("&&" (LetCondition | Expr))* ;
+IfExpr       = "if" Condition Block ("else" (IfExpr | Block))? ;
+WhileStmt    = "while" Condition Block ;
+LetElseStmt  = "let" Pattern "=" Expr "else" Block ";" ;
 ```
 
 ### 12.6 Attributes
@@ -6054,7 +6517,7 @@ inside `std/`. A program that names one outside the standard library gets
 
 ## 13. Self-Hosting Roadmap
 
-> See HEW-FUTURE.md §5.1 for the self-hosting roadmap — targeted for
+> See HEW-FUTURE.md §6.1 for the self-hosting roadmap — targeted for
 > v1.0+. Bootstrap chain, minimum viable subset, kernel-language
 > concept, and WASM-as-portable-bootstrap belong to the post-
 > stability project.
@@ -6070,7 +6533,10 @@ inside `std/`. A program that names one outside the standard library gets
 
 ---
 
-## 15. Minimum viable Hew (implementation plan aligned to this spec)
+## 15. Historical minimum viable Hew plan
+
+This early plan is retained as history, not current implementation sequencing.
+The compiler architecture and source contracts above take precedence.
 
 - **Phase A (compiler front-end)**: lexer/parser → AST → typecheck (Send/Frozen rules)
 - **Phase B (runtime)**: scheduler, actor mailboxes, bounded channels, timers, TCP
@@ -6080,7 +6546,8 @@ inside `std/`. A program that names one outside the standard library gets
 
 ---
 
-If you want this to be directly executable as an engineering project, the next most useful artifact is a “Hew Core IR” spec (the lowered form the compiler targets before LLVM), because it locks the semantics of actors, mailboxes, supervision, and cancellation independent of syntax.
+The original plan called for an IR specification before implementation. The
+current compiler stages and their responsibilities are described in §8.1.
 
 [1]: https://tutorial.ponylang.io/index.html "Pony Tutorial"
 [2]: https://www.erlang.org/docs/17/design_principles/sup_princ "Supervisor Behaviour - Restart Strategy"
@@ -6093,9 +6560,10 @@ If you want this to be directly executable as an engineering project, the next m
 
 ## Changelog
 
-> **Non-normative.** This section records what changed at the edition boundary
-> for readers migrating existing code. For current invariants, see the spec body
-> §N cited in each entry.
+> **Historical, non-normative.** These entries preserve earlier edition
+> checkpoints, including designs and implementation limits later superseded.
+> They are not migration recipes or current feature-status claims. Use the
+> reconciled spec body for current contracts and labelled implementation gaps.
 
 ### Edition 2026 (this document)
 
@@ -6115,24 +6583,23 @@ If you want this to be directly executable as an engineering project, the next m
   (see HEW-FUTURE). Not user-extensible in this edition.
 - **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
   surface is removed entirely. `scope { }` is the structured-concurrency
-  block (the scope boundary). `fork name = expr;` / `fork expr;`
-  are the only child-start forms, and they are only legal inside a
-  `scope { }` body. `scope` and `fork` are not synonyms.
-  Historical note retained at §4.9.
+  block (the scope boundary). `fork expr` is the only child-start form,
+  and it is only legal inside a `scope { }` body. `scope` and `fork` are
+  not synonyms. Historical note retained at §4.9.
 - **Stdlib narrowing.** The edition 2026 normative stdlib is deliberately
   narrow (§3.10.1). Surfaces that exist in `std/` today but are not
   normative — `dns`, `tls`, `quic`, `websocket`, `xml`/`yaml`/`toml`/`csv`,
   `regex`, `process`, `compress` — move to HEW-FUTURE.md §3.
-- **MIR ladder.** §8 (compilation model) is rewritten around the new IR
-  ladder: AST → Resolved HIR → SIR → Raw MIR → Checked MIR → Elaborated
-  MIR → LLVM IR via inkwell. The v0.4 Rust-frontend / C++ backend /
-  MessagePack-AST pipeline is no longer the design.
+- **IR ladder.** §8 (compilation model) is rewritten around the new IR
+  ladder: AST → typed HIR → ownership SIR → checked physical MIR → LLVM
+  IR via inkwell. The v0.4 Rust-frontend / C++ backend / MessagePack-AST
+  pipeline is no longer the design.
 - **Deferred to next edition.** Generators (`Lazy<T>` / `#[prefetch(N)]`),
   closures with captured
   environment, user-facing `Arc<T>`, `dyn Trait`, `DoubleEndedIterator`,
   generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
   tokens, actor await + read-after-send barrier, and the self-hosting
   roadmap. See HEW-FUTURE.md for the surface and version targets.
-  Channels (`std::channel`) and the rest of the `Iterator`/`IntoIterator`
+  Channels (`std.channel`) and the rest of the `Iterator`/`IntoIterator`
   trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
   communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.

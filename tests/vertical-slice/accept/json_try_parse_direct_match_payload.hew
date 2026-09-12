@@ -1,6 +1,6 @@
 //! Local `json.parse` matches own their fresh Result payloads.
 //!
-//! Both arms bind heap-owning payloads: `Ok(doc)` is an opaque JSON resource and
+//! Both arms bind heap-owning payloads: `Ok(doc)` is an owning JSON value and
 //! `Err(ParseError.Invalid(message))` carries the parser's native string detail.
 //! The inputs are dynamically allocated so the loop exercises the ownership path
 //! in both directions rather than only literal-backed values.
@@ -12,7 +12,11 @@ fn report_line(line: string) -> string {
     match parsed {
         .Ok(doc) => {
             let owned_doc = doc;
-            if owned_doc.type_of() < 0 {
+            if owned_doc.type_of() != Kind.Object {
+                return "";
+            }
+            let number = owned_doc.get_field("N").expect("get_field succeeds").expect("get_field returns a value").get_int().expect("get_int succeeds");
+            if number != 1 {
                 return "";
             }
             return "ok";

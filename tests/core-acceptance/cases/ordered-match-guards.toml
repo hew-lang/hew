@@ -1,0 +1,10 @@
+[[case]]
+id = "ordered-match-guards"
+intent = "Failed guards preserve ordered side effects for subsequent arms and the final mutable-value join."
+source = "cases/ordered-match-guards.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2:4:4:0\n"
+exit = 0

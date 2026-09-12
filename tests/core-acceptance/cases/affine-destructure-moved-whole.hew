@@ -1,0 +1,11 @@
+#[resource]
+type Ticket { id: i64 }
+impl Ticket { fn close(consume self) {} }
+type Booking { ticket: Ticket, label: string }
+fn inspect(booking: Booking) { println(booking.label); }
+fn main() {
+    let booking = Booking { ticket: Ticket { id: 7 }, label: "seat" };
+    let t = match booking { Booking { ticket: t, .. } => t };
+    t.close();
+    inspect(booking);
+}

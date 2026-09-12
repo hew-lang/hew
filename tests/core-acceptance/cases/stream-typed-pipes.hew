@@ -1,0 +1,46 @@
+import std.stream;
+
+fn write_text(consume sink: stream.Sink<string>) -> i64 {
+    let first = "TEXT\0ACROSS A BOUNDED PIPE".to_lower();
+    sink.write(first);
+    assert(first == "text\0across a bounded pipe");
+    sink.write("");
+    sink.write("last");
+    sink.close();
+    3
+}
+
+fn write_bytes(consume sink: stream.Sink<bytes>) -> i64 {
+    let first = "bytes\0across a bounded pipe".to_bytes();
+    sink.write(first);
+    assert(first == "bytes\0across a bounded pipe".to_bytes());
+    sink.write("".to_bytes());
+    sink.write("last".to_bytes());
+    sink.close();
+    3
+}
+
+fn main() {
+    let (text_sink, text) = stream.pipe(1).expect("text pipe");
+    scope {
+        let writer = fork write_text(text_sink);
+        assert(text.recv().expect("first text") == "text\0across a bounded pipe");
+        assert(text.recv().expect("empty text") == "");
+        assert(text.recv().expect("last text") == "last");
+        assert(text.recv().is_none());
+        assert(await writer == 3);
+    }
+    text.close();
+
+    let (byte_sink, data) = stream.bytes_pipe(1).expect("bytes pipe");
+    scope {
+        let writer = fork write_bytes(byte_sink);
+        assert(data.recv().expect("first bytes") == "bytes\0across a bounded pipe".to_bytes());
+        assert(data.recv().expect("empty bytes").len() == 0);
+        assert(data.recv().expect("last bytes") == "last".to_bytes());
+        assert(data.recv().is_none());
+        assert(await writer == 3);
+    }
+    data.close();
+    println("typed text and bytes, including empty items");
+}

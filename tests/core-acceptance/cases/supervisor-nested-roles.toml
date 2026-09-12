@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-nested-roles"
+intent = "Generic nested supervisor config owns embedded-NUL strings; retained typed subtree and leaf roles compose through multiple ancestors, survive replacement and refuse delivery after parent closure."
+source = "cases/supervisor-nested-roles.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "nested config and retained roles survive subtree replacement\n"
+stderr = "hew: failure: UserPanic (212): restart nested child\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart nested child\nhew: actor crash in Worker.fail (actor 5): UserPanic\n"
+exit = 0

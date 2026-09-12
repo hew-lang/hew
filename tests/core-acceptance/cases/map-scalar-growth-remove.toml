@@ -1,0 +1,10 @@
+[[case]]
+id = "map-scalar-growth-remove"
+intent = "Map growth, replacement and removal preserve an independent copy and return the exact removed value."
+source = "cases/map-scalar-growth-remove.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "999\n310\n999\nabsent\n31\n32\n"
+exit = 0

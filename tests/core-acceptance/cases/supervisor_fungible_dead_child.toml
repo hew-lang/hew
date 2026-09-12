@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor_fungible_dead_child"
+intent = "The fixture prints exactly its recorded output and exits 1."
+source = "../vertical-slice/accept/supervisor_fungible_dead_child.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "DEAD_CHILD:9\n"
+stderr = "hew: failure: UserPanic (212): worker crash\nhew: actor crash in Worker.crash_me (actor 1): UserPanic\nhew: failure: UserPanic (212): worker crash\nhew: actor crash in Worker.crash_me (actor 3): UserPanic\n"
+exit = 1

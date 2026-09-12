@@ -1,0 +1,11 @@
+[[case]]
+id = "hashmap_keys_values"
+intent = "HashMap key/value projection ops."
+source = "cases/hashmap_keys_values.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "2\n2\n2\n"
+exit = 0

@@ -73,6 +73,25 @@ pub struct ActorHandlerDescriptor {
     /// consumer "the symbol and the `msg_id` for this handler are these
     /// values, atomically").
     pub symbol: String,
+    /// How a `fails` handler's declared error renders when it has no caller.
+    /// A one-way submission through a mailbox view leaves the handler's
+    /// `Err(e)` with nowhere to go, so it becomes the actor's own fault and
+    /// this target supplies the fault's text. `None` for a handler without a
+    /// `fails` clause, and for an error type whose rendering the checker
+    /// cannot name — those handlers stay refused through a view.
+    pub failure_display: Option<ReceiveFailureDisplay>,
+}
+
+/// How one `fails` handler's declared error becomes fault text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReceiveFailureDisplay {
+    /// The error is already its own rendering: `fails string`.
+    Identity,
+    /// A declared `impl Display` body for the error type.
+    Declared {
+        declaration: crate::DefId,
+        instance: crate::EntryCallableInstance,
+    },
 }
 
 /// Build the fully-qualified name fed into the `msg_id` hash.
@@ -165,6 +184,7 @@ impl ActorProtocolDescriptor {
                 param_tys: spec.param_tys.clone(),
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
+                failure_display: None,
             });
         }
         Ok(Self {
@@ -208,6 +228,7 @@ impl ActorProtocolDescriptor {
                 param_tys: spec.param_tys.clone(),
                 return_ty: spec.return_ty.clone(),
                 symbol: spec.symbol.clone(),
+                failure_display: None,
             });
         }
         Ok(Self {
@@ -332,4 +353,36 @@ mod tests {
         assert_eq!(id, descriptor.handlers[0].msg_id);
         assert!(descriptor.msg_id_for("missing").is_none());
     }
+}
+
+/// The message id of a lambda actor's one receive handler.
+///
+/// A lambda actor has exactly one handler and no wire identity to keep stable
+/// across builds, so its id is fixed rather than hashed from a name. A call
+/// site reaches a lambda through its `actor(M) -> R` handle type, which names no
+/// particular lambda, so the id it addresses cannot depend on which one.
+pub const LAMBDA_ACTOR_MESSAGE_ID: u32 = 0;
+
+/// The dispatch id a lambda actor's completion call carries.
+///
+/// A call site reaches a lambda through its `actor(M) -> R` handle type, which
+/// names no particular lambda, so it cannot name that lambda's handler
+/// declaration. Every lambda actor declares exactly one handler, so the
+/// target selects it structurally rather than by path.
+pub const LAMBDA_ACTOR_METHOD_ID: &str = "#lambda::call";
+
+/// The resolver-minted identities of one lambda actor (`actor |msg| { .. }`).
+///
+/// A lambda actor has no source name, so the checker mints its declaration
+/// and its single receive handler keyed by the exact span of the `actor`
+/// expression. HIR synthesizes the actor declaration these belong to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LambdaActorIdentity {
+    /// The synthesized actor declaration.
+    pub actor: crate::DefId,
+    /// Its one receive handler.
+    pub handler: crate::DefId,
+    /// The declaration path the actor is registered under, which is also the
+    /// name its synthesized declaration carries.
+    pub path: String,
 }

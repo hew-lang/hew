@@ -14,7 +14,7 @@
 // NOTE on leaks: like the landed W5.011 `string` value-class drop, a loop-body
 // composite is released at FUNCTION-scope exit, not per loop iteration
 // (`enumerate_exits` narrows drops to `Return` exits), so this loop leaks one
-// buffer per iteration — exactly as `let s = string_concat(..)` in a loop does
+// buffer per iteration — exactly as `let s = left + right` in a loop does
 // today. Per-iteration loop-scope drop is a shared, pre-existing limitation
 // tracked separately; it is NOT a double-free and NOT a W5.020 regression. A
 // non-loop handler (see `result_handler_heap_oracle`) is fully leak-free.
@@ -22,7 +22,7 @@ fn handle(n: i64) -> Result<i64, string> {
     if n >= 0 {
         Ok(n * 2)
     } else {
-        Err(string_concat("neg-", "input"))
+        Err(("neg-" + "input"))
     }
 }
 

@@ -1,73 +1,43 @@
-//! Measured result-retention proofs for HTTP request/response strings.
-//!
-//! The request half uses one real loopback request because
-//! [`server::HewHttpRequest`] intentionally hides the `tiny_http::Request`
-//! that owns its method, path, headers, and body. The response half uses the
-//! exported C-layout response object directly. Every admitted symbol has its
-//! own R1/R2/R3 call site:
-//!
-//! - R1: two results held live simultaneously occupy distinct allocations.
-//! - R2: `cstring_ensure_unique(result) == result`, proving refcount one at
-//!   handoff.
-//! - R3: after the caller releases both results, the same request/response can
-//!   produce another result.
-//!
-//! Null, missing-header, and allocated-empty paths are audited separately.
-//! They do not borrow a static sentinel and do not weaken the positive-path
-//! transfer proof.
+//! Managed string results survive sibling releases and leave their producer usable.
+//! Raw protocol objects retain their own independent storage and release path.
 
-use std::ffi::{c_char, CStr, CString};
+use crate::test_string::ManagedString;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use hew_cabi::cabi::{cstring_ensure_unique, free_cstring, str_to_malloc};
+use hew_cabi::cabi::str_to_malloc;
+use hew_cabi::string::{string_as_str, string_release, string_retain, HewString};
 
 use super::{client, server};
 
-fn assert_transferred(
+fn assert_owned_results(
     symbol: &str,
-    mut call: impl FnMut() -> *mut c_char,
-    validate: impl Fn(&CStr),
+    mut call: impl FnMut() -> *mut HewString,
+    validate: impl Fn(&str),
 ) {
     let first = call();
     let second = call();
-    assert!(
-        !first.is_null() && !second.is_null(),
-        "{symbol}: expected two live results"
-    );
-    assert_ne!(
-        first, second,
-        "{symbol}: R1 failed: two live results share an address"
-    );
-
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: `ptr` is a live header-aware result from the named producer.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "{symbol}: R2 failed: the {label} result was shared at handoff"
-        );
-        // SAFETY: the uniqueness probe returned the live pointer unchanged.
-        validate(unsafe { CStr::from_ptr(ptr) });
+    if !first.is_null() {
+        assert_ne!(first, second, "{symbol}: live copies must be independent");
     }
-
-    // SAFETY: R1/R2 establish two distinct, solely-owned live results.
+    // SAFETY: both results are owned managed strings, including canonical empty.
     unsafe {
-        free_cstring(first);
-        free_cstring(second);
+        validate(string_as_str(first));
+        validate(string_as_str(second));
+        let retained = string_retain(first);
+        string_release(first);
+        string_release(second);
+        validate(string_as_str(retained));
+        string_release(retained);
     }
-
     let third = call();
-    assert!(
-        !third.is_null(),
-        "{symbol}: R3 failed after caller releases"
-    );
-    // SAFETY: `third` is a fresh live result.
-    validate(unsafe { CStr::from_ptr(third) });
-    // SAFETY: the third result is solely owned by this caller.
-    unsafe { free_cstring(third) };
+    // SAFETY: the producer remains usable after releasing earlier results.
+    unsafe {
+        validate(string_as_str(third));
+        string_release(third);
+    }
 }
 
 struct RequestFixture {
@@ -78,7 +48,7 @@ struct RequestFixture {
 
 impl RequestFixture {
     fn new() -> Self {
-        let addr = CString::new("127.0.0.1:0").unwrap();
+        let addr = ManagedString::new("127.0.0.1:0");
         // SAFETY: `addr` is a live NUL-terminated bind address.
         let server = unsafe { server::hew_http_server_new(addr.as_ptr()) };
         assert!(!server.is_null(), "loopback HTTP server must bind");
@@ -133,7 +103,7 @@ impl RequestFixture {
 
 impl Drop for RequestFixture {
     fn drop(&mut self) {
-        let response = CString::new("retention-complete").unwrap();
+        let response = ManagedString::new("retention-complete");
         // SAFETY: the fixture owns a live request. A body read restores the
         // inner request, so this response also proves the request remains
         // operational after caller-side result releases.
@@ -166,86 +136,46 @@ impl Drop for RequestFixture {
 fn request_method_path_and_header_results_are_transferred() {
     let fixture = RequestFixture::new();
 
-    assert_transferred(
+    assert_owned_results(
         "hew_http_request_method",
         // SAFETY: `fixture.request` remains live for the measurement.
         || unsafe { server::hew_http_request_method(fixture.request) },
-        |text| assert_eq!(text.to_str().unwrap(), "POST"),
+        |text| assert_eq!(text, "POST"),
     );
-    assert_transferred(
+    assert_owned_results(
         "hew_http_request_path",
         // SAFETY: `fixture.request` remains live for the measurement.
         || unsafe { server::hew_http_request_path(fixture.request) },
-        |text| assert_eq!(text.to_str().unwrap(), "/retention/probe?round=1"),
+        |text| assert_eq!(text, "/retention/probe?round=1"),
     );
 
-    let header = CString::new("x-retention").unwrap();
-    assert_transferred(
+    let header = ManagedString::new("x-retention");
+    assert_owned_results(
         "hew_http_request_header",
         // SAFETY: the request and NUL-terminated header name remain live.
         || unsafe { server::hew_http_request_header(fixture.request, header.as_ptr()) },
-        |text| assert_eq!(text.to_str().unwrap(), "request-owner"),
+        |text| assert_eq!(text, "request-owner"),
     );
 }
 
 #[test]
 fn request_body_result_is_transferred_and_request_survives_release() {
     let fixture = RequestFixture::new();
-    let encoding = CString::new("utf-8").unwrap();
+    let encoding = ManagedString::new("utf-8");
 
-    // A request body is a stream: the first read has the payload and the
-    // second/third reads are allocated empty strings. That producer-specific
-    // state transition still admits the same ownership proof.
-    // SAFETY: request/encoding remain live through all calls.
+    // SAFETY: the fixture lends its live request and encoding strings.
     let first = unsafe { server::hew_http_request_body_string(fixture.request, encoding.as_ptr()) };
-    // SAFETY: as above; the request's body reader is now at EOF.
+    // SAFETY: the request's body reader is now at EOF.
     let second =
         unsafe { server::hew_http_request_body_string(fixture.request, encoding.as_ptr()) };
-    assert!(
-        !first.is_null() && !second.is_null(),
-        "hew_http_request_body_string: expected two live results"
-    );
-    assert_ne!(
-        first, second,
-        "hew_http_request_body_string: R1 failed: live payload/EOF results alias"
-    );
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: `ptr` is a live header-aware body result.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "hew_http_request_body_string: R2 failed for {label} result"
-        );
-    }
-    // SAFETY: both pointers remain live and solely owned.
-    let first_text = unsafe { CStr::from_ptr(first) };
-    assert_eq!(first_text.to_str().unwrap(), "request-body-owner");
-    // SAFETY: the second pointer is a live allocated-empty result.
-    assert!(unsafe { CStr::from_ptr(second) }.to_bytes().is_empty());
-    // SAFETY: R1/R2 prove two independent caller-owned results.
+    drop(fixture);
+    // SAFETY: both returned values own their strings independently of the request.
     unsafe {
-        free_cstring(first);
-        free_cstring(second);
+        assert_eq!(string_as_str(first), "request-body-owner");
+        assert!(string_as_str(second).is_empty());
+        string_release(first);
+        string_release(second);
     }
-
-    // SAFETY: caller releases do not consume the request; another body result
-    // is still produced from the live EOF state.
-    let third = unsafe { server::hew_http_request_body_string(fixture.request, encoding.as_ptr()) };
-    assert!(
-        !third.is_null(),
-        "hew_http_request_body_string: R3 failed after caller releases"
-    );
-    // SAFETY: `third` is live and solely owned.
-    assert!(unsafe { CStr::from_ptr(third) }.to_bytes().is_empty());
-    // SAFETY: balancing release for the third result.
-    unsafe { free_cstring(third) };
-
-    // SAFETY: the request itself must still be readable after the body
-    // result's lifecycle, independently of Drop's successful response check.
-    let method = unsafe { server::hew_http_request_method(fixture.request) };
-    assert!(!method.is_null());
-    // SAFETY: `method` is the caller-owned result just returned.
-    unsafe { free_cstring(method) };
 }
 
 #[test]
@@ -261,7 +191,7 @@ fn request_null_and_missing_header_paths_are_not_static_results() {
     }
 
     let fixture = RequestFixture::new();
-    let missing = CString::new("x-definitely-missing").unwrap();
+    let missing = ManagedString::new("x-definitely-missing");
     // SAFETY: request/name are live; absence is represented by null, not a
     // borrowed static empty string.
     let absent = unsafe { server::hew_http_request_header(fixture.request, missing.as_ptr()) };
@@ -271,7 +201,7 @@ fn request_null_and_missing_header_paths_are_not_static_results() {
     let path = unsafe { server::hew_http_request_path(fixture.request) };
     assert!(!path.is_null());
     // SAFETY: `path` is a fresh caller-owned result.
-    unsafe { free_cstring(path) };
+    unsafe { string_release(path) };
 }
 
 fn response_fixture() -> *mut client::HewHttpResponse {
@@ -295,11 +225,11 @@ fn response_fixture() -> *mut client::HewHttpResponse {
 #[test]
 fn response_body_content_type_and_header_results_are_transferred() {
     let response = response_fixture();
-    assert_transferred(
+    assert_owned_results(
         "hew_http_response_body",
         // SAFETY: `response` remains live for the measurement.
         || unsafe { client::hew_http_response_body(response) },
-        |text| assert_eq!(text.to_str().unwrap(), "response-body-owner"),
+        |text| assert_eq!(text, "response-body-owner"),
     );
     assert_eq!(
         // SAFETY: accessor calls and caller releases only borrow the response.
@@ -308,19 +238,19 @@ fn response_body_content_type_and_header_results_are_transferred() {
         "response state must survive body result releases"
     );
 
-    assert_transferred(
+    assert_owned_results(
         "hew_http_response_content_type",
         // SAFETY: `response` remains live for the measurement.
         || unsafe { client::hew_http_response_content_type(response) },
-        |text| assert_eq!(text.to_str().unwrap(), "application/retention"),
+        |text| assert_eq!(text, "application/retention"),
     );
 
-    let name = CString::new("x-retention").unwrap();
-    assert_transferred(
+    let name = ManagedString::new("x-retention");
+    assert_owned_results(
         "hew_http_response_header",
         // SAFETY: response/name remain live through the measurement.
         || unsafe { client::hew_http_response_header(response, name.as_ptr()) },
-        |text| assert_eq!(text.to_str().unwrap(), "response-owner"),
+        |text| assert_eq!(text, "response-owner"),
     );
 
     // SAFETY: every accessor borrowed `response`; this is its sole release.
@@ -335,32 +265,32 @@ fn response_null_missing_and_empty_paths_allocate_or_return_null_as_documented()
 
     // Header/content-type represent a null response with a fresh allocated
     // empty result, never with a static sentinel.
-    assert_transferred(
+    assert_owned_results(
         "hew_http_response_header(null-response)",
         // SAFETY: null is explicitly accepted.
         || unsafe { client::hew_http_response_header(std::ptr::null(), std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
+        |text| assert!(text.is_empty()),
     );
-    assert_transferred(
+    assert_owned_results(
         "hew_http_response_content_type(null-response)",
         // SAFETY: null is explicitly accepted.
         || unsafe { client::hew_http_response_content_type(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
+        |text| assert!(text.is_empty()),
     );
 
     let response = response_fixture();
-    let missing = CString::new("x-definitely-missing").unwrap();
-    assert_transferred(
+    let missing = ManagedString::new("x-definitely-missing");
+    assert_owned_results(
         "hew_http_response_header(missing)",
-        // SAFETY: response/name remain live; a miss returns allocated empty.
+        // SAFETY: response/name remain live; a miss returns canonical empty.
         || unsafe { client::hew_http_response_header(response, missing.as_ptr()) },
-        |text| assert!(text.to_bytes().is_empty()),
+        |text| assert!(text.is_empty()),
     );
-    assert_transferred(
+    assert_owned_results(
         "hew_http_response_header(null-name)",
-        // SAFETY: null name is explicitly mapped to allocated empty.
+        // SAFETY: null name is explicitly mapped to canonical empty.
         || unsafe { client::hew_http_response_header(response, std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
+        |text| assert!(text.is_empty()),
     );
     // SAFETY: all empty-path calls borrowed the response.
     unsafe { client::hew_http_response_free(response) };

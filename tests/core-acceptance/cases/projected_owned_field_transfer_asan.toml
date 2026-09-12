@@ -1,0 +1,13 @@
+[[case]]
+id = "projected_owned_field_transfer_asan"
+intent = "ASan/LSan oracle for the projected-owned-field handoff (#3226)."
+source = "../vertical-slice/accept/projected_owned_field_transfer_asan.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n12\n1\nnone\n"
+exit = 0

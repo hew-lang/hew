@@ -10,9 +10,10 @@ use super::*;
 ///
 /// The two positions have different grammars on purpose. `Source` is a
 /// pattern matched against the machine's current state — it has no expected
-/// type, carries no bare-variant lint, and therefore has no contextual
-/// (`.Variant`) form. `Target` is an expression checked against the machine's
-/// state enum, so it accepts `.Variant` and the bare form warns with a fix-it.
+/// type and therefore has no contextual (`.Variant`) form. `Target` is a state
+/// name in the machine's own namespace (HEW-SPEC-2026 §3.11.3), written bare;
+/// the contextual spelling is tolerated there and carries no bare-variant lint
+/// either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StatePatternPosition {
     Source,
@@ -132,7 +133,7 @@ impl Parser<'_> {
                 let fn_start = self.peek_span().start;
                 self.advance();
                 if let Some(mut method) =
-                    self.parse_function(fn_start, false, false, Visibility::Private, hook_attrs)
+                    self.parse_function(fn_start, false, Visibility::Private, hook_attrs)
                 {
                     method.doc_comment = doc_comment;
                     methods.push(method);
@@ -152,10 +153,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate fields".to_string());
-                    self.advance();
-                }
+                self.expect_structural_separator();
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -174,10 +172,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate fields".to_string());
-                    self.advance();
-                }
+                self.expect_structural_separator();
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -202,7 +197,7 @@ impl Parser<'_> {
                     self.advance();
                     overflow_policy = self.parse_overflow_policy();
                 }
-                self.eat(&Token::Semicolon);
+                self.expect_structural_separator();
             } else if self.peek_is_field_decl() {
                 self.validate_attributes_for(&attrs, AttrPosition::Unsupported);
                 let field_name = self.expect_ident()?;
@@ -213,10 +208,7 @@ impl Parser<'_> {
                 } else {
                     None
                 };
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate fields".to_string());
-                    self.advance();
-                }
+                self.expect_structural_separator();
                 fields.push(FieldDecl {
                     name: field_name,
                     ty,
@@ -351,7 +343,7 @@ impl Parser<'_> {
 
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek_machine_kw("events") {
-                // `events { Name; Name { f: T; } … }` — the input-event
+                // `events { Name, Name { f: T }, … }` — the input-event
                 // vocabulary header (contextual keyword; replaces the former
                 // interleaved `event Name;` declarations).
                 self.advance();
@@ -359,7 +351,7 @@ impl Parser<'_> {
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let event_name = self.expect_ident()?;
                     let fields = self.parse_machine_event_fields()?;
-                    self.eat(&Token::Semicolon);
+                    self.expect_structural_separator();
                     events.push(MachineEvent {
                         name: event_name,
                         fields,
@@ -367,15 +359,17 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightBrace)?;
             } else if self.peek_machine_kw("emits") {
-                // `emits { Name; … }` — optional Mealy-output manifest. Each
-                // entry names a declared event the machine may `emit`. Stored
-                // as a bare name list; HIR cross-checks emit sites against it.
+                // Outputs have their own typed vocabulary, separate from inputs.
                 self.advance();
                 self.expect(&Token::LeftBrace)?;
                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                     let emitted = self.expect_ident()?;
-                    self.eat(&Token::Semicolon);
-                    emits.push(emitted);
+                    let fields = self.parse_machine_event_fields()?;
+                    self.expect_structural_separator();
+                    emits.push(MachineEvent {
+                        name: emitted,
+                        fields,
+                    });
                 }
                 self.expect(&Token::RightBrace)?;
             } else if self.peek() == Some(&Token::State) {
@@ -398,25 +392,24 @@ impl Parser<'_> {
             } else if self.peek() == Some(&Token::On) {
                 let transition = self.parse_machine_transition()?;
                 transitions.push(transition);
-            } else if self.peek() == Some(&Token::Default) {
+            } else if self.eat_machine_kw("default") {
                 // `default { state }` — unhandled events stay in current state.
-                self.advance();
-                if self.eat(&Token::LeftBrace) {
-                    let mut depth = 1;
-                    while depth > 0 && !self.at_end() {
-                        if self.peek() == Some(&Token::LeftBrace) {
-                            depth += 1;
-                        }
-                        if self.peek() == Some(&Token::RightBrace) {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        self.advance();
+                // One spelling: a bare `default` or `default;` said the same
+                // thing and is refused (D480).
+                if self.peek() == Some(&Token::LeftBrace) {
+                    let block = self.parse_block()?;
+                    if !block.stmts.is_empty()
+                        || !matches!(block.trailing_expr.as_deref(), Some((Expr::Identifier(name), _)) if name == "state")
+                    {
+                        self.error("machine default must be `default { state }`; use an explicit rule for computation".to_string());
                     }
-                    self.expect(&Token::RightBrace)?;
                 } else {
+                    let span = self.peek_span();
+                    self.error_at_with_hint(
+                        "machine default must be `default { state }`".to_string(),
+                        span,
+                        "write the identity body: `default { state }`",
+                    );
                     self.eat(&Token::Semicolon);
                 }
                 has_default = true;
@@ -431,11 +424,7 @@ impl Parser<'_> {
 
         self.expect(&Token::RightBrace)?;
 
-        // Splice composite entry/exit hooks into every boundary-crossing
-        // transition (top-level + expanded) now that the full flat list is
-        // assembled. Done as a post-pass so a top-level `Outside => Sk` enter
-        // and `Sk => Outside` leave are covered, not just parent-rule clones.
-        Self::splice_all_composite_hooks(&mut transitions, &composite_groups);
+        Self::desugar_composites(&mut transitions, &composite_groups);
 
         Some(MachineDecl {
             visibility,
@@ -452,13 +441,60 @@ impl Parser<'_> {
         })
     }
 
+    /// Finish the composite desugar once the whole machine body is parsed:
+    /// expand each group's parent rules onto its members, then splice the
+    /// group's hooks into every transition that crosses its boundary. Both run
+    /// here, not while the block is parsed, so rules written after the block
+    /// are seen — a substate override below the block still beats the parent
+    /// rule, and a top-level enter or leave still gets its hooks.
+    fn desugar_composites(
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &[CompositeGroup],
+    ) {
+        Self::expand_all_composite_parent_rules(transitions, composite_groups);
+        Self::splice_all_composite_hooks(transitions, composite_groups);
+    }
+
+    /// Post-pass: expand each composite's wildcard-source parent rules (D1) to
+    /// one concrete-source transition per member. Concrete sources are required
+    /// because the checker refuses `state.field` under a literal `_` source.
+    ///
+    /// A substate's own unguarded rule for the same event wins outright and the
+    /// parent rule is not expanded onto it. A guarded substate rule keeps the
+    /// parent rule, appended after it as the unconditional fallback.
+    fn expand_all_composite_parent_rules(
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &[CompositeGroup],
+    ) {
+        for group in composite_groups {
+            for parent in &group.parent_transitions {
+                if parent.source_state != "_" {
+                    continue;
+                }
+                for member in &group.members {
+                    let covered = transitions.iter().any(|existing| {
+                        existing.source_state == *member
+                            && existing.event_name == parent.event_name
+                            && existing.guard.is_none()
+                    });
+                    if covered {
+                        continue;
+                    }
+                    let mut expanded = parent.clone();
+                    expanded.source_state.clone_from(member);
+                    transitions.push(expanded);
+                }
+            }
+        }
+    }
+
     /// Post-pass: splice composite `entry`/`exit` hooks into every transition
     /// that crosses a composite boundary, for each depth-1 group. A transition
     /// entering composite C (source ∉ C, target ∈ C) gets `C.entry` prepended;
     /// one leaving C (source ∈ C, target ∉ C) gets `C.exit` prepended. With the
     /// MIR firing the source substate's own `exit` before the body and the
     /// target substate's own `entry` after, this yields Harel ordering.
-    pub(crate) fn splice_all_composite_hooks(
+    fn splice_all_composite_hooks(
         transitions: &mut [MachineTransition],
         composite_groups: &[CompositeGroup],
     ) {
@@ -468,6 +504,7 @@ impl Parser<'_> {
         for group in composite_groups {
             for transition in transitions.iter_mut() {
                 if transition.target_state == group.name {
+                    transition.target_composite = Some(group.name.clone());
                     transition.target_state.clone_from(&group.initial);
                     // Rewrite a bare-identifier passthrough body that named the
                     // composite to name the initial substate instead.
@@ -535,24 +572,30 @@ impl Parser<'_> {
         // re-entry). Grammar slot: `on E(b): Src => Tgt reenter [when g] [body]`.
         let reenter = self.eat_machine_kw("reenter");
 
-        // Optional guard: `when <expr>`.
+        // Optional guard: `when <expr>`. A guard shares the `if`/`while`
+        // condition's no-struct-literal context: a bare identifier directly
+        // followed by `{` is the transition's body opener (a field-list or
+        // block body), never a struct literal starting the guard expression
+        // — `when active { n: state.n + 1 }` is the guard `active` with body
+        // `{ n: state.n + 1 }`, not a guard `active { n: ... }` with an
+        // elided implicit body.
         let guard = if self.peek() == Some(&Token::When) {
             self.advance();
-            Some(self.parse_expr()?)
+            Some(self.parse_cond_expr()?)
         } else {
             None
         };
 
         // Body forms:
-        //   on Event: Source => Target;                     ← no body (unit)
-        //   on Event: Source => Target { field: expr, ... } ← struct fields, target inferred
-        //   on Event: Source => Target { expression }       ← explicit body
-        let (body, body_form, body_start, body_end) = if self.eat(&Token::Semicolon) {
+        //   on Event: Source => Target,                     ← no body (unit)
+        //   on Event: Source => Target { field: expr, ... } ← field list, target elided
+        //   on Event: Source => Target { expression }       ← computed body
+        let (body, body_form, body_start, body_end) = if self.peek() != Some(&Token::LeftBrace) {
+            self.expect_structural_separator();
             // The implicit body is synthesized from the target state, so it is
             // spanned on the target token — not on whatever token follows the
-            // `;`. Diagnostics on this expression (notably the bare-variant
-            // fix-it that rewrites `Tgt` to `.Tgt`) are only applicable if they
-            // point at the text they ask the author to replace.
+            // `,`. A diagnostic on this expression has to point at the text it
+            // asks the author to change.
             let body_expr = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
                     name: target_state.clone(),
@@ -570,33 +613,24 @@ impl Parser<'_> {
         } else if target_state != "_" && self.is_struct_init_body() {
             let bs = self.peek_span().start;
             self.expect(&Token::LeftBrace)?;
-            let mut fields = Vec::new();
-            while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                let fname = self.expect_ident()?;
-                self.expect(&Token::Colon)?;
-                let fval = self.parse_expr()?;
-                fields.push((fname, fval));
-                if !self.eat(&Token::Comma) {
-                    break;
-                }
-            }
-            self.expect(&Token::RightBrace)?;
+            // The head already named the target, so the braces hold exactly a
+            // record literal's field list — `..base` included.
+            let (fields, base) = self.parse_struct_init_fields()?;
             let be = self.peek_span().start;
             // A contextual target keeps its contextual form when it carries a
             // payload: `=> .Faulted { error }` resolves against the machine's
-            // state enum exactly as `=> .Faulted;` does, and carries no
-            // bare-variant warning.
+            // state enum exactly as `=> .Faulted,` does.
             let payload = if target_is_contextual {
                 Expr::ContextVariant(ContextVariantExpr {
                     name: target_state.clone(),
-                    record: Some(Box::new(ContextVariantRecord { fields, base: None })),
+                    record: Some(Box::new(ContextVariantRecord { fields, base })),
                 })
             } else {
                 Expr::StructInit {
                     name: target_state.clone(),
                     fields,
                     type_args: None,
-                    base: None,
+                    base,
                 }
             };
             (payload, MachineTransitionBodyForm::PayloadShorthand, bs, be)
@@ -618,6 +652,7 @@ impl Parser<'_> {
             source_state,
             target_state,
             target_is_contextual,
+            target_composite: None,
             event_bindings: head_bindings,
             composite_prelude_len: 0,
             guard,
@@ -638,9 +673,7 @@ impl Parser<'_> {
                 let field_name = self.expect_ident()?;
                 self.expect(&Token::Colon)?;
                 let ty = self.parse_type()?;
-                if !self.eat(&Token::Semicolon) {
-                    self.eat(&Token::Comma);
-                }
+                self.expect_structural_separator();
                 fields.push((field_name, ty));
             }
             self.expect(&Token::RightBrace)?;
@@ -695,15 +728,13 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.eat(&Token::Semicolon);
+        self.expect_structural_separator();
 
         states.push(MachineState {
             name: state_name,
@@ -795,7 +826,7 @@ impl Parser<'_> {
             }
         }
         self.expect(&Token::RightBrace)?;
-        self.eat(&Token::Semicolon);
+        self.expect_structural_separator();
 
         let Some(initial_name) = initial else {
             self.error_at(
@@ -809,8 +840,6 @@ impl Parser<'_> {
         };
 
         // ── Desugar to the flat lists. ───────────────────────────────────────
-        let member_set: std::collections::HashSet<String> = member_names.iter().cloned().collect();
-
         // Stamp composite-owned fields onto every member (shared layout).
         for member in &mut members {
             for (fname, fty) in &fields {
@@ -820,29 +849,13 @@ impl Parser<'_> {
             }
         }
 
-        // Explicit per-member rules already authored (inside the block as
-        // `on E: Sk => …`, or at the machine top level). Used for D1
-        // override-skip so an explicit rule beats the expanded parent rule.
-        let explicit_keys: std::collections::HashSet<(String, String)> = transitions
-            .iter()
-            .chain(parent_transitions.iter())
-            .filter(|t| member_set.contains(&t.source_state))
-            .map(|t| (t.source_state.clone(), t.event_name.clone()))
-            .collect();
-
-        // D1: expand each parent rule to one concrete-source transition per
-        // member. Composite entry/exit hooks are spliced uniformly in a
-        // post-pass (`splice_all_composite_hooks`) once every transition —
-        // top-level and expanded — is in the flat list, so boundary-crossing
-        // top-level transitions are covered too.
+        // A parent rule written with a concrete member source (`on E: Sk => …`
+        // inside the block) is that member's own rule; it joins the flat list
+        // here. Wildcard-source parent rules are expanded per member by the
+        // post-pass, once every top-level rule is also in the list.
         for pt in &parent_transitions {
-            for member in &member_names {
-                if explicit_keys.contains(&(member.clone(), pt.event_name.clone())) {
-                    continue;
-                }
-                let mut expanded = pt.clone();
-                expanded.source_state.clone_from(member);
-                transitions.push(expanded);
+            if pt.source_state != "_" {
+                transitions.push(pt.clone());
             }
         }
 
@@ -864,7 +877,7 @@ impl Parser<'_> {
 
     /// Parse a single substate declaration (`state Name;` /
     /// `state Name { fields; entry {} exit {} }`). A `state` inside a substate
-    /// body is depth>1 nesting, rejected with a v0.6 diagnostic.
+    /// body nests deeper than one level and is refused.
     pub(crate) fn parse_machine_substate(&mut self, composite_name: &str) -> Option<MachineState> {
         self.expect(&Token::State)?;
         let name = self.expect_ident()?;
@@ -882,9 +895,9 @@ impl Parser<'_> {
                 } else if self.peek() == Some(&Token::State) || self.peek_machine_kw("initial") {
                     self.error_at(
                         format!(
-                            "nested composite states (depth > 1) are reserved for v0.6; \
-                             substate `{name}` of composite `{composite_name}` may not contain \
-                             further substates"
+                            "a composite state nests one level; substate `{name}` of \
+                             composite `{composite_name}` may not declare substates of \
+                             its own"
                         ),
                         self.peek_span(),
                     );
@@ -907,15 +920,13 @@ impl Parser<'_> {
                     let field_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                     fields.push((field_name, ty));
                 }
             }
             self.expect(&Token::RightBrace)?;
         }
-        self.eat(&Token::Semicolon);
+        self.expect_structural_separator();
         Some(MachineState {
             name,
             fields,
@@ -1108,15 +1119,18 @@ impl Parser<'_> {
         if self.peek() != Some(&Token::LeftBrace) {
             return false;
         }
-        // Look ahead: tokens[pos+1] should be Identifier, tokens[pos+2] should be Colon
+        // Look ahead: tokens[pos+1] should be Identifier, tokens[pos+2] should
+        // be Colon — or tokens[pos+1] is `..`, the record spread that supplies
+        // the fields the list does not name (§3.1).
         let pos = self.pos;
         if pos + 2 >= self.tokens.len() {
             return false;
         }
-        matches!(
-            (&self.tokens[pos + 1].0, &self.tokens[pos + 2].0),
-            (Token::Identifier(_), Token::Colon)
-        )
+        matches!(&self.tokens[pos + 1].0, Token::DotDot)
+            || matches!(
+                (&self.tokens[pos + 1].0, &self.tokens[pos + 2].0),
+                (Token::Identifier(_), Token::Colon)
+            )
     }
 
     #[expect(
@@ -1128,6 +1142,11 @@ impl Parser<'_> {
         visibility: Visibility,
     ) -> Option<SupervisorDecl> {
         let name = self.expect_ident()?;
+        let type_params = if self.eat(&Token::Less) {
+            self.parse_type_params()?
+        } else {
+            Vec::new()
+        };
 
         // Optional construction-time config params: `supervisor App(config: T)`.
         // Mirrors the actor `init(params)` shape; the child init-arg exprs in the
@@ -1171,9 +1190,7 @@ impl Parser<'_> {
                         }
                         _ => None,
                     };
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                 }
                 // `intensity: N within <duration>` — the restart-budget contract.
                 // Fuses the legacy `max_restarts:` + `window:` fields. `within`
@@ -1182,7 +1199,11 @@ impl Parser<'_> {
                     self.advance();
                     self.expect(&Token::Colon)?;
                     let restarts = if let Some(Token::Integer(num_str)) = self.peek() {
-                        let n = parse_int_literal(num_str).ok().map(|(v, _)| v);
+                        // The declared restart count keeps its `i64` range;
+                        // the literal carrier is wider than the field.
+                        let n = parse_int_literal(num_str)
+                            .ok()
+                            .and_then(|(v, _)| i64::try_from(v).ok());
                         self.advance();
                         n
                     } else {
@@ -1241,9 +1262,7 @@ impl Parser<'_> {
                     if let (Some(restarts), Some(window)) = (restarts, window) {
                         intensity = Some(Intensity { restarts, window });
                     }
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                 }
                 // Legacy `max_restarts:` / `window:` fields — removed in the
                 // flat-reliability-fields cutover. Emit a migration diagnostic
@@ -1269,13 +1288,11 @@ impl Parser<'_> {
                     {
                         self.advance();
                     }
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                 }
-                Some(Token::Child | Token::Pool) => {
+                Some(Token::Child | Token::Identifier("pool")) => {
                     let child_start = self.peek_span().start;
-                    let is_pool = matches!(self.peek(), Some(Token::Pool));
+                    let is_pool = matches!(self.peek(), Some(Token::Identifier("pool")));
                     self.advance();
                     let child_name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
@@ -1291,6 +1308,11 @@ impl Parser<'_> {
                         actor_type.push('.');
                         actor_type.push_str(&type_name);
                     }
+                    let type_args = if self.eat(&Token::Less) {
+                        self.parse_type_args()?
+                    } else {
+                        Vec::new()
+                    };
 
                     // Parse named init args: `child w: Worker(field: expr, ...)`.
                     // Mirrors plain `spawn Worker(field: expr, ...)` at parser.rs:6047.
@@ -1545,12 +1567,11 @@ impl Parser<'_> {
                         }
                     }
 
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
+                    self.expect_structural_separator();
                     children.push(ChildSpec {
                         name: child_name,
                         actor_type,
+                        type_args,
                         args,
                         restart,
                         wired_to,
@@ -1579,6 +1600,7 @@ impl Parser<'_> {
         Some(SupervisorDecl {
             visibility,
             name,
+            type_params,
             params,
             strategy,
             intensity,

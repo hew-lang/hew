@@ -1,0 +1,10 @@
+[[case]]
+id = "entry-result-ok"
+intent = "A Result entry returning Ok exits 0 after releasing its owned locals."
+source = "cases/entry-result-ok.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "held:ok\n"
+exit = 0

@@ -40,13 +40,6 @@ pub struct ReplSession {
     /// Target triple for compilation (e.g. `wasm32-wasi`). When `None` the
     /// host native target is used.
     eval_target: Option<String>,
-    /// JIT execution mode.  When `None` (or `Worker`), uses the existing
-    /// AOT+spawn path.  When `Inprocess`, routes through LLJIT.
-    jit_mode: Option<crate::args::JitMode>,
-    /// SIR lane selected by `hew eval`. This stays on the session so every
-    /// synthetic fragment, loaded file, native AOT compile, and WASM AOT
-    /// compile makes the same explicit lowering choice.
-    sir_mode: crate::compile::SirMode,
 }
 
 #[derive(Debug)]
@@ -163,17 +156,6 @@ enum ExpressionEvalPlan {
     Display(String),
 }
 
-/// One explicit lowering/execution selection for an eval compilation.
-///
-/// Native and WASM AOT both consume this shared configuration, preventing a
-/// new compiler-lane flag from being threaded into only one execution backend.
-#[derive(Clone, Copy)]
-struct EvalBackendOptions<'a> {
-    target: Option<&'a str>,
-    jit_mode: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
-}
-
 #[derive(Debug)]
 enum CompiledEvalError {
     DiagnosticsRendered,
@@ -261,40 +243,17 @@ pub(crate) fn emit_runtime_failure_output(
         // The child died silently (e.g. classic signal-killed arithmetic trap
         // with no stderr). Synthesise an explanation.
         eprintln!("{}", describe_runtime_failure(exit_code, signal));
-    } else if signal.is_some() || is_runtime_trap_stderr(stderr) {
-        // Two equivalent cases for which we synthesise a user-facing prefix:
-        //
-        // 1. Unix: child was killed by a signal (F1.3 path on Linux/macOS —
-        //    `hew_trap_with_code` emits "hew: trap in main context: …" then
-        //    the default SIGILL handler terminates the process). The Unix
-        //    signal number is available via `signal`.
-        //
-        // 2. Windows: `hew_trap_with_code` emits the runtime-internal message
-        //    then the caller's `llvm.trap` terminates the process as
-        //    STATUS_ILLEGAL_INSTRUCTION (0xC000001D). There is no Unix signal;
-        //    the cause is detectable only via the stderr message prefix and the
-        //    NTSTATUS exit code.
-        //
-        // In both cases, emit the synthesised user-facing description first so
-        // the output always contains "runtime error" and the named cause, then
-        // forward the child's raw runtime-internal stderr for additional context.
+    } else if signal.is_some() {
+        // The child was killed by a signal and still wrote something: emit the
+        // synthesised description first so the output names the cause, then
+        // forward the child's own stderr for context. A logical trap no longer
+        // reaches here — it exits 1 with its own complete `hew: failure:` line,
+        // which is the branch below.
         eprintln!("{}", describe_runtime_failure(exit_code, signal));
         eprint!("{stderr}");
     } else {
         eprint!("{stderr}");
     }
-}
-
-/// Return `true` when the child's stderr is a runtime-internal trap diagnostic
-/// emitted by `hew_trap_with_code` (F1.3). The pattern
-/// `"hew: trap in main context:"` is the sole source of this prefix.
-///
-/// Used to detect the Windows trap path, where no Unix signal is available but
-/// the child's stderr names the cause before `llvm.trap` terminates the process.
-pub(crate) fn is_runtime_trap_stderr(stderr: &str) -> bool {
-    stderr
-        .trim_start()
-        .starts_with("hew: trap in main context:")
 }
 
 fn normalize_captured_output(output: &str) -> String {
@@ -307,17 +266,16 @@ impl Default for ReplSession {
     }
 }
 
-fn typecheck_program(
-    program: &hew_parser::ast::Program,
-    enable_wasm: bool,
-) -> hew_types::check::TypeCheckOutput {
-    let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
-        hew_types::module_registry::build_module_search_paths(),
-    ));
-    if enable_wasm {
-        checker.enable_wasm_target();
-    }
-    checker.check_program(program)
+/// The checker errors of a frontend run, or `None` when it reported none.
+fn frontend_type_errors(
+    state: &hew_compile::DocumentFrontendState,
+) -> Option<&[hew_types::TypeError]> {
+    let errors = state
+        .typecheck_result
+        .as_ref()
+        .and_then(|result| result.tco.as_ref())
+        .map(|tco| tco.errors.as_slice())?;
+    (!errors.is_empty()).then_some(errors)
 }
 
 pub(crate) fn find_type_query_expr_type(
@@ -364,13 +322,6 @@ fn parse_errors_are_fatal(errors: &[hew_parser::ParseError]) -> bool {
     errors
         .iter()
         .any(|error| error.severity == hew_parser::Severity::Error)
-}
-
-fn program_has_imports(program: &hew_parser::ast::Program) -> bool {
-    program
-        .items
-        .iter()
-        .any(|(item, _)| matches!(item, hew_parser::ast::Item::Import(_)))
 }
 
 pub(crate) fn program_defines_main(program: &hew_parser::ast::Program) -> bool {
@@ -618,8 +569,6 @@ impl ReplSession {
             execution_timeout,
             project_dir: None,
             eval_target: None,
-            jit_mode: None,
-            sir_mode: crate::compile::SirMode::Disabled,
         }
     }
 
@@ -638,8 +587,6 @@ impl ReplSession {
             execution_timeout,
             project_dir,
             eval_target: None,
-            jit_mode: None,
-            sir_mode: crate::compile::SirMode::Disabled,
         }
     }
 
@@ -664,20 +611,6 @@ impl ReplSession {
         session
     }
 
-    /// Set the JIT execution mode for this session.
-    ///
-    /// `Inprocess` routes through LLJIT; `Worker` (or `None`) uses the
-    /// existing AOT+spawn path.
-    pub fn set_jit_mode(&mut self, mode: Option<crate::args::JitMode>) {
-        self.jit_mode = mode;
-    }
-
-    /// Select the SIR lowering lane for every compilation performed by this
-    /// session. `Disabled` remains the default for non-CLI embedding callers.
-    pub fn set_sir_mode(&mut self, mode: crate::compile::SirMode) {
-        self.sir_mode = mode;
-    }
-
     #[cfg(test)]
     pub(crate) fn add_item_for_test(&mut self, source: &str) {
         self.session.add_item(source);
@@ -687,14 +620,6 @@ impl ReplSession {
         self.eval_target.as_deref().is_some_and(|t| {
             crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
         })
-    }
-
-    fn backend_options(&self) -> EvalBackendOptions<'_> {
-        EvalBackendOptions {
-            target: self.eval_target.as_deref(),
-            jit_mode: self.jit_mode,
-            sir_mode: self.sir_mode,
-        }
     }
 
     /// Evaluate a line of input and return the result.
@@ -774,7 +699,7 @@ impl ReplSession {
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 // On success, persist the input into session state.
@@ -880,7 +805,7 @@ impl ReplSession {
             "<repl>",
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &checked_program.kind);
@@ -922,7 +847,15 @@ impl ReplSession {
             kind.clone(),
             auto_print_expressions,
         );
-        let parse_result = hew_parser::parse(&synthetic_program.source);
+        let mut state = hew_compile::run_source_frontend(
+            &synthetic_program.source,
+            source_label,
+            &self.frontend_options(),
+        );
+        let parse_result = state
+            .parse_result
+            .take()
+            .expect("the source frontend parses the buffer");
         if !parse_result.errors.is_empty() {
             render_eval_parse_diagnostics(
                 &synthetic_program.source,
@@ -937,19 +870,17 @@ impl ReplSession {
             }
         }
 
-        if matches!(kind, InputKind::Expression | InputKind::Statement)
-            && !program_has_imports(&parse_result.program)
-        {
-            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-            let module_source_map =
-                crate::diagnostic::build_module_source_map(&parse_result.program);
-            if !tco.errors.is_empty() {
+        // A definition's own diagnostics are the compile path's to render; an
+        // expression or statement gets them here so the spans point at the
+        // line the user typed rather than into the synthetic wrapper.
+        if matches!(kind, InputKind::Expression | InputKind::Statement) {
+            if let Some(errors) = frontend_type_errors(&state) {
                 render_eval_type_diagnostics(
                     &synthetic_program.source,
                     input_name,
                     synthetic_program.diagnostic_view.as_ref(),
-                    &tco.errors,
-                    &module_source_map,
+                    errors,
+                    &crate::diagnostic::build_module_source_map(&state.program),
                 );
                 return Err(CliEvalError::DiagnosticsRendered);
             }
@@ -961,7 +892,7 @@ impl ReplSession {
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => {
                 self.record_success(trimmed, &kind);
@@ -976,6 +907,17 @@ impl ReplSession {
     /// # Errors
     ///
     /// Returns parse or type errors if the expression is invalid.
+    /// The frontend configuration every REPL check shares: a session fragment
+    /// checked against the session's project, with the completeness lints off.
+    fn frontend_options(&self) -> hew_compile::FrontendOptions {
+        hew_compile::FrontendOptions {
+            enable_wasm_target: self.is_wasm_target(),
+            project_dir: self.project_dir.clone(),
+            repl_fragment: true,
+            ..hew_compile::FrontendOptions::default()
+        }
+    }
+
     pub fn type_of(&mut self, expr: &str) -> Result<String, Vec<String>> {
         match self.type_of_checked(expr) {
             Ok(ty) => Ok(ty),
@@ -1005,7 +947,15 @@ impl ReplSession {
     ) -> Result<hew_types::Ty, TypeQueryFailure> {
         let synthetic_program = self.session.build_type_query_program(expr);
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
-        let parse_result = hew_parser::parse(&synthetic_program.source);
+        let mut state = hew_compile::run_source_frontend(
+            &synthetic_program.source,
+            source_label,
+            &self.frontend_options(),
+        );
+        let parse_result = state
+            .parse_result
+            .take()
+            .expect("the source frontend parses the buffer");
         // Warning-only parse results must not fail the type probe; the
         // expression's actual evaluation surfaces any warnings.
         if parse_errors_are_fatal(&parse_result.errors) {
@@ -1016,36 +966,12 @@ impl ReplSession {
             }));
         }
 
-        let (tco, module_source_map) = if program_has_imports(&parse_result.program) {
-            let options = hew_compile::FrontendOptions {
-                enable_wasm_target: self.is_wasm_target(),
-                project_dir: self.project_dir.clone(),
-                // This probe type-checks the same accumulated REPL fragment, so
-                // it must suppress the completeness lints too; otherwise an
-                // unrelated eval failure would surface the probe's spurious
-                // `unused import`/`unused variable` warnings alongside the real
-                // error.
-                repl_fragment: true,
-                ..hew_compile::FrontendOptions::default()
-            };
-            let state = hew_compile::run_program_frontend_to_typecheck(
-                parse_result.program,
-                &synthetic_program.source,
-                source_label,
-                &options,
-            )
-            .map_err(TypeQueryFailure::Frontend)?;
-            let tco = state
-                .typecheck_result
-                .tco
-                .ok_or(TypeQueryFailure::NoTypeInfo)?;
-            let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
-            (tco, module_source_map)
-        } else {
-            let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-            let module_source_map =
-                crate::diagnostic::build_module_source_map(&parse_result.program);
-            (tco, module_source_map)
+        let module_source_map = crate::diagnostic::build_module_source_map(&state.program);
+        let stopped = state.stopped;
+        // A run that never reached the checker reports why, not "no type
+        // information".
+        let Some(tco) = state.typecheck_result.and_then(|result| result.tco) else {
+            return Err(stopped.map_or(TypeQueryFailure::NoTypeInfo, TypeQueryFailure::Frontend));
         };
 
         let query_ty = find_type_query_expr_type(&synthetic_program.source, &tco.expr_types);
@@ -1257,7 +1183,15 @@ impl ReplSession {
         );
         let diagnostic_view = synthetic_program.diagnostic_view.clone();
 
-        let parse_result = hew_parser::parse(&synthetic_program.source);
+        let mut state = hew_compile::run_source_frontend(
+            &synthetic_program.source,
+            "<repl>",
+            &self.frontend_options(),
+        );
+        let parse_result = state
+            .parse_result
+            .take()
+            .expect("the source frontend parses the buffer");
         if parse_errors_are_fatal(&parse_result.errors) {
             return Err(EvalCheckFailure::Parse {
                 source: synthetic_program.source,
@@ -1275,15 +1209,14 @@ impl ReplSession {
             );
         }
 
-        let tco = typecheck_program(&parse_result.program, self.is_wasm_target());
-        let module_source_map = crate::diagnostic::build_module_source_map(&parse_result.program);
-
-        if !tco.errors.is_empty() {
+        if let Some(errors) = frontend_type_errors(&state) {
             return Err(EvalCheckFailure::Type {
                 source: synthetic_program.source,
                 diagnostic_view,
-                errors: tco.errors,
-                module_source_map: Box::new(module_source_map),
+                errors: errors.to_vec(),
+                module_source_map: Box::new(crate::diagnostic::build_module_source_map(
+                    &state.program,
+                )),
             });
         }
 
@@ -1314,7 +1247,7 @@ impl ReplSession {
             source_label,
             self.execution_timeout,
             self.project_dir.clone(),
-            self.backend_options(),
+            self.eval_target.as_deref(),
         ) {
             Ok(output) => Ok(output),
             Err(error) => Err(CliEvalError::from(error)),
@@ -1455,34 +1388,27 @@ fn handle_interactive_input(session: &mut ReplSession, input: &str) -> Interacti
     }
 }
 
-/// Compile the given already-parsed program to a native binary in a temporary
-/// directory and execute it, returning its stdout.
-///
-/// Import resolution and typecheck are performed here (not by the caller)
-/// so that the codegen pipeline sees stdlib type information in the same order
-/// as the frontend-to-codegen path.  The REPL's fast in-process typecheck is
-/// kept for user-facing error reporting only; this function runs the full
-/// correctly-ordered pipeline for codegen.
+/// Use the same project resolution and compilation options for native and WASI eval.
 fn eval_compile_options(
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> crate::compile::CompileOptions {
     crate::compile::CompileOptions {
         project_dir,
-        target: backend.target.map(str::to_owned),
+        target: target.map(str::to_owned),
         repl_fragment: true,
-        sir_mode: backend.sir_mode,
         ..crate::compile::CompileOptions::default()
     }
 }
 
-fn run_inprocess_compiled(
+/// Compile a native executable and capture its output from a child process.
+fn run_native_eval_compiled(
     program: hew_parser::ast::Program,
     source: &str,
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -1494,7 +1420,7 @@ fn run_inprocess_compiled(
         source,
         source_label,
         &bin_path,
-        &eval_compile_options(project_dir, backend),
+        &eval_compile_options(project_dir, target),
     )
     .map_err(|_channel| CompiledEvalError::DiagnosticsRendered)?;
 
@@ -1523,65 +1449,23 @@ fn run_inprocess_compiled(
     }
 }
 
-/// Dispatch to JIT, native, or WASM execution depending on mode and target.
-///
-/// Only `Some(Inprocess)` routes to the fail-closed `ORCv2` gap guard, because
-/// the user explicitly asked for the in-process LLJIT path that does not exist
-/// yet. `Auto` means "best available", which today is the AOT path — failing
-/// closed on it would be a category error — so it falls through alongside
-/// `Worker` and `None`. When `target` resolves to a WASM target, routes through
-/// wasmtime; otherwise falls through to the native `run_inprocess_compiled`
-/// AOT+spawn path.
+/// Compile and execute through the native worker or WASI runtime.
 fn run_eval_compiled(
     program: hew_parser::ast::Program,
     source: &str,
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
-    // Only an explicit `--jit=inprocess` reaches the fail-closed guard. `Auto`
-    // selects the best available backend (today: AOT) and must not fail closed.
-    if matches!(backend.jit_mode, Some(crate::args::JitMode::Inprocess)) {
-        return run_inprocess_jit(program, source, source_label, project_dir);
-    }
-
-    let is_wasm = backend.target.is_some_and(|t| {
+    let is_wasm = target.is_some_and(|t| {
         crate::target::TargetSpec::from_requested(Some(t)).is_ok_and(|spec| spec.is_wasm())
     });
 
     if is_wasm {
-        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, backend)
+        run_wasm_eval_compiled(program, source, source_label, timeout, project_dir, target)
     } else {
-        run_inprocess_compiled(program, source, source_label, timeout, project_dir, backend)
-    }
-}
-
-/// Fail closed for the unavailable in-process JIT path.
-///
-/// The Rust-codegen `ORCv2` bridge is not implemented yet. Keep this helper as a
-/// narrow adapter, but do not compile or execute here.
-fn run_inprocess_jit(
-    _program: hew_parser::ast::Program,
-    _source: &str,
-    _source_label: &str,
-    _project_dir: Option<PathBuf>,
-) -> Result<String, CompiledEvalError> {
-    match crate::jit::run_jit(&[]) {
-        Ok(_exit_code) => {
-            // JIT output went directly to stdout; return empty to avoid
-            // double-printing in emit_eval_output.
-            Ok(String::new())
-        }
-        Err(crate::jit::JitError::ExecFailed(msg)) => {
-            // Treat JIT exec failure as a runtime failure with exit code 1.
-            Err(CompiledEvalError::RuntimeFailure {
-                stdout: String::new(),
-                stderr: msg,
-                exit_code: 1,
-                signal: None,
-            })
-        }
+        run_native_eval_compiled(program, source, source_label, timeout, project_dir, target)
     }
 }
 
@@ -1592,7 +1476,7 @@ fn run_wasm_eval_compiled(
     source_label: &str,
     timeout: Duration,
     project_dir: Option<PathBuf>,
-    backend: EvalBackendOptions<'_>,
+    target: Option<&str>,
 ) -> Result<String, CompiledEvalError> {
     let tmp_dir = tempfile::tempdir()
         .map_err(|e| CompiledEvalError::Message(format!("cannot create temp dir: {e}")))?;
@@ -1603,7 +1487,7 @@ fn run_wasm_eval_compiled(
         source,
         source_label,
         &module_path,
-        &eval_compile_options(project_dir, backend),
+        &eval_compile_options(project_dir, target),
     )
     .map_err(|_channel| CompiledEvalError::DiagnosticsRendered)?;
 
@@ -1658,16 +1542,12 @@ fn prompts_for_terminal_state(
 pub fn run_interactive(
     timeout: Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
     quiet: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::io::IsTerminal;
 
     let mut rl = rustyline::DefaultEditor::new()?;
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
-    session.set_jit_mode(jit);
-    session.set_sir_mode(sir_mode);
     let (primary_prompt, continuation_prompt) = prompts_for_terminal_state(
         std::io::stdin().is_terminal(),
         std::io::stdout().is_terminal(),
@@ -1739,12 +1619,8 @@ pub fn eval_one(
     expr: &str,
     timeout: Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
 ) -> Result<String, CliEvalError> {
     let mut session = ReplSession::with_timeout_and_target(timeout, target);
-    session.set_jit_mode(jit);
-    session.set_sir_mode(sir_mode);
     session.eval_cli(expr, "<eval>")
 }
 
@@ -1757,8 +1633,6 @@ pub fn eval_file(
     path: &str,
     timeout: Duration,
     target: Option<&str>,
-    jit: Option<crate::args::JitMode>,
-    sir_mode: crate::compile::SirMode,
 ) -> Result<String, CliEvalError> {
     let (source, input_name) = if path == "-" {
         let mut source = String::new();
@@ -1777,8 +1651,6 @@ pub fn eval_file(
     } else {
         ReplSession::for_path_with_target(path, timeout, target)
     };
-    session.set_jit_mode(jit);
-    session.set_sir_mode(sir_mode);
     session.eval_source_file_cli(&source, &input_name, &input_name)
 }
 
@@ -1981,34 +1853,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn is_runtime_trap_stderr_matches_trap_prefix() {
-        // F1.3 runtime message from hew_trap_with_code.
-        assert!(is_runtime_trap_stderr(
-            "hew: trap in main context: DivideByZero\n"
-        ));
-        assert!(is_runtime_trap_stderr(
-            "hew: trap in main context: IndexOutOfBounds\n"
-        ));
-        assert!(is_runtime_trap_stderr(
-            "hew: trap in main context: IntegerOverflow\n"
-        ));
-    }
-
-    #[test]
-    fn is_runtime_trap_stderr_rejects_non_trap_messages() {
-        // Ordinary process stderr (e.g. panic output) must not be detected.
-        assert!(!is_runtime_trap_stderr(
-            "thread 'main' panicked at foo.rs:1"
-        ));
-        assert!(!is_runtime_trap_stderr(""));
-        assert!(!is_runtime_trap_stderr("error: something went wrong\n"));
-        // Partial match is not enough.
-        assert!(!is_runtime_trap_stderr(
-            "hew: some other prefix: DivideByZero"
-        ));
-    }
-
     #[cfg(unix)]
     fn capture_stderr<T>(f: impl FnOnce() -> T) -> (T, String) {
         use std::fs::File;
@@ -2203,13 +2047,7 @@ mod tests {
         if !require_toolchain() {
             return;
         }
-        let result = eval_one(
-            "2 * 3",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_one("2 * 3", DEFAULT_EVAL_TIMEOUT, None);
         assert_eq!(result.unwrap(), "6\n");
     }
 
@@ -2355,13 +2193,7 @@ mod tests {
             "fn add(a: i64, b: i64) -> i64 {\n    a + b\n}\n\nadd(1, 2)\n",
         )
         .unwrap();
-        let result = eval_file(
-            path.to_str().unwrap(),
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2374,13 +2206,7 @@ mod tests {
         let path = dir.path().join("hew_eval_balanced_incomplete_expr.hew");
         std::fs::write(&path, "1 +\n2\n").unwrap();
 
-        let result = eval_file(
-            path.to_str().unwrap(),
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_file(path.to_str().unwrap(), DEFAULT_EVAL_TIMEOUT, None);
         assert!(result.is_ok(), "eval_file failed: {result:?}");
     }
 
@@ -2477,8 +2303,6 @@ mod tests {
             main_path.to_str().expect("main path is valid UTF-8"),
             DEFAULT_EVAL_TIMEOUT,
             None,
-            None,
-            crate::compile::SirMode::Disabled,
         );
         assert!(
             result.is_ok(),
@@ -2637,13 +2461,7 @@ mod tests {
         if !require_wasi_toolchain() {
             return;
         }
-        let result = eval_one(
-            "1 + 2",
-            DEFAULT_EVAL_TIMEOUT,
-            Some("wasm32-wasi"),
-            None,
-            crate::compile::SirMode::Disabled,
-        );
+        let result = eval_one("1 + 2", DEFAULT_EVAL_TIMEOUT, Some("wasm32-wasi"));
         assert_eq!(result.unwrap(), "3\n");
     }
 
@@ -2656,8 +2474,6 @@ mod tests {
             r#"println("hello from wasi")"#,
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
-            None,
-            crate::compile::SirMode::Disabled,
         );
         assert_eq!(result.unwrap(), "hello from wasi\n");
     }
@@ -2704,151 +2520,7 @@ mod tests {
             path.to_str().unwrap(),
             DEFAULT_EVAL_TIMEOUT,
             Some("wasm32-wasi"),
-            None,
-            crate::compile::SirMode::Disabled,
         );
         assert!(result.is_ok(), "wasi eval_file failed: {result:?}");
-    }
-
-    /// `--jit=auto` selects the best-available backend (today AOT) and runs the
-    /// program, while `--jit=inprocess` fails closed through the unavailable
-    /// LLJIT guard. They no longer share an error shape: `auto` is a working
-    /// alias for AOT, not a category error.
-    #[test]
-    fn jit_auto_falls_back_to_aot_while_inprocess_fails_closed() {
-        let source = "fn main() { println(\"hello\"); }";
-        let parse_result = hew_parser::parse(source);
-        assert!(
-            parse_result.errors.is_empty(),
-            "parse failed: {:?}",
-            parse_result.errors
-        );
-
-        // `inprocess` fails closed even without a toolchain — it never reaches
-        // codegen.
-        let inprocess_result = run_eval_compiled(
-            parse_result.program.clone(),
-            source,
-            "<test>",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            EvalBackendOptions {
-                target: None,
-                jit_mode: Some(crate::args::JitMode::Inprocess),
-                sir_mode: crate::compile::SirMode::Disabled,
-            },
-        );
-        assert!(
-            inprocess_result.is_err(),
-            "Inprocess mode must fail closed while in-process JIT is unavailable"
-        );
-
-        // `auto` falls through to the AOT path, which needs the native
-        // toolchain to compile and run.
-        if !require_toolchain() {
-            return;
-        }
-        let auto_result = run_eval_compiled(
-            parse_result.program,
-            source,
-            "<test>",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            EvalBackendOptions {
-                target: None,
-                jit_mode: Some(crate::args::JitMode::Auto),
-                sir_mode: crate::compile::SirMode::Disabled,
-            },
-        );
-        assert_eq!(
-            auto_result.expect("Auto mode must succeed via AOT fallback"),
-            "hello\n",
-            "Auto (AOT) should produce the program's stdout"
-        );
-    }
-
-    /// `JitMode::Worker` routes to the AOT+spawn path (`run_inprocess_compiled`),
-    /// producing the same output as when `--jit` is absent.
-    /// Skipped when the native toolchain is unavailable.
-    #[test]
-    fn jit_worker_mode_produces_same_result_as_no_jit_flag() {
-        if !require_toolchain() {
-            return;
-        }
-        let result_no_flag = eval_one(
-            "1 + 1",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            None,
-            crate::compile::SirMode::Disabled,
-        )
-        .expect("eval without --jit should succeed");
-        let result_worker = eval_one(
-            "1 + 1",
-            DEFAULT_EVAL_TIMEOUT,
-            None,
-            Some(crate::args::JitMode::Worker),
-            crate::compile::SirMode::Disabled,
-        )
-        .expect("eval with --jit=worker should succeed");
-        assert_eq!(
-            result_no_flag, result_worker,
-            "--jit=worker should produce identical output to no --jit flag"
-        );
-    }
-
-    #[test]
-    fn set_jit_mode_stores_mode_on_session() {
-        let mut session = ReplSession::new();
-        assert_eq!(
-            session.jit_mode, None,
-            "new session should have no jit mode"
-        );
-        session.set_jit_mode(Some(crate::args::JitMode::Inprocess));
-        assert_eq!(
-            session.jit_mode,
-            Some(crate::args::JitMode::Inprocess),
-            "set_jit_mode should persist the supplied mode on the session"
-        );
-        session.set_jit_mode(None);
-        assert_eq!(
-            session.jit_mode, None,
-            "set_jit_mode(None) should clear the mode"
-        );
-    }
-
-    #[test]
-    fn sir_mode_is_preserved_for_native_and_wasm_eval_compiles() {
-        let native = eval_compile_options(
-            None,
-            EvalBackendOptions {
-                target: None,
-                jit_mode: None,
-                sir_mode: crate::compile::SirMode::Lower,
-            },
-        );
-        assert_eq!(native.sir_mode, crate::compile::SirMode::Lower);
-        assert!(native.repl_fragment);
-        assert!(native.target.is_none());
-
-        let wasm = eval_compile_options(
-            None,
-            EvalBackendOptions {
-                target: Some("wasm32-wasi"),
-                jit_mode: None,
-                sir_mode: crate::compile::SirMode::Lower,
-            },
-        );
-        assert_eq!(wasm.sir_mode, crate::compile::SirMode::Lower);
-        assert!(wasm.repl_fragment);
-        assert_eq!(wasm.target.as_deref(), Some("wasm32-wasi"));
-    }
-
-    #[test]
-    fn set_sir_mode_stores_mode_on_session() {
-        let mut session = ReplSession::new();
-        assert_eq!(session.sir_mode, crate::compile::SirMode::Disabled);
-        session.set_sir_mode(crate::compile::SirMode::Lower);
-        assert_eq!(session.sir_mode, crate::compile::SirMode::Lower);
     }
 }

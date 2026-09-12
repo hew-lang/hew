@@ -14,16 +14,16 @@
 // Expected: rejected with "E_DUPLEX_NON_SEND".
 
 actor Producer {
-    let n: i64;
+    let n: i64,
     receive fn make() -> Rc<i64> {
         panic("unreachable")
     }
 }
 
 actor Consumer {
-    let p: LocalPid<Producer>;
+    let p: Producer,
     receive fn run(unused: i64) {
-        match await p.make() {
+        match p.make() {
             .Ok(x) => {},
             .Err(e) => {},
         }
@@ -33,5 +33,5 @@ actor Consumer {
 fn main() {
     let prod = spawn Producer(n: 0);
     let cons = spawn Consumer(p: prod);
-    cons.run(0);
+    let _ = cons.run(0);
 }

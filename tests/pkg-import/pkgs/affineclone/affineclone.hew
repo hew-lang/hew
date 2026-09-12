@@ -1,19 +1,19 @@
 #[resource]
 pub type ResourceToken {
-    id: i64;
+    id: i64,
 }
 
 impl ResourceToken {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 #[linear]
 pub type LinearTicket {
-    id: i64;
+    id: i64,
 }
 
 impl LinearTicket {
-    fn redeem(consuming self) -> i64 {
+    fn redeem(consume self) -> i64 {
         self.id
     }
 }

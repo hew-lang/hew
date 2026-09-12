@@ -1,0 +1,9 @@
+=== Interval Tree ===
+PASS: basic point overlap query
+PASS: no overlap query
+PASS: all intervals overlap
+PASS: boundary overlap
+PASS: range overlap query
+
+5/5 tests passed
+PASS

@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_method_clone_rejected"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/arena_method_clone_rejected.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 6
+column = 17
+message = "cannot be cloned"

@@ -497,10 +497,10 @@ fn write_template_source(dir: &Path, name: &str, template: manifest::ManifestTem
         ),
         manifest::ManifestTemplate::Actor => (
             "main.hew".to_string(),
-            "actor Counter {\n    var count: i32;\n\n    receive fn increment() {\n        \
+            "actor Counter {\n    var count: i32,\n\n    receive fn increment() {\n        \
              count = count + 1;\n        println(count);\n    }\n}\n\n\
-             fn main() {\n    let c = spawn Counter(count: 0);\n    c.increment();\n    \
-             c.increment();\n    c.increment();\n}\n"
+             fn main() {\n    let c = spawn Counter(count: 0);\n    let _ = c.increment();\n    \
+             let _ = c.increment();\n    let _ = c.increment();\n}\n"
                 .to_string(),
         ),
         manifest::ManifestTemplate::Bin => (
@@ -1404,13 +1404,18 @@ fn fetch_missing_packages(
                     lock_path.display()
                 )
             })?;
-        let mut package_lock = fd_lock::RwLock::new(lock_file);
-        let _package_guard = package_lock.write().map_err(|error| {
-            format!(
-                "could not acquire package cache lock {}: {error}",
-                lock_path.display()
-            )
-        })?;
+        loop {
+            match lock_file.lock() {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) => {
+                    return Err(format!(
+                        "could not acquire package cache lock {}: {error}",
+                        lock_path.display()
+                    ));
+                }
+            }
+        }
         if let Some(verified) =
             registry.verified_online_cache_entry(registry_id, name, version, &resolved.checksum)?
         {

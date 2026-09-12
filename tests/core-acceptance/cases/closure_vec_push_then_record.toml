@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_vec_push_then_record"
+intent = "Mixed consumption: a Vec push moves the closure pair into the vec slot; a later record-field store of the same binding would create a second owner of the environment."
+source = "../vertical-slice/reject/closure_vec_push_then_record.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 16
+column = 26
+message = "use of moved value `f`"

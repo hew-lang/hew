@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-wildcard-hooks"
+intent = "Wildcard targets always execute exit, body and entry for both same-tag and changed-tag results."
+source = "cases/machine-wildcard-hooks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "exit:closed\nbody\nenter:closed\nClosed\nexit:closed\nbody\nenter:opened\nOpened\n"
+exit = 0

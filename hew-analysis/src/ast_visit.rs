@@ -1,6 +1,6 @@
 use hew_parser::ast::{
-    Block, Expr, Item, LambdaParam, MatchArm, Pattern, PatternField, SelectArm, Span, Stmt,
-    StringPart, TraitItem, TypeBodyItem,
+    Block, ConditionItem, Expr, Item, LambdaParam, MatchArm, Pattern, PatternField, SelectArm,
+    Span, Stmt, StringPart, TraitItem, TypeBodyItem,
 };
 use hew_parser::ParseResult;
 
@@ -120,6 +120,7 @@ pub(crate) struct VisitContext<'ast> {
 }
 
 pub(crate) trait AstVisitor<'ast> {
+    fn visit_scope(&mut self, _span: &Span, _scopes: &[ScopeFrame<'ast>]) {}
     fn enter_body(&mut self, _body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {}
     fn leave_body(&mut self, _body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {}
     fn visit_item(&mut self, _item: &'ast Item, _span: &'ast Span, _ctx: VisitContext<'ast>) {}
@@ -165,7 +166,6 @@ pub(crate) fn visible_bindings_at<'ast>(
     let mut collector = VisibleBindingsCollector {
         offset,
         matches: Vec::new(),
-        active_body_depth: 0,
     };
     walk_parse_result(Some(source), parse_result, &mut collector);
     collector.matches
@@ -174,44 +174,29 @@ pub(crate) fn visible_bindings_at<'ast>(
 struct VisibleBindingsCollector<'ast> {
     offset: usize,
     matches: Vec<BindingInfo<'ast>>,
-    active_body_depth: usize,
 }
 
 impl<'ast> AstVisitor<'ast> for VisibleBindingsCollector<'ast> {
-    fn enter_body(&mut self, body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {
-        if body.span.is_some_and(|span| span.start <= self.offset) {
-            if self.active_body_depth == 0 {
-                self.matches.clear();
-            }
-            self.active_body_depth += 1;
-        }
-    }
-
-    fn leave_body(&mut self, body: BodyInfo<'ast>, _ctx: VisitContext<'ast>) {
-        if body.span.is_some_and(|span| span.start <= self.offset) && self.active_body_depth > 0 {
-            self.active_body_depth -= 1;
-        }
-    }
-
-    fn visit_binding(&mut self, binding: BindingInfo<'ast>, _ctx: VisitContext<'ast>) {
-        if self.active_body_depth == 0 {
+    fn visit_scope(&mut self, span: &Span, scopes: &[ScopeFrame<'ast>]) {
+        if !span.contains(&self.offset) {
             return;
         }
-        if binding.span.start <= self.offset {
-            if let Some(existing) = self
-                .matches
-                .iter_mut()
-                .find(|existing| existing.name == binding.name)
-            {
-                *existing = binding;
-            } else {
-                self.matches.push(binding);
+        self.matches.clear();
+        for scope in scopes.iter().rev() {
+            for binding in scope.bindings.iter().rev() {
+                if !self
+                    .matches
+                    .iter()
+                    .any(|existing| existing.name == binding.name)
+                {
+                    self.matches.push(binding.clone());
+                }
             }
         }
     }
 }
 
-struct ScopeFrame<'ast> {
+pub(crate) struct ScopeFrame<'ast> {
     bindings: Vec<BindingInfo<'ast>>,
 }
 
@@ -597,6 +582,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
         reason = "statement traversal must preserve scope ordering across variants"
     )]
     fn walk_stmt(&mut self, stmt: &'ast Stmt, span: &'ast Span, body: Option<BodyInfo<'ast>>) {
+        self.visitor.visit_scope(span, &self.scopes);
         self.visitor.visit_stmt(stmt, span, Self::context(body));
         match stmt {
             Stmt::Let { pattern, value, .. } => {
@@ -637,17 +623,17 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body: inner_body,
                 else_body,
             } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.push_scope(pattern_bindings(self.source, pattern));
+                let scopes = self.walk_condition(conditions, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
+                for _ in 0..scopes {
+                    self.pop_scope();
+                }
                 if let Some(else_body) = else_body {
-                    self.walk_block(else_body, body);
+                    self.walk_expr(&else_body.0, &else_body.1, body);
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -668,15 +654,15 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.walk_block(inner_body, body);
             }
             Stmt::WhileLet {
-                pattern,
-                expr,
+                conditions,
                 body: inner_body,
                 ..
             } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.push_scope(pattern_bindings(self.source, pattern));
+                let scopes = self.walk_condition(conditions, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
+                for _ in 0..scopes {
+                    self.pop_scope();
+                }
             }
             Stmt::For {
                 pattern,
@@ -726,6 +712,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
         reason = "expression traversal needs exhaustive variant coverage"
     )]
     fn walk_expr(&mut self, expr: &'ast Expr, span: &'ast Span, body: Option<BodyInfo<'ast>>) {
+        self.visitor.visit_scope(span, &self.scopes);
         self.visitor.visit_expr(expr, span, Self::context(body));
         match expr {
             Expr::Identifier(name) => {
@@ -759,11 +746,26 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&base.0, &base.1, body);
                 }
             }
-            Expr::Binary { left, right, .. } => {
+            Expr::Binary { left, right, .. } | Expr::Coalesce { left, right } => {
                 self.walk_expr(&left.0, &left.1, body);
                 self.walk_expr(&right.0, &right.1, body);
             }
+            Expr::Handle {
+                operand,
+                error,
+                body: handler,
+            } => {
+                self.walk_expr(&operand.0, &operand.1, body);
+                self.push_scope(vec![BindingInfo {
+                    kind: BindingKind::Local,
+                    name: &error.0,
+                    span: error.1.clone(),
+                }]);
+                self.walk_expr(&handler.0, &handler.1, body);
+                self.pop_scope();
+            }
             Expr::Unary { operand, .. }
+            | Expr::ReturnError(operand)
             | Expr::Clone(operand)
             | Expr::Await(operand)
             | Expr::AwaitRestart(operand)
@@ -772,9 +774,15 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             | Expr::Return(Some(operand)) => {
                 self.walk_expr(&operand.0, &operand.1, body);
             }
-            Expr::Tuple(elements) | Expr::Array(elements) | Expr::Join(elements) => {
+            Expr::Tuple(elements) | Expr::Race(elements) => {
                 for element in elements {
                     self.walk_expr(&element.0, &element.1, body);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let operand = element.expr();
+                    self.walk_expr(&operand.0, &operand.1, body);
                 }
             }
             Expr::ArrayRepeat { value, count } => {
@@ -805,17 +813,17 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body: inner_body,
                 else_body,
             } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.push_scope(pattern_bindings(self.source, pattern));
+                let scopes = self.walk_condition(conditions, body);
                 self.walk_block(inner_body, body);
-                self.pop_scope();
+                for _ in 0..scopes {
+                    self.pop_scope();
+                }
                 if let Some(else_body) = else_body {
-                    self.walk_block(else_body, body);
+                    self.walk_expr(&else_body.0, &else_body.1, body);
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -894,10 +902,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     self.walk_expr(&timeout.body.0, &timeout.body.1, body);
                 }
             }
-            Expr::Timeout { expr, duration } => {
-                self.walk_expr(&expr.0, &expr.1, body);
-                self.walk_expr(&duration.0, &duration.1, body);
-            }
             Expr::FieldAccess { object, .. } => {
                 self.walk_expr(&object.0, &object.1, body);
             }
@@ -919,13 +923,34 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
             }
             Expr::Literal(_)
             | Expr::QualifiedAssoc(_)
-            | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None)
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
         }
+    }
+
+    /// Walk a pattern condition (§12.5), opening one scope per `let` operand so
+    /// the operands to its right and the then block see its binders. Returns
+    /// how many scopes were opened; the caller pops that many after the body.
+    fn walk_condition(
+        &mut self,
+        conditions: &'ast [ConditionItem],
+        body: Option<BodyInfo<'ast>>,
+    ) -> usize {
+        let mut opened = 0;
+        for item in conditions {
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    self.walk_expr(&expr.0, &expr.1, body);
+                    self.push_scope(pattern_bindings(self.source, pattern));
+                    opened += 1;
+                }
+                ConditionItem::Expr(expr) => self.walk_expr(&expr.0, &expr.1, body),
+            }
+        }
+        opened
     }
 
     fn push_scope(&mut self, bindings: Vec<BindingInfo<'ast>>) {
@@ -1224,6 +1249,28 @@ mod tests {
             .collect();
         assert_eq!(x_bindings.len(), 1);
         assert!(x_bindings[0].span.start > source.find("let x = 1").unwrap());
+    }
+
+    #[test]
+    fn handler_error_binding_is_visible_only_in_its_lexical_body() {
+        let source = "fn f(value: Result<i64, string>) { value handle problem { recover(problem) }; after(); }";
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let inside = visible_bindings_at(
+            source,
+            &parsed,
+            source.find("recover(problem)").unwrap() + 9,
+        );
+        let error = inside
+            .iter()
+            .find(|binding| binding.name == "problem")
+            .expect("handler binding");
+        assert_eq!(
+            error.span,
+            source.find("problem").unwrap()..source.find("problem").unwrap() + 7
+        );
+        let outside = visible_bindings_at(source, &parsed, source.find("after()").unwrap());
+        assert!(!outside.iter().any(|binding| binding.name == "problem"));
     }
 
     #[test]

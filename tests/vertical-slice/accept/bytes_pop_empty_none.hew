@@ -1,0 +1,17 @@
+// `bytes.pop()` on an empty buffer returns `.None`. The signature carries the
+// empty case in its type, so the runtime returns a sentinel the caller can only
+// reach through the `Option`, and there is nothing to trap on. A pop that
+// fabricated a byte, or trapped the way an out-of-bounds index does, fails here.
+fn main() -> i64 {
+    var b: bytes = bytes.new();
+    match b.pop() {
+        .Some(_) => 1,
+        .None => {
+            b.push(7);
+            match b.pop() {
+                .Some(byte) => if byte == 7 { 0 } else { 2 },
+                .None => 3,
+            }
+        }
+    }
+}

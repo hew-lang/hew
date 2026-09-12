@@ -195,59 +195,14 @@ fn generic_record_with_owned_field_admits_and_runs() {
     );
 }
 
-/// A generic record whose concrete inline-enum field owns a string must use the
-/// recursive record drop spine after both ordinary construction and repeated
-/// field overwrite. The MIR assertions cover normal, panic, and cancellation
-/// exits plus the last-borrow release path; the LLVM assertions prove both
-/// enclosing-record and nested-enum clone/drop thunks have bodies rather than
-/// declarations.
+/// Repeated generic-record overwrites and untouched scope exit retain their
+/// observable value under allocator poisoning. The same fixture is exercised
+/// by the generic-enum-record-scope-drop acceptance and ASan/LSan safety case.
 #[test]
-fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
+fn generic_record_enum_overwrites_and_scope_exit_preserve_value() {
     require_codegen();
 
     let source = fixture_path("generic_enum_record_scope_drop.hew");
-    let mir = std::process::Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "elab"])
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("dump elaborated MIR");
-    assert!(
-        mir.status.success(),
-        "generic enum-record MIR should elaborate; stderr: {}",
-        String::from_utf8_lossy(&mir.stderr)
-    );
-    let mir = String::from_utf8_lossy(&mir.stdout);
-    assert!(
-        mir.contains("return[bb4] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place")
-            && mir.contains(
-                "panic[bb6] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
-            )
-            && mir.contains(
-                "cancel[bb7] ->\n      drop _8 ty=EnumHolder<string> kind=record_in_place"
-            ),
-        "generic enum-record drop must cover overwrite, error, and cancel exits:\n{mir}"
-    );
-
-    let raw = std::process::Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "raw"])
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("dump raw MIR");
-    assert!(
-        raw.status.success(),
-        "generic enum-record raw MIR should lower; stderr: {}",
-        String::from_utf8_lossy(&raw.stderr)
-    );
-    let raw = String::from_utf8_lossy(&raw.stdout);
-    assert!(
-        raw.contains(
-            "_8 = _7.field[1]\n    snapshot_drop _7 ty=EnumHolder<string> plan=UserRecord { name: \"EnumHolder$$string\" } boundary=LocalCall\n    ownership Release { owner: OwnerId { binding: BindingId(3), generation: 0 }, place: Local(7) }\n    ret = move _8"
-        ),
-        "untouched generic enum-record must release after its final borrow and before return:\n{raw}"
-    );
-
     let emit_dir = support::tempdir();
     let mut command = std::process::Command::new(hew_binary());
     command
@@ -265,19 +220,6 @@ fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
         "generic enum-record LLVM should compile; stderr: {}",
         String::from_utf8_lossy(&compile.output.stderr)
     );
-    let llvm = std::fs::read_to_string(compile.ll_path).expect("read generic enum-record LLVM");
-    for helper in [
-        "define internal i32 @\"__hew_record_clone_inplace_EnumHolder$$string\"",
-        "define internal i32 @\"__hew_enum_clone_inplace_Choice$$string\"",
-        "define internal void @\"__hew_record_drop_inplace_EnumHolder$$string\"",
-        "define internal void @\"__hew_enum_drop_inplace_Choice$$string\"",
-        "define internal void @\"__hew_enum_overwrite_release_Choice$$string\"",
-    ] {
-        assert!(
-            llvm.contains(helper),
-            "expected a bodied recursive helper `{helper}`"
-        );
-    }
 
     let output = std::process::Command::new(hew_testutil::compiled_binary_path(
         emit_dir.path(),
@@ -328,4 +270,58 @@ fn return_type_polymorphic_ctor_lowers_and_runs() {
         ["2", "1", "3", "1", "4"],
         "return-type-polymorphic ctor output mismatch; stdout: {stdout}"
     );
+}
+
+/// The package keeps Slot<T> private while Store<string> crosses its public
+/// boundary. Both optimization levels must execute the two additions and read
+/// back their generation stamps through the imported generic methods.
+#[test]
+fn imported_private_generic_record_executes_at_both_optimization_levels() {
+    require_codegen();
+    let packages = repo_root().join("tests/pkg-import");
+    let source = packages.join("private_generic_record_vec_element.hew");
+    for level in ["0", "2"] {
+        let output_dir = support::tempdir();
+        let binary = hew_testutil::compiled_binary_path(
+            output_dir.path(),
+            "private_generic_record_vec_element",
+        );
+        let mut command = std::process::Command::new(hew_binary());
+        command
+            .arg("build")
+            .arg(&source)
+            .arg("--pkg-path")
+            .arg(packages.join("pkgs"))
+            .arg("--output")
+            .arg(&binary)
+            .args(["--opt-level", level])
+            .current_dir(repo_root());
+        let compiled = support::run_bounded_command(
+            command,
+            format!("compile private generic package at O{level}"),
+        );
+        assert!(
+            compiled.status.success(),
+            "package compilation at O{level} failed: {}",
+            support::describe_output(&compiled)
+        );
+        let run = support::run_bounded_command(
+            std::process::Command::new(binary),
+            format!("run private generic package at O{level}"),
+        );
+        assert!(
+            run.status.success(),
+            "package execution at O{level} failed: {}",
+            support::describe_output(&run)
+        );
+        assert_eq!(
+            run.stdout, b"0\n1\n",
+            "incorrect generation stamps at O{level}"
+        );
+        assert!(
+            run.stderr.is_empty(),
+            "unexpected runtime diagnostics at O{level}: {}",
+            support::describe_output(&run)
+        );
+    }
 }

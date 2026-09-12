@@ -1,7 +1,7 @@
 //! Checker-level tests for `#[resource]` inherent-`close` consume semantics
 //! (issue #1295).
 //!
-//! A `#[resource]` type's inherent `fn close(self)` is BOTH the implicit-drop
+//! A `#[resource]` type's inherent `fn close(consume self)` is BOTH the implicit-drop
 //! dispatch target (W3.030) AND a terminal consuming method: calling it moves
 //! the receiver, so a subsequent use is a compile error and the scope-exit
 //! implicit drop is suppressed on the consumed path. These tests verify the
@@ -33,10 +33,10 @@ fn resource_inherent_close_records_per_call_site_flag() {
     let output = typecheck_inline(
         r"
         #[resource]
-        pub type Conn { id: i64; }
+        pub type Conn { id: i64, }
 
         impl Conn {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         fn main() {
@@ -60,10 +60,10 @@ fn resource_inherent_single_close_typechecks_cleanly() {
     let output = typecheck_inline(
         r"
         #[resource]
-        pub type Conn { id: i64; }
+        pub type Conn { id: i64, }
 
         impl Conn {
-            fn close(self) {}
+            fn close(consume self) {}
         }
 
         fn main() {
@@ -89,7 +89,7 @@ fn resource_inherent_single_close_typechecks_cleanly() {
 fn non_resource_inherent_close_not_in_resource_consume_set() {
     let output = typecheck_inline(
         r"
-        pub type Plain { id: i64; }
+        pub type Plain { id: i64, }
 
         impl Plain {
             fn close(self) {}

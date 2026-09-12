@@ -9,7 +9,7 @@
 // independent per-slot clone -- so a Vec-field record is admitted, matching
 // what copy-in `.push` already accepts.
 type Bag {
-    items: Vec<i64>;
+    items: Vec<i64>,
 }
 
 fn main() -> i64 {

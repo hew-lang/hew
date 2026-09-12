@@ -1,0 +1,9 @@
+[[case]]
+id = "affine-pattern-guard-snapshots"
+intent = "Aggregate guards preserve match-entry ordinary field snapshots across declined candidates, while an affine field loan permits mutation of a disjoint omitted sibling."
+source = "cases/affine-pattern-guard-snapshots.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "OLD\nNEW\nOLD\nNEW\nOLD\nclose TICKET\nNEW\n"
+exit = 0

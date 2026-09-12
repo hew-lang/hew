@@ -1,0 +1,23 @@
+import std.encoding.utf8.{decode as read, decode_lossy as repair};
+import std.string;
+
+fn main() -> i64 {
+    let retained = {
+        let input = b"A\xffB\xe2\x82";
+        let repaired = repair(input);
+        if input.len() != 5 { return 1; }
+        repaired
+    };
+    if retained != "A�B�" || retained.len() != 4 || retained.byte_len() != 8 {
+        return 2;
+    }
+    let copied = retained;
+    let encoded = copied.to_bytes();
+    var changed = encoded;
+    changed.push(33);
+    let valid = read(b"valid") handle error { println(error.fmt()); return 3; };
+    if valid != "valid" || repair(b"") != "" { return 4; }
+    println(retained);
+    println(f"{copied.len()}:{encoded.len()}:{changed.len()}");
+    0
+}

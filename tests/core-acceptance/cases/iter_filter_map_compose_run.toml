@@ -1,0 +1,13 @@
+[[case]]
+id = "iter_filter_map_compose_run"
+intent = "The fixture runs to completion and exits 18."
+source = "../vertical-slice/accept/iter_filter_map_compose_run.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 18

@@ -1,0 +1,13 @@
+[[case]]
+id = "cross_module_fn_value"
+intent = "Non-generic cross-module named functions are first-class values: stored in a let binding, passed as an argument, returned from a function, held as a Vec element, held in a record field, and invoked through each path."
+source = "../vertical-slice/accept/cross_module_fn_value/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\n-8\n100\n12\n-6\n22\n9\n"
+exit = 0

@@ -1,6 +1,6 @@
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 actor TestSink {

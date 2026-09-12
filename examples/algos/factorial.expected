@@ -1,0 +1,7 @@
+PASS: 0!=1
+PASS: 1!=1
+PASS: 5!=120
+PASS: 10!=3628800
+---
+Passed: 4 / 4
+ALL PASS

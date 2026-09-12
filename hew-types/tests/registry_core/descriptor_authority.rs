@@ -108,6 +108,7 @@ fn canonical_string_nested_generic() {
 #[test]
 fn canonical_string_function() {
     let ty = ResolvedTy::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![ResolvedTy::I32, ResolvedTy::Bool],
         ret: Box::new(ResolvedTy::String),
     };
@@ -117,6 +118,7 @@ fn canonical_string_function() {
 #[test]
 fn canonical_string_function_no_params() {
     let ty = ResolvedTy::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![],
         ret: Box::new(ResolvedTy::Unit),
     };
@@ -126,6 +128,7 @@ fn canonical_string_function_no_params() {
 #[test]
 fn canonical_string_closure_with_captures() {
     let ty = ResolvedTy::Closure {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![ResolvedTy::I32],
         ret: Box::new(ResolvedTy::Bool),
         captures: vec![ResolvedTy::String, ResolvedTy::I64],
@@ -233,10 +236,12 @@ fn is_native_wire_false_for_non_native_types() {
             is_opaque: false,
         },
         ResolvedTy::Function {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(ResolvedTy::Unit),
         },
         ResolvedTy::Closure {
+            capabilities: hew_parser::ast::CallableCapabilities::default(),
             params: vec![],
             ret: Box::new(ResolvedTy::Unit),
             captures: vec![],

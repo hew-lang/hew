@@ -1,0 +1,13 @@
+[[case]]
+id = "attribute_closed_table_positions"
+intent = "Accept twin for the closed-table reject fixtures: every attribute HEW-SPEC-2026 §12.6 legalises, used in each position the spec lists for it, must still type-check cleanly."
+source = "../vertical-slice/accept/attribute_closed_table_positions.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1\n"
+exit = 0

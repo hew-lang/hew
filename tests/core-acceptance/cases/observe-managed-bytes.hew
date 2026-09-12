@@ -1,0 +1,145 @@
+// Every allocation Hew owns goes through the Rust global allocator, so the
+// `std.observe` heap gauge sees all of it: bytes and string buffers and the
+// per-object headers that used to be allocated beside the accounting boundary,
+// as well as the collection storage that was already visible.
+//
+// Each probe reads the live gauge before building, while holding the payload
+// and after releasing it. Holding must move the gauge by at least the payload
+// it asked for, and releasing must put it back where it started: a payload
+// that is invisible fails the first check, and one that leaks fails the second.
+
+import std.observe;
+
+fn live_bytes() -> i64 {
+    return observe.read("heap.live_bytes").unwrap_or(0);
+}
+
+// The gauge is process-wide, so an unrelated allocation on another thread can
+// land between two reads. Settling is judged against a slack far smaller than
+// any payload here and far larger than that incidental traffic.
+fn report(name: string, before: i64, held: i64, after: i64, payload: i64) {
+    let grew = (held - before) >= payload;
+    let settled = (after - before) < (payload / 16);
+    println(f"{name} grew={grew} settled={settled}");
+}
+
+// A bytes buffer: the payload used to be a libc allocation the counters never
+// saw at all.
+fn bytes_buffer() {
+    let payload: i64 = 4000000;
+    let before = live_bytes();
+    var held: i64 = 0;
+    {
+        var buf: bytes = bytes.new();
+        for _ in 0..payload {
+            buf.push(65);
+        }
+        held = live_bytes();
+        println(f"bytes len={buf.len()}");
+    }
+    report("bytes", before, held, live_bytes(), payload);
+}
+
+// A string: header plus payload, both previously outside the boundary.
+fn large_string() {
+    let payload: i64 = 2000000;
+    let before = live_bytes();
+    var held: i64 = 0;
+    {
+        var text: string = "";
+        for _ in 0..100000 {
+            text = text + "twenty bytes of text";
+        }
+        held = live_bytes();
+        println(f"string len={text.len()}");
+    }
+    report("string", before, held, live_bytes(), payload);
+}
+
+// A Vec of strings: the element buffer was already counted, each string's own
+// header and payload were not.
+fn vec_of_strings() {
+    let payload: i64 = 2000000;
+    let before = live_bytes();
+    var held: i64 = 0;
+    {
+        var names: Vec<string> = Vec.new();
+        for i in 0..40000 {
+            names.push(f"a fifty byte string for element number {i}!!!!!!");
+        }
+        held = live_bytes();
+        println(f"vec len={names.len()}");
+    }
+    report("vec", before, held, live_bytes(), payload);
+}
+
+// A HashMap of strings: entries table plus every key and value.
+fn map_of_strings() {
+    let payload: i64 = 2000000;
+    let before = live_bytes();
+    var held: i64 = 0;
+    {
+        var table: HashMap<string, string> = HashMap.new();
+        for i in 0..20000 {
+            table.insert(
+                f"key number {i} padded out to fifty bytes!!!!!!!",
+                f"value number {i} padded out to fifty bytes!!!!!",
+            );
+        }
+        held = live_bytes();
+        println(f"map len={table.len()}");
+    }
+    report("map", before, held, live_bytes(), payload);
+}
+
+type Node { child: Vec<Node> }
+
+fn build_nested() -> i64 {
+    var node = Node { child: Vec.new() };
+    for _ in 0..20000 {
+        var wrapper: Vec<Node> = Vec.new();
+        wrapper.push(node);
+        node = Node { child: wrapper };
+    }
+    return live_bytes();
+}
+
+// A deep nested Vec, released through the iterative walker rather than a
+// recursive free chain: the walker must return every level's storage.
+//
+// The walker's worklist is a thread-local Vec that keeps the capacity its
+// deepest walk needed, so the first round is a warm-up and the baseline is read
+// after it. What is measured is the released payload, not the worklist cache.
+fn nested_vec() {
+    let payload: i64 = 1000000;
+    let _warmup = build_nested();
+    let before = live_bytes();
+    let held = build_nested();
+    report("nested", before, held, live_bytes(), payload);
+}
+
+// Control: a bit-copy Vec was visible to the counters before this change and
+// still is, so a regression that lost accounting would show here too.
+fn bit_copy_control() {
+    let payload: i64 = 8000000;
+    let before = live_bytes();
+    var held: i64 = 0;
+    {
+        var numbers: Vec<i64> = Vec.new();
+        for i in 0..1000000 {
+            numbers.push(i);
+        }
+        held = live_bytes();
+        println(f"control len={numbers.len()}");
+    }
+    report("control", before, held, live_bytes(), payload);
+}
+
+fn main() {
+    bytes_buffer();
+    large_string();
+    vec_of_strings();
+    map_of_strings();
+    nested_vec();
+    bit_copy_control();
+}

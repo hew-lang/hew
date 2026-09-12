@@ -1,0 +1,10 @@
+[[case]]
+id = "numeric-conversions"
+intent = "i64, f64 and u8 render to string and parse back through std.string, including a failing parse for both int and float, with every owned string released once."
+source = "cases/numeric-conversions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "-4200\ntrue\n3.5\ntrue\n250\nstring.to_int: invalid integer literal\nstring.to_float: invalid float literal\n"
+exit = 0

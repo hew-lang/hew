@@ -2,17 +2,20 @@
 //!
 //! Exposes a blocking C ABI over rustls for TLS client connections.
 //! All `extern "C"` functions are designed to be called from compiled Hew
-//! programs via FFI. Any string returned by [`hew_tls_last_error`] is allocated
-//! with `libc::malloc`; callers must free it with `libc::free`.
+//! programs via FFI. `host` and the result of [`hew_tls_last_error`] use
+//! managed UTF-8 strings; null is the canonical empty string.
 use std::ffi::c_void;
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
-use std::os::raw::{c_char, c_int};
+#[cfg(test)]
+use std::os::raw::c_char;
+use std::os::raw::c_int;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
-use hew_cabi::cabi::{alloc_cstring, cstr_to_str, str_to_malloc};
+use hew_cabi::cabi::alloc_cstring;
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use hew_runtime::bytes::{hew_bytes_from_static, BytesTriple};
 use rustls::pki_types::ServerName;
 use rustls::RootCertStore;
@@ -311,14 +314,15 @@ fn write_tls_bytes<W: Write>(writer: &mut W, buf: &[u8]) -> HewTlsWriteResult {
 ///
 /// # Safety
 ///
-/// `host` must be a valid NUL-terminated UTF-8 string.
+/// `host` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *mut HewTlsStream {
-    // SAFETY: `host` is a valid NUL-terminated C string per caller contract.
-    let Some(host_str) = (unsafe { cstr_to_str(host) }) else {
-        set_tls_last_error("hew_tls_connect: invalid host string");
+pub unsafe extern "C" fn hew_tls_connect(host: *const HewString, port: c_int) -> *mut HewTlsStream {
+    // SAFETY: host borrows a live managed string or canonical empty.
+    let host_str = unsafe { string_as_str(host) };
+    if host_str.is_empty() {
+        set_tls_last_error("hew_tls_connect: host is empty");
         return std::ptr::null_mut();
-    };
+    }
     let Ok(port_u16) = u16::try_from(port) else {
         set_tls_last_error(format!("hew_tls_connect: invalid port {port}"));
         return std::ptr::null_mut();
@@ -337,12 +341,10 @@ pub unsafe extern "C" fn hew_tls_connect(host: *const c_char, port: c_int) -> *m
 
 /// Return this actor's last TLS client error.
 ///
-/// Returns an empty string when no TLS client error has been recorded. The
-/// returned string is `malloc`-allocated; callers must free it with
-/// `libc::free`.
+/// Returns an empty string when no TLS client error has been recorded.
 #[no_mangle]
-pub extern "C" fn hew_tls_last_error() -> *mut c_char {
-    str_to_malloc(&get_tls_last_error())
+pub extern "C" fn hew_tls_last_error() -> *mut HewString {
+    string_from_str(&get_tls_last_error())
 }
 
 /// Write `data` to the TLS stream.
@@ -899,7 +901,7 @@ pub unsafe extern "C" fn hew_tls_attach(
         set_tls_last_error(detail);
         return -1;
     }
-    // Hew `LocalPid<T>` crosses an extern C call as the bare local actor
+    // A Hew actor handle crosses an extern C call as the bare local actor
     // pointer. Build the stable by-value actor-ref snapshot the reader owns.
     let actor_ref = TlsActorRef {
         kind: TLS_ACTOR_REF_LOCAL,
@@ -925,14 +927,15 @@ pub unsafe extern "C" fn hew_tls_attach(
 mod tests {
     use super::*;
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
+    use crate::test_string::ManagedString;
     use hew_cabi::cabi::free_cstring;
+    use hew_cabi::string::string_release;
     use hew_runtime::actor;
     use hew_runtime::bytes::{hew_bytes_clone_ref, hew_bytes_drop, hew_bytes_push};
     use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
     use std::cell::Cell;
     use std::collections::HashMap;
     use std::ffi::CStr;
-    use std::ffi::CString;
     use std::io::ErrorKind;
     use std::net::TcpListener;
     use std::os::raw::c_void;
@@ -1064,18 +1067,16 @@ mod tests {
         }
     }
 
+    /// Last-error accessor returns "" (null) with no error recorded; a
+    /// non-empty result is a live managed string owner this helper releases.
     fn last_error_string() -> String {
         let ptr = hew_tls_last_error();
-        if ptr.is_null() {
-            return String::new();
-        }
-        // SAFETY: `ptr` is returned by `hew_tls_last_error` as a valid,
-        // NUL-terminated string allocation.
-        let message = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
-        // SAFETY: `ptr` was allocated with `libc::malloc` by `hew_tls_last_error`.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (frees hew_tls_last_error = str_to_malloc)
+        // SAFETY: `ptr` is null (canonical empty) or a live managed owner
+        // returned by `hew_tls_last_error`.
+        let message = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: `ptr` is the owner this call just produced; releasing is a
+        // no-op when it is null.
+        unsafe { string_release(ptr) };
         message
     }
 
@@ -1095,8 +1096,8 @@ mod tests {
         // SAFETY: non-null triples produced by this module are refcount-1
         // `hew_bytes_from_static` allocations (header-bearing, per
         // `bytes.rs::alloc_buf`). `hew_bytes_drop` is the correct release —
-        // freeing `triple.ptr` with `libc::free` would free the wrong base
-        // (the allocation header precedes `ptr`) and corrupt the allocator.
+        // freeing `triple.ptr` with `buf_free` directly would free the wrong
+        // base (the allocation header precedes `ptr`) and corrupt the heap.
         // `hew_bytes_drop` is a no-op on a null pointer.
         unsafe { hew_runtime::bytes::hew_bytes_drop(triple.ptr) };
     }
@@ -1118,10 +1119,10 @@ mod tests {
     #[test]
     fn connect_null_host_returns_null() {
         clear_tls_last_error();
-        // SAFETY: passing null is the test.
+        // SAFETY: null is the canonical empty managed string.
         let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443) };
         assert!(ptr.is_null());
-        assert_eq!(last_error_string(), "hew_tls_connect: invalid host string");
+        assert_eq!(last_error_string(), "hew_tls_connect: host is empty");
     }
 
     #[test]
@@ -1131,8 +1132,8 @@ mod tests {
         // (or DNS resolution itself fails for a bogus host), either way
         // exercising the `connect_tls(...) => Err(_)` failure path without
         // needing a live network fixture.
-        let host = CString::new("127.0.0.1").unwrap();
-        // SAFETY: `host` is a valid NUL-terminated C string.
+        let host = ManagedString::new("127.0.0.1");
+        // SAFETY: `host` is a live managed string handle.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), 0) };
         assert!(ptr.is_null());
         assert!(
@@ -1141,7 +1142,7 @@ mod tests {
             last_error_string()
         );
         assert!(
-            !last_error_string().ends_with("invalid host string")
+            !last_error_string().ends_with("host is empty")
                 && !last_error_string().contains("invalid port"),
             "expected the connect_tls Err(_) path, got {:?}",
             last_error_string()
@@ -1378,22 +1379,22 @@ mod tests {
     #[test]
     fn connect_empty_host_returns_null() {
         clear_tls_last_error();
-        let host = std::ffi::CString::new("").unwrap();
-        // SAFETY: passing valid but empty C string.
+        let host = ManagedString::new("");
+        // A managed empty string and null share the same canonical empty
+        // representation, so an explicit "" host takes the identical
+        // early-return path as a null pointer (`connect_null_host_returns_null`)
+        // rather than reaching `connect_tls`'s invalid-DNS-name error.
+        // SAFETY: `host` is a live managed string handle (empty).
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), 443) };
         assert!(ptr.is_null());
-        // An empty host is valid UTF-8 (passes `cstr_to_str`), so this hits
-        // the `connect_tls(...) => Err(_)` path (invalid DNS name) rather
-        // than the null/invalid-C-string path exercised by
-        // `connect_null_host_returns_null`.
-        assert_eq!(last_error_string(), "hew_tls_connect: invalid dns name");
+        assert_eq!(last_error_string(), "hew_tls_connect: host is empty");
     }
 
     #[test]
     fn connect_negative_port_returns_null() {
         clear_tls_last_error();
-        let host = std::ffi::CString::new("example.com").unwrap();
-        // SAFETY: passing valid host with invalid port.
+        let host = ManagedString::new("example.com");
+        // SAFETY: passing a live managed host string with an invalid port.
         let ptr = unsafe { hew_tls_connect(host.as_ptr(), -1) };
         assert!(ptr.is_null());
         assert_eq!(last_error_string(), "hew_tls_connect: invalid port -1");
@@ -1885,7 +1886,7 @@ mod tests {
     // "the audit says fresh" is a proxy for that, not the answer. This measures
     // it at the real allocation site over a real handshake, and the answer is
     // recorded as `result-retention = "transferred"` on the symbol's
-    // [[ownership.contracts]] row in scripts/jit-symbol-classification.toml.
+    // [[ownership.contracts]] row in scripts/runtime-export-classification.toml.
     //
     // Three probes, all on results obtained from a live stream:
     //
@@ -2239,7 +2240,8 @@ mod tests {
             // drive the real hew_tls_connect failure path — the actual
             // producer, not a direct slot poke.
             with_actor_context(test_actor, || {
-                // SAFETY: passing null is the documented failure path.
+                // SAFETY: null is the canonical empty managed string; the
+                // documented failure path.
                 let ptr = unsafe { hew_tls_connect(std::ptr::null(), 443) };
                 assert!(ptr.is_null());
             });
@@ -2247,7 +2249,7 @@ mod tests {
 
             let result = handle.join().expect("thread B panicked");
             assert_eq!(
-                result, "hew_tls_connect: invalid host string",
+                result, "hew_tls_connect: host is empty",
                 "run {run}: TLS error recorded on thread A must be visible on thread B for the same actor"
             );
 

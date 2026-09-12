@@ -1,0 +1,7 @@
+fn main() {
+    let prefix = "prefix".to_upper();
+    let named = |value: string| -> string { prefix + value };
+    var values: Vec<fn(string) -> string> = Vec.new();
+    values.push(named);
+    values.set(99, named);
+}

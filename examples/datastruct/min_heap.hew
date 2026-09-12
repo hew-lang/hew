@@ -1,6 +1,9 @@
 // Min-Heap using implicit array representation
 // Parent of i = (i-1)/2, left child = 2*i+1, right child = 2*i+2
-fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
+//
+// A parameter is the callee's own copy, so push and pop hand the heap back and
+// the caller reassigns; pop also reports the value it removed.
+fn heap_push(var heap: Vec<i32>, val: i32) -> Vec<i32> {
     heap.push(val);
     // Sift up
     var i = heap.len() - 1;
@@ -15,17 +18,25 @@ fn heap_push(heap: Vec<i32>, val: i32) -> i32 {
             i = 0; // stop
         }
     }
-    0
+    heap
+}
+
+// Push every value in order.
+fn heap_push_all(var heap: Vec<i32>, values: Vec<i32>) -> Vec<i32> {
+    for value in values {
+        heap = heap_push(heap, value);
+    }
+    heap
 }
 
 fn heap_peek(heap: Vec<i32>) -> i32 {
     heap[0]
 }
 
-fn heap_pop(heap: Vec<i32>) -> i32 {
+fn heap_pop(var heap: Vec<i32>) -> (Vec<i32>, i32) {
     let min_val = heap[0];
     let last = heap.pop();
-    if heap.len() > 0 {
+    if !heap.is_empty() {
         heap.set(0, last);
         // Sift down
         var i = 0;
@@ -54,16 +65,13 @@ fn heap_pop(heap: Vec<i32>) -> i32 {
             }
         }
     }
-    min_val
+    (heap, min_val)
 }
 
 fn test_basic_min_heap() -> i32 {
-    let heap: Vec<i32> = Vec.new();
-    let _ = heap_push(heap, 5);
-    let _ = heap_push(heap, 3);
-    let _ = heap_push(heap, 7);
-    let _ = heap_push(heap, 1);
-    let _ = heap_push(heap, 4);
+    var heap: Vec<i32> = Vec.new();
+    let seeds1: Vec<i32> = [5, 3, 7, 1, 4];
+    heap = heap_push_all(heap, seeds1);
     let pk = heap_peek(heap);
     if pk == 1 {
         println("PASS: min-heap peek returns minimum");
@@ -76,22 +84,24 @@ fn test_basic_min_heap() -> i32 {
 }
 
 fn test_extract_min_order() -> i32 {
-    let heap: Vec<i32> = Vec.new();
-    let _ = heap_push(heap, 5);
-    let _ = heap_push(heap, 3);
-    let _ = heap_push(heap, 7);
-    let _ = heap_push(heap, 1);
-    let _ = heap_push(heap, 4);
-    let _ = heap_push(heap, 6);
-    let _ = heap_push(heap, 2);
+    var heap: Vec<i32> = Vec.new();
+    let seeds2: Vec<i32> = [5, 3, 7, 1, 4, 6, 2];
+    heap = heap_push_all(heap, seeds2);
     // Extract all in order
-    let e1 = heap_pop(heap);
-    let e2 = heap_pop(heap);
-    let e3 = heap_pop(heap);
-    let e4 = heap_pop(heap);
-    let e5 = heap_pop(heap);
-    let e6 = heap_pop(heap);
-    let e7 = heap_pop(heap);
+    let (after_e1, e1) = heap_pop(heap);
+    heap = after_e1;
+    let (after_e2, e2) = heap_pop(heap);
+    heap = after_e2;
+    let (after_e3, e3) = heap_pop(heap);
+    heap = after_e3;
+    let (after_e4, e4) = heap_pop(heap);
+    heap = after_e4;
+    let (after_e5, e5) = heap_pop(heap);
+    heap = after_e5;
+    let (after_e6, e6) = heap_pop(heap);
+    heap = after_e6;
+    let (after_e7, e7) = heap_pop(heap);
+    heap = after_e7;
     var ok = true;
     if e1 != 1 {
         ok = false;
@@ -137,13 +147,9 @@ fn test_extract_min_order() -> i32 {
 }
 
 fn test_heap_property() -> i32 {
-    let heap: Vec<i32> = Vec.new();
-    let _ = heap_push(heap, 10);
-    let _ = heap_push(heap, 4);
-    let _ = heap_push(heap, 15);
-    let _ = heap_push(heap, 20);
-    let _ = heap_push(heap, 0);
-    let _ = heap_push(heap, 8);
+    var heap: Vec<i32> = Vec.new();
+    let seeds3: Vec<i32> = [10, 4, 15, 20, 0, 8];
+    heap = heap_push_all(heap, seeds3);
     // Verify heap property: parent <= children
     var ok = true;
     for i in 0 .. heap.len() {
@@ -170,13 +176,14 @@ fn test_heap_property() -> i32 {
 }
 
 fn test_single_element() -> i32 {
-    let heap: Vec<i32> = Vec.new();
-    let _ = heap_push(heap, 42);
+    var heap: Vec<i32> = Vec.new();
+    heap = heap_push(heap, 42);
     let pk = heap_peek(heap);
-    let popped = heap_pop(heap);
+    let (after_popped, popped) = heap_pop(heap);
+    heap = after_popped;
     if pk == 42 {
         if popped == 42 {
-            if heap.len() == 0 {
+            if heap.is_empty() {
                 println("PASS: single element heap");
                 return 1;
             }
@@ -187,17 +194,19 @@ fn test_single_element() -> i32 {
 }
 
 fn test_duplicates() -> i32 {
-    let heap: Vec<i32> = Vec.new();
-    let _ = heap_push(heap, 3);
-    let _ = heap_push(heap, 1);
-    let _ = heap_push(heap, 3);
-    let _ = heap_push(heap, 1);
-    let _ = heap_push(heap, 2);
-    let e1 = heap_pop(heap);
-    let e2 = heap_pop(heap);
-    let e3 = heap_pop(heap);
-    let e4 = heap_pop(heap);
-    let e5 = heap_pop(heap);
+    var heap: Vec<i32> = Vec.new();
+    let seeds4: Vec<i32> = [3, 1, 3, 1, 2];
+    heap = heap_push_all(heap, seeds4);
+    let (after_e1, e1) = heap_pop(heap);
+    heap = after_e1;
+    let (after_e2, e2) = heap_pop(heap);
+    heap = after_e2;
+    let (after_e3, e3) = heap_pop(heap);
+    heap = after_e3;
+    let (after_e4, e4) = heap_pop(heap);
+    heap = after_e4;
+    let (after_e5, e5) = heap_pop(heap);
+    heap = after_e5;
     var ok = true;
     if e1 != 1 {
         ok = false;

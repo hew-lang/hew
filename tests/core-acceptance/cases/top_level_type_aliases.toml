@@ -1,0 +1,13 @@
+[[case]]
+id = "top_level_type_aliases"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/top_level_type_aliases.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "5\n42\n42\n1\n"
+exit = 0

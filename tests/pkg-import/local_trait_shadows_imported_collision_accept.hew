@@ -14,7 +14,7 @@ pub trait Source {
 }
 
 type W {
-    id: i64;
+    id: i64,
 }
 
 impl Source for W {

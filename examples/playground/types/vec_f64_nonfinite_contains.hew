@@ -1,24 +1,24 @@
 //! @name Vec<f64> Non-Finite Contains
-//! @description Vec<f64>.contains follows native fcmp-OEQ semantics for NaN and +-Infinity
+//! @description Vec<f64>.contains uses total, bitwise float equality: NaN finds itself and the signed infinities stay distinct
 
 fn main() {
     let zero: f64 = 0.0;
     let nan: f64 = zero / zero;
     let inf: f64 = 1.0 / zero;
     let neg_inf: f64 = -1.0 / zero;
-    let nans: Vec<f64> = Vec.new();
+    var nans: Vec<f64> = Vec.new();
     nans.push(nan);
-    // NaN never compares equal to anything (fcmp OEQ returns false for any NaN
-    // operand) — matches native hew_vec_contains_f64 exact-equality scan.
+    // Container equality is total: a NaN with the same bits is the same
+    // element, unlike the IEEE `==` a bare `f64 == f64` expression lowers to.
     println(f"[nan].contains(nan)   {nans.contains(nan)}");
     println(f"[nan].contains(inf)   {nans.contains(inf)}");
-    let infs: Vec<f64> = Vec.new();
+    var infs: Vec<f64> = Vec.new();
     infs.push(inf);
-    // +Infinity and -Infinity are distinct values under OEQ.
+    // +Infinity and -Infinity have different bits, so they are distinct.
     println(f"[inf].contains(-inf)  {infs.contains(neg_inf)}");
 
-    // Positive control: finite exact match must still work.
-    let nums: Vec<f64> = Vec.new();
+    // Finite exact match, and a finite value never matches NaN.
+    var nums: Vec<f64> = Vec.new();
     nums.push(2.5);
     println(f"[2.5].contains(2.5)   {nums.contains(2.5)}");
     println(f"[2.5].contains(nan)   {nums.contains(nan)}");

@@ -1,0 +1,10 @@
+[[case]]
+id = "utf8-decode-errors"
+intent = "Malformed, incomplete, overlong and surrogate UTF-8 inputs produce ordinary inspectable error values with exact byte positions and optional sequence lengths."
+source = "cases/utf8-decode-errors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "invalid UTF-8 at byte 1 (1-byte sequence)\ninvalid UTF-8 at byte 1 (1-byte sequence)\nincomplete UTF-8 sequence at byte 1\ninvalid UTF-8 at byte 0 (1-byte sequence)\ninvalid UTF-8 at byte 0 (1-byte sequence)\n"
+exit = 0

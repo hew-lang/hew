@@ -1,0 +1,10 @@
+[[case]]
+id = "var-self-values"
+intent = "Mutable methods return values and updated scalar, owned and projected receivers, snapshot aliased arguments, observe nested argument mutation, and preserve generic unit results on both return paths."
+source = "cases/var-self-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "12\n12\nINITIAL\nNESTED\nFINAL\nFINAL\nFIELD\nSIBLING\nFINAL\nTUPLE\nUPDATED\nPEER\nKEPT\n7\n12\n15\n15\nFINAL\nFINAL\nAFTER SNAPSHOTS\n"
+exit = 0

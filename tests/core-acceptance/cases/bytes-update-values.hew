@@ -1,0 +1,13 @@
+fn main() {
+    let source = "abcd".to_bytes();
+    var slice = source[1..3];
+    let alias = slice;
+    slice.set(0, 255);
+    assert(slice[0] == 255);
+    assert(alias[0] == 98);
+    assert(source[1] == 98);
+    slice[1] = 0;
+    assert(slice[1] == 0);
+    assert(alias[1] == 99);
+    println("byte updates passed");
+}

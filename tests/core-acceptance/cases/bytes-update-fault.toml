@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-update-fault"
+intent = "An out-of-range byte update follows the logical failure edge before mutation and releases the transferred receiver and its retained alias."
+source = "cases/bytes-update-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

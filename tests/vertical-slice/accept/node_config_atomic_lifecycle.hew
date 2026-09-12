@@ -1,0 +1,73 @@
+import std.fs;
+import std.os;
+
+// The node writes `<key>.hew-state` beside its key and refuses a key path that
+// is already in use, so the path must be unique to this process: the acceptance
+// runner runs the same program at O0 and O2, and a shared path would make the
+// second run fail on the first run's leftover.
+fn key_path() -> string {
+    f"{os.temp_dir()}/hew-node-config-atomic-lifecycle-{os.pid()}.key"
+}
+
+fn starts(consume config: NodeConfig) -> bool {
+    match Node.start(config) {
+        .Ok(_) => true,
+        .Err(_) => false,
+    }
+}
+
+fn configured_at(bind: string) -> NodeConfig {
+    var config = NodeConfig.at(bind);
+    config.key = key_path();
+    config
+}
+
+fn main() -> i64 {
+    let initial = configured_at("127.0.0.1:0");
+    if !starts(initial) { return 1; }
+    Node.shutdown();
+
+    let invalid = NodeConfig {
+        bind: "127.0.0.1:0",
+        transport: "tcp",
+        key: key_path(),
+        trust: "open",
+        peers: Vec.new(),
+        seeds: Vec.new(),
+    };
+    if starts(invalid) { return 2; }
+
+    // Empty bind reaches the first managed-field rejection while later owned
+    // strings and vectors are populated; consuming Node.start must release all.
+    let empty_bind = NodeConfig {
+        bind: "",
+        transport: "tcp",
+        key: key_path(),
+        trust: "pinned",
+        peers: ["later-peer"],
+        seeds: ["127.0.0.1:1"],
+    };
+    if starts(empty_bind) { return 7; }
+
+    let failed_seed = NodeConfig {
+        bind: "127.0.0.1:0",
+        transport: "tcp",
+        key: key_path(),
+        trust: "pinned",
+        peers: Vec.new(),
+        seeds: ["127.0.0.1:1"],
+    };
+    if starts(failed_seed) { return 3; }
+
+    let retry = configured_at("127.0.0.1:0");
+    if !starts(retry) { return 4; }
+    let repeated = configured_at("127.0.0.1:0");
+    if starts(repeated) { return 5; }
+    Node.shutdown();
+    let restart = configured_at("127.0.0.1:0");
+    if !starts(restart) { return 6; }
+    Node.shutdown();
+    let _ = fs.delete(key_path() + ".hew-state");
+    let _ = fs.delete(key_path());
+    0
+}

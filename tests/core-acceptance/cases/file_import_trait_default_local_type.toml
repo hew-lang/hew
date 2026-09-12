@@ -1,0 +1,13 @@
+[[case]]
+id = "file_import_trait_default_local_type"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/file_import_trait_default_local_type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "w1:7\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_capture_record_owned"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/closure_capture_record_owned.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\n2\n"
+exit = 0

@@ -1,0 +1,17 @@
+// Reject fixture: a `select` with no arms waits on nothing and can never
+// complete. The checker refuses it rather than lowering a suspension with no
+// registered source.
+//
+// Harness verb: hew check (must fail)
+// Expected diagnostic substring: "needs at least one arm: a source arm"
+actor Driver {
+    #[on(start)]
+    fn start() {
+        select {};
+    }
+}
+
+fn main() {
+    let _d = spawn Driver;
+    sleep(20ms);
+}

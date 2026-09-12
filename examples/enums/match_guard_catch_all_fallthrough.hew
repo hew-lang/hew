@@ -1,6 +1,6 @@
 enum Score {
-    High(i64);
-    Low(i64);
+    High(i64),
+    Low(i64),
 }
 
 fn is_never() -> bool {

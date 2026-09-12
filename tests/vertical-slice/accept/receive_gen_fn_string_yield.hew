@@ -16,7 +16,7 @@ actor Namer {
 
 fn main() {
     let n = spawn Namer;
-    for await v in n.names() {
+    for v in n.names() {
         println(f"len={v.len()} val={v}");
     }
 }

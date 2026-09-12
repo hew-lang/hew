@@ -1,25 +1,9 @@
-use std::ffi::c_char;
+use hew_cabi::string::{string_as_bytes, string_from_utf8, HewString};
 use std::ptr;
 
 use std::ffi::c_void;
 
-use hew_cabi::vec::{HewTypeOwnershipKind, HewVecElemLayout};
-
-pub(crate) fn bytes_to_cstr(item: &[u8]) -> *mut c_char {
-    let len = item.len();
-    // Header-aware (S1): backs channel<string> recv; released via hew_string_drop / free_cstring.
-    let buf = crate::cabi::alloc_cstring_data(len + 1); // CSTRING-ALLOC: str-open (bytes_to_cstr — header-aware String backing channel<string> recv; reaches hew_string_drop)
-    if buf.is_null() {
-        return ptr::null_mut();
-    }
-    if len > 0 {
-        // SAFETY: `buf` has `len + 1` bytes and `item` has `len` readable bytes.
-        unsafe { ptr::copy_nonoverlapping(item.as_ptr(), buf.cast::<u8>(), len) };
-    }
-    // SAFETY: writing the NUL terminator at offset `len` stays in-bounds.
-    unsafe { *buf.cast::<u8>().add(len) = 0 };
-    buf.cast::<c_char>()
-}
+use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
 pub(crate) unsafe fn free_channel_pair<P, S, R>(
     pair: *mut P,
@@ -53,14 +37,14 @@ pub(crate) unsafe fn free_channel_pair<P, S, R>(
 // ---------------------------------------------------------------------------
 //
 // The channel and stream queue cores carry opaque `Vec<u8>` envelopes; the
-// `*_layout` runtime entries use a `HewVecElemLayout` witness (the same
+// `*_layout` runtime entries use a `HewValueLayout` witness (the same
 // descriptor W5.016 production-proved for `Vec<owned-T>`) to decide how a
 // typed element is serialised into and decoded out of that envelope:
 //
 // | ownership_kind  | envelope contents                       | thunks      |
 // |-----------------|-----------------------------------------|-------------|
 // | `Plain`         | the element's raw bytes (`size` wide)   | none        |
-// | `String`        | the string's CONTENT bytes (no NUL)     | none        |
+// | `String`        | the string's UTF-8 bytes (including NUL) | none        |
 // | `Bytes`         | the bytes value's content bytes         | none        |
 // | `LayoutManaged` | the element representation (`size` wide)| clone + drop|
 //
@@ -87,12 +71,9 @@ pub(crate) fn abort_elem_witness(context: &str, reason: &str) -> ! {
 ///
 /// # Safety
 ///
-/// `layout`, when non-null, must point to a `HewVecElemLayout` that lives for
+/// `layout`, when non-null, must point to a `HewValueLayout` that lives for
 /// the duration of the caller's operation (in practice a codegen static).
-pub(crate) unsafe fn elem_layout_witness<'a>(
-    layout: *const HewVecElemLayout,
-    context: &str,
-) -> &'a HewVecElemLayout {
+unsafe fn element_layout<'a>(layout: *const HewValueLayout, context: &str) -> &'a HewValueLayout {
     if layout.is_null() {
         abort_elem_witness(context, "element layout witness must be non-null");
     }
@@ -107,6 +88,19 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
             "element layout align must be a non-zero power of two",
         );
     }
+    l
+}
+
+/// Validate a descriptor used by a copy-in queue operation.
+///
+/// # Safety
+/// `layout` points to a live descriptor for the duration of the operation.
+pub(crate) unsafe fn elem_layout_witness<'a>(
+    layout: *const HewValueLayout,
+    context: &str,
+) -> &'a HewValueLayout {
+    // SAFETY: descriptor validity is the caller's contract.
+    let l = unsafe { element_layout(layout, context) };
     if l.ownership_kind == HewTypeOwnershipKind::LayoutManaged
         && (l.clone_fn.is_none() || l.drop_fn.is_none())
     {
@@ -118,6 +112,51 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
     l
 }
 
+/// Validate a descriptor used by an owned-value transfer. A move-only value
+/// needs its destructor but does not need a clone operation.
+///
+/// # Safety
+/// `layout` points to a live descriptor for the duration of the operation.
+pub(crate) unsafe fn move_elem_layout_witness<'a>(
+    layout: *const HewValueLayout,
+    context: &str,
+) -> &'a HewValueLayout {
+    // SAFETY: descriptor validity is the caller's contract.
+    let layout = unsafe { element_layout(layout, context) };
+    if layout.ownership_kind != HewTypeOwnershipKind::Plain && layout.drop_fn.is_none() {
+        abort_elem_witness(context, "owned element witness is missing its drop thunk");
+    }
+    layout
+}
+
+/// Move a value into its descriptor-selected queue envelope. Content-backed
+/// strings and bytes release their source only after encoding succeeds;
+/// layout-managed values transfer their slot image without cloning.
+///
+/// # Safety
+/// `data` is a writable live element slot. `layout` passed the move validator.
+/// The caller must abandon the source slot after this function returns.
+pub(crate) unsafe fn move_elem_envelope(
+    data: *mut c_void,
+    layout: &HewValueLayout,
+    context: &str,
+) -> Vec<u8> {
+    if matches!(
+        layout.ownership_kind,
+        HewTypeOwnershipKind::Plain | HewTypeOwnershipKind::LayoutManaged
+    ) {
+        // SAFETY: data contains the live element described by the witness.
+        return unsafe { std::slice::from_raw_parts(data.cast::<u8>(), layout.size) }.to_vec();
+    }
+    // SAFETY: content encoding reads the source without changing ownership.
+    let envelope = unsafe { encode_elem_envelope(data, layout, context) };
+    let drop = layout.drop_fn.expect("validated owned element destructor");
+    // SAFETY: encoding succeeded, so the envelope now owns the content and
+    // this is the sole release of the transferred source value.
+    unsafe { drop(data) };
+    envelope
+}
+
 /// Release one queue envelope that never reached a consumer.
 ///
 /// Plain, string, and bytes envelopes own only their `Vec<u8>` storage. A
@@ -126,7 +165,7 @@ pub(crate) unsafe fn elem_layout_witness<'a>(
 /// discarded.
 #[allow(dead_code, reason = "used by the wasm32 channel backing")]
 pub(crate) fn drop_elem_envelope(
-    layout: Option<&HewVecElemLayout>,
+    layout: Option<&HewValueLayout>,
     mut envelope: Vec<u8>,
     context: &str,
 ) {
@@ -157,11 +196,11 @@ pub(crate) fn drop_elem_envelope(
 /// # Safety
 ///
 /// `data` must point to one live element of the witness's type: `size`
-/// readable bytes for `Plain`/`LayoutManaged`, a `*const c_char` slot for
+/// readable bytes for `Plain`/`LayoutManaged`, a `*const HewString` slot for
 /// `String`, a `BytesTriple` slot for `Bytes`.
 pub(crate) unsafe fn encode_elem_envelope(
     data: *const c_void,
-    layout: &HewVecElemLayout,
+    layout: &HewValueLayout,
     context: &str,
 ) -> Vec<u8> {
     match layout.ownership_kind {
@@ -171,15 +210,9 @@ pub(crate) unsafe fn encode_elem_envelope(
         }
         HewTypeOwnershipKind::String => {
             // SAFETY: caller guarantees `data` is a string slot.
-            let sptr = unsafe { *data.cast::<*const c_char>() };
-            if sptr.is_null() {
-                Vec::new()
-            } else {
-                // SAFETY: a non-null Hew string is a valid NUL-terminated buffer.
-                unsafe { std::ffi::CStr::from_ptr(sptr) }
-                    .to_bytes()
-                    .to_vec()
-            }
+            let sptr = unsafe { *data.cast::<*const HewString>() };
+            // SAFETY: the slot contains a borrowed managed string, including null/empty.
+            unsafe { string_as_bytes(sptr) }.to_vec()
         }
         HewTypeOwnershipKind::Bytes => {
             // SAFETY: caller guarantees `data` is a BytesTriple slot.
@@ -226,8 +259,8 @@ pub(crate) unsafe fn encode_elem_envelope(
 
 /// Decode one queue envelope into the consumer's out slot (the recv side).
 ///
-/// Returns 1 when a value was written to `out`, 0 when no value is available
-/// (`item` was `None`, or the documented bytes empty-item narrowing applied).
+/// Returns 1 when a value was written to `out`, including empty string or
+/// bytes content, and 0 at EOF or after a decoding failure.
 /// Ownership of a decoded `LayoutManaged` element MOVES to the consumer: no
 /// clone runs, no drop runs, and the envelope bytes are dead afterwards.
 ///
@@ -238,7 +271,7 @@ pub(crate) unsafe fn encode_elem_envelope(
 pub(crate) unsafe fn decode_elem_envelope(
     item: Option<Vec<u8>>,
     out: *mut c_void,
-    layout: &HewVecElemLayout,
+    layout: &HewValueLayout,
     context: &str,
 ) -> i32 {
     let Some(item) = item else {
@@ -246,25 +279,28 @@ pub(crate) unsafe fn decode_elem_envelope(
     };
     match layout.ownership_kind {
         HewTypeOwnershipKind::String => {
-            // Empty contents are a valid `Some("")` — only `None` maps to 0.
-            // CSTRING-ALLOC: str-open (header-aware String element decode;
-            // reaches hew_string_drop on the Hew side).
-            let s = bytes_to_cstr(&item);
+            // Empty contents are a valid `Some("")`; malformed UTF-8 reports
+            // an error without initializing a string slot.
+            let s = match string_from_utf8(&item) {
+                Ok(value) => value,
+                Err(error) => {
+                    crate::stream_error::set_last_error(format!(
+                        "{context}: invalid string element: {error}"
+                    ));
+                    return 0;
+                }
+            };
             // SAFETY: caller guarantees `out` is a string slot.
-            unsafe { *out.cast::<*mut c_char>() = s };
+            unsafe { *out.cast::<*mut HewString>() = s };
             1
         }
         HewTypeOwnershipKind::Bytes => {
-            if item.is_empty() {
-                // Documented bytes narrowing: a present zero-length item is
-                // indistinguishable from EOF (matches `hew_stream_next_bytes`).
+            let Ok(len) = u32::try_from(item.len()) else {
+                crate::stream_error::set_last_error(format!(
+                    "{context}: bytes element exceeds its length representation"
+                ));
                 return 0;
-            }
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "stream item lengths carry the u32 bytes-ABI width"
-            )]
-            let len = item.len() as u32;
+            };
             // SAFETY: item is valid for len bytes; from_static copies it into a
             // fresh refcount-1 buffer the consumer owns.
             let triple = unsafe { crate::bytes::hew_bytes_from_static(item.as_ptr(), len) };

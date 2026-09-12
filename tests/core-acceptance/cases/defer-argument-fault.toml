@@ -1,0 +1,12 @@
+[[case]]
+id = "defer-argument-fault"
+intent = "A later argument failure releases an earlier resource argument and still runs older deferred cleanup with committed state."
+source = "cases/defer-argument-fault.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "5\n"
+stderr = "hew: failure: UserPanic (212): argument\nhew: secondary failure: UserPanic (212): older\n"
+exit = 1

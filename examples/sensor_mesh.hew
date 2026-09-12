@@ -9,7 +9,8 @@
 //   Logger   — writes events to a log
 //
 // In a distributed deployment each would run on its own node. The Node API —
-// start/shutdown/register/lookup/connect/set_transport/load_keys/allow_peer —
+// start(config)/shutdown/register/lookup/connect, where `config` is a
+// NodeConfig record carrying transport, key, trust, peers, and seeds —
 // typechecks and lowers today; this single-process demo keeps them off.
 actor Logger {
 
@@ -29,7 +30,7 @@ actor Logger {
     // let monitor = Node.lookup("monitor");
 
     // Simulate 6 ticks
-    var count: i32;
+    var count: i32,
     receive fn log_event(source: string, msg: string) {
         count = count + 1;
         println(f"[log #{count}] {source}: {msg}");
@@ -37,13 +38,13 @@ actor Logger {
 }
 
 actor Monitor {
-    let readings: Vec<i32>;
-    let logger: LocalPid<Logger>;
-    let threshold: i32;
+    var readings: Vec<i32>,
+    let logger: Logger,
+    let threshold: i32,
     receive fn reading(sensor_id: string, temp: i32) {
         readings.push(temp);
         if temp > threshold {
-            logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
+            let _ = logger.log_event(sensor_id, f"ALERT temp={temp} exceeds {threshold}");
         }
         if readings.len() % 3 == 0 {
             var sum: i64 = 0;
@@ -51,18 +52,18 @@ actor Monitor {
                 sum = sum + reading as i64;
             }
             let avg = sum / readings.len();
-            logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");
+            let _ = logger.log_event("monitor", f"avg={avg} over {readings.len()} readings");
         }
     }
 }
 
 actor Sensor {
-    let sensor_id: string;
-    let monitor: LocalPid<Monitor>;
-    let base_temp: i32;
+    let sensor_id: string,
+    let monitor: Monitor,
+    let base_temp: i32,
     receive fn tick(cycle: i32) {
         let temp = base_temp + cycle % 5 - 2;
-        monitor.reading(sensor_id, temp);
+        let _ = monitor.reading(sensor_id, temp);
     }
 }
 
@@ -74,8 +75,8 @@ fn main() {
     let s1 = spawn Sensor(sensor_id: "sensor-A", monitor: monitor, base_temp: 25);
     let s2 = spawn Sensor(sensor_id: "sensor-B", monitor: monitor, base_temp: 31);
     for cycle in 0 .. 6 {
-        s1.tick(cycle);
-        s2.tick(cycle);
+        let _ = s1.tick(cycle);
+        let _ = s2.tick(cycle);
         sleep(30ms);
     }
     sleep(200ms);

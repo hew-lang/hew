@@ -31,8 +31,8 @@
 /// real fault — the hook's job is to choose between Restart, Escalate,
 /// and Kill".
 pub type CrashInfo {
-    code: i64;
-    message: string;
+    code: i64,
+    message: string,
 }
 
 /// Advisory return value of a `#[on(crash)]` hook.
@@ -50,9 +50,9 @@ pub type CrashInfo {
 ///   supervisor's supervisor instead of restarting locally.
 /// - `Kill`: v0.6 control intent to terminate the actor permanently.
 pub enum CrashAction {
-    Restart;
-    Escalate;
-    Kill;
+    Restart,
+    Escalate,
+    Kill,
 }
 
 /// Identity + class of a crash that propagated to a linked actor.
@@ -77,17 +77,17 @@ pub enum CrashAction {
 ///
 /// WHAT (v0.5 shape, integer-tag only per Q45/A22): `actor_id` carries the
 /// crashed actor's id as a raw `u64`.  Future widening to a typed
-/// `LocalPid<A>` requires the linked actor to know A's static type — a
+/// An actor handle requires the linked actor to know A's static type — a
 /// generics-and-trait-bound enhancement deferred until the spine
 /// supports it.
 pub type CrashNotification {
     /// Numeric identity of the actor that crashed.  Raw `u64` rather
-    /// than `LocalPid<A>` because the linked actor does not in general
+    /// than an actor handle because the linked actor does not in general
     /// know the crashed actor's static type at the hook site.
-    actor_id: u64;
+    actor_id: u64,
     /// Class of the originating crash.  Mirrors the runtime
     /// `ExitReason` discriminator the supervisor receives.
-    kind: CrashKind;
+    kind: CrashKind,
 }
 
 /// Class of a crash propagated to a linked actor.
@@ -106,10 +106,10 @@ pub type CrashNotification {
 pub enum CrashKind {
     /// Generic crash from `panic(...)`, `hew_panic()`, or an
     /// unclassified trap (SEGV / BUS / FPE / ILL / TRAP).
-    Crashed;
+    Crashed,
     /// Per-actor arena cap exceeded.
-    HeapExceeded;
+    HeapExceeded,
     /// A duplex / mailbox partition was observed on a recv path the
     /// crashed actor was awaiting.
-    PartitionDetected;
+    PartitionDetected,
 }

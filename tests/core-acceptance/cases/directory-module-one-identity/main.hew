@@ -1,0 +1,12 @@
+// One directory module, two importers, one identity. `probe.lib` is a
+// directory module whose entry file calls its own private helper and its
+// peer's public one; the root and `probe.mid` both reach it by the directory
+// spelling, and every call still has an executable target.
+import probe.lib;
+import probe.mid;
+
+fn main() {
+    println(lib.describe());
+    println(mid.through());
+    println(lib.peer_note());
+}

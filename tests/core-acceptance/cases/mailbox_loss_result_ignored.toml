@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_loss_result_ignored"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/mailbox_loss_result_ignored.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SEND_RESULT_DROPPED"
+line = 9
+column = 5
+message = "E_SEND_RESULT_DROPPED"

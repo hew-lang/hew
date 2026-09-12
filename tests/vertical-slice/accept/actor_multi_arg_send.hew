@@ -8,7 +8,7 @@
 // Output is deterministic: all prints run inside TestSink in mailbox FIFO
 // order; the trailing ask fences main until every send has dispatched.
 actor TestSink {
-    var total: i64;
+    var total: i64,
     receive fn process(label: string, count: i64) {
         total = total + count;
         println(f"{label}: count={count} total={total}");
@@ -23,12 +23,12 @@ actor TestSink {
 
 fn main() {
     let s = spawn TestSink(total: 0);
-    s.process("first", 5);
-    s.process("second", 7);
+    let _ = s.process("first", 5);
+    let _ = s.process("second", 7);
     let left = "alpha";
     let right = "beta";
-    s.note(left, right);
-    let r = await s.fence();
+    let _ = s.note(left, right);
+    let r = s.fence();
     match r {
         .Ok(v) => println(f"fence total={v}"),
         .Err(_) => println("fence failed"),

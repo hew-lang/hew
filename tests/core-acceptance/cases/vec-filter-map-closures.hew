@@ -1,0 +1,9 @@
+// #3375: a captured-closure Vec pipeline lowers to an immutable place root.
+fn main() {
+    let nums: Vec<i64> = [1, 2, 3, 4, 5];
+    let evens = nums.filter(|x| x % 2 == 0);
+    let doubled = nums.map(|x| x * 2);
+    let threshold = 3;
+    let big = nums.filter(|x| x > threshold);
+    println(f"evens={evens.len()} doubled={doubled.len()} big={big.len()}");
+}

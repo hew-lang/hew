@@ -2,48 +2,49 @@ import std.link_monitor.{MonitorRef};
 
 #[resource]
 type Handle {
-    name: string;
+    name: string,
 }
 
 impl Handle {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 type Wrapper {
-    handle: Handle;
+    handle: Handle,
 }
 
-type PositionalWrapper(Handle);
-
-fn _count<T>(items: Vec<T>) -> i64 {
-    var count = 0;
-    for _item in items {
-        count = count + 1;
+// `for item in items` binds the element as a borrow, so counting is fine and
+// no shallow clone is made. The fail-closed property lives at the escape: a
+// borrowed element with no copy operation cannot be transferred out.
+fn _take_first<T>(items: Vec<T>) -> Option<T> {
+    for item in items {
+        return Some(item);
     }
-    count
+    None
 }
 
-// The parameter is enough to instantiate _count<Handle>; no Handle
+// The parameter is enough to instantiate `_take_first<Handle>`; no Handle
 // constructor or unsafe value fabrication is needed for the fail-closed proof.
-fn _count_handles(items: Vec<Handle>) -> i64 {
-    _count(items)
+fn _take_handle(items: Vec<Handle>) -> Option<Handle> {
+    _take_first(items)
 }
 
 // An unmarked outer record must not hide the nested resource marker.
-fn _count_wrappers(items: Vec<Wrapper>) -> i64 {
-    _count(items)
-}
-
-// Positional payloads are stored fields even though `.0` access is not exposed.
-// Their resource marker must participate in the concrete MIR clone proof.
-fn _count_positional_wrappers(items: Vec<PositionalWrapper>) -> i64 {
-    _count(items)
+fn _take_wrapper(items: Vec<Wrapper>) -> Option<Wrapper> {
+    _take_first(items)
 }
 
 // MonitorRef is a builtin field-bearing resource record. Its u64 field is
 // structurally cloneable, but the monitor registration itself is not.
-fn _count_monitor_refs(items: Vec<MonitorRef>) -> i64 {
-    _count(items)
+fn _take_monitor_ref(items: Vec<MonitorRef>) -> Option<MonitorRef> {
+    _take_first(items)
 }
 
-fn main() {}
+fn main() {
+    let handles: Vec<Handle> = Vec.new();
+    let wrappers: Vec<Wrapper> = Vec.new();
+    let monitors: Vec<MonitorRef> = Vec.new();
+    let _a = _take_handle(handles);
+    let _b = _take_wrapper(wrappers);
+    let _c = _take_monitor_ref(monitors);
+}

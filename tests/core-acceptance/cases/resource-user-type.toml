@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-user-type"
+intent = "A user `#[resource]` record is released exactly once by its own `close` from a record field, a vector element and both exits of a function with an early return."
+source = "cases/resource-user-type.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "held 7\nclose h1\nlen=2\nclose v1\nclose v2\nclose e1\nearly=0\nclose e1\nlate=1\n"
+stderr = ""
+exit = 0

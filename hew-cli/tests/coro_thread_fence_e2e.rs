@@ -7,7 +7,7 @@
 //! not exist yet.
 //!
 //! - `generator_iteration_creates_no_os_threads` passes today: all four
-//!   generator surfaces (`gen fn`, `gen {}`, `async gen fn`, `receive gen fn`)
+//!   generator surfaces (`gen fn`, `gen {}`, `receive gen fn`)
 //!   already run on `llvm.coro` frames, not OS threads. It is a regression
 //!   fence so the P4 concurrency lane cannot quietly re-thread the pump.
 //! - `fork_children_create_no_os_threads` FAILS today: every `fork` child
@@ -100,7 +100,7 @@ const GENERATOR_THREAD_FENCE_SOURCE: &str = r#"
 import std.fs;
 
 fn threads() -> i64 {
-    let names = fs.list_dir("/proc/self/task");
+    let names = fs.list_dir("/proc/self/task").expect("the task directory is readable");
     names.len()
 }
 
@@ -110,7 +110,7 @@ gen fn counter(n: i64) -> i64 {
     }
 }
 
-async gen fn aticks(n: i64) -> i64 {
+gen fn aticks(n: i64) -> i64 {
     for i in 0..n {
         yield i;
     }
@@ -164,11 +164,11 @@ fn main() {
     println("iters-genblock");
     println(iters_genblock);
 
-    // async gen fn + for await
+    // second gen fn + for
     let pre_asyncgen = threads();
     var peak_asyncgen = pre_asyncgen;
     var iters_asyncgen = 0;
-    for await v in aticks(50) {
+    for v in aticks(50) {
         let t = threads();
         if t > peak_asyncgen { peak_asyncgen = t; }
         iters_asyncgen = iters_asyncgen + 1;
@@ -181,12 +181,12 @@ fn main() {
     println("iters-asyncgen");
     println(iters_asyncgen);
 
-    // receive gen fn + for await (cross-actor stream producer)
+    // receive gen fn + for (cross-actor stream producer)
     let e = spawn Emitter;
     let pre_recvgen = threads();
     var peak_recvgen = pre_recvgen;
     var iters_recvgen = 0;
-    for await v in e.ticks(200) {
+    for v in e.ticks(200) {
         let t = threads();
         if t > peak_recvgen { peak_recvgen = t; }
         iters_recvgen = iters_recvgen + 1;
@@ -276,7 +276,7 @@ fn run_fork_thread_probe(n: i64) -> (i64, i64) {
 import std.fs;
 
 fn threads() -> i64 {{
-    let names = fs.list_dir("/proc/self/task");
+    let names = fs.list_dir("/proc/self/task").expect("the task directory is readable");
     names.len()
 }}
 
@@ -290,7 +290,7 @@ fn reporter() {{
     println(threads());
 }}
 
-actor Driver {{
+actor Driver {{ 
     receive fn go() -> i64 {{
         // Warm the shared `hew-timer-tick` thread before sampling the
         // baseline: it is spawned lazily on the first ctx-bearing `sleep`
@@ -298,11 +298,8 @@ actor Driver {{
         // blocking). Without this warm-up, `pre` would be sampled before the
         // timer thread exists and `during` after — a false +1 unrelated to
         // fork children.
-        sleep(1ms);
-        println("pre");
-        println(threads());
-        scope {{
-{napper_forks}            fork {{ reporter(); }};
+        sleep(1ms), println("pre"), println(threads()), scope {{
+{napper_forks}            fork {{ reporter() }};
         }};
         0
     }}

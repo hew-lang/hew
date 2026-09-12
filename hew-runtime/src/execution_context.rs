@@ -179,7 +179,7 @@ pub extern "C" fn hew_set_partition_policy(tag: i64) -> bool {
 /// Target-architecture-aware byte size of [`HewExecutionContext`].
 ///
 /// Derived from `size_of` rather than a literal so the value is correct on
-/// both 64-bit native targets (128 bytes) and 32-bit wasm32 targets (96 bytes,
+/// both 64-bit native targets (136 bytes) and 32-bit wasm32 targets (96 bytes,
 /// because four-byte pointers eliminate the pointer-sized padding slots).
 pub const HEW_CTX_SIZE: usize = std::mem::size_of::<HewExecutionContext>();
 
@@ -250,7 +250,7 @@ pub const HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED: u32 = 1 << 1;
 /// |------|--------------|---------------|
 /// | `trace` start | 56 | 40 |
 /// | post-trace start (`partition_policy`) | 96 | 80 |
-/// | struct size | 128 | 96 |
+/// | struct size | 136 | 96 |
 ///
 /// The shift between targets originates in the pre-trace pointer fields:
 /// `actor` (ptr) → `actor_id` (u64, align-padded to 8) → `parent_supervisor`
@@ -296,6 +296,10 @@ pub struct HewExecutionContext {
     /// dispatch (worker A mid-select → worker B inner ask) restores the
     /// outer arm's channel via the `prev_context` chain.
     pub reply_channel: *mut c_void,
+    /// Checked native completion, consumed by the activation's scheduler.
+    /// The slot releases an unconsumed owner during exceptional teardown.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub checked_fault: crate::actor_native::CheckedActorFault,
 }
 
 thread_local! {
@@ -321,56 +325,33 @@ pub fn current_context() -> *mut HewExecutionContext {
     CURRENT_EXECUTION_CONTEXT.with(Cell::get)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-thread_local! {
-    /// Depth of live process-entry `catch_unwind` boundaries on this thread.
-    ///
-    /// The generated `main` runs beneath a runtime-owned catch boundary
-    /// (`hew_main_unwind_boundary`) that is NOT a dispatch: there is no actor,
-    /// no mailbox and no reply channel, so it deliberately installs no
-    /// [`HewExecutionContext`]. Installing one would make main indistinguishable
-    /// from an actor dispatch to every `current_context().is_null()` reader -
-    /// `hew_observe_barrier` refuses to run inside a dispatch, tracing and arena
-    /// routing read the carrier's lanes - so the boundary records itself here
-    /// instead. [`current_context_can_unwind`] stays the single reader.
-    static PROCESS_ENTRY_UNWIND_BOUNDARIES: Cell<u32> = const { Cell::new(0) };
-}
-
-/// Enter a process-entry unwind boundary for the current thread.
-///
-/// Paired with [`leave_process_entry_unwind_boundary`]; the runtime's main
-/// boundary restores the previous depth on both the normal and the caught-panic
-/// leg so a nested `hew build`-style embedding cannot leak the marker.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn enter_process_entry_unwind_boundary() {
-    PROCESS_ENTRY_UNWIND_BOUNDARIES.with(|depth| depth.set(depth.get().saturating_add(1)));
-}
-
-/// Leave a process-entry unwind boundary for the current thread.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn leave_process_entry_unwind_boundary() {
-    PROCESS_ENTRY_UNWIND_BOUNDARIES.with(|depth| depth.set(depth.get().saturating_sub(1)));
-}
-
 /// Whether this stack is enclosed by a live runtime-owned unwind boundary.
 ///
-/// Two frames can own one: a scheduler dispatch carrier (the
-/// [`HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED`] bit) and the process entry frame
-/// (`hew_main_unwind_boundary`). Both answer the same question - may a typed
-/// language unwind start here and be caught - and this is the only function
-/// that answers it.
+/// The scheduler dispatch carrier owns the boundary marker. This is the only
+/// function that answers whether a typed language unwind may start here.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub(crate) fn current_context_can_unwind() -> bool {
-    if PROCESS_ENTRY_UNWIND_BOUNDARIES.with(Cell::get) > 0 {
-        return true;
-    }
     let ctx = current_context();
     if ctx.is_null() {
         return false;
     }
     // SAFETY: a non-null current context is live until its matching restore.
     unsafe { ((*ctx).flags & HEW_CTX_FLAG_UNWIND_BOUNDARY_INSTALLED) != 0 }
+}
+
+/// Whether this stack is inside an actor dispatch. A process root task that has
+/// suspended runs under a task context whose actor slot is null; that is not a
+/// dispatch.
+#[cfg(not(target_arch = "wasm32"))]
+#[must_use]
+pub(crate) fn current_context_is_actor_dispatch() -> bool {
+    let ctx = current_context();
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: a non-null current context is live until its matching restore.
+    unsafe { !(*ctx).actor.is_null() }
 }
 
 #[must_use]
@@ -395,7 +376,7 @@ pub(crate) fn require_current_context() -> *mut HewExecutionContext {
 /// [`hew_context_restore`] afterward, exactly as the scheduler brackets each
 /// dispatch with `set_current_context`.
 ///
-/// `ctx` is the codegen-built context carrier (the 128-byte stack array whose
+/// `ctx` is the codegen-built context carrier (the `HEW_CTX_SIZE` stack array whose
 /// `actor`/`actor_id` fields the lifecycle site populated). Reinterpreted as a
 /// `*mut HewExecutionContext`; only the fields the hook body reads
 /// (`actor` via `hew_actor_self`) are load-bearing across the install.
@@ -711,62 +692,6 @@ mod tests {
         }
     }
 
-    /// The process-entry boundary must answer the unwind question without
-    /// pretending to be a dispatch.
-    ///
-    /// `hew_observe_barrier` and the tracing/arena readers use
-    /// `current_context().is_null()` to mean "not inside an actor dispatch". A
-    /// main-context boundary that installed a carrier to carry the unwind bit
-    /// would silently flip all of them, so the marker is deliberately separate
-    /// and only `current_context_can_unwind` reads it.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn process_entry_boundary_permits_unwind_without_installing_a_context() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-
-        assert!(
-            !current_context_can_unwind(),
-            "a bare thread has no catch boundary"
-        );
-
-        enter_process_entry_unwind_boundary();
-        assert!(
-            current_context_can_unwind(),
-            "the process-entry boundary must permit a typed unwind"
-        );
-        assert!(
-            current_context().is_null(),
-            "the process-entry boundary must not read as an actor dispatch"
-        );
-
-        leave_process_entry_unwind_boundary();
-        assert!(
-            !current_context_can_unwind(),
-            "leaving the boundary must retract the permission"
-        );
-    }
-
-    /// The marker is per-thread: a scheduler worker must not inherit main's
-    /// boundary and start an unwind that nothing on its stack catches.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn process_entry_boundary_does_not_leak_across_threads() {
-        let _runtime_guard = crate::runtime_test_guard();
-        let _context_guard = ContextResetGuard::new();
-
-        enter_process_entry_unwind_boundary();
-        let observed = thread::spawn(current_context_can_unwind)
-            .join()
-            .expect("probe thread must not panic");
-        leave_process_entry_unwind_boundary();
-
-        assert!(
-            !observed,
-            "another thread must not see main's catch boundary"
-        );
-    }
-
     #[test]
     fn install_restore_round_trip() {
         let _runtime_guard = crate::runtime_test_guard();
@@ -925,7 +850,7 @@ mod tests {
     #[test]
     fn execution_context_size_matches_ctx_size_constant() {
         // HEW_CTX_SIZE is now derived from size_of rather than a literal, so
-        // this assertion holds on all targets (128 on native 64-bit, 96 on
+        // this assertion holds on all targets (136 on native 64-bit, 96 on
         // wasm32) without needing per-target conditional compilation.
         assert_eq!(std::mem::size_of::<HewExecutionContext>(), HEW_CTX_SIZE);
     }

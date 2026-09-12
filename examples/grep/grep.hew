@@ -32,24 +32,25 @@ import std.text.regex;
 
 // ── Configuration ─────────────────────────────────────────────────────────────
 type Config {
-    pattern: string; // raw pattern string as given on argv
-    flag_i: bool; // -i  case-insensitive
-    flag_n: bool; // -n  line numbers
-    flag_v: bool; // -v  invert match
-    flag_c: bool; // -c  count-only
-    flag_r: bool; // -r  recursive directory walk
-    files: Vec<string>; // remaining positional arguments (files/dirs)
+    pattern: string, // raw pattern string as given on argv
+    flag_i: bool, // -i  case-insensitive
+    flag_n: bool, // -n  line numbers
+    flag_v: bool, // -v  invert match
+    flag_c: bool, // -c  count-only
+    flag_r: bool, // -r  recursive directory walk
+    files: Vec<string>, // remaining positional arguments (files/dirs)
 }
 
 // ── Match state ────────────────────────────────────────────────────────────────
 type MatchState {
-    found_any: bool; // any match seen across all files
-    had_error: bool; // any file open / read error
+    found_any: bool, // any match seen across all files
+    had_error: bool, // any file open / read error
 }
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 fn parse_args() -> Result<Config, string> {
-    let argc = os.args().len();
+    let arguments = os.args();
+    let argc = arguments.len();
     if argc < 2 {
         return Result.Err("usage: grep [FLAGS] PATTERN [FILE...]");
     }
@@ -60,10 +61,13 @@ fn parse_args() -> Result<Config, string> {
     var flag_r = false;
     var pattern: string = "";
     var pattern_set = false;
-    let files: Vec<string> = Vec.new();
+    var files: Vec<string> = Vec.new();
     var i = 1;
     while i < argc {
-        let arg = os.args().get(i);
+        let arg = match arguments.get(i) {
+            .Some(value) => value,
+            .None => return Result.Err("grep: missing argument"),
+        };
         if !pattern_set && arg.starts_with("-") && arg.len() > 1 {
             // Treat each character after '-' as an individual flag.
             // "--" ends flag parsing (next arg is the pattern).
@@ -72,7 +76,10 @@ fn parse_args() -> Result<Config, string> {
                 if i >= argc {
                     return Result.Err("grep: missing pattern after --");
                 }
-                pattern = os.args().get(i);
+                pattern = match arguments.get(i) {
+                    .Some(value) => value,
+                    .None => return Result.Err("grep: missing pattern after --"),
+                };
                 pattern_set = true;
                 i = i + 1;
                 continue;

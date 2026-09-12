@@ -3,7 +3,7 @@
 // legal, and the record (the new sole owner) dispatches and drops the
 // environment exactly once.
 type Button {
-    on_click: fn(i64) -> i64;
+    on_click: fn(i64) -> i64,
 }
 
 fn make_adder(n: i64) -> fn(i64) -> i64 {

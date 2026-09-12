@@ -1,6 +1,6 @@
 // Benchmark: Sentinel Search
 // Places target at end of array to eliminate bounds check in loop.
-fn sentinel_search(v: Vec<i64>, target: i64) -> i64 {
+fn sentinel_search(var v: Vec<i64>, target: i64) -> i64 {
     let n = v.len();
     if n == 0 {
         return 0 - 1;
@@ -24,7 +24,7 @@ fn sentinel_search(v: Vec<i64>, target: i64) -> i64 {
 const ITERS: i64 = 100000;
 
 fn main() {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     for i in 0 .. 10000 {
         v.push(i);
     }

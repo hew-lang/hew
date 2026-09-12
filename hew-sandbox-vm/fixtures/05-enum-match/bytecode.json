@@ -679,9 +679,34 @@
     "supervisors": [],
     "types": [
       {
-        "id": "type:AskError",
+        "id": "type:ActorError",
         "kind": "enum",
-        "name": "AskError"
+        "name": "ActorError"
+      },
+      {
+        "id": "type:ActorMailbox",
+        "kind": "record",
+        "name": "ActorMailbox"
+      },
+      {
+        "id": "type:ActorPolicy",
+        "kind": "record",
+        "name": "ActorPolicy"
+      },
+      {
+        "id": "type:ActorRequest",
+        "kind": "record",
+        "name": "ActorRequest"
+      },
+      {
+        "id": "type:ActorRequestAdmission",
+        "kind": "record",
+        "name": "ActorRequestAdmission"
+      },
+      {
+        "id": "type:ActorRequestOwner",
+        "kind": "record",
+        "name": "ActorRequestOwner"
       },
       {
         "id": "type:ChildRef",
@@ -689,14 +714,19 @@
         "name": "ChildRef"
       },
       {
+        "id": "type:Delivery",
+        "kind": "enum",
+        "name": "Delivery"
+      },
+      {
+        "id": "type:DropNewestSend",
+        "kind": "record",
+        "name": "DropNewestSend"
+      },
+      {
         "id": "type:HashMapIter",
         "kind": "record",
         "name": "HashMapIter"
-      },
-      {
-        "id": "type:LocalPid",
-        "kind": "record",
-        "name": "LocalPid"
       },
       {
         "id": "type:Location",
@@ -704,9 +734,34 @@
         "name": "Location"
       },
       {
+        "id": "type:Message",
+        "kind": "record",
+        "name": "Message"
+      },
+      {
+        "id": "type:Never",
+        "kind": "enum",
+        "name": "Never"
+      },
+      {
+        "id": "type:NodeConfig",
+        "kind": "record",
+        "name": "NodeConfig"
+      },
+      {
         "id": "type:NodeId",
         "kind": "record",
         "name": "NodeId"
+      },
+      {
+        "id": "type:OnFull",
+        "kind": "enum",
+        "name": "OnFull"
+      },
+      {
+        "id": "type:RejectSend",
+        "kind": "record",
+        "name": "RejectSend"
       },
       {
         "id": "type:RemotePid",
@@ -714,9 +769,24 @@
         "name": "RemotePid"
       },
       {
+        "id": "type:ReplaceLatestSend",
+        "kind": "record",
+        "name": "ReplaceLatestSend"
+      },
+      {
+        "id": "type:ScopeFailure",
+        "kind": "enum",
+        "name": "ScopeFailure"
+      },
+      {
         "id": "type:SendError",
         "kind": "enum",
         "name": "SendError"
+      },
+      {
+        "id": "type:SendFailure",
+        "kind": "record",
+        "name": "SendFailure"
       },
       {
         "id": "type:Shape",
@@ -727,6 +797,11 @@
         "id": "type:VecIter",
         "kind": "record",
         "name": "VecIter"
+      },
+      {
+        "id": "type:WaitSend",
+        "kind": "record",
+        "name": "WaitSend"
       },
       {
         "id": "type:bool",
@@ -769,14 +844,49 @@
         "name": "ReplyToken"
       },
       {
-        "id": "type:std.builtins.AskError",
+        "id": "type:std.builtins.ActorError",
         "kind": "enum",
-        "name": "std.builtins.AskError"
+        "name": "std.builtins.ActorError"
+      },
+      {
+        "id": "type:std.builtins.ActorMailbox",
+        "kind": "record",
+        "name": "std.builtins.ActorMailbox"
+      },
+      {
+        "id": "type:std.builtins.ActorPolicy",
+        "kind": "record",
+        "name": "std.builtins.ActorPolicy"
+      },
+      {
+        "id": "type:std.builtins.ActorRequest",
+        "kind": "record",
+        "name": "std.builtins.ActorRequest"
+      },
+      {
+        "id": "type:std.builtins.ActorRequestAdmission",
+        "kind": "record",
+        "name": "std.builtins.ActorRequestAdmission"
+      },
+      {
+        "id": "type:std.builtins.ActorRequestOwner",
+        "kind": "record",
+        "name": "std.builtins.ActorRequestOwner"
       },
       {
         "id": "type:std.builtins.ChildRef",
         "kind": "record",
         "name": "std.builtins.ChildRef"
+      },
+      {
+        "id": "type:std.builtins.Delivery",
+        "kind": "enum",
+        "name": "std.builtins.Delivery"
+      },
+      {
+        "id": "type:std.builtins.DropNewestSend",
+        "kind": "record",
+        "name": "std.builtins.DropNewestSend"
       },
       {
         "id": "type:std.builtins.HashMapIter",
@@ -789,11 +899,6 @@
         "name": "std.builtins.LinkError"
       },
       {
-        "id": "type:std.builtins.LocalPid",
-        "kind": "record",
-        "name": "std.builtins.LocalPid"
-      },
-      {
         "id": "type:std.builtins.Location",
         "kind": "record",
         "name": "std.builtins.Location"
@@ -804,9 +909,39 @@
         "name": "std.builtins.LookupError"
       },
       {
+        "id": "type:std.builtins.Message",
+        "kind": "record",
+        "name": "std.builtins.Message"
+      },
+      {
+        "id": "type:std.builtins.Never",
+        "kind": "enum",
+        "name": "std.builtins.Never"
+      },
+      {
+        "id": "type:std.builtins.NodeConfig",
+        "kind": "record",
+        "name": "std.builtins.NodeConfig"
+      },
+      {
+        "id": "type:std.builtins.NodeError",
+        "kind": "enum",
+        "name": "std.builtins.NodeError"
+      },
+      {
         "id": "type:std.builtins.NodeId",
         "kind": "record",
         "name": "std.builtins.NodeId"
+      },
+      {
+        "id": "type:std.builtins.OnFull",
+        "kind": "enum",
+        "name": "std.builtins.OnFull"
+      },
+      {
+        "id": "type:std.builtins.RejectSend",
+        "kind": "record",
+        "name": "std.builtins.RejectSend"
       },
       {
         "id": "type:std.builtins.RemotePid",
@@ -814,9 +949,24 @@
         "name": "std.builtins.RemotePid"
       },
       {
+        "id": "type:std.builtins.ReplaceLatestSend",
+        "kind": "record",
+        "name": "std.builtins.ReplaceLatestSend"
+      },
+      {
+        "id": "type:std.builtins.ScopeFailure",
+        "kind": "enum",
+        "name": "std.builtins.ScopeFailure"
+      },
+      {
         "id": "type:std.builtins.SendError",
         "kind": "enum",
         "name": "std.builtins.SendError"
+      },
+      {
+        "id": "type:std.builtins.SendFailure",
+        "kind": "record",
+        "name": "std.builtins.SendFailure"
       },
       {
         "id": "type:std.builtins.TimeoutError",
@@ -827,6 +977,11 @@
         "id": "type:std.builtins.VecIter",
         "kind": "record",
         "name": "std.builtins.VecIter"
+      },
+      {
+        "id": "type:std.builtins.WaitSend",
+        "kind": "record",
+        "name": "std.builtins.WaitSend"
       },
       {
         "id": "type:std.failure.CrashAction",
@@ -877,13 +1032,13 @@
       }
     ]
   },
-  "package_id": "pkg:c883612cc7d547b5",
+  "package_id": "pkg:4ca41e67d8463d4f",
   "profile": "sandbox.sandbox-vm-export.v0",
   "schema_version": "hew.sandbox.bytecode.v0",
   "source_map": {
     "sources": [
       {
-        "content_sha256": "be136e8a6e7e0286633e6423e2c90246d929e37c68208750131cc0f895bc9485",
+        "content_sha256": "9d2aba8a11a214065d3da2663b0ac7e2ac54f77a37677b449a96a341331245ea",
         "id": "src:main",
         "path": "main.hew"
       }

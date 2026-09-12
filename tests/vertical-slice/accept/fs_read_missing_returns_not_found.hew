@@ -1,0 +1,11 @@
+import std.fs;
+
+fn main() -> i64 {
+    match fs.read("tests/vertical-slice/accept/fs_read_missing_file.txt") {
+        .Ok(_) => 1,
+        .Err(error) => match error {
+            fs.IoError.NotFound(_) => 0,
+            _ => 2,
+        },
+    }
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "vector-get-mutate"
+intent = "Optional vector extraction preserves an independent Unicode/NUL string across replacement, removal, clear and receiver destruction."
+source = "cases/vector-get-mutate.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "4\n"
+exit = 0

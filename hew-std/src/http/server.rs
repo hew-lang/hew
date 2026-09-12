@@ -7,10 +7,14 @@
 //! default so slow trickle-feed clients cannot hold the server indefinitely.
 //! Use [`hew_http_server_set_request_timeout_ms`] to tune that deadline.
 
-use super::headers_vec::string_pair_elem_layout;
+use super::headers_vec::{string_pair_elem_layout, HewStringPair};
 use crate::bind_addr::normalize_bind_addr;
-use hew_cabi::cabi::{free_cstring, malloc_bytes, malloc_cstring, str_to_malloc};
+use hew_cabi::cabi::malloc_bytes;
 use hew_cabi::sink::{into_write_sink_ptr, set_last_error, HewSink};
+use hew_cabi::string::{
+    string_as_bytes, string_as_str, string_from_str, string_from_utf8, string_release,
+    string_to_cstring, HewString,
+};
 use hew_cabi::vec::HewVec;
 use std::ffi::{c_char, c_void, CStr};
 use std::io::{self, Read, Write};
@@ -369,18 +373,19 @@ impl Drop for HewHttpServer {
 ///
 /// # Safety
 ///
-/// `addr` must be a valid NUL-terminated C string.
+/// `addr` must be a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_http_server_new(addr: *const c_char) -> *mut HewHttpServer {
+pub unsafe extern "C" fn hew_http_server_new(addr: *const HewString) -> *mut HewHttpServer {
     if addr.is_null() {
         set_listen_error(-1, "http.listen: address is null".to_owned());
         return std::ptr::null_mut();
     }
-    // SAFETY: addr is a valid NUL-terminated C string per caller contract.
-    let Ok(addr_str) = unsafe { CStr::from_ptr(addr) }.to_str() else {
-        set_listen_error(-1, "http.listen: address is not valid UTF-8".to_owned());
+    // SAFETY: the caller borrows a live managed string.
+    let addr_str = unsafe { string_as_str(addr) };
+    if addr_str.contains('\0') {
+        set_listen_error(-1, "http.listen: address contains NUL".to_owned());
         return std::ptr::null_mut();
-    };
+    }
 
     let bind_addr = normalize_bind_addr(addr_str);
     match tiny_http::Server::http(bind_addr.as_ref()) {
@@ -508,40 +513,40 @@ pub unsafe extern "C" fn hew_http_server_set_request_timeout_ms(
     0
 }
 
-/// Return the HTTP method of the request as a `malloc`-allocated C string.
+/// Return the HTTP method of the request as an owned managed string.
 ///
 /// # Safety
 ///
 /// `req` must be a valid pointer to a [`HewHttpRequest`] whose `inner` is
 /// `Some`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_http_request_method(req: *const HewHttpRequest) -> *mut c_char {
+pub unsafe extern "C" fn hew_http_request_method(req: *const HewHttpRequest) -> *mut HewString {
     if req.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &*req };
     match request.inner.as_ref() {
-        Some(r) => str_to_malloc(r.method().as_str()),
+        Some(r) => string_from_str(r.method().as_str()),
         None => std::ptr::null_mut(),
     }
 }
 
-/// Return the URL path of the request as a `malloc`-allocated C string.
+/// Return the URL path of the request as an owned managed string.
 ///
 /// # Safety
 ///
 /// `req` must be a valid pointer to a [`HewHttpRequest`] whose `inner` is
 /// `Some`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_http_request_path(req: *const HewHttpRequest) -> *mut c_char {
+pub unsafe extern "C" fn hew_http_request_path(req: *const HewHttpRequest) -> *mut HewString {
     if req.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &*req };
     match request.inner.as_ref() {
-        Some(r) => str_to_malloc(r.url()),
+        Some(r) => string_from_str(r.url()),
         None => std::ptr::null_mut(),
     }
 }
@@ -607,8 +612,7 @@ pub unsafe extern "C" fn hew_http_request_body(
     ptr
 }
 
-/// Read the request body and return it as a `malloc`-allocated, NUL-terminated
-/// C string.
+/// Read the request body and return it as an owned managed UTF-8 string.
 ///
 /// This is the bridge function that matches the Hew-side ABI
 /// `body(req, encoding) -> String`. The `encoding` parameter is accepted for
@@ -618,12 +622,12 @@ pub unsafe extern "C" fn hew_http_request_body(
 ///
 /// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`] whose
 ///   `inner` is `Some`.
-/// * `encoding` must be a valid NUL-terminated C string (or null).
+/// * `encoding` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_body_string(
     req: *mut HewHttpRequest,
-    _encoding: *const c_char,
-) -> *mut c_char {
+    _encoding: *const HewString,
+) -> *mut HewString {
     let mut out_len: usize = 0;
     // SAFETY: req validity is the caller's responsibility; out_len is a
     // valid local variable.
@@ -632,13 +636,19 @@ pub unsafe extern "C" fn hew_http_request_body_string(
         return std::ptr::null_mut();
     }
     // SAFETY: ptr is valid for out_len bytes per hew_http_request_body's contract.
-    let result = unsafe { malloc_cstring(ptr, out_len) };
-    // SAFETY: ptr was allocated via libc::malloc inside hew_http_request_body.
-    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (frees the malloc_bytes byte buffer from hew_http_request_body; the STRING result is a separate malloc_cstring — this stays libc::free in S1)
+    let bytes = unsafe { std::slice::from_raw_parts(ptr, out_len) };
+    let result = if let Ok(text) = string_from_utf8(bytes) {
+        text
+    } else {
+        crate::http::client::set_http_last_error("http.request.body: body is not valid UTF-8");
+        std::ptr::null_mut()
+    };
+    // SAFETY: ptr came from hew_http_request_body's sized-block allocation.
+    unsafe { hew_cabi::mem::buf_free(ptr.cast()) };
     result
 }
 
-/// Return the value of the named HTTP header as a `malloc`-allocated C string.
+/// Return the value of the named HTTP header as an owned managed string.
 ///
 /// Header name matching is case-insensitive. Returns null if the header is
 /// absent or if any argument is invalid.
@@ -647,21 +657,23 @@ pub unsafe extern "C" fn hew_http_request_body_string(
 ///
 /// * `req` must be a valid pointer to a [`HewHttpRequest`] whose `inner` is
 ///   `Some`.
-/// * `name` must be a valid NUL-terminated C string.
+/// * `name` must be a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_request_header(
     req: *const HewHttpRequest,
-    name: *const c_char,
-) -> *mut c_char {
+    name: *const HewString,
+) -> *mut HewString {
     if req.is_null() || name.is_null() {
         return std::ptr::null_mut();
     }
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &*req };
-    // SAFETY: name is a valid NUL-terminated C string per caller contract.
-    let Ok(name_str) = unsafe { CStr::from_ptr(name) }.to_str() else {
+    // SAFETY: the caller borrows a live managed string.
+    let name_str = unsafe { string_as_str(name) };
+    if name_str.contains('\0') {
+        crate::http::client::set_http_last_error("http.request.header: name contains NUL");
         return std::ptr::null_mut();
-    };
+    }
 
     let Some(inner) = request.inner.as_ref() else {
         return std::ptr::null_mut();
@@ -674,7 +686,7 @@ pub unsafe extern "C" fn hew_http_request_header(
             .as_str()
             .eq_ignore_ascii_case(name_str)
         {
-            return str_to_malloc(header.value.as_str());
+            return string_from_str(header.value.as_str());
         }
     }
     std::ptr::null_mut()
@@ -754,24 +766,33 @@ pub unsafe extern "C" fn hew_http_respond(
 ///
 /// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`] whose
 ///   `inner` is `Some`.
-/// * `content_type` must be a valid NUL-terminated C string (or null).
-/// * `body` must be a valid NUL-terminated C string (or null for empty body).
+/// * `content_type` must be a live managed string handle (null means empty).
+/// * `body` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_respond_bridge(
     req: *mut HewHttpRequest,
     status: i32,
-    content_type: *const c_char,
-    body: *const c_char,
+    content_type: *const HewString,
+    body: *const HewString,
 ) -> i32 {
-    let (body_ptr, body_len) = if body.is_null() {
-        (std::ptr::null(), 0usize)
-    } else {
-        // SAFETY: body is a valid NUL-terminated C string per caller contract.
-        let bytes = unsafe { CStr::from_ptr(body) }.to_bytes();
-        (bytes.as_ptr(), bytes.len())
+    // SAFETY: both strings are borrowed managed values for this call.
+    let body = unsafe { string_as_bytes(body) };
+    // The raw response API borrows its C header copy only during the call.
+    // SAFETY: content_type is a borrowed managed string.
+    let Ok(content_type) = (unsafe { string_to_cstring(content_type) }) else {
+        set_last_error("invalid Content-Type: value contains NUL".into());
+        return -1;
     };
-    // SAFETY: All pointers are valid per caller contract.
-    unsafe { hew_http_respond(req, status, body_ptr, body_len, content_type) }
+    // SAFETY: the body slice and temporary C header copy remain live.
+    unsafe {
+        hew_http_respond(
+            req,
+            status,
+            body.as_ptr(),
+            body.len(),
+            content_type.as_ptr(),
+        )
+    }
 }
 
 /// Send a `text/plain` response.
@@ -781,18 +802,18 @@ pub unsafe extern "C" fn hew_http_respond_bridge(
 /// # Safety
 ///
 /// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`].
-/// * `text` must be a valid NUL-terminated C string.
+/// * `text` must be a live managed string handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_respond_text(
     req: *mut HewHttpRequest,
     status: i32,
-    text: *const c_char,
+    text: *const HewString,
 ) -> i32 {
-    if req.is_null() || text.is_null() {
+    if req.is_null() {
         return -1;
     }
-    // SAFETY: text is a valid NUL-terminated C string per caller contract.
-    let text_bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
+    // SAFETY: the caller borrows a managed string; null means empty.
+    let text_bytes = unsafe { string_as_bytes(text) };
     let ct = c"text/plain; charset=utf-8";
     // SAFETY: All pointers are valid; text_bytes.len() matches the buffer.
     unsafe {
@@ -813,18 +834,18 @@ pub unsafe extern "C" fn hew_http_respond_text(
 /// # Safety
 ///
 /// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`].
-/// * `json` must be a valid NUL-terminated C string containing JSON.
+/// * `json` must be a live managed string handle containing JSON.
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_respond_json(
     req: *mut HewHttpRequest,
     status: i32,
-    json: *const c_char,
+    json: *const HewString,
 ) -> i32 {
-    if req.is_null() || json.is_null() {
+    if req.is_null() {
         return -1;
     }
-    // SAFETY: json is a valid NUL-terminated C string per caller contract.
-    let json_bytes = unsafe { CStr::from_ptr(json) }.to_bytes();
+    // SAFETY: the caller borrows a managed string; null means empty.
+    let json_bytes = unsafe { string_as_bytes(json) };
     let ct = c"application/json";
     // SAFETY: All pointers are valid; json_bytes.len() matches the buffer.
     unsafe {
@@ -920,12 +941,12 @@ impl Write for HttpResponseSink {
 ///
 /// * `req` must be a valid, mutable pointer to a [`HewHttpRequest`] whose
 ///   `inner` is `Some`.
-/// * `content_type` must be a valid NUL-terminated C string (or null).
+/// * `content_type` must be a live managed string handle (null means empty).
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_respond_stream(
     req: *mut HewHttpRequest,
     status: i32,
-    content_type: *const c_char,
+    content_type: *const HewString,
 ) -> *mut HewSink {
     if req.is_null() {
         set_last_error("invalid request pointer".into());
@@ -937,7 +958,12 @@ pub unsafe extern "C" fn hew_http_respond_stream(
         ));
         return std::ptr::null_mut();
     };
-    let ct_header = match response_content_type_header(content_type) {
+    // SAFETY: content_type is a borrowed managed string.
+    let Ok(content_type) = (unsafe { string_to_cstring(content_type) }) else {
+        set_last_error("invalid Content-Type: value contains NUL".into());
+        return std::ptr::null_mut();
+    };
+    let ct_header = match response_content_type_header(content_type.as_ptr()) {
         Ok(header) => header,
         Err(message) => {
             set_last_error(message);
@@ -1037,21 +1063,9 @@ pub unsafe extern "C" fn hew_http_request_free(req: *mut HewHttpRequest) {
 // Bulk header accessor
 // ---------------------------------------------------------------------------
 
-/// ABI layout for a `(String, String)` tuple element in a Hew `Vec<(String, String)>`.
-///
-/// Both pointers are header-aware heap strings (allocated via `str_to_malloc`).
-/// The `Vec` is constructed with `hew_vec_new_with_elem_layout` carrying
-/// `string_pair_drop_thunk`, so Hew's compiled destructor frees both fields
-/// via `hew_vec_free_owned` when the binding goes out of scope.
-#[repr(C)]
-struct HewStringPair {
-    name: *mut c_char,
-    value: *mut c_char,
-}
-
 /// Return a new `Vec<(String, String)>` containing all headers from `req`.
 ///
-/// Each element is a `(name, value)` pair of header-aware heap strings.  The
+/// Each element is a `(name, value)` pair of managed strings.  The
 /// returned `HewVec` is backed by an owned-element descriptor
 /// (`string_pair_elem_layout`) so that Hew's compiled destructor can call
 /// `hew_vec_free_owned` when the binding goes out of scope — freeing both
@@ -1082,8 +1096,8 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
     };
     for header in inner.headers() {
         let pair = HewStringPair {
-            name: str_to_malloc(header.field.as_str().as_str()),
-            value: str_to_malloc(header.value.as_str()),
+            name: string_from_str(header.field.as_str().as_str()),
+            value: string_from_str(header.value.as_str()),
         };
         // push_owned: memcpy the pair into the slot, then `string_pair_clone_thunk`
         // bumps the refcount on both strings (rc: 1→2).
@@ -1092,10 +1106,10 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
             hew_cabi::vec::hew_vec_push_owned(vec, std::ptr::addr_of!(pair).cast::<c_void>());
         }
         // Release the source copy (rc: 2→1).  The vec slot is now the sole owner.
-        // SAFETY: pair.name and pair.value are header-aware heap strings.
+        // SAFETY: pair.name and pair.value are managed strings.
         unsafe {
-            free_cstring(pair.name); // CSTRING-FREE: str-open (header name — release source after push_owned)
-            free_cstring(pair.value); // CSTRING-FREE: str-open (header value — release source after push_owned)
+            string_release(pair.name);
+            string_release(pair.value);
         }
     }
     vec
@@ -1108,17 +1122,15 @@ pub unsafe extern "C" fn hew_http_request_headers(req: *const HewHttpRequest) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_string::ManagedString;
     use std::net::{Shutdown, SocketAddr, TcpStream};
 
     fn http_last_error_text() -> String {
         let ptr = crate::http::client::hew_http_last_error();
-        assert!(!ptr.is_null());
-        // SAFETY: accessor returns a valid header-aware C string.
-        let text = unsafe { CStr::from_ptr(ptr) }
-            .to_string_lossy()
-            .into_owned();
+        // SAFETY: accessor returns an owned managed string.
+        let text = unsafe { string_as_str(ptr) }.to_owned();
         // SAFETY: pointer came from hew_http_last_error.
-        unsafe { free_cstring(ptr) };
+        unsafe { string_release(ptr) };
         text
     }
 
@@ -1253,21 +1265,18 @@ mod tests {
             request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
-        let ct = c"text/plain";
+        let ct = ManagedString::new("text/plain");
         // SAFETY: req is a valid mutable pointer; ct is a valid C string literal.
         let sink = unsafe { hew_http_respond_stream(&raw mut req, 200, ct.as_ptr()) };
         assert!(sink.is_null());
 
         let err = hew_cabi::sink::hew_stream_last_error();
         assert!(!err.is_null());
-        // SAFETY: err is a valid NUL-terminated C string from hew_stream_last_error.
-        let err_msg = unsafe { CStr::from_ptr(err) }
-            .to_str()
-            .expect("error should be utf-8");
+        // SAFETY: the getter transferred a managed string owner that remains live.
+        let err_msg = unsafe { hew_cabi::string::string_as_str(err) };
         assert_eq!(err_msg, "request already responded to");
-        // SAFETY: err was allocated by hew_stream_last_error via alloc_cstring_from_str
-        // (header-aware, S1 path) — must be released through free_cstring, not bare libc::free.
-        unsafe { hew_cabi::cabi::free_cstring(err) }; // CSTRING-FREE: str-open (hew_stream_last_error now allocates via alloc_cstring_from_str)
+        // SAFETY: the managed borrow has ended; this releases the transferred owner.
+        unsafe { hew_cabi::string::string_release(err) };
     }
 
     #[test]
@@ -1307,8 +1316,8 @@ mod tests {
 
     #[test]
     fn server_new_loopback_returns_non_null() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null(), "binding to loopback:0 should succeed");
         // SAFETY: srv was allocated by hew_http_server_new.
@@ -1317,8 +1326,8 @@ mod tests {
 
     #[test]
     fn server_new_invalid_addr_returns_null() {
-        let addr = c"not-a-valid-address";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("not-a-valid-address");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(srv.is_null(), "invalid address should return null");
         assert_eq!(hew_http_last_listen_errno(), -1);
@@ -1346,8 +1355,8 @@ mod tests {
 
     #[test]
     fn set_max_body_zero_returns_error() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 0 is an invalid max body size.
@@ -1359,8 +1368,8 @@ mod tests {
 
     #[test]
     fn set_max_body_negative_returns_error() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; -1 is invalid.
@@ -1372,8 +1381,8 @@ mod tests {
 
     #[test]
     fn set_max_body_valid_returns_success() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 4096 is a valid size.
@@ -1394,8 +1403,8 @@ mod tests {
 
     #[test]
     fn set_request_timeout_ms_zero_returns_error() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 0 is an invalid timeout.
@@ -1407,8 +1416,8 @@ mod tests {
 
     #[test]
     fn set_request_timeout_ms_negative_returns_error() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; -1 is invalid.
@@ -1420,8 +1429,8 @@ mod tests {
 
     #[test]
     fn set_request_timeout_ms_valid_returns_success() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 250 is a valid timeout.
@@ -1481,8 +1490,8 @@ mod tests {
             request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
-        let name = c"content-type";
-        // SAFETY: req is valid with inner = None; name is a valid C string.
+        let name = ManagedString::new("content-type");
+        // SAFETY: req is valid with inner = None; name is a live managed string.
         let result = unsafe { hew_http_request_header(&raw const req, name.as_ptr()) };
         assert!(result.is_null());
     }
@@ -1547,8 +1556,8 @@ mod tests {
 
     #[test]
     fn loopback_request_headers_single_pair_roundtrip() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1581,16 +1590,10 @@ mod tests {
             let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
             assert!(!pair.name.is_null());
             assert!(!pair.value.is_null());
-            // SAFETY: pair.name is a valid malloc'd C string from hew_http_request_headers.
-            let name = unsafe { CStr::from_ptr(pair.name) }
-                .to_str()
-                .unwrap()
-                .to_owned();
-            // SAFETY: pair.value is a valid malloc'd C string from hew_http_request_headers.
-            let value = unsafe { CStr::from_ptr(pair.value) }
-                .to_str()
-                .unwrap()
-                .to_owned();
+            // SAFETY: pair.name is an owned managed string from hew_http_request_headers.
+            let name = unsafe { string_as_str(pair.name) }.to_owned();
+            // SAFETY: pair.value is a borrowed managed string from hew_http_request_headers.
+            let value = unsafe { string_as_str(pair.value) }.to_owned();
             if name.eq_ignore_ascii_case("x-custom") {
                 assert_eq!(value, "hello");
                 found = true;
@@ -1601,8 +1604,8 @@ mod tests {
         // SAFETY: descriptor-driven free releases every header pair recursively.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         assert_eq!(result, 0);
         handle.join().unwrap();
@@ -1615,8 +1618,8 @@ mod tests {
 
     #[test]
     fn loopback_request_headers_multiple_pairs_order_preserved() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string literal.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1649,16 +1652,10 @@ mod tests {
             let pair = unsafe { elem_ptr.cast::<HewStringPair>().read_unaligned() };
             assert!(!pair.name.is_null());
             assert!(!pair.value.is_null());
-            // SAFETY: pair.name is a valid malloc'd C string from hew_http_request_headers.
-            let name = unsafe { CStr::from_ptr(pair.name) }
-                .to_str()
-                .unwrap()
-                .to_owned();
-            // SAFETY: pair.value is a valid malloc'd C string from hew_http_request_headers.
-            let value = unsafe { CStr::from_ptr(pair.value) }
-                .to_str()
-                .unwrap()
-                .to_owned();
+            // SAFETY: pair.name is an owned managed string from hew_http_request_headers.
+            let name = unsafe { string_as_str(pair.name) }.to_owned();
+            // SAFETY: pair.value is a borrowed managed string from hew_http_request_headers.
+            let value = unsafe { string_as_str(pair.value) }.to_owned();
             pairs.push((name, value));
         }
 
@@ -1694,8 +1691,8 @@ mod tests {
         // SAFETY: descriptor-driven free releases every header pair recursively.
         unsafe { hew_cabi::vec::hew_vec_free(vec) };
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         assert_eq!(result, 0);
         handle.join().unwrap();
@@ -1738,7 +1735,7 @@ mod tests {
 
     #[test]
     fn respond_stream_null_request_returns_null() {
-        let ct = c"text/plain";
+        let ct = ManagedString::new("text/plain");
         // SAFETY: null request is the tested scenario.
         let sink = unsafe { hew_http_respond_stream(std::ptr::null_mut(), 200, ct.as_ptr()) };
         assert!(sink.is_null());
@@ -1746,13 +1743,12 @@ mod tests {
 
     // -- Loopback integration tests -----------------------------------
 
-    /// Helper: read a malloc'd C string and free it.
-    unsafe fn take_cstr(ptr: *mut c_char) -> String {
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid malloc'd C string.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap().to_owned();
-        // SAFETY: ptr was allocated via libc::malloc in str_to_malloc.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (take_cstr test helper, str_to_malloc)
+    /// Read and release one owned managed string, including canonical empty.
+    unsafe fn take_string(ptr: *mut HewString) -> String {
+        // SAFETY: ptr is an owned managed string, including canonical empty.
+        let s = unsafe { string_as_str(ptr) }.to_owned();
+        // SAFETY: ptr is the outstanding string result owned by this caller.
+        unsafe { string_release(ptr) };
         s
     }
 
@@ -1769,8 +1765,8 @@ mod tests {
 
     #[test]
     fn loopback_get_recv_respond_text() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1783,15 +1779,15 @@ mod tests {
         assert!(!req.is_null());
 
         // SAFETY: req is valid with inner = Some.
-        let method = unsafe { take_cstr(hew_http_request_method(req)) };
+        let method = unsafe { take_string(hew_http_request_method(req)) };
         assert_eq!(method, "GET");
 
         // SAFETY: req is valid with inner = Some.
-        let path = unsafe { take_cstr(hew_http_request_path(req)) };
+        let path = unsafe { take_string(hew_http_request_path(req)) };
         assert_eq!(path, "/hello");
 
-        let text = c"world";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("world");
+        // SAFETY: req is valid; text is a live managed string.
         let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         assert_eq!(result, 0);
 
@@ -1808,8 +1804,8 @@ mod tests {
 
     #[test]
     fn loopback_post_recv_read_body() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1834,19 +1830,19 @@ mod tests {
         let received = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         let received_str = std::str::from_utf8(received).unwrap();
         assert_eq!(received_str, "{\"key\":\"value\"}");
-        // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = hew_http_request_body malloc_bytes)
+        // SAFETY: body_ptr came from hew_http_request_body's sized-block allocation.
+        unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = hew_http_request_body malloc_bytes)
 
-        let ct_name = c"Content-Type";
+        let ct_name = ManagedString::new("Content-Type");
         // SAFETY: req and ct_name are valid.
         let ct_val = unsafe { hew_http_request_header(req, ct_name.as_ptr()) };
         assert!(!ct_val.is_null());
-        // SAFETY: ct_val is a valid malloc'd C string.
-        let ct = unsafe { take_cstr(ct_val) };
+        // SAFETY: ct_val is an owned managed string.
+        let ct = unsafe { take_string(ct_val) };
         assert_eq!(ct, "application/json");
 
-        let json = c"{\"status\":\"ok\"}";
-        // SAFETY: req is valid; json is a valid C string.
+        let json = ManagedString::new("{\"status\":\"ok\"}");
+        // SAFETY: req is valid; json is a live managed string.
         let result = unsafe { hew_http_respond_json(req, 200, json.as_ptr()) };
         assert_eq!(result, 0);
 
@@ -1861,8 +1857,8 @@ mod tests {
 
     #[test]
     fn loopback_respond_with_raw_body() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1892,8 +1888,8 @@ mod tests {
 
     #[test]
     fn loopback_respond_empty_body() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1921,8 +1917,8 @@ mod tests {
 
     #[test]
     fn loopback_respond_stream_sends_chunks() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -1934,7 +1930,7 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let ct = c"text/plain";
+        let ct = ManagedString::new("text/plain");
         // SAFETY: req and ct are valid.
         let sink = unsafe { hew_http_respond_stream(req, 200, ct.as_ptr()) };
         assert!(!sink.is_null(), "respond_stream should return a valid sink");
@@ -1963,8 +1959,8 @@ mod tests {
     fn server_close_cancels_streaming_responses_and_drains_threads() {
         const CANCEL_SLO: Duration = Duration::from_secs(1);
 
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let tracker = {
@@ -1988,7 +1984,7 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let ct = c"text/plain";
+        let ct = ManagedString::new("text/plain");
         // SAFETY: req and ct are valid.
         let sink = unsafe { hew_http_respond_stream(req, 200, ct.as_ptr()) };
         assert!(!sink.is_null(), "respond_stream should return a valid sink");
@@ -2028,8 +2024,8 @@ mod tests {
         const STREAM_COUNT: usize = 4;
         const CANCEL_SLO: Duration = Duration::from_secs(2);
 
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let tracker = {
@@ -2058,7 +2054,7 @@ mod tests {
             // SAFETY: srv is valid until hew_http_server_close consumes it below.
             let req = unsafe { hew_http_server_recv(srv) };
             assert!(!req.is_null());
-            let ct = c"text/plain";
+            let ct = ManagedString::new("text/plain");
             // SAFETY: req and ct are valid.
             let sink = unsafe { hew_http_respond_stream(req, 200, ct.as_ptr()) };
             assert!(!sink.is_null(), "respond_stream should return a valid sink");
@@ -2127,8 +2123,8 @@ mod tests {
     fn server_close_detaches_hung_response_thread_after_timeout() {
         const DETACH_EPSILON: Duration = Duration::from_millis(400);
 
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let tracker = {
@@ -2189,8 +2185,8 @@ mod tests {
 
     #[test]
     fn loopback_request_header_missing_returns_null() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2201,13 +2197,13 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let name = c"X-Nonexistent";
+        let name = ManagedString::new("X-Nonexistent");
         // SAFETY: req and name are valid.
         let val = unsafe { hew_http_request_header(req, name.as_ptr()) };
         assert!(val.is_null(), "missing header should return null");
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         handle.join().unwrap();
 
@@ -2219,8 +2215,8 @@ mod tests {
 
     #[test]
     fn loopback_request_header_case_insensitive() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2236,16 +2232,16 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let name = c"x-my-header";
+        let name = ManagedString::new("x-my-header");
         // SAFETY: req and name are valid.
         let val = unsafe { hew_http_request_header(req, name.as_ptr()) };
         assert!(!val.is_null());
-        // SAFETY: val is a valid malloc'd C string.
-        let s = unsafe { take_cstr(val) };
+        // SAFETY: val is an owned managed string.
+        let s = unsafe { take_string(val) };
         assert_eq!(s, "found-it");
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         handle.join().unwrap();
 
@@ -2257,8 +2253,8 @@ mod tests {
 
     #[test]
     fn loopback_empty_post_body() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2279,11 +2275,11 @@ mod tests {
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 0);
-        // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
+        // SAFETY: body_ptr came from the sized-block allocator.
+        unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         handle.join().unwrap();
 
@@ -2295,8 +2291,8 @@ mod tests {
 
     #[test]
     fn loopback_max_body_exceeded_returns_413() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 5 is a valid max body size.
@@ -2334,8 +2330,8 @@ mod tests {
 
     #[test]
     fn loopback_request_body_timeout_returns_408() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 100ms is a valid timeout.
@@ -2372,10 +2368,10 @@ mod tests {
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         let elapsed = start.elapsed();
         if !body_ptr.is_null() {
-            // SAFETY: body_ptr was malloc'd.
-            unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
-            let text = c"late";
-            // SAFETY: req is valid; text is a valid C string.
+            // SAFETY: body_ptr came from the sized-block allocator.
+            unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
+            let text = ManagedString::new("late");
+            // SAFETY: req is valid; text is a live managed string.
             let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         }
 
@@ -2399,8 +2395,8 @@ mod tests {
 
     #[test]
     fn loopback_request_body_within_timeout_succeeds() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 250ms is a valid timeout.
@@ -2424,14 +2420,14 @@ mod tests {
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         assert!(!body_ptr.is_null());
         assert_eq!(out_len, 2048);
-        // SAFETY: body_ptr points to `out_len` bytes allocated by libc::malloc.
+        // SAFETY: body_ptr points to `out_len` bytes from the sized-block allocator.
         let body = unsafe { std::slice::from_raw_parts(body_ptr, out_len) };
         assert_eq!(body, vec![b'a'; 2048].as_slice());
-        // SAFETY: body_ptr was malloc'd.
-        unsafe { libc::free(body_ptr.cast()) }; // CSTRING-FREE: libc-bytes (body_ptr = malloc_bytes)
+        // SAFETY: body_ptr came from the sized-block allocator.
+        unsafe { hew_cabi::mem::buf_free(body_ptr.cast()) }; // CSTRING-FREE: sized-block (body_ptr = malloc_bytes)
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let _ = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
 
         let client_result = handle.join().unwrap();
@@ -2448,8 +2444,8 @@ mod tests {
 
     #[test]
     fn loopback_request_free_drops_connection() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2474,7 +2470,7 @@ mod tests {
 
     #[test]
     fn body_string_null_request_returns_null() {
-        let encoding = c"utf-8";
+        let encoding = ManagedString::new("utf-8");
         // SAFETY: null request is the tested scenario.
         let result =
             unsafe { hew_http_request_body_string(std::ptr::null_mut(), encoding.as_ptr()) };
@@ -2489,7 +2485,7 @@ mod tests {
             request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
-        let encoding = c"utf-8";
+        let encoding = ManagedString::new("utf-8");
         // SAFETY: req is a valid local struct with inner = None.
         let result = unsafe { hew_http_request_body_string(&raw mut req, encoding.as_ptr()) };
         assert!(result.is_null());
@@ -2510,8 +2506,8 @@ mod tests {
 
     #[test]
     fn respond_bridge_null_request_returns_error() {
-        let ct = c"text/plain";
-        let body = c"hello";
+        let ct = ManagedString::new("text/plain");
+        let body = ManagedString::new("hello");
         // SAFETY: null request is the tested scenario.
         let result = unsafe {
             hew_http_respond_bridge(std::ptr::null_mut(), 200, ct.as_ptr(), body.as_ptr())
@@ -2527,8 +2523,8 @@ mod tests {
             request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
-        let ct = c"text/plain";
-        let body = c"hello";
+        let ct = ManagedString::new("text/plain");
+        let body = ManagedString::new("hello");
         // SAFETY: req is valid with inner = None; all C strings are valid.
         let result =
             unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), body.as_ptr()) };
@@ -2543,7 +2539,7 @@ mod tests {
             request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
-        let ct = c"text/plain";
+        let ct = ManagedString::new("text/plain");
         // SAFETY: null body is valid (empty response); consumed request returns -1.
         let result =
             unsafe { hew_http_respond_bridge(&raw mut req, 200, ct.as_ptr(), std::ptr::null()) };
@@ -2558,7 +2554,7 @@ mod tests {
             request_body_timeout: DEFAULT_REQUEST_BODY_TIMEOUT,
             response_threads: None,
         };
-        let body = c"hello";
+        let body = ManagedString::new("hello");
         // SAFETY: null content_type is valid; consumed request returns -1.
         let result =
             unsafe { hew_http_respond_bridge(&raw mut req, 200, std::ptr::null(), body.as_ptr()) };
@@ -2569,8 +2565,8 @@ mod tests {
 
     #[test]
     fn loopback_body_string_reads_post() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2586,16 +2582,15 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let encoding = c"utf-8";
-        // SAFETY: req is valid; encoding is a valid C string.
-        let body_cstr = unsafe { hew_http_request_body_string(req, encoding.as_ptr()) };
-        assert!(!body_cstr.is_null());
-        // SAFETY: body_cstr is a valid malloc'd C string.
-        let body = unsafe { take_cstr(body_cstr) };
+        let encoding = ManagedString::new("utf-8");
+        // SAFETY: req is valid; encoding is a live managed string.
+        let body_string = unsafe { hew_http_request_body_string(req, encoding.as_ptr()) };
+        // SAFETY: body_string is an owned managed string.
+        let body = unsafe { take_string(body_string) };
         assert_eq!(body, "hello bridge");
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         assert_eq!(result, 0);
 
@@ -2610,8 +2605,8 @@ mod tests {
 
     #[test]
     fn loopback_body_string_empty_body() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2627,16 +2622,15 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let encoding = c"utf-8";
-        // SAFETY: req is valid; encoding is a valid C string.
-        let body_cstr = unsafe { hew_http_request_body_string(req, encoding.as_ptr()) };
-        assert!(!body_cstr.is_null());
-        // SAFETY: body_cstr is a valid malloc'd C string.
-        let body = unsafe { take_cstr(body_cstr) };
+        let encoding = ManagedString::new("utf-8");
+        // SAFETY: req is valid; encoding is a live managed string.
+        let body_string = unsafe { hew_http_request_body_string(req, encoding.as_ptr()) };
+        // SAFETY: body_string is an owned managed string.
+        let body = unsafe { take_string(body_string) };
         assert_eq!(body, "");
 
-        let text = c"ok";
-        // SAFETY: req is valid; text is a valid C string.
+        let text = ManagedString::new("ok");
+        // SAFETY: req is valid; text is a live managed string.
         let result = unsafe { hew_http_respond_text(req, 200, text.as_ptr()) };
         assert_eq!(result, 0);
 
@@ -2651,8 +2645,8 @@ mod tests {
 
     #[test]
     fn loopback_respond_bridge_full_response() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2665,8 +2659,8 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let ct = c"text/html";
-        let body = c"<h1>Hello</h1>";
+        let ct = ManagedString::new("text/html");
+        let body = ManagedString::new("<h1>café\0雪</h1>");
         // SAFETY: req, ct, and body are all valid.
         let result = unsafe { hew_http_respond_bridge(req, 200, ct.as_ptr(), body.as_ptr()) };
         assert_eq!(result, 0);
@@ -2682,7 +2676,7 @@ mod tests {
             .to_string();
         assert_eq!(ct_header, "text/html");
         let resp_body = resp.into_body().read_to_string().unwrap();
-        assert_eq!(resp_body, "<h1>Hello</h1>");
+        assert_eq!(resp_body, "<h1>café\0雪</h1>");
 
         // SAFETY: req was already responded to.
         unsafe { hew_http_request_free(req) };
@@ -2692,8 +2686,8 @@ mod tests {
 
     #[test]
     fn loopback_respond_bridge_null_body_sends_empty() {
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         let base = server_addr(srv);
@@ -2705,7 +2699,7 @@ mod tests {
         let req = unsafe { hew_http_server_recv(srv) };
         assert!(!req.is_null());
 
-        let ct = c"text/plain";
+        let ct = ManagedString::new("text/plain");
         // SAFETY: req and ct are valid; null body means empty response.
         let result = unsafe { hew_http_respond_bridge(req, 204, ct.as_ptr(), std::ptr::null()) };
         assert_eq!(result, 0);
@@ -2786,8 +2780,8 @@ mod tests {
     fn loopback_request_body_full_stall_returns_within_deadline() {
         // Regression for #1480: a peer that sends complete headers but zero
         // body bytes must not park the request-handling thread indefinitely.
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 200ms is a valid timeout.
@@ -2858,8 +2852,8 @@ mod tests {
         // receive buffer must not park the server beyond the 2s join window.
         const DETACH_EPSILON: Duration = Duration::from_millis(800);
 
-        let addr = c"127.0.0.1:0";
-        // SAFETY: addr is a valid C string.
+        let addr = ManagedString::new("127.0.0.1:0");
+        // SAFETY: addr is a live managed string.
         let srv = unsafe { hew_http_server_new(addr.as_ptr()) };
         assert!(!srv.is_null());
         // SAFETY: srv is valid; 100ms is a valid timeout.

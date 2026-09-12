@@ -1,4 +1,4 @@
 fn main() {
     let r: Result<bool, bool> = Err(false);
-    let _v = r.unwrap();
+    let _v = r.expect("r is present");
 }

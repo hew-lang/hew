@@ -1,0 +1,13 @@
+[[case]]
+id = "iter_xmod_captured_closure"
+intent = "The fixture runs to completion and exits 4."
+source = "../vertical-slice/accept/iter_xmod_captured_closure.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 4

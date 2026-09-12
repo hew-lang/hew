@@ -1,0 +1,11 @@
+[[case]]
+id = "int-bit-methods"
+intent = "count_ones, count_zeros, leading_zeros, trailing_zeros, swap_bytes, reverse_bits, rotate_left and rotate_right hold at positive, negative and boundary (zero, MIN, MAX, all-bits-set) values at every integer width Hew has: i8, i16, i32, i64, isize, u8, u16, u32, u64 and usize. swap_bytes at i8/u8 is the identity (LLVM's bswap intrinsic rejects a one-byte operand)."
+source = "cases/int-bit-methods.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "integer bit methods hold at every integer width's boundaries\n"
+stderr = ""
+exit = 0

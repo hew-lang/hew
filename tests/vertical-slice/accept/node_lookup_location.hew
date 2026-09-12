@@ -1,0 +1,45 @@
+// Accept: Node::lookup returns the exact carried RemotePid location for a
+// registration, and a different name remains LookupError.NotFound.
+actor Worker {
+    receive fn ping() {}
+}
+
+impl ActorMsg for Worker {
+    type Msg = ();
+    type Reply = ();
+}
+
+fn main() -> i64 {
+    let started = Node.start(NodeConfig {
+        bind: "127.0.0.1:0",
+        transport: "tcp",
+        key: "/tmp/hew-node-lookup-location.key",
+        trust: "pinned",
+        peers: Vec.new(),
+        seeds: Vec.new(),
+    });
+    match started {
+        .Ok(_) => {},
+        .Err(_) => return 1,
+    }
+
+    let worker = spawn Worker();
+    if Node.register("node-lookup-location-worker", worker) != 0 { return 2; }
+
+    let missing: Result<RemotePid<Worker>, LookupError> =
+        Node.lookup("node-lookup-location-missing");
+    match missing {
+        .Ok(_) => return 3,
+        .Err(LookupError.NotFound) => {},
+        .Err(_) => return 4,
+    }
+
+    let found: Result<RemotePid<Worker>, LookupError> =
+        Node.lookup("node-lookup-location-worker");
+    let status = match found {
+        .Ok(_) => 0,
+        .Err(_) => 5,
+    };
+    Node.shutdown();
+    status
+}

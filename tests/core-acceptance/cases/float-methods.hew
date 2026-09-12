@@ -1,0 +1,77 @@
+import std.math;
+
+fn make_nan() -> f64 {
+    0.0 / 0.0
+}
+
+fn make_pos_inf() -> f64 {
+    1.0 / 0.0
+}
+
+fn make_neg_inf() -> f64 {
+    -1.0 / 0.0
+}
+
+fn main() {
+    // to_bits / from_bits round trip.
+    let x: f64 = 43.6;
+    let bits = x.to_bits();
+    assert(math.from_bits(bits) == x);
+
+    let neg_x: f64 = -43.6;
+    let neg_bits = neg_x.to_bits();
+    assert(math.from_bits(neg_bits) == neg_x);
+
+    // Zero and negative zero have distinct bit patterns but compare equal.
+    let zero: f64 = 0.0;
+    let neg_zero: f64 = -0.0;
+    assert(zero == neg_zero);
+    assert(zero.to_bits() != neg_zero.to_bits());
+    assert(math.from_bits(zero.to_bits()) == 0.0);
+
+    // NaN and infinity classification.
+    let nan = make_nan();
+    assert(nan.is_nan());
+    assert(!nan.is_finite());
+    assert(!nan.is_infinite());
+    assert(!x.is_nan());
+
+    let pos_inf = make_pos_inf();
+    let neg_inf = make_neg_inf();
+    assert(pos_inf.is_infinite());
+    assert(neg_inf.is_infinite());
+    assert(!pos_inf.is_finite());
+    assert(!neg_inf.is_finite());
+    assert(!pos_inf.is_nan());
+    assert(x.is_finite());
+    assert(!x.is_infinite());
+
+    // Negative zero: sign bit set, classified as neither NaN nor infinite.
+    assert(neg_zero.is_sign_negative());
+    assert(!zero.is_sign_negative());
+    assert(neg_zero.is_finite());
+    assert(neg_x.is_sign_negative());
+    assert(!x.is_sign_negative());
+
+    // abs() as a method matches the existing math.abs free function.
+    assert(neg_x.abs() == x);
+    assert(x.abs() == x);
+    assert(math.abs(neg_x) == neg_x.abs());
+
+    // Float-to-integer `as` casts saturate rather than producing poison
+    // (issue #3367): positive overflow clamps to MAX, negative overflow
+    // clamps to MIN (or 0 for unsigned targets), and NaN converts to 0.
+    let huge: f64 = 1.0e30;
+    let neg_huge: f64 = -1.0e30;
+    assert(huge as i32 == 2147483647);
+    assert(neg_huge as i32 == -2147483648);
+    assert(nan as i32 == 0);
+    assert(huge as i64 == 9223372036854775807);
+    assert(neg_huge as i64 == -9223372036854775808);
+    assert(nan as i64 == 0);
+    assert(huge as u32 == 4294967295);
+    assert(neg_huge as u32 == 0);
+    assert(nan as u32 == 0);
+
+    println("float methods classify NaN, infinity, sign and bit patterns correctly");
+}

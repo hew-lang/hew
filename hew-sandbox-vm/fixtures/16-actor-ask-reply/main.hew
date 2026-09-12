@@ -6,5 +6,5 @@ actor Echo {
 
 fn main() {
     let echo = spawn Echo;
-    println(await echo.echo("pong"));
+    println(echo.echo("pong"));
 }

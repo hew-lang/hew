@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_entries_asan"
+intent = "ASan/LSan oracle for HashMap.entries() tuple clone/drop ownership."
+source = "../vertical-slice/accept/hashmap_entries_asan.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,14 @@
+[[case]]
+id = "check-partial-move-field-read-refused"
+intent = "Reading a record field whose value already moved out is refused: the storage has a new owner, and the diagnostic names the moved place rather than the whole record."
+source = "cases/check-partial-move-field-read-refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+severity = "error"
+line = 31
+column = 24
+message = "use of moved place `booking.ticket`"

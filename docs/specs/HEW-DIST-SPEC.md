@@ -1,5 +1,13 @@
 # Hew Distributed Runtime Specification
 
+> Actor-call surface: ordinary calls wait for completion; `fork` creates a task
+> and `await` joins it. Protocol operations below do not introduce a public
+> send keyword or actor-specific await. See [the actor guide](../hew-language-guide.md#actors)
+> for completion, mailbox and admission views, including the pending typed
+> request-recovery contract. Protocol descriptions are not native cutover
+> acceptance evidence.
+
+
 **Status:** normative for v0.6.0-rc1
 **Protocol epoch:** 2
 **Targets:** native only
@@ -228,7 +236,7 @@ that authority.
 
 ## 7. Registry and names
 
-`Node.register(name, pid: LocalPid<A>) -> Result<(), RegisterError>` publishes
+`Node.register(name, actor: A) -> Result<(), RegisterError>` publishes
 the actor's exact `Location` and records `A`'s declaration identity beside it.
 `Node.lookup<A>(name)` returns a typed `RemotePid<A>` discovered through the
 authenticated registry, and MUST compare the recorded identity against `A`
@@ -239,7 +247,7 @@ the returned handle is an unchecked cast.
 `Node.register` is the one registration verb. It registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
 `Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
-Result<LocalPid<A>, LookupError>` is the local view of the same registry and
+Result<A, LookupError>` is the local view of the same registry and
 performs the same comparison.
 
 At v0.6.0 the declaration identity is recorded and compared on the registering
@@ -261,7 +269,7 @@ connection MUST be rejected.
 
 `RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
 creates a request identifier, sends the typed request, suspends the caller, and
-resumes with either the typed reply or `AskError`.
+resumes with the completion-call `Result` and its `ActorError` envelope.
 
 Pending asks are owned by one reply table. Connection loss, SWIM death, local
 shutdown, cancellation, timeout, version mismatch, stale identity, and explicit
@@ -389,7 +397,9 @@ derives the peer's `NodeId`; the numeric prefix is never the peer identity. A
 `found` of `Err(LookupError.TypeMismatch)` means the name resolved to an actor
 whose declaration is not `Counter` (§7).
 
-> **Implementation status.** The shipped surface is still the call sequence
-> `Node.set_transport`, `Node.load_keys`, `Node.allow_peer`, `Node.start(addr)`,
-> with an untyped `Node.register` and a `Node.lookup<T>` that compares nothing.
-> Tracked in hew-lang/hew#3256.
+> **Implementation status.** Native `Node.start(NodeConfig)` performs the
+> configuration transaction, and registration and lookup carry actor locations.
+> Lookup does not yet validate the requested actor declaration, and
+> `LookupError.TypeMismatch` is not implemented. Remote send and ask still lack
+> ownership-SIR lowering. These gaps prevent the distributed contract above
+> from being considered complete. Tracked in hew-lang/hew#3256.

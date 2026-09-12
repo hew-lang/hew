@@ -9,7 +9,7 @@
 // `check_call_with_type`, reaching the `Ty::Function`/`Ty::Closure` arm
 // and verifying argument types against the function signature.
 type Holder {
-    f: fn(i64) -> i64;
+    f: fn(i64) -> i64,
 }
 
 fn main() -> i64 {

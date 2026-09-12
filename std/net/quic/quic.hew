@@ -93,6 +93,8 @@
 
 import std.net;
 
+import std.encoding.utf8;
+
 /// A QUIC endpoint bound to a local UDP address.
 ///
 /// An endpoint can operate as a client (dial outgoing connections) or as
@@ -138,36 +140,36 @@ type QUICEventHandle {
 
 #[resource]
 pub type QUICEvent {
-    handle: QUICEventHandle;
+    handle: QUICEventHandle,
 }
 
 /// Non-destructive endpoint observation.
 pub type QUICEndpointObservation {
-    local_addr: string;
-    accepted_connections: i64;
-    last_error: string;
+    local_addr: string,
+    accepted_connections: i64,
+    last_error: string,
 }
 
 /// Non-destructive connection observation.
 pub type QUICConnectionObservation {
-    local_addr: string;
-    peer_addr: string;
-    opened_streams: i64;
-    accepted_streams: i64;
-    rtt_ms: i64;
-    bytes_sent: i64;
-    bytes_received: i64;
-    closed: bool;
-    last_error: string;
+    local_addr: string,
+    peer_addr: string,
+    opened_streams: i64,
+    accepted_streams: i64,
+    rtt_ms: i64,
+    bytes_sent: i64,
+    bytes_received: i64,
+    closed: bool,
+    last_error: string,
 }
 
 /// Non-destructive stream observation.
 pub type QUICStreamObservation {
-    bytes_sent: i64;
-    bytes_received: i64;
-    send_closed: bool;
-    recv_closed: bool;
-    last_error: string;
+    bytes_sent: i64,
+    bytes_received: i64,
+    send_closed: bool,
+    recv_closed: bool,
+    last_error: string,
 }
 
 // ── QUICEndpoint methods ──────────────────────────────────────────────
@@ -219,7 +221,7 @@ impl QUICEndpointMethods for QUICEndpoint {
 
 impl QUICEndpoint {
     /// Release this endpoint early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_quic_endpoint_close(self)
         };
@@ -242,7 +244,7 @@ trait QUICConnectionMethods {
     /// Gracefully close this connection and release its resources.
     ///
     /// Returns `Ok(())` on success or `Err(net.NetError)` on failure.
-    fn disconnect(consuming self) -> Result<(), net.NetError>;
+    fn disconnect(consume self) -> Result<(), net.NetError>;
 
     /// Block until the next queued QUIC event on this connection.
     ///
@@ -265,7 +267,7 @@ impl QUICConnectionMethods for QUICConnection {
             hew_quic_conn_accept_stream(conn)
         }
     }
-    fn disconnect(consuming self) -> Result<(), net.NetError> {
+    fn disconnect(consume self) -> Result<(), net.NetError> {
         connection_disconnect(self)
     }
     fn on_event(conn: QUICConnection) -> QUICEvent {
@@ -282,7 +284,7 @@ impl QUICConnection {
     /// Release this connection without reporting shutdown status.
     /// `disconnect()` remains the consuming compatibility API when callers
     /// need the result.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_quic_conn_disconnect(self)
         };
@@ -337,9 +339,10 @@ trait QUICStreamMethods {
 
     /// Block until data arrives and return it as a UTF-8 string.
     ///
-    /// Convenience wrapper around `recv` that converts the received bytes to
-    /// a `string`.  Returns an empty string on stream close or error.
-    fn recv_string(self) -> string;
+    /// Validates one received buffer; malformed or incomplete UTF-8 is an
+    /// error. An empty buffer follows `recv`'s stream-close/error convention.
+    /// Retain raw bytes across reads when decoding streaming text.
+    fn recv_string(self) -> Result<string, utf8.Utf8Error>;
 
     /// Return a non-destructive snapshot of stream state.
     fn observe(self) -> QUICStreamObservation;
@@ -369,7 +372,7 @@ impl QUICStreamMethods for QUICStream {
     fn send_string(strm: QUICStream, msg: string) -> Result<(), net.NetError> {
         stream_send_string(strm, msg)
     }
-    fn recv_string(strm: QUICStream) -> string {
+    fn recv_string(strm: QUICStream) -> Result<string, utf8.Utf8Error> {
         stream_recv_string(strm)
     }
     fn observe(strm: QUICStream) -> QUICStreamObservation {
@@ -379,7 +382,7 @@ impl QUICStreamMethods for QUICStream {
 
 impl QUICStream {
     /// Release this stream early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_quic_stream_close(self)
         };
@@ -406,9 +409,9 @@ impl QUICEventMethods for QUICEvent {
 
 impl QUICEvent {
     /// Release this event early.
-    fn close(evt: QUICEvent) {
+    fn close(consume self) {
         unsafe {
-            hew_quic_event_free(evt.handle)
+            hew_quic_event_free(self.handle)
         };
     }
 }
@@ -491,7 +494,7 @@ pub fn last_error() -> string {
 ///
 /// Reads the local address, cumulative accepted-connection count, and last
 /// error string from the endpoint without closing or mutating it. The
-/// returned `QUICEndpointObservation` is a plain value struct and does not
+/// returned `QUICEndpointObservation` is a plain value record and does not
 /// need to be freed. Call this at any time to poll endpoint health or
 /// inspect which address the runtime bound.
 pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
@@ -508,7 +511,7 @@ pub fn endpoint_observe(ep: QUICEndpoint) -> QUICEndpointObservation {
 ///
 /// Reads both endpoint addresses, stream counts, round-trip time,
 /// byte counters, closed flag, and last error string in a single call.
-/// The returned `QUICConnectionObservation` is a plain value struct.
+/// The returned `QUICConnectionObservation` is a plain value record.
 /// `rtt_ms` is the smoothed RTT in milliseconds as reported by the
 /// QUIC stack; it is 0 until the handshake completes. `last_error` is
 /// empty when the connection is healthy.
@@ -558,7 +561,7 @@ pub fn connection_disconnect(consume conn: QUICConnection) -> Result<(), net.Net
 ///
 /// Reads cumulative byte counts, send/receive close flags, and the
 /// last error string. The returned `QUICStreamObservation` is a plain
-/// value struct. `send_closed` is true after `stream_finish` or
+/// value record. `send_closed` is true after `stream_finish` or
 /// `stream_stop` completes; `recv_closed` is true when the peer has
 /// finished sending. `last_error` is empty while the stream is healthy.
 pub fn stream_observe(stream: QUICStream) -> QUICStreamObservation {
@@ -699,13 +702,11 @@ pub fn stream_send_string(strm: QUICStream, msg: string) -> Result<(), net.NetEr
 
 /// Receive a UTF-8 string from a QUIC stream.
 ///
-/// Delegates to `hew_quic_stream_recv` and converts the resulting bytes to a
-/// `string` using the runtime string helper.
-pub fn stream_recv_string(strm: QUICStream) -> string {
-    unsafe {
-        let payload = hew_quic_stream_recv(strm);
-        hew_bytes_to_string(payload)
-    }
+/// Validates the returned byte buffer, reporting malformed or incomplete
+/// UTF-8. Empty input follows `recv`'s stream-close/error convention.
+pub fn stream_recv_string(strm: QUICStream) -> Result<string, utf8.Utf8Error> {
+    let payload = strm.recv();
+    utf8.decode(payload)
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
@@ -763,5 +764,4 @@ extern "C" {
 
     // string conversion helpers (shared runtime builtins)
     fn hew_string_to_bytes(s: string) -> bytes;
-    fn hew_bytes_to_string(data: bytes) -> string;
 }

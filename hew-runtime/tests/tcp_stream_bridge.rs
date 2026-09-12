@@ -40,7 +40,7 @@ fn make_bridge_pair() -> (i32, TcpStream) {
 }
 
 /// Drain all items from a `HewStream` into a flat Vec<u8>, freeing each
-/// malloc'd buffer returned by `hew_stream_next_sized`.
+/// sized-block buffer returned by `hew_stream_next_sized`.
 ///
 /// # Safety
 ///
@@ -55,11 +55,11 @@ unsafe fn drain_bytes(stream: *mut hew_runtime::stream::HewStream) -> Vec<u8> {
         if ptr.is_null() {
             break;
         }
-        // SAFETY: ptr points to `size` bytes malloc'd by the runtime.
+        // SAFETY: ptr points to `size` bytes allocated by the runtime.
         let slice = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), size) };
         out.extend_from_slice(slice);
-        // SAFETY: ptr was malloc'd by hew_stream_next_sized; we free it here.
-        unsafe { libc::free(ptr) };
+        // SAFETY: ptr was allocated by hew_stream_next_sized; we free it here.
+        unsafe { hew_runtime::mem::buf_free(ptr) };
     }
     out
 }

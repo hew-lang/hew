@@ -2,15 +2,15 @@ use crate::common;
 
 use hew_types::error::TypeErrorKind;
 
-// ── Deliverable 1: Node::register tightens 2nd arg to LocalPid<T> ────────────
+// ── Deliverable 1: Node::register tightens 2nd arg to T ────────────
 
-/// Passing a freshly-spawned local pid must typecheck without error.
+/// Passing a freshly-spawned actor handle must typecheck without error.
 #[test]
-fn node_register_accepts_local_pid() {
+fn node_register_accepts_an_actor_handle() {
     let output = common::typecheck(
         r#"
         actor Worker {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {
@@ -21,13 +21,14 @@ fn node_register_accepts_local_pid() {
     );
     assert!(
         output.errors.is_empty(),
-        "Node::register with a LocalPid should typecheck cleanly; got: {:#?}",
+        "Node::register with an actor handle should typecheck cleanly; got: {:#?}",
         output.errors
     );
 }
 
-/// Passing an integer literal — previously accepted by the unconstrained `Var`
-/// — must now be rejected with a type mismatch.
+/// An actor is the type of its handle, so no wrapper type names "any actor"
+/// and the registered signature carries a free variable for the operand. The
+/// call site proves the operand instead: an integer literal is refused there.
 #[test]
 fn node_register_rejects_integer_literal() {
     let output = common::typecheck(
@@ -38,12 +39,12 @@ fn node_register_rejects_integer_literal() {
     "#,
     );
     assert!(
-        output.errors.iter().any(|e| matches!(
-            &e.kind,
-            TypeErrorKind::Mismatch { expected, .. }
-                if expected.contains("LocalPid")
-        )),
-        "Node::register with an integer should produce a LocalPid mismatch; got: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::InvalidOperation
+                && e.message.contains("expects an actor handle")),
+        "Node::register with an integer should be refused as a non-handle operand; got: {:#?}",
         output.errors
     );
 }
@@ -54,7 +55,7 @@ fn node_register_rejects_remote_pid() {
     let output = common::typecheck(
         r#"
         actor Worker {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {
@@ -79,7 +80,7 @@ fn node_register_result_eq_zero_typechecks() {
     let output = common::typecheck(
         r#"
         actor Worker {
-            let n: i32;
+            let n: i32,
             init() {}
         }
         fn main() {

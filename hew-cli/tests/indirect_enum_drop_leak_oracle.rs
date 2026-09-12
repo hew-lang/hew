@@ -117,7 +117,7 @@ use support::{describe_output, require_codegen};
 /// double-frees under the poisoned allocator. The `sum` output (1+2+3 = 6) plus
 /// the clean exit pin both directions.
 const NAMED_CHILD_DF_CONTROL_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 fn sum(t: Tree) -> i64 { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r), } }\n\
 fn main() {\n\
 \x20   let left = Node(Leaf(1), Leaf(2));\n\
@@ -142,7 +142,7 @@ const NAMED_CHILD_DF_CONTROL_EXPECTED: &str = "ok";
 fn loop_build_consume_source(iters: usize) -> String {
     let expected_total = iters * 3; // val(Node(Leaf(1), Leaf(2))) == 1 + 2 == 3
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -183,7 +183,7 @@ fn loop_build_consume_source(iters: usize) -> String {
 fn var_overwrite_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // val(Node(Leaf(1), Leaf(2))) == 1 + 2 == 3
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -210,7 +210,7 @@ fn var_overwrite_loop_source(iters: usize) -> String {
 fn single_leaf_loop_source(iters: usize) -> String {
     let expected_total = iters * 5; // val(Leaf(5)) == 5
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -236,7 +236,7 @@ fn single_leaf_loop_source(iters: usize) -> String {
 fn deep_tree_loop_source(iters: usize) -> String {
     let expected_total = iters * 10; // val(Node(Node(1,2),Node(3,4))) == 1+2+3+4 == 10
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -261,8 +261,8 @@ fn deep_tree_loop_source(iters: usize) -> String {
 fn mutual_loop_source(iters: usize) -> String {
     let expected_total = iters * 10; // depthA(AWrap(BWrap(AWrap(BEnd(7))))) == 7 + 1 + 1 + 1 == 10
     format!(
-        "indirect enum A {{ AEnd(i64); AWrap(B); }}\n\
-         indirect enum B {{ BEnd(i64); BWrap(A); }}\n\
+        "indirect enum A {{ AEnd(i64), AWrap(B), }}\n\
+         indirect enum B {{ BEnd(i64), BWrap(A), }}\n\
          fn depthA(a: A) -> i64 {{ match a {{ AEnd(n) => n, AWrap(b) => depthB(b) + 1, }} }}\n\
          fn depthB(b: B) -> i64 {{ match b {{ BEnd(n) => n, BWrap(a) => depthA(a) + 1, }} }}\n\
          fn run_loop() -> i64 {{\n\
@@ -299,8 +299,8 @@ fn mutual_loop_source(iters: usize) -> String {
 fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // val(Node(W(Leaf(3)))) == 3
     format!(
-        "enum Wrap {{ W(Tree); }}\n\
-         indirect enum Tree {{ Leaf(i64); Node(Wrap); }}\n\
+        "enum Wrap {{ W(Tree), }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Wrap), }}\n\
          fn val(t: Tree) -> i64 {{\n\
          \x20   match t {{\n\
          \x20       Leaf(n) => n,\n\
@@ -344,8 +344,8 @@ fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
 fn record_of_inline_enum_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // h.tag == 3
     format!(
-        "enum Wrap {{ W(Tree); }}\n\
-         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "enum Wrap {{ W(Tree), }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          type Holder {{ tag: i64, wrap: Wrap }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
@@ -378,8 +378,8 @@ fn record_of_inline_enum_loop_source(iters: usize) -> String {
 fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
     let expected_total = iters * 3; // pair.1 == 3
     format!(
-        "enum Wrap {{ W(Tree); }}\n\
-         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "enum Wrap {{ W(Tree), }}\n\
+         indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
@@ -403,26 +403,26 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
 /// so a missing message destructor produces a steep leak slope.
 fn actor_mailbox_teardown_source(frames: usize) -> String {
     format!(
-        "import std.channel.channel;\n\
-         indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
-         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
-         actor ProbeSink {{\n\
+        "import std.channel;\n\
+         indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), }} }}\n\
+         actor ProbeSink {{ \n\
          \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
-         \x20       ready.send(1);\n\
-         \x20       sleep(10s);\n\
-         \x20   }}\n\
+         \x20       ready.send(1), \n\
+         \x20       sleep(10s), \n\
+         \x20 }}\n\
          \x20   receive fn take(t: Tree) {{ let _ = sum(t); }}\n\
          \x20   receive fn tagged(tag: i64, t: Tree) {{ let _ = tag + sum(t); }}\n\
          }}\n\
          supervisor App {{\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
-         \x20   child sink: ProbeSink;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
+         \x20   child sink: ProbeSink,\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\
          \x20   let sink = sup.sink;\n\
-         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   sink.hold(ready_tx);\n\
          \x20   let started = match await ready_rx.recv() {{ .Some(n) => n, .None => 0, }};\n\
          \x20   if started != 1 {{ print(\"BAD\"); return 1; }}\n\
@@ -447,18 +447,18 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
 fn actor_request_carrier_source(frames: usize) -> String {
     let expected_total = 3 * frames * frames + 75 * frames;
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
-         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor Scorer {{\n\
          \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag + sum(tree) }}\n\
          }}\n\
          actor Coordinator {{\n\
-         \x20   let scorer: LocalPid<Scorer>;\n\
+         \x20   let scorer: Scorer,\n\
          \x20   receive fn ask_score(tag: i64, tree: Tree) -> i64 {{\n\
-         \x20       match await scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
+         \x20       match scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, tree: Tree) -> i64 {{\n\
-         \x20       select {{ reply from scorer.score(tag, tree) => reply, after 5s => -2, }}\n\
+         \x20       select {{ reply from scorer.score(tag, tree) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -468,7 +468,7 @@ fn actor_request_carrier_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let direct = match await scorer.score(i, Node(Leaf(1), Leaf(2))) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
-         \x20       let selected = select {{ reply from scorer.score(i, Node(Leaf(3), Leaf(4))) => reply, after 5s => -4, }};\n\
+         \x20       let selected = select {{ reply = await scorer.score(i, Node(Leaf(3), Leaf(4))) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
          \x20       let (joined_a, joined_b) = join {{\n\
          \x20           scorer.score(i, Node(Leaf(5), Leaf(6))),\n\
          \x20           scorer.score(i, Node(Leaf(7), Leaf(8))),\n\
@@ -495,12 +495,12 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20   receive fn score(tag: i64, value: i64) -> i64 {{ tag + value }}\n\
          }}\n\
          actor Coordinator {{\n\
-         \x20   let scorer: LocalPid<Scorer>;\n\
+         \x20   let scorer: Scorer,\n\
          \x20   receive fn ask_score(tag: i64, value: i64) -> i64 {{\n\
          \x20       match await scorer.score(tag, value) {{ .Ok(result) => result, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, value: i64) -> i64 {{\n\
-         \x20       select {{ reply from scorer.score(tag, value) => reply, after 5s => -2, }}\n\
+         \x20       select {{ reply = await scorer.score(tag, value) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -510,7 +510,7 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let direct = match await scorer.score(i, 3) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
-         \x20       let selected = select {{ reply from scorer.score(i, 7) => reply, after 5s => -4, }};\n\
+         \x20       let selected = select {{ reply = await scorer.score(i, 7) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
          \x20       let (joined_a, joined_b) = join {{ scorer.score(i, 11), scorer.score(i, 15), }};\n\
          \x20       let suspended_ask = match await coordinator.ask_score(i, 19) {{ .Ok(value) => value, .Err(_) => -5, }};\n\
          \x20       let suspended_select = match await coordinator.select_score(i, 23) {{ .Ok(value) => value, .Err(_) => -6, }};\n\
@@ -529,14 +529,14 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
 /// the `after` arm makes every iteration observable without trapping.
 fn dead_actor_select_request_source(frames: usize) -> String {
     format!(
-        "indirect enum Tree {{ Leaf(i64); Node(Tree, Tree); }}\n\
+        "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
          actor Worker {{\n\
          \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag }}\n\
          }}\n\
          supervisor App {{\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
-         \x20   child worker: Worker;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
+         \x20   child worker: Worker,\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let sup = spawn App;\n\
@@ -546,7 +546,7 @@ fn dead_actor_select_request_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let selected = select {{\n\
-         \x20           reply from worker.score(i, Node(Leaf(1), Leaf(2))) => reply,\n\
+         \x20           reply = await worker.score(i, Node(Leaf(1), Leaf(2))) => reply.expect(\"ask reply\"),\n\
          \x20           after 1ms => i,\n\
          \x20       }};\n\
          \x20       total = total + selected;\n\
@@ -564,15 +564,15 @@ fn dead_actor_select_request_source(frames: usize) -> String {
 /// the prepared owning carrier must complete under the poisoned allocator, and
 /// the post-join `BAD` sentinel must remain unreachable.
 const DEAD_ACTOR_JOIN_REQUEST_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 actor Worker {\n\
 \x20   receive fn score(tag: i64, tree: Tree) -> i64 { tag }\n\
 \x20   receive fn crash_me() { panic(\"worker crash\"); }\n\
 }\n\
 supervisor App {\n\
-\x20   strategy: one_for_one;\n\
-\x20   intensity: 1 within 60s;\n\
-\x20   child worker: Worker;\n\
+\x20   strategy: one_for_one,\n\
+\x20   intensity: 1 within 60s,\n\
+\x20   child worker: Worker,\n\
 }\n\
 fn main() -> i64 {\n\
 \x20   let sup = spawn App;\n\
@@ -657,20 +657,20 @@ fn assert_actor_request_payload_slope_matches_scalar() {
 /// path uses, so a pointer-backed reply frees the subtree through the recursive
 /// `__hew_indirect_enum_free_<E>` thunk.
 ///
-/// The ask is a PLAIN `await` inside an actor handler (a suspending context):
-/// that is the `SuspendingAsk` lowering that wires the reply destructor
-/// (`wire_reply_drop_fn`). A blocking `await` in `main` uses the direct
-/// `hew_actor_ask` path and wires no destructor.
+/// The ask is a plain handler-to-actor call inside an actor handler (a
+/// suspending context): that is the `SuspendingAsk` lowering that wires the
+/// reply destructor (`wire_reply_drop_fn`). The same call from `main` uses the
+/// direct `hew_actor_ask` path and wires no destructor.
 const ASK_REPLY_INDIRECT_ENUM_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64); Node(Tree, Tree); }\n\
+indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
 fn val(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => val(l) + val(r), } }\n\
 actor SlowReplier {\n\
 \x20   receive fn fetch() -> Tree { Tree.Node(Tree.Leaf(1), Tree.Leaf(2)) }\n\
 }\n\
 actor Driver {\n\
-\x20   var slow: LocalPid<SlowReplier>;\n\
+\x20   var slow: SlowReplier,\n\
 \x20   receive fn run() -> i64 {\n\
-\x20       match await slow.fetch() {\n\
+\x20       match slow.fetch() {\n\
 \x20           .Ok(t) => { val(t) }\n\
 \x20           .Err(e) => { let _ = e; 0 }\n\
 \x20       }\n\
@@ -679,7 +679,7 @@ actor Driver {\n\
 fn main() -> i64 {\n\
 \x20   let slow = spawn SlowReplier;\n\
 \x20   let driver = spawn Driver(slow: slow);\n\
-\x20   match await driver.run() {\n\
+\x20   match driver.run() {\n\
 \x20       .Ok(v) => { print(\"${v}\"); }\n\
 \x20       .Err(e) => { let _ = e; }\n\
 \x20   }\n\
@@ -1110,35 +1110,39 @@ fn indirect_enum_dead_actor_join_request_cleans_before_intentional_trap() {
     }
 }
 
-/// F4 / #2208 — the actor ask-reply ABI-boundary leg, pinned at the IR level.
+/// F4 / #2208 - the actor ask-reply ABI-boundary leg, pinned at the IR level.
 ///
 /// ## Why an IR assertion here, not a `leaks --atExit` slope
 ///
 /// The registered reply destructor fires at RUNTIME only on a reply that is
-/// deposited-but-never-consumed — the cancel / timeout / select-loser teardown
-/// legs. Every source construct that abandons a reply that way (`await … |
-/// after d`, `select { reply from … }`) currently FAILS TO COMPILE for an
-/// `indirect enum` reply: the suspending deadline/select consume path moves the
-/// pointer-lowered reply into an inline-`{ tag, payload }`-typed match/result
-/// binder and fails closed (`Move type mismatch: src=ptr dest=%Tree`,
-/// `hew-codegen-rs/src/llvm.rs`). That is a SEPARATE consume-side ABI defect —
-/// the reply DESTRUCTOR routing this oracle pins is independent of it — so a
-/// runtime per-iteration leak slope for the abandoned-reply leg is not
-/// expressible until that consume path is ABI-consistent. The runtime firing of
-/// the channel destructor itself is already proven for a heap reply by
+/// deposited-but-never-consumed - the cancel / timeout / select-loser teardown
+/// legs. Every source construct that abandons a reply that way currently fails
+/// to compile for an `indirect enum` reply, because the suspending
+/// deadline/select consume path moves the pointer-lowered reply into an
+/// inline-`{ tag, payload }`-typed binder. That is a separate consume-side ABI
+/// defect; the destructor routing pinned here is independent of it. The runtime
+/// firing of the destructor is already proven for a heap reply by
 /// `ask_reply_owned_leak_oracle` (the owned-`string` cancel leg); this oracle
-/// pins the remaining unknown — that a pointer-backed `indirect enum` reply is
-/// routed through the recursive node free, not the inline helper.
+/// pins the remaining unknown - that a pointer-backed `indirect enum` reply is
+/// routed through the recursive node free, not an inline in-place helper.
+///
+/// ## Where the registration lives
+///
+/// The ask caller knows the reply type statically and registers the destructor
+/// when it builds the operation: `hew_actor_call_new` takes the drop thunk and
+/// hands it to the reply channel's constructor before the request is published.
+/// The replying handler passes the same thunk to `hew_actor_reply_native`, which
+/// runs it directly when the submission was one-way. A bit-copy reply registers
+/// `ptr null` - the fixture's `i64` ask is that control.
 ///
 /// ## Teeth (fail-without-fix)
 ///
-/// The reply channel must register `__hew_reply_drop_indirect_Tree` (which loads
-/// the node pointer and calls the recursive `__hew_indirect_enum_free_Tree`).
-/// Reverting the routing re-registers the inline `__hew_enum_drop_inplace_Tree`
-/// on the pointer buffer — it reads the node pointer's bits as a tag and frees
-/// nothing — flipping both the registered-symbol assertion and the
-/// recursive-free-in-thunk assertion. Platform-independent (reads emitted IR,
-/// no `leaks(1)`), so it holds the invariant on every codegen target.
+/// The `Tree` ask must name a real drop thunk, and that thunk must load the
+/// heap-node pointer out of the reply buffer and reach a recursive variant
+/// destroyer that deallocates the node. Registering an inline `{ tag, payload }`
+/// helper instead would read the node pointer's bits as a tag and free nothing;
+/// dropping the registration would leave `ptr null` on both asks. Either flips
+/// an assertion here. Platform-independent (reads emitted IR, no `leaks(1)`).
 #[test]
 fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
     require_codegen();
@@ -1155,42 +1159,94 @@ fn indirect_enum_ask_reply_drop_routes_through_recursive_free() {
     let ir = std::fs::read_to_string(dir.path().join("ask_reply_indirect.ll"))
         .expect("read emitted LLVM IR for the indirect-enum ask-reply fixture");
 
-    // Every reply-destructor registration for this fixture must name the
-    // indirect-aware wrapper; none may name the inline in-place helper.
-    let registrations: Vec<&str> = ir
+    // The reply-drop argument of `hew_actor_call_new` is its seventh: after the
+    // target, message id, request pointer, request size, request drop thunk and
+    // reply size.
+    let reply_drop_argument = |line: &str| -> String {
+        let arguments = line
+            .split_once("@hew_actor_call_new(")
+            .expect("ask construction names its runtime entry")
+            .1;
+        arguments
+            .rsplit_once(')')
+            .expect("ask construction closes its argument list")
+            .0
+            .split(',')
+            .nth(6)
+            .expect("ask construction carries a reply drop argument")
+            .trim()
+            .to_string()
+    };
+    let constructions: Vec<String> = ir
         .lines()
-        .filter(|l| l.contains("call void @hew_reply_channel_set_reply_drop_fn("))
+        .filter(|line| line.contains("call ptr @hew_actor_call_new("))
+        .map(reply_drop_argument)
         .collect();
     assert!(
-        !registrations.is_empty(),
-        "expected the SuspendingAsk lowering to register a reply destructor \
-         (`hew_reply_channel_set_reply_drop_fn`) for the pointer-backed indirect-enum reply; \
-         found none — the ask no longer wires a destructor, so a never-consumed reply leaks its \
-         heap node unconditionally.\n--- IR ---\n{ir}"
+        constructions.len() >= 2,
+        "expected the fixture's `Tree` ask and its `i64` ask; found {} operation(s)\n--- IR ---\n{ir}",
+        constructions.len()
     );
     assert!(
-        registrations
-            .iter()
-            .all(|l| l.contains("@__hew_reply_drop_indirect_Tree")),
-        "the indirect-enum reply destructor must be `__hew_reply_drop_indirect_Tree` (loads the \
-         node pointer, frees the subtree via `__hew_indirect_enum_free_Tree`). A registration \
-         naming `__hew_enum_drop_inplace_Tree` runs the inline `{{ tag, payload }}` helper over a \
-         buffer that holds only a heap-node pointer — it misreads the pointer as a tag and frees \
-         nothing, leaking the node (#2208 F4 ask-reply boundary). Registrations found:\n{}",
-        registrations.join("\n")
+        constructions.iter().any(|argument| argument == "ptr null"),
+        "a bit-copy reply needs no destructor, so at least one ask must register `ptr null`; \
+         found {constructions:?}"
+    );
+    let registered: Vec<&String> = constructions
+        .iter()
+        .filter(|argument| *argument != "ptr null")
+        .collect();
+    assert_eq!(
+        registered.len(),
+        1,
+        "exactly the `Tree` ask registers a reply destructor; found {constructions:?}"
+    );
+    let symbol = registered[0]
+        .strip_prefix("ptr @")
+        .expect("a registered reply destructor names a function")
+        .to_string();
+
+    // The replying handler hands the same thunk to the reply transfer, so a
+    // one-way submission destroys the payload instead of leaking it.
+    assert!(
+        ir.lines()
+            .any(|line| line.contains("call void @hew_actor_reply_native(")
+                && line.contains(&format!("ptr @{symbol}"))),
+        "the handler must hand `@{symbol}` to `hew_actor_reply_native`; a reply with no \
+         destructor on the one-way leg leaks its heap node\n--- IR ---\n{ir}"
     );
 
-    // The wrapper body must reach the recursive node free — not the inline helper.
-    let thunk = llvm_fn_body(&ir, "__hew_reply_drop_indirect_Tree").unwrap_or_else(|| {
-        panic!(
-            "reply channel registered `__hew_reply_drop_indirect_Tree` but its body is not defined \
-             in the module — a dangling reply destructor.\n--- IR ---\n{ir}"
-        )
+    // The thunk loads the node pointer out of the reply buffer and destroys the
+    // node through the recursive variant walk.
+    let thunk = llvm_fn_body(&ir, &symbol).unwrap_or_else(|| {
+        panic!("the ask registered `@{symbol}` but its body is not defined in the module - a dangling reply destructor.\n--- IR ---\n{ir}")
     });
     assert!(
-        thunk.contains("call void @__hew_indirect_enum_free_Tree("),
-        "`__hew_reply_drop_indirect_Tree` must free the reply through the recursive \
-         `__hew_indirect_enum_free_Tree` node walk; its body does not call it, so the subtree \
-         under the reply node leaks:\n{thunk}"
+        thunk.contains("load ptr, ptr %0"),
+        "`@{symbol}` must load the heap-node pointer out of the reply buffer; reading the buffer \
+         as an inline `{{ tag, payload }}` value misreads the pointer as a tag and frees \
+         nothing:\n{thunk}"
+    );
+    let Some((_, rest)) = thunk
+        .lines()
+        .find_map(|line| line.split_once("call void @__hew_variant_drop_"))
+    else {
+        panic!("`@{symbol}` must destroy the reply node through a variant destroyer:\n{thunk}")
+    };
+    let recursive = format!(
+        "__hew_variant_drop_{}",
+        rest.split('(').next().unwrap_or_default()
+    );
+    let walk = llvm_fn_body(&ir, &recursive).unwrap_or_else(|| {
+        panic!("`@{recursive}` is registered but not defined\n--- IR ---\n{ir}")
+    });
+    assert!(
+        walk.contains(&format!("call void @{recursive}(")),
+        "`@{recursive}` must walk the node's own `Node` children, or the subtree under the reply \
+         node leaks:\n{walk}"
+    );
+    assert!(
+        walk.contains("call void @hew_dealloc("),
+        "`@{recursive}` must deallocate each visited node:\n{walk}"
     );
 }

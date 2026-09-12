@@ -1,0 +1,13 @@
+[[case]]
+id = "result_only_remaining_try_names_removed"
+intent = "Removed Result-only API names must fail at the public API boundary."
+source = "../vertical-slice/reject/result_only_remaining_try_names_removed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_PATH_MEMBER_NOT_FOUND"
+line = 14
+column = 13
+message = "module `process` has no exported value `try_run`"

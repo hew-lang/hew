@@ -1,0 +1,10 @@
+[[case]]
+id = "hashmap-iteration"
+intent = "Every HashMap iteration form reaches one cursor contract: `for (k, v) in m`, `into_iter()` and the keys/values/entries projections read the same map state, yield independently owned pairs for scalar and owned element types alike, leave the map live and unchanged, and release a removed entry exactly once. A HashSet walk is the control."
+source = "cases/hashmap-iteration.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "pairs=3 chars=25 len=3\nkeys=2016 values=4032\nkeys=3 values=60 entries=3/60\ncursor total=10 seen=3 len=3\nremoved=13 seen=2 chars=31 len=2\nset seen=3 chars=11 len=3\nnested elements=3 chars=17 len=2\n"
+exit = 0

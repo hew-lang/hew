@@ -74,8 +74,8 @@ fn owned_vec_clone_drop_loop_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let v: Vec<Vec<string>> = [];\n\
-         \x20       let row: Vec<string> = [];\n\
+         \x20       var v: Vec<Vec<string>> = [];\n\
+         \x20       var row: Vec<string> = [];\n\
          \x20       row.push(\"owned-clone-leak-oracle-cell-one\");\n\
          \x20       row.push(\"owned-clone-leak-oracle-cell-two\");\n\
          \x20       v.push(row);\n\
@@ -94,13 +94,13 @@ fn owned_vec_clone_drop_loop_source(frames: usize) -> String {
 /// both handles release independently under the poisoned allocator.
 const OWNED_VEC_CLONE_INDEPENDENT_SOURCE: &str = "\
 fn main() {\n\
-\x20   let v: Vec<Vec<string>> = [];\n\
-\x20   let row: Vec<string> = [];\n\
+\x20   var v: Vec<Vec<string>> = [];\n\
+\x20   var row: Vec<string> = [];\n\
 \x20   row.push(\"orig-aaa\");\n\
 \x20   row.push(\"orig-bbb\");\n\
 \x20   v.push(row);\n\
-\x20   let w = v.clone();\n\
-\x20   let extra: Vec<string> = [];\n\
+\x20   var w = v.clone();\n\
+\x20   var extra: Vec<string> = [];\n\
 \x20   extra.push(\"clone-ccc\");\n\
 \x20   w.push(extra);\n\
 \x20   print(f\"v{v.len()}r{v[0].len()}c;w{w.len()}r;\");\n\

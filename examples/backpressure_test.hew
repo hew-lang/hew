@@ -4,9 +4,9 @@
 // Backpressure test - bounded mailbox demo
 // Demonstrates that actors with bounded mailboxes apply backpressure
 actor SlowWorker {
-    let id: i32;
+    let id: i32,
 
-    mailbox 4;
+    mailbox 4,
     receive fn process(value: i32) {
         print("SlowWorker ");
         print(id);
@@ -21,7 +21,7 @@ fn main() {
     // A full mailbox cooperatively suspends this sender; it does not park a
     // runtime worker thread.
     for i in 0 .. 8 {
-        worker.process(i);
+        let _ = worker.process(i);
     }
     sleep(500ms);
     println("=== Done ===");

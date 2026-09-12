@@ -1,0 +1,30 @@
+type Marker {}
+
+fn main() -> i64 {
+    var values: HashMap<Marker, string> = HashMap.new();
+    values.insert(Marker {}, "first".to_upper());
+    let copy = values;
+    values.insert(Marker {}, "replacement".to_upper());
+    let keys = values.keys();
+    let entries = values.entries();
+    values.clear();
+    println(keys.len());
+    let (_, value) = entries[0];
+    println(value);
+    println(copy[Marker {}]);
+    var empty_pairs: HashMap<Marker, Marker> = HashMap.new();
+    empty_pairs.insert(Marker {}, Marker {});
+    let pairs = empty_pairs.entries();
+    empty_pairs.clear();
+    println(pairs.len());
+    let (_, _) = pairs[0];
+    var members: HashSet<Marker> = HashSet.new();
+    println(members.insert(Marker {}));
+    println(members.insert(Marker {}));
+    let member_copy = members;
+    let snapshot = members.to_vec();
+    println(members.remove(Marker {}));
+    println(member_copy.contains(Marker {}));
+    println(snapshot.len());
+    0
+}

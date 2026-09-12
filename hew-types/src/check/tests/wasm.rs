@@ -13,7 +13,7 @@ pub(super) use super::*;
 //
 // Coverage:
 //  - channel.new / send / try_recv → allowed on wasm32 bounded subset
-//  - Receiver<T>::recv / `for await ... in Receiver<T>` → BlockingChannelRecv error
+//  - Receiver<T>::recv / `for ... in Receiver<T>` → BlockingChannelRecv error
 //  - semaphore.new / try_acquire / release / count / close → allowed on wasm32
 //  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
 //  - sleep_ms → now an undefined-function error (removed; use sleep(duration))
@@ -237,9 +237,9 @@ mod wasm_rejects {
     #[test]
     fn wasm_allows_bounded_channel_subset() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    let _ = rx.try_recv();\n",
             "    tx.close();\n",
@@ -265,7 +265,7 @@ mod wasm_rejects {
     #[test]
     fn native_channel_new_no_platform_error() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
             "    let pair = channel.new(0);\n",
             "}\n",
@@ -286,53 +286,12 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn receive_fn_await_channel_recv_does_not_warn_blocking() {
+    fn native_channel_receive_does_not_warn_worker_blocking() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "actor Worker {\n",
             "    receive fn run() {\n",
-            "        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
-            "        tx.send(\"hello\");\n",
-            "        tx.close();\n",
-            "        let _ = await rx.recv();\n",
-            "        rx.close();\n",
-            "    }\n",
-            "}\n",
-            "fn main() {\n",
-            "    let w = spawn Worker;\n",
-            "    w.run();\n",
-            "}\n",
-        );
-        let result = hew_parser::parse(source);
-        assert!(
-            result.errors.is_empty(),
-            "parse errors: {:?}",
-            result.errors
-        );
-        let mut checker = Checker::new(test_registry());
-        let output = checker.check_program(&result.program);
-        assert!(
-            output.errors.is_empty(),
-            "awaited receive-fn recv fixture should type-check cleanly: {:?}",
-            output.errors
-        );
-        assert!(
-            !output
-                .warnings
-                .iter()
-                .any(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn),
-            "await rx.recv() suspends and must not warn as blocking: {:?}",
-            output.warnings
-        );
-    }
-
-    #[test]
-    fn receive_fn_bare_channel_recv_still_warns_blocking() {
-        let source = concat!(
-            "import std.channel.channel;\n",
-            "actor Worker {\n",
-            "    receive fn run() {\n",
-            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n",
+            "        let (_tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "        let _ = rx.recv();\n",
             "        rx.close();\n",
             "    }\n",
@@ -351,11 +310,11 @@ mod wasm_rejects {
         let mut checker = Checker::new(test_registry());
         let output = checker.check_program(&result.program);
         assert!(
-            output
+            !output
                 .warnings
                 .iter()
                 .any(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn),
-            "bare rx.recv() in a receive fn must still warn as blocking: {:?}",
+            "native rx.recv() suspends without blocking a worker: {:?}",
             output.warnings
         );
     }
@@ -363,9 +322,9 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_blocking_channel_recv() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
-            "    let (_tx, rx) = channel.new(1);\n",
+            "    let (_tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    let _ = rx.recv();\n",
             "}\n",
         );
@@ -393,12 +352,12 @@ mod wasm_rejects {
     #[test]
     fn wasm_rejects_for_await_receiver() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
-            "    for await item in rx {\n",
+            "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
             "}\n",
@@ -414,7 +373,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             has_platform_limitation_error(&output),
-            "`for await` over Receiver<T> should be a compile-time error on WASM; got errors: {:?}",
+            "`for` over Receiver<T> should be a compile-time error on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -429,9 +388,9 @@ mod wasm_rejects {
         let source = concat!(
             "import std.stream;\n",
             "fn main() {\n",
-            "    let (sink, input) = stream.bytes_pipe(1);\n",
+            "    let (sink, input) = match stream.bytes_pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    sink.close();\n",
-            "    for await item in input {\n",
+            "    for item in input {\n",
             "        println(item.to_string());\n",
             "    }\n",
             "}\n",
@@ -447,7 +406,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             has_platform_limitation_error(&output),
-            "`for await` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
+            "`for` over Stream<T> should be a compile-time error on WASM; got errors: {:?}",
             output.errors
         );
         assert!(
@@ -460,12 +419,12 @@ mod wasm_rejects {
     #[test]
     fn native_for_await_receiver_no_platform_error() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
-            "    for await item in rx {\n",
+            "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
             "}\n",
@@ -480,7 +439,7 @@ mod wasm_rejects {
         let output = checker.check_program(&result.program);
         assert!(
             !has_platform_limitation_error(&output),
-            "`for await` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
+            "`for` over Receiver<T> should not emit PlatformLimitation on native target; got: {:?}",
             output.errors
         );
     }
@@ -730,12 +689,12 @@ mod wasm_rejects {
             checker.enable_wasm_target();
             let output = checker.check_program(&parsed.program);
             assert_eq!(
-                checker
+                output
                     .import_fn_name_aliases
                     .get(&(None, 0, binding.to_string())),
                 Some(&"std.fs.read".to_string()),
                 "named binding `{binding}` must retain exact source identity; all bindings: {:#?}",
-                checker.import_fn_name_aliases,
+                output.import_fn_name_aliases,
             );
             let rejections = output
                 .errors
@@ -935,27 +894,6 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_rejects_crypto_try_random_bytes() {
-        // The fallible twin draws from the same native-only entropy source, so
-        // it must not become a way around the fail-closed wasm32 rejection.
-        let source = concat!(
-            "import std.crypto.crypto;\n",
-            "fn main() { crypto.try_random_bytes(16); }\n",
-        );
-        let output = check_wasm_with_registry(source);
-        assert!(
-            has_platform_limitation_error(&output),
-            "crypto.try_random_bytes should be a compile-time error on WASM; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "random_bytes"),
-            "error message should mention crypto.random_bytes; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn wasm_rejects_crypto_random_bytes() {
         // crypto.random_bytes requires secure entropy. On wasm32, no secure
         // implementation is linked, so the checker must fail closed.
@@ -1103,7 +1041,7 @@ mod wasm_rejects {
         // checker records a type for the object and check_field_access takes the
         // normal path.
         let source = r"
-type Conn { connect: i64; }
+type Conn { connect: i64, }
 fn main() {
     let net = Conn { connect: 42 };
     println(net.connect);
@@ -1129,7 +1067,7 @@ fn main() {
     fn wasm_admits_function_param_named_stream() {
         // A function parameter named `stream` must NOT trigger the guard.
         let source = r"
-type Packet { value: i64; }
+type Packet { value: i64, }
 fn process(stream: Packet) -> i64 {
     stream.value
 }
@@ -1333,7 +1271,7 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let worker = spawn Worker;
                 let result = monitor(worker);
                 link(worker);
@@ -1353,9 +1291,9 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let worker = spawn Worker;
-                let _ok: Result<MonitorRef, MonitorError> = monitor(worker);
+                let _ok: Result<MonitorRef, LinkError> = monitor(worker);
                 let x: i64 = monitor(worker);
                 println(x);
             }
@@ -1368,7 +1306,7 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let worker = spawn Worker;
                 match monitor(worker) {
                     .Ok(m) => {
@@ -1387,7 +1325,7 @@ fn main() {
                 receive fn ping() {}
             }
 
-            fn main() {
+            fn register() {
                 let remote: RemotePid<Worker>;
                 let result: Result<MonitorRef, MonitorError> = monitor(remote);
                 match result {
@@ -1410,7 +1348,7 @@ fn main() {
         r"
             fn main() {
                 scope {
-                    fork task = compute();
+                    let task = fork compute();
                     await task;
                 }
             }
@@ -1770,18 +1708,8 @@ fn main() {
     }
 
     #[test]
-    fn wasm_rejects_node_load_keys() {
-        let output = check_wasm(r#"fn main() { Node.load_keys("/keys/node.pem"); }"#);
-        assert!(
-            platform_error_contains(&output, "Distributed node"),
-            "Node::load_keys should be a Distributed-node WASM error; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn wasm_rejects_node_register_and_lookup() {
-        // `Node::register` (LocalPid arg) and `Node::lookup` (RemotePid result)
+        // `Node::register` (actor-handle arg) and `Node::lookup` (RemotePid result)
         // both ride the native registry transport and must fail closed too.
         let source = concat!(
             "actor Worker { receive fn ping() {} }\n",
@@ -1811,9 +1739,9 @@ fn main() {
     fn native_node_calls_no_platform_error() {
         let source = concat!(
             "fn main() {\n",
-            "    Node.start(\"a@127.0.0.1:9000\");\n",
-            "    Node.connect(\"b@127.0.0.1:9001\");\n",
-            "    Node.load_keys(\"/keys/node.pem\");\n",
+            "    let config = NodeConfig.at(\"127.0.0.1:9000\");\n",
+            "    Node.start(config);\n",
+            "    Node.connect(\"1@127.0.0.1:9001\");\n",
             "}\n",
         );
         let output = check_native(source);
@@ -1879,7 +1807,7 @@ fn main() {
         let output = check_wasm(
             r"
             actor Responder {
-                let value: i64;
+                let value: i64,
                 receive fn get() -> i64 {
                     value
                 }
@@ -1889,8 +1817,8 @@ fn main() {
                 let a = spawn Responder(value: 1);
                 let b = spawn Responder(value: 2);
                 let result = select {
-                    x from a.get() => x,
-                    y from b.get() => y,
+                    x from a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
+                    y from b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
                     after 1ms => -1,
                 };
                 println(result);
@@ -1920,7 +1848,7 @@ fn main() {
         let output = check_wasm(
             r"
             actor Responder {
-                let value: i64;
+                let value: i64,
                 receive fn get() -> i64 {
                     value
                 }
@@ -1931,8 +1859,8 @@ fn main() {
                 let b = spawn Responder(value: 2);
                 let timeout = 1ms;
                 let result = select {
-                    x from a.get() => x,
-                    y from b.get() => y,
+                    x from a.get() => match x { .Ok(value) => value, .Err(_) => -2 },
+                    y from b.get() => match y { .Ok(value) => value, .Err(_) => -2 },
                     after timeout => -1,
                 };
                 println(result);

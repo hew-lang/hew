@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-record"
+intent = "Generic record field replacement preserves siblings and independent source records during iteration."
+source = "cases/vector-iteration-record.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "changed\nleft\nnested\n"
+exit = 0
+stderr = ""

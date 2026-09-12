@@ -1,6 +1,6 @@
 //! Coercion soundness for the active-mode handler surface.
 //!
-//! `LocalPid<Actor>` narrows to `LocalPid<HandlerTrait>` (the `conn.attach(this)`
+//! `Actor` narrows to `HandlerTrait` (the `conn.attach(this)`
 //! surface) only when the actor's `receive fn`s structurally satisfy the handler
 //! trait. An explicit `impl HandlerTrait for Actor {}` with no matching
 //! `receive fn`s must NOT admit the coercion: `attach` codegen synthesises the
@@ -21,7 +21,7 @@ fn has_rewrite(output: &hew_types::TypeCheckOutput, symbol: &str) -> bool {
 }
 
 /// Positive: an actor whose `receive fn`s match the handler trait's methods
-/// coerces cleanly to `LocalPid<Handler>`.
+/// coerces cleanly to `Handler`.
 #[test]
 fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
     let output = typecheck(
@@ -32,13 +32,13 @@ fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
         }
 
         actor Echo {
-            let n: i32;
+            let n: i32,
             init() {}
             receive fn on_data(data: bytes) {}
             receive fn on_close() {}
         }
 
-        fn use_handler(h: LocalPid<Handler>) {}
+        fn use_handler(h: Handler) {}
 
         fn main() {
             let echo = spawn Echo(n: 0);
@@ -49,7 +49,7 @@ fn actor_with_matching_receive_fns_coerces_to_handler_pid() {
     assert!(
         output.errors.is_empty(),
         "an actor whose receive fns satisfy the handler trait must coerce \
-         cleanly to LocalPid<Handler>: {:#?}",
+         cleanly to Handler: {:#?}",
         output.errors
     );
 }
@@ -68,7 +68,7 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
         }
 
         actor Bare {
-            let n: i32;
+            let n: i32,
             init() {}
         }
 
@@ -77,7 +77,7 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
             fn on_close() {}
         }
 
-        fn use_handler(h: LocalPid<Handler>) {}
+        fn use_handler(h: Handler) {}
 
         fn main() {
             let bare = spawn Bare(n: 0);
@@ -94,9 +94,9 @@ fn explicit_handler_impl_without_receive_fns_is_rejected_early() {
     assert!(
         output.errors.iter().any(|error| {
             let m = error.message.to_lowercase();
-            m.contains("handler") || m.contains("localpid") || m.contains("expected")
+            m.contains("handler") || m.contains("expected")
         }),
-        "the rejection must be an honest handler-pid type mismatch, not an \
+        "the rejection must be an honest handler type mismatch, not an \
          unrelated error: {:#?}",
         output.errors
     );
@@ -117,7 +117,7 @@ fn user_transport_short_names_keep_user_attach_dispatch() {
             r"
             {module_import}
 
-            type {type_name} {{ value: i64; }}
+            type {type_name} {{ value: i64, }}
 
             impl {type_name} {{
                 fn attach(self, increment: i64) -> i64 {{

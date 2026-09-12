@@ -7,15 +7,29 @@ use super::types::GenericLambdaSig;
 )]
 use super::*;
 use crate::check::types::{
-    DeferredIsCheck, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
-    GenericStructuralEqRequirement, PendingInstantiation,
+    DeferredIsCheck, EqRequirement, GenericCallEdge, GenericCallee, GenericFnInstantiationSite,
+    PendingInstantiation,
 };
 use crate::env::{PlaceConflict, PlacePath};
-use crate::eq_eligibility::{
-    ty_eq_ineligibility_with_type_params, EqEligibility, EqEligibilityFailure,
-};
 use crate::BuiltinType;
 use std::collections::VecDeque;
+
+/// The joined element type of a `Vec<Task<T>>` operand, or `None` for anything
+/// else. `await` over a vector of task handles is the only vector form it joins.
+fn vec_task_output(ty: &Ty) -> Option<Ty> {
+    let Ty::Named {
+        builtin: Some(BuiltinType::Vec),
+        args,
+        ..
+    } = ty
+    else {
+        return None;
+    };
+    match args.first() {
+        Some(Ty::Task(output)) => Some((**output).clone()),
+        _ => None,
+    }
+}
 
 type DangerousRcBinding = String;
 type DangerousRcScope = HashMap<String, Option<DangerousRcBinding>>;
@@ -80,7 +94,12 @@ impl Checker {
                 is_mutable: *is_mutable,
                 pointee: Box::new(Self::lambda_generic_schema_ty(pointee, generic_param_names)),
             },
-            Ty::Function { params, ret } => Ty::Function {
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            } => Ty::Function {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
@@ -88,10 +107,13 @@ impl Checker {
                 ret: Box::new(Self::lambda_generic_schema_ty(ret, generic_param_names)),
             },
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
+                identity,
             } => Ty::Closure {
+                capabilities: *capabilities,
                 params: params
                     .iter()
                     .map(|param| Self::lambda_generic_schema_ty(param, generic_param_names))
@@ -101,6 +123,7 @@ impl Checker {
                     .iter()
                     .map(|capture| Self::lambda_generic_schema_ty(capture, generic_param_names))
                     .collect(),
+                identity: identity.clone(),
             },
             Ty::TraitObject { traits } => Ty::TraitObject {
                 traits: traits
@@ -131,6 +154,28 @@ impl Checker {
 
     /// Synthesize: infer the type of an expression (bottom-up).
     pub(super) fn synthesize(&mut self, expr: &Expr, span: &Span) -> Ty {
+        if self.deferred_body.is_some()
+            && matches!(
+                expr,
+                Expr::ReturnError(_)
+                    | Expr::PostfixTry(_)
+                    | Expr::Await(_)
+                    | Expr::AwaitRestart(_)
+                    | Expr::Yield(_)
+                    | Expr::ScopeDeadline { .. }
+                    | Expr::ForkChild { .. }
+                    | Expr::ForkBlock { .. }
+                    | Expr::Select { .. }
+                    | Expr::Race(_)
+            )
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a deferred body cannot suspend or propagate an error out of its scope".to_string(),
+            );
+            return Ty::Error;
+        }
         // Synthesis runs without an expected type, so no expression reached
         // through `synthesize` is in `check_against` tail position. Clear the
         // tail Ok-coercion flag for the duration so a nested expression (an
@@ -151,7 +196,7 @@ impl Checker {
             return;
         }
         match expr {
-            Expr::Scope { .. } | Expr::Join(_) => {
+            Expr::Scope { .. } | Expr::Race(_) => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::StructuredConcurrency);
             }
             Expr::ForkChild { .. } => {
@@ -161,7 +206,7 @@ impl Checker {
         }
     }
 
-    fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
+    pub(super) fn display_impl_type(&mut self, ty: &Ty) -> Option<Ty> {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
         if matches!(resolved, Ty::String) {
             return Some(resolved);
@@ -365,12 +410,22 @@ impl Checker {
                 );
                 Ty::Error
             }
-            Expr::GenericApplySuffix { target, type_args } => {
-                for type_arg in type_args {
-                    self.resolve_type_expr(type_arg);
+            Expr::GenericApplySuffix { target, type_args } => match &target.0 {
+                Expr::Identifier(name) => {
+                    self.synthesize_identifier_with_type_args(name, Some(type_args), span)
                 }
-                self.synthesize(&target.0, &target.1)
-            }
+                Expr::FieldAccess { object, field } => {
+                    self.check_field_access_with_type_args(object, field, Some(type_args), span)
+                }
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "explicit type arguments require a function declaration".to_string(),
+                    );
+                    Ty::Error
+                }
+            },
             Expr::RecordInitSuffix {
                 target,
                 fields,
@@ -434,14 +489,14 @@ impl Checker {
                 let then_ty = self.synthesize(&then_block.0, &then_block.1);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 if let Some(eb) = else_block {
                     self.env.restore_ownership(&entry);
                     let else_ty = self.synthesize(&eb.0, &eb.1);
                     let else_exit = BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&eb.0, &else_ty),
+                        diverges: Self::arm_skips_join(&else_ty),
                     };
                     self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     self.unify_branches(&then_ty, &else_ty, span)
@@ -453,16 +508,16 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
-            } => self.synthesize_iflet(pattern, expr, body, else_body.as_ref(), span),
+            } => self.synthesize_iflet(conditions, body, else_body.as_deref(), span),
 
             // Match
             Expr::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_expr(&scr_ty, arms, span, None)
+                let place = self.expr_place(&scrutinee.0);
+                self.check_match_expr(&scr_ty, place.as_ref(), arms, span, None)
             }
 
             // Tuple
@@ -470,7 +525,14 @@ impl Checker {
                 if elems.is_empty() {
                     Ty::Unit
                 } else {
-                    let tys: Vec<_> = elems.iter().map(|(e, s)| self.synthesize(e, s)).collect();
+                    let tys: Vec<_> = elems
+                        .iter()
+                        .map(|(e, s)| {
+                            let ty = self.synthesize(e, s);
+                            self.record_callable_value_transfer(e, s);
+                            ty
+                        })
+                        .collect();
                     Ty::Tuple(tys)
                 }
             }
@@ -499,12 +561,15 @@ impl Checker {
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {
                 is_move,
+                private_captures,
                 type_params,
                 params,
                 return_type,
                 body,
+                ..
             } => self.check_lambda(
                 *is_move,
+                private_captures,
                 type_params.as_deref(),
                 params,
                 return_type.as_ref(),
@@ -512,22 +577,13 @@ impl Checker {
                 None,
                 span,
                 false,
+                false,
             ),
 
             // Await
             Expr::Await(inner) => {
-                // Signal to check_named_method_fallback that an actor-ask method
-                // call under `await` is valid.  Save and restore so nested awaits
-                // (e.g. `await { await expr }`) do not clobber the outer flag.
-                let prev_inside_await = self.inside_await_expr;
-                self.inside_await_expr = true;
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
-                self.inside_await_expr = prev_inside_await;
-
-                // When the user writes `await { method_call }` the inner expression
-                // is an `Expr::Block` wrapping a single trailing method call, not a
-                // bare `Expr::MethodCall`.  Unwrap one level of block so the ask-
-                // dispatch guard and span-key lookup below can find the right node.
+                // Locate a directly awaited method through a transparent block
+                // so suspension permission belongs to the call's exact span.
                 let (effective_expr, effective_span) = match &inner.0 {
                     Expr::Block(block)
                         if block.stmts.is_empty()
@@ -542,79 +598,92 @@ impl Checker {
                     _ => (&inner.0, &inner.1),
                 };
 
-                // await Task<T> → T (simplified)
+                self.suspension_operands
+                    .insert(SpanKey::in_module(effective_span, self.current_module_idx));
+                let inner_ty = self.synthesize(&inner.0, &inner.1);
+
+                // Join one Task layer; `await` joins tasks and nothing else. A
+                // `Vec<Task<T>>` joins every task in order and yields `Vec<T>`;
+                // the vector and each handle in it are consumed by the join.
                 match inner_ty {
-                    Ty::Task(inner) => *inner,
-                    // `await close(actor)` or bare actor handle → Unit (actor termination).
-                    // But NOT for method calls that happen to return an actor handle —
-                    // those should pass through the method's declared return type.
-                    _ if inner_ty.as_actor_handle().is_some()
-                        && !matches!(effective_expr, Expr::MethodCall { .. }) =>
-                    {
-                        Ty::Unit
-                    }
-                    // Named-actor ask: `await ref.method(args)` (bare or block-wrapped)
-                    // where the method is an ask-shaped receive fn (non-unit return).
-                    // The checker recorded an `ActorMethodKind::Ask` entry for the
-                    // inner method-call span; unify with the lambda/remote paths by
-                    // returning `Result<R, AskError>`.
-                    _ if matches!(effective_expr, Expr::MethodCall { .. }) => {
-                        let dispatch_key =
-                            SpanKey::in_module(effective_span, self.current_module_idx);
-                        if let Some(ActorMethodKind::Ask(_, reply_ty)) =
-                            self.actor_method_dispatch.get(&dispatch_key).cloned()
-                        {
-                            Ty::result(reply_ty, Ty::ask_error())
-                        } else {
-                            inner_ty
+                    Ty::Task(output) => {
+                        if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
+                            self.mark_expr_moved(&inner.0, &inner.1);
                         }
+                        *output
                     }
-                    _ => inner_ty,
+                    ref vector if vec_task_output(vector).is_some() => {
+                        let output = vec_task_output(vector).expect("matched a vector of tasks");
+                        if !self.reject_borrowed_consumption(&inner.0, &inner.1) {
+                            self.mark_expr_moved(&inner.0, &inner.1);
+                        }
+                        self.make_vec_type(output, span)
+                    }
+                    other => {
+                        self.check_await_operand(effective_expr, effective_span, &other);
+                        other
+                    }
                 }
             }
 
             // AwaitRestart: `await_restart <supervised-child>` — suspend until the
-            // named static supervised child's slot is Live again, then resume with
-            // the same stable `ChildRef<ChildType>`. The operand MUST be a
-            // static supervised-child accessor (recorded in
-            // `supervisor_child_slots` by the inner `FieldAccess` synthesis, kind
-            // `Static`). The result type is the same `ChildRef<ChildType>` — by
-            // construction the slot is Live after a completed restart; a
-            // permanently-Dead child fails closed at runtime (resumes immediately)
-            // rather than hanging, so the bare form never yields an `Option`.
+            // named slot is Live again, then resume with the same stable
+            // `ChildRef<ChildType>`. The operand names one slot: a static child
+            // accessor (recorded in `supervisor_child_slots`, kind `Static`) or
+            // one pool member (`sup.pool[i]`, recorded in `pool_accessor_sites`
+            // as `Index`). A whole pool names many slots and has no single
+            // restart signal, so it is refused. The result type is the same
+            // `ChildRef<ChildType>` — by construction the slot is Live after a
+            // completed restart; a permanently-Dead child fails closed at
+            // runtime (resumes immediately) rather than hanging, so the bare
+            // form never yields an `Option`.
             Expr::AwaitRestart(inner) => {
                 // Synthesize the operand first; this records the supervisor child
-                // slot side-table entry keyed by the inner expression's span.
+                // slot and pool accessor side-table entries keyed by the inner
+                // expression's span.
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
                 let inner_key = SpanKey::in_module(&inner.1, self.current_module_idx);
-                match self.supervisor_child_slots.get(&inner_key).cloned() {
-                    Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
-                        // Stable role handle: same `ChildRef<ChildType>` the
-                        // accessor produced. Carry the discriminator forward — the
-                        // side-table entry already keys MIR lowering on this span.
-                        inner_ty
-                    }
-                    Some(_pool_slot) => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            "`await_restart` applies to a static supervised child \
-                             (`child name: Type`), not a pool member; pool members \
-                             do not have a per-slot restart signal"
-                                .to_string(),
-                        );
-                        Ty::Error
-                    }
-                    None => {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            "`await_restart` expects a supervised-child accessor \
-                             (`await_restart sup.child`); its operand is not a \
-                             supervisor child slot"
-                                .to_string(),
-                        );
-                        Ty::Error
+                let member = matches!(
+                    self.pool_accessor_sites
+                        .get(&inner_key)
+                        .map(|accessor| accessor.kind),
+                    Some(crate::check::types::PoolAccessorKind::Index)
+                );
+                if member {
+                    // One pool member's own slot: the same `ChildRef<ChildType>`
+                    // the indexed accessor produced.
+                    inner_ty
+                } else {
+                    match self.supervisor_child_slots.get(&inner_key).cloned() {
+                        Some(slot) if slot.kind == crate::check::types::ChildKind::Static => {
+                            // Stable role handle: same `ChildRef<ChildType>` the
+                            // accessor produced. Carry the discriminator forward — the
+                            // side-table entry already keys MIR lowering on this span.
+                            inner_ty
+                        }
+                        Some(_pool_slot) => {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                "`await_restart` waits on one supervised slot; a pool \
+                                 names many, so wait on a member with \
+                                 `await_restart sup.pool[i]`"
+                                    .to_string(),
+                            );
+                            Ty::Error
+                        }
+                        None => {
+                            self.report_error(
+                                TypeErrorKind::InvalidOperation,
+                                span,
+                                "`await_restart` expects a supervised-child accessor \
+                                 (`await_restart sup.child` or `await_restart \
+                                 sup.pool[i]`); its operand is not a supervisor \
+                                 child slot"
+                                    .to_string(),
+                            );
+                            Ty::Error
+                        }
                     }
                 }
             }
@@ -622,6 +691,7 @@ impl Checker {
             // PostfixTry: expr? → unwrap Result/Option
             Expr::PostfixTry(inner) => {
                 let ty = self.synthesize(&inner.0, &inner.1);
+                let ty = self.subst.resolve(&ty);
                 // Build an error message if the enclosing function's return type
                 // cannot propagate via `?`.  Computed before any mutable borrow.
                 //
@@ -645,8 +715,8 @@ impl Checker {
                 let current_return_type = self.current_return_type.clone();
                 let bad_ctx_msg: Option<String> = current_return_type.as_ref().and_then(|ret| {
                     let r = self.subst.resolve(ret);
-                    if r.as_option().is_some()
-                        || r.as_result().is_some()
+                    if (r.as_option().is_some() && ty.as_option().is_some())
+                        || (r.as_result().is_some() && ty.as_result().is_some())
                         || matches!(r, Ty::Var(_) | Ty::Error)
                         || matches!(&r, Ty::Named { name, .. }
                                 if !Ty::is_named_builtin(name)
@@ -656,8 +726,8 @@ impl Checker {
                         None
                     } else {
                         Some(format!(
-                            "`?` cannot be used in a function returning `{r}`; \
-                                 the enclosing function must return `Option` or `Result`"
+                            "`?` cannot be used in a function returning `{r}` to propagate `{ty}`; \
+                             absence requires an Option return and errors require a Result return"
                         ))
                     }
                 });
@@ -713,6 +783,13 @@ impl Checker {
                 }
             }
 
+            Expr::Coalesce { left, right } => self.check_local_recovery(left, right, None, span),
+            Expr::Handle {
+                operand,
+                error,
+                body,
+            } => self.check_local_recovery(operand, body, Some(error), span),
+
             // Yield
             Expr::Yield(value) => self.synthesize_yield(value.as_deref(), span),
 
@@ -728,19 +805,30 @@ impl Checker {
                 self.check_return_operand(value.as_deref(), span);
                 Ty::Never
             }
-
-            // Actor self-reference handle — returns LocalPid<Self>, not the actor type itself
-            Expr::This => {
-                if let Some(actor_ty) = &self.current_actor_type {
-                    Ty::local_pid(actor_ty.clone())
+            Expr::ReturnError(value) => {
+                let error = self.current_return_type.as_ref().and_then(|ty| {
+                    self.subst
+                        .resolve(ty)
+                        .as_result()
+                        .map(|(_, error)| error.clone())
+                });
+                if let Some(error) = error.filter(|_| self.current_fails) {
+                    self.check_against(&value.0, &value.1, &error);
+                    self.result_return_coercions.insert(
+                        SpanKey::in_module(span, self.current_module_idx),
+                        super::ResultReturnKind::Error,
+                    );
                 } else {
+                    self.synthesize(&value.0, &value.1);
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
-                        "`this` can only be used inside an actor".to_string(),
+                        "`return error` requires an enclosing function declared with `fails`"
+                            .to_string(),
                     );
-                    Ty::Error
                 }
+                self.recheck_return_edge_defers();
+                Ty::Never
             }
 
             // Index
@@ -771,7 +859,7 @@ impl Checker {
             // ranges, fn/closures.
             //
             // Result is always `bool`. Cross-class mismatches (e.g.
-            // `LocalPid<T> is Vec<int>`) collapse into a single
+            // `<actor handle> is Vec<int>`) collapse into a single
             // `TypeErrorKind::Mismatch` diagnostic that requires the operands
             // share the same resolved type. Move/consumed-self semantics
             // follow the existing use-after-move rule (plan §D-D4, Q-N3).
@@ -875,10 +963,8 @@ impl Checker {
         right_ty: &Ty,
     ) {
         if integer_type_info(common_ty, self.pointer_width()).is_some() {
-            // Concrete, compatible widths deliberately keep their operand
-            // types: HIR carries the common result type and MIR inserts the
-            // required NumericCast before checked arithmetic. Only literal or
-            // inference-variable operands need contextual unification here.
+            // Preserve the source types and publish explicit widening targets
+            // for HIR. Literal and inference operands use contextual unification.
             self.record_concrete_integer_operand(common_ty, left, left_ty);
             self.record_concrete_integer_operand(common_ty, right, right_ty);
         }
@@ -891,8 +977,84 @@ impl Checker {
         operand_ty: &Ty,
     ) {
         let resolved = self.subst.resolve(operand_ty);
+        if resolved.is_integer() && !resolved.is_integer_literal() && resolved != *common_ty {
+            self.numeric_operand_coercions.insert(
+                SpanKey::in_module(&operand.1, self.current_module_idx),
+                common_ty.clone(),
+            );
+        }
         if resolved.is_integer_literal() || matches!(resolved, Ty::Var(_)) {
-            self.check_against(&operand.0, &operand.1, common_ty);
+            if self.is_coercible_numeric(&operand.0)
+                || (resolved.is_integer_literal()
+                    && Self::is_literal_integer_arithmetic(&operand.0))
+            {
+                self.check_against(&operand.0, &operand.1, common_ty);
+            } else {
+                // The operand has already been checked. Rechecking an await
+                // or call would repeat its ownership effects.
+                self.promote_literal_binding(operand_ty, common_ty);
+                self.expect_type(common_ty, operand_ty, &operand.1);
+                self.record_type(&operand.1, common_ty);
+            }
+        }
+    }
+
+    /// Give a binding whose type is still a defaulting integer literal the
+    /// concrete width its arithmetic requires.
+    ///
+    /// `expect_type` cannot do this: `IntLiteral` already unifies with every
+    /// integer type, so the variable keeps the literal kind, the operand site
+    /// alone records the narrower width, and the declaration exports the
+    /// `i64` default. HIR then reads an `i64` binding under an `i32`
+    /// expression, which no later stage can reconcile. Promoting the variable
+    /// keeps the declaration and every reference on one type.
+    fn promote_literal_binding(&mut self, operand_ty: &Ty, common_ty: &Ty) {
+        let Ty::Var(var) = operand_ty else {
+            return;
+        };
+        if !common_ty.is_integer() || common_ty.is_integer_literal() {
+            return;
+        }
+        if !self.subst.resolve(&Ty::Var(*var)).is_integer_literal() {
+            return;
+        }
+        self.subst.insert(*var, common_ty).expect(
+            "promoting a literal-defaulting binding to a concrete integer width stays acyclic",
+        );
+    }
+
+    /// Integer arithmetic whose own checked type is still a literal type, so
+    /// every leaf under it is a literal or an untyped const.
+    ///
+    /// Recording only the top node's contextual width would leave those leaves
+    /// to default independently (`a == 0 - 1` with `a: i32` recorded the
+    /// subtraction as `i32` while both literals defaulted to `i64`, which SIR
+    /// then rejected as a mismatched checked-arithmetic terminator). Rechecking
+    /// such a subtree against the contextual width repeats no ownership effect
+    /// because it contains no call, await or resource use.
+    fn is_literal_integer_arithmetic(expr: &Expr) -> bool {
+        match expr {
+            Expr::Binary { op, .. } => matches!(
+                op,
+                BinaryOp::Add
+                    | BinaryOp::Subtract
+                    | BinaryOp::Multiply
+                    | BinaryOp::Divide
+                    | BinaryOp::Modulo
+                    | BinaryOp::WrappingAdd
+                    | BinaryOp::WrappingSub
+                    | BinaryOp::WrappingMul
+                    | BinaryOp::BitAnd
+                    | BinaryOp::BitOr
+                    | BinaryOp::BitXor
+                    | BinaryOp::Shl
+                    | BinaryOp::Shr
+            ),
+            Expr::Unary {
+                op: UnaryOp::BitNot | UnaryOp::Negate,
+                ..
+            } => true,
+            _ => false,
         }
     }
 
@@ -1024,7 +1186,7 @@ impl Checker {
                 continue;
             }
             if let ConstValue::Integer(v) = value {
-                env.insert(name.clone(), i128::from(*v));
+                env.insert(name.clone(), *v);
             }
         }
         env
@@ -1058,61 +1220,191 @@ impl Checker {
                 );
             }
         }
-        // Owned (non-Copy) elements are cloned per slot at runtime (N independent
-        // owned copies, source dropped once at block exit — matching `vec![x; n]`
-        // semantics). Array-repeat clonability is now identical to Vec-storage
-        // admissibility: both route the per-slot clone through the same
-        // `hew_vec_push_owned` deep copy-in (the HIR desugar reuses the Vec push
-        // path and no longer materialises an aliasing temp). Gate on the single
-        // authority: `string`/`bytes` always admit (push_str / push_bytes copy
-        // independently); an owned record/enum admits exactly when it is
-        // cloneable via `vec_owned_element_admissible` — which admits a
-        // record/enum transitively holding collections or Rc/Weak handles and
-        // keeps a closure-field element rejected. Anything else fails closed
-        // with a clear diagnostic rather than a silent double-free.
-        if !self.vec_element_has_copy_layout(&elem_ty) {
+        // An array repeat copies the element into every slot, so it admits
+        // exactly the element types the value class gives a copy path — the
+        // same answer `xs[i]`, a range slice and cloning iteration get. A
+        // trait object and a `Receiver` are drop-only in the class table
+        // (`CloneKind::None`), so they refuse here without a second rule.
+        if let Some(blocker) = self.element_clone_blocker(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
-            // Drop-only descriptor elements have only the MOVE-in path. An
-            // array repeat would need clone-in for every slot, which is
-            // forbidden.
-            let descriptor_drop_only = matches!(resolved_elem, Ty::TraitObject { .. })
-                || matches!(
-                    resolved_elem,
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Receiver),
-                        ..
-                    }
-                );
-            let clonable = !descriptor_drop_only
-                && (matches!(resolved_elem, Ty::String | Ty::Bytes)
-                    || self.vec_owned_element_admissible(&elem_ty));
-            if !clonable {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    span,
-                    format!(
-                        "`[{elem}; N]` array repeat requires the element type to be Clone, \
-                         but `{elem}` has no clone path (not a string, bytes, or record/enum \
-                         with a synthesised clone thunk); use an explicit loop with `.clone()` \
-                         or a Copy element type",
-                        elem = resolved_elem.user_facing()
-                    ),
-                );
-            }
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "E_ELEMENT_NO_COPY: `[{elem}; N]` array repeat copies the element into \
+                     every slot, but {blocker} has no copy operation; use an explicit loop \
+                     that builds each element, or a Copy element type",
+                    elem = resolved_elem.user_facing()
+                ),
+            );
         }
         self.make_vec_type(elem_ty, span)
     }
 
-    pub(super) fn synthesize_array_literal(&mut self, elems: &[Spanned<Expr>], span: &Span) -> Ty {
-        let elem_ty = if elems.is_empty() {
-            Ty::Var(TypeVar::fresh())
+    /// Type one lazy recovery branch without introducing a callable boundary.
+    /// The success path preserves the state after the operand; only the other
+    /// path evaluates the fallback or binds the Result error.
+    fn check_local_recovery(
+        &mut self,
+        operand: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        error: Option<&Spanned<String>>,
+        span: &Span,
+    ) -> Ty {
+        let container = self.synthesize(&operand.0, &operand.1);
+        let container = self.subst.resolve(&container);
+        let scope_recovery =
+            error.is_some() && matches!(operand.0, Expr::Scope { .. } | Expr::ScopeDeadline { .. });
+        let (payload, error_ty) = if scope_recovery {
+            Some((
+                container.clone(),
+                Ty::Named {
+                    name: "std.builtins.ScopeFailure".to_string(),
+                    args: Vec::new(),
+                    builtin: None,
+                },
+            ))
+        } else if error.is_some() {
+            container
+                .as_result()
+                .map(|(ok, err)| (ok.clone(), err.clone()))
         } else {
-            let first_ty = self.synthesize(&elems[0].0, &elems[0].1);
-            for elem in &elems[1..] {
-                self.check_against(&elem.0, &elem.1, &first_ty);
+            container.as_option().map(|some| (some.clone(), Ty::Unit))
+        }
+        .unwrap_or_else(|| {
+            if !matches!(container, Ty::Error) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    if error.is_some() {
+                        format!(
+                            "`handle` requires Result, found `{}`",
+                            container.user_facing()
+                        )
+                    } else {
+                        format!(
+                            "`??` requires Option, found `{}`; handle Result errors explicitly",
+                            container.user_facing()
+                        )
+                    },
+                );
             }
-            first_ty
+            (Ty::Error, Ty::Error)
+        });
+        let recovery_kind = if scope_recovery {
+            super::RecoveryKind::Scope {
+                failure_ty: ResolvedTy::from_ty(&error_ty)
+                    .expect("ScopeFailure is a concrete source-defined enum"),
+            }
+        } else if error.is_some() {
+            super::RecoveryKind::Result
+        } else {
+            super::RecoveryKind::Option
         };
+        self.recovery_kinds.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            recovery_kind,
+        );
+        let entry = self.env.ownership_snapshot();
+        self.env.push_scope();
+        if let Some((name, binding_span)) = error {
+            self.check_shadowing(name, binding_span);
+            self.env
+                .define_with_span(name.clone(), error_ty, false, binding_span.clone());
+        }
+        let body_ty = if payload == Ty::Never {
+            self.synthesize(&body.0, &body.1)
+        } else {
+            self.check_expr_with_expected(&body.0, &body.1, &payload)
+        };
+        let taken = BranchArmExit {
+            ownership: self.env.ownership_snapshot(),
+            diverges: Self::arm_skips_join(&body_ty),
+        };
+        self.env.pop_scope();
+        self.join_fall_through(&entry, taken);
+        let payload = self.subst.resolve(&payload);
+        if payload == Ty::Never {
+            self.subst.resolve(&body_ty)
+        } else {
+            payload
+        }
+    }
+
+    /// A spread reads each of the operand's elements and pushes an independent
+    /// copy onto the new vector, so it admits exactly the element types the
+    /// value class gives a copy path — the same answer `xs[i]`, a range slice
+    /// and cloning iteration get.
+    fn refuse_uncopyable_spread_element(&mut self, elem_ty: &Ty, span: &Span) {
+        let Some(blocker) = self.element_clone_blocker(elem_ty) else {
+            return;
+        };
+        let resolved = self.subst.resolve(elem_ty).materialize_literal_defaults();
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "E_ELEMENT_NO_COPY: spreading a `Vec<{elem}>` copies each element into the \
+                 new vector, but {blocker} has no copy operation; use an owning removal such \
+                 as `pop()` to move the elements out instead",
+                elem = resolved.user_facing()
+            ),
+        );
+    }
+
+    /// `Vec<elem_ty>` without the concrete-element validation `make_vec_type`
+    /// performs: used to build an expectation for a spread operand, where the
+    /// element type may still be an inference variable.
+    fn vec_of(elem_ty: Ty) -> Ty {
+        Ty::Named {
+            builtin: Some(BuiltinType::Vec),
+            name: "Vec".to_string(),
+            args: vec![elem_ty],
+        }
+    }
+
+    pub(super) fn synthesize_array_literal(
+        &mut self,
+        elements: &[ArrayElement],
+        span: &Span,
+    ) -> Ty {
+        let mut elem_ty: Option<Ty> = None;
+        let mut spread_span: Option<Span> = None;
+        for element in elements {
+            let (operand, operand_span) = element.expr();
+            match element {
+                ArrayElement::Value(_) => {
+                    match elem_ty.clone() {
+                        None => elem_ty = Some(self.synthesize(operand, operand_span)),
+                        // Distinct closures and function items only meet in
+                        // their erased callable type.
+                        Some(current) if self.subst.resolve(&current).contains_callable() => {
+                            let next = self.synthesize(operand, operand_span);
+                            elem_ty =
+                                Some(self.join_callable_values(&current, &next, operand_span));
+                        }
+                        Some(current) => {
+                            self.check_against(operand, operand_span, &current);
+                        }
+                    }
+                    self.record_callable_value_transfer(operand, operand_span);
+                }
+                ArrayElement::Spread(_) => {
+                    // A spread operand is a `Vec` of the literal's element
+                    // type, so unifying against `Vec<T>` both infers `T` from
+                    // the first spread and refuses a mismatched later one.
+                    let current = elem_ty.clone().unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
+                    let want = Self::vec_of(current.clone());
+                    self.check_against(operand, operand_span, &want);
+                    elem_ty = Some(current);
+                    spread_span.get_or_insert_with(|| operand_span.clone());
+                }
+            }
+        }
+        let elem_ty = elem_ty.unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
+        if let Some(spread_span) = spread_span {
+            self.refuse_uncopyable_spread_element(&elem_ty, &spread_span);
+        }
         self.make_vec_type(elem_ty, span)
     }
 
@@ -1149,35 +1441,25 @@ impl Checker {
 
     pub(super) fn synthesize_iflet(
         &mut self,
-        pattern: &Spanned<Pattern>,
-        expr: &Spanned<Expr>,
+        conditions: &[ConditionItem],
         body: &Block,
-        else_body: Option<&Block>,
+        else_body: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
-        let scr_ty = self.synthesize(&expr.0, &expr.1);
-        if self.reject_unsupported_iflet_pattern(&pattern.0, &pattern.1) {
-            return Ty::Error;
-        }
         let entry = self.env.ownership_snapshot();
-        self.env.push_scope();
-        self.bind_pattern(&pattern.0, &scr_ty, false, &pattern.1);
-        // Record the pattern resolution so HIR lowering can consume
-        // the same `pattern_resolutions` side-table that powers
-        // `WhileLet` and `Match` lowering.
-        self.record_arm_resolution(&pattern.0, &pattern.1, &scr_ty);
+        self.check_condition(conditions);
         let then_ty = self.check_block(body, None);
         let then_exit = BranchArmExit {
             ownership: self.env.ownership_snapshot(),
-            diverges: Self::arm_skips_join_block(body, &then_ty),
+            diverges: Self::arm_skips_join(&then_ty),
         };
         self.env.pop_scope();
-        if let Some(block) = else_body {
+        if let Some(else_expr) = else_body {
             self.env.restore_ownership(&entry);
-            let else_ty = self.check_block(block, None);
+            let else_ty = self.synthesize(&else_expr.0, &else_expr.1);
             let else_exit = BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
-                diverges: Self::arm_skips_join_block(block, &else_ty),
+                diverges: Self::arm_skips_join(&else_ty),
             };
             self.join_branch_ownership(&entry, &[then_exit, else_exit]);
             self.unify_branches(&then_ty, &else_ty, span)
@@ -1227,11 +1509,19 @@ impl Checker {
     /// also SYNTHESISES it first, and the read paths ([`Self::check_field_access`]
     /// and [`Self::synthesize_identifier`]) own the use-after-move diagnostic.
     /// Reporting here as well would double-diagnose one consuming use.
-    fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
+    pub(super) fn mark_expr_moved(&mut self, expr: &Expr, span: &Span) {
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
+        if self.reject_prepared_task_access(&root, &path, span, TypeErrorKind::OwnConsumeBorrowed) {
+            return;
+        }
         if !path.is_empty() {
+            if self.reject_borrowed_consumption(expr, span)
+                || self.reject_partial_place_consumption(&root, &path, span)
+            {
+                return;
+            }
             self.env.mark_place_moved(&root, path, span.clone());
             return;
         }
@@ -1254,6 +1544,74 @@ impl Checker {
             self.errors.push(error);
         }
         self.env.mark_moved(&root, span.clone());
+    }
+
+    /// A selected field may move only when every enclosing value supports
+    /// independent field ownership. The selected value's own cleanup contract
+    /// does not prevent moving that entire value out of its plain parent.
+    pub(super) fn reject_partial_place_consumption(
+        &mut self,
+        root: &str,
+        path: &[String],
+        span: &Span,
+    ) -> bool {
+        let Some(binding) = self.env.lookup_ref(root) else {
+            return false;
+        };
+        let mut parent = self.subst.resolve(&binding.ty);
+        for field in path {
+            let Some(selected) = self.independent_record_or_tuple_field(&parent, field) else {
+                self.report_error_with_suggestions(
+                    TypeErrorKind::OwnPartialConsume,
+                    span,
+                    format!(
+                        "cannot consume `{}` separately: enclosing type `{}` must remain whole",
+                        Self::render_place(root, path),
+                        parent.user_facing(),
+                    ),
+                    vec!["transfer the enclosing value whole to a consuming operation".to_string()],
+                );
+                return true;
+            };
+            parent = self.subst.resolve(&selected);
+        }
+        false
+    }
+
+    fn independent_record_or_tuple_field(&self, parent: &Ty, field: &str) -> Option<Ty> {
+        match parent {
+            Ty::Tuple(items) => items.get(field.parse::<usize>().ok()?).cloned(),
+            Ty::Named { name, args, .. } => {
+                let declaration = crate::value_class::ClassDeclarations::declared_type(
+                    &self.class_declarations(),
+                    name,
+                )?;
+                if declaration.marker != crate::value_class::DeclarationMarker::None
+                    || declaration.is_opaque
+                {
+                    return None;
+                }
+                let definition = self.type_defs.get(name)?;
+                if !matches!(definition.kind, TypeDefKind::Struct | TypeDefKind::Record)
+                    || definition.type_params.len() != args.len()
+                {
+                    return None;
+                }
+                let substitutions = definition
+                    .type_params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect();
+                Some(
+                    definition
+                        .fields
+                        .get(field)?
+                        .substitute_named_params_parallel(&substitutions),
+                )
+            }
+            _ => None,
+        }
     }
 
     /// Resolve an expression to a checker PLACE: the root binding name plus the
@@ -1341,7 +1699,7 @@ impl Checker {
     }
 
     /// Render a place for diagnostics: `h.sock`, or plain `h` for the root.
-    fn render_place(root: &str, path: &[String]) -> String {
+    pub(super) fn render_place(root: &str, path: &[String]) -> String {
         std::iter::once(root)
             .chain(path.iter().map(String::as_str))
             .collect::<Vec<_>>()
@@ -1511,11 +1869,48 @@ impl Checker {
         ty: &Ty,
     ) {
         let ty = self.subst.resolve(ty);
-        if !self.registry.implements_marker(&ty, MarkerTrait::Send) {
+        let boundary_ty = self.normalize_for_use(&ty);
+        if !self.type_satisfies_trait_bound(&boundary_ty, "Send") {
             self.report_invalid_actor_send(&ty, error_span);
         }
         if self.ty_contains_affine_actor_transfer(&ty) {
-            self.mark_expr_moved(expr, move_span);
+            self.mark_affine_transfer_moved(expr, move_span);
+        }
+    }
+
+    /// Mark the source of one affine boundary transfer moved.
+    ///
+    /// A handle sent directly names a place and marks straight through. A
+    /// handle packed into a tuple or array literal at the call site names no
+    /// place of its own, so the literal is transparent here: the mailbox takes
+    /// the aggregate and with it each element, and the element binding is
+    /// exactly what a later use must be refused against.
+    fn mark_affine_transfer_moved(&mut self, expr: &Expr, move_span: &Span) {
+        match expr {
+            Expr::Tuple(elements) => {
+                for (element, span) in elements {
+                    self.mark_affine_transfer_element(element, span);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let (element, span) = element.expr();
+                    self.mark_affine_transfer_element(element, span);
+                }
+            }
+            _ => self.mark_expr_moved(expr, move_span),
+        }
+    }
+
+    /// One element of an aggregate literal crossing the boundary: descend only
+    /// where the element's own checked type carries a transferring owner.
+    fn mark_affine_transfer_element(&mut self, expr: &Expr, span: &Span) {
+        let key = super::SpanKey::in_module(span, self.current_module_idx);
+        let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
+            return;
+        };
+        if self.ty_contains_affine_actor_transfer(&ty) {
+            self.mark_affine_transfer_moved(expr, span);
         }
     }
 
@@ -1532,8 +1927,6 @@ impl Checker {
                 let resolved = self.subst.resolve(return_ty);
                 let yield_ty = if let Some((yields, _)) = resolved.as_generator() {
                     yields.clone()
-                } else if let Some(yields) = resolved.as_async_generator() {
-                    yields.clone()
                 } else {
                     resolved
                 };
@@ -1545,11 +1938,29 @@ impl Checker {
         Ty::Unit
     }
 
+    pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+        self.synthesize_identifier_with_type_args(name, None, span)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single dispatch over all identifier forms (context readers, module-qualified variants, bindings, fn sigs, constructors, type aliases); splitting would fragment shared error-reporting state"
     )]
-    pub(super) fn synthesize_identifier(&mut self, name: &str, span: &Span) -> Ty {
+    fn synthesize_identifier_with_type_args(
+        &mut self,
+        name: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        if type_args.is_some() && self.env.lookup_ref(name).is_some() {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "explicit type arguments require a function declaration, not a value binding"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             if self.in_actor_handler_context {
                 return reader.ty();
@@ -1588,7 +1999,7 @@ impl Checker {
         // identity is never parsed back into one (rc1-F1 stage D).
         let surface_name = name;
         let name = canonical_lifecycle_name.as_deref().unwrap_or(name);
-        if self.report_bare_const_import_ambiguity(name, span) {
+        if self.report_bare_const_scope_error(name, span) {
             return Ty::Error;
         }
         // Module-qualified value constructor reference encoded as a flat
@@ -1627,14 +2038,27 @@ impl Checker {
         if let Some((depth, binding)) = self.env.lookup_with_depth(name) {
             let binding_id = binding.id;
             let is_moved = binding.is_moved;
+            let deferred_init = binding.deferred_init();
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
-            let def_span = binding.def_span.clone();
+            let def_span = binding
+                .def_span
+                .clone()
+                .or_else(|| binding.shadow_span.clone());
             // The outermost place of an assignment target is written, not read:
             // `sock = Socket { .. }` after `sock.detach()` is the re-initialisation
             // that plugs the hole, not a use of the value that left.
             let is_write_target = self.place_write_depth > 0 && self.place_base_depth == 0;
-            if is_moved && !is_write_target {
+            if is_moved && deferred_init && !is_write_target {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "E_ACTOR_FIELD_UNINITIALIZED: state field `{name}` is read before \
+                         `init` initializes it; assign it first"
+                    ),
+                );
+            } else if is_moved && !is_write_target {
                 let is_linear = matches!(
                     &ty,
                     Ty::Named { name, .. } if self.registry.is_linear(name)
@@ -1701,8 +2125,9 @@ impl Checker {
                         binding_id,
                         name: name.to_string(),
                         ty: ty.clone(),
-                        mode: ClosureCaptureMode::Copy,
-                        mode_origin: CaptureModeOrigin::ImplicitCopy,
+                        acquisition: crate::ClosureCaptureAcquisition::Snapshot,
+                        access: crate::ClosureCaptureAccess::Read,
+                        consumption: crate::ClosureCaptureConsumption::Retained,
                         is_send: false,
                         is_sync: false,
                         use_span: span.clone(),
@@ -1711,12 +2136,10 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) = self
-            // rc1-F1 stage A: canonical-first — a root fn used as a value
-            // resolves under its canonical `{root_module}.{name}` fn_sigs
-            // key; bare registrations (builtins, externs) resolve unchanged.
-            .root_canonical_fn_sig_key(name)
-            .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
+        } else if let Some(fn_sig_key) =
+            Some(self.canonical_fn_identity(self.canonical_fn_owner(), name))
+                .filter(|key| self.fn_sigs.contains_key(key))
+                .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
         {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
@@ -1744,13 +2167,10 @@ impl Checker {
                     return user_ty;
                 }
             }
-            if sig.params.is_empty() {
+            if sig.params.is_empty() && self.let_identifier_is_unit_variant(name) {
                 sig.return_type
             } else {
-                Ty::Function {
-                    params: sig.params,
-                    ret: Box::new(sig.return_type),
-                }
+                self.instantiate_function_value(&fn_sig_key, type_args, span)
             }
         } else if self.module_binding_in_current_file(surface_name) {
             self.report_error(
@@ -1876,26 +2296,67 @@ impl Checker {
         Ty::Error
     }
 
-    /// Reject a bare constant binding published by multiple imported owners.
-    /// The value environment retains one compatibility slot, so selecting it
-    /// before this check would silently choose the last registration.
-    fn report_bare_const_import_ambiguity(&mut self, name: &str, span: &Span) -> bool {
+    /// Reject a bare constant binding that is ill-formed for this file: one a
+    /// file import published into ANOTHER file's scope, or one published here
+    /// by more than one owner. The value environment retains a single flat
+    /// slot, so selecting it before this check would admit a name the file
+    /// never imported, or silently choose the last registration.
+    fn report_bare_const_scope_error(&mut self, name: &str, span: &Span) -> bool {
         if name.contains('.') || name.contains("::") {
             return false;
         }
         // A local/parameter in an inner body scope shadows imports normally.
-        // Only an outer import-scope binding can be ambiguous here.
+        // Only an outer import-scope binding can be ill-formed here.
         if !matches!(self.env.lookup_ref_with_depth(name), Some((0, _))) {
             return false;
         }
         if self.current_module.is_none() && self.root_value_bindings.contains(name) {
             return false;
         }
-        let Some(owners) = self.published_bare_const_owners.get(&(
+        let published = self.published_bare_const_owners.get(&(
             self.current_module.clone(),
             self.current_module_idx,
             name.to_string(),
-        )) else {
+        ));
+        if published.is_none() {
+            // A file import publishes its constants into the importing file
+            // only. Reaching the flat env slot from a file that did not write
+            // that import is out of scope, exactly as it is for its types.
+            if let Some(owners) = self.file_import_const_exports.get(name) {
+                let candidates: Vec<String> = owners.iter().cloned().collect();
+                // The declaring file's own body is a same-owner self-reference,
+                // not a cross-file one: the gate exists for a file that did not
+                // write the import, and `helper.hew` never imports itself.
+                if candidates.iter().any(|identity| {
+                    identity
+                        .rsplit_once('.')
+                        .is_some_and(|(owner, _)| Some(owner) == self.current_module.as_deref())
+                }) {
+                    return false;
+                }
+                let detail = candidates
+                    .iter()
+                    .filter_map(|identity| identity.rsplit_once('.'))
+                    .map(|(owner, _)| format!("`{owner}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.report_error_with_suggestions(
+                    TypeErrorKind::UndefinedVariable,
+                    span,
+                    format!(
+                        "constant `{name}` is not in scope; it is declared by file {detail}, \
+                         which this file does not import"
+                    ),
+                    candidates
+                        .iter()
+                        .map(|candidate| format!("qualify the reference, e.g. `{candidate}`"))
+                        .collect(),
+                );
+                return true;
+            }
+            return false;
+        }
+        let Some(owners) = published else {
             return false;
         };
         if owners.len() < 2 {
@@ -1993,6 +2454,7 @@ impl Checker {
                         })
                         .collect();
                     Ty::Function {
+                        capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                         params,
                         ret: Box::new(return_type),
                     }
@@ -2174,17 +2636,20 @@ impl Checker {
                 return Ty::Error;
             }
             if name == "self" {
-                let message = if self.current_actor_type.is_some() {
-                    "`self` names actor state only through a field, as `self.count` or bare \
-                     `count`; use `this` when you need the actor handle"
-                        .to_string()
-                } else {
-                    "`self` is not a valid identifier in Hew; \
-                     use a named receiver parameter instead: \
+                // Inside an actor, bare `self` is the actor's own handle:
+                // `Self` is the actor type. Actor state is still reached
+                // through a field, as `self.count` or bare `count`.
+                if let Some(actor_ty) = &self.current_actor_type {
+                    return Ty::actor_handle_of(actor_ty);
+                }
+                self.report_error(
+                    TypeErrorKind::UndefinedVariable,
+                    span,
+                    "`self` is the actor's own handle and exists only inside an actor \
+                     body; elsewhere use a named receiver parameter: \
                      `fn method(val: Self)` in traits or `fn method(p: Point)` in impls"
-                        .to_string()
-                };
-                self.report_error(TypeErrorKind::UndefinedVariable, span, message);
+                        .to_string(),
+                );
             } else {
                 let similar = crate::error::find_similar(
                     name,
@@ -2257,7 +2722,14 @@ impl Checker {
                     builtin: Some(BuiltinType::Vec),
                     args,
                     ..
-                } if !args.is_empty() => obj_ty.clone(),
+                } if !args.is_empty() => {
+                    let element = args[0].clone();
+                    if self.validate_vec_slice_element_clone_type(&element, span) {
+                        obj_ty.clone()
+                    } else {
+                        Ty::Error
+                    }
+                }
                 // W3 collections-sugar S2: `s[a..b]` over `string` returns a
                 // fresh owned `string`. Codepoint-bounds slice, O(n), panic on
                 // invalid bounds. Endpoints are i64 (validated above).
@@ -2285,7 +2757,12 @@ impl Checker {
         if let Some((_, child_ty)) = resolved_obj.as_supervisor_pool() {
             let idx_actual = self.synthesize(&index.0, &index.1);
             let idx_resolved = self.subst.resolve(&idx_actual);
-            if !Self::is_narrower_signed_int(&idx_resolved) {
+            if Self::is_narrower_signed_int(&idx_resolved) {
+                self.numeric_operand_coercions.insert(
+                    SpanKey::in_module(&index.1, self.current_module_idx),
+                    Ty::I64,
+                );
+            } else {
                 self.check_against(&index.0, &index.1, &Ty::I64);
             }
             if ctx == IndexContext::AssignTarget {
@@ -2337,8 +2814,8 @@ impl Checker {
             // than i64 (i8/i16/i32) as a Vec index.  The operand widens to i64
             // at the call site; the element result type is NOT changed (LESSONS
             // `widen-operands-not-result-when-tightening-int-coercion`).
-            // MIR `lower_vec_index` inserts a `NumericCast` for the `xs[i]`
-            // path so the bounds-check `IntCmp` sees matching i64 operands.
+            // Publish the operand widening so HIR inserts an explicit cast
+            // before the runtime bounds check.
             Ty::Named {
                 builtin: Some(BuiltinType::Vec),
                 args,
@@ -2346,13 +2823,28 @@ impl Checker {
             } if !args.is_empty() => {
                 let idx_actual = self.synthesize(&index.0, &index.1);
                 let idx_resolved = self.subst.resolve(&idx_actual);
-                if !Self::is_narrower_signed_int(&idx_resolved) {
+                if Self::is_narrower_signed_int(&idx_resolved) {
+                    self.numeric_operand_coercions.insert(
+                        SpanKey::in_module(&index.1, self.current_module_idx),
+                        Ty::I64,
+                    );
+                } else {
                     self.check_against(&index.0, &index.1, &Ty::I64);
                 }
-                if matches!(ctx, IndexContext::Read)
-                    && !self.validate_vec_index_borrow_surface(&args[0], span)
-                {
-                    return Ty::Error;
+                if matches!(ctx, IndexContext::Read) {
+                    if !self.validate_vec_index_borrow_surface(&args[0], span) {
+                        return Ty::Error;
+                    }
+                    // D432: an element with no clone is read as a loan of the
+                    // slot the vector still owns, never copied out.
+                    match self.vec_iteration_element_mode(&args[0], span) {
+                        Some(super::types::VecIterationMode::Borrow) => {
+                            self.borrowed_element_index_reads
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                        }
+                        Some(super::types::VecIterationMode::Clone) => {}
+                        None => return Ty::Error,
+                    }
                 }
                 if matches!(ctx, IndexContext::AssignTarget) {
                     self.record_resolved_vec_call("set", &args[0], span);
@@ -2389,6 +2881,13 @@ impl Checker {
                 // types, exactly as the method-call path does — for both the
                 // read (trap) and the write (insert) surfaces.
                 if !self.validate_hashmap_owned_element_types(&key_ty, &val_ty, span) {
+                    return Ty::Error;
+                }
+                // The trapping read clones the value out of its slot; the
+                // write only moves one in.
+                if ctx == IndexContext::Read
+                    && !self.validate_hashmap_value_clone_type(&val_ty, "m[k]", span)
+                {
                     return Ty::Error;
                 }
                 match ctx {
@@ -2472,7 +2971,21 @@ impl Checker {
                 }
                 Ty::Error
             }
-            Ty::Array(elem, _) | Ty::Slice(elem) => {
+            Ty::Array(elem, _) => {
+                self.check_against(&index.0, &index.1, &Ty::I64);
+                if matches!(ctx, IndexContext::Read) {
+                    match self.vec_iteration_element_mode(elem, span) {
+                        Some(super::types::VecIterationMode::Borrow) => {
+                            self.borrowed_element_index_reads
+                                .insert(SpanKey::in_module(span, self.current_module_idx));
+                        }
+                        Some(super::types::VecIterationMode::Clone) => {}
+                        None => return Ty::Error,
+                    }
+                }
+                (**elem).clone()
+            }
+            Ty::Slice(elem) => {
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 (**elem).clone()
             }
@@ -2493,13 +3006,7 @@ impl Checker {
     fn record_dyn_index_method_call(&mut self, bound: &crate::ty::TraitObjectBound, span: &Span) {
         let trait_name = bound.trait_name.as_str();
         let trait_lookup_key = self.trait_ref_lookup_key(trait_name);
-        let Some(trait_info) = self.trait_defs.get(&trait_lookup_key).cloned() else {
-            return;
-        };
-        let Some(method_idx) = trait_info
-            .methods
-            .iter()
-            .position(|method| method.name == "at")
+        let Some((slot, _, declaring_spelling)) = self.dyn_vtable_slot_for_method(trait_name, "at")
         else {
             return;
         };
@@ -2511,9 +3018,8 @@ impl Checker {
             return;
         };
         self.apply_trait_object_bound_substitutions(&mut sig, bound);
-        let slot = 3 + u32::try_from(method_idx).unwrap_or(u32::MAX);
         let target = self
-            .trait_method_call_target_ids(trait_name, "at")
+            .trait_method_call_target_ids(&declaring_spelling, "at")
             .map_or_else(
                 || crate::check::dispatch::CallTarget::Unsupported {
                     reason: format!(
@@ -2544,136 +3050,114 @@ impl Checker {
         );
     }
 
+    /// `await` joins a task and nothing else. A plain call suspends the caller
+    /// on its own, so `await` adds nothing there; every other operand is not a
+    /// task and is refused with the move that replaces it.
+    fn check_await_operand(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        if matches!(ty, Ty::Error) {
+            return;
+        }
+        // Every call waits on its own, an actor call included (U383): `await`
+        // adds nothing there. `fork` is how a call runs concurrently, and
+        // `await` then joins that task.
+        if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+            self.errors.push(TypeError {
+                severity: crate::error::Severity::Error,
+                kind: TypeErrorKind::InvalidOperation,
+                span: span.clone(),
+                message: "`await` on a plain call adds nothing: the call suspends on its own"
+                    .to_string(),
+                notes: vec![],
+                suggestions: vec![
+                    "remove `await`, or fork the call to run it concurrently".to_string()
+                ],
+                source_module: self.current_module.clone(),
+            });
+        } else {
+            let mut suggestions = vec!["remove `await`, or fork a call to get a task".to_string()];
+            if matches!(
+                ty,
+                Ty::Named {
+                    builtin: Some(BuiltinType::Vec),
+                    ..
+                }
+            ) {
+                suggestions.push(
+                    "`await` over a vector joins a vector of task handles, so fill it with \
+                     forked calls"
+                        .to_string(),
+                );
+            }
+            if ty.as_local_actor_ref().is_some() {
+                suggestions
+                    .push("`closed(actor)` waits for an actor to finish terminating".to_string());
+            }
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!("`await` joins a task; `{}` is not one", ty.user_facing()),
+                suggestions,
+            );
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "concurrency variants (scope/select/join/spawn/unsafe/timeout)"
     )]
     pub(super) fn synthesize_concurrency(&mut self, expr: &Expr, span: &Span) -> Ty {
         match expr {
-            Expr::ForkChild {
-                binding,
-                expr: child,
-            } => {
-                // `fork name = call(...)` is a child-task spawn statement and is
-                // only meaningful inside a `scope { }` body (TI-2). HIR lowering
-                // enforces the same position rule; rejecting here as well gives a
-                // check-time diagnostic instead of a lowering error.
-                if self.task_scope_depth == 0 {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "`fork` is only valid inside a `scope { }` body".to_string(),
-                    );
-                    return Ty::Error;
-                }
-                // Parity with HIR's ForkChildNotACall gate: the child must be a
-                // call expression — task spawning needs a callee to run, not a
-                // value to wrap.
-                if !matches!(child.0, Expr::Call { .. }) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        &child.1,
-                        "`fork name = expr` requires a call expression as the \
-                         right-hand side; other expression forms cannot be \
-                         spawned as tasks"
-                            .to_string(),
-                    );
-                    return Ty::Error;
+            Expr::ForkChild { expr: child } => {
+                let children: Vec<&Spanned<Expr>> = match &child.0 {
+                    Expr::Array(elements) => elements.iter().map(ArrayElement::expr).collect(),
+                    Expr::Tuple(children) => children.iter().collect(),
+                    _ => vec![child.as_ref()],
+                };
+                for branch in &children {
+                    if !matches!(branch.0, Expr::Call { .. } | Expr::MethodCall { .. }) {
+                        self.report_error(
+                            TypeErrorKind::InvalidOperation,
+                            &branch.1,
+                            "fork expects a call or a batch of calls; use fork { ... } for a body"
+                                .to_string(),
+                        );
+                    }
+                    self.suspension_operands
+                        .insert(SpanKey::in_module(&branch.1, self.current_module_idx));
                 }
                 let ret_ty = self.synthesize(&child.0, &child.1);
-                // Mark non-Copy call arguments as moved into the fork child.
-                //
-                // `fork name = f(a, b)` transfers ownership of non-Copy args
-                // into the child task env. The general `Expr::Call` arm of
-                // `synthesize` does NOT mark args as moved (regular function
-                // calls are by-value but the type checker treats them as
-                // borrows), so without this pass a `string` arg remains live
-                // in the parent scope and a subsequent use goes unreported.
-                //
-                // We read each arg's type via `lookup_ref` (no read-count
-                // increment — `synthesize` already counted the read) and
-                // delegate to `mark_expr_moved_if_non_copy`, which gates on
-                // `!Copy` and only marks `Expr::Identifier` nodes.
-                //
-                // WHEN-OBSOLETE: if the general call-arg path gains its own
-                // move-tracking, this pass becomes redundant and can be
-                // deleted. Until then this is the sole source of
-                // UseAfterMove diagnostics for named fork spawn args.
-                if let Expr::Call { args, .. } = &child.0 {
-                    for arg in args {
-                        let (arg_expr, arg_span) = arg.expr();
-                        if let Expr::Identifier(arg_name) = arg_expr {
-                            if let Some(binding_ty) =
-                                self.env.lookup_ref(arg_name).map(|b| b.ty.clone())
-                            {
-                                let resolved = self.subst.resolve(&binding_ty);
-                                self.mark_expr_moved_if_non_copy(arg_expr, arg_span, &resolved);
-                            }
-                        }
-                    }
+                for branch in &children {
+                    self.record_fork_call_inputs(branch);
                 }
-                if let Some(name) = binding {
-                    // Mirror `let`: introduce the binding into the enclosing
-                    // block scope so later statements (`await t`) resolve it.
-                    // The handle types as Task<T> where T is the callee's
-                    // return type; `await` typing unwraps it (await Task<T> → T).
-                    self.env.define_with_span(
-                        name.clone(),
-                        Ty::Task(Box::new(ret_ty)),
-                        false,
-                        span.clone(),
-                    );
-                }
-                // The fork statement itself produces no value.
-                Ty::Unit
+                Ty::Task(Box::new(ret_ty))
             }
             Expr::ForkBlock { body } => {
-                // `fork { ... }` is a fire-and-forget anonymous child task,
-                // `≈ fork _ = (|| { body })()`. Its body is checked here as a
-                // zero-parameter, unit-returning closure context so that body
-                // statements, callee arguments, and the tail expression are all
-                // type-checked — the same coverage the named `fork name = call()`
-                // form already enjoys.
-                //
-                // Position gate (defence-in-depth): like `fork name = call(...)`,
-                // `fork { ... }` is only meaningful inside a `scope { }` body. The
-                // parser already rejects `fork { }` outside a scope, so this gate is
-                // unreachable via a clean parse; it mirrors the `ForkChild` arm so
-                // the checker never silently accepts an out-of-position fork.
-                if self.task_scope_depth == 0 {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "`fork { ... }` is only valid inside a `scope { }` body".to_string(),
-                    );
-                    return Ty::Unit;
-                }
-                // A fork block is a synthesized nullary `move` closure. Reuse
-                // the closure checker so free-variable identity, Send checks,
-                // and move tracking stay on the same capture ledger as every
-                // other scope-owned task environment.
+                // Share capture identity and child return inference with closures.
                 let synthetic_body = (Expr::Block(body.clone()), span.clone());
-                let expected_params: &[Ty] = &[];
-                let _ = self.check_lambda(
+                let lambda_ty = self.check_lambda(
                     true,
+                    &[],
                     None,
                     &[],
                     None,
                     &synthetic_body,
-                    Some((expected_params, &Ty::Unit)),
+                    None,
                     span,
                     false,
+                    true,
                 );
 
+                self.check_fork_transfer(expr, span, &lambda_ty);
+
                 // Ordinary parameters are borrowed at Hew call boundaries.
-                // Moving one into a child would let the child outlive the
-                // caller-owned value, so reject it before HIR can manufacture
-                // an owning environment field.
+                // Value snapshots acquire an independent child owner; an affine
+                // borrowed parameter or explicit view cannot escape that way.
                 let capture_key = SpanKey::in_module(span, self.current_module_idx);
                 if let Some(captures) = self.closure_capture_facts.get(&capture_key).cloned() {
                     for capture in captures {
                         let capture_is_copy = self.ty_is_non_owning(&capture.ty);
                         let borrowed_parameter = !capture_is_copy
+                            && capture.acquisition == crate::ClosureCaptureAcquisition::Move
                             && self.env.lookup_ref(&capture.name).is_some_and(|binding| {
                                 binding.id == capture.binding_id && binding.is_param()
                             });
@@ -2692,8 +3176,10 @@ impl Checker {
                         }
                     }
                 }
-                // The fork statement itself produces no value.
-                Ty::Unit
+                match lambda_ty {
+                    Ty::Function { ret, .. } | Ty::Closure { ret, .. } => Ty::Task(ret),
+                    _ => Ty::Error,
+                }
             }
             Expr::SpawnLambdaActor {
                 is_move,
@@ -2701,6 +3187,12 @@ impl Checker {
                 return_type,
                 body,
             } => {
+                // A lambda actor is an actor declaration without a source
+                // name. Mint its identity here, keyed by the exact span of
+                // the `actor` expression, so HIR can synthesize the actor
+                // declaration and its single receive handler against a
+                // resolver-owned `DefId` like every named actor.
+                self.declare_lambda_actor(span);
                 // Synthesise the body without propagating the return-type annotation as
                 // a contextual hint.  This lets us extract the actual body return type
                 // and emit targeted diagnostics rather than generic Mismatch errors:
@@ -2716,8 +3208,18 @@ impl Checker {
                 // recursive self-sends (a Duplex capture called from within its own
                 // actor body). Nested fn-closures inside the body pass is_actor_body=false,
                 // so they correctly see in_lambda_actor_body=false.
-                let lambda_ty =
-                    self.check_lambda(*is_move, None, params, None, body, None, span, true);
+                let lambda_ty = self.check_lambda(
+                    *is_move,
+                    &[],
+                    None,
+                    params,
+                    None,
+                    body,
+                    None,
+                    span,
+                    true,
+                    false,
+                );
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
                     Ty::Function { ret, .. } | Ty::Closure { ret, .. } => {
@@ -2747,8 +3249,8 @@ impl Checker {
                     _ => Ty::Unit,
                 };
                 // E_LAMBDA_SELF_ESCAPE: the lambda body returns an actor handle.
-                // A lambda body that produces a `LambdaPid<...>` (lambda-actor handle)
-                // or a raw `Duplex<...>` channel is leaking a move-only handle outside
+                // A lambda body that produces an `actor(...) -> ...` handle (lambda-actor
+                // handle) or a raw `Duplex<...>` channel is leaking a move-only handle outside
                 // the actor boundary — the handle's lifetime is bound to the let-binding
                 // site, not to values the body produces.
                 //
@@ -2760,7 +3262,7 @@ impl Checker {
                 //
                 // WHEN-OBSOLETE: slice 3 adds MIR-level self-ref weak capture that covers
                 // the runtime dimension of self-escape; this is the static type-level gate.
-                if body_ret.as_lambda_pid().is_some() || body_ret.as_duplex().is_some() {
+                if body_ret.as_actor_fn().is_some() || body_ret.as_duplex().is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -2790,9 +3292,9 @@ impl Checker {
                 };
                 // The reply type determines send vs ask:
                 //   send-shaped (`actor |p| { ... }` — no explicit return type, or `-> ()`)
-                //     → `LambdaPid<Msg, ()>` — call-site returns `Result<(), SendError>`
+                //     → `actor(Msg) -> ()` — call-site returns `Result<(), SendError>`
                 //   ask-shaped (`actor |p| -> Reply { ... }`)
-                //     → `LambdaPid<Msg, Reply>` — call-site returns `Result<Reply, AskError>`
+                //     → `actor(Msg) -> Reply` — call-site returns `Result<Reply, AskError>`
                 let reply_ty = if let Some(ret_ann) = return_type.as_ref() {
                     let resolved = self.resolve_type_expr(ret_ann);
                     if matches!(resolved, Ty::Unit) {
@@ -2853,27 +3355,20 @@ impl Checker {
                         ),
                     );
                 }
-                Ty::lambda_pid(msg_ty, reply_ty)
+                Ty::actor_fn(msg_ty, reply_ty)
             }
             Expr::Scope { body: block } => {
-                // Type-check the block body for diagnostics; the scope itself is Unit
-                // (it is a lifetime boundary, not a value-producing block).
-                // Track the nesting depth so `fork name = call(...)` statements
-                // can verify they appear inside a scope body.
                 self.task_scope_depth += 1;
-                self.check_block(block, None);
+                let ty = self.check_block(block, None);
                 self.task_scope_depth -= 1;
-                Ty::Unit
+                ty
             }
             Expr::ScopeDeadline { duration, body } => {
-                // A deadline clause is unit-valued, but both of its children are
-                // still ordinary checked source. In particular, direct calls in
-                // the body must publish their canonical targets for HIR lowering;
-                // treating this node as the concurrency fallback's default Unit
-                // silently skipped the entire body.
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
-                self.check_block(body, None);
-                Ty::Unit
+                self.task_scope_depth += 1;
+                let ty = self.check_block(body, None);
+                self.task_scope_depth -= 1;
+                ty
             }
             Expr::UnsafeBlock(block) => {
                 let prev = self.in_unsafe;
@@ -2883,7 +3378,18 @@ impl Checker {
                 ty
             }
             Expr::Select { arms, timeout } => {
+                if arms.is_empty() && timeout.is_none() {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "a `select` needs at least one arm: a source arm \
+                         (`name from source => body`), or an `after` timer arm"
+                            .to_string(),
+                    );
+                    return Ty::Error;
+                }
                 let mut result_ty: Option<Ty> = None;
+                let prepared_depth = self.prepared_select_tasks.len();
                 // Only the BODIES of a select are alternatives. Every arm's
                 // source is prepared before dispatch chooses a winner — all the
                 // asks are issued, all the receivers polled — so the sources run
@@ -2892,25 +3398,46 @@ impl Checker {
                 // sequentially; the same goes for the timeout duration, which
                 // arms the deadline before any arm fires.
                 let mut source_tys = Vec::with_capacity(arms.len());
+                let mut sources = Vec::with_capacity(arms.len());
                 for arm in arms {
                     self.env.push_scope();
-                    source_tys.push(self.synthesize_actor_concurrency_source(
-                        &arm.source.0,
-                        &arm.source.1,
-                        "select arm source",
-                    ));
+                    let (ty, source) = self.synthesize_select_source(&arm.source.0, &arm.source.1);
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. })) {
+                        if let Some((root, path)) = self.expr_place(&arm.source.0) {
+                            if let Some(binding) = self.env.lookup_ref(&root) {
+                                self.prepared_select_tasks
+                                    .push(super::types::PreparedSelectTask {
+                                        binding: binding.id,
+                                        path,
+                                        span: arm.source.1.clone(),
+                                    });
+                            }
+                        }
+                    }
+                    source_tys.push(ty);
+                    sources.push(source);
                     self.env.pop_scope();
+                }
+                if let Some(checked) = sources.iter().cloned().collect::<Option<Vec<_>>>() {
+                    self.select_sources
+                        .insert(SpanKey::in_module(span, self.current_module_idx), checked);
                 }
                 if let Some(tc) = timeout {
                     self.check_against(&tc.duration.0, &tc.duration.1, &Ty::Duration);
                 }
+                self.prepared_select_tasks.truncate(prepared_depth);
 
                 // Dispatch happens here: from this state exactly one body runs.
                 let entry = self.env.ownership_snapshot();
                 let mut arm_exits = Vec::with_capacity(arms.len() + 1);
-                for (arm, source_ty) in arms.iter().zip(&source_tys) {
+                for ((arm, source_ty), source) in arms.iter().zip(&source_tys).zip(&sources) {
                     self.env.push_scope();
                     self.env.restore_ownership(&entry);
+                    if matches!(source, Some(super::CheckedSelectSource::TaskAwait { .. }))
+                        && !self.reject_borrowed_consumption(&arm.source.0, &arm.source.1)
+                    {
+                        self.mark_expr_moved(&arm.source.0, &arm.source.1);
+                    }
                     self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
                     let body_ty = if let Some(expected) = &result_ty {
                         self.check_against(&arm.body.0, &arm.body.1, expected)
@@ -2919,7 +3446,7 @@ impl Checker {
                     };
                     arm_exits.push(BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&arm.body.0, &body_ty),
+                        diverges: Self::arm_skips_join(&body_ty),
                     });
                     if result_ty.is_none() {
                         result_ty = Some(body_ty);
@@ -2931,7 +3458,7 @@ impl Checker {
                     let timeout_ty = self.synthesize(&tc.body.0, &tc.body.1);
                     arm_exits.push(BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&tc.body.0, &timeout_ty),
+                        diverges: Self::arm_skips_join(&timeout_ty),
                     });
                     if let Some(expected) = &result_ty {
                         self.expect_type(expected, &timeout_ty, &tc.body.1);
@@ -2942,84 +3469,7 @@ impl Checker {
                 self.join_branch_ownership(&entry, &arm_exits);
                 result_ty.unwrap_or(Ty::Unit)
             }
-            Expr::Join(exprs) => {
-                let types: Vec<Ty> = exprs
-                    .iter()
-                    .map(|(e, s)| {
-                        self.synthesize_actor_concurrency_source(e, s, "join expression element")
-                    })
-                    .collect();
-                if types.len() == 1 {
-                    types[0].clone()
-                } else {
-                    Ty::Tuple(types)
-                }
-            }
-            Expr::Timeout {
-                expr: inner,
-                duration,
-            } => {
-                self.check_against(&duration.0, &duration.1, &Ty::Duration);
-                let inner_ty = self.synthesize(&inner.0, &inner.1);
-                // NEW-6: supported await deadlines resolve to the same Result shape
-                // their resume edge binds. Actor asks use `Result<R, AskError>`;
-                // raw connection reads use `Result<bytes, IoError>`. Other
-                // `| after d` forms are deferred and fail closed in HIR lowering;
-                // type them as the inner expression's type so the checker emits no
-                // spurious diagnostics here (the precise deferred diagnostic is
-                // raised during lowering).
-                if let Expr::Await(await_inner) = &inner.0 {
-                    let inner_key = SpanKey::in_module(&await_inner.1, self.current_module_idx);
-                    if let Some(ActorMethodKind::Ask(_, reply_ty)) =
-                        self.actor_method_dispatch.get(&inner_key).cloned()
-                    {
-                        Ty::result(reply_ty, Ty::ask_error())
-                    } else if let Some(&to_string) = self.conn_await_reads.get(&inner_key) {
-                        // `await conn.read() | after d` → `Result<bytes, NetError>`
-                        // `await conn.read_string() | after d` → `Result<string, NetError>`
-                        let ok_ty = if to_string { Ty::String } else { Ty::Bytes };
-                        Ty::result(
-                            ok_ty,
-                            Ty::Named {
-                                name: crate::stdlib::STD_NET_ERROR.to_string(),
-                                args: Vec::new(),
-                                builtin: None,
-                            },
-                        )
-                    } else if self.listener_await_accepts.contains(&inner_key) {
-                        // `await ln.accept() | after d` → `Result<Connection, NetError>`
-                        // The Ok type mirrors the plain await's inner type (Connection).
-                        Ty::result(
-                            inner_ty,
-                            Ty::Named {
-                                name: crate::stdlib::STD_NET_ERROR.to_string(),
-                                args: Vec::new(),
-                                builtin: None,
-                            },
-                        )
-                    } else if matches!(
-                        self.method_call_rewrites.get(&inner_key),
-                        Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                            if c_symbol == "hew_channel_recv_layout"
-                    ) {
-                        // `await rx.recv() | after d` → `Result<Option<T>, TimeoutError>`
-                        // `inner_ty` is `Option<T>` from the plain `await rx.recv()` path.
-                        Ty::result(inner_ty, Ty::timeout_error())
-                    } else if matches!(
-                        self.method_call_rewrites.get(&inner_key),
-                        Some(MethodCallRewrite::RewriteToFunction { c_symbol, .. })
-                            if c_symbol == "hew_stream_next_layout"
-                    ) {
-                        // `await stream.recv() | after d` → `Result<Option<T>, TimeoutError>`
-                        // `inner_ty` is `Option<T>` from the plain `await stream.recv()` path.
-                        Ty::result(inner_ty, Ty::timeout_error())
-                    } else {
-                        inner_ty
-                    }
-                } else {
-                    inner_ty
-                }
-            }
+            Expr::Race(branches) => self.synthesize_race(branches, span),
             Expr::GenBlock { body } => {
                 // A98 / Q98: generator blocks inside actor receive handlers are
                 // permanently forbidden.  The scheduler holds the actor-state lock
@@ -3060,13 +3510,27 @@ impl Checker {
 
                 let prev_in_generator = self.in_generator;
                 let prev_return_type = self.current_return_type.take();
+                let previous_defer = self.deferred_body.take();
+                let prev_fails = std::mem::replace(&mut self.current_fails, false);
                 self.in_generator = true;
                 self.current_return_type = Some(gen_ty.clone());
 
+                let effect_body = super::effects::EffectBody::GeneratorBlock(SpanKey::in_module(
+                    span,
+                    self.current_module_idx,
+                ));
+                self.effect_graph
+                    .bodies
+                    .entry(effect_body.clone())
+                    .or_default();
+                let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
                 let body_ty = self.check_block(body, None);
+                self.effect_graph.current_body = previous_effect_body;
 
                 self.in_generator = prev_in_generator;
                 self.current_return_type = prev_return_type;
+                self.deferred_body = previous_defer;
+                self.current_fails = prev_fails;
 
                 // Unify the tail-expression type with the Return type-variable.
                 // Never / Error propagate vacuously (unify is a no-op for Error).
@@ -3183,6 +3647,13 @@ impl Checker {
         let tail_ok_armed = std::mem::replace(&mut self.tail_ok_armed, false);
         match (expr, expected) {
             (Expr::ContextVariant(context), _) => {
+                if let Some(result) = self.dispatch_context_builtin_variant(
+                    expected,
+                    context,
+                    &super::type_members::DottedTypeMemberUse::Reference { span },
+                ) {
+                    return result;
+                }
                 let Some(owner) = self.context_variant_expected_owner(expected, span) else {
                     return Ty::Error;
                 };
@@ -3229,18 +3700,22 @@ impl Checker {
             (
                 Expr::Lambda {
                     is_move,
+                    private_captures,
                     type_params,
                     params,
                     return_type,
                     body,
+                    ..
                 },
                 Ty::Function {
                     params: expected_params,
                     ret,
+                    ..
                 },
             ) => {
                 let result = self.check_lambda(
                     *is_move,
+                    private_captures,
                     type_params.as_deref(),
                     params,
                     return_type.as_ref(),
@@ -3248,7 +3723,9 @@ impl Checker {
                     Some((expected_params, ret)),
                     span,
                     false,
+                    false,
                 );
+                self.expect_type(expected, &result, span);
                 self.record_type(span, &result);
                 result
             }
@@ -3270,7 +3747,7 @@ impl Checker {
                 let then_ty = self.check_expr_with_expected(&then_block.0, &then_block.1, expected);
                 let then_exit = BranchArmExit {
                     ownership: self.env.ownership_snapshot(),
-                    diverges: Self::arm_skips_join_expr(&then_block.0, &then_ty),
+                    diverges: Self::arm_skips_join(&then_ty),
                 };
                 let actual = if let Some(else_block) = else_block {
                     self.tail_ok_armed = tail_ok_armed;
@@ -3279,7 +3756,7 @@ impl Checker {
                         self.check_expr_with_expected(&else_block.0, &else_block.1, expected);
                     let else_exit = BranchArmExit {
                         ownership: self.env.ownership_snapshot(),
-                        diverges: Self::arm_skips_join_expr(&else_block.0, &else_ty),
+                        diverges: Self::arm_skips_join(&else_ty),
                     };
                     self.join_branch_ownership(&entry, &[then_exit, else_exit]);
                     if matches!(then_ty, Ty::Error) || matches!(else_ty, Ty::Error) {
@@ -3313,7 +3790,9 @@ impl Checker {
                 // re-arm before checking them; the scrutinee (synthesized above)
                 // does not. `check_match_expr` threads the flag to each arm body.
                 self.tail_ok_armed = tail_ok_armed;
-                let actual = self.check_match_expr(&scr_ty, arms, span, Some(expected));
+                let place = self.expr_place(&scrutinee.0);
+                let actual =
+                    self.check_match_expr(&scr_ty, place.as_ref(), arms, span, Some(expected));
                 if matches!(actual, Ty::Never | Ty::Error) {
                     actual
                 } else {
@@ -3375,8 +3854,11 @@ impl Checker {
                 let actual = self.check_binary_op(left, *op, right, span);
                 let actual_resolved = self.subst.resolve(&actual);
                 if actual_resolved.is_integer_literal() {
-                    self.check_against(&left.0, &left.1, expected);
-                    self.check_against(&right.0, &right.1, expected);
+                    for operand in [left, right] {
+                        let key = SpanKey::in_module(&operand.1, self.current_module_idx);
+                        let operand_ty = self.expr_types[&key].clone();
+                        self.record_concrete_integer_operand(expected, operand, &operand_ty);
+                    }
                     self.record_type(span, expected);
                     expected.clone()
                 } else if matches!(actual_resolved, Ty::Never | Ty::Error) {
@@ -3390,6 +3872,37 @@ impl Checker {
                         self.record_type(span, &actual);
                         actual
                     }
+                }
+            }
+
+            (
+                Expr::Unary {
+                    op: op @ (UnaryOp::BitNot | UnaryOp::Negate),
+                    operand,
+                },
+                ty,
+            ) if ty.is_integer()
+                && !ty.is_integer_literal()
+                && !(*op == UnaryOp::Negate
+                    && matches!(operand.0, Expr::Literal(Literal::Integer { .. }))) =>
+            {
+                // Complement and negation both use the contextual width for
+                // their operand and result, including nested literal
+                // expressions (`-(1 + 2)` against `i32` narrows the `1 + 2`
+                // arithmetic to `i32` the same way `~(1 + 2)` already did;
+                // otherwise the literal defaults to `i64` and MIR has no
+                // lowering for the resulting mixed-width unary). A bare
+                // `-LITERAL` is excluded: it stays on the `is_integer_literal`
+                // arm below, which negates before the range check so the
+                // most-negative value of each width (`-128i8`, `i32::MIN`,
+                // …) is admitted even though the positive literal alone
+                // would overflow.
+                let operand_ty = self.check_against(&operand.0, &operand.1, expected);
+                if matches!(operand_ty, Ty::Never | Ty::Error) {
+                    operand_ty
+                } else {
+                    self.record_type(span, expected);
+                    expected.clone()
                 }
             }
 
@@ -3467,9 +3980,16 @@ impl Checker {
                 },
             ) => {
                 let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
-                for elem in elems {
-                    let (expr, sp) = (&elem.0, &elem.1);
-                    self.check_against(expr, sp, &elem_ty);
+                for element in elems {
+                    let (operand, operand_span) = element.expr();
+                    if element.is_spread() {
+                        let want = Self::vec_of(elem_ty.clone());
+                        self.check_against(operand, operand_span, &want);
+                        self.refuse_uncopyable_spread_element(&elem_ty, operand_span);
+                    } else {
+                        self.check_against(operand, operand_span, &elem_ty);
+                        self.record_callable_value_transfer(operand, operand_span);
+                    }
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -3477,6 +3997,22 @@ impl Checker {
 
             // Array literals checked against [T; N] require exact arity.
             (Expr::Array(elems), Ty::Array(elem_ty, size)) => {
+                // A fixed-size array's length is part of its type, and a
+                // spread operand's length is a runtime value. Spread builds a
+                // `Vec`; a `[T; N]` literal names each element.
+                if let Some(spread) = elems.iter().find(|element| element.is_spread()) {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &spread.expr().1,
+                        format!(
+                            "spread `..` is not allowed in a `{}` literal: a fixed-size array's \
+                             length is part of its type, and a spread's length is only known at \
+                             run time",
+                            expected.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
                 let Ok(actual_len) = u64::try_from(elems.len()) else {
                     self.report_error(
                         TypeErrorKind::ArityMismatch,
@@ -3501,8 +4037,10 @@ impl Checker {
                     return Ty::Error;
                 }
 
-                for elem in elems {
-                    self.check_against(&elem.0, &elem.1, elem_ty);
+                for element in elems {
+                    let (operand, operand_span) = element.expr();
+                    self.check_against(operand, operand_span, elem_ty);
+                    self.record_callable_value_transfer(operand, operand_span);
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -3539,6 +4077,11 @@ impl Checker {
                 expected.clone()
             }
 
+            (Expr::Block(_), _) => {
+                self.tail_ok_armed = tail_ok_armed;
+                self.check_expr_with_expected(expr, span, expected)
+            }
+
             // Array repeat coercion to Array<T, N> type. The declared length
             // `N` is part of the fixed-array type, so — like the plain array
             // literal arm above — the repeat count must agree with it. A
@@ -3547,6 +4090,15 @@ impl Checker {
             // proven to equal `N` in a fixed-array position and is rejected too.
             (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, size)) => {
                 self.check_against(&value.0, &value.1, elem_ty);
+                self.record_callable_value_transfer(&value.0, &value.1);
+                if *size > 1
+                    && self.vec_iteration_element_mode(elem_ty, span)
+                        != Some(super::types::VecIterationMode::Clone)
+                {
+                    self.report_error(TypeErrorKind::InvalidOperation, &value.1,
+                        format!("fixed array repeat of length {size} requires a Clone element; `{}` cannot be duplicated", elem_ty.user_facing()));
+                    return Ty::Error;
+                }
                 self.check_against(&count.0, &count.1, &Ty::I64);
                 let const_env = self.const_eval_env();
                 match crate::check::const_eval::eval_const_expr(count, &const_env) {
@@ -3670,11 +4222,18 @@ impl Checker {
 
             // Tuple literal coercion: propagate expected element types
             (Expr::Tuple(elems), Ty::Tuple(expected_tys)) if elems.len() == expected_tys.len() => {
-                for (elem, expected_ty) in elems.iter().zip(expected_tys.iter()) {
-                    self.check_against(&elem.0, &elem.1, expected_ty);
-                }
-                self.record_type(span, expected);
-                expected.clone()
+                let elements = elems
+                    .iter()
+                    .zip(expected_tys.iter())
+                    .map(|(elem, expected_ty)| {
+                        let actual = self.check_against(&elem.0, &elem.1, expected_ty);
+                        self.record_callable_value_transfer(&elem.0, &elem.1);
+                        actual
+                    })
+                    .collect();
+                let actual = Ty::Tuple(elements);
+                self.record_type(span, &actual);
+                actual
             }
 
             // Module-qualified struct init coercion: a bare construction name
@@ -3775,7 +4334,13 @@ impl Checker {
                 self.check_against(&qualified_init, span, expected)
             }
 
-            // Struct init coercion: propagate expected type args into field checking
+            // Struct init coercion: propagate expected type args into field checking.
+            //
+            // A channel endpoint is excluded by its builtin discriminator, not
+            // by its spelling: the resolver renders `std.channel.Sender` under
+            // the catalog's bare `Sender`, so a user `type Sender<T>` matches it
+            // by name here. No struct literal constructs a substrate handle, so
+            // the pair falls through to ordinary coercion and is refused there.
             (
                 Expr::StructInit {
                     name,
@@ -3786,9 +4351,11 @@ impl Checker {
                 Ty::Named {
                     name: expected_name,
                     args: expected_args,
-                    ..
+                    builtin: expected_builtin,
                 },
-            ) if name == expected_name => {
+            ) if name == expected_name
+                && !expected_builtin.is_some_and(crate::BuiltinType::is_channel_handle) =>
+            {
                 // If the literal carries explicit type args, validate that they agree
                 // with the expected args coming from the binding site.  Conflicting
                 // annotations (`Wrapper<String>` when expected is `Wrapper<int>`) are
@@ -3846,6 +4413,7 @@ impl Checker {
                                 let field_expected =
                                     declared_ty.substitute_named_params_parallel(&type_arg_map);
                                 let actual = self.check_against(fexpr, fs, &field_expected);
+                                self.record_callable_value_transfer(fexpr, fs);
 
                                 // Still infer any remaining unbound type params
                                 for tp in &td.type_params {
@@ -4010,6 +4578,7 @@ impl Checker {
                                         let field_expected = declared_ty
                                             .substitute_named_params_parallel(&type_arg_map);
                                         let actual = self.check_against(fexpr, fs, &field_expected);
+                                        self.record_callable_value_transfer(fexpr, fs);
                                         // Bind any remaining unbound type params
                                         for tp in &type_params {
                                             if !type_arg_map.contains_key(tp)
@@ -4255,119 +4824,6 @@ impl Checker {
                 }
             }
 
-            // Context-determined generic cross-module function as a value.
-            //
-            // When `module.fn_name` resolves to a generic function and the
-            // expected type is a concrete `Ty::Function`, infer the type
-            // args by unifying the freshened parameter/return types with the
-            // expected shape.  Concretely-resolved type args are recorded into
-            // `call_type_args` at this span so the HIR lowerer can compute the
-            // mangled monomorphisation symbol and register the instantiation.
-            //
-            // Guard: fires ONLY when
-            //   (a) the object is a bare module identifier,
-            //   (b) the field names a GENERIC function in `fn_sigs`, and
-            //   (c) the expected type is a `Ty::Function`.
-            // Non-generic cross-module fns are handled by the synthesize path
-            // (which returns the monomorphic function type directly without
-            // needing this arm).  Ambiguous fn values (no expected context) fall
-            // through to `synthesize` → `check_field_access` → diagnostic.
-            (Expr::FieldAccess { object, field }, Ty::Function { .. })
-                if if let Expr::Identifier(module_name) = &object.0 {
-                    // Must be a known module (not a local binding or user type).
-                    let receiver_is_binding = self.env.lookup_ref(module_name).is_some();
-                    let receiver_is_known_type = self.type_defs.contains_key(module_name);
-                    !receiver_is_binding
-                        && !receiver_is_known_type
-                        && self.module_binding_in_current_file(module_name)
-                        && !field.contains("::")
-                        && {
-                            let qk = format!("{module_name}.{field}");
-                            self.fn_sigs
-                                .get(&qk)
-                                .is_some_and(|s| !s.type_params.is_empty())
-                        }
-                } else {
-                    false
-                } =>
-            {
-                // Re-extract the module name and qualified key now that the
-                // guard has confirmed the shape.
-                let Expr::Identifier(module_name) = &object.0 else {
-                    unreachable!("guard confirmed Identifier shape")
-                };
-                let qualified_key = format!("{module_name}.{field}");
-                // `unwrap` is safe: the guard confirmed the entry exists.
-                let sig = self.fn_sigs.get(&qualified_key).unwrap().clone();
-
-                // Freshen the sig (allocates fresh inference vars for each
-                // type parameter) and unify against the expected function type.
-                let (freshened_params, freshened_ret, resolved_type_args) =
-                    self.instantiate_fn_sig_for_call(&sig, None, span);
-
-                let fresh_fn_ty = Ty::Function {
-                    params: freshened_params.clone(),
-                    ret: Box::new(freshened_ret.clone()),
-                };
-
-                // Trial-unify: if the expected type is inconsistent (e.g. wrong
-                // arity or incompatible concrete types) surface a type mismatch
-                // diagnostic and return Error — never a garbage fn value.
-                let n = self.errors.len();
-                self.expect_type(expected, &fresh_fn_ty, span);
-                if self.errors.len() > n {
-                    return Ty::Error;
-                }
-
-                // Resolve after unification — type args should now be concrete.
-                let concrete_args: Vec<Ty> = resolved_type_args
-                    .iter()
-                    .map(|ty| self.subst.resolve(ty))
-                    .collect();
-
-                if concrete_args.iter().any(Ty::has_inference_var) {
-                    // Still ambiguous after unification — the expected type did
-                    // not fully determine the type parameters (e.g. a partially-
-                    // polymorphic context). Fail closed with a diagnostic that
-                    // asks for an explicit annotation.
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`{qualified_key}` is a generic function; the type context \
-                             did not fully determine its type parameters — add an \
-                             explicit type annotation (e.g. `let f: fn({params}) -> {ret} \
-                             = {qualified_key}`)",
-                            params = sig
-                                .params
-                                .iter()
-                                .map(|t| format!("{t}"))
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                            ret = sig.return_type,
-                        ),
-                    );
-                    return Ty::Error;
-                }
-
-                // Record the concrete type args so the HIR lowerer can look
-                // them up by this expression's span and compute the mangled
-                // monomorphisation symbol.
-                self.record_concrete_call_type_args(span, &concrete_args);
-
-                // Mark the module as used.
-                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    module_name.clone(),
-                ));
-
-                // Resolve the resulting function type and record it.
-                let result_ty = self.subst.resolve(&fresh_fn_ty);
-                self.record_type(span, &result_ty);
-                result_ty
-            }
-
             // Default: synthesize and unify
             _ => {
                 let actual = self.synthesize(expr, span);
@@ -4521,6 +4977,7 @@ impl Checker {
         // the `Ok` payload.
         let snapshot = self.subst.snapshot();
         if self.try_unify_with_owner_identity(&ok_ty, actual) {
+            self.record_suspension_obligations(&ok_ty, actual, span);
             self.tail_ok_coercions
                 .insert(SpanKey::in_module(span, self.current_module_idx));
             // Return the full `Result` as this expression's check-against
@@ -4586,6 +5043,21 @@ impl Checker {
         let right_resolved = self.subst.resolve(&right_ty);
         if matches!(left_resolved, Ty::Error) || matches!(right_resolved, Ty::Error) {
             return Ty::Error;
+        }
+
+        if left_resolved.is_float() && right_resolved.is_float() {
+            if let Some(common_ty) =
+                common_numeric_type(&left_resolved, &right_resolved, self.pointer_width())
+            {
+                for (operand, source_ty) in [(left, &left_resolved), (right, &right_resolved)] {
+                    if !source_ty.is_numeric_literal() && *source_ty != common_ty {
+                        self.numeric_operand_coercions.insert(
+                            SpanKey::in_module(&operand.1, self.current_module_idx),
+                            common_ty.clone(),
+                        );
+                    }
+                }
+            }
         }
 
         match op {
@@ -5085,19 +5557,39 @@ impl Checker {
         names
     }
 
-    /// Fail-closed gate for aggregate comparisons outside the structural-equality subset.
-    ///
-    /// Eligible records and payload enums may use `==`/`!=`; ordering remains
-    /// rejected. The gate deliberately uses the structural equality eligibility
-    /// substrate, not the broader `MarkerTrait::Eq`, because semantic Eq can
-    /// admit handles that have no structural compare path. Generic type
-    /// parameters are admitted only inside a generic frame: MIR/codegen must
-    /// resolve the concrete monomorphized leaves and fail closed for any leaf
-    /// that still lacks an equality path.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "aggregate comparison admission keeps record, enum, and diagnostic routing in one checker gate"
-    )]
+    /// Like `current_type_param_names`, but carries each name's declared
+    /// bounds instead of discarding them. A deferred check that replays
+    /// admission after inference settles (`finalize_hashmap_admission`) needs
+    /// the actual bounds to answer `type_param_has_marker_bound`; the
+    /// original declaration scope is gone by then, so this is the one point
+    /// that captures it.
+    pub(super) fn current_type_param_bounds_map(&self) -> HashMap<String, Vec<String>> {
+        let mut bounds: HashMap<String, Vec<String>> = HashMap::new();
+        for frame in &self.current_type_param_bounds {
+            for (name, param_bounds) in &frame.bounds {
+                bounds
+                    .entry(name.clone())
+                    .or_insert_with(|| param_bounds.clone());
+            }
+        }
+        if let Some(fn_name) = &self.current_function {
+            if let Some(sig) = self.fn_sigs.get(fn_name) {
+                for param_name in &sig.type_params {
+                    bounds.entry(param_name.clone()).or_insert_with(|| {
+                        sig.type_param_bounds
+                            .get(param_name)
+                            .cloned()
+                            .unwrap_or_default()
+                    });
+                }
+            }
+        }
+        bounds
+    }
+
+    /// Equality uses the selected Eq authority after declarations and inference
+    /// settle. Ordinary numeric comparisons bypass this gate and retain IEEE
+    /// float semantics; selecting aggregate Eq does not change ordering.
     fn reject_record_comparison(
         &mut self,
         op: BinaryOp,
@@ -5107,40 +5599,13 @@ impl Checker {
         right_span: &Span,
         expr_span: &Span,
     ) {
-        enum UnsupportedComparison {
-            Record {
-                type_name: String,
-                reason: Option<EqEligibilityFailure>,
-            },
-            PayloadEnum {
-                type_name: String,
-                reason: EqEligibilityFailure,
-            },
-            Tuple {
-                type_name: String,
-                reason: Option<EqEligibilityFailure>,
-            },
-            EnumOrdering(String),
-        }
-        // D340: a user `impl Eq for T { .. }` overrides the derived
-        // structural default and is never walled off by the structural
-        // eligibility gate below — the whole point of a user impl is to
-        // state a rule the structural walk cannot express (a case-
-        // insensitive key, a tolerance-based float compare). Record the
-        // dispatch fact for HIR lowering (`Expr::Binary` consults
-        // `user_comparison_dispatch` before falling back to the structural
-        // comparison thunk) and return before the eligibility scan runs.
-        // Both operands already have the same resolved type here (the
-        // caller's `expect_type` check above only reaches this function on
-        // agreement), so checking `left_resolved` alone is sufficient.
         if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-            if let Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } = left_resolved
-            {
-                if let Some(method) = self.user_trait_impl_method(name, "Eq", "eq") {
+            // Preserve the exact top-level user-method dispatch route. Nested
+            // user methods are selected recursively by TypeFactService.
+            if let Ty::Named { builtin: None, .. } = left_resolved {
+                if let Some((method, _)) =
+                    self.trait_impl_method_declaration(left_resolved, "Eq", "eq")
+                {
                     self.record_user_comparison_dispatch(
                         expr_span,
                         UserComparisonDispatch::Eq { method },
@@ -5148,258 +5613,73 @@ impl Checker {
                     return;
                 }
             }
-        }
-        // Ordering operators on an aggregate: no structural lexicographic
-        // comparison thunk exists in codegen (only eq/hash thunks do — see
-        // `hew-codegen-rs/src/thunks.rs`), so the derived-Ord half of D26
-        // ("ordered lexicographically by field order when every field is
-        // itself ordered") cannot be made true here without a new codegen
-        // lowering, which is out of this change's reach. A user
-        // `impl Ord`/`impl PartialOrd` is still honoured (D340, same
-        // dispatch mechanism as Eq, no codegen thunk involved — HIR emits a
-        // call to the resolved `lt` method); absent that, every aggregate
-        // ordering comparison that is structurally derivable reports the
-        // Limitation-channel `E_LIMIT_DERIVED_ORD`. A shape with an unordered
-        // member does not derive the trait and remains an ordinary user error.
-        if matches!(
-            op,
-            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
-        ) {
-            if let Ty::Named {
-                name,
-                builtin: None,
-                ..
-            } = left_resolved
-            {
-                if let Some(method) = self.user_trait_impl_method(name, "Ord", "lt") {
-                    self.record_user_comparison_dispatch(
-                        expr_span,
-                        UserComparisonDispatch::Ord { method },
-                    );
-                    return;
-                }
-                if let Some(method) = self.user_trait_impl_method(name, "PartialOrd", "lt") {
-                    self.record_user_comparison_dispatch(
-                        expr_span,
-                        UserComparisonDispatch::PartialOrd { method },
-                    );
-                    return;
-                }
-            }
-        }
-
-        let current_type_params = self.current_type_param_names();
-        let unsupported = [left_resolved, right_resolved].into_iter().find_map(|ty| {
-            let type_name = ty.user_facing().to_string();
-            if matches!(ty, Ty::Tuple(_)) {
-                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    return ty_eq_ineligibility_with_type_params(
-                        ty,
-                        &self.type_defs,
-                        &current_type_params,
-                    )
-                    .map(|reason| UnsupportedComparison::Tuple {
-                        type_name,
-                        reason: Some(reason),
-                    });
-                }
-                return Some(UnsupportedComparison::Tuple {
-                    type_name,
-                    reason: None,
-                });
-            }
-            let Ty::Named { name, builtin, .. } = ty else {
-                return None;
-            };
-            if matches!(builtin, Some(BuiltinType::Option | BuiltinType::Result)) {
-                if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                    return ty_eq_ineligibility_with_type_params(
-                        ty,
-                        &self.type_defs,
-                        &current_type_params,
-                    )
-                    .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason });
-                }
-                return Some(UnsupportedComparison::EnumOrdering(type_name));
-            }
-            let type_def = self.type_defs.get(name)?;
-            match type_def.kind {
-                TypeDefKind::Struct | TypeDefKind::Record => {
-                    if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        return ty_eq_ineligibility_with_type_params(
-                            ty,
-                            &self.type_defs,
-                            &current_type_params,
-                        )
-                        .map(|reason| UnsupportedComparison::Record {
-                            type_name,
-                            reason: Some(reason),
-                        });
-                    }
-                    Some(UnsupportedComparison::Record {
-                        type_name,
-                        reason: None,
-                    })
-                }
-                TypeDefKind::Enum => {
-                    let has_payload_variant = type_def
-                        .variants
-                        .values()
-                        .any(|variant| !matches!(variant, VariantDef::Unit));
-                    if has_payload_variant {
-                        if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                            ty_eq_ineligibility_with_type_params(
-                                ty,
-                                &self.type_defs,
-                                &current_type_params,
-                            )
-                            .map(|reason| UnsupportedComparison::PayloadEnum { type_name, reason })
-                        } else {
-                            Some(UnsupportedComparison::EnumOrdering(type_name))
-                        }
-                    } else if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                        None
-                    } else {
-                        Some(UnsupportedComparison::EnumOrdering(type_name))
-                    }
-                }
-                TypeDefKind::Actor | TypeDefKind::Machine => None,
-            }
-        });
-        let Some(unsupported) = unsupported else {
-            // Admitted. If the admission leaned on an abstract type parameter,
-            // the template proved nothing about the concrete leaves — record
-            // the obligation so every instantiation re-runs the same walk.
-            if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) {
-                for ty in [left_resolved, right_resolved] {
-                    self.record_generic_structural_eq_requirement(ty, &current_type_params);
-                }
-            }
+            self.record_eq_requirement(left_resolved, expr_span);
             return;
-        };
-        // Span the whole comparison, not just one operand.
-        let span = Span {
-            start: left_span.start,
-            end: right_span.end,
-        };
-        if matches!(
-            op,
-            BinaryOp::Less | BinaryOp::LessEqual | BinaryOp::Greater | BinaryOp::GreaterEqual
-        ) {
-            let type_name = match &unsupported {
-                UnsupportedComparison::Record { type_name, .. }
-                | UnsupportedComparison::PayloadEnum { type_name, .. }
-                | UnsupportedComparison::Tuple { type_name, .. } => type_name.clone(),
-                UnsupportedComparison::EnumOrdering(name) => name.clone(),
-            };
-            if !self
-                .registry
-                .implements_marker(left_resolved, MarkerTrait::PartialOrd)
+        }
+        if let Ty::Named { builtin: None, .. } = left_resolved {
+            if let Some((method, _)) =
+                self.trait_impl_method_declaration(left_resolved, "Ord", "lt")
             {
-                self.report_error(
-                    TypeErrorKind::InvalidOperation,
-                    &span,
-                    format!(
-                        "`{op}` is not available for `{type_name}` because the type does not \
-                         derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
-                    ),
+                self.record_user_comparison_dispatch(
+                    expr_span,
+                    UserComparisonDispatch::Ord { method },
                 );
                 return;
             }
-            // No user impl (the bypass above already returned) and the type
-            // does derive ordering, but no structural lexicographic lowering
-            // exists yet. This is a compiler limitation, not a program error.
+            if let Some((method, _)) =
+                self.trait_impl_method_declaration(left_resolved, "PartialOrd", "lt")
+            {
+                self.record_user_comparison_dispatch(
+                    expr_span,
+                    UserComparisonDispatch::PartialOrd { method },
+                );
+                return;
+            }
+        }
+        let Some(type_name) = [left_resolved, right_resolved].into_iter().find_map(|ty| {
+            let aggregate = match ty {
+                Ty::Tuple(_)
+                | Ty::Named {
+                    builtin: Some(BuiltinType::Option | BuiltinType::Result),
+                    ..
+                } => true,
+                Ty::Named { name, .. } => self.type_defs.get(name).is_some_and(|definition| {
+                    matches!(
+                        definition.kind,
+                        TypeDefKind::Struct | TypeDefKind::Record | TypeDefKind::Enum
+                    )
+                }),
+                _ => false,
+            };
+            aggregate.then(|| ty.user_facing().to_string())
+        }) else {
+            return;
+        };
+        let span = left_span.start..right_span.end;
+        if !self
+            .registry
+            .implements_marker(left_resolved, MarkerTrait::PartialOrd)
+        {
             self.report_error(
-                TypeErrorKind::DerivedOrdUnavailable {
-                    type_name: type_name.clone(),
-                },
+                TypeErrorKind::InvalidOperation,
                 &span,
                 format!(
-                    "E_LIMIT_DERIVED_ORD: `{op}` has no derived ordering for `{type_name}` yet \
-                     — provide `impl Ord for {type_name}` (or `impl PartialOrd`) with a `lt` \
-                     method"
+                    "`{op}` is not available for `{type_name}` because the type does not \
+                     derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"
                 ),
             );
             return;
         }
-        let (message, suggestion) = match unsupported {
-            UnsupportedComparison::Record { type_name, reason } => {
-                if let Some(reason) = reason {
-                    (
-                        format!(
-                            "`{op}` on record type `{type_name}` is not supported because member \
-                             `{}` is ineligible: {}",
-                            reason.member,
-                            Self::structural_eq_ineligibility_reason(reason.reason)
-                        ),
-                        "compare individual eligible fields explicitly, or match/destructure and \
-                         handle managed fields with their supported equality operations"
-                            .to_string(),
-                    )
-                } else {
-                    (
-                        format!("`{op}` is not supported for record type `{type_name}`"),
-                        format!("compare an individual field instead (e.g. `a.x {op} b.x`)"),
-                    )
-                }
-            }
-            UnsupportedComparison::PayloadEnum { type_name, reason } => (
-                format!(
-                    "`{op}` on enum `{type_name}` with payload variants is not supported because \
-                     member `{}` is ineligible: {}",
-                    reason.member,
-                    Self::structural_eq_ineligibility_reason(reason.reason)
-                ),
-                "match on the enum and compare eligible payload fields in the relevant arms"
-                    .to_string(),
-            ),
-            UnsupportedComparison::Tuple { type_name, reason } => {
-                if let Some(reason) = reason {
-                    (
-                        format!(
-                            "`{op}` on tuple type `{type_name}` is not supported because member \
-                             `{}` is ineligible: {}",
-                            reason.member,
-                            Self::structural_eq_ineligibility_reason(reason.reason)
-                        ),
-                        "compare only tuple members that support equality".to_string(),
-                    )
-                } else {
-                    (
-                        format!("`{op}` is not supported for tuple type `{type_name}`"),
-                        "tuple ordering is not structural; compare an explicit member".to_string(),
-                    )
-                }
-            }
-            UnsupportedComparison::EnumOrdering(type_name) => (
-                format!("`{op}` is not supported for enum `{type_name}`"),
-                "match on the enum and compare an explicit value in each arm".to_string(),
-            ),
-        };
-        self.report_error_with_suggestions(
-            TypeErrorKind::InvalidOperation,
+        self.report_error(
+            TypeErrorKind::DerivedOrdUnavailable {
+                type_name: type_name.clone(),
+            },
             &span,
-            message,
-            vec![suggestion],
+            format!(
+                "E_LIMIT_DERIVED_ORD: `{op}` has no derived ordering for `{type_name}` yet \
+                 — provide `impl Ord for {type_name}` (or `impl PartialOrd`) with a `lt` method"
+            ),
         );
-    }
-
-    /// Return the exact implementation method selected for a nominal marker
-    /// trait override. The registration key preserves trait identity, so an
-    /// `Ord::lt` implementation cannot be confused with `PartialOrd::lt`.
-    pub(super) fn user_trait_impl_method(
-        &self,
-        type_name: &str,
-        trait_name: &str,
-        method_name: &str,
-    ) -> Option<crate::DefId> {
-        self.trait_impl_method_declaration_ids
-            .get(&(
-                type_name.to_string(),
-                trait_name.to_string(),
-                method_name.to_string(),
-            ))
-            .cloned()
     }
 
     /// Record that the binary expression at `span` must dispatch to a user
@@ -5428,40 +5708,28 @@ impl Checker {
         ty.substitute_named_params_parallel(&probe) != *ty
     }
 
-    /// Record a structural-equality obligation raised by the generic function
-    /// currently being checked.
-    ///
-    /// Only aggregates that actually mention the owning signature's type
-    /// parameters are recorded — a fully concrete aggregate was already decided
-    /// on the spot by `reject_record_comparison`.
-    fn record_generic_structural_eq_requirement(&mut self, ty: &Ty, in_scope: &HashSet<String>) {
-        if in_scope.is_empty() {
+    /// Record an Eq demand in the existing instantiation obligation graph.
+    /// Concrete demands are checked once declarations and inference settle;
+    /// abstract demands are substituted at the graph's concrete call roots.
+    pub(super) fn record_eq_requirement(&mut self, ty: &Ty, span: &Span) {
+        let owner = self.current_function.clone();
+        let params = owner
+            .as_ref()
+            .and_then(|key| self.fn_sigs.get(key))
+            .map_or_else(Vec::new, |sig| sig.type_params.clone());
+        let requirements = self.eq_requirements.entry(owner).or_default();
+        if requirements.iter().any(|existing| {
+            existing.ty == *ty
+                && existing.span == *span
+                && existing.source_module == self.current_module
+        }) {
             return;
         }
-        let Some(fn_key) = self.current_function.clone() else {
-            return;
-        };
-        let Some(params) = self
-            .fn_sigs
-            .get(&fn_key)
-            .map(|sig| sig.type_params.clone())
-            .filter(|params| !params.is_empty())
-        else {
-            return;
-        };
-        if !Self::ty_mentions_type_params(ty, &params) {
-            return;
-        }
-        let requirements = self
-            .generic_structural_eq_requirements
-            .entry(fn_key)
-            .or_default();
-        if requirements.iter().any(|existing| existing.ty == *ty) {
-            return;
-        }
-        requirements.push(GenericStructuralEqRequirement {
+        requirements.push(EqRequirement {
             ty: ty.clone(),
             owner_type_params: params,
+            span: span.clone(),
+            source_module: self.current_module.clone(),
         });
     }
 
@@ -5611,11 +5879,10 @@ impl Checker {
     }
 
     /// Build the diagnostic for one ineligible instantiation of a generic
-    /// callee that compares `template` structurally.
+    /// callee that requires Eq for `template`.
     fn generic_structural_eq_instantiation_error(
         template: &Ty,
         concrete: &Ty,
-        failure: EqEligibilityFailure,
         pending: &PendingInstantiation,
     ) -> crate::error::TypeError {
         let callee = &pending.callee;
@@ -5623,17 +5890,13 @@ impl Checker {
             TypeErrorKind::InvalidOperation,
             pending.report_span.clone(),
             format!(
-                "`{callee}` compares `{}` structurally; this instantiation `{}` has no \
-                 structural equality path because member `{}` is ineligible: {}",
+                "`{callee}` requires Eq for `{}`; this instantiation `{}` has no selected Eq implementation",
                 template.user_facing(),
                 concrete.user_facing(),
-                failure.member,
-                Self::structural_eq_ineligibility_reason(failure.reason),
             ),
         )
         .with_suggestion(format!(
-            "instantiate `{callee}` with a type whose members all support structural equality, \
-             or compare the eligible members explicitly inside `{callee}`"
+            "instantiate `{callee}` with a type that supports Eq, or provide an Eq implementation"
         ));
         if let Some(module) = pending.report_module.clone() {
             err = err.with_source_module(module);
@@ -5673,30 +5936,90 @@ impl Checker {
         err
     }
 
-    /// Discharge every generic structural-equality obligation against the
-    /// concrete instantiations the program actually contains.
+    pub(super) fn selected_eq_available(service: &mut TypeFactService, ty: &Ty) -> bool {
+        ResolvedTy::from_ty(ty).ok().is_some_and(|resolved| {
+            service
+                .capability_plan(&resolved, crate::ValueCapability::Eq)
+                .is_ok_and(|selection| selection.is_some())
+        })
+    }
+
+    fn check_concrete_eq_requirements(
+        &self,
+        requirements: &HashMap<Option<String>, Vec<EqRequirement>>,
+        service: &mut TypeFactService,
+    ) -> Vec<crate::error::TypeError> {
+        let mut new_errors = Vec::new();
+        let mut demands: Vec<_> = requirements.values().flatten().collect();
+        demands.sort_by_key(|demand| (&demand.source_module, demand.span.start, demand.span.end));
+        for requirement in demands {
+            let concrete = self
+                .normalize_for_use(&requirement.ty)
+                .materialize_literal_defaults();
+            if concrete.contains_error()
+                || concrete.has_inference_var()
+                || concrete.contains_assoc_type()
+                || Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params)
+            {
+                continue;
+            }
+            if !Self::selected_eq_available(service, &concrete) {
+                let mut error = crate::error::TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    requirement.span.clone(),
+                    format!(
+                        "`{}` has no selected Eq implementation for equality comparison",
+                        concrete.user_facing()
+                    ),
+                );
+                if let Some(module) = &requirement.source_module {
+                    error = error.with_source_module(module.clone());
+                }
+                new_errors.push(error);
+            }
+        }
+        new_errors
+    }
+
+    /// Discharge concrete comparisons and the generic Eq obligations reachable
+    /// through the program's instantiation graph.
     ///
     /// The walk starts at applications whose substitution is concrete in the
     /// caller's terms and follows generic → generic call edges, so an obligation
     /// raised two hops down still lands on the concrete application the
-    /// programmer wrote. Codegen's `eq_thunk` is therefore never the first to
-    /// notice an ineligible instantiation.
-    pub(super) fn finalize_generic_structural_eq(&mut self) {
+    /// programmer wrote. Every demand uses the same selected Eq authority.
+    pub(super) fn finalize_eq_requirements(&mut self) {
         // WHY a hop budget: polymorphic recursion (`fn f<T>() { g::<Vec<T>>() }`)
         // generates an unbounded instantiation chain. Exceeding it is reported,
         // never skipped — see `generic_structural_eq_depth_error`.
         const MAX_INSTANTIATION_DEPTH: u32 = 64;
 
-        let requirements = std::mem::take(&mut self.generic_structural_eq_requirements);
+        let mut requirements = std::mem::take(&mut self.eq_requirements);
+        for requirement in requirements.values_mut().flatten() {
+            requirement.ty = self
+                .normalize_for_use(&requirement.ty)
+                .materialize_literal_defaults();
+        }
         let sites = std::mem::take(&mut self.generic_fn_instantiation_sites);
         if requirements.is_empty() {
             return;
         }
 
+        let mut service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
+        let mut new_errors = self.check_concrete_eq_requirements(&requirements, &mut service);
+        requirements.retain(|_, demands| {
+            demands.retain(|demand| {
+                Self::ty_mentions_type_params(&demand.ty, &demand.owner_type_params)
+            });
+            !demands.is_empty()
+        });
+        if requirements.is_empty() {
+            self.errors.extend(new_errors);
+            return;
+        }
         let (roots, edges) = self.partition_generic_instantiation_sites(sites);
         let mut seen: HashSet<(String, String, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
 
         while let Some(pending) = work.pop_front() {
             // Span offsets are module-local, so two modules can produce the same
@@ -5718,7 +6041,11 @@ impl Checker {
                 continue;
             }
 
-            for requirement in requirements.get(&pending.callee).into_iter().flatten() {
+            for requirement in requirements
+                .get(&Some(pending.callee.clone()))
+                .into_iter()
+                .flatten()
+            {
                 // Substitute, then collapse any associated-type projection the
                 // substitution just made resolvable (`Option<C::Item>` with
                 // `C = IntBox` becomes `Option<i64>`). A projection that
@@ -5740,15 +6067,13 @@ impl Checker {
                 if Self::ty_mentions_type_params(&concrete, &requirement.owner_type_params) {
                     continue;
                 }
-                if let Some(failure) = ty_eq_ineligibility_with_type_params(
-                    &concrete,
-                    &self.type_defs,
-                    &HashSet::new(),
+                if !Self::selected_eq_available(
+                    &mut service,
+                    &concrete.materialize_literal_defaults(),
                 ) {
                     new_errors.push(Self::generic_structural_eq_instantiation_error(
                         &requirement.ty,
                         &concrete,
-                        failure,
                         &pending,
                     ));
                 }
@@ -5778,25 +6103,6 @@ impl Checker {
         }
 
         self.errors.extend(new_errors);
-    }
-
-    fn structural_eq_ineligibility_reason(reason: EqEligibility) -> String {
-        match reason {
-            EqEligibility::Eligible => {
-                "structural equality eligibility was unexpectedly unresolved".to_string()
-            }
-            EqEligibility::IneligibleManaged(managed_ty) => format!(
-                "it contains layout-managed/non-Copy data `{}`",
-                managed_ty.user_facing()
-            ),
-            EqEligibility::IneligibleOwned(owned_ty) => format!(
-                "it contains owned or heap-backed data `{}`",
-                owned_ty.user_facing()
-            ),
-            EqEligibility::IneligibleUnknown => {
-                "aggregate equality eligibility is unknown".to_string()
-            }
-        }
     }
 
     /// Type-check an arithmetic operation where at least one operand is `duration` or `instant`.
@@ -5960,6 +6266,14 @@ impl Checker {
         scopes: &[DangerousRcScope],
     ) {
         match expr {
+            Expr::Coalesce { right, .. } => {
+                self.check_expr_is_rc_param_return(&right.0, &right.1, scopes);
+            }
+            Expr::Handle { error, body, .. } => {
+                let mut handler_scopes = scopes.to_vec();
+                handler_scopes.push(HashMap::from([(error.0.clone(), None)]));
+                self.check_expr_is_rc_param_return(&body.0, &body.1, &handler_scopes);
+            }
             Expr::Identifier(name) => {
                 if let Some(source_param) = Self::lookup_dangerous_binding(name, scopes) {
                     self.emit_borrowed_param_return(name, &source_param, span);
@@ -6040,17 +6354,15 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                pattern,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
                 let mut then_scopes = scopes.to_vec();
-                self.shadow_pattern_bindings(&pattern.1, &mut then_scopes);
+                self.shadow_condition_bindings(conditions, &mut then_scopes);
                 self.scan_block_for_rc_param_return(body, &mut then_scopes);
-                if let Some(else_blk) = else_body {
-                    let mut else_scopes = scopes.to_vec();
-                    self.scan_block_for_rc_param_return(else_blk, &mut else_scopes);
+                if let Some(else_expr) = else_body {
+                    self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
                 }
             }
             Expr::Match { arms, .. } => {
@@ -6174,6 +6486,21 @@ impl Checker {
     /// has no entry and shadows nothing, which is the fail-closed direction:
     /// the scanner then still sees the dangerous param and flags a genuine
     /// escape rather than silently masking it.
+    /// Shadow every name a pattern condition binds (§12.5): one condition can
+    /// carry several `let` operands, and all of their binders are live in the
+    /// then block.
+    fn shadow_condition_bindings(
+        &self,
+        conditions: &[ConditionItem],
+        scopes: &mut [DangerousRcScope],
+    ) {
+        for item in conditions {
+            if let ConditionItem::Let { pattern, .. } = item {
+                self.shadow_pattern_bindings(&pattern.1, scopes);
+            }
+        }
+    }
+
     fn shadow_pattern_bindings(&self, pattern_span: &Span, scopes: &mut [DangerousRcScope]) {
         let key = super::types::SpanKey::in_module(pattern_span, self.current_module_idx);
         if let Some(names) = self.pattern_bound_names.get(&key) {
@@ -6456,9 +6783,11 @@ impl Checker {
                 Stmt::Loop { body, .. } | Stmt::While { body, .. } => {
                     self.scan_block_for_rc_param_return(body, scopes);
                 }
-                Stmt::WhileLet { pattern, body, .. } => {
+                Stmt::WhileLet {
+                    conditions, body, ..
+                } => {
                     scopes.push(HashMap::new());
-                    self.shadow_pattern_bindings(&pattern.1, scopes);
+                    self.shadow_condition_bindings(conditions, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(&trailing.0, &trailing.1, scopes);
@@ -6466,13 +6795,12 @@ impl Checker {
                     scopes.pop();
                 }
                 Stmt::IfLet {
-                    pattern,
+                    conditions,
                     body,
                     else_body,
-                    ..
                 } => {
                     scopes.push(HashMap::new());
-                    self.shadow_pattern_bindings(&pattern.1, scopes);
+                    self.shadow_condition_bindings(conditions, scopes);
                     self.scan_stmts_for_rc_param_return(&body.stmts, scopes);
                     if let Some(then_trailing) = &body.trailing_expr {
                         self.check_expr_is_rc_param_return(
@@ -6482,8 +6810,8 @@ impl Checker {
                         );
                     }
                     scopes.pop();
-                    if let Some(else_blk) = else_body {
-                        self.scan_block_for_rc_param_return(else_blk, scopes);
+                    if let Some(else_expr) = else_body {
+                        self.check_expr_is_rc_param_return(&else_expr.0, &else_expr.1, scopes);
                     }
                 }
                 Stmt::Match { arms, .. } => {
@@ -6663,9 +6991,10 @@ impl Checker {
                         method_name,
                         bindings,
                     );
-                    if let Some(block) = else_body {
-                        self.scan_block_for_owned_handle_field_return(
-                            block,
+                    if let Some(else_expr) = else_body {
+                        self.check_expr_for_owned_handle_field_return(
+                            &else_expr.0,
+                            &else_expr.1,
                             receiver_name,
                             type_name,
                             method_name,
@@ -6786,9 +7115,10 @@ impl Checker {
                     method_name,
                     bindings,
                 );
-                if let Some(block) = else_body {
-                    self.scan_block_for_owned_handle_field_return(
-                        block,
+                if let Some(else_expr) = else_body {
+                    self.check_expr_for_owned_handle_field_return(
+                        &else_expr.0,
+                        &else_expr.1,
                         receiver_name,
                         type_name,
                         method_name,
@@ -6807,6 +7137,20 @@ impl Checker {
                         bindings,
                     );
                 }
+            }
+            Expr::Coalesce { right: body, .. } | Expr::Handle { body, .. } => {
+                let mut branch_bindings = bindings.clone();
+                if let Expr::Handle { error, .. } = expr {
+                    branch_bindings.remove(&error.0);
+                }
+                self.check_expr_for_owned_handle_field_return(
+                    &body.0,
+                    &body.1,
+                    receiver_name,
+                    type_name,
+                    method_name,
+                    &mut branch_bindings,
+                );
             }
             Expr::Binary { .. }
             | Expr::Unary { .. }
@@ -6833,12 +7177,11 @@ impl Checker {
             | Expr::MethodCall { .. }
             | Expr::StructInit { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
-            | Expr::Timeout { .. }
+            | Expr::Race(_)
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
-            | Expr::This
+            | Expr::ReturnError(_)
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }
             | Expr::Cast { .. }
@@ -6929,16 +7272,38 @@ impl Checker {
             .map(|handle_name| (field.to_string(), handle_name))
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "field access handles many type variants"
-    )]
     pub(super) fn check_field_access(
         &mut self,
         object: &Spanned<Expr>,
         field: &str,
         span: &Span,
     ) -> Ty {
+        self.check_field_access_with_type_args(object, field, None, span)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "field access handles many type variants"
+    )]
+    fn check_field_access_with_type_args(
+        &mut self,
+        object: &Spanned<Expr>,
+        field: &str,
+        type_args: Option<&[Spanned<TypeExpr>]>,
+        span: &Span,
+    ) -> Ty {
+        if type_args.is_some()
+            && matches!(&object.0, Expr::Identifier(name) if self.env.lookup_ref(name).is_some())
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "explicit type arguments require a function declaration, not a value field"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
+
         // `self.count` is the receiver spelling of the actor state binding
         // `count`. Delegate to the bare-name shell so the read gets the same
         // type, the same use-after-move reporting, and the same HIR binding
@@ -6960,30 +7325,6 @@ impl Checker {
             );
             return Ty::Error;
         }
-        if matches!(&object.0, Expr::This) && self.current_actor_type.is_some() {
-            if self.current_actor_fields.iter().any(|f| f.name == field) {
-                self.report_error_with_suggestions(
-                    TypeErrorKind::UndefinedField,
-                    span,
-                    format!(
-                        "`this` is the actor handle, not actor state; access actor field \
-                         `{field}` as `self.{field}` or bare `{field}`, not `this.{field}`"
-                    ),
-                    vec![format!("self.{field}"), field.to_string()],
-                );
-            } else {
-                self.report_error(
-                    TypeErrorKind::UndefinedField,
-                    span,
-                    format!(
-                        "`this` is the actor handle, not actor state; actor body has no \
-                         field `{field}`"
-                    ),
-                );
-            }
-            return Ty::Error;
-        }
-
         if let Some(head) = self.resolve_dotted_type_head(object, field) {
             if let Some(result) = self.dispatch_dotted_type_member(
                 &head,
@@ -6995,37 +7336,9 @@ impl Checker {
             }
         }
 
-        if let Expr::Identifier(name) = &object.0 {
-            if name == "self" {
-                if let Some(ty) = self.check_machine_transition_self_field_access(field, span) {
-                    let self_ty = self.current_machine_transition.as_ref().map_or(
-                        Ty::Error,
-                        |(machine_name, _, _)| Ty::Named {
-                            builtin: None,
-                            name: machine_name.clone(),
-                            args: self
-                                .lookup_type_def(machine_name)
-                                .map_or_else(Vec::new, |def| {
-                                    def.type_params
-                                        .iter()
-                                        .map(|param| Ty::Named {
-                                            builtin: None,
-                                            name: param.clone(),
-                                            args: vec![],
-                                        })
-                                        .collect()
-                                }),
-                        },
-                    );
-                    self.publish_checked_expression(&object.0, &object.1, self_ty);
-                    return ty;
-                }
-            }
-
-            // Dotted type members were dispatched from the canonical head
-            // above. Remaining identifiers are ordinary value projections or
-            // unresolved names and continue through the existing diagnostics.
-        }
+        // Dotted type members were dispatched from the canonical head above.
+        // Remaining identifiers are ordinary value projections or unresolved
+        // names and continue through the existing diagnostics.
 
         // Dotted module-qualified unit constructor:
         // `module.Type.Variant`. The parser represents this as nested field
@@ -7119,68 +7432,30 @@ impl Checker {
                     // the const is not exported, emit a targeted diagnostic rather than
                     // falling through to the generic "undefined variable `module`" error.
                     if self.module_binding_in_current_file(name) {
-                        // The module DOES export a function under this name:
-                        // a non-generic cross-module function in value
-                        // position resolves to its function type (the HIR
-                        // lowerer emits a fn-value BindingRef for it). The
-                        // generic case reached here without a context-determined
-                        // expected type (the `check_against` arm handles the
-                        // annotated case); emit a diagnostic asking for a type
-                        // annotation or suggesting a direct call / lambda wrap.
-                        if let Some(sig) = self.fn_sigs.get(&qualified_key) {
-                            if sig.type_params.is_empty() {
-                                let ty = Ty::Function {
-                                    params: sig.params.clone(),
-                                    ret: Box::new(sig.return_type.clone()),
-                                };
-                                self.used_modules.borrow_mut().insert(ImportKey::in_file(
-                                    self.current_module.clone(),
-                                    self.current_module_idx,
-                                    name.clone(),
-                                ));
-                                // Apply the same wasm native-only guard used for call
-                                // expressions (#2135): a value-position reference to a
-                                // native-only stdlib function is itself a
-                                // `PlatformLimitation` rejection on wasm32, mirroring
-                                // the call-form guard in methods.rs.
-                                // The manifest-generated rejection slice is the
-                                // single source; both guards iterate it.
-                                if let Some(feature) = self.wasm_native_only_module_feature(name) {
-                                    self.reject_wasm_feature(span, feature);
-                                }
-                                self.reject_wasm_native_only_module_function(name, field, span);
-                                // crypto.random_bytes and its fallible twin depend on a
-                                // native-only secure entropy source absent from the wasm32
-                                // link set.
-                                if self.is_shipped_crypto_module(name)
-                                    && matches!(field, "random_bytes" | "try_random_bytes")
-                                {
-                                    self.reject_wasm_feature(
-                                        span,
-                                        WasmUnsupportedFeature::CryptoRandom,
-                                    );
-                                }
-                                return ty;
+                        if self.fn_sigs.contains_key(&qualified_key) {
+                            self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                name.clone(),
+                            ));
+                            if let Some(feature) = self.wasm_native_only_module_feature(name) {
+                                self.reject_wasm_feature(span, feature);
                             }
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
+                            self.reject_wasm_native_only_module_function(name, field, span);
+                            if self.is_shipped_crypto_module(name)
+                                && matches!(field, "random_bytes" | "try_random_bytes")
+                            {
+                                self.reject_wasm_feature(
+                                    span,
+                                    WasmUnsupportedFeature::CryptoRandom,
+                                );
+                            }
+                            self.record_call_edge(&qualified_key);
+                            return self.instantiate_function_value(
+                                &qualified_key,
+                                type_args,
                                 span,
-                                format!(
-                                    "`{qualified_key}` is a generic function; to use it as a \
-                                     value, add a type annotation that fully determines its \
-                                     type parameters (e.g. `let f: fn({params}) -> {ret} = \
-                                     {qualified_key}`), call it directly, or wrap it in a \
-                                     lambda (`|x| {qualified_key}(x)`)",
-                                    params = sig
-                                        .params
-                                        .iter()
-                                        .map(|t| format!("{t}"))
-                                        .collect::<Vec<_>>()
-                                        .join(", "),
-                                    ret = sig.return_type,
-                                ),
                             );
-                            return Ty::Error;
                         }
                         let similar = crate::error::find_similar(
                             field,
@@ -7224,119 +7499,80 @@ impl Checker {
             }
         }
         let resolved = self.subst.resolve(&obj_ty);
+        if self.reject_sealed_delivery_access(&resolved, span) {
+            return Ty::Error;
+        }
+
         match &resolved {
+            // `Range<T>` exposes its bounds as `start`/`end`. It carries no
+            // `TypeDef` (it is a compiler builtin, not a user declaration), so
+            // the two fields resolve straight from the type's own argument
+            // instead of the `type_defs` table the generic `Named` arm below
+            // reads from. Any other field name falls through to that arm,
+            // finds no `TypeDef` for `Range`, and reports `UndefinedField`
+            // exactly as before.
+            Ty::Named {
+                builtin: Some(BuiltinType::Range),
+                args,
+                ..
+            } if args.len() == 1 && matches!(field, "start" | "end") => args[0].clone(),
             Ty::Named { name, args, .. } => {
-                // Actor children produce ChildRef<T>; nested supervisors remain LocalPid<S>.
-                // Accepts local actor handles via as_actor_handle().
-                if let Some(Ty::Named { name: sup_name, .. }) = resolved.as_actor_handle() {
-                    if let Some(sup_children) = self.supervisor_children.get(sup_name) {
-                        // Check static children first, then pool children.
-                        let resolved_slot =
-                            sup_children
-                                .statics
-                                .iter()
-                                .enumerate()
-                                .find_map(|(idx, (cn, ty))| {
-                                    (cn == field).then(|| {
-                                    (
-                                        crate::check::types::ChildSlot {
-                                            kind: crate::check::types::ChildKind::Static,
-                                            #[expect(
-                                                clippy::cast_possible_truncation,
-                                                reason = "supervisor child count is always small; \
-                                                          u32 is the ABI type"
-                                            )]
-                                            index: idx as u32,
-                                            child_ty: ty.clone(),
-                                            child_name: cn.clone(),
-                                            supervisor: sup_name.clone(),
-                                        },
-                                        ty.clone(),
-                                    )
-                                })
-                                });
-                        let resolved_slot = resolved_slot.or_else(|| {
-                            sup_children
-                                .pools
-                                .iter()
-                                .enumerate()
-                                .find_map(|(idx, (cn, ty))| {
-                                    (cn == field).then(|| {
-                                    (
-                                        crate::check::types::ChildSlot {
-                                            kind: crate::check::types::ChildKind::Pool,
-                                            #[expect(
-                                                clippy::cast_possible_truncation,
-                                                reason = "supervisor child count is always small; \
-                                                          u32 is the ABI type"
-                                            )]
-                                            index: idx as u32,
-                                            child_ty: ty.clone(),
-                                            child_name: cn.clone(),
-                                            supervisor: sup_name.clone(),
-                                        },
-                                        ty.clone(),
-                                    )
-                                })
-                                })
-                        });
-                        if let Some((slot, child_type)) = resolved_slot {
-                            let slot_kind = slot.kind;
-                            self.supervisor_child_slots
-                                .insert(SpanKey::in_module(span, self.current_module_idx), slot);
-                            // Path-4 defense-in-depth bound enforcement on
-                            // supervisor-child PID synthesis. The
-                            // `SupervisorChildren` table stores child types
-                            // as bare `String` names (see
-                            // `check::types::SupervisorChildren`); the
-                            // synthesised PID payload is `Ty::Named { args:
-                            // vec![] }`, so the helper short-circuits today
-                            // on empty args. Wiring the call here means any
-                            // future change that admits type-parameterised
-                            // children (e.g. `child h: Holder<File>`)
-                            // inherits enforcement at the canonical seam
-                            // rather than re-litigating bound checking at a
-                            // sibling site.
-                            self.enforce_type_def_instantiation_bounds(&child_type, &[], span);
-                            // The child type is stored as the raw user-spelled
-                            // string (`bank.Account`); canonicalize its module
-                            // prefix to the registered actor identity so the
-                            // synthesised `LocalPid` carries the same dotted
-                            // identity a spawn handle does and method dispatch
-                            // keys `fn_sigs` correctly.
-                            let canonical_child_type =
-                                self.canonical_supervisor_child_type(&child_type);
-                            let child_ty = Ty::Named {
-                                builtin: None,
-                                name: canonical_child_type.clone(),
-                                args: vec![],
-                            };
-                            if slot_kind == crate::check::types::ChildKind::Pool {
+                // A role retains the child's complete type after substituting
+                // the owning supervisor's concrete arguments.
+                if let Some(Ty::Named {
+                    name: sup_name,
+                    args: sup_args,
+                    ..
+                }) = resolved.as_local_actor_ref()
+                {
+                    if let Some(children) = self.supervisor_children.get(sup_name).cloned() {
+                        let selected = children
+                            .statics
+                            .iter()
+                            .enumerate()
+                            .map(|(index, child)| (super::types::ChildKind::Static, index, child))
+                            .chain(children.pools.iter().enumerate().map(|(index, child)| {
+                                (super::types::ChildKind::Pool, index, child)
+                            }))
+                            .find(|(_, _, (name, _))| name == field);
+                        if let Some((kind, index, (child_name, template))) = selected {
+                            let parameters = self
+                                .type_defs
+                                .get(sup_name)
+                                .map_or_else(Vec::new, |definition| definition.type_params.clone());
+                            let substitution = parameters
+                                .into_iter()
+                                .zip(sup_args.iter().cloned())
+                                .collect();
+                            let child_ty = template.substitute_named_params_parallel(&substitution);
+                            if let Ty::Named { name, args, .. } = &child_ty {
+                                self.enforce_type_def_instantiation_bounds(name, args, span);
+                            }
+                            self.supervisor_child_slots.insert(
+                                SpanKey::in_module(span, self.current_module_idx),
+                                super::types::ChildSlot {
+                                    kind,
+                                    index: u32::try_from(index)
+                                        .expect("supervisor child count exceeds u32"),
+                                    child_ty: child_ty.user_facing().to_string(),
+                                    child_name: child_name.clone(),
+                                    supervisor: sup_name.clone(),
+                                },
+                            );
+                            if kind == super::types::ChildKind::Pool {
                                 return Ty::supervisor_pool(
-                                    Ty::Named {
-                                        builtin: None,
-                                        name: sup_name.clone(),
-                                        args: vec![],
-                                    },
+                                    Ty::actor_handle(sup_name.clone(), sup_args.clone()),
                                     child_ty,
                                 );
                             }
-                            if self.supervisor_children.contains_key(&canonical_child_type) {
-                                return Ty::local_pid(child_ty);
-                            }
                             return Ty::child_ref(child_ty);
                         }
-                        // The supervisor is known but this child name is not declared.
-                        // Emit a clear diagnostic and stop — the fallthrough branch
-                        // would silently return Ty::Error because the handle has no type
-                        // definition in the checker's type_defs map.
-                        let all_names: Vec<&str> = sup_children
+                        let names = children
                             .statics
                             .iter()
-                            .chain(sup_children.pools.iter())
-                            .map(|(cn, _)| cn.as_str())
-                            .collect();
-                        let similar = crate::error::find_similar(field, all_names.iter().copied());
+                            .chain(children.pools.iter())
+                            .map(|(name, _)| name.as_str());
+                        let similar = crate::error::find_similar(field, names);
                         self.report_error_with_suggestions(
                             TypeErrorKind::UndefinedField,
                             span,
@@ -7358,70 +7594,6 @@ impl Checker {
                             .map(|(p, a)| (p.clone(), a.clone()))
                             .collect();
                         field_ty.substitute_named_params_parallel(&subst_map)
-                    } else if let Some((ref mn, ref src_state, ref evt_name)) =
-                        self.current_machine_transition
-                    {
-                        if td.kind == TypeDefKind::Machine && mn == name {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(src_state).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-
-                        // Inside a machine transition: resolve `event.field` on the event enum type
-                        let event_type_name = format!("{mn}Event");
-                        if *name == event_type_name && evt_name != "_" {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(evt_name).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-                        let similar =
-                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedField,
-                            span,
-                            format!("no field `{field}` on type `{name}`"),
-                            similar,
-                        );
-                        Ty::Error
-                    } else if let Some((ref mn, ref state_name)) =
-                        self.current_machine_lifecycle.clone()
-                    {
-                        // Inside a state entry/exit lifecycle block: resolve
-                        // `state.<field>` for payload states.  `event` is NOT
-                        // bound (that binding belongs to transition scope only),
-                        // so event-enum field access is correctly unreachable here.
-                        if td.kind == TypeDefKind::Machine && *mn == *name {
-                            if let Some(VariantDef::Struct(variant_fields)) =
-                                td.variants.get(state_name.as_str()).cloned()
-                            {
-                                if let Some((_, field_ty)) =
-                                    variant_fields.iter().find(|(fname, _)| fname == field)
-                                {
-                                    return field_ty.clone();
-                                }
-                            }
-                        }
-                        let similar =
-                            crate::error::find_similar(field, td.fields.keys().map(String::as_str));
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedField,
-                            span,
-                            format!("no field `{field}` on type `{name}`"),
-                            similar,
-                        );
-                        Ty::Error
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));
@@ -7434,6 +7606,14 @@ impl Checker {
                         Ty::Error
                     }
                 } else {
+                    self.report_error(
+                        TypeErrorKind::UndefinedField,
+                        span,
+                        format!(
+                            "cannot access field `{field}` on `{}`",
+                            resolved.user_facing()
+                        ),
+                    );
                     Ty::Error
                 }
             }
@@ -7470,67 +7650,37 @@ impl Checker {
         }
     }
 
-    fn check_machine_transition_self_field_access(
-        &mut self,
-        field: &str,
-        span: &Span,
-    ) -> Option<Ty> {
-        let (machine_name, source_state, _) = self.current_machine_transition.clone()?;
-        if source_state == "_" {
-            self.report_error(
-                TypeErrorKind::UndefinedField,
-                span,
-                format!(
-                    "cannot read `self.{field}` in wildcard transition for machine \
-                     `{machine_name}` because `_` has no single source-state payload"
-                ),
-            );
-            return Some(Ty::Error);
-        }
-
-        let variant_fields = match self.lookup_type_def(&machine_name) {
-            Some(td) if td.kind == TypeDefKind::Machine => td.variants.get(&source_state).cloned(),
-            _ => None,
-        };
-        let Some(VariantDef::Struct(variant_fields)) = variant_fields else {
-            self.report_error(
-                TypeErrorKind::UndefinedField,
-                span,
-                format!(
-                    "state `{source_state}` of machine `{machine_name}` has no payload field \
-                     `{field}`"
-                ),
-            );
-            return Some(Ty::Error);
-        };
-
-        if let Some((_, field_ty)) = variant_fields
-            .iter()
-            .find(|(field_name, _)| field_name == field)
-        {
-            return Some(field_ty.clone());
-        }
-
-        let similar =
-            crate::error::find_similar(field, variant_fields.iter().map(|(name, _)| name.as_str()));
-        self.report_error_with_suggestions(
-            TypeErrorKind::UndefinedField,
-            span,
-            format!("state `{source_state}` of machine `{machine_name}` has no field `{field}`"),
-            similar,
-        );
-        Some(Ty::Error)
-    }
-
     pub(super) fn check_match_expr(
         &mut self,
         scrutinee_ty: &Ty,
+        scrutinee_place: Option<&(String, crate::env::PlacePath)>,
         arms: &[MatchArm],
         span: &Span,
         expected: Option<&Ty>,
     ) -> Ty {
         if arms.is_empty() {
-            return Ty::Unit;
+            let resolved = self.subst.resolve(scrutinee_ty);
+            let uninhabited = match &resolved {
+                Ty::Never => true,
+                Ty::Named { name, .. } => self.lookup_type_def(name).is_some_and(|definition| {
+                    definition.kind == TypeDefKind::Enum && definition.variants.is_empty()
+                }),
+                _ => false,
+            };
+            if uninhabited {
+                return Ty::Never;
+            }
+            if resolved != Ty::Error {
+                self.report_error(
+                    TypeErrorKind::NonExhaustiveMatch,
+                    span,
+                    format!(
+                        "an empty match cannot cover inhabited type `{}`",
+                        resolved.user_facing()
+                    ),
+                );
+            }
+            return Ty::Error;
         }
 
         // If the enclosing context supplies a concrete expected type (e.g. the
@@ -7569,13 +7719,21 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
+            self.pattern_place = scrutinee_place.cloned();
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.pattern_place = None;
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
+                // Pattern bindings borrow during candidate testing. Their
+                // field transfers happen only after the guard selects this
+                // arm, so a declined candidate cannot move the source.
+                let pattern_entry = fall_through.clone();
+                let selected_pattern = self.env.ownership_snapshot();
+                self.env.restore_ownership(&fall_through);
                 let guard_ty = self.check_against(guard, gs, &Ty::Bool);
-                if Self::arm_skips_join_expr(guard, &guard_ty) {
+                if Self::arm_skips_join(&guard_ty) {
                     guard_diverges = true;
                     // Rewind the guard's consumes: neither the unreachable body
                     // below nor any later arm ever observes them.
@@ -7583,23 +7741,38 @@ impl Checker {
                 } else {
                     // The guard ran and returned false; later arms see its state.
                     fall_through = self.env.ownership_snapshot();
+                    self.env
+                        .apply_pattern_moves(&pattern_entry, &selected_pattern);
                 }
             }
 
             self.tail_ok_armed = tail_ok_armed;
             let arm_ty = if let Some(expected) = &result_ty {
-                self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+                if expected.contains_callable() && resolved_expected.is_none() {
+                    self.synthesize(&arm.body.0, &arm.body.1)
+                } else {
+                    self.check_expr_with_expected(&arm.body.0, &arm.body.1, expected)
+                }
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
+            self.record_callable_value_transfer(&arm.body.0, &arm.body.1);
             arm_exits.push(BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
-                diverges: guard_diverges || Self::arm_skips_join_expr(&arm.body.0, &arm_ty),
+                diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
             });
             // Skip Never/Error when setting the expected type — diverging arms
             // (return, panic, break) shouldn't constrain the match result type.
-            if result_ty.is_none() && !matches!(arm_ty, Ty::Never | Ty::Error) {
-                result_ty = Some(arm_ty);
+            if !matches!(arm_ty, Ty::Never | Ty::Error) {
+                result_ty = Some(if let Some(previous) = result_ty {
+                    if previous.contains_callable() || arm_ty.contains_callable() {
+                        self.unify_branches(&previous, &arm_ty, span)
+                    } else {
+                        previous
+                    }
+                } else {
+                    arm_ty
+                });
             }
 
             self.env.pop_scope();
@@ -7618,12 +7791,12 @@ impl Checker {
 
     #[expect(
         clippy::too_many_arguments,
-        clippy::too_many_lines,
         reason = "lambda checking combines contextual inference with capture analysis"
     )]
     pub(super) fn check_lambda(
         &mut self,
         is_move: bool,
+        private_captures: &[Spanned<String>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -7631,7 +7804,51 @@ impl Checker {
         expected: Option<(&[Ty], &Ty)>,
         span: &Span,
         is_actor_body: bool,
+        is_fork_body: bool,
     ) -> Ty {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let owner = super::effects::EffectBody::Closure(key.clone());
+        self.effect_graph.bodies.entry(owner.clone()).or_default();
+        let previous = self.effect_graph.current_body.replace(owner);
+        let result = self.check_lambda_body(
+            is_move,
+            private_captures,
+            type_params,
+            params,
+            return_type,
+            body,
+            expected,
+            span,
+            is_actor_body,
+            is_fork_body,
+        );
+        self.effect_graph.current_body = previous;
+        result
+    }
+
+    #[expect(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "lambda checking combines contextual inference with capture analysis"
+    )]
+    fn check_lambda_body(
+        &mut self,
+        is_move: bool,
+        private_captures: &[Spanned<String>],
+        type_params: Option<&[TypeParam]>,
+        params: &[LambdaParam],
+        return_type: Option<&Spanned<TypeExpr>>,
+        body: &Spanned<Expr>,
+        expected: Option<(&[Ty], &Ty)>,
+        span: &Span,
+        is_actor_body: bool,
+        is_fork_body: bool,
+    ) -> Ty {
+        let private_bindings = self.resolve_private_captures(private_captures);
+        let body_environment = self
+            .env
+            .closure_environment(&private_bindings, is_actor_body);
+        let outer_environment = std::mem::replace(&mut self.env, body_environment);
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
         let prev_captures = std::mem::take(&mut self.lambda_captures);
@@ -7732,7 +7949,10 @@ impl Checker {
         // that PostfixTry (`?`) context checks see the lambda's return type,
         // not the outer function's.
         let prev_return_type = self.current_return_type.take();
+        let previous_defer = self.deferred_body.take();
+        let prev_fails = std::mem::replace(&mut self.current_fails, false);
 
+        let previous_inferred_returns = self.inferred_lambda_returns.take();
         let ret_ty = if let Some(annotation) = return_type {
             let (expected_ret, hole_vars) = self.resolve_annotation_holes(annotation);
             // Unify the annotated return type against the contextual expected return
@@ -7758,13 +7978,14 @@ impl Checker {
             self.check_against(&body.0, &body.1, expected_ret);
             expected_ret.clone()
         } else {
-            // Return type is fully inferred: leave current_return_type as None
-            // (already taken above) so `?` is not validated against a stale
-            // outer return type during synthesis.
-            self.synthesize(&body.0, &body.1)
+            self.infer_lambda_result(body)
         };
+        self.inferred_lambda_returns = previous_inferred_returns;
+        self.record_callable_value_transfer(&body.0, &body.1);
 
         self.current_return_type = prev_return_type;
+        self.deferred_body = previous_defer;
+        self.current_fails = prev_fails;
         self.in_actor_handler_context = prev_actor_handler_context;
         self.task_scope_depth = prev_task_scope_depth;
         self.in_lambda_actor_body = prev_in_lambda_actor_body;
@@ -7806,124 +8027,56 @@ impl Checker {
             }
         }
 
-        // Collect binding-accurate captures, preserving first-use order.
+        let body_environment = std::mem::replace(&mut self.env, outer_environment);
+        self.env.merge_closure_reads(&body_environment);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
-        // Scan the lambda body once syntactically to determine which
-        // capture names are mutated (`BorrowMut` over `Borrow`) and
-        // whether the body contains a suspend point
-        // (`NonSyncMutCaptureCrossesSuspend` gate).
-        let body_facts = super::closure_inference::scan_lambda_body(body);
-        let mut seen_capture_bindings = HashSet::new();
-        let mut capture_facts = Vec::new();
-        for mut fact in raw_capture_facts {
-            if !seen_capture_bindings.insert(fact.binding_id) {
-                continue;
-            }
-            let resolved_ty = self.subst.resolve(&fact.ty).materialize_literal_defaults();
-            let is_copy = self
-                .registry
-                .implements_marker(&resolved_ty, MarkerTrait::Copy);
-            fact.is_send = self
-                .registry
-                .implements_marker(&resolved_ty, MarkerTrait::Send);
-            fact.is_sync = self.registry.is_sync(&resolved_ty);
-            let mutates = body_facts.mutated_names.contains(&fact.name);
-            // Capture-mode inference rule:
-            //   `move`     → Move  / ExplicitMove
-            //   Copy type  → Copy  / ImplicitCopy
-            //   mut use    → BorrowMut / InferredBorrowMut
-            //   read-only  → Borrow    / InferredBorrow
-            let (selected_mode, selected_origin) = if is_move {
-                (ClosureCaptureMode::Move, CaptureModeOrigin::ExplicitMove)
-            } else if is_copy {
-                (ClosureCaptureMode::Copy, CaptureModeOrigin::ImplicitCopy)
-            } else if mutates {
-                (
-                    ClosureCaptureMode::BorrowMut,
-                    CaptureModeOrigin::InferredBorrowMut,
-                )
-            } else {
-                (
-                    ClosureCaptureMode::Borrow,
-                    CaptureModeOrigin::InferredBorrow,
-                )
-            };
-            fact.mode = selected_mode;
-            fact.mode_origin = selected_origin;
-            fact.ty = resolved_ty.clone();
-            // Substrate gain: inferred `Borrow` / `BorrowMut`
-            // captures are ACCEPTED. Previously, non-Copy non-`move`
-            // captures emitted `ClosureExplicitMoveRequired`; the
-            // checker now records the inferred mode and lets the
-            // lowerer materialise the reference. The legacy diagnostic
-            // is dead for this site (still declared for the source
-            // span on `move` keyword misuse, if a future caller needs
-            // it).
-            // An inferred `BorrowMut` capture of a non-`Sync` binding
-            // crossing a suspend point is rejected until a future
-            // auto-lock pass subscribes to this kind and rewrites the
-            // closure. Diagnostic kind name is the public seam; do not
-            // rename.
-            if matches!(fact.mode, ClosureCaptureMode::BorrowMut)
-                && !fact.is_sync
-                && body_facts.has_suspend
-                && !matches!(resolved_ty, Ty::Error | Ty::Var(_))
-            {
-                let suspend_label = if body_facts.suspend_kind.is_empty() {
-                    "await".to_string()
-                } else {
-                    body_facts.suspend_kind.clone()
-                };
-                let origin_label = match fact.mode_origin {
-                    CaptureModeOrigin::InferredBorrowMut => "inferred from a mutating use",
-                    CaptureModeOrigin::InferredBorrow => "inferred read-only borrow",
-                    CaptureModeOrigin::ExplicitMove => "explicit `move`",
-                    CaptureModeOrigin::ImplicitCopy => "implicit copy",
-                };
-                self.report_error(
-                    TypeErrorKind::NonSyncMutCaptureCrossesSuspend {
-                        capture_name: fact.name.clone(),
-                        suspend_kind: suspend_label.clone(),
-                    },
-                    &fact.use_span,
-                    format!(
-                        "non-Sync capture `{}` is mutated across a `{}` point \
-                         (mode = BorrowMut, {}); this is unsound until \
-                         automatic locking lands",
-                        fact.name, suspend_label, origin_label
-                    ),
-                );
-            }
-            if is_move && !is_copy {
-                self.env.mark_moved(&fact.name, span.clone());
-            }
-            capture_facts.push(fact);
-        }
+        // Acquisition happens in the enclosing scope, not in the new closure.
+        self.lambda_capture_depth = prev_capture_depth;
+        let capture_facts = self.finish_closure_captures(
+            raw_capture_facts,
+            &private_bindings,
+            &body_environment,
+            is_move,
+            span,
+            is_fork_body,
+        );
+        let capabilities = self.closure_capabilities(&capture_facts);
         self.closure_capture_facts.insert(
             SpanKey::in_module(span, self.current_module_idx),
             capture_facts.clone(),
         );
 
-        // Keep the public callable type shape unchanged while deriving its
-        // capture payload from the binding-accurate ledger.
+        // The callable payload and its guarantees come from the same resolved captures.
         let captures: Vec<Ty> = capture_facts.iter().map(|fact| fact.ty.clone()).collect();
 
         // Restore outer capture tracking state
-        self.lambda_capture_depth = prev_capture_depth;
         self.lambda_captures = prev_captures;
         self.lambda_capture_facts = prev_capture_facts;
+        if let Some(depth) = prev_capture_depth {
+            for fact in &capture_facts {
+                if self
+                    .env
+                    .lookup_with_depth(&fact.name)
+                    .is_some_and(|(binding_depth, binding)| {
+                        binding_depth < depth && binding.id == fact.binding_id
+                    })
+                {
+                    self.lambda_capture_facts.push(fact.clone());
+                }
+            }
+        }
 
-        if captures.is_empty() {
-            Ty::Function {
-                params: param_tys,
-                ret: Box::new(ret_ty),
-            }
-        } else {
-            Ty::Closure {
-                params: param_tys,
-                ret: Box::new(ret_ty),
-                captures,
-            }
+        // Every literal has a concrete environment type, including an empty one.
+        // Callable guarantees do not erase the identity needed by HIR and SIR.
+        Ty::Closure {
+            capabilities,
+            params: param_tys,
+            ret: Box::new(ret_ty),
+            captures,
+            identity: super::effects::EffectBody::Closure(SpanKey::in_module(
+                span,
+                self.current_module_idx,
+            )),
         }
     }
 
@@ -8037,6 +8190,7 @@ impl Checker {
                     .collect();
                 let ret = Ty::normalize_named(qualified_type, args);
                 Ty::Function {
+                    capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
                     params: subst_params,
                     ret: Box::new(ret),
                 }
@@ -8131,6 +8285,20 @@ impl Checker {
         base: Option<&Spanned<Expr>>,
         span: &Span,
     ) -> Ty {
+        // Every field is initialized exactly once: a base supplies the fields
+        // the literal does not name, and naming one twice leaves no reading
+        // that says which value wins.
+        let mut named: HashSet<&str> = HashSet::new();
+        for (field_name, (_, field_span)) in fields {
+            if !named.insert(field_name.as_str()) {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    field_span,
+                    format!("record literal names field `{field_name}` more than once"),
+                );
+            }
+        }
+
         // Expression-position struct variants use the final dotted surface
         // (`Type.Variant { ... }`). Normalize that spelling only after the
         // owner has been selected by checker authority: a lexical nominal
@@ -8171,7 +8339,57 @@ impl Checker {
                 _ => None,
             }
         };
-        let name = dotted_struct_variant.as_deref().unwrap_or(name);
+        // A plain record constructor uses the two-segment `module.Type`
+        // surface, which overlaps syntactically with a local
+        // `Type.StructVariant`. Give the proven local variant above first
+        // refusal, then resolve a lexical module binding through the same
+        // export table as annotation-position qualified types. The lexical
+        // alias is never a nominal identity: carry the declaration's full
+        // source owner into the shared record-initialiser path.
+        let module_record_name = if dotted_struct_variant.is_none() && !name.contains("::") {
+            let segments = name.split('.').collect::<Vec<_>>();
+            match segments.as_slice() {
+                [module_short, type_name]
+                    if self.env.lookup_ref(module_short).is_none()
+                        && self.module_binding_in_current_file(module_short) =>
+                {
+                    self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        (*module_short).to_string(),
+                    ));
+                    let Some(_) = self.resolve_module_type(module_short, type_name) else {
+                        let similar = self
+                            .module_type_exports_for_binding(module_short)
+                            .map(|set| {
+                                crate::error::find_similar(
+                                    type_name,
+                                    set.iter().map(String::as_str),
+                                )
+                            })
+                            .unwrap_or_default();
+                        self.report_error_with_suggestions(
+                            TypeErrorKind::UndefinedType,
+                            span,
+                            format!("module `{module_short}` has no exported type `{type_name}`"),
+                            similar,
+                        );
+                        return Ty::Error;
+                    };
+                    Some(format!(
+                        "{}.{type_name}",
+                        self.canonical_module_import_owner(module_short)
+                    ))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let name = dotted_struct_variant
+            .as_deref()
+            .or(module_record_name.as_deref())
+            .unwrap_or(name);
         let Ok(canonical_lifecycle_name) =
             self.canonicalize_source_lifecycle_value_path(name, span)
         else {
@@ -8269,6 +8487,16 @@ impl Checker {
         let qualified_owned = self
             .published_bare_type_qualified(name)
             .or_else(|| self.flat_file_import_type_owner(name));
+        let delivery_owner = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
+        if self.reject_sealed_delivery_access(
+            &crate::actor_delivery::nominal(&delivery_owner, Vec::new()),
+            span,
+        ) {
+            return Ty::Error;
+        }
+
         if let Some(qualified) = qualified_owned.as_deref() {
             // `qualified` is the full owner-qualified source identity
             // (`owner.TypeName`), and `owner` itself may be a dotted module
@@ -8286,6 +8514,17 @@ impl Checker {
             }
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
+        if self
+            .lookup_type_def(name)
+            .is_some_and(|definition| definition.kind == TypeDefKind::Enum)
+        {
+            self.report_error(
+                TypeErrorKind::TypeUsedAsValue,
+                span,
+                format!("enum `{name}` requires a declared variant; it cannot be constructed as a record"),
+            );
+            return Ty::Error;
+        }
         // Fail closed on opaque handle direct construction — but ONLY for
         // cross-module constructions. The module that DECLARES an `#[opaque]`
         // type is the producer: its impl blocks contain the legitimate FFI
@@ -8409,6 +8648,7 @@ impl Checker {
                     } else {
                         self.check_against(expr, es, &expected)
                     };
+                    self.record_callable_value_transfer(expr, es);
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
@@ -8556,6 +8796,7 @@ impl Checker {
                     } else {
                         self.check_against(expr, es, &expected)
                     };
+                    self.record_callable_value_transfer(expr, es);
 
                     // Bind bare type params from this field's declared type
                     for tp in &enum_type_params {
@@ -8649,9 +8890,10 @@ impl Checker {
     /// to `synthesize`:
     ///
     /// 1. Unknown field name — an error will be reported separately.
-    /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg is
-    ///    `LocalPid<Printer>`, not `Printer`, so checking against the bare name
-    ///    produces a spurious type mismatch.
+    /// 2. Bare-actor-name field (e.g. `let target: Printer`): the spawn arg
+    ///    carries `Printer`'s own actor-handle type, not the bare `Printer`
+    ///    used for construction, so checking against the bare name produces
+    ///    a spurious type mismatch.
     fn check_spawn_constructor_args(
         &mut self,
         actor_name: &str,
@@ -8681,6 +8923,28 @@ impl Checker {
                 .as_ref()
                 .and_then(|params| params.iter().find(|p| &p.name == field_name))
                 .map(|p| p.ty.clone());
+            // A field init initializes has no spawn value (D447): one init
+            // body cannot be a first store at one spawn site and a
+            // replacement at another.
+            if declared_init_param.is_none()
+                && self
+                    .actor_deferred_fields
+                    .get(actor_name)
+                    .is_some_and(|deferred| deferred.contains(field_name))
+            {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    as_,
+                    format!(
+                        "E_ACTOR_FIELD_DEFERRED: state field `{field_name}` of actor \
+                         `{actor_name}` is initialized by `init`; remove it from the spawn \
+                         arguments"
+                    ),
+                );
+                let ty_raw = self.synthesize(arg, as_);
+                self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
+                continue;
+            }
             // A spawn arg name that matches BOTH an init parameter and a state
             // field with a DIFFERENT declared type is unsatisfiable: the one
             // provided value cannot simultaneously be the init parameter's type
@@ -8827,7 +9091,7 @@ impl Checker {
                                 similar,
                             );
                             // The caller types the spawn as bare `Ty::Error`
-                            // (not `LocalPid<Error>`) so a subsequent
+                            // (not `Error`'s own actor-handle type) so a subsequent
                             // `await handle.method()` is suppressed (method
                             // calls on a `Ty::Error` receiver short-circuit),
                             // keeping a single clear diagnostic.
@@ -8865,103 +9129,59 @@ impl Checker {
         };
 
         if let Some(name) = actor_name {
-            // Resolve the explicit type-argument list.  When type_args is
-            // non-empty, substitute them into the PID type and enforce any
-            // declared bounds.  When empty, check whether the actor is
-            // generic (has declared type params) and emit a diagnostic if so.
-            let resolved_type_args: Vec<Ty> = type_args
-                .iter()
-                .map(|te| self.resolve_type_expr(te))
-                .collect();
-
-            // Look up the arity of the actor's declared type params (0 for
-            // non-generic actors).
-            let type_params: Vec<String> = self
+            let owner_kind = if self.supervisor_children.contains_key(&name) {
+                "supervisor"
+            } else {
+                "actor"
+            };
+            let type_params = self
                 .type_defs
                 .get(&name)
-                .map_or_else(Vec::new, |td| td.type_params.clone());
+                .map_or_else(Vec::new, |definition| definition.type_params.clone());
             let declared_arity = type_params.len();
-
-            // Build the spawn-site substitution map (declared param name ->
-            // resolved type argument) so a generic actor field/init param
-            // like `value: T` is checked against `i64` for `spawn Box<i64>(
-            // value: 5)`, not against the unsubstituted `T` (#2447). Only
-            // populated when the supplied arity matches the declared arity;
-            // an arity mismatch is diagnosed below and the raw declared type
-            // is left in place (no partial/misaligned substitution).
-            let type_subst: Option<HashMap<String, Ty>> =
-                if declared_arity > 0 && resolved_type_args.len() == declared_arity {
-                    Some(
-                        type_params
-                            .iter()
-                            .cloned()
-                            .zip(resolved_type_args.iter().cloned())
-                            .collect(),
-                    )
-                } else {
-                    None
-                };
-
-            self.check_spawn_constructor_args(&name, args, type_subst.as_ref());
-
-            if declared_arity > 0 && resolved_type_args.is_empty() {
-                // Generic actor spawned without type arguments.
-                self.report_error(
-                    TypeErrorKind::MissingActorTypeArgs {
-                        actor_name: name.clone(),
-                        expected_arity: declared_arity,
-                    },
-                    span,
-                    format!(
-                        "actor `{name}` has {declared_arity} type parameter(s); \
-                         supply explicit type arguments: `spawn {name}<T>(...)`"
-                    ),
-                );
-                return Ty::local_pid(Ty::Error);
-            }
-
-            if declared_arity > 0
-                && !resolved_type_args.is_empty()
-                && resolved_type_args.len() != declared_arity
-            {
+            let mut resolved_type_args: Vec<Ty> = if type_args.is_empty() {
+                type_params
+                    .iter()
+                    .map(|_| Ty::Var(TypeVar::fresh()))
+                    .collect()
+            } else {
+                type_args
+                    .iter()
+                    .map(|argument| self.resolve_type_expr(argument))
+                    .collect()
+            };
+            if resolved_type_args.len() != declared_arity {
                 self.report_error(
                     TypeErrorKind::ActorTypeArgArityMismatch {
-                        actor_name: name.clone(),
-                        expected: declared_arity,
-                        got: resolved_type_args.len(),
-                    },
-                    span,
-                    format!(
-                        "actor `{name}` has {declared_arity} type parameter(s) but \
-                         {} type argument(s) were supplied",
-                        resolved_type_args.len()
-                    ),
+                        actor_name: name.clone(), expected: declared_arity, got: resolved_type_args.len(),
+                    }, span,
+                    format!("{owner_kind} `{name}` has {declared_arity} type parameter(s) but {} type argument(s) were supplied", resolved_type_args.len()),
                 );
-                return Ty::local_pid(Ty::Error);
+                return Ty::Error;
             }
-
-            // Enforce declared bounds on the resolved type arguments.
-            if !resolved_type_args.is_empty() {
-                self.enforce_actor_instantiation_bounds(&name, &resolved_type_args, span);
+            let type_subst: HashMap<_, _> = type_params
+                .iter()
+                .cloned()
+                .zip(resolved_type_args.iter().cloned())
+                .collect();
+            self.check_spawn_constructor_args(&name, args, Some(&type_subst));
+            resolved_type_args = resolved_type_args
+                .iter()
+                .map(|argument| self.subst.resolve(argument))
+                .collect();
+            if resolved_type_args.iter().any(Ty::has_inference_var) {
+                self.report_error(
+                    TypeErrorKind::MissingActorTypeArgs { actor_name: name.clone(), expected_arity: declared_arity },
+                    span,
+                    format!("cannot infer all type arguments of {owner_kind} `{name}` from its spawn arguments; supply explicit type arguments"),
+                );
+                return Ty::Error;
             }
+            self.enforce_type_def_instantiation_bounds(&name, &resolved_type_args, span);
 
-            // Record the actor-mono entry: (actor_name, resolved_type_args).
-            // This populates the per-spawn instantiation table consulted by
-            // the actor-mono discovery pass (blocked on MachineMonoPass infra).
-            // Today's entry is keyed by mangled name; the runtime
-            // mailbox ABI is unchanged (opaque pointer, no `hew_actor_spawn`
-            // change).
-            if !resolved_type_args.is_empty() {
-                self.record_actor_mono_entry(&name, resolved_type_args.clone(), span);
-            }
-
-            Ty::local_pid(Ty::Named {
-                builtin: None,
-                name,
-                args: resolved_type_args,
-            })
+            Ty::actor_handle(name, resolved_type_args)
         } else {
-            Ty::local_pid(Ty::Error)
+            Ty::Error
         }
     }
 
@@ -9007,525 +9227,16 @@ impl Checker {
         );
     }
 
-    fn produced_fact_at(&self, span: &Span) -> Option<ProducedValueFact> {
-        self.produced_value_ownership
-            .get(&SpanKey::in_module(span, self.current_module_idx))
-            .cloned()
-    }
-
-    fn join_produced_facts(&self, spans: impl IntoIterator<Item = Span>) -> ProducedValueFact {
-        let mut facts = spans
-            .into_iter()
-            .filter_map(|span| self.produced_fact_at(&span));
-        let Some(first) = facts.next() else {
-            return ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Unknown);
-        };
-        if facts.all(|fact| {
-            fact.ownership == first.ownership && fact.receiver_span == first.receiver_span
-        }) {
-            ProducedValueFact {
-                arguments: Vec::new(),
-                ..first
-            }
-        } else {
-            ProducedValueFact::result(crate::runtime_call::ProducedValueOwnership::Unknown)
-        }
-    }
-
-    fn non_empty_produced_join(
-        children: impl IntoIterator<Item = SpanKey>,
-    ) -> Option<ProducedValueDependency> {
-        let children: Vec<_> = children.into_iter().collect();
-        (!children.is_empty()).then_some(ProducedValueDependency::Join(children))
-    }
-
-    fn argument_is_proven_non_owning(&self, span: &Span) -> bool {
-        let Some(ty) = self
-            .expr_types
-            .get(&SpanKey::in_module(span, self.current_module_idx))
-            .map(|ty| self.subst.resolve(ty))
-        else {
-            return false;
-        };
-        self.ty_is_non_owning(&ty)
-    }
-
-    fn provisional_argument_boundaries(
-        &self,
-        args: &[CallArg],
-    ) -> Vec<crate::runtime_call::ProducedArgumentBoundary> {
-        use crate::runtime_call::ProducedArgumentBoundary as Boundary;
-
-        args.iter()
-            .map(|arg| {
-                if self.argument_is_proven_non_owning(&arg.expr().1) {
-                    Boundary::Borrow
-                } else {
-                    Boundary::Unknown
-                }
-            })
-            .collect()
-    }
-
-    /// Complete one public expression-checking entry point.
-    ///
-    /// Some checking paths record a more precise source-expression type before
-    /// returning their contextual result. In particular, tail-`Ok` coercion
-    /// returns the surrounding `Result` while the source span must retain its
-    /// payload type for lowering. Therefore completion fills an absent type but
-    /// never overwrites an existing one, and derives ownership from that
-    /// authoritative recorded type. A nested `synthesize` reached from
-    /// `check_against` may complete the same source occurrence first, so the
-    /// ownership/dependency publication is likewise deliberately single-shot.
+    /// Publish a checked expression type without overwriting a more precise
+    /// source type recorded during contextual checking.
     fn publish_checked_expression(&mut self, expr: &Expr, span: &Span, result: Ty) -> Ty {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .entry(key.clone())
             .or_insert_with(|| self.current_module.clone());
-        let published_ty = self
-            .expr_types
-            .entry(key.clone())
-            .or_insert_with(|| result.clone())
-            .clone();
-        let first_publication = self.published_value_occurrences.insert(key);
-        // The parser currently gives a lambda actor and its synthetic body
-        // block the same source span. Body checking therefore publishes first,
-        // but the enclosing expression is the materialized `LambdaPid` value
-        // and must replace that provisional ownership node.
-        if first_publication || matches!(expr, Expr::SpawnLambdaActor { .. }) {
-            self.record_produced_value_fact(expr, span, &published_ty);
-        }
+        self.expr_types.entry(key).or_insert_with(|| result.clone());
+        self.record_expression_effect(expr, span);
         result
-    }
-
-    /// Publish the single checker-side ownership/result-boundary fact.
-    ///
-    /// This runs after expression checking has completed, so all structured
-    /// dispatch side tables and child facts are available. It is the last
-    /// phase allowed to consult source call spellings or generated FFI rows.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "ownership publication exhaustively classifies every expression form"
-    )]
-    fn record_produced_value_fact(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
-        use crate::runtime_call::{
-            ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
-        };
-
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        let resolved = self.subst.resolve(ty);
-        let no_owner = self.ty_is_non_owning(&resolved);
-        let mut fact = match expr {
-            Expr::Identifier(_) | Expr::This => ProducedValueFact::result(if no_owner {
-                Ownership::NoOwner
-            } else {
-                Ownership::Borrowed
-            }),
-            Expr::FieldAccess { object, .. } => {
-                if no_owner {
-                    ProducedValueFact::result(Ownership::NoOwner)
-                } else {
-                    let ownership =
-                        self.produced_fact_at(&object.1)
-                            .map_or(Ownership::Unknown, |base| match base.ownership {
-                                Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
-                                Ownership::Borrowed | Ownership::ReceiverIdentity => {
-                                    Ownership::Borrowed
-                                }
-                                Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
-                            });
-                    ProducedValueFact::result(ownership)
-                }
-            }
-            Expr::Index { object, .. } => {
-                if no_owner {
-                    ProducedValueFact::result(Ownership::NoOwner)
-                } else if self
-                    .expr_types
-                    .get(&SpanKey::in_module(&object.1, self.current_module_idx))
-                    .map(|ty| self.subst.resolve(ty))
-                    .is_some_and(|ty| {
-                        matches!(
-                            ty,
-                            Ty::Named {
-                                builtin: Some(BuiltinType::Vec),
-                                ..
-                            }
-                        )
-                    })
-                {
-                    ProducedValueFact::result(Ownership::owned(Acquisition::Clone))
-                } else {
-                    ProducedValueFact::result(Ownership::Unknown)
-                }
-            }
-            Expr::Literal(Literal::String(_)) => ProducedValueFact::result(Ownership::Borrowed),
-            Expr::Binary {
-                op: BinaryOp::Add, ..
-            } if matches!(resolved, Ty::String) => {
-                ProducedValueFact::result(Ownership::owned(Acquisition::Fresh))
-            }
-            Expr::Literal(_)
-            | Expr::ContextVariant(_)
-            | Expr::GenericApplySuffix { .. }
-            | Expr::RecordInitSuffix { .. }
-            | Expr::QualifiedAssoc(_)
-            | Expr::Unary { .. }
-            | Expr::Cast { .. }
-            | Expr::Range { .. }
-            | Expr::Is { .. }
-            | Expr::MachineEmit { .. }
-            | Expr::Return(_)
-            | Expr::Binary { .. }
-            | Expr::AwaitRestart(_)
-            | Expr::Tuple(_)
-            | Expr::StructInit { .. } => ProducedValueFact::result(if no_owner {
-                Ownership::NoOwner
-            } else {
-                Ownership::Unknown
-            }),
-            Expr::Clone(_) => ProducedValueFact::result(if no_owner {
-                Ownership::NoOwner
-            } else {
-                Ownership::owned(Acquisition::Clone)
-            }),
-            Expr::Array(_)
-            | Expr::ArrayRepeat { .. }
-            | Expr::MapLiteral { .. }
-            | Expr::Lambda { .. }
-            | Expr::Spawn { .. }
-            | Expr::SpawnLambdaActor { .. }
-            | Expr::ForkChild { .. }
-            | Expr::ForkBlock { .. }
-            | Expr::GenBlock { .. }
-            | Expr::RegexLiteral(_)
-            | Expr::ByteStringLiteral(_)
-            | Expr::ByteArrayLiteral(_)
-            | Expr::InterpolatedString(_) => ProducedValueFact::result(if no_owner {
-                Ownership::NoOwner
-            } else {
-                Ownership::owned(Acquisition::Fresh)
-            }),
-            Expr::Block(block) => block
-                .trailing_expr
-                .as_deref()
-                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
-                    self.join_produced_facts([tail.1.clone()])
-                }),
-            Expr::UnsafeBlock(block) => block
-                .trailing_expr
-                .as_deref()
-                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
-                    self.join_produced_facts([tail.1.clone()])
-                }),
-            Expr::If {
-                then_block,
-                else_block,
-                ..
-            } => {
-                let mut tails = vec![then_block.1.clone()];
-                if let Some(else_block) = else_block {
-                    tails.push(else_block.1.clone());
-                }
-                self.join_produced_facts(tails)
-            }
-            Expr::IfLet {
-                body, else_body, ..
-            } => {
-                let mut tails = Vec::new();
-                if let Some(tail) = body.trailing_expr.as_deref() {
-                    tails.push(tail.1.clone());
-                }
-                if let Some(tail) = else_body
-                    .as_ref()
-                    .and_then(|block| block.trailing_expr.as_deref())
-                {
-                    tails.push(tail.1.clone());
-                }
-                self.join_produced_facts(tails)
-            }
-            Expr::Match { arms, .. } => {
-                self.join_produced_facts(arms.iter().map(|arm| arm.body.1.clone()))
-            }
-            Expr::PostfixTry(inner) => ProducedValueFact::result(if no_owner {
-                Ownership::NoOwner
-            } else {
-                self.produced_fact_at(&inner.1)
-                    .map_or(Ownership::Unknown, |fact| match fact.ownership {
-                        Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
-                        Ownership::Borrowed | Ownership::ReceiverIdentity => Ownership::Borrowed,
-                        Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
-                    })
-            }),
-            Expr::Await(inner) => {
-                let inner_ty = self
-                    .expr_types
-                    .get(&SpanKey::in_module(&inner.1, self.current_module_idx))
-                    .map(|ty| self.subst.resolve(ty));
-                if no_owner {
-                    ProducedValueFact::result(Ownership::NoOwner)
-                } else if inner_ty.as_ref().is_some_and(|ty| {
-                    matches!(
-                        ty,
-                        Ty::Named {
-                            builtin: Some(BuiltinType::Task),
-                            ..
-                        }
-                    )
-                }) {
-                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
-                } else if inner_ty.as_ref() != Some(&resolved) {
-                    // A specialised await may wrap its source (for example an
-                    // actor reply `R` in `Result<R, AskError>`).  That wrapper
-                    // is a new typed publication boundary, not an identity
-                    // alias of differently-shaped storage.
-                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
-                } else {
-                    self.join_produced_facts([inner.1.clone()])
-                }
-            }
-            Expr::Select { arms, timeout } => {
-                let mut bodies: Vec<Span> = arms.iter().map(|arm| arm.body.1.clone()).collect();
-                if let Some(timeout) = timeout {
-                    bodies.push(timeout.body.1.clone());
-                }
-                self.join_produced_facts(bodies)
-            }
-            Expr::Join(_) => ProducedValueFact::result(if no_owner {
-                Ownership::NoOwner
-            } else {
-                Ownership::owned(Acquisition::Delivery)
-            }),
-            Expr::Timeout { expr, .. } => {
-                let inner_ty = self
-                    .expr_types
-                    .get(&SpanKey::in_module(&expr.1, self.current_module_idx))
-                    .map(|ty| self.subst.resolve(ty));
-                if no_owner {
-                    ProducedValueFact::result(Ownership::NoOwner)
-                } else if inner_ty.as_ref() == Some(&resolved) {
-                    self.join_produced_facts([expr.1.clone()])
-                } else {
-                    ProducedValueFact::result(Ownership::owned(Acquisition::Delivery))
-                }
-            }
-            Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => body
-                .trailing_expr
-                .as_deref()
-                .map_or(ProducedValueFact::result(Ownership::NoOwner), |tail| {
-                    self.join_produced_facts([tail.1.clone()])
-                }),
-            Expr::Yield(_) => ProducedValueFact::result(Ownership::NoOwner),
-            Expr::Call { args, .. } => self.resolved_direct_call_ownership.get(&key).map_or_else(
-                || ProducedValueFact {
-                    ownership: if no_owner {
-                        Ownership::NoOwner
-                    } else {
-                        Ownership::Unknown
-                    },
-                    receiver_span: None,
-                    receiver_boundary: None,
-                    arguments: self.provisional_argument_boundaries(args),
-                },
-                |pending| pending.fact.clone(),
-            ),
-            Expr::MethodCall { receiver, args, .. } => {
-                self.resolved_method_call_ownership.get(&key).map_or_else(
-                    || {
-                        let ownership = if no_owner {
-                            Ownership::NoOwner
-                        } else {
-                            Ownership::Unknown
-                        };
-                        ProducedValueFact {
-                            ownership,
-                            receiver_span: matches!(ownership, Ownership::ReceiverIdentity)
-                                .then(|| SpanKey::in_module(&receiver.1, self.current_module_idx)),
-                            receiver_boundary: Some(
-                                crate::runtime_call::ProducedArgumentBoundary::Unknown,
-                            ),
-                            arguments: self.provisional_argument_boundaries(args),
-                        }
-                    },
-                    |pending| pending.fact.clone(),
-                )
-            }
-        };
-        if !no_owner && self.dyn_trait_coercions.contains_key(&key) {
-            fact.ownership = Ownership::owned(Acquisition::Fresh);
-            fact.receiver_span = None;
-            self.produced_value_dependencies.remove(&key);
-        } else if no_owner {
-            fact.ownership = Ownership::NoOwner;
-            fact.receiver_span = None;
-        }
-        let dependency = match expr {
-            Expr::FieldAccess { object, .. } => {
-                let child = SpanKey::in_module(&object.1, self.current_module_idx);
-                self.expr_types
-                    .contains_key(&child)
-                    .then_some(ProducedValueDependency::Projection(child))
-            }
-            Expr::PostfixTry(inner) => Some(ProducedValueDependency::MoveOut(SpanKey::in_module(
-                &inner.1,
-                self.current_module_idx,
-            ))),
-            Expr::Block(block) => block.trailing_expr.as_deref().map(|tail| {
-                ProducedValueDependency::Identity(SpanKey::in_module(
-                    &tail.1,
-                    self.current_module_idx,
-                ))
-            }),
-            Expr::UnsafeBlock(block) => block.trailing_expr.as_deref().map(|tail| {
-                ProducedValueDependency::Identity(SpanKey::in_module(
-                    &tail.1,
-                    self.current_module_idx,
-                ))
-            }),
-            Expr::If {
-                then_block,
-                else_block: Some(else_block),
-                ..
-            } => Self::non_empty_produced_join([
-                SpanKey::in_module(&then_block.1, self.current_module_idx),
-                SpanKey::in_module(&else_block.1, self.current_module_idx),
-            ]),
-            Expr::IfLet {
-                body,
-                else_body: Some(else_body),
-                ..
-            } => {
-                let children: Vec<_> = body
-                    .trailing_expr
-                    .iter()
-                    .chain(else_body.trailing_expr.iter())
-                    .map(|child| SpanKey::in_module(&child.1, self.current_module_idx))
-                    .collect();
-                Self::non_empty_produced_join(children)
-            }
-            Expr::Match { arms, .. } => Self::non_empty_produced_join(
-                arms.iter()
-                    .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
-                    .collect::<Vec<_>>(),
-            ),
-            Expr::Await(inner)
-                if !self
-                    .expr_types
-                    .get(&SpanKey::in_module(&inner.1, self.current_module_idx))
-                    .map(|ty| self.subst.resolve(ty))
-                    .is_some_and(|ty| {
-                        matches!(
-                            ty,
-                            Ty::Named {
-                                builtin: Some(BuiltinType::Task),
-                                ..
-                            }
-                        )
-                    }) =>
-            {
-                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
-                    &inner.1,
-                    self.current_module_idx,
-                )))
-            }
-            Expr::Timeout { expr: inner, .. } => Some(ProducedValueDependency::Subsumes(
-                SpanKey::in_module(&inner.1, self.current_module_idx),
-            )),
-            Expr::Clone(inner)
-                if matches!(
-                    self.method_call_rewrites.get(&key),
-                    Some(MethodCallRewrite::CopyCloneNoop)
-                ) =>
-            {
-                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
-                    &inner.1,
-                    self.current_module_idx,
-                )))
-            }
-            Expr::MethodCall { receiver, .. }
-                if matches!(
-                    self.method_call_rewrites.get(&key),
-                    Some(MethodCallRewrite::CopyCloneNoop)
-                ) =>
-            {
-                Some(ProducedValueDependency::Subsumes(SpanKey::in_module(
-                    &receiver.1,
-                    self.current_module_idx,
-                )))
-            }
-            Expr::Select { arms, timeout } => {
-                let mut children: Vec<SpanKey> = arms
-                    .iter()
-                    .map(|arm| SpanKey::in_module(&arm.body.1, self.current_module_idx))
-                    .collect();
-                if let Some(timeout) = timeout {
-                    children.push(SpanKey::in_module(&timeout.body.1, self.current_module_idx));
-                }
-                Self::non_empty_produced_join(children)
-            }
-            Expr::Scope { body } | Expr::ScopeDeadline { body, .. } => {
-                body.trailing_expr.as_deref().map(|tail| {
-                    // A scope expression is always Unit at the outer surface,
-                    // but its tail expression may produce any type and still be
-                    // evaluated for side effects. Model that as a subsuming
-                    // publication rather than an identity edge so the checker
-                    // does not require the scope node and its tail to have the
-                    // same type.
-                    ProducedValueDependency::Subsumes(SpanKey::in_module(
-                        &tail.1,
-                        self.current_module_idx,
-                    ))
-                })
-            }
-            _ => None,
-        };
-        // Divergent (`Never`) branches never materialize the join destination;
-        // exclude them from the ownership convergence set rather than
-        // pretending they are a differently-typed value generation.
-        let dependency = dependency.and_then(|dependency| match dependency {
-            ProducedValueDependency::Join(mut children) => {
-                children.retain(|child| {
-                    !self
-                        .expr_types
-                        .get(child)
-                        .map(|ty| self.subst.resolve(ty))
-                        .is_some_and(|ty| matches!(ty, Ty::Never))
-                });
-                Self::non_empty_produced_join(children)
-            }
-            other => Some(other),
-        });
-        if !self.dyn_trait_coercions.contains_key(&key) {
-            if let Some(dependency) = dependency {
-                self.produced_value_dependencies
-                    .insert(key.clone(), dependency);
-            } else {
-                // A leaf publication is authoritative too. This also retires a
-                // provisional edge when two synthetic AST occurrences share a
-                // source span (notably lambda actors and their body block).
-                self.produced_value_dependencies.remove(&key);
-            }
-        }
-        self.produced_value_ownership.insert(key, fact);
-    }
-
-    /// Record a generic actor spawn instantiation.
-    ///
-    /// Inserts `(actor_name, type_args)` into the `actor_spawn_type_args`
-    /// table keyed by the spawn expression span. The mangled symbol is
-    /// derived at output time via
-    /// `mangle_instantiation(SymbolClass::Actor, actor_name, type_args, &[])`.
-    /// This table is consumed by the actor-mono discovery pass.
-    pub(super) fn record_actor_mono_entry(
-        &mut self,
-        actor_name: &str,
-        type_args: Vec<Ty>,
-        span: &Span,
-    ) {
-        let key = SpanKey::in_module(span, self.current_module_idx);
-        self.actor_spawn_type_args
-            .entry(key)
-            .or_insert_with(|| (actor_name.to_string(), type_args));
     }
 
     /// Check if an expression is typically used for side effects (not for its return value).
@@ -9533,15 +9244,7 @@ impl Checker {
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.expr_type_source_modules
             .insert(key.clone(), self.current_module.clone());
-        self.expr_types.insert(key.clone(), ty.clone());
-        let non_owning = self.ty_is_non_owning(ty);
-        self.produced_value_ownership.entry(key).or_insert_with(|| {
-            ProducedValueFact::result(if non_owning {
-                crate::runtime_call::ProducedValueOwnership::NoOwner
-            } else {
-                crate::runtime_call::ProducedValueOwnership::Unknown
-            })
-        });
+        self.expr_types.insert(key, ty.clone());
     }
 
     pub(super) fn record_integer_literal_type(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
@@ -9631,15 +9334,16 @@ impl Checker {
                 }
             }
             Stmt::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                self.scan_expr_for_stack_hints(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.scan_expr_for_stack_hints(&expr.0);
+                }
                 self.scan_block_for_stack_hints(body);
-                if let Some(b) = else_body {
-                    self.scan_block_for_stack_hints(b);
+                if let Some(else_expr) = else_body {
+                    self.scan_expr_for_stack_hints(&else_expr.0);
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -9654,8 +9358,12 @@ impl Checker {
                 self.scan_expr_for_stack_hints(&condition.0);
                 self.scan_block_for_stack_hints(body);
             }
-            Stmt::WhileLet { expr, body, .. } => {
-                self.scan_expr_for_stack_hints(&expr.0);
+            Stmt::WhileLet {
+                conditions, body, ..
+            } => {
+                for expr in condition_exprs(conditions) {
+                    self.scan_expr_for_stack_hints(&expr.0);
+                }
                 self.scan_block_for_stack_hints(body);
             }
             Stmt::For { iterable, body, .. } => {
@@ -9713,6 +9421,15 @@ impl Checker {
     /// `var` bindings produce hints in this slice.
     fn scan_expr_for_stack_hints(&mut self, expr: &Expr) {
         match expr {
+            Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
+                self.scan_expr_for_stack_hints(&left.0);
+                self.scan_expr_for_stack_hints(&right.0);
+            }
             Expr::Block(block) => self.scan_block_for_stack_hints(block),
             Expr::If {
                 condition,
@@ -9727,18 +9444,19 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
                 // Mirrors the `Stmt::IfLet` arm in `scan_stmt_for_stack_hints`.
                 // `body` and `else_body` are bare `Block` values (not `Spanned<Expr>`),
                 // so we call `scan_block_for_stack_hints` directly.
-                self.scan_expr_for_stack_hints(&expr.0);
+                for expr in condition_exprs(conditions) {
+                    self.scan_expr_for_stack_hints(&expr.0);
+                }
                 self.scan_block_for_stack_hints(body);
-                if let Some(b) = else_body {
-                    self.scan_block_for_stack_hints(b);
+                if let Some(else_expr) = else_body {
+                    self.scan_expr_for_stack_hints(&else_expr.0);
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -9905,7 +9623,7 @@ impl Checker {
         }
 
         // Cross-class / cross-instantiation mismatch (e.g. `Vec<int> is Vec<String>`
-        // or `LocalPid<Foo> is Vec<int>`) — only reported when both sides are
+        // or `<actor handle> is Vec<int>`) — only reported when both sides are
         // independently identity-capable; otherwise the value-type rejection
         // above carries the diagnostic.
         if lhs_ok && rhs_ok && lhs_resolved != rhs_resolved {
@@ -10029,7 +9747,7 @@ impl Checker {
     /// Returns `true` when `is` is valid on values of this type:
     ///
     /// * Actors and actor handles: `TypeDefKind::Actor` named types and
-    ///   `LocalPid<T>`.
+    ///   their own actor-handle types.
     ///
     /// Returns `false` for value types: scalars, `String`, `bytes`,
     /// `type Foo { ... }` record declarations (`TypeDefKind::Struct`),
@@ -10051,8 +9769,8 @@ impl Checker {
             // Named types: actor handles and any user `TypeDef` whose kind
             // carries heap/reference identity.
             Ty::Named { name, .. } => {
-                // Actor handles (`LocalPid<T>`).
-                if ty.as_actor_handle().is_some() {
+                // Actor handles.
+                if ty.as_local_actor_ref().is_some() {
                     return true;
                 }
                 // Actor declarations are the only identity-bearing user

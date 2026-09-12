@@ -1,0 +1,54 @@
+// `m.get(k)` over a HashMap whose value has no clone is a borrowed read: `Some`
+// carries a loan of the slot the map still owns, an absent key is `None`, and
+// the map is whole afterwards. Each value is released once, by the owning
+// removal.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+fn main() -> i64 {
+    var tokens: HashMap<string, Token> = HashMap.new();
+    tokens.insert("a", Token { label: "t", id: 1 });
+    tokens.insert("b", Token { label: "t", id: 2 });
+
+    match tokens.get("a") {
+        Option.Some(token) => {
+            println(token.id);
+            token.show();
+        },
+        Option.None => println("missing"),
+    }
+    // The same slot reads again: the borrow moved nothing.
+    match tokens.get("a") {
+        Option.Some(token) => println(token.label),
+        Option.None => println("missing"),
+    }
+    match tokens.get("zz") {
+        Option.Some(token) => println(token.id),
+        Option.None => println("missing"),
+    }
+    println(f"len={tokens.len()}");
+
+    match tokens.remove("a") {
+        Option.Some(token) => token.close(),
+        Option.None => println("missing"),
+    }
+    match tokens.remove("b") {
+        Option.Some(token) => token.close(),
+        Option.None => println("missing"),
+    }
+    println(f"len={tokens.len()}");
+    0
+}

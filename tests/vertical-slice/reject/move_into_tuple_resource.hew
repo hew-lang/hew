@@ -1,8 +1,8 @@
 #[resource]
-type File { fd: i64; }
+type File { fd: i64, }
 
 impl File {
-    fn close(file: File) { }
+    fn close(consume self) { }
 }
 
 fn main() -> i64 {

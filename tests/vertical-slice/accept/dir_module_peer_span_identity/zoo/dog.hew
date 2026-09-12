@@ -1,6 +1,6 @@
 // Peer file: Dog. Byte-for-byte parallel to cat.hew — every declaration has
 // the same length, so each expression sits at the SAME byte offset in both.
-pub type Dog { name: string; }
+pub type Dog { name: string, }
 
 pub fn make_dog(name: string) -> Dog {
     Dog { name: name }

@@ -1,0 +1,10 @@
+[[case]]
+id = "empty-enum-values"
+intent = "Reports with uninhabited output elements copy and drop independently, iterate zero times and return None for lookup while zero-arm elimination remains exhaustive."
+source = "cases/empty-enum-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ORIGINAL\nchanged\n"
+exit = 0

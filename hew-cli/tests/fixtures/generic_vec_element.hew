@@ -2,8 +2,11 @@
 // it, monomorphised at i64 AND string in one program. Proves the generic-fn
 // body lowers polymorphically through HIR -> MIR -> LLVM for an owned-type
 // instantiation (string) as well as a BitCopy one (i64).
-fn first<T>(xs: Vec<T>) -> T {
-    xs[0]
+//
+// `xs[0]` borrows the element for every T (D444); returning it owned needs
+// an explicit `T: Clone` bound and clone at the boundary.
+fn first<T: Clone>(xs: Vec<T>) -> T {
+    xs[0].clone()
 }
 
 fn main() {

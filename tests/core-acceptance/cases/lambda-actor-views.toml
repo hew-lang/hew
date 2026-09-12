@@ -1,0 +1,10 @@
+[[case]]
+id = "lambda-actor-views"
+intent = "A lambda actor's handle takes both delivery views (`mailbox` submits one way, `policy` completes), and answers a call read from a record field and from a `Vec` element, releasing the handle once, whether it is closed or left to its scope."
+source = "cases/lambda-actor-views.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "submitted\nbarrier\naccepted\n21\n24\ndoubler 42\n105\n999\ndone\n"
+exit = 0

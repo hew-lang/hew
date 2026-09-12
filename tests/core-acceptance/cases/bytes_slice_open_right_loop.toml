@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_slice_open_right_loop"
+intent = "Repeated open-right byte-slices shrink by one each pass and the total length is the exit code."
+source = "../vertical-slice/accept/bytes_slice_open_right_loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "abcd\nbcd\ncd\nd\n"
+exit = 10

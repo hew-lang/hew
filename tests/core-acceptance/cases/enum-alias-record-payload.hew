@@ -1,0 +1,19 @@
+type Row {
+    text: string,
+}
+
+enum Box {
+    Full(Row),
+    Empty,
+}
+
+fn main() {
+    var opt = Box.Full(Row { text: f"record" });
+    match opt {
+        .Full(row) => {
+            opt = Box.Empty;
+            println(row.text);
+        },
+        .Empty => {},
+    }
+}

@@ -11,7 +11,7 @@
 
 /// Heap-owning record: an owned `string` field forces a real drop helper.
 pub type Box {
-    label: string;
+    label: string,
 }
 
 /// Build a `Box` joining two labels.

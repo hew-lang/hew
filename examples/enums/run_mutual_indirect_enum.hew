@@ -8,13 +8,13 @@
 //   indirect enum A { ALeaf(i64); AWrap(B); }
 //   indirect enum B { BLeaf(i64); BWrap(A); }
 indirect enum A {
-    ALeaf(i64);
-    AWrap(B);
+    ALeaf(i64),
+    AWrap(B),
 }
 
 indirect enum B {
-    BLeaf(i64);
-    BWrap(A);
+    BLeaf(i64),
+    BWrap(A),
 }
 
 fn eval_a(a: A) -> i64 {

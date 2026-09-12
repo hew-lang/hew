@@ -25,7 +25,7 @@ fn checker_registers_pub_type_box_t_with_one_type_param() {
 
 #[test]
 fn checker_registers_pub_type_pair_ab_with_two_type_params() {
-    let tco = check("pub type Pair<A, B> { first: A; second: B }");
+    let tco = check("pub type Pair<A, B> { first: A, second: B }");
     assert!(
         tco.errors.is_empty(),
         "expected no checker errors: {:?}",
@@ -35,7 +35,7 @@ fn checker_registers_pub_type_pair_ab_with_two_type_params() {
 
 #[test]
 fn checker_registers_pub_enum_outcome_te_with_two_type_params() {
-    let tco = check("pub enum Outcome<T, E> { Ok(T); Err(E) }");
+    let tco = check("pub enum Outcome<T, E> { Ok(T), Err(E) }");
     assert!(
         tco.errors.is_empty(),
         "expected no checker errors: {:?}",
@@ -86,7 +86,7 @@ fn checker_accepts_two_param_type_at_init() {
     // but struct literal expressions use `,` between fields.
     let tco = check(
         r#"
-        pub type Pair<A, B> { first: A; second: B }
+        pub type Pair<A, B> { first: A, second: B }
         fn main() {
             let p = Pair<i64, string> { first: 1, second: "hello" };
         }
@@ -103,7 +103,7 @@ fn checker_accepts_two_param_type_at_init() {
 fn checker_accepts_generic_enum_variant_construction() {
     let tco = check(
         r"
-        pub enum Either<A, B> { Left(A); Right(B) }
+        pub enum Either<A, B> { Left(A), Right(B) }
         fn main() {
             let x: Either<i64, string> = Either.Left(42);
         }
@@ -120,7 +120,7 @@ fn checker_accepts_generic_enum_variant_construction() {
 
 #[test]
 fn checker_accepts_monomorphic_type_without_type_params() {
-    let tco = check("pub type Point { x: i64; y: i64 }");
+    let tco = check("pub type Point { x: i64, y: i64 }");
     assert!(
         tco.errors.is_empty(),
         "monomorphic type should check cleanly: {:?}",
@@ -151,7 +151,7 @@ fn checker_rejects_duplicate_type_param_names() {
 
 #[test]
 fn checker_rejects_duplicate_type_params_in_enum() {
-    let tco = check("pub enum Either<T, T> { Left(T); Right(T) }");
+    let tco = check("pub enum Either<T, T> { Left(T), Right(T) }");
     assert!(
         !tco.errors.is_empty(),
         "duplicate type param names in enum should produce a checker error"

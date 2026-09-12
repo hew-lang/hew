@@ -4,15 +4,15 @@
 // stress_supervision.hew - Test supervisor tree creation and actor management
 // Creates a supervisor with workers and verifies the tree starts correctly.
 actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(x: i64) {
         println(f"Worker {id} processing {x}");
     }
 }
 
 supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 5 within 10s;
+    strategy: one_for_one,
+    intensity: 5 within 10s,
 }
 
 fn main() {
@@ -24,13 +24,13 @@ fn main() {
     let w3 = spawn Worker(id: 3);
     // Send work to each
     for i in 0 .. 10 {
-        w1.work(i);
+        let _ = w1.work(i);
     }
     for i in 0 .. 10 {
-        w2.work(i + 100);
+        let _ = w2.work(i + 100);
     }
     for i in 0 .. 10 {
-        w3.work(i + 200);
+        let _ = w3.work(i + 200);
     }
     sleep(50ms);
     println("PASS: supervision tree defined, actors process messages");

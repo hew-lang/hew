@@ -1,6 +1,6 @@
 enum Choice {
-    Some(i64);
-    None;
+    Some(i64),
+    None,
 }
 
 fn choose(flag: bool) -> Choice {

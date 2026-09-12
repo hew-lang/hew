@@ -14,7 +14,7 @@
 //! }
 //!
 //! fn main() {
-//!     let s = bench.suite("My Benchmarks");
+//!     var s = bench.suite("My Benchmarks");
 //!     s.add("fib_20", 1000, || { fibonacci(20); });
 //!     s.report();
 //! }
@@ -25,18 +25,18 @@ import std.time.datetime;
 // ── Types ─────────────────────────────────────────────────────────────
 /// A single benchmark result containing timing statistics.
 pub type BenchResult {
-    name: string;
-    iterations: i64;
-    avg_ns: i64;
-    min_ns: i64;
-    max_ns: i64;
-    total_ns: i64;
+    name: string,
+    iterations: i64,
+    avg_ns: i64,
+    min_ns: i64,
+    max_ns: i64,
+    total_ns: i64,
 }
 
 /// A collection of benchmark results.
 pub type Suite {
-    name: string;
-    results: Vec<BenchResult>;
+    name: string,
+    results: Vec<BenchResult>,
 }
 
 // ── Constructor ───────────────────────────────────────────────────────
@@ -54,7 +54,7 @@ trait SuiteMethods {
     /// Executes `f` for `iterations` times after a warmup phase
     /// (10% of iterations, minimum 1). Records min, max, avg, and total
     /// timing in nanoseconds.
-    fn add(self, name: string, iterations: i64, f: fn());
+    fn add(var self, name: string, iterations: i64, f: fn());
 
     /// Print results as a human-readable table.
     fn report(self);
@@ -65,7 +65,7 @@ trait SuiteMethods {
 
 impl SuiteMethods for Suite {
     /// Run a benchmark and record the result.
-    fn add(suite: Suite, name: string, iterations: i64, f: fn()) {
+    fn add(var self, name: string, iterations: i64, f: fn()) {
 
         // Warmup: 10% of iterations, minimum 1
         var warmup = iterations / 10;
@@ -94,13 +94,13 @@ impl SuiteMethods for Suite {
         }
         let avg_ns = total_ns / iterations;
         let result = BenchResult { name: name, iterations: iterations, avg_ns: avg_ns, min_ns: min_ns, max_ns: max_ns, total_ns: total_ns };
-        suite.results.push(result);
+        self.results.push(result);
     }
     /// Print results as a human-readable table.
-    fn report(suite: Suite) {
-        println(f"=== {suite.name} ===");
-        for i in 0 .. suite.results.len() {
-            let r = suite.results[i];
+    fn report(self) {
+        println(f"=== {self.name} ===");
+        for i in 0 .. self.results.len() {
+            let r = self.results[i];
             let avg_str = format_time(r.avg_ns);
             let min_str = format_time(r.min_ns);
             let max_str = format_time(r.max_ns);
@@ -109,10 +109,10 @@ impl SuiteMethods for Suite {
         }
     }
     /// Print results as a JSON array.
-    fn report_json(suite: Suite) {
-        var json = f"\{\"suite\":\"{suite.name}\",\"benchmarks\":[";
-        for i in 0 .. suite.results.len() {
-            let r = suite.results[i];
+    fn report_json(self) {
+        var json = f"\{\"suite\":\"{self.name}\",\"benchmarks\":[";
+        for i in 0 .. self.results.len() {
+            let r = self.results[i];
             if i > 0 {
                 json = json + ",";
             }

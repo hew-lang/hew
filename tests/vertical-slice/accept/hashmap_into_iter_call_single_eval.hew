@@ -11,7 +11,7 @@ import std.iter;
 
 fn make_map() -> HashMap<i64, i64> {
     println("MK");
-    let m: HashMap<i64, i64> = HashMap.new();
+    var m: HashMap<i64, i64> = HashMap.new();
     m.insert(1, 10);
     m.insert(2, 20);
     m.insert(3, 30);

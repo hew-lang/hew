@@ -17,12 +17,12 @@
 //!     double-free aborts under `MallocScribble`) and the leak-slope guard
 //!     (the neutralize must not invert the UAF into a per-frame leak).
 //!
-//!   * **Consume agreement (fail-closed diagnostic).** Moving the projected
-//!     binder consumes the scrutinee; a later re-read (e.g. the next
-//!     iteration of the reporter's `while` loop) is rejected at compile time
-//!     as a use-after-move rather than left to null-dereference at runtime
-//!     (`hew_vec_len` is not null-tolerant). Pinned by the compile-fail
-//!     fixture.
+//!   * **Consume agreement.** Moving the projected binder is a real transfer
+//!     of the payload, so a projection the arm only reads leaves the
+//!     scrutinee readable afterwards. The accepted move-out shapes and their
+//!     exactly-once release live in the `payload-move-out-*` and
+//!     `payload-projection-reread` core-acceptance cases, which run under
+//!     ASan/LSan; this file keeps the runtime pins and the borrow controls.
 //!
 //! The control fixture proves the link is gated strictly on a genuine
 //! move-out: a read-only borrow (`v.len()`) of the projected payload keeps
@@ -35,57 +35,18 @@ mod support;
 use std::process::Command;
 
 use support::leak_slope::{assert_frame_slope_below_tolerance, compile_to_native};
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 /// `Vec<i64>` producer shared by every fixture — a fresh, solely-owned heap
 /// buffer of length 3 per call.
 const SEED_FN: &str = "\
 fn seed() -> Vec<i64> {\n\
-\x20   let v: Vec<i64> = Vec.new();\n\
+\x20   var v: Vec<i64> = Vec.new();\n\
 \x20   v.push(1);\n\
 \x20   v.push(2);\n\
 \x20   v.push(3);\n\
 \x20   v\n\
 }\n";
-
-/// Compile a source and assert it is REJECTED with `expected` in the
-/// diagnostic stream (the fail-closed use-after-move surface).
-fn assert_compile_fails(shape_name: &str, source: &str, expected: &str) {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("payload-reassign-fail-{shape_name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join(format!("{shape_name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.path().to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("hew src utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        !output.status.success(),
-        "{shape_name}: expected a fail-closed use-after-move rejection, but compile \
-         succeeded — the projected-payload move-out did not consume the scrutinee:\n{}",
-        describe_output(&output)
-    );
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains(expected),
-        "{shape_name}: compile failed but did not mention `{expected}`:\n{combined}"
-    );
-}
 
 /// Compile a source and run it under the poisoned-allocator triple (no
 /// `leaks` dependency — works on any unix). Asserts a clean exit with
@@ -118,50 +79,16 @@ fn assert_scribbled_run_exit(shape_name: &str, source: &str, expected_exit: i32)
 
 // ── fixture sources ─────────────────────────────────────────────────────────
 
-/// The reporter's original shape (issue #2523): the projected payload is
-/// moved into `w`, `w` is reassigned (freeing the moved buffer), and the
-/// enum is re-matched on the next `while` iteration — a use-after-move that
-/// MUST be rejected at compile time.
-fn reread_loop_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         \n\
-         fn main() {{\n\
-         \x20   let b = Box.Full(seed());\n\
-         \x20   var i = 0;\n\
-         \x20   var sum = 0;\n\
-         \x20   while i < 5 {{\n\
-         \x20       match b {{\n\
-         \x20           Box.Full(v) => {{\n\
-         \x20               sum = sum + v.len();\n\
-         \x20               var w = v;\n\
-         \x20               w = seed();\n\
-         \x20               sum = sum + w.len();\n\
-         \x20           }}\n\
-         \x20           Box.Empty => {{}}\n\
-         \x20       }}\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   println(sum);\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
 /// Move-out + reassign, single match, no re-read. `w = seed()` is the sole
 /// free of the moved payload buffer; the scrutinee's scope-exit composite
 /// drop must no-op on the neutralized slot. Pre-fix: double-free aborts.
 /// Returns `3 + 3 = 6`.
 fn move_reassign_no_reread_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -188,10 +115,10 @@ fn move_reassign_no_reread_source() -> String {
 /// aborts. Returns `3 + 3 = 6`.
 fn move_scope_drop_no_reread_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -217,10 +144,10 @@ fn move_scope_drop_no_reread_source() -> String {
 /// re-read. Returns `3 + 3 + 3 = 9`.
 fn aggregate_payload_no_reread_source() -> String {
     format!(
-        "enum Pair {{\n\
-         \x20   Both((Vec<i64>, Vec<i64>));\n\
-         \x20   Neither;\n\
-         }}\n\
+        "enum Pair {{ \n\
+         \x20   Both((Vec<i64>, Vec<i64>)), \n\
+         \x20   Neither, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Pair.Both((seed(), seed()));\n\
@@ -248,10 +175,10 @@ fn aggregate_payload_no_reread_source() -> String {
 /// leak — the slope stays flat.
 fn fresh_scrutinee_loop_source(frames: usize) -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var i = 0;\n\
@@ -282,10 +209,10 @@ fn fresh_scrutinee_loop_source(frames: usize) -> String {
 /// `3 * 5 = 15`.
 fn borrow_only_loop_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
@@ -308,17 +235,6 @@ fn borrow_only_loop_source() -> String {
 }
 
 // ── oracles ─────────────────────────────────────────────────────────────────
-
-/// (Consume agreement) The reporter's re-reading loop must be rejected at
-/// compile time as a use-after-move, not left to null-dereference at runtime.
-#[test]
-fn reread_after_payload_move_is_use_after_move() {
-    assert_compile_fails(
-        "reread_loop",
-        &reread_loop_source(),
-        "used after it was consumed",
-    );
-}
 
 /// (Memory safety) Move-out + reassign, no re-read: the moved buffer is freed
 /// exactly once; the scrutinee slot is neutralized. No double-free.
@@ -364,138 +280,23 @@ fn borrow_only_projection_keeps_scrutinee_live() {
 
 // ── #2523 F1: re-readable *place* scrutinees ────────────────────────────────
 //
-// A projected heap payload moved out of a re-readable PLACE scrutinee
-// (`match h.b`, `match pair.0`, `match o.inner.b`, `match self.field`) is a
-// silent same-root-cause use-after-free: the match COPIES the place into a
-// temp, so nulling the temp cannot reach the origin field's storage — the
-// moved-from field keeps a dangling pointer the new owner later frees. Actual
-// physical neutralization of a copied place scrutinee is not soundly
-// expressible, so the move-out is REJECTED fail-closed before codegen. These
-// oracles pin the rejection (and prove the sound sibling paths are untouched).
-
-/// A record-FIELD place scrutinee (`match h.b`) matched in a loop, projected
-/// payload moved into `w`, `w` reassigned. Pre-fix: compiles clean and
-/// segfaults on the loop re-read. MUST reject at compile time.
-fn field_place_reread_loop_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         type Holder {{ b: Box, }}\n\
-         \n\
-         fn main() {{\n\
-         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
-         \x20   var i = 0;\n\
-         \x20   var sum = 0;\n\
-         \x20   while i < 5 {{\n\
-         \x20       match h.b {{\n\
-         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box.Empty => {{}}\n\
-         \x20       }}\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   println(sum);\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// A record-FIELD place scrutinee move-out with NO re-read (single match). The
-/// temp-neutralize cannot reach `h.b`, so it leaks / risks a double-free at
-/// `h`'s drop. Uniformly rejected fail-closed (a leak is not an acceptable
-/// end state for a heap ownership transfer).
-fn field_place_no_reread_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         type Holder {{ b: Box, }}\n\
-         \n\
-         fn main() -> i64 {{\n\
-         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
-         \x20   var out = 0;\n\
-         \x20   match h.b {{\n\
-         \x20       Box.Full(v) => {{ out = v.len(); var w = v; w = seed(); out = out + w.len(); }}\n\
-         \x20       Box.Empty => {{}}\n\
-         \x20   }}\n\
-         \x20   out\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// A TUPLE-index scrutinee (`match pair.0`) whose direct owning tuple can hand
-/// the projected enum field to the match temp. Moving the payload remains
-/// fail-closed when the loop re-reads `pair`: the projection transfer
-/// neutralizes `pair.0` and consume-marks `pair`, so the generic MIR checker
-/// rejects the later iteration before codegen.
-fn tuple_place_reread_loop_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         \n\
-         fn main() {{\n\
-         \x20   let pair = (Box.Full(seed()), 0);\n\
-         \x20   var i = 0;\n\
-         \x20   var sum = 0;\n\
-         \x20   while i < 5 {{\n\
-         \x20       match pair.0 {{\n\
-         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box.Empty => {{}}\n\
-         \x20       }}\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   println(sum);\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// A NESTED record-field place scrutinee (`match o.inner.b`) — the recursive
-/// place-root predicate must see through the projection chain. MUST reject.
-fn nested_field_place_reread_loop_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         type Inner {{ b: Box, }}\n\
-         type Outer {{ inner: Inner, }}\n\
-         \n\
-         fn main() {{\n\
-         \x20   let o = Outer {{ inner: Inner {{ b: Box.Full(seed()) }} }};\n\
-         \x20   var i = 0;\n\
-         \x20   var sum = 0;\n\
-         \x20   while i < 5 {{\n\
-         \x20       match o.inner.b {{\n\
-         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box.Empty => {{}}\n\
-         \x20       }}\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   println(sum);\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
+// A projected payload moved out of a re-readable PLACE scrutinee
+// (`match h.b`, `match pair.0`, `match o.inner.b`) reaches the origin's real
+// storage, so the move is accepted and the payload is released once; the
+// `payload-move-out-places` core-acceptance case pins that under ASan/LSan.
+// What stays here is the pair of controls: a read-only borrow of a field
+// place keeps the scrutinee live, and an ephemeral scrutinee's move-out frees
+// exactly once.
 
 /// A read-only borrow of a record-FIELD place scrutinee must stay valid — the
 /// rejection fires only on a move-out (`Consume`), never on a borrow. The loop
 /// re-matches `h.b` every iteration and totals `3 * 5 = 15`.
 fn field_place_borrow_only_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          type Holder {{ b: Box, }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -522,10 +323,10 @@ fn field_place_borrow_only_source() -> String {
 /// ephemeral path when tightening the place path. Returns `3 + 3 = 6`.
 fn call_scrutinee_move_reassign_source() -> String {
     format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
+        "enum Box {{ \n\
+         \x20   Full(Vec<i64>), \n\
+         \x20   Empty, \n\n\
+         \x20}}\n\
          fn mk() -> Box {{ Box.Full(seed()) }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -539,49 +340,6 @@ fn call_scrutinee_move_reassign_source() -> String {
          \n\
          {SEED_FN}"
     )
-}
-
-/// (F1 · use-after-free) A record-field place scrutinee move-out in a loop must
-/// be rejected at compile time — not left to segfault on the re-read.
-#[test]
-fn field_place_move_out_reread_is_rejected() {
-    assert_compile_fails(
-        "field_place_reread",
-        &field_place_reread_loop_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a re-readable place",
-    );
-}
-
-/// (F1) A single-match field-place move-out (no re-read) is also rejected —
-/// the temp-neutralize cannot reach `h.b`, so the transfer is unsound.
-#[test]
-fn field_place_move_out_no_reread_is_rejected() {
-    assert_compile_fails(
-        "field_place_no_reread",
-        &field_place_no_reread_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a re-readable place",
-    );
-}
-
-/// A tuple-index owner transfer is rejected when the source tuple is re-read.
-#[test]
-fn tuple_place_move_out_is_rejected() {
-    assert_compile_fails(
-        "tuple_place_reread",
-        &tuple_place_reread_loop_source(),
-        "binding `pair` is used after it was consumed",
-    );
-}
-
-/// (F1) A nested record-field place scrutinee move-out is rejected — the
-/// place-root predicate sees through the projection chain.
-#[test]
-fn nested_field_place_move_out_is_rejected() {
-    assert_compile_fails(
-        "nested_field_place",
-        &nested_field_place_reread_loop_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a re-readable place",
-    );
 }
 
 /// (F1 · over-fire guard) A read-only borrow of a field-place scrutinee stays
@@ -599,99 +357,6 @@ fn call_scrutinee_move_reassign_single_free() {
     assert_scribbled_run_exit("call_scrutinee", &call_scrutinee_move_reassign_source(), 6);
 }
 
-// ── #2523 F1b: default-deny — wrapper-hidden / non-enumerated place scrutinees ─
-//
-// The F1 fix classified by an allowlist of REJECT shapes and defaulted every
-// other shape to the sound-only temp-neutralize — a fail-OPEN direction. A
-// place projection hidden behind a `Block` (`match { h.b }`) or `If`
-// (`match if c { h.b } else { h.b }`) wrapper is not one of the enumerated
-// place shapes, so it slipped through to the temp-neutralize and double-freed
-// deterministically (5/5), identical mechanism to the direct `match h.b`. The
-// classifier is now fail-CLOSED: only a bare owning binding or a *proven*
-// ephemeral producer (call / constructor / literal / await) takes the
-// neutralize path; every other shape — wrappers and any un-enumerated or future
-// HIR shape — is REJECTED before codegen. These oracles pin that direction so a
-// wrapper-hidden alias can never again reach the unsound neutralize.
-
-/// F1b primary: a record-FIELD place hidden behind a `Block` wrapper
-/// (`match { h.b }`). Pre-F1b: compiled clean and double-freed 5/5. MUST reject.
-fn block_wrapped_field_place_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         type Holder {{ b: Box, }}\n\
-         \n\
-         fn main() {{\n\
-         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
-         \x20   var i = 0;\n\
-         \x20   var sum = 0;\n\
-         \x20   while i < 5 {{\n\
-         \x20       match {{ h.b }} {{\n\
-         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box.Empty => {{}}\n\
-         \x20       }}\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   println(sum);\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// F1b, second complex shape: a record-FIELD place behind an `If` wrapper
-/// (`match if c { h.b } else { h.b }`). Same alias-carrying tail, a different
-/// non-enumerated wrapper. MUST reject (fail-closed default).
-fn if_wrapped_field_place_source() -> String {
-    format!(
-        "enum Box {{\n\
-         \x20   Full(Vec<i64>);\n\
-         \x20   Empty;\n\
-         }}\n\
-         type Holder {{ b: Box, }}\n\
-         \n\
-         fn main() {{\n\
-         \x20   let h = Holder {{ b: Box.Full(seed()) }};\n\
-         \x20   var i = 0;\n\
-         \x20   var sum = 0;\n\
-         \x20   while i < 5 {{\n\
-         \x20       match if i < 2 {{ h.b }} else {{ h.b }} {{\n\
-         \x20           Box.Full(v) => {{ sum = sum + v.len(); var w = v; w = seed(); }}\n\
-         \x20           Box.Empty => {{}}\n\
-         \x20       }}\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   println(sum);\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// (F1b) A block-wrapped field-place scrutinee move-out is rejected — the
-/// fail-closed default catches the wrapper the syntactic allowlist missed.
-#[test]
-fn block_wrapped_place_move_out_is_rejected() {
-    assert_compile_fails(
-        "block_wrapped_place",
-        &block_wrapped_field_place_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a re-readable place",
-    );
-}
-
-/// (F1b) An if-wrapped field-place scrutinee move-out is rejected — a second
-/// non-enumerated wrapper shape, proving the default-deny is not `Block`-only.
-#[test]
-fn if_wrapped_place_move_out_is_rejected() {
-    assert_compile_fails(
-        "if_wrapped_place",
-        &if_wrapped_field_place_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a re-readable place",
-    );
-}
-
 // ── #2523 F2: exhaustive projection-ownership correction (nested / capture /
 //     two independent fields) ─────────────────────────────────────────────────
 //
@@ -700,76 +365,27 @@ fn if_wrapped_place_move_out_is_rejected() {
 // temp-neutralize cannot reach, or a false use-after-consume on a valid
 // second-field move):
 //
-//   1. NESTED binders (`Outer::Wrap(Inner::Full(v))`) are bound from a
-//      TRANSIENT copy the predicate phase loads, not the outer value's real
-//      nested slot; neutralizing the transient cannot reach it, so a heap
-//      move-out double-frees / leaks. Now REJECTED fail-closed (the outer
-//      value's storage is not expressible as a single `Place::MachineVariant`).
-//      The enum and machine nested payloads share the identical
-//      `nested_binding_jobs` / `Place::MachineVariant` seam, so this enum
-//      coverage pins both.
+//   1. NESTED binders (`Outer::Wrap(Inner::Full(v))`) reach the outer value's
+//      real nested slot, so the move-out is accepted and releases once; the
+//      `payload-move-out-patterns` core-acceptance case pins it. The borrow-only
+//      control stays here.
 //   2. A closure-CAPTURED binding (`match b` inside `|| { … }` that captures
 //      `b`) is read from the closure environment by BYTE-COPY
 //      (`ClosureEnvFieldLoad`), NOT moved into the temp; the captured copy
 //      survives the move and double-frees when the env drops. Now REJECTED.
 //   3. TWO independent heap fields moved in one arm
 //      (`Both(x, y) => var wx = x; var wy = y;`) must both single-free — the
-//      per-field partial-projection consume-mark keeps the aggregate re-read
-//      forbidding without a false use-after-consume on the second move, and the
-//      neutralized-transfer edges keep the two owners in separate move
-//      components so neither scope-exit drop is wrongly stripped.
-
-/// (F2 item 1) A NESTED enum payload move-out from an ephemeral scrutinee
-/// (`match mk()`). The nested binder aliases a transient copy; the move-out is
-/// rejected fail-closed. Pre-fix: compiled and leaked / double-freed.
-fn nested_enum_move_out_source() -> String {
-    format!(
-        "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
-         enum Outer {{ Wrap(Inner); Bare; }}\n\
-         fn mk() -> Outer {{ Outer.Wrap(Inner.Full(seed())) }}\n\
-         fn main() -> i64 {{\n\
-         \x20   var total = 0;\n\
-         \x20   match mk() {{\n\
-         \x20       Outer.Wrap(Inner.Full(v)) => {{ var w = v; total = w.len(); w = seed(); total = total + w.len(); }}\n\
-         \x20       Outer.Wrap(Inner.Hollow) => {{}}\n\
-         \x20       Outer.Bare => {{}}\n\
-         \x20   }}\n\
-         \x20   total\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// (F2 item 1) The same nested move-out from an owned BINDING scrutinee
-/// (`match b`). Rejected fail-closed for the same reason: the nested slot is
-/// reachable only through a transient copy the neutralize cannot null.
-fn nested_enum_move_out_binding_source() -> String {
-    format!(
-        "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
-         enum Outer {{ Wrap(Inner); Bare; }}\n\
-         fn main() -> i64 {{\n\
-         \x20   let b = Outer.Wrap(Inner.Full(seed()));\n\
-         \x20   var total = 0;\n\
-         \x20   match b {{\n\
-         \x20       Outer.Wrap(Inner.Full(v)) => {{ var w = v; total = w.len(); w = seed(); total = total + w.len(); }}\n\
-         \x20       Outer.Wrap(Inner.Hollow) => {{}}\n\
-         \x20       Outer.Bare => {{}}\n\
-         \x20   }}\n\
-         \x20   total\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
+//      first move must not raise a false use-after-consume on the second, and
+//      the two owners stay in separate move components so neither scope-exit
+//      drop is wrongly stripped.
 
 /// (F2 item 1 control) A borrow-only NESTED destructure never reaches the
 /// consume hook, so it stays valid: the loop reads the nested payload and
 /// totals correctly with no double-free.
 fn nested_enum_borrow_only_source() -> String {
     format!(
-        "enum Inner {{ Full(Vec<i64>); Hollow; }}\n\
-         enum Outer {{ Wrap(Inner); Bare; }}\n\
+        "enum Inner {{  Full(Vec<i64>), Hollow }}\n\
+         enum Outer {{  Wrap(Inner), Bare }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Outer.Wrap(Inner.Full(seed()));\n\
          \x20   var total = 0;\n\
@@ -791,11 +407,11 @@ fn nested_enum_borrow_only_source() -> String {
 /// double-free 3/3 under the poisoned allocator.
 fn captured_binding_move_out_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var total = 0;\n\
-         \x20   let f = || {{\n\
+         \x20   var f = capture(var total) || {{\n\
          \x20       match b {{\n\
          \x20           Box.Full(v) => {{ var w = v; total = w.len(); w = seed(); }}\n\
          \x20           Box.Empty => {{}}\n\
@@ -814,7 +430,7 @@ fn captured_binding_move_out_source() -> String {
 /// runs clean (the env-copy is read, never moved out).
 fn captured_binding_borrow_only_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   let f = || -> i64 {{\n\
@@ -836,7 +452,7 @@ fn captured_binding_borrow_only_source() -> String {
 /// use-after-consume on the second move; no leak. Returns `3 + 3 = 6`.
 fn two_field_move_out_source() -> String {
     format!(
-        "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
+        "enum Pair {{  Both(Vec<i64>, Vec<i64>), Neither }}\n\
          fn mk() -> Pair {{ Pair.Both(seed(), seed()) }}\n\
          fn main() -> i64 {{\n\
          \x20   var out = 0;\n\
@@ -860,7 +476,7 @@ fn two_field_move_out_source() -> String {
 /// was consumed` on the SECOND field. Must compile and single-free. Returns 6.
 fn two_field_move_out_binding_source() -> String {
     format!(
-        "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
+        "enum Pair {{  Both(Vec<i64>, Vec<i64>), Neither }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Pair.Both(seed(), seed());\n\
          \x20   var out = 0;\n\
@@ -879,54 +495,6 @@ fn two_field_move_out_binding_source() -> String {
     )
 }
 
-/// (F2 item 3, negative re-read) After BOTH fields are moved out, the aggregate
-/// binding must not be re-readable: a second `match b` is rejected at compile
-/// time as a use-after-move. Proves the per-field partial-projection mark still
-/// forbids re-read (the consume state is not weakened).
-fn two_field_reread_source() -> String {
-    format!(
-        "enum Pair {{ Both(Vec<i64>, Vec<i64>); Neither; }}\n\
-         fn main() -> i64 {{\n\
-         \x20   let b = Pair.Both(seed(), seed());\n\
-         \x20   var out = 0;\n\
-         \x20   match b {{\n\
-         \x20       Pair.Both(x, y) => {{ var wx = x; var wy = y; out = wx.len() + wy.len(); }}\n\
-         \x20       Pair.Neither => {{}}\n\
-         \x20   }}\n\
-         \x20   match b {{\n\
-         \x20       Pair.Both(x2, y2) => {{ out = out + x2.len() + y2.len(); }}\n\
-         \x20       Pair.Neither => {{}}\n\
-         \x20   }}\n\
-         \x20   out\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// (F2 item 1) A nested projected-payload move-out from an ephemeral scrutinee
-/// is rejected fail-closed with the nested-pattern diagnostic.
-#[test]
-fn nested_enum_move_out_is_rejected() {
-    assert_compile_fails(
-        "nested_enum_move",
-        &nested_enum_move_out_source(),
-        "cannot move the heap-owning payload `v` out of a nested `match` pattern",
-    );
-}
-
-/// (F2 item 1) The same nested move-out from an owned binding scrutinee is also
-/// rejected — the reject is on the nested-destructure shape, not the scrutinee
-/// origin.
-#[test]
-fn nested_enum_move_out_binding_is_rejected() {
-    assert_compile_fails(
-        "nested_enum_move_binding",
-        &nested_enum_move_out_binding_source(),
-        "cannot move the heap-owning payload `v` out of a nested `match` pattern",
-    );
-}
-
 /// (F2 item 1 control) A borrow-only nested destructure stays valid and frees
 /// exactly once. Returns 3.
 #[test]
@@ -934,14 +502,20 @@ fn nested_enum_borrow_only_is_valid() {
     assert_scribbled_run_exit("nested_enum_borrow", &nested_enum_borrow_only_source(), 3);
 }
 
-/// (F2 item 2) A projected-payload move-out of a closure-captured binding is
-/// rejected fail-closed with the captured-binding diagnostic.
+/// (F2 item 2) A projected-payload move-out of a closure-captured binding
+/// compiles and runs clean: `capture(...)` names an independent immutable
+/// snapshot per binding (HEW-SPEC-2026 closure syntax), so the closure's copy
+/// of `b` owns its own payload and moving `v` out of it cannot alias the
+/// outer scope's `b`. This superseded the prior fail-closed rejection from
+/// before the named-capture redesign. `total` is materialised through the
+/// closure's own private field (same as `closure_captured_var_writeback`),
+/// so `main`'s outer `total` stays 0 after `f()` runs.
 #[test]
-fn captured_binding_move_out_is_rejected() {
-    assert_compile_fails(
+fn captured_binding_move_out_is_valid() {
+    assert_scribbled_run_exit(
         "captured_binding_move",
         &captured_binding_move_out_source(),
-        "cannot move the heap-owning payload `v` out of a `match` on a closure-captured binding",
+        0,
     );
 }
 
@@ -974,73 +548,15 @@ fn two_field_move_out_binding_single_free() {
     );
 }
 
-/// (F2 item 3, negative re-read) The aggregate cannot be re-read after any
-/// field move — the second `match b` is a compile-time use-after-move.
-#[test]
-fn two_field_reread_is_use_after_move() {
-    assert_compile_fails(
-        "two_field_reread",
-        &two_field_reread_source(),
-        "used after it was consumed",
-    );
-}
-
 // ── F2 (guard continuation): fallthrough-capable match-arm guards ────────────
 //
 // A `match`-arm guard is evaluated BEFORE the arm is committed; a false guard
-// falls through to a later arm. If the guard CONSUMES a projected heap payload
-// (a block-expression guard containing a move, e.g. `if { var w = v; ... }`),
-// the consume neutralizes (nulls) the shared scrutinee payload slot before the
-// guard outcome is known. A false guard then falls through to a later arm that
-// re-projects the now-null slot → null-fault / abort. Because guard truth is
-// not statically known and every arm guard can fall through, projected
-// heap-payload CONSUMPTION inside any match-arm guard is rejected fail-closed,
-// regardless of the guard's (would-be) truth. A read-only borrow in the guard
-// (`v.len() > 100`) never reaches the consume hook and stays valid.
-
-/// (F2 guard) A block-expression guard that MOVES the projected payload (`var
-/// w = v`) and then falls through (guard false) to a later arm that
-/// re-destructures the same slot. The consume must be rejected at compile time
-/// as a guard-fallthrough move rather than null-fault at runtime.
-fn guarded_consume_fallthrough_source() -> String {
-    format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
-         fn main() -> i64 {{\n\
-         \x20   let b = Box.Full(seed());\n\
-         \x20   var out = 0;\n\
-         \x20   match b {{\n\
-         \x20       Box.Full(v) if {{ var w = v; w.len() > 100 }} => {{ out = 1; }}\n\
-         \x20       Box.Full(v2) => {{ out = v2.len(); }}\n\
-         \x20       Box.Empty => {{}}\n\
-         \x20   }}\n\
-         \x20   out\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
-
-/// (F2 guard) The same block-move guard with a would-be-TRUE predicate
-/// (`w.len() > 0`). The reject is on the consume-in-fallthrough-guard shape,
-/// not the guard's truth — guard truth is not statically known, so this is
-/// rejected identically.
-fn true_guarded_consume_source() -> String {
-    format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
-         fn main() -> i64 {{\n\
-         \x20   let b = Box.Full(seed());\n\
-         \x20   var out = 0;\n\
-         \x20   match b {{\n\
-         \x20       Box.Full(v) if {{ var w = v; w.len() > 0 }} => {{ out = 1; }}\n\
-         \x20       Box.Full(v2) => {{ out = v2.len(); }}\n\
-         \x20       Box.Empty => {{}}\n\
-         \x20   }}\n\
-         \x20   out\n\
-         }}\n\
-         \n\
-         {SEED_FN}"
-    )
-}
+// falls through to a later arm, which re-projects the same payload. A guard
+// over a value payload takes its own copy, so the fallthrough arm still reads
+// a live payload — the `payload-projection-reread` core-acceptance case pins
+// both the false and the taken guard. A guard that genuinely consumes a
+// resource binder is still refused by the ownership stage
+// (`E_OWN_GUARD_CONSUME`). The borrow-only guard control stays here.
 
 /// (F2 guard control) A borrow-only guard (`v.len() > 100`) that evaluates
 /// false and falls through to a later arm. The borrow never reaches the
@@ -1048,7 +564,7 @@ fn true_guarded_consume_source() -> String {
 /// correctly. Guard false → `v2.len()` = 3.
 fn borrow_only_guard_fallthrough_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var out = 0;\n\
@@ -1062,29 +578,6 @@ fn borrow_only_guard_fallthrough_source() -> String {
          \n\
          {SEED_FN}"
     )
-}
-
-/// (F2 guard) A projected heap-payload consumed inside a fallthrough-capable
-/// guard is rejected fail-closed — the false-guard fallthrough would otherwise
-/// re-project a neutralized (null) payload slot and abort.
-#[test]
-fn guarded_consume_fallthrough_is_rejected() {
-    assert_compile_fails(
-        "guarded_consume_fallthrough",
-        &guarded_consume_fallthrough_source(),
-        "cannot move the heap-owning payload `v` out of a `match`-arm guard that can fall through",
-    );
-}
-
-/// (F2 guard) The would-be-true guarded consume is rejected identically — the
-/// policy is on the consume-in-guard shape, not the guard's (unknown) truth.
-#[test]
-fn true_guarded_consume_is_rejected() {
-    assert_compile_fails(
-        "true_guarded_consume",
-        &true_guarded_consume_source(),
-        "cannot move the heap-owning payload `v` out of a `match`-arm guard that can fall through",
-    );
 }
 
 /// (F2 guard control) A borrow-only guard that falls through stays valid and
@@ -1104,7 +597,7 @@ fn borrow_only_guard_fallthrough_runs_safely() {
 /// of the first iteration and leaves `b` holding null. Totals `3 * 5 = 15`.
 fn if_let_borrow_only_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var i = 0;\n\
@@ -1128,7 +621,7 @@ fn if_let_borrow_only_source() -> String {
 /// memory on the second. Totals `3 * 4 = 12`.
 fn while_let_borrow_only_source() -> String {
     format!(
-        "enum Box {{ Full(Vec<i64>); Empty; }}\n\
+        "enum Box {{  Full(Vec<i64>), Empty }}\n\
          fn main() -> i64 {{\n\
          \x20   let b = Box.Full(seed());\n\
          \x20   var sum = 0;\n\

@@ -86,16 +86,16 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
 #[test]
 fn bytes_methods_resolve_through_std_io_extern_symbols() {
     let source = r"
-        fn exercise(buf: bytes, other: bytes) {
+        fn exercise(input: bytes, other: bytes) {
+            var buf = input;
             buf.push(65);
-            let _: u8 = buf.pop();
+            let _: Option<u8> = buf.pop();
             let _: i64 = buf.len();
             let _: Option<u8> = buf.get(0);
             buf.set(0, 66);
             let _: bool = buf.is_empty();
             buf.clear();
             let _: bool = buf.contains(66);
-            let _: string = buf.to_string();
             buf.append(other);
         }
     ";
@@ -108,11 +108,7 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
     for symbol in [
         "hew_bytes_push",
         "hew_bytes_pop",
-        // `bytes.len()` keeps the `hew_vec_len` extern annotation: the symbol
-        // is shape-compatible (reads the length word of the BytesTriple) and
-        // codegen routes a bytes receiver to the canonical `hew_bytes_len`
-        // entry, so the checker-owned rewrite still records `hew_vec_len`.
-        "hew_vec_len",
+        "hew_bytes_len",
         // `bytes.get` routes to the dedicated `hew_bytes_get` getter, which
         // returns `Option<u8>` — de-aliased from the trapping index getter
         // `hew_bytes_index` that backs `buf[i]`.
@@ -124,7 +120,6 @@ fn bytes_methods_resolve_through_std_io_extern_symbols() {
         "hew_bytes_is_empty",
         "hew_bytes_clear",
         "hew_bytes_contains",
-        "hew_bytes_to_string",
         "hew_bytes_append",
     ] {
         assert!(
@@ -155,4 +150,36 @@ fn bytes_remove_fails_closed_without_a_checked_in_runtime_symbol() {
         "unsupported bytes.remove must not record a rewrite; got: {:#?}",
         output.method_call_rewrites
     );
+}
+
+#[test]
+fn bytes_text_conversion_requires_explicit_utf8_decoding() {
+    let removed = typecheck("fn sample(data: bytes) -> string { data.to_string() }");
+    assert!(
+        removed
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedMethod),
+        "{:?}",
+        removed.errors
+    );
+    let validating = typecheck(
+        r"
+        import std.encoding.utf8;
+        fn sample(data: bytes) -> string fails utf8.Utf8Error { utf8.decode(data)? }
+    ",
+    );
+    assert!(validating.errors.is_empty(), "{:?}", validating.errors);
+    assert!(validating
+        .method_call_rewrites
+        .values()
+        .any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: hew_types::CallTarget::Runtime(
+                    hew_types::runtime_call::RuntimeCallFamily::BytesDecodeUtf8
+                ),
+                ..
+            }
+        )));
 }

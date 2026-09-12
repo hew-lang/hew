@@ -3,8 +3,8 @@
 // the observer's metrics, actor list, and message tracing views.
 
 actor Counter {
-    let name: string;
-    var count: Int;
+    let name: string,
+    var count: Int,
 
     receive fn tick() {
         count += 1;
@@ -16,8 +16,8 @@ actor Counter {
 }
 
 actor Relay {
-    let id: Int;
-    let target: Counter;
+    let id: Int,
+    let target: Counter,
 
     receive fn forward(n: Int) {
         var i = 0;
@@ -29,10 +29,10 @@ actor Relay {
 }
 
 actor Monitor {
-    let c1: Counter;
-    let c2: Counter;
-    let c3: Counter;
-    var checks: Int;
+    let c1: Counter,
+    let c2: Counter,
+    let c3: Counter,
+    var checks: Int,
 
     receive fn check() {
         let a = await c1.get_count();

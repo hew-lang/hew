@@ -1,0 +1,10 @@
+[[case]]
+id = "duplex-send"
+intent = "A lambda actor's `.send(msg)` is the same completion call as `handle(msg)` and its `.close()` the same terminal release as `close(handle)`: both spellings deliver through the actor path, an owned message transfers, and a reply-shaped lambda answers its caller."
+source = "cases/duplex-send.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "42\nsent\n8\ncalled\nhello world-1\nsquare 36\ndone\n"
+exit = 0

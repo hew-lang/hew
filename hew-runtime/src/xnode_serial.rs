@@ -32,7 +32,7 @@
 //!
 //! ## Ownership across the boundary
 //!
-//! - A serialize thunk returns a `libc::malloc`'d byte buffer the runtime owns;
+//! - A serialize thunk returns a sized-block-allocator byte buffer the runtime owns;
 //!   the runtime copies those bytes into the envelope and frees the buffer with
 //!   `hew_ser_free_bytes`.
 //! - A deserialize thunk borrows the envelope bytes (no copy) and returns a
@@ -50,8 +50,8 @@ use std::sync::Mutex;
 #[no_mangle]
 pub unsafe extern "C" fn hew_ser_free_bytes(ptr: *mut u8) {
     if !ptr.is_null() {
-        // SAFETY: ptr came from libc::malloc in hew_cbor_ser_finish.
-        unsafe { libc::free(ptr.cast::<c_void>()) };
+        // SAFETY: ptr came from the sized-block allocator in hew_cbor_ser_finish.
+        unsafe { crate::mem::buf_free(ptr.cast::<c_void>()) };
     }
 }
 
@@ -68,7 +68,7 @@ pub unsafe extern "C" fn hew_ser_free_bytes(ptr: *mut u8) {
 // uses.
 
 /// C-ABI signature of a codegen-emitted deserialize thunk: it borrows the wire
-/// bytes, returns a `libc::malloc`'d reconstructed value the caller owns, and
+/// bytes, returns a sized-block-allocator reconstructed value the caller owns, and
 /// writes the value's in-memory struct byte size to `*out_struct_size` (which
 /// differs from the wire length, so the runtime can hand the mailbox / ask path
 /// the correct byte count).
@@ -76,7 +76,7 @@ pub type DeserializeThunk =
     unsafe extern "C" fn(data: *const u8, len: usize, out_struct_size: *mut usize) -> *mut c_void;
 
 /// C-ABI signature of a codegen-emitted serialize thunk: it reads the value at
-/// `value_ptr` and returns a `libc::malloc`'d byte buffer (length via `out_len`)
+/// `value_ptr` and returns a sized-block-allocator byte buffer (length via `out_len`)
 /// the caller owns (free with `hew_ser_free_bytes`).
 pub type SerializeThunk =
     unsafe extern "C" fn(value_ptr: *const c_void, out_len: *mut usize) -> *mut u8;
@@ -456,7 +456,7 @@ mod tests {
         unsafe { crate::cbor_serial::hew_cbor_ser_finish(buf, out_len) }
     }
 
-    /// Codec A deserialize: reconstruct a single `i64` into a malloc'd slot.
+    /// Codec A deserialize: reconstruct a single `i64` into a sized-block slot.
     unsafe extern "C" fn de_a(
         data: *const u8,
         len: usize,
@@ -474,7 +474,7 @@ mod tests {
             return std::ptr::null_mut();
         }
         // SAFETY: malloc for an i64 slot.
-        let slot = unsafe { libc::malloc(std::mem::size_of::<i64>()) }.cast::<i64>();
+        let slot = crate::mem::buf_try_alloc(std::mem::size_of::<i64>()).cast::<i64>();
         if slot.is_null() {
             return std::ptr::null_mut();
         }
@@ -498,7 +498,7 @@ mod tests {
         unsafe { crate::cbor_serial::hew_cbor_ser_finish(buf, out_len) }
     }
 
-    /// Codec B deserialize: reconstruct an owned `string` into a malloc'd slot
+    /// Codec B deserialize: reconstruct an owned `string` into a sized-block slot
     /// holding the owned `*mut c_char` (owned-field layout differs from A).
     unsafe extern "C" fn de_b(
         data: *const u8,
@@ -515,15 +515,15 @@ mod tests {
         unsafe { crate::cbor_serial::hew_cbor_de_free(reader) };
         if failed != 0 {
             // SAFETY: drop the empty owned string the reader handed back.
-            unsafe { crate::string::hew_string_drop(s) };
+            unsafe { crate::cabi::free_cstring(s) };
             return std::ptr::null_mut();
         }
         // SAFETY: malloc for a `*mut c_char` slot.
         let slot =
-            unsafe { libc::malloc(std::mem::size_of::<*mut c_char>()) }.cast::<*mut c_char>();
+            crate::mem::buf_try_alloc(std::mem::size_of::<*mut c_char>()).cast::<*mut c_char>();
         if slot.is_null() {
             // SAFETY: reclaim the owned string on alloc failure.
-            unsafe { crate::string::hew_string_drop(s) };
+            unsafe { crate::cabi::free_cstring(s) };
             return std::ptr::null_mut();
         }
         // SAFETY: slot is a fresh owned-pointer slot.
@@ -599,15 +599,15 @@ mod tests {
             !a_val.is_null(),
             "actor A's frame must route to A's codec, not be lost to B's registration"
         );
-        // SAFETY: a_val is a malloc'd i64 slot from de_a.
+        // SAFETY: a_val is a sized-block i64 slot from de_a.
         let a_decoded = unsafe { *a_val.cast::<i64>() };
         assert_eq!(a_size, std::mem::size_of::<i64>());
         assert_eq!(
             a_decoded, -987_654_321,
             "actor A's i64 must decode correctly under A's codec"
         );
-        // SAFETY: a_val came from de_a (libc::malloc of an i64 slot).
-        unsafe { libc::free(a_val) };
+        // SAFETY: a_val came from de_a (sized-block allocation of an i64 slot).
+        unsafe { crate::mem::buf_free(a_val) };
 
         // Actor B's frame (a string) must decode under B's codec to the string.
         let b_bytes = encode_with_b("collision-payload");
@@ -624,7 +624,7 @@ mod tests {
             !b_val.is_null(),
             "actor B's frame must route to B's codec, not A's (type-confusion)"
         );
-        // SAFETY: b_val is a malloc'd `*mut c_char` slot from de_b.
+        // SAFETY: b_val is a sized-block `*mut c_char` slot from de_b.
         let b_str_ptr = unsafe { *b_val.cast::<*mut c_char>() };
         assert_eq!(b_size, std::mem::size_of::<*mut c_char>());
         // SAFETY: b_str_ptr is an owned C string from de_b.
@@ -637,10 +637,10 @@ mod tests {
             "actor B's string must decode correctly under B's codec, not be \
              reinterpreted by A's i64 codec"
         );
-        // SAFETY: b_str_ptr is an owned string; b_val is its malloc'd slot.
+        // SAFETY: b_str_ptr is an owned string; b_val is its sized-block slot.
         unsafe {
-            crate::string::hew_string_drop(b_str_ptr);
-            libc::free(b_val);
+            crate::cabi::free_cstring(b_str_ptr);
+            crate::mem::buf_free(b_val);
         }
 
         // Clean the registry so the serial test ordering is hermetic.

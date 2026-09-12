@@ -1,0 +1,10 @@
+PASS: no false negatives
+PASS: some non-members rejected
+PASS: empty filter rejects all
+PASS: high saturation with many elements
+PASS: false positives demonstrated (50 out of 100)
+PASS: larger filter has fewer false positives
+---
+Passed: 6
+Failed: 0
+ALL PASS

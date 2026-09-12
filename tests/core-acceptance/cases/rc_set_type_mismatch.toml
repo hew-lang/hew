@@ -1,0 +1,12 @@
+[[case]]
+id = "rc_set_type_mismatch"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/rc_set_type_mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 3
+column = 12

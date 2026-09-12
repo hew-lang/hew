@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-user-type-fault"
+intent = "A checked arithmetic fault releases a user `#[resource]` held in a record field and in a vector element exactly once, and preserves the original failure."
+source = "cases/resource-user-type-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "live 7\nclose v1\nclose h1\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

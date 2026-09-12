@@ -15,7 +15,7 @@
 import std.testing;
 
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     receive fn step() -> i64 {
         n = n + 1;
         return n;
@@ -23,14 +23,14 @@ actor Counter {
 }
 
 actor Classifier {
-    let counter: LocalPid<Counter>;
+    let counter: Counter,
 
     // Three distinct `return` paths reached through one `await`: the early
     // `return 100` when the stepped value exceeds 3, the `return v`
     // fall-through, and the ask-error `return -1`. Each path deposits its own
     // value through the single shared final-suspend block.
     receive fn classify() -> i64 {
-        match await counter.step() {
+        match counter.step() {
             .Ok(v) => {
                 if v > 3 {
                     return 100;
@@ -51,7 +51,7 @@ actor Classifier {
     receive fn scan_until(limit: i64) -> i64 {
         var ticks = 0;
         while ticks < 50 {
-            match await counter.step() {
+            match counter.step() {
                 .Ok(v) => {
                     if v >= limit {
                         return v;
@@ -79,8 +79,8 @@ fn multi_return_value_handler_deposits_each_path() {
     expect_classify(c, 100);
 }
 
-fn expect_classify(c: LocalPid<Classifier>, want: i64) {
-    match await c.classify() {
+fn expect_classify(c: Classifier, want: i64) {
+    match c.classify() {
         .Ok(got) => testing.assert_eq(got, want),
         .Err(e) => testing.assert_true(false),
     }
@@ -93,7 +93,7 @@ fn early_return_out_of_loop_after_await_returns_stop_value() {
     // step() yields 1,2,3,...; scan returns the value the first time it reaches
     // 3 (the early `return v` inside the loop), proving the in-loop early
     // return deposits its value through the shared block.
-    match await c.scan_until(3) {
+    match c.scan_until(3) {
         .Ok(at) => testing.assert_eq(at, 3),
         .Err(e) => testing.assert_true(false),
     }

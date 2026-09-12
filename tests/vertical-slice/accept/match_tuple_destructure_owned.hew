@@ -15,7 +15,7 @@
 //! grow RSS linearly with iteration count.
 
 fn make_pair(n: i64) -> (string, i64) {
-    (string_concat("item-", "-payload"), n)
+    (("item-" + "-payload"), n)
 }
 
 fn main() -> i64 {

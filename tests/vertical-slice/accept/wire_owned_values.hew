@@ -1,0 +1,131 @@
+import std.encoding.wire;
+// Decode-only construction demands nested value glue and byte-key callbacks.
+// All three formats preserve complete UTF-8, optional elements and byte keys.
+#[json(camelCase)]
+#[yaml("kebab-case")]
+#[wire]
+enum DispatchMode {
+    Idle,
+    SendNow(string, Vec<string>),
+}
+
+#[json(camelCase)]
+#[yaml("kebab-case")]
+#[wire]
+type Settings {
+    display_labels: Vec<Option<string>> @7,
+    rows: Vec<Vec<string>> @2,
+    binary_keys: HashMap<bytes, Vec<string>> @5,
+    delivery: DispatchMode @9,
+    comment: Option<string> @12 optional json("remark") yaml("note"),
+}
+
+fn valid(settings: Settings) -> bool {
+    if settings.display_labels.len() != 2 {
+        return false;
+    }
+    match settings.display_labels[0] {
+        .Some(label) => {
+            if label != "admin\0é" {
+                return false;
+            }
+            let data = label.to_bytes();
+            if data.len() != 8 || data[5] != 0 || data[6] != 195 {
+                return false;
+            }
+        },
+        .None => return false,
+    }
+    if let .Some(_) = settings.display_labels[1] {
+        return false;
+    }
+    if settings.rows.len() != 2 || settings.rows[0][1] != "雪" {
+        return false;
+    }
+    if !settings.rows[1].is_empty() {
+        return false;
+    }
+    var key = bytes.new();
+    key.push(0);
+    key.push(255);
+    match settings.binary_keys.get(key) {
+        .Some(values) => {
+            if values.len() != 1 || values[0] != "byte\0key" {
+                return false;
+            }
+        },
+        .None => return false,
+    }
+    match settings.delivery {
+        .SendNow(label, destinations) => {
+            if label != "packet\0name" || destinations[0] != "Montréal" {
+                return false;
+            }
+        },
+        .Idle => return false,
+    }
+    match settings.comment {
+        .Some(_) => false,
+        .None => true,
+    }
+}
+
+fn main() -> i64 {
+    let document = "{\"displayLabels\":[\"admin\\u0000é\",null],\"rows\":[[\"first\",\"雪\"],[]],\"binaryKeys\":[[[0,255],[\"byte\\u0000key\"]]],\"delivery\":{\"sendNow\":[\"packet\\u0000name\",[\"Montréal\"]]}}";
+    let settings = Settings.from_json(document) handle error {
+        return 1;
+    };
+    if !valid(settings) {
+        return 2;
+    }
+    let binary = Settings.decode(settings.encode());
+    if !valid(binary) {
+        return 3;
+    }
+    let json = Settings.from_json(binary.to_json()) handle error {
+        return 4;
+    };
+    if !valid(json) {
+        return 5;
+    }
+    let yaml = Settings.from_yaml(json.to_yaml()) handle error {
+        return 6;
+    };
+    if !valid(yaml) || !valid(settings) {
+        return 7;
+    }
+    // The same byte-key contract supports ordinary source operations.
+    let key = b"owned-key";
+    var overwritten: HashMap<bytes, string> = HashMap.new();
+    overwritten.insert(key, "first".to_upper());
+    overwritten.insert(key, "second".to_upper());
+    let projected = overwritten.keys();
+    if projected.len() != 1 || projected[0] != key {
+        return 8;
+    }
+    match overwritten.remove(key) {
+        .Some(value) => {
+            if value != "SECOND" {
+                return 9;
+            }
+        },
+        .None => return 10,
+    }
+    var unique: HashSet<bytes> = HashSet.new();
+    unique.insert(key);
+    unique.insert(key);
+    if unique.len() != 1 || !unique.contains(key) {
+        return 11;
+    }
+    let blobs = wire.from_json<Vec<bytes>>("[[0,255],[1]]") handle error {
+        return 12;
+    };
+    if blobs[0][1] != 255 || blobs[1][0] != 1 {
+        return 13;
+    }
+    let copied = wire.decode<Vec<bytes>>(wire.encode(blobs));
+    if copied[0] != blobs[0] {
+        return 14;
+    }
+    42
+}

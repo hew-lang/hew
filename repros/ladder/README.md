@@ -1,5 +1,10 @@
 # Ladder probes
 
+Historical record of the compiler revisions named below. The outcomes and
+`[current]` labels refer to those revisions, not the final compiler core.
+Use the current language contract when deciding whether a probe needs migration;
+an old rejection is not a permanent language restriction.
+
 The `.hew` programs `docs/internal/ir-ladder.md` cites for its `[current]`
 claims: every transcript that document quotes was produced by running one of
 these. They lived in `.tmp/` while the ladder was being written, which made
@@ -24,45 +29,50 @@ Per the matrix's citation rule, **the section name is the citation and the line
 is a convenience** — re-grep the line if it has drifted.
 
 `outcome` is what `hew check` does today: `accept` compiles clean; `reject` is
-a deliberate refusal under the current lowerer, pinned by path and code in
-`scripts/hew-corpus-expected-failures.txt` (`# ── repros/ladder/ ──`) so the
-repo-wide corpus sweep does not flag it as a regression. A `reject` row is not
-a bug to fix — it is the behaviour the citing section quotes.
+a deliberate refusal; `limit` is the limitation channel (exit 3,
+`compiler limitation:`) and `ice` the internal channel (exit 4,
+`internal compiler error:`) — the final path cannot lower the probe. Every
+non-`accept` outcome is pinned by path, and by code where the check emits
+exactly one, in `scripts/hew-corpus-expected-failures.txt`
+(`# ── repros/ladder/ ──`) so the repo-wide corpus sweep does not flag it as a
+regression. A `reject` row is not a bug to fix — it is the behaviour the citing
+section quotes. A `limit` or `ice` row is: the checker admitted the program and
+a later stage refused it.
 
 | probe                      | outcome | cited by `docs/internal/ir-ladder.md`                              |
 | -------------------------- | ------- | ------------------------------------------------------------------ |
-| `bind_copy.hew`            | reject  | §11 (L2712)                                                        |
+| `bind_copy.hew`            | accept  | §11 (L2712)                                                        |
 | `borrowmut_capture.hew`    | accept  | §1.3.5 (L482); §11 (L2726)                                         |
 | `bytes_clone.hew`          | reject  | §11 (L2718)                                                        |
 | `cap_move.hew`             | reject  | §1.6 (L991); §1.6 (L1007)                                          |
 | `cap_nomove.hew`           | accept  | §2.1 (L1241); §11 (L2732)                                          |
 | `closure_borrow_conn.hew`  | accept  | §1.3.5 (L540); §11 (L2740)                                         |
 | `closure_mut_share.hew`    | reject  | §1.3.5 (L500); §1.6 (L994); §2.1 (L1247); §7 (L2549); §11 (L2716)  |
-| `closure_rebind.hew`       | reject  | §5.4 (L1892)                                                       |
-| `cond_init.hew`            | reject  | §2.1 (L1155); §11 (L2710)                                          |
+| `closure_rebind.hew`       | accept  | §5.4 (L1892)                                                       |
+| `cond_init.hew`            | limit   | §2.1 (L1155); §11 (L2710)                                          |
 | `dyn_rc.hew`               | accept  | §3 (L1339); §11 (L2720)                                            |
-| `fork_unawaited.hew`       | reject  | §2.1 (L1280); §11 (L2710)                                          |
-| `gen_rebind.hew`           | reject  | §2.1 (L1103); §11 (L2710)                                          |
+| `fork_unawaited.hew`       | accept  | §2.1 (L1280); §11 (L2710)                                          |
+| `gen_rebind.hew`           | ice     | §2.1 (L1103); §11 (L2710)                                          |
 | `lambda_send_twice.hew`    | reject  | §1.1 (L192); §1.3.1 (L371); §1.6 (L991); §2.1 (L1179); §11 (L2714) |
 | `let_field_mut.hew`        | reject  | §2.1 (L1209)                                                       |
-| `let_index_assign.hew`     | reject  | §2.1 (L1210)                                                       |
+| `let_index_assign.hew`     | accept  | §2.1 (L1210)                                                       |
 | `let_map_insert.hew`       | accept  | §2.1 (L1204)                                                       |
 | `let_state_push.hew`       | accept  | §1.3.6 (L600); §2.1 (L1204); §11 (L2711)                           |
-| `linear_actor_field.hew`   | accept  | §1.3.6 (L689); §1.6 (L997); §11 (L2730)                            |
+| `linear_actor_field.hew`   | limit   | §1.3.6 (L689); §1.6 (L997); §11 (L2730)                            |
 | `mutate_let.hew`           | accept  | §2.1 (L1203); §11 (L2711)                                          |
 | `rc_clone.hew`             | accept  | §2.1 (L1218); §11 (L2713)                                          |
 | `res_param_borrow.hew`     | accept  | §2.1 (L1118)                                                       |
-| `res_param_consume.hew`    | accept  | §1.6 (L996); §2.1 (L1120); §4.2 (L1446); §11 (L2728)               |
+| `res_param_consume.hew`    | limit   | §1.6 (L996); §2.1 (L1120); §4.2 (L1446); §11 (L2728)               |
 | `resource_early_close.hew` | reject  | §2.1 (L1104); §4.2 (L1419); §11 (L2710)                            |
-| `resource_keep.hew`        | accept  | §5.6 (L1936); §11 (L2733)                                          |
+| `resource_keep.hew`        | limit   | §5.6 (L1936); §11 (L2733)                                          |
 | `resource_send.hew`        | accept  | §11 (L2714)                                                        |
 | `resource_send2.hew`       | reject  | §2.1 (L1179)                                                       |
 | `state_alias.hew`          | accept  | §11 (L2735)                                                        |
-| `state_reinit.hew`         | accept  | §1.3.6 (L667); §11 (L2744)                                         |
-| `state_resource_mut.hew`   | reject  | §1.3.6 (L611)                                                      |
-| `state_resource_trait.hew` | reject  | §1.3.6 (L610); §1.6 (L995); §11 (L2744)                            |
+| `state_reinit.hew`         | limit   | §1.3.6 (L667); §11 (L2744)                                         |
+| `state_resource_mut.hew`   | ice     | §1.3.6 (L611)                                                      |
+| `state_resource_trait.hew` | ice     | §1.3.6 (L610); §1.6 (L995); §11 (L2744)                            |
 | `temp_close.hew`           | accept  | §1.3.4 (L449); §11 (L2736)                                         |
 | `vec_rc_weak.hew`          | accept  | §1.1 (L183); §3 (L1339); §11 (L2720)                               |
-| `vec_resource.hew`         | reject  | §1.1 (L183); §2.1 (L1105); §11 (L2712)                             |
+| `vec_resource.hew`         | ice     | §1.1 (L183); §2.1 (L1105); §11 (L2712)                             |
 | `vec_resource_drop.hew`    | accept  | §1.1 (L183); §1.3 (L287); §3 (L1339); §11 (L2713)                  |
 | `weak_scope.hew`           | accept  | §3 (L1339); §11 (L2720)                                            |

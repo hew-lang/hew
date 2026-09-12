@@ -18,7 +18,10 @@ fn pick(path: string, first: bool, second: bool) {
         },
         .Err(e) => println(f"open failed: {e}"),
     }
-    println(fs.read(path));
+    match fs.read(path) {
+        .Ok(contents) => println(contents),
+        .Err(_) => panic("failed to read guarded-arm output"),
+    }
 }
 
 fn main() {

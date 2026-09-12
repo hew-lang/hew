@@ -1,0 +1,4 @@
+// The process status is the entry function's integer result.
+fn main() -> i64 {
+    23
+}

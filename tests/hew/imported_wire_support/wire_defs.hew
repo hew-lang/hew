@@ -10,8 +10,8 @@ pub type Env {
 
 #[wire]
 pub enum Signal {
-    Ready;
-    Busy(i64);
+    Ready,
+    Busy(i64),
 }
 
 pub fn env_to_json(e: Env) -> string {

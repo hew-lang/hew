@@ -3,18 +3,14 @@
 // names, so the HIR expected-type constructor path is exercised directly.
 machine Counter {
     events {
-        Tick;
+        Tick,
     }
 
-    state Idle;
-    state Running;
+    state Idle,
+    state Running,
 
-    on Tick: Idle => Running {
-        Counter.Running
-    }
-    on Tick: Running => Running reenter {
-        Counter.Running
-    }
+    on Tick: Idle => Running,
+    on Tick: Running => Running reenter,
 }
 
 fn main() {

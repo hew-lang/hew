@@ -1,0 +1,13 @@
+[[case]]
+id = "bare_variant_pattern"
+intent = "Reject: a variant matched by its bare name in every pattern position."
+source = "../vertical-slice/reject/bare_variant_pattern.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_BARE_VARIANT_PATTERN"
+line = 21
+column = 9
+message = "E_BARE_VARIANT_PATTERN: bare variant pattern `Present` is not a pattern; use `.Present` when the scrutinee type selects the enum, or qualify the variant with its type"

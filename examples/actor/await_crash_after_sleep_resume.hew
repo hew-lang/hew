@@ -1,21 +1,8 @@
-// Crash-recovery regression for a handler that crashes AFTER suspending.
-//
-// `Reader.go` is an ASK handler that `sleep_ms`-suspends TWICE (two timer-wheel
-// park/resume cycles), then `panic()`s. The panic fires while the handler runs
-// as a RESUMED continuation — the rest of a suspended handler, driven on the
-// scheduler's resume re-entry, not the fresh-dispatch frame.
-//
-// The resume re-entry must install the same caught-unwind recovery boundary the
-// fresh dispatch does: without it the trap escapes the worker and downs the
-// whole process. With it, the crash routes to the actor (not the
-// runtime), the outer `await reader.go(0)` resolves to `Err` (the empty crash
-// fallback), and the program completes.
-//
-// The two sleeps also pin the frame-reclamation edge: the crash-abandoned coro
-// frame (whose `sleep` resume edges already released their await-cancel
-// registrations) must be reclaimed WITHOUT re-running the cleanup outline, or
-// the registration double-frees. `trigger` is a runtime value so the panic is
-// not statically unreachable ahead of the suspends.
+// Fault after two suspending sleep calls in an actor handler.
+// The completion call reports ActorError.Trapped; the actor owns the fault.
+// Matching the caller's error does not recover the actor fault. An unrecovered
+// fault reports a diagnostic and makes the native process exit with status 1.
+// Cleanup must release the suspended frame exactly once.
 actor Reader {
     receive fn go(trigger: i64) -> i64 {
         sleep(50ms);
@@ -29,7 +16,7 @@ actor Reader {
 
 fn main() {
     let reader = spawn Reader;
-    let r = await reader.go(0);
+    let r = reader.go(0);
     match r {
         .Ok(v) => println(f"reader-returned: {v}"),
         .Err(_) => println("reader-crash-fallback"),

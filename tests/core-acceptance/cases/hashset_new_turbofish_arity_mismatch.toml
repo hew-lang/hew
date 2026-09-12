@@ -1,0 +1,13 @@
+[[case]]
+id = "hashset_new_turbofish_arity_mismatch"
+intent = "The retired Rust-style turbofish spelling must suggest dotted Hew syntax."
+source = "../vertical-slice/reject/hashset_new_turbofish_arity_mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_LEGACY_TURBOFISH"
+line = 3
+column = 21
+message = "E_LEGACY_TURBOFISH: Rust-style `::<...>` has been removed; use Hew generic application: `let _s = HashSet<i64, i64>.new();`"

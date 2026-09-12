@@ -1,0 +1,34 @@
+// A generic function bounded by a local trait, called with a receiver owned by
+// another module. The bound is discharged through the impl's canonical
+// identity, the same one a direct call resolves; a local type on the same
+// generic function is the negative control.
+import std.encoding.json;
+
+trait Tagged {
+    fn tag(self) -> string;
+}
+
+impl Tagged for json.Value {
+    fn tag(self) -> string {
+        "json"
+    }
+}
+
+type Local { n: i64 }
+
+impl Tagged for Local {
+    fn tag(self) -> string {
+        "local"
+    }
+}
+
+fn tag_of<T: Tagged>(v: T) -> string {
+    v.tag()
+}
+
+fn main() {
+    let value = json.object();
+    println(tag_of(value));
+    let local = Local { n: 1 };
+    println(tag_of(local));
+}

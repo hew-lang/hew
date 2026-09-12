@@ -11,7 +11,7 @@ fn nap() {
 }
 
 actor Worker {
-    var fired: i64 = 0;
+    var fired: i64 = 0,
 
     receive fn guarded() -> i64 {
         fired = 7;
@@ -33,12 +33,12 @@ actor Worker {
 
 fn main() {
     let w = spawn Worker(fired: 0);
-    let r = await w.guarded();
+    let r = w.guarded();
     match r {
         .Ok(v) => println(f"guarded={v}"),
         .Err(_) => println("guarded failed"),
     }
-    let a = await w.announce();
+    let a = w.announce();
     match a {
         .Ok(v) => println(f"announce={v}"),
         .Err(_) => println("announce failed"),

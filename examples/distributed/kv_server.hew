@@ -15,22 +15,22 @@ import std.os;
 
 // `record` is Serializable (required for RemotePid messaging).
 type KvPut {
-    key: string;
-    val: string;
+    key: string,
+    val: string,
 }
 
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut),
+    GetKey(string),
 }
 
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack,
+    Value(string),
 }
 
 actor KeyValue {
-    let store: HashMap<string, string>;
+    var store: HashMap<string, string>,
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq.Put(kv) => {
@@ -57,13 +57,19 @@ impl ActorMsg for KeyValue {
 
 fn main() {
     var port: string = "9100";
-    if os.args().len() > 1 {
-        port = os.args().get(1);
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        if let .Some(value) = arguments.get(1) {
+            port = value;
+        }
     }
     let addr = f"0.0.0.0:{port}";
     println(f"[kv-server] starting on {addr}");
-    Node.set_transport("tcp");
-    Node.start(addr);
+    let config = NodeConfig { bind: addr, transport: "tcp", key: "kv-server.key", trust: "pinned", peers: [], seeds: [] };
+    match Node.start(config) {
+        .Ok(_) => {},
+        .Err(_) => panic("node start failed"),
+    }
     println("[kv-server] node started");
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
@@ -75,7 +81,7 @@ fn main() {
     // + 2.5 s for the ask/tell round-trips + 5 s headroom = 98 s.  Use 120 s to be
     // safe; the harness kills the server after the client exits anyway.
     sleep(2m);
-    let n = await kv.count();
+    let n = kv.count();
     match n {
         .Ok(cnt) => println(f"[kv-server] entries stored: {cnt}"),
         .Err(_) => println("[kv-server] count ask failed"),

@@ -1,0 +1,60 @@
+enum Slot {
+    Filled(string),
+    Empty,
+}
+
+fn slot(index: i64) -> Slot {
+    if index < 3 {
+        .Filled(f"slot {index}")
+    } else {
+        .Empty
+    }
+}
+
+fn size(index: i64) -> Result<i64, string> {
+    if index == 0 {
+        .Ok(40)
+    } else {
+        .Err(f"no size for {index}")
+    }
+}
+
+fn describe(index: i64, allow: bool) -> string {
+    if let .Filled(name) = slot(index) && allow && let .Ok(bytes) = size(index) {
+        f"{name} {bytes}"
+    } else if let .Empty = slot(index) {
+        "empty"
+    } else if allow {
+        "allowed"
+    } else {
+        "none"
+    }
+}
+
+fn main() {
+    // Every operand holds: the chain binds an owned string, a boolean gates the
+    // middle, and the second `let` binds from a value the first made available.
+    println(describe(0, true));
+    // The boolean in the middle fails: the chain stops there and the `else if`
+    // links take over, releasing nothing the condition bound.
+    println(describe(0, false));
+    // The second `let` fails, so the `else if allow` link answers.
+    println(describe(1, true));
+    // The first `let` fails and the `else if let` link matches.
+    println(describe(9, true));
+
+    // A `while` chain: the condition runs left to right each iteration and the
+    // loop leaves through whichever operand fails first.
+    var index = 0;
+    while let .Filled(name) = slot(index) && index < 2 {
+        println(name);
+        index = index + 1;
+    }
+    println(f"stopped {index}");
+
+    // A boolean operand may open the chain.
+    let ready = true;
+    if ready && let .Filled(name) = slot(0) {
+        println(name);
+    }
+}

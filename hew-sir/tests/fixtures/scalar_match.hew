@@ -1,0 +1,74 @@
+enum Tag { Null, Bool, Integer, Float, String, Array, Object, Invalid }
+
+fn tag_kind(raw: i32) -> Tag {
+    let copied = raw;
+    match copied {
+        0 => Tag.Null,
+        1 => Tag.Bool,
+        2 => Tag.Integer,
+        3 => Tag.Float,
+        4 => Tag.String,
+        5 => Tag.Array,
+        6 => Tag.Object,
+        _ => Tag.Invalid,
+    }
+}
+
+fn tag_number(tag: Tag) -> i64 {
+    match tag {
+        .Null => 0,
+        .Bool => 1,
+        .Integer => 2,
+        .Float => 3,
+        .String => 4,
+        .Array => 5,
+        .Object => 6,
+        .Invalid => 7,
+    }
+}
+
+fn signed(code: i8) -> i64 {
+    match code { -128 => 1, 127 => 2, _ => 3 }
+}
+
+fn unsigned(code: u8) -> i64 {
+    match code { 0 => 10, 255 => 20, other => other as i64 }
+}
+
+fn character(code: char) -> i64 {
+    match code { 'é' => 4, _ => 5 }
+}
+
+fn guarded(code: i32, divisor: i64) -> i64 {
+    var visits = 0;
+    let result = match code {
+        1 if { visits += 1; 10 / divisor > 1 } => 10,
+        n if { visits += 1; n < 0 } => 20,
+        _ => 30,
+    };
+    result + visits
+}
+
+fn owned(code: i32, input: string, divisor: i64) -> string {
+    match code {
+        1 if { let upper = input.to_upper(); upper.len() / divisor > 0 } => input,
+        _ => input + "!",
+    }
+}
+
+fn main() -> i64 {
+    for raw in -1..8 {
+        let expected = if raw >= 0 && raw <= 6 { raw } else { 7 };
+        if tag_number(tag_kind(raw as i32)) != expected { return 1; }
+    }
+    if signed(-128) != 1 || signed(127) != 2 || signed(0) != 3 { return 2; }
+    if unsigned(0) != 10 || unsigned(255) != 20 || unsigned(7) != 7 { return 3; }
+    if character('é') != 4 || character('a') != 5 { return 4; }
+    if guarded(0, 0) != 31 || guarded(1, 2) != 11 { return 5; }
+    if guarded(1, 20) != 32 || guarded(-1, 0) != 21 { return 6; }
+    let input = "kept".to_upper();
+    if owned(0, input, 0) != "KEPT!" { return 7; }
+    if owned(1, input, 1) != "KEPT" { return 8; }
+    if owned(1, input, 20) != "KEPT!" || input != "KEPT" { return 9; }
+    0
+}

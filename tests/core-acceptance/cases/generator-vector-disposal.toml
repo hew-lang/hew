@@ -1,0 +1,11 @@
+[[case]]
+id = "generator-vector-disposal"
+intent = "A vector owns multiple unopened generators and disposes their frames on scope exit."
+source = "cases/generator-vector-disposal.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "len=2\n"
+stderr = ""
+exit = 0

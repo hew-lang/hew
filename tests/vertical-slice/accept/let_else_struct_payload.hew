@@ -2,8 +2,8 @@
 //! The nested tuple binders must materialize and retain their field values.
 
 enum Packet {
-    Data { pair: (i64, i64) };
-    Empty;
+    Data { pair: (i64, i64) },
+    Empty,
 }
 
 fn sum(value: Packet) -> i64 {

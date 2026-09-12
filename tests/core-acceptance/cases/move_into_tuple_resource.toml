@@ -1,0 +1,13 @@
+[[case]]
+id = "move_into_tuple_resource"
+intent = "Reading a resource after moving it into an aggregate reports a source use-after-move error."
+source = "../vertical-slice/reject/move_into_tuple_resource.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+severity = "error"
+line = 11
+column = 5

@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_enum_payload_if_let"
+intent = "If-let over an enum record variant with one bound owned field and one wildcarded owned sibling."
+source = "cases/pattern_enum_payload_if_let.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

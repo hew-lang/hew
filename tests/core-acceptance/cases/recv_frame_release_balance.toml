@@ -1,0 +1,13 @@
+[[case]]
+id = "recv_frame_release_balance"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/recv_frame_release_balance.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "drain: 8390\nearly: 105\nforward: 8390\nrecords: 11780\nchannel: 12390\n"
+exit = 0

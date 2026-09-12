@@ -21,7 +21,7 @@
 //! 102 length, 103–105 element values) so a regression is legible.
 
 type Countdown {
-    n: i64;
+    n: i64,
 }
 
 impl Iterator for Countdown {
@@ -39,8 +39,8 @@ impl Iterator for Countdown {
 }
 
 type Map<I, A, B> {
-    iter: I;
-    f: fn(A) -> B;
+    iter: I,
+    f: fn(A) -> B,
 }
 
 impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
@@ -58,12 +58,12 @@ impl<I, A, B> Iterator for Map<I, A, B> where I: Iterator<Item = A> {
 }
 
 /// Construct a lazy `Map` adapter (mirrors `std::iter::map`).
-fn mk_map<I, A, B>(it: I, f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
+fn mk_map<I, A, B>(consume it: I, consume f: fn(A) -> B) -> Map<I, A, B> where I: Iterator<Item = A> {
     Map { iter: it, f: f }
 }
 
 /// Count items in a fixed-`i64` iterator (mirrors `std::iter::count`).
-fn count_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
+fn count_i64<I>(consume it: I) -> i64 where I: Iterator<Item = i64> {
     var n: i64 = 0;
     var iter = it;
     loop {
@@ -80,8 +80,8 @@ fn count_i64<I>(it: I) -> i64 where I: Iterator<Item = i64> {
 }
 
 /// Collect a fixed-`i64` iterator into a `Vec<i64>` (mirrors `std::iter::collect`).
-fn collect_i64<I>(it: I) -> Vec<i64> where I: Iterator<Item = i64> {
-    let out: Vec<i64> = Vec.new();
+fn collect_i64<I>(consume it: I) -> Vec<i64> where I: Iterator<Item = i64> {
+    var out: Vec<i64> = Vec.new();
     var iter = it;
     loop {
         match iter.next() {

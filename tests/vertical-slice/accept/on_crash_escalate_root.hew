@@ -40,10 +40,10 @@ actor Probe {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
 
-    child w: Worker;
+    child w: Worker,
 }
 
 fn main() {
@@ -52,11 +52,11 @@ fn main() {
     let w = sup.w;
     // Fire-and-forget crash: the on_crash hook returns Escalate, which the
     // root supervisor has nowhere to route.
-    w.boom();
+    let _ = w.boom();
     // Give the crash-handling dispatch time to run to completion. A
     // pre-fix binary aborts the whole process during this window.
     sleep(300ms);
-    let probed = match await probe.ping() {
+    let probed = match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,
     };

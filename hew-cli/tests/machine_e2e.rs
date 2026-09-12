@@ -4,19 +4,46 @@ use std::process::Command;
 
 use support::hew_binary;
 
+#[test]
+fn ordinary_machine_diagram_retains_typed_outputs_and_dynamic_targets() {
+    let dir = support::tempdir();
+    let input = dir.path().join("gate.hew");
+    std::fs::write(
+        &input,
+        include_str!("../../tests/core-acceptance/cases/machine-wildcard-hooks.hew"),
+    )
+    .unwrap();
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(input)
+        .args(["--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagram: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(diagram["outputs"][0]["name"], "Trace");
+    assert_eq!(diagram["outputs"][0]["fields"][0], "text");
+    assert_eq!(diagram["transitions"][0]["to"], "_");
+    assert_eq!(diagram["transitions"][0]["external"], true);
+}
+
 fn machine_fixture() -> &'static str {
-    "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On { .On }\n    on Toggle: On => Off { .Off }\n}\n"
+    "machine Light {\n    events {\n        Toggle,\n    }\n    state Off,\n    state On,\n    on Toggle: Off => On,\n    on Toggle: On => Off,\n}\n"
 }
 
 fn missing_import_fixture() -> &'static str {
     "machine TrafficLight {\n\
-     \x20   events { Tick; }\n\
-     \x20   state Red;\n\
-     \x20   state Green;\n\
-     \x20   state Yellow;\n\
-     \x20   on Tick: Red => Green { .Green }\n\
-     \x20   on Tick: Green => Yellow { .Yellow }\n\
-     \x20   on Tick: Yellow => Red { .Red }\n\
+     \x20   events { Tick, }\n\
+     \x20   state Red,\n\
+     \x20   state Green,\n\
+     \x20   state Yellow,\n\
+     \x20   on Tick: Red => Green,\n\
+     \x20   on Tick: Green => Yellow,\n\
+     \x20   on Tick: Yellow => Red,\n\
      }\n\
      fn main() {\n\
      \x20   let _ = fs.read(\"test.txt\");\n\
@@ -79,16 +106,16 @@ fn machine_diagram_dot_emits_graphviz_on_stdout() {
 fn composite_fixture() -> &'static str {
     "machine Conn {\n\
      \x20   events {\n\
-     \x20       Connect;\n\
-     \x20       Disconnect;\n\
+     \x20       Connect,\n\
+     \x20       Disconnect,\n\
      \x20   }\n\
-     \x20   state Disconnected;\n\
+     \x20   state Disconnected,\n\
      \x20   state Connected {\n\
-     \x20       initial state Authenticating;\n\
-     \x20       state Active;\n\
-     \x20       on Disconnect: _ => .Disconnected;\n\
+     \x20       initial state Authenticating,\n\
+     \x20       state Active,\n\
+     \x20       on Disconnect: _ => .Disconnected,\n\
      \x20   }\n\
-     \x20   on Connect: Disconnected => .Authenticating;\n\
+     \x20   ,on Connect: Disconnected => .Authenticating,\n\
      \x20   on Connect: _ => _ { state }\n\
      \x20   on Disconnect: _ => _ { state }\n\
      }\n"
@@ -137,24 +164,32 @@ fn machine_diagram_composite_json_carries_composites_array() {
     let input = dir.path().join("conn.hew");
     std::fs::write(&input, composite_fixture()).unwrap();
 
+    // The native evaluator does not admit composite states (HEW-SPEC-2026
+    // §3.11.2), so the checker refuses this fixture and the renderer only sees
+    // it behind `--no-check`.
     let output = Command::new(hew_binary())
         .arg("machine")
         .arg("diagram")
         .arg(&input)
-        .arg("--format")
-        .arg("json")
+        .args(["--format", "json", "--no-check"])
         .output()
         .unwrap();
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\"composites\":[{\"name\":\"Connected\""),
-        "json must carry the composites array; stdout:\n{stdout}"
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert!(
-        stdout.contains("\"initial\":\"Authenticating\""),
-        "stdout:\n{stdout}"
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagram: serde_json::Value = serde_json::from_str(&stdout).expect("diagram JSON");
+    assert_eq!(
+        diagram["composites"],
+        serde_json::json!([{
+            "name": "Connected",
+            "initial": "Authenticating",
+            "members": ["Authenticating", "Active"],
+        }]),
+        "json must carry the composite group with its initial substate; stdout:\n{stdout}"
     );
 }
 
@@ -199,7 +234,7 @@ fn machine_diagram_missing_file_exits_non_zero() {
     assert!(!output.status.success());
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("Error reading"), "stderr: {stderr}");
+    assert!(stderr.contains("cannot read"), "stderr: {stderr}");
     assert!(stderr.contains("missing.hew"), "stderr: {stderr}");
 }
 
@@ -295,7 +330,21 @@ fn machine_list_fails_closed_on_parse_error() {
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("parse error"), "stderr: {stderr}");
+    // Located diagnostics, anchored on the offending file: the machine command
+    // fails closed rather than listing a half-parsed machine.
+    assert!(
+        stderr.contains("parse_err.hew:2:10: error:"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("expected `,` between structural members"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).is_empty(),
+        "must not emit a fabricated inventory; stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
 }
 
 #[test]
@@ -341,12 +390,12 @@ fn machine_list_fails_closed_on_zero_machines() {
 fn default_fixture() -> &'static str {
     "machine Tank {\n\
      \x20   events {\n\
-     \x20       Fill;\n\
-     \x20       Drain;\n\
+     \x20       Fill,\n\
+     \x20       Drain,\n\
      \x20   }\n\
-     \x20   state Filling;\n\
-     \x20   state Draining;\n\
-     \x20   on Drain: Filling => Draining { .Draining }\n\
+     \x20   state Filling,\n\
+     \x20   state Draining,\n\
+     \x20   on Drain: Filling => Draining,\n\
      \x20   default { state }\n\
      }\n"
 }
@@ -355,15 +404,15 @@ fn default_fixture() -> &'static str {
 fn reenter_fixture() -> &'static str {
     "machine Counter {\n\
      \x20   events {\n\
-     \x20       Inc;\n\
-     \x20       Reset;\n\
+     \x20       Inc,\n\
+     \x20       Reset,\n\
      \x20   }\n\
-     \x20   state Zero;\n\
-     \x20   state NonZero { value: i64; }\n\
-     \x20   on Inc: Zero => NonZero { .NonZero { value: 1 } }\n\
-     \x20   on Inc: NonZero => NonZero reenter { .NonZero { value: self.value + 1 } }\n\
-     \x20   on Reset: NonZero => Zero { .Zero }\n\
-     \x20   on Reset: Zero => Zero reenter { .Zero }\n\
+     \x20   state Zero,\n\
+     \x20   state NonZero { value: i64, }\n\
+     \x20   ,on Inc: Zero => NonZero { value: 1 }\n\
+     \x20   on Inc: NonZero => NonZero reenter { value: state.value + 1 }\n\
+     \x20   on Reset: NonZero => Zero,\n\
+     \x20   on Reset: Zero => Zero reenter,\n\
      }\n"
 }
 
@@ -372,31 +421,34 @@ fn reenter_fixture() -> &'static str {
 fn emits_fixture() -> &'static str {
     "machine Relay {\n\
      \x20   events {\n\
-     \x20       Trigger;\n\
-     \x20       Signal;\n\
+     \x20       Trigger,\n\
+     \x20       Signal,\n\
      \x20   }\n\
      \x20   emits {\n\
-     \x20       Signal;\n\
+     \x20       Signal,\n\
      \x20   }\n\
-     \x20   state Idle;\n\
-     \x20   state Active;\n\
+     \x20   state Idle,\n\
+     \x20   state Active,\n\
      \x20   on Trigger: Idle => Active { emit Signal {}; .Active }\n\
-     \x20   on Trigger: Active => Idle { .Idle }\n\
+     \x20   on Trigger: Active => Idle,\n\
      \x20   default { state }\n\
      }\n"
 }
 
-/// Generic machine — HIR path must not crash; falls back to AST with a warning.
+/// Generic machine — the ordinary HIR check path admits it. `default { state }`
+/// satisfies exhaustiveness, which generic machines are checked for like any
+/// other.
 fn generic_fixture() -> &'static str {
     "machine Box<T> {\n\
      \x20   events {\n\
-     \x20       Put { value: T; }\n\
-     \x20       Take;\n\
+     \x20       Put { value: T, }\n\
+     \x20       ,Take,\n\
      \x20   }\n\
-     \x20   state Empty;\n\
-     \x20   state Full { value: T; }\n\
-     \x20   on Put(value): Empty => Full { Full { value: value } }\n\
-     \x20   on Take: Full => Empty { Empty }\n\
+     \x20   state Empty,\n\
+     \x20   state Full { value: T, }\n\
+     \x20   ,on Put(value): Empty => Full { value: value }\n\
+     \x20   on Take: Full => Empty,\n\
+     \x20   default { state }\n\
      }\n"
 }
 
@@ -647,15 +699,17 @@ fn machine_list_shows_emits_section() {
     );
 }
 
-// ── fix 4: generic machines fall back to AST (no crash) ──────────────────────
+// ── fix 4: generic machines go through the ordinary HIR check path ───────────
 
 #[test]
-fn machine_diagram_generic_fallback_exits_zero_with_warning() {
+fn machine_diagram_generic_renders_through_the_check_path() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
 
-    // Default (check) path — must not crash; must emit warning on stderr.
+    // Default (check) path — a generic machine is checked like any other and
+    // renders with nothing on stderr. The old AST fallback and its
+    // "skipping HIR checks" warning are retired.
     let output = Command::new(hew_binary())
         .args(["machine", "diagram"])
         .arg(&input)
@@ -664,25 +718,23 @@ fn machine_diagram_generic_fallback_exits_zero_with_warning() {
 
     assert!(
         output.status.success(),
-        "generic machine must not crash; stderr: {}",
+        "generic machine must render; stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains(
-            "warning: generic machine(s) skipping HIR checks — use --no-check to suppress"
-        ),
-        "must emit warning with suppression hint for generic machine; stderr:\n{stderr}"
+        output.stderr.is_empty(),
+        "the check path must not warn about generic machines; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("stateDiagram-v2"),
-        "must still produce diagram output; stdout:\n{stdout}"
+        "must produce diagram output; stdout:\n{stdout}"
     );
 }
 
 #[test]
-fn machine_list_generic_lists_with_warning() {
+fn machine_list_generic_lists_through_the_check_path() {
     let dir = support::tempdir();
     let input = dir.path().join("box.hew");
     std::fs::write(&input, generic_fixture()).unwrap();
@@ -707,14 +759,10 @@ fn machine_list_generic_lists_with_warning() {
     assert!(stdout.contains("    Put { value }"), "stdout:\n{stdout}");
     assert!(stdout.contains("  Transitions: 2"), "stdout:\n{stdout}");
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("warning: generic machine(s) skipping HIR checks"),
-        "stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("--no-check"),
-        "list warning must not mention unsupported --no-check flag; stderr:\n{stderr}"
+        output.stderr.is_empty(),
+        "the check path must not warn about generic machines; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -743,18 +791,21 @@ fn machine_diagram_generic_json_carries_type_params() {
 
 #[test]
 fn machine_diagram_json_no_wildcard_rows() {
-    // The connection_lifecycle fixture has wildcard `_ => _` transitions; the
-    // JSON output must not contain raw "_" as a from/to value — they must be
-    // expanded to concrete states (vacuous self-loops suppressed).
+    // A wildcard source must reach the JSON as concrete states, never a raw
+    // "_". The wildcard-derived `A => A` row is NOT suppressed: it is emitted
+    // flagged `selfTransition: true, external: false`, matching the mermaid
+    // renderer's `A --> A : Reset` edge. Whether a vacuous self-loop belongs in
+    // a diagram at all is an open question; this pins what both renderers
+    // actually agree on today so a change to either is deliberate.
     let dir = support::tempdir();
     // Minimal wildcard machine: one wildcard source, one named target.
     // `default { state }` satisfies exhaustiveness so the HIR path works.
     let source = "machine Toggle {\n\
-                  \x20   events { Flip; Reset; }\n\
-                  \x20   state A;\n\
-                  \x20   state B;\n\
-                  \x20   on Flip: A => B { .B }\n\
-                  \x20   on Reset: _ => A { .A }\n\
+                  \x20   events { Flip, Reset, }\n\
+                  \x20   state A,\n\
+                  \x20   state B,\n\
+                  \x20   on Flip: A => B,\n\
+                  \x20   on Reset: _ => A,\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("toggle.hew");
@@ -769,19 +820,41 @@ fn machine_diagram_json_no_wildcard_rows() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let diagram: serde_json::Value = serde_json::from_str(&stdout).expect("diagram JSON");
+    let transitions = diagram["transitions"]
+        .as_array()
+        .expect("transitions array")
+        .clone();
     assert!(
-        !stdout.contains("\"from\":\"_\"") && !stdout.contains("\"to\":\"_\""),
-        "JSON must not contain raw wildcard _; stdout:\n{stdout}"
+        transitions
+            .iter()
+            .all(|row| row["from"] != "_" && row["to"] != "_"),
+        "JSON must not carry a raw wildcard state; stdout:\n{stdout}"
     );
-    // Reset from B => A must be present (wildcard expanded to B).
-    assert!(
-        stdout.contains("\"from\":\"B\",\"to\":\"A\""),
-        "wildcard Reset must expand to concrete B => A; stdout:\n{stdout}"
+    assert_eq!(
+        transitions,
+        vec![
+            serde_json::json!({"event": "Flip", "from": "A", "to": "B",
+                "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
+            serde_json::json!({"event": "Reset", "from": "A", "to": "A",
+                "selfTransition": true, "guarded": false, "reenter": false, "external": false}),
+            serde_json::json!({"event": "Reset", "from": "B", "to": "A",
+                "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
+        ],
+        "wildcard Reset must expand to both concrete sources; stdout:\n{stdout}"
     );
-    // Reset from A => A is a vacuous self-loop: must be suppressed.
+
+    // The mermaid renderer draws the same self-loop, so the two agree.
+    let mermaid = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .output()
+        .unwrap();
+    assert!(mermaid.status.success());
+    let mermaid = String::from_utf8_lossy(&mermaid.stdout).into_owned();
     assert!(
-        !stdout.contains("\"from\":\"A\",\"to\":\"A\""),
-        "wildcard-derived vacuous self-loop A=>A must be suppressed; stdout:\n{stdout}"
+        mermaid.contains("A --> A : Reset"),
+        "mermaid must draw the same wildcard-derived self-loop; stdout:\n{mermaid}"
     );
 }
 
@@ -791,11 +864,11 @@ fn machine_diagram_json_event_fields_present() {
     let dir = support::tempdir();
     // `default { state }` satisfies exhaustiveness so the HIR check path works.
     let source = "machine Sender {\n\
-                  \x20   events { Send { payload: i64; }; Ack; }\n\
-                  \x20   state Idle;\n\
-                  \x20   state Waiting;\n\
-                  \x20   on Send: Idle => Waiting { .Waiting }\n\
-                  \x20   on Ack: Waiting => Idle { .Idle }\n\
+                  \x20   events { Send { payload: i64, }, Ack, }\n\
+                  \x20   state Idle,\n\
+                  \x20   state Waiting,\n\
+                  \x20   on Send: Idle => Waiting,\n\
+                  \x20   on Ack: Waiting => Idle,\n\
                   \x20   default { state }\n\
                   }\n";
     let input = dir.path().join("sender.hew");
@@ -837,11 +910,11 @@ fn imported_only_fixture() -> &'static str {
 fn local_and_imported_fixture() -> &'static str {
     "import std.machines.toggle.{Toggle, ToggleEvent};\n\
      machine Door {\n\
-     \x20   events { Push; }\n\
-     \x20   state Closed;\n\
-     \x20   state Open;\n\
-     \x20   on Push: Closed => Open { .Open }\n\
-     \x20   on Push: Open => Closed { .Closed }\n\
+     \x20   events { Push, }\n\
+     \x20   state Closed,\n\
+     \x20   state Open,\n\
+     \x20   on Push: Closed => Open,\n\
+     \x20   on Push: Open => Closed,\n\
      }\n\
      fn main() {\n\
      \x20   var d: Door = .Closed;\n\

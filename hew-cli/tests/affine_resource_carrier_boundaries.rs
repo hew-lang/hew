@@ -20,18 +20,18 @@ use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ans
 const TOKEN: &str = r#"
 #[resource]
 type Token {
-    id: i64;
+    id: i64,
 }
 
 impl Token {
-    fn close(self) {
+    fn close(consume self) {
         println(f"closing token id={self.id}");
     }
 }
 "#;
 
 const IDENTITY_BODY: &str = r"
-fn identity<T>(value: T) -> T {
+fn identity<T>(consume value: T) -> T {
     value
 }
 
@@ -44,10 +44,10 @@ fn main() -> i64 {
 
 const NESTED_IDENTITY_BODY: &str = r"
 type Wrap {
-    token: Token;
+    token: Token,
 }
 
-fn identity<T>(value: T) -> T {
+fn identity<T>(consume value: T) -> T {
     value
 }
 
@@ -61,7 +61,7 @@ const ARENA_BODY: &str = r#"
 import std.arena;
 
 fn main() -> i64 {
-    let store: arena.Arena<Token> = arena.new();
+    var store: arena.Arena<Token> = arena.new();
     println("before insert");
     let _key = store.insert(Token { id: 41 });
     println("after insert");
@@ -83,8 +83,8 @@ actor ProbeSink {
 fn main() -> i64 {
     let sink = spawn ProbeSink;
     let token = Token { id: 77 };
-    sink.take(token);
-    match await sink.fence() {
+    let _ = sink.take(token);
+    match sink.fence() {
         .Ok(_) => 0,
         .Err(_) => 2,
     }
@@ -92,7 +92,7 @@ fn main() -> i64 {
 ";
 
 const PARAMETER_ORDER_BODY: &str = r"
-fn store_or_drop(items: Vec<Token>, value: Token, store: bool) -> Vec<Token> {
+fn store_or_drop(consume var items: Vec<Token>, consume value: Token, store: bool) -> Vec<Token> {
     if store {
         items.push(value);
     }
@@ -100,7 +100,7 @@ fn store_or_drop(items: Vec<Token>, value: Token, store: bool) -> Vec<Token> {
 }
 
 fn main() -> i64 {
-    let items: Vec<Token> = Vec.new();
+    var items: Vec<Token> = Vec.new();
     let stored = store_or_drop(items, Token { id: 13 }, true);
     println(stored.len());
     0
@@ -108,7 +108,7 @@ fn main() -> i64 {
 ";
 
 const PARAMETER_REUSE_BODY: &str = r"
-fn store_then_reuse(items: Vec<Token>, value: Token) -> Vec<Token> {
+fn store_then_reuse(consume var items: Vec<Token>, consume value: Token) -> Vec<Token> {
     items.push(value);
     value.close();
     items
@@ -136,10 +136,10 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_SENDER_CLONE_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (tx, _rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (tx, _rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let senders: Vec<channel.Sender<Token>> = [tx];
     let senders_copy = senders.clone();
     println(senders_copy.len());
@@ -148,10 +148,10 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_CLONE_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _receivers_copy = receivers.clone();
     0
@@ -162,10 +162,10 @@ fn main() -> i64 {
 /// shape, which moves `rx` into the descriptor-backed Vec then lets the Vec
 /// close it at scope exit.
 const CHANNEL_RECEIVER_MOVE_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     println(receivers.len());
     0
@@ -173,10 +173,10 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_GET_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _item = receivers.get(0);
     0
@@ -184,10 +184,10 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_INDEX_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _item = receivers[0];
     0
@@ -195,10 +195,10 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_SLICE_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let receivers: Vec<channel.Receiver<Token>> = [rx];
     let _slice = receivers[0..1];
     0
@@ -206,21 +206,21 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_ITER_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
-    let receivers: Vec<channel.Receiver<Token>> = [rx];
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    var receivers: Vec<channel.Receiver<Token>> = [rx];
     let _iter = receivers.iter();
     0
 }
 ";
 
 const CHANNEL_RECEIVER_COPY_PUSH_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx, rx): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     var receivers: Vec<channel.Receiver<Token>> = Vec.new();
     receivers.push(rx);
     println(receivers.len());
@@ -229,11 +229,11 @@ fn main() -> i64 {
 ";
 
 const CHANNEL_RECEIVER_COPY_SET_BODY: &str = r"
-import std.channel.channel;
+import std.channel;
 
 fn main() -> i64 {
-    let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
-    let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = channel.new(4);
+    let (_tx1, rx1): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (_tx2, rx2): (channel.Sender<Token>, channel.Receiver<Token>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     var receivers: Vec<channel.Receiver<Token>> = [rx1];
     receivers.set(0, rx2);
     println(receivers.len());
@@ -244,19 +244,19 @@ fn main() -> i64 {
 const CONDITIONAL_HEAP_RESOURCE_SOURCE: &str = r#"
 #[resource]
 type Buf {
-    data: Vec<i64>;
-    id: i64;
+    data: Vec<i64>,
+    id: i64,
 }
 
 impl Buf {
-    fn close(b: Buf) {
-        println(f"CLOSE {b.id}");
-        let _len = b.data.len();
+    fn close(consume self) {
+        println(f"CLOSE {self.id}");
+        let _len = self.data.len();
     }
 }
 
 fn make(id: i64) -> Buf {
-    let data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new();
     data.push(id);
     Buf { data: data, id: id }
 }
@@ -264,7 +264,7 @@ fn make(id: i64) -> Buf {
 fn main() {
     for i in 0 .. 4 {
         let b = make(i);
-        if i == -1 {
+        if i % 2 == 0 {
             b.close();
         }
     }
@@ -303,32 +303,6 @@ fn assert_exact_runtime(name: &str, body: &str, expected_stdout: &str) {
     );
 }
 
-fn raw_mir(name: &str, body: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("affine-resource-mir-{name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let input = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&input, source(body)).expect("write MIR fixture");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--dump-mir",
-            "raw",
-            input.to_str().expect("fixture path utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew MIR dump");
-    assert!(
-        output.status.success(),
-        "{name} raw MIR must compile:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
 fn compile_rejected(name: &str, body: &str) -> String {
     require_codegen();
     let dir = tempfile::Builder::new()
@@ -349,42 +323,6 @@ fn compile_rejected(name: &str, body: &str) -> String {
         describe_output(&output)
     );
     strip_ansi(&String::from_utf8_lossy(&output.stderr))
-}
-
-fn function<'a>(dump: &'a str, header: &str) -> &'a str {
-    let start = dump
-        .find(header)
-        .unwrap_or_else(|| panic!("missing `{header}` in MIR:\n{dump}"));
-    let tail = &dump[start..];
-    let end = tail[header.len()..]
-        .find("\nfn ")
-        .map_or(tail.len(), |offset| header.len() + offset);
-    &tail[..end]
-}
-
-fn assert_channel_affine_guards(mir: &str) {
-    for symbol in [
-        "fn std$channel$try_new",
-        "fn std.channel.ChannelPair::close",
-    ] {
-        let guarded_function = function(mir, symbol);
-        assert!(
-            guarded_function.lines().any(|line| {
-                line.contains("ownership Guard") && line.contains("kind: AffineRelease")
-            }),
-            "{symbol} must publish its physical close flag as an explicit OwnerId/generation Guard event:\n{guarded_function}"
-        );
-    }
-}
-
-fn assert_ordered(haystack: &str, needles: &[&str]) {
-    let mut cursor = 0;
-    for needle in needles {
-        let offset = haystack[cursor..]
-            .find(needle)
-            .unwrap_or_else(|| panic!("missing ordered `{needle}` in:\n{haystack}"));
-        cursor += offset + needle.len();
-    }
 }
 
 #[test]
@@ -433,81 +371,14 @@ fn resource_parameter_reuse_after_collection_transfer_is_rejected() {
     );
 }
 
-#[test]
-fn raw_mir_carries_guards_and_preserves_the_parameter_prefix() {
-    let identity = raw_mir("identity_guard", IDENTITY_BODY);
-    let identity_fn = function(&identity, "fn identity$$Token(Token) -> Token");
-    assert_ordered(
-        identity_fn,
-        &[
-            "_1 = const.i64 0",
-            "_2 = move _0",
-            "neutralize_payload _0 -> _2 [WholeCarrierConsume]",
-            "_1 = const.i64 1",
-            "snapshot_drop _0 ty=Token plan=UserRecord { name: \"Token\" } boundary=LocalCall guard=_1",
-        ],
-    );
-
-    let nested = raw_mir("nested_identity_guard", NESTED_IDENTITY_BODY);
-    let nested_fn = function(&nested, "fn identity$$Wrap(Wrap) -> Wrap");
-    assert!(
-        nested_fn.contains(
-            "snapshot_drop _0 ty=Wrap plan=UserRecord { name: \"Wrap\" } boundary=LocalCall guard=_1"
-        ),
-        "a resource nested below an unmarked record must retain the whole-carrier guard:\n{nested_fn}"
-    );
-
-    let arena = raw_mir("arena_guard", ARENA_BODY);
-    let insert_fn = function(
-        &arena,
-        "fn std.arena.Arena::insert$$Token(std.arena.Arena<Token>, Token) -> std.arena.Key<Token>",
-    );
-    assert!(
-        insert_fn.contains(
-            "snapshot_drop _1 ty=Token plan=UserRecord { name: \"Token\" } boundary=LocalCall guard=_2"
-        ),
-        "Arena::insert's generic Token carrier must have a guarded terminal drop:\n{insert_fn}"
-    );
-    assert!(
-        insert_fn.contains("call hew_vec_push_owned_move("),
-        "Arena::insert's fresh Slot carrier must move into Vec storage:\n{insert_fn}"
-    );
-    assert_ordered(
-        insert_fn,
-        &[
-            "neutralize_payload _1",
-            "[WholeCarrierConsume]",
-            "_2 = const.i64 1",
-        ],
-    );
-
-    let actor = raw_mir("actor_guard", ACTOR_BODY);
-    let actor_main = function(&actor, "fn main() -> i64");
-    assert_ordered(
-        actor_main,
-        &[
-            "token site=",
-            "intent=Consume",
-            "= const.i64 1",
-            "[SendTransferLastUse]",
-            "send actor0",
-        ],
-    );
-
-    let order = raw_mir("parameter_prefix", PARAMETER_ORDER_BODY);
-    let helper = function(
-        &order,
-        "fn store_or_drop(Vec<Token>, Token, bool) -> Vec<Token>",
-    );
-    assert_ordered(
-        helper,
-        &["_0: Vec<Token>", "_1: Token", "_2: bool", "_3: i64"],
-    );
-    assert!(
-        helper.contains("branch _2 ?"),
-        "the trailing bool argument must remain parameter local _2:\n{helper}"
-    );
-}
+// Lost coverage: `raw_mir_carries_guards_and_preserves_the_parameter_prefix`
+// used `--dump-mir raw` (retired) to pin exact guard/neutralize/snapshot_drop
+// opcode text and parameter-local ordering across the identity, nested,
+// arena-insert, actor-send and parameter-order fixtures. Physical MIR's
+// structured (Debug) dump has no equivalent single-line text to grep, so
+// this MIR-emission coverage has no direct replacement. The same fixtures'
+// end-to-end behaviour (single close, correct ordering of side effects) is
+// still proven by the exact-runtime tests above.
 
 #[test]
 fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
@@ -536,10 +407,10 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
         "a reusable closure must not byte-copy and consume its environment-owned resource"
     );
     assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("whole-value move of captured generator/closure value `value`")
-            && stderr.contains("cannot be moved out of the generator/closure environment"),
-        "closure consumption must fail at the captured-resource authority:\n{stderr}"
+        stderr.contains("E_OWN_CONSUME_BORROWED")
+            && stderr.contains("cannot consume a value through borrowed parameter `value`")
+            && stderr.contains("declare the parameter `consume value:"),
+        "closure consumption must fail at the borrowed-parameter authority:\n{stderr}"
     );
     assert!(
         !contains_native_artifact(&emit_dir),
@@ -550,32 +421,13 @@ fn consuming_a_resource_from_a_reusable_closure_fails_closed() {
 #[test]
 fn channel_handle_clone_terminals_match_runtime_semantics() {
     assert_exact_runtime("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY, "1\n");
-    let sender_mir = raw_mir("channel_sender_clone", CHANNEL_SENDER_CLONE_BODY);
-    let channel_ctor = function(
-        &sender_mir,
-        "fn std$channel$try_new(i64) -> Result<(Sender, Receiver), string>",
-    );
-    let (_, after_pair_free) = channel_ctor
-        .split_once("call hew_channel_pair_free")
-        .expect("channel construction must discharge its transient pair through the extern ABI");
-    assert!(
-        after_pair_free.contains("neutralize_payload _13 [CallDischargeConsume]")
-            && !after_pair_free.contains("drop _13 ty=std.channel.ChannelPair"),
-        "a consuming extern must neutralize the pair on its normal successor; \
-         its source slot cannot remain armed for ChannelPair::close:\n{channel_ctor}"
-    );
-    assert!(
-        sender_mir.contains("call hew_vec_clone_owned(")
-            && sender_mir.contains("call hew_vec_push_owned_move(")
-            && sender_mir.lines().any(|line| {
-                line.contains(" tx ")
-                    && line.contains("ty=Sender<Token>")
-                    && line.contains("intent=Consume")
-            })
-            && !sender_mir.contains("call hew_vec_clone_layout(")
-            && !sender_mir.contains("call hew_vec_push_ptr("),
-        "Vec<Sender<AffineT>> must consume its source into, and clone through, the thunk-bearing owned descriptor lane:\n{sender_mir}"
-    );
+    // Lost coverage: this test used to also dump `--dump-mir raw` (retired)
+    // here to pin the channel constructor's neutralize-on-discharge text and
+    // the Vec<Sender<AffineT>> clone/push-owned-move opcode shape directly.
+    // Physical MIR's structured (Debug) dump has no equivalent single-line
+    // text to grep, so that MIR-emission split has no direct replacement;
+    // the exact-runtime assertion above still proves the externally
+    // observable half (one close, correct output).
 
     let dir = tempfile::Builder::new()
         .prefix("affine-resource-channel-receiver-")
@@ -624,45 +476,61 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
     );
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
 
-    let mir = raw_mir("receiver_move", CHANNEL_RECEIVER_MOVE_BODY);
-    assert_channel_affine_guards(&mir);
-    assert!(
-        mir.contains("call hew_vec_push_owned_move(")
-            && mir.lines().any(|line| {
-                line.contains(" rx ")
-                    && line.contains("ty=Receiver<Token>")
-                    && line.contains("intent=Consume")
-            })
-            && !mir.contains("call hew_vec_push_ptr("),
-        "array construction must consume Receiver into the owned move lane:\n{mir}"
-    );
+    // Lost coverage: this test used to also dump `--dump-mir raw` (retired)
+    // here to pin the channel affine close guards and the exact
+    // push-owned-move/consume opcode shape directly. Physical MIR's
+    // structured (Debug) dump has no equivalent single-line text to grep,
+    // so that MIR-emission detail has no direct replacement; the LLVM-IR
+    // assertion below still proves the externally observable half.
 
     let ir = std::fs::read_to_string(dir.path().join("receiver_move.ll"))
         .expect("read drop-only Receiver Vec LLVM IR");
     assert!(
-        ir.contains("@__hew_vec_elem_layout_channel_receiver_drop_only")
-            && ir.contains("call ptr @hew_vec_new_with_elem_layout")
+        ir.contains("call ptr @hew_vec_new_with_elem_layout")
             && ir.contains("call void @hew_vec_push_owned_move")
-            && ir.contains("call void @hew_vec_free_owned")
-            && ir.contains("define internal void @__hew_vec_channel_receiver_drop_inplace")
-            && ir.contains("call void @hew_channel_receiver_close")
-            && ir.contains("ptr null, ptr @__hew_vec_channel_receiver_drop_inplace"),
-        "Receiver Vec must emit clone-null descriptor, move ingress, and one close-on-free wrapper:\n{ir}"
+            && ir.contains("call void @hew_vec_free_owned"),
+        "Receiver Vec must build through the element-layout descriptor and move its endpoint in:\n{ir}"
+    );
+    // The descriptor is the subject, not its mangled name: an element-layout
+    // constant carrying a NULL clone slot is what makes the Vec drop-only, and
+    // the drop thunk it names is where the endpoint's close must land. Matching
+    // the emitted symbol out of the descriptor keeps this off the emission
+    // order, which decides only the numeric suffix.
+    let descriptor = ir
+        .lines()
+        .find(|line| line.contains("= internal constant { i64, i64, i8, ptr, ptr, ptr }"))
+        .unwrap_or_else(|| panic!("no Vec element-layout descriptor emitted:\n{ir}"));
+    let clone_null_prefix = "i8 2, ptr null, ptr @";
+    let drop_symbol = descriptor
+        .split_once(clone_null_prefix)
+        .unwrap_or_else(|| {
+            panic!("Receiver Vec descriptor must carry a null clone slot:\n{descriptor}")
+        })
+        .1
+        .split(',')
+        .next()
+        .expect("drop thunk symbol")
+        .trim();
+    let drop_thunk = ir
+        .split_once(&format!("define internal void @{drop_symbol}(ptr %0) {{"))
+        .unwrap_or_else(|| panic!("descriptor names a missing drop thunk @{drop_symbol}:\n{ir}"))
+        .1;
+    let drop_body = drop_thunk
+        .split_once("\n}")
+        .expect("drop thunk body is unterminated")
+        .0;
+    assert!(
+        drop_body.contains("call void @hew_channel_receiver_close"),
+        "the drop-only element thunk @{drop_symbol} must close the endpoint exactly once:\n{drop_body}"
     );
 
-    for (name, body, symbol, consumed) in [
-        (
-            "receiver_bound_push",
-            CHANNEL_RECEIVER_COPY_PUSH_BODY,
-            "hew_vec_push_owned_move",
-            " rx ",
-        ),
-        (
-            "receiver_bound_set",
-            CHANNEL_RECEIVER_COPY_SET_BODY,
-            "hew_vec_set_owned_move",
-            " rx2 ",
-        ),
+    // Lost coverage: `--dump-mir raw` (retired) used to also confirm each of
+    // these two fixtures carried an explicit move-in consume event through
+    // its owned-move symbol; physical MIR has no equivalent single-line
+    // text to grep, so that MIR-emission detail has no direct replacement.
+    for (name, body) in [
+        ("receiver_bound_push", CHANNEL_RECEIVER_COPY_PUSH_BODY),
+        ("receiver_bound_set", CHANNEL_RECEIVER_COPY_SET_BODY),
     ] {
         let accepted = compile_to_native(&source(body), dir.path(), name);
         let output = Command::new(&accepted)
@@ -673,16 +541,6 @@ fn receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject() {
             output.status.success() && output.stdout == b"1\n",
             "{name} must move the source endpoint into the descriptor and close once:\n{}",
             describe_output(&output)
-        );
-        let mir = raw_mir(name, body);
-        assert!(
-            mir.contains(&format!("call {symbol}("))
-                && mir.lines().any(|line| {
-                    line.contains(consumed)
-                        && line.contains("ty=Receiver<Token>")
-                        && line.contains("intent=Consume")
-                }),
-            "{name} must carry an explicit move-in consume event:\n{mir}"
         );
     }
 

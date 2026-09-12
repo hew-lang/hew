@@ -41,8 +41,8 @@ fn main() -> i64 {
     // The after 100ms arm fires only if both workers fail to reply within
     // the deadline — should not happen in normal execution.
     let winner = select {
-        reply from fast.compute(42) => reply,
-        reply from slow.compute(99) => reply,
+        reply from fast.compute(42) => reply.expect("ask reply"),
+        reply from slow.compute(99) => reply.expect("ask reply"),
         after 100ms => 0,
     };
     // Return the winning value as the process exit code.

@@ -5,7 +5,7 @@
 //! without an extra allocation layer.
 
 use crate::ast_visit::{self, AstVisitor};
-use hew_parser::ast::{Block, Expr, Item, Span, Stmt, StringPart};
+use hew_parser::ast::{condition_exprs, Block, Expr, Item, Span, Stmt, StringPart};
 use hew_parser::ParseResult;
 
 /// A single call site found in the AST.
@@ -133,8 +133,12 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
             collect_calls_in_expr(condition, calls);
             collect_calls_in_block(body, calls);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                collect_calls_in_expr(expr, calls);
+            }
             collect_calls_in_block(body, calls);
         }
         Stmt::If {
@@ -156,15 +160,16 @@ fn collect_calls_in_stmt(stmt: &Stmt, calls: &mut Vec<CallSite>) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
+            for expr in condition_exprs(conditions) {
+                collect_calls_in_expr(expr, calls);
+            }
             collect_calls_in_block(body, calls);
-            if let Some(block) = else_body {
-                collect_calls_in_block(block, calls);
+            if let Some(else_expr) = else_body {
+                collect_calls_in_expr(else_expr, calls);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -241,22 +246,29 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
+            for expr in condition_exprs(conditions) {
+                collect_calls_in_expr(expr, calls);
+            }
             collect_calls_in_block(body, calls);
-            if let Some(block) = else_body {
-                collect_calls_in_block(block, calls);
+            if let Some(else_expr) = else_body {
+                collect_calls_in_expr(else_expr, calls);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             collect_calls_in_expr(left.as_ref(), calls);
             collect_calls_in_expr(right.as_ref(), calls);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             collect_calls_in_expr(operand.as_ref(), calls);
         }
         Expr::Await(a) | Expr::AwaitRestart(a) => {
@@ -314,9 +326,14 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(v, calls);
             }
         }
-        Expr::Tuple(exprs) | Expr::Array(exprs) | Expr::Join(exprs) => {
+        Expr::Tuple(exprs) | Expr::Race(exprs) => {
             for e in exprs {
                 collect_calls_in_expr(e, calls);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                collect_calls_in_expr(element.expr(), calls);
             }
         }
         Expr::Range { start, end, .. } => {
@@ -362,10 +379,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
                 collect_calls_in_expr(a, calls);
             }
         }
-        Expr::Timeout { expr, duration } => {
-            collect_calls_in_expr(expr.as_ref(), calls);
-            collect_calls_in_expr(duration.as_ref(), calls);
-        }
         Expr::Is { lhs, rhs } => {
             collect_calls_in_expr(lhs.as_ref(), calls);
             collect_calls_in_expr(rhs.as_ref(), calls);
@@ -373,7 +386,6 @@ fn collect_calls_in_expr(spanned: &(Expr, Span), calls: &mut Vec<CallSite>) {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_)

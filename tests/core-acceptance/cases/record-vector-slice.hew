@@ -1,0 +1,11 @@
+type Person {
+    name: string,
+}
+
+fn main() {
+    let v: Vec<Person> = [Person { name: "a" }];
+    let s = v[0..1];
+    assert(s[0].name == "a");
+    assert(v[0].name == "a");
+    println(s.len());
+}

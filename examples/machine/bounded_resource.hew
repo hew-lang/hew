@@ -11,8 +11,8 @@
 //   * inline `<T: Resource>` bound on a machine declaration
 //   * use-site type annotation `Bounded<File>` (Path 2 — annotation
 //     resolution)
-//   * struct-state brace-init at `Holding { handle: f }` typed
-//     against the machine self-type (Path 1 — struct-state init)
+//   * record-state brace-init at `Holding { handle: f }` typed
+//     against the machine self-type (Path 1 — record-state init)
 //
 // Per-substitution machine layout (per-monomorphisation `MachineLayout`
 // entries under mangled names) is future work; this fixture is the
@@ -23,7 +23,7 @@ trait Resource {
 }
 
 type File {
-    raw: i64;
+    raw: i64,
 }
 
 impl Resource for File {
@@ -32,25 +32,17 @@ impl Resource for File {
 
 machine Bounded<T: Resource> {
     events {
-        Start { handle: T; }
-        Finish;
+        Start { handle: T, },
+        Finish,
     }
 
-    state Idle;
-    state Holding { handle: T; }
+    state Idle,
+    state Holding { handle: T, },
 
-    on Start: Idle => Holding {
-        Holding { handle: event.handle }
-    }
-    on Finish: Holding => Idle {
-        Bounded.Idle
-    }
-    on Start: Holding => Holding reenter {
-        Holding { handle: self.handle }
-    }
-    on Finish: Idle => Idle reenter {
-        Bounded.Idle
-    }
+    on Start: Idle => Holding { handle: event.handle }
+    on Finish: Holding => Idle,
+    on Start: Holding => Holding reenter { handle: state.handle }
+    on Finish: Idle => Idle reenter,
 }
 
 fn main() {

@@ -1,0 +1,13 @@
+[[case]]
+id = "std_machines_toggle_import_run"
+intent = "The fixture runs to completion and prints exactly what it printed here."
+source = "../vertical-slice/accept/std_machines_toggle_import_run.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "toggle:Off:On:Off\n"
+exit = 0

@@ -1,0 +1,25 @@
+// A function that yields a value with no copy operation transfers it out, so
+// the expression it returns consumes what it names. A parameter the
+// declaration only borrows cannot be that source: the caller keeps the
+// listener and releases it after the call, so returning it needs `consume`.
+import std.net;
+
+fn serve(listener: net.Listener, rounds: i64) -> net.Listener {
+    var served = 0;
+    while served < rounds {
+        let conn = listener.accept();
+        conn.close();
+        served = served + 1;
+    }
+    listener
+}
+
+fn main() {
+    let listener = match net.listen("127.0.0.1:0") {
+        .Err(_) => panic("listener setup failed"),
+        .Ok(l) => l,
+    };
+    let listener2 = serve(listener, 0);
+    listener2.close();
+    println("served");
+}

@@ -1,13 +1,13 @@
 import std.encoding.xml;
 
 enum DocState {
-    Empty;
-    Loaded(xml.Node);
-    Broken(string);
+    Empty,
+    Loaded(xml.Node),
+    Broken(string),
 }
 
 actor DocHolder {
-    var doc: DocState;
+    var doc: DocState,
 
     receive fn load(s: string) -> i64 {
         match xml.parse(s) {
@@ -24,7 +24,7 @@ actor DocHolder {
 
 fn main() -> i64 {
     let holder = spawn DocHolder(doc: DocState.Empty);
-    let first = (await holder.load("<doc/>")).unwrap_or(0);
-    let second = (await holder.load("<doc>")).unwrap_or(0);
+    let first = (holder.load("<doc/>")).unwrap_or(0);
+    let second = (holder.load("<doc>")).unwrap_or(0);
     first + second - 2
 }

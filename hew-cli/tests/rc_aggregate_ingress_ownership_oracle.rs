@@ -70,7 +70,7 @@ fn expected_lines(frames: usize) -> usize {
 fn tuple_local_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -95,7 +95,7 @@ fn main() -> i64 {{
 fn tuple_returned_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> (Rc<Node>, string) {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -118,7 +118,7 @@ fn main() -> i64 {{
 fn option_local_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -144,7 +144,7 @@ fn main() -> i64 {{
 fn option_returned_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> Option<Rc<Node>> {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -170,7 +170,7 @@ fn main() -> i64 {{
 fn result_local_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -196,7 +196,7 @@ fn main() -> i64 {{
 fn result_returned_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> Result<Rc<Node>, string> {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -222,8 +222,8 @@ fn main() -> i64 {{
 fn record_local_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
-type Holder {{ r: Rc<Node>; tag: string; }}
+type Node {{ id: i64, }}
+type Holder {{ r: Rc<Node>, tag: string, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -246,8 +246,8 @@ fn main() -> i64 {{
 fn record_returned_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
-type Holder {{ r: Rc<Node>; tag: string; }}
+type Node {{ id: i64, }}
+type Holder {{ r: Rc<Node>, tag: string, }}
 
 fn frame(seed: i64) -> Holder {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -272,9 +272,9 @@ fn main() -> i64 {{
 fn nested_record_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
-type Inner {{ r: Rc<Node>; }}
-type Outer {{ i: Inner; tag: string; }}
+type Node {{ id: i64, }}
+type Inner {{ r: Rc<Node>, }}
+type Outer {{ i: Inner, tag: string, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -325,7 +325,7 @@ fn main() -> i64 {{
 fn conditional_ingress_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(flag: bool) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
@@ -358,7 +358,7 @@ fn main() -> i64 {{
 fn array_element_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -390,7 +390,7 @@ fn main() -> i64 {{
 fn conditional_array_element_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(flag: bool) -> i64 {{
     let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
@@ -429,12 +429,12 @@ fn main() -> i64 {{
 fn machine_payload_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 machine Cell {{
-    events {{ Fill; Drain; }}
-    state Empty;
-    state Full {{ r: Rc<Node>; }}
+    events {{ Fill, Drain, }}
+    state Empty,
+    state Full {{ r: Rc<Node>, }},
     on Fill: Empty => Full {{
         let shared: Rc<Node> = Rc.new(Node {{ id: 7 }});
         Full {{ r: shared }}
@@ -471,7 +471,7 @@ fn main() -> i64 {{
 fn reassign_after_ingress_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(seed: i64) -> i64 {{
     var shared: Rc<Node> = Rc.new(Node {{ id: seed }});
@@ -498,7 +498,7 @@ fn main() -> i64 {{
 fn reassign_in_loop_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn main() -> i64 {{
     var total: i64 = 0;
@@ -528,7 +528,7 @@ fn main() -> i64 {{
 fn alternating_reassign_source(frames: usize) -> String {
     format!(
         r#"
-type Node {{ id: i64; }}
+type Node {{ id: i64, }}
 
 fn frame(flag: bool) -> i64 {{
     var shared: Rc<Node> = Rc.new(Node {{ id: 7 }});

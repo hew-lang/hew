@@ -1,0 +1,13 @@
+fn main() {
+    let try = 1;
+    let catch = 2;
+    let cooperate = 3;
+    let foreign = 4;
+    let super = 5;
+    let async = 6;
+    let budget = 7;
+    let default = 8;
+    let emit = 9;
+    let pool = 10;
+    println(try + catch + cooperate + foreign + super + async + budget + default + emit + pool);
+}

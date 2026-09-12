@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-lifecycle-hooks"
+intent = "The start hook runs before the first message, stop hooks run in lexical order with state live, and `close` returns only after the resource field is released."
+source = "cases/actor-lifecycle-hooks.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "start\n2\nstop\n2\nstop again\nclosed\n"
+exit = 0

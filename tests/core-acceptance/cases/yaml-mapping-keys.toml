@@ -1,0 +1,10 @@
+[[case]]
+id = "yaml-mapping-keys"
+intent = "Checked mapping enumeration preserves exact ordered string keys, null and nested fields, rejects all non-string key kinds without mutation, and returns independent strings surviving the mapping."
+source = "cases/yaml-mapping-keys.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "ok\n"
+exit = 0

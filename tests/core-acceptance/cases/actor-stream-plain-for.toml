@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-stream-plain-for"
+intent = "`for x in pid.stream()` waits per item with no marker on the loop: it drains a receive gen fn to completion, an early `break` ends the producer turn, and the producer answers a later ask from its own unchanged state."
+source = "cases/actor-stream-plain-for.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "tick\ntick\ntick\n3\ntick\ntick\n2\n0\nclosed\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-alias-mixed-string-vec"
+intent = "An enum overwrite preserves both a string and vector payload bound by the match."
+source = "cases/enum-alias-mixed-string-vec.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "mixed\n29\n"
+exit = 0

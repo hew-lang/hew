@@ -20,10 +20,13 @@ actor Slow {
 }
 
 actor Coordinator {
-    let slow: LocalPid<Slow>;
+    let slow: Slow,
     receive fn race_deadline(n: i64) -> i64 {
         let result = select {
-            reply from slow.compute(n) => reply,
+            reply from slow.compute(n) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -7,
+            },
             after 20ms => -7,
         };
         result
@@ -36,7 +39,7 @@ fn main() {
     // The Slow arm sleeps 200ms; the 20ms deadline fires first. The select
     // resumes into the AfterTimer winner block (cancelling the Slow ask) and
     // binds the deadline body's value (-7).
-    let r = await c.race_deadline(5);
+    let r = c.race_deadline(5);
     match r {
         .Ok(v) => println(f"deadline={v}"),
         .Err(_) => println("race failed"),

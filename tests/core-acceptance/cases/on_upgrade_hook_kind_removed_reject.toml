@@ -1,0 +1,13 @@
+[[case]]
+id = "on_upgrade_hook_kind_removed_reject"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/on_upgrade_hook_kind_removed_reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 7
+column = 5
+message = "on(upgrade)"

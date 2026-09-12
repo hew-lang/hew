@@ -1,0 +1,10 @@
+[[case]]
+id = "anonymous-actor-type"
+intent = "An anonymous actor's handle is written `actor(M) -> R`, mirroring an `fn` type: annotated on a binding, on a record field and on a parameter, inferred where nothing writes it, and a unit reply written by leaving the arrow off."
+source = "cases/anonymous-actor-type.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "20\ndoubler 42\nannounced\n"
+exit = 0

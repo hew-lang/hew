@@ -1,0 +1,13 @@
+[[case]]
+id = "static_trait_dispatch_missing_super_impl"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/static_trait_dispatch_missing_super_impl.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 9
+column = 55
+message = "not its declared supertrait"

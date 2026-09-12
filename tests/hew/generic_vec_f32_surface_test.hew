@@ -8,7 +8,7 @@ fn first_f32<T>(xs: Vec<T>) -> T {
 
 #[test]
 fn test_generic_vec_f32_push_get_pop() {
-    let values: Vec<f32> = Vec.new();
+    var values: Vec<f32> = Vec.new();
     let first: f32 = 1.5 as f32;
     let second: f32 = 2.5 as f32;
     values.push(first);

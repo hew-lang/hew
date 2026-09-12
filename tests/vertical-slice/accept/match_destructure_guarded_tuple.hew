@@ -1,0 +1,20 @@
+//! Accept: a guard on a tuple match-destructure arm.
+//!
+//! The tuple sibling of `match_destructure_guarded_record`: a `false` guard
+//! falls through to the next tuple arm with the scrutinee untouched.
+//!
+//! Observable contract: prints `b-payload`.
+
+fn make_pair() -> (string, string) {
+    (("a-" + "payload"), ("b-" + "payload"))
+}
+
+fn main() -> i64 {
+    let p = make_pair();
+    let v = match p {
+        (a, _) if false => a,
+        (_, b) => b,
+    };
+    println(v);
+    0
+}

@@ -23,7 +23,7 @@ const SLOPE_TOLERANCE: usize = 3;
 fn generic_record_repeat_source(frames: usize) -> String {
     format!(
         "import std.string;\n\
-         type Pair<A, B> {{ first: A; second: B; }}\n\
+         type Pair<A, B> {{ first: A, second: B, }}\n\
          fn emit_pair(print_it: bool) -> i64 {{\n\
          \x20   let full = string.repeat(\"field\", 1);\n\
          \x20   let pair = Pair {{ first: 1, second: full }};\n\

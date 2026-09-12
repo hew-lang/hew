@@ -1,0 +1,11 @@
+[[case]]
+id = "fixed-array-resources"
+intent = "Fixed arrays move affine elements, borrow indexed reads, release replaced and remaining resources once, and evaluate and release a zero-length repeat seed."
+source = "cases/fixed-array-resources.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 0\n0\nTOKEN\n1\nclose 1\n1\n4\nclose 4\nclose 2\nclose 3\nreleased\n"
+stderr = ""
+exit = 0

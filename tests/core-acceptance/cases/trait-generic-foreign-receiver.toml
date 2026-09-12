@@ -1,0 +1,10 @@
+[[case]]
+id = "trait-generic-foreign-receiver"
+intent = "A generic function bounded by a local trait selects the implementation for a receiver owned by another module, and the same generic function keeps selecting a local type's implementation."
+source = "cases/trait-generic-foreign-receiver.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "json\nlocal\n"
+exit = 0

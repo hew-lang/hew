@@ -23,7 +23,10 @@ fn close_event(value: quic.QUICEvent) {
 }
 
 fn main() -> i64 {
-    let glob = path.glob("tests/vertical-slice/accept/*.hew");
+    let glob = match path.glob("tests/vertical-slice/accept/*.hew") {
+        .Ok(glob) => glob,
+        .Err(error) => panic(to_string(error)),
+    };
     glob.close();
     let sem = semaphore.new(1);
     sem.close();
@@ -33,7 +36,10 @@ fn main() -> i64 {
     schedule.close();
     let parsed_url = url.parse("https://example.com");
     parsed_url.close();
-    let node = xml.parse("<root/>");
+    let node = match xml.parse("<root/>") {
+        .Ok(node) => node,
+        .Err(reason) => panic(reason),
+    };
     node.close();
     0
 }

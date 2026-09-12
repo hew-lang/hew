@@ -59,7 +59,7 @@ fn sleep_until_future_instant_waits() {
 
 // ── sleep inside an actor handler suspends cooperatively ─────────────────
 actor SleepActor {
-    var woke: i64 = 0;
+    var woke: i64 = 0,
     receive fn sleep_and_count(d: duration) -> i64 {
         sleep(d);
         woke = woke + 1;
@@ -70,7 +70,7 @@ actor SleepActor {
 #[test]
 fn sleep_in_actor_suspends_and_resumes() {
     let a = spawn SleepActor(woke: 0);
-    match await a.sleep_and_count(10ms) {
+    match a.sleep_and_count(10ms) {
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_true(false),
     }
@@ -78,7 +78,7 @@ fn sleep_in_actor_suspends_and_resumes() {
 
 // ── sleep_until inside an actor handler suspends cooperatively ───────────
 actor SleepUntilActor {
-    var woke: i64 = 0;
+    var woke: i64 = 0,
     receive fn sleep_until_and_count() -> i64 {
 
         // Sleep until 10ms in the future.
@@ -93,7 +93,7 @@ actor SleepUntilActor {
 #[test]
 fn sleep_until_in_actor_suspends_and_resumes() {
     let a = spawn SleepUntilActor(woke: 0);
-    match await a.sleep_until_and_count() {
+    match a.sleep_until_and_count() {
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_true(false),
     }

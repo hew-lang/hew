@@ -1,6 +1,6 @@
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn sum(t: Tree) -> i64 {
@@ -17,10 +17,10 @@ actor Scorer {
 }
 
 actor Coordinator {
-    let scorer: LocalPid<Scorer>;
+    let scorer: Scorer,
 
     receive fn ask_score(tag: i64, tree: Tree) -> i64 {
-        match await scorer.score(tag, tree) {
+        match scorer.score(tag, tree) {
             .Ok(value) => value,
             .Err(_) => -1,
         }
@@ -28,7 +28,10 @@ actor Coordinator {
 
     receive fn select_score(tag: i64, tree: Tree) -> i64 {
         select {
-            reply from scorer.score(tag, tree) => reply,
+            reply from scorer.score(tag, tree) => match reply {
+                .Ok(value) => value,
+                .Err(_) => -2,
+            },
             after 5s => -2,
         }
     }
@@ -37,23 +40,31 @@ actor Coordinator {
 fn main() -> i64 {
     let scorer = spawn Scorer;
     let coordinator = spawn Coordinator(scorer: scorer);
-    let direct = match await scorer.score(10, .Node(.Leaf(1), .Leaf(2))) {
+    let direct = match scorer.score(10, .Node(.Leaf(1), .Leaf(2))) {
         .Ok(value) => value,
         .Err(_) => -3,
     };
     let selected = select {
-        reply from scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => reply,
+        reply from scorer.score(20, .Node(.Leaf(3), .Leaf(4))) => match reply {
+            .Ok(value) => value,
+            .Err(_) => -2,
+        },
         after 5s => -4,
     };
-    let (joined_a, joined_b) = join {
-        scorer.score(30, .Node(.Leaf(5), .Leaf(6))),
-        scorer.score(40, .Node(.Leaf(7), .Leaf(8))),
+    let (joined_a_result, joined_b_result) = await fork (scorer.score(30, .Node(.Leaf(5), .Leaf(6))), scorer.score(40, .Node(.Leaf(7), .Leaf(8))));
+    let joined_a = match joined_a_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
-    let suspended_ask = match await coordinator.ask_score(50, .Node(.Leaf(9), .Leaf(10))) {
+    let joined_b = match joined_b_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let suspended_ask = match coordinator.ask_score(50, .Node(.Leaf(9), .Leaf(10))) {
         .Ok(value) => value,
         .Err(_) => -5,
     };
-    let suspended_select = match await coordinator.select_score(60, .Node(.Leaf(11), .Leaf(12))) {
+    let suspended_select = match coordinator.select_score(60, .Node(.Leaf(11), .Leaf(12))) {
         .Ok(value) => value,
         .Err(_) => -6,
     };

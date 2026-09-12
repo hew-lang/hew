@@ -2,7 +2,7 @@
 //! @description A simple actor that counts messages
 
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) -> i64 {
         count = count + n;
         println(f"Count is now: {count}");
@@ -13,14 +13,11 @@ actor Counter {
 fn main() {
     let c = spawn Counter(count: 0);
     // Statement-position match is not yet sandbox-admitted, so the first two
-    // replies are awaited bare (with an explicit must_use allow for the
-    // discarded ask reply) and the last is an expression match (-1 marks a
-    // failed ask).
-    // hew:allow(must_use)
-    await c.increment(5);
-    // hew:allow(must_use)
-    await c.increment(3);
-    let total = match await c.increment(12) {
+    // replies are discarded deliberately and the last is an expression match
+    // (-1 marks a failed ask).
+    let _ = c.increment(5);
+    let _ = c.increment(3);
+    let total = match c.increment(12) {
         .Ok(v) => v,
         .Err(_) => -1,
     };

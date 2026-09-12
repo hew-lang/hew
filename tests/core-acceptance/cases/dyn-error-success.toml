@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-error-success"
+intent = "A `fails dyn Error` function that does not fail returns its value and the program exits zero."
+source = "cases/dyn-error-success.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "width=5\n"
+exit = 0

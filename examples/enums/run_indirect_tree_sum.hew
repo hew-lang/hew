@@ -7,8 +7,8 @@
 // (sizeof the tagged-union outer struct), and pointer-typed in the function
 // ABI so recursive calls pass heap pointers correctly.
 indirect enum Tree {
-    Leaf(i64);
-    Node(Tree, Tree);
+    Leaf(i64),
+    Node(Tree, Tree),
 }
 
 fn sum(t: Tree) -> i64 {

@@ -1,0 +1,13 @@
+[[case]]
+id = "defer_in_loop_break"
+intent = "The fixture runs to completion and exits 9."
+source = "../vertical-slice/accept/defer_in_loop_break.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 9

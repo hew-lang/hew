@@ -1,0 +1,14 @@
+[[case]]
+id = "int_negate_runtime_min_traps"
+intent = "The guard traps: the fixture reports IntegerOverflow and exits 1 under the one exit rule."
+source = "../vertical-slice/accept/int_negate_runtime_min_traps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IntegerOverflow (201)\n"
+exit = 1

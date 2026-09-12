@@ -1,37 +1,31 @@
-//! Async HTTP/1.1 server codec — idiomatic Hew over a suspending listener+conn.
+//! HTTP/1.1 codec over ordinary `std.net` calls.
 //!
-//! The `await`-suspended sibling of the blocking `std.net.http` server
-//! (which is backed by a native engine and cannot suspend an actor). The codec
-//! is pure Hew layered on NEW-2's `await listener.accept()` carrier and NEW-1's
-//! `await conn.read()`: an acceptor handler creates a listener with
-//! `net.listen`, **`await`s a connection**, drives an **`await conn.read()`
-//! loop** until the request is fully buffered ([`request_complete`]), parses it
-//! ([`parse_request`]), and replies by writing the bytes from [`response_text`]
-//! / [`response_json`] / [`build_response`] over the connection.
+//! Call `conn.read()` directly; pending reads can suspend the caller.
+//! Use `fork` for concurrent work and `await` for the resulting task.
+//! The codec buffers bodies and uses one connection per request; HTTPS and
+//! connection pooling are not provided here.
 //!
-//! Scope (v0.5.0): HTTP/1.1 only, fully-buffered request/response bodies, one
-//! connection handled per accept (the OTP acceptor-per-conn shape). The
-//! `Listener`/`Connection` are handler LOCALs, never actor state (the
-//! supervisor-restart clone gate rejects opaque handles in state). Streaming
-//! bodies are NEW-7; HTTPS is BUG-NET-3.
-//!
-//! # Example (the await-accept + await-read request loop, inline in a handler)
+//! # Example
 //!
 //! ```
 //! import std.net;
 //! import std.net.http.http_async_server;
 //! import std.string;
+//! import std.encoding.utf8;
 //!
 //! actor Server {
-//!     let addr: string;   // "127.0.0.1:8080"
+//!     let addr: string,   // "127.0.0.1:8080"
 //!     receive fn serve(unused: i64) {
-//!         let listener = net.listen(addr);
-//!         let conn = await listener.accept();         // suspends on readiness
+//!         let listener = match net.listen(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+//!         let conn = listener.accept();               // suspends on readiness
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;
 //!         while !done {
-//!             let chunk = await conn.read_string();    // suspends the worker
+//!             let chunk = utf8.decode(conn.read()) handle error {
+//!                 println(f"invalid UTF-8: {error}");
+//!                 return;
+//!             };    // suspends the worker
 //!             reads = reads + 1;
 //!             if string.is_empty(chunk) {
 //!                 done = true;
@@ -55,7 +49,10 @@
 //!                 _        => http_async_server.response_text(404, "nope"),
 //!             };
 //!         }
-//!         conn.write_string(reply);
+//!         conn.write_string(reply) handle error {
+//!             println(f"response write failed: {error}");
+//!             return;
+//!         };
 //!         let _ = conn.close();
 //!         let _ = listener.close();
 //!     }
@@ -89,11 +86,11 @@ pub const MAX_READS: i64 = 4096;
 /// well-formed request, or the HTTP status the codec failed closed with
 /// (`400` malformed framing, `413` over a size bound).
 pub type AsyncRequest {
-    verb: string;
-    target: string;
-    header_section: string;
-    body_text: string;
-    reject_code: i64;
+    verb: string,
+    target: string,
+    header_section: string,
+    body_text: string,
+    reject_code: i64,
 }
 
 /// Methods on [`AsyncRequest`] — the request-side accessor surface.

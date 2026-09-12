@@ -185,7 +185,7 @@ fn duplex_missing_generic_args_rejected() {
 }
 
 /// `channel(16)` is no longer a builtin; the name is unresolved and must fail.
-/// The canonical constructor is `std::channel::channel.new(capacity)`.
+/// The canonical constructor is `std.channel.new(capacity)`.
 #[test]
 fn channel_builtin_is_removed_unresolved() {
     let source = r"

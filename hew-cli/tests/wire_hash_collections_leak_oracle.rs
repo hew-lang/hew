@@ -42,15 +42,15 @@ type Registry {
 fn main() {
     var i: i64 = 0;
     while i < __FRAMES__ {
-        let features: HashMap<string, Feature> = HashMap.new();
+        var features: HashMap<string, Feature> = HashMap.new();
         features.insert("beta-" + "key", Feature { enabled: false, note: "later-" + "owned" });
         features.insert("alpha-" + "key", Feature { enabled: true, note: "now-" + "owned" });
 
-        let labels: HashMap<i64, string> = HashMap.new();
+        var labels: HashMap<i64, string> = HashMap.new();
         labels.insert(2, "two-" + "owned");
         labels.insert(1, "one-" + "owned");
 
-        let names: HashSet<string> = HashSet.new();
+        var names: HashSet<string> = HashSet.new();
         names.insert("gamma-" + "owned");
         names.insert("alpha-" + "owned");
 

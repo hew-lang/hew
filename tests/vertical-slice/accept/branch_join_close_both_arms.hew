@@ -12,7 +12,7 @@ type Conn {
 }
 
 impl Conn {
-    fn close(consuming self) {
+    fn close(consume self) {
         print(self.fd);
         println(" closed");
     }

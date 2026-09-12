@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_in_value_position"
+intent = "Reject fixture: `scope` in a value position is E_SCOPE_IS_STATEMENT (User)."
+source = "../vertical-slice/reject/scope_in_value_position.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 14
+column = 16
+message = "type `()` does not implement `Display` (f-string interpolation requires `impl Display for ()`)"

@@ -1,0 +1,26 @@
+// A `Display` impl over a generic type renders through interpolation: the
+// f-string spine monomorphises the impl for each instantiation instead of
+// refusing the call for want of type arguments.
+enum Outcome<T, E> {
+    Done(T),
+    Failed(E),
+    Pending,
+}
+
+impl<T, E> Display for Outcome<T, E> {
+    fn fmt(outcome: Outcome<T, E>) -> string {
+        match outcome {
+            Outcome.Done(_) => "done",
+            Outcome.Failed(_) => "failed",
+            Outcome.Pending => "pending",
+        }
+    }
+}
+
+fn main() {
+    let done: Outcome<i64, string> = Outcome.Done(7);
+    let failed: Outcome<i64, string> = Outcome.Failed("boom");
+    let pending: Outcome<bool, i64> = Outcome.Pending;
+    println(f"{done}");
+    println(f"{failed} and {pending}");
+}

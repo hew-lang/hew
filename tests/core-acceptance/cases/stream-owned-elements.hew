@@ -1,0 +1,35 @@
+type Packet {
+    label: string,
+    data: bytes,
+    history: Vec<string>,
+}
+
+actor Producer {
+    receive gen fn records(count: i64) -> Packet {
+        for index in 0..count {
+            yield Packet {
+                label: "packet".to_upper(),
+                data: "owned\0bytes".to_bytes(),
+                history: ["saved".to_upper()],
+            };
+        }
+    }
+}
+
+fn main() {
+    let producer = spawn Producer();
+    var seen = 0;
+    for packet in producer.records(3) {
+        assert(packet.label == "PACKET");
+        assert(packet.data == "owned\0bytes".to_bytes());
+        assert(packet.history[0] == "SAVED");
+        seen = seen + 1;
+    }
+    assert(seen == 3);
+    for packet in producer.records(100) {
+        assert(packet.label == "PACKET");
+        break;
+    }
+    close(producer);
+    println("owned stream elements and early close");
+}

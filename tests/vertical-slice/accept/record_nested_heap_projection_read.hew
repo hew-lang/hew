@@ -7,10 +7,10 @@ type NestedHeapReadCarrier {
 fn project(i: i64) -> i64 {
     let r = NestedHeapReadCarrier {
         inner: NestedHeapReadInner {
-            text: string_concat("inner-", "payload"),
+            text: ("inner-" + "payload"),
             value: i,
         },
-        sibling: string_concat("sibling-", "payload"),
+        sibling: ("sibling-" + "payload"),
     };
     r.inner.text.len()
 }

@@ -1,0 +1,13 @@
+[[case]]
+id = "const_unsigned_underflow"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/const_unsigned_underflow.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_CONST_INITIALIZER"
+line = 4
+column = 17
+message = "constant initializer arithmetic overflows declared type `u8`"

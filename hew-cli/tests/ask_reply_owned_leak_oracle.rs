@@ -88,18 +88,18 @@ const NO_ABORT_ITERS: usize = 400;
 /// itself, making the post-fix leak slope a clean ≈0.
 fn cancelled_owned_reply_source(iters: usize) -> String {
     format!(
-        "actor SlowReplier {{\n\
+        "actor SlowReplier {{ \n\
          \x20   receive fn fetch() -> string {{\n\
-         \x20       sleep(5ms);\n\
+         \x20       sleep(5ms), \n\
          \x20       \"owned-reply-heap-payload\".to_upper()\n\
-         \x20   }}\n\
+         \x20 }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let slow = spawn SlowReplier;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {iters} {{\n\
          \x20       let r = select {{\n\
-         \x20           reply from slow.fetch() => 1,\n\
+         \x20           reply = await slow.fetch() => 1,\n\
          \x20           after 1ms => 0,\n\
          \x20       }};\n\
          \x20       let _ = r;\n\
@@ -118,7 +118,7 @@ fn cancelled_owned_reply_source(iters: usize) -> String {
 fn never_consumed_owned_reply_source(iters: usize) -> String {
     format!(
         "actor Replier {{\n\
-         \x20   let tag: string;\n\
+         \x20   let tag: string,\n\
          \x20   receive fn fetch() -> string {{ tag.to_upper() }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -127,8 +127,8 @@ fn never_consumed_owned_reply_source(iters: usize) -> String {
          \x20       let a = spawn Replier(tag: \"alpha-owned-reply\");\n\
          \x20       let b = spawn Replier(tag: \"beta-owned-reply\");\n\
          \x20       let r = select {{\n\
-         \x20           reply from a.fetch() => 10,\n\
-         \x20           reply from b.fetch() => 20,\n\
+         \x20           reply = await a.fetch() => 10,\n\
+         \x20           reply = await b.fetch() => 20,\n\
          \x20       }};\n\
          \x20       let _ = r;\n\
          \x20       i = i + 1;\n\

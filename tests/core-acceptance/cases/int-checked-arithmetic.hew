@@ -1,0 +1,168 @@
+// wrapping_*, saturating_* and checked_* all lower through
+// RuntimeCallFamily::IntArith and are exercised at their boundaries below,
+// at every integer width Hew has. checked_div/checked_rem are not exercised:
+// only add/sub/mul exist for these opt-out families (no div/rem/shift
+// variant is implemented).
+
+fn main() {
+    // i32 boundaries.
+    let i32_max: i32 = 2147483647;
+    let i32_min: i32 = -2147483648;
+    assert(i32_max.wrapping_add(1) == i32_min);
+    assert(i32_max.saturating_add(1) == i32_max);
+    assert(i32_min.wrapping_sub(1) == i32_max);
+    assert(i32_min.saturating_sub(1) == i32_min);
+    assert(i32_min.wrapping_mul(-1) == i32_min);
+    // 1000 * 1000000 fits in i32 (no wrap).
+    let mid: i32 = 1000;
+    assert(mid.wrapping_mul(1000000) == 1000000000);
+
+    // i64 boundaries.
+    let i64_max: i64 = 9223372036854775807;
+    let i64_min: i64 = -9223372036854775808;
+    assert(i64_max.wrapping_add(1) == i64_min);
+    assert(i64_max.saturating_add(1) == i64_max);
+    assert(i64_min.wrapping_sub(1) == i64_max);
+    assert(i64_min.saturating_sub(1) == i64_min);
+
+    // u32 boundaries: subtraction underflow wraps to MAX, saturates to 0.
+    let u32_max: u32 = 4294967295;
+    let u32_zero: u32 = 0;
+    assert(u32_max.wrapping_add(1) == u32_zero);
+    assert(u32_max.saturating_add(1) == u32_max);
+    assert(u32_zero.wrapping_sub(1) == u32_max);
+    assert(u32_zero.saturating_sub(1) == u32_zero);
+
+    // u64 boundaries.
+    let u64_max: u64 = 18446744073709551615;
+    let u64_zero: u64 = 0;
+    assert(u64_max.wrapping_add(1) == u64_zero);
+    assert(u64_max.saturating_add(1) == u64_max);
+    assert(u64_zero.wrapping_sub(1) == u64_max);
+    assert(u64_zero.saturating_sub(1) == u64_zero);
+
+    // i8 boundaries.
+    let i8_max: i8 = 127;
+    let i8_min: i8 = -128;
+    assert(i8_max.wrapping_add(1) == i8_min);
+    assert(i8_max.saturating_add(1) == i8_max);
+    assert(i8_min.wrapping_sub(1) == i8_max);
+    assert(i8_min.saturating_sub(1) == i8_min);
+
+    // i16 boundaries.
+    let i16_max: i16 = 32767;
+    let i16_min: i16 = -32768;
+    assert(i16_max.wrapping_add(1) == i16_min);
+    assert(i16_max.saturating_add(1) == i16_max);
+    assert(i16_min.wrapping_sub(1) == i16_max);
+    assert(i16_min.saturating_sub(1) == i16_min);
+
+    // isize boundaries: the same 64-bit physical width as i64 on every
+    // supported native target, carried as a distinct semantic width.
+    let isize_max: isize = 9223372036854775807;
+    let isize_min: isize = -9223372036854775808;
+    assert(isize_max.wrapping_add(1) == isize_min);
+    assert(isize_max.saturating_add(1) == isize_max);
+
+    // u8 boundaries.
+    let u8_max: u8 = 255;
+    let u8_zero: u8 = 0;
+    assert(u8_max.wrapping_add(1) == u8_zero);
+    assert(u8_max.saturating_add(1) == u8_max);
+    assert(u8_zero.wrapping_sub(1) == u8_max);
+    assert(u8_zero.saturating_sub(1) == u8_zero);
+
+    // u16 boundaries.
+    let u16_max: u16 = 65535;
+    let u16_zero: u16 = 0;
+    assert(u16_max.wrapping_add(1) == u16_zero);
+    assert(u16_max.saturating_add(1) == u16_max);
+    assert(u16_zero.wrapping_sub(1) == u16_max);
+    assert(u16_zero.saturating_sub(1) == u16_zero);
+
+    // usize boundaries: the same 64-bit physical width as u64.
+    let usize_max: usize = 18446744073709551615;
+    let usize_zero: usize = 0;
+    assert(usize_max.wrapping_add(1) == usize_zero);
+    assert(usize_max.saturating_add(1) == usize_max);
+
+    // checked_add/sub/mul and saturating_mul at every signed width's
+    // boundaries: MAX+1 and MIN*-1 (the classic MIN/-1 overflow) are
+    // `None`; an ordinary call is `Some`. saturating_mul exercises both
+    // branches of its sign-based bound select: same-sign operands
+    // saturate to MAX, differing-sign operands saturate to MIN.
+    assert(i8_max.checked_add(1).is_none());
+    assert(i8_min.checked_sub(1).is_none());
+    assert(i8_min.checked_mul(-1).is_none());
+    assert(i8_max.checked_add(-5).unwrap_or(0) == 122);
+    assert(i8_max.saturating_mul(2) == i8_max);
+    assert(i8_min.saturating_mul(-1) == i8_max);
+    assert(i8_max.saturating_mul(-2) == i8_min);
+
+    assert(i16_max.checked_add(1).is_none());
+    assert(i16_min.checked_sub(1).is_none());
+    assert(i16_min.checked_mul(-1).is_none());
+    assert(i16_max.checked_add(-5).unwrap_or(0) == 32762);
+    assert(i16_max.saturating_mul(2) == i16_max);
+    assert(i16_min.saturating_mul(-1) == i16_max);
+    assert(i16_max.saturating_mul(-2) == i16_min);
+
+    assert(i32_max.checked_add(1).is_none());
+    assert(i32_min.checked_sub(1).is_none());
+    assert(i32_min.checked_mul(-1).is_none());
+    assert(i32_max.checked_add(-5).unwrap_or(0) == 2147483642);
+    assert(i32_max.saturating_mul(2) == i32_max);
+    assert(i32_min.saturating_mul(-1) == i32_max);
+    assert(i32_max.saturating_mul(-2) == i32_min);
+
+    assert(i64_max.checked_add(1).is_none());
+    assert(i64_min.checked_sub(1).is_none());
+    assert(i64_min.checked_mul(-1).is_none());
+    assert(i64_max.checked_add(-5).unwrap_or(0) == 9223372036854775802);
+    assert(i64_max.saturating_mul(2) == i64_max);
+    assert(i64_min.saturating_mul(-1) == i64_max);
+    assert(i64_max.saturating_mul(-2) == i64_min);
+
+    assert(isize_max.checked_add(1).is_none());
+    assert(isize_min.checked_sub(1).is_none());
+    assert(isize_min.checked_mul(-1).is_none());
+    assert(isize_max.checked_add(-5).unwrap_or(0) == 9223372036854775802);
+    assert(isize_max.saturating_mul(2) == isize_max);
+    assert(isize_min.saturating_mul(-1) == isize_max);
+    assert(isize_max.saturating_mul(-2) == isize_min);
+
+    // checked_add/sub/mul and saturating_mul at every unsigned width's
+    // boundaries: unsigned saturating multiply always clamps to the
+    // all-ones max (no sign to select a different bound).
+    assert(u8_max.checked_add(1).is_none());
+    assert(u8_zero.checked_sub(1).is_none());
+    assert(u8_max.checked_mul(2).is_none());
+    assert(u8_max.checked_sub(5).unwrap_or(0) == 250);
+    assert(u8_max.saturating_mul(2) == u8_max);
+
+    assert(u16_max.checked_add(1).is_none());
+    assert(u16_zero.checked_sub(1).is_none());
+    assert(u16_max.checked_mul(2).is_none());
+    assert(u16_max.checked_sub(5).unwrap_or(0) == 65530);
+    assert(u16_max.saturating_mul(2) == u16_max);
+
+    assert(u32_max.checked_add(1).is_none());
+    assert(u32_zero.checked_sub(1).is_none());
+    assert(u32_max.checked_mul(2).is_none());
+    assert(u32_max.checked_sub(5).unwrap_or(0) == 4294967290);
+    assert(u32_max.saturating_mul(2) == u32_max);
+
+    assert(u64_max.checked_add(1).is_none());
+    assert(u64_zero.checked_sub(1).is_none());
+    assert(u64_max.checked_mul(2).is_none());
+    assert(u64_max.checked_sub(5).unwrap_or(0) == 18446744073709551610);
+    assert(u64_max.saturating_mul(2) == u64_max);
+
+    assert(usize_max.checked_add(1).is_none());
+    assert(usize_zero.checked_sub(1).is_none());
+    assert(usize_max.checked_mul(2).is_none());
+    assert(usize_max.checked_sub(5).unwrap_or(0) == 18446744073709551610);
+    assert(usize_max.saturating_mul(2) == usize_max);
+
+    println("wrapping, saturating and checked arithmetic hold at every boundary");
+}

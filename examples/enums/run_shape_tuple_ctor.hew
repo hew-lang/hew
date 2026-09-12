@@ -9,9 +9,9 @@
 //   3. The arm body uses the bound payload value in an arithmetic
 //      expression that flows to observable output.
 enum Shape {
-    Point;
-    Line(i64);
-    Origin;
+    Point,
+    Line(i64),
+    Origin,
 }
 
 fn line_length(s: Shape) -> i64 {

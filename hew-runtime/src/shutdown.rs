@@ -22,7 +22,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::reactor;
-use crate::runtime::{rt_current, rt_current_opt, rt_default};
+#[cfg(feature = "profiler")]
+use crate::runtime::rt_current_opt;
+use crate::runtime::{rt_current, rt_default};
 use crate::scheduler;
 
 // ---------------------------------------------------------------------------

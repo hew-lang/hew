@@ -1,0 +1,13 @@
+// Repro: a `gen fn` value driven through `iter.map`.
+import std.iter;
+
+gen fn counter() -> i64 {
+    yield 1;
+    yield 2;
+    yield 3;
+}
+
+fn main() {
+    let total = iter.fold(iter.map(counter(), |x: i64| x * 2), 0, |acc: i64, x: i64| acc + x);
+    println(total);
+}

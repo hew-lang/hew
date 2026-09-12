@@ -19,7 +19,7 @@
 import hew.aliassrc.{ Payload as U };
 
 type U {
-    local: i64;
+    local: i64,
 }
 
 fn get_local(x: U) -> i64 {

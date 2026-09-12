@@ -7,5 +7,5 @@
 
 /// Wide `Gadget`: a single `i64` field.
 pub type Gadget {
-    v: i64;
+    v: i64,
 }

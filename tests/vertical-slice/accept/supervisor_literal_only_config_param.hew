@@ -20,12 +20,12 @@ actor Ping {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
     // Stateless children with no init args — no config.field reads.
-    child a: Ping();
-    child b: Ping();
+    child a: Ping(),
+    child b: Ping(),
 }
 
 fn main() -> i64 {

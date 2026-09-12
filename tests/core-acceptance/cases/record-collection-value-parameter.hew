@@ -1,0 +1,22 @@
+// Mutating a record value parameter preserves the caller and returns updated projections.
+type Holder {
+    items: Vec<i64>,
+    counts: HashMap<string, i64>,
+}
+
+fn mutate(var holder: Holder) -> Holder {
+    holder.items[0] = 9;
+    holder.counts.insert("changed", 7);
+    holder
+}
+
+fn main() -> i64 {
+    let items: Vec<i64> = [1, 2];
+    let counts: HashMap<string, i64> = HashMap.new();
+    let holder = Holder { items: items, counts: counts };
+    let changed = mutate(holder);
+    assert(holder.items[0] == 1 && holder.counts.len() == 0);
+    println(changed.items[0]);
+    println(changed.counts.get("changed").expect("get succeeds"));
+    0
+}

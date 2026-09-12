@@ -20,8 +20,8 @@
 //
 // In Hew, the same thing is 5 lines:
 actor Worker {
-    let id: i32;
-    var processed: i32;
+    let id: i32,
+    var processed: i32,
     receive fn process(item: i32) {
         processed = processed + 1;
         print("worker ");
@@ -45,12 +45,12 @@ actor Worker {
 // The supervisor declaration IS the pool definition.
 // No boilerplate, no factory functions, no lifecycle hooks.
 supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 10 within 60s;
+    strategy: one_for_one,
+    intensity: 10 within 60s,
 
-    child w1: Worker(id: 1, processed: 0);
-    child w2: Worker(id: 2, processed: 0);
-    child w3: Worker(id: 3, processed: 0);
+    child w1: Worker(id: 1, processed: 0),
+    child w2: Worker(id: 2, processed: 0),
+    child w3: Worker(id: 3, processed: 0),
 }
 
 fn main() {
@@ -63,25 +63,25 @@ fn main() {
     let w2 = sup.w2;
     let w3 = sup.w3;
     // Round-robin some work
-    w1.process(100);
-    w2.process(200);
-    w3.process(300);
+    let _ = w1.process(100);
+    let _ = w2.process(200);
+    let _ = w3.process(300);
     sleep(30ms);
-    w1.process(101);
-    w2.process(201);
+    let _ = w1.process(101);
+    let _ = w2.process(201);
     sleep(30ms);
     println("");
     println("--- worker 2 crashes on bad input ---");
-    w2.crash_on(666);
+    let _ = w2.crash_on(666);
     sleep(200ms);
 
     // Workers 1 and 3 are unaffected.
     // Worker 2 has been restarted with fresh state (processed=0). The existing
     // ChildRef remains valid and resolves the replacement incarnation.
     println("--- after restart, all workers operational ---");
-    w1.process(102);
-    w2.process(202);
-    w3.process(301);
+    let _ = w1.process(102);
+    let _ = w2.process(202);
+    let _ = w3.process(301);
     sleep(50ms);
     println("");
     println("Pool survived the crash. That's supervision.");

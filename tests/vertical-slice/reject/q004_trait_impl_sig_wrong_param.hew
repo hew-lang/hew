@@ -15,7 +15,7 @@ pub trait Indexer {
 }
 
 pub type Bag {
-    val: i64;
+    val: i64,
 }
 
 impl Indexer for Bag {

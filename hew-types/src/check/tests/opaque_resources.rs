@@ -18,7 +18,7 @@ const TCP_CONNECTION_SOURCE: &str = r#"
 pub type Connection {}
 
 impl Connection {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe { hew_tcp_close(self) };
     }
 }
@@ -31,6 +31,68 @@ extern "C" {
 "#;
 
 #[test]
+fn borrowing_close_on_resource_type_is_rejected() {
+    let output = check_source(
+        r"
+        #[resource]
+        type Socket { fd: i64 }
+
+        impl Socket {
+            fn close(self) {}
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("`close` on a resource type must consume its receiver")),
+        "a borrowing `close` on a `#[resource]` type must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn borrowing_close_on_opaque_type_is_rejected() {
+    let output = check_source(
+        r"
+        #[opaque]
+        type Handle {}
+
+        impl Handle {
+            fn close(self) {}
+        }
+        ",
+    );
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("`close` on a resource type must consume its receiver")),
+        "a borrowing `close` on an `#[opaque]` type must be rejected, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn borrowing_close_on_unmarked_type_stays_legal() {
+    let output = check_source(
+        r"
+        type Widget { fd: i64 }
+
+        impl Widget {
+            fn close(self) {}
+        }
+        ",
+    );
+    assert!(
+        !output.errors.iter().any(|error| error
+            .message
+            .contains("`close` on a resource type must consume its receiver")),
+        "a borrowing `close` on an unmarked type is legal, got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn resource_close_discharges_and_moves_the_receiver() {
     let output = check_source(
         r"
@@ -38,7 +100,7 @@ fn resource_close_discharges_and_moves_the_receiver() {
         type Socket { fd: i64 }
 
         impl Socket {
-            fn close(consuming self) {}
+            fn close(consume self) {}
             fn status(self) -> i64 { self.fd }
         }
 
@@ -67,8 +129,8 @@ fn non_close_consuming_method_moves_the_receiver() {
         type Socket { fd: i64 }
 
         impl Socket {
-            fn close(consuming self) {}
-            fn detach(consuming self) -> i64 { self.fd }
+            fn close(consume self) {}
+            fn detach(consume self) -> i64 { self.fd }
             fn status(self) -> i64 { self.fd }
         }
 
@@ -101,7 +163,7 @@ fn resource_close_discharge_rejects_a_second_close() {
         type Socket { fd: i64 }
 
         impl Socket {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         fn bad(socket: Socket) {
@@ -164,6 +226,12 @@ fn collect_hew_sources(directory: &Path, sources: &mut Vec<PathBuf>) {
 }
 
 fn canonical_std_module(std_root: &Path, source: &Path) -> Vec<String> {
+    // A directory-module peer (`std/net/http/http_client.hew`) is an alternate
+    // physical spelling of its package owner, not a second nominal module. The
+    // registry owns that rule; do not re-derive it from the path here.
+    if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(source) {
+        return owner.split('.').map(str::to_string).collect();
+    }
     let relative = source.strip_prefix(std_root).expect("source is below std/");
     let mut module = vec!["std".to_string()];
     if let Some(parent) = relative.parent() {
@@ -192,7 +260,7 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
     collect_hew_sources(std_root, &mut sources);
     sources.sort();
 
-    let mut parsed_modules = BTreeMap::new();
+    let mut parsed_modules: ParsedStdModules = BTreeMap::new();
     let mut resource_types = BTreeSet::new();
     for source in sources {
         let text = fs::read_to_string(&source).expect("read stdlib source");
@@ -243,12 +311,12 @@ fn parse_shipped_std_sources(std_root: &Path) -> (ParsedStdModules, BTreeSet<Str
             );
             resource_types.insert(format!("{}.{}", module_path.join("."), declaration.name));
         }
-        assert!(
-            parsed_modules
-                .insert(module_path, parsed.program.items)
-                .is_none(),
-            "canonical std module identity must be unique"
-        );
+        // Peers that collapse onto one owner contribute their items to the
+        // same module rather than claiming a second identity.
+        parsed_modules
+            .entry(module_path)
+            .or_default()
+            .extend(parsed.program.items);
     }
 
     (parsed_modules, resource_types)
@@ -270,7 +338,7 @@ fn shipped_std_module_graph(parsed_modules: &ParsedStdModules) -> ModuleGraph {
                     declaration.path.join(".")
                 )
             });
-            declaration.resolved_items = Some(resolved.clone());
+            declaration.resolved_items = Some(resolved.clone().into());
             imports.push(hew_parser::module::ModuleImport {
                 target: ModuleId::new(declaration.path.clone()),
                 spec: declaration.spec.clone(),
@@ -422,6 +490,16 @@ fn source_derived_resource_key(source_path: &str, resource: &str) -> String {
         path.extension().and_then(|value| value.to_str()),
         Some("hew")
     );
+    // The registry owns the directory-module peer rule, so a peer source such as
+    // `std/net/http/http_client.hew` keys on its package owner. Matrix rows hold
+    // repository-relative paths; the registry resolves an absolute one.
+    let absolute = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("hew-types is below repository root")
+        .join(path);
+    if let Some(owner) = crate::module_registry::canonical_stdlib_module_for_source(&absolute) {
+        return format!("{owner}.{resource}");
+    }
     let mut module: Vec<_> = path
         .parent()
         .expect("shipped source has a parent")
@@ -527,7 +605,8 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
     assert!(missing_source
         .opaque_resource_candidates
         .candidates
-        .is_empty());
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
 
     let unknown_family = check_source_in_module(
         r#"
@@ -535,7 +614,7 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
         #[opaque]
         type Unknown {}
         impl Unknown {
-            fn close(consuming self) { unsafe { unknown_free(self) }; }
+            fn close(consume self) { unsafe { unknown_free(self) }; }
         }
         extern "C" {
             fn unknown_new() -> Unknown;
@@ -547,7 +626,8 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
     assert!(unknown_family
         .opaque_resource_candidates
         .candidates
-        .is_empty());
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(unknown_family
         .opaque_resource_candidates
         .conflicts
@@ -557,7 +637,11 @@ fn generated_contract_without_source_or_unknown_source_family_never_enters_inven
 #[test]
 fn root_symbol_spoof_cannot_inherit_qualified_lifecycle() {
     let output = check_source(TCP_CONNECTION_SOURCE);
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -567,7 +651,11 @@ fn foreign_module_symbol_and_type_spoof_cannot_inherit_lifecycle() {
         TCP_CONNECTION_SOURCE,
         vec!["user".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -587,7 +675,11 @@ fn short_name_collision_records_result_mismatch_without_candidate() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -613,7 +705,11 @@ fn mismatched_source_consume_release_records_conflict() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -636,7 +732,11 @@ fn missing_source_release_records_conflict() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(matches!(
         output.opaque_resource_candidates.conflicts.as_slice(),
         [OpaqueResourceLifecycleConflict {
@@ -660,7 +760,11 @@ fn borrowed_or_untyped_results_do_not_mint_candidates() {
         "#,
         vec!["std".to_string(), "net".to_string()],
     );
-    assert!(output.opaque_resource_candidates.candidates.is_empty());
+    assert!(output
+        .opaque_resource_candidates
+        .candidates
+        .keys()
+        .all(|name| name.full_path() == "std.builtins.ActorRequestOwner"));
     assert!(output.opaque_resource_candidates.conflicts.is_empty());
 }
 
@@ -750,7 +854,7 @@ fn checker_with_resolved_module_graph(sources: &[(&[&str], &str)]) -> Checker {
                 .iter()
                 .position(|candidate| candidate.path == declaration.path)
                 .expect("test import target must be present in the graph");
-            declaration.resolved_items = Some(parsed_items[target_index].clone());
+            declaration.resolved_items = Some(parsed_items[target_index].clone().into());
             imports.push(hew_parser::module::ModuleImport {
                 target: module_ids[target_index].clone(),
                 spec: declaration.spec.clone(),
@@ -825,7 +929,7 @@ const SYNTHETIC_OWNER: &str = r#"
 #[opaque]
 pub type Socket {}
 impl Socket {
-    fn close(consuming self) { unsafe { example_socket_close(self) }; }
+    fn close(consume self) { unsafe { example_socket_close(self) }; }
 }
 extern "C" {
     fn example_socket_close(consume socket: Socket) -> i32;
@@ -840,7 +944,7 @@ fn generic_extern_template_joins_only_exact_canonical_contract_expansions() {
         #[opaque]
         pub type Socket {}
         impl Socket {
-            fn close(consuming self) { unsafe { example_socket_close(self) }; }
+            fn close(consume self) { unsafe { example_socket_close(self) }; }
         }
         extern "C" {
             fn example_socket_close(consume socket: Socket) -> i32;
@@ -1109,7 +1213,7 @@ fn synthetic_non_net_contract_uses_the_same_candidate_graph() {
         #[opaque]
         pub type Socket {}
         impl Socket {
-            fn close(consuming self) {
+            fn close(consume self) {
                 unsafe { example_socket_close(self) };
             }
         }
@@ -1165,7 +1269,7 @@ fn disagreeing_producers_record_conflict_instead_of_selecting_a_release() {
         #[opaque]
         pub type Socket {}
         impl Socket {
-            fn close(consuming self) {
+            fn close(consume self) {
                 unsafe { example_socket_close(self) };
             }
         }
@@ -1233,22 +1337,21 @@ fn machine_state_resource_payload_rejects() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
         "type Tok { id: i64 }\n",
-        "impl Tok { fn close(self) { } }\n",
+        "impl Tok { fn close(consume self) { } }\n",
         "machine Gate {\n",
-        "    events { Open; Shut; }\n",
-        "    state Closed;\n",
-        "    state Opened { tok: Tok; }\n",
-        "    on Open: Closed => .Opened { Opened { tok: Tok { id: 1 } } }\n",
-        "    on Shut: Opened => .Closed { .Closed }\n",
+        "    events { Open, Shut, }\n",
+        "    state Closed,\n",
+        "    state Opened { tok: Tok, },\n",
+        "    on Open: Closed => .Opened { tok: Tok { id: 1 } }\n",
+        "    on Shut: Opened => .Closed,\n",
         "    default { state }\n",
         "}\n",
         "fn main() { var h = Closed; h.step(.Open); }\n",
     ));
     assert!(
         errors.iter().any(|e| {
-            e.message.contains("machine `Gate` state `Opened`")
-                && e.message.contains("`Tok`")
-                && e.message.contains("rejected rather than leaking")
+            e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("not demonstrably pure")
         }),
         "a resource in a machine state payload must be rejected: {errors:?}"
     );
@@ -1261,21 +1364,22 @@ fn machine_state_resource_payload_rejects_transitively() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
         "type Tok { id: i64 }\n",
-        "impl Tok { fn close(self) { } }\n",
+        "impl Tok { fn close(consume self) { } }\n",
         "type Wrap { t: Tok }\n",
         "machine Gate {\n",
-        "    events { Open; }\n",
-        "    state Closed;\n",
-        "    state Opened { w: Wrap; }\n",
-        "    on Open: Closed => .Opened { Opened { w: Wrap { t: Tok { id: 1 } } } }\n",
+        "    events { Open, }\n",
+        "    state Closed,\n",
+        "    state Opened { w: Wrap, },\n",
+        "    on Open: Closed => .Opened { w: Wrap { t: Tok { id: 1 } } }\n",
         "    default { state }\n",
         "}\n",
         "fn main() { var h = Closed; h.step(.Open); }\n",
     ));
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("machine `Gate` state `Opened`")),
+        errors.iter().any(|e| {
+            e.kind == crate::error::TypeErrorKind::MachineExhaustivenessError
+                && e.message.contains("not demonstrably pure")
+        }),
         "a record-wrapped resource in a machine state must be rejected: {errors:?}"
     );
 }
@@ -1284,10 +1388,10 @@ fn machine_state_resource_payload_rejects_transitively() {
 fn machine_state_without_resource_payload_is_admitted() {
     let (errors, _) = parse_and_check(concat!(
         "machine Counter {\n",
-        "    events { Inc; }\n",
-        "    state Zero;\n",
-        "    state NonZero { value: i64; }\n",
-        "    on Inc: Zero => .NonZero { NonZero { value: 1 } }\n",
+        "    events { Inc, }\n",
+        "    state Zero,\n",
+        "    state NonZero { value: i64, },\n",
+        "    on Inc: Zero => .NonZero { value: 1 }\n",
         "    default { state }\n",
         "}\n",
         "fn main() { var x = Zero; x.step(.Inc); }\n",
@@ -1306,13 +1410,13 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
     let (errors, _) = parse_and_check(concat!(
         "#[resource]\n",
         "type Tok { id: i64 }\n",
-        "impl Tok { fn close(self) { } }\n",
+        "impl Tok { fn close(consume self) { } }\n",
         "type Phantom<T> { id: i64 }\n",
         "machine Gate {\n",
-        "    events { Open; }\n",
-        "    state Closed;\n",
-        "    state Opened { p: Phantom<Tok>; }\n",
-        "    on Open: Closed => .Opened { Opened { p: Phantom<Tok> { id: 1 } } }\n",
+        "    events { Open, }\n",
+        "    state Closed,\n",
+        "    state Opened { p: Phantom<Tok>, },\n",
+        "    on Open: Closed => .Opened { p: Phantom<Tok> { id: 1 } }\n",
         "    default { state }\n",
         "}\n",
         "fn main() { var h = Closed; h.step(.Open); }\n",

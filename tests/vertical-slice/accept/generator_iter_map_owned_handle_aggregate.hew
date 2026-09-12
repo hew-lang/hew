@@ -1,0 +1,20 @@
+// A `Generator` handle passed into a `std.iter` adapter: the adapter stores
+// the owned handle in its own record (`Map { iter: I, f: fn(A) -> B }`) and
+// the collected vector is released once. This was a fail-closed refusal while
+// a generator instance could not be monomorphised over its `()` return; it is
+// ordinary owning iteration now.
+import std.iter;
+
+gen fn counter(n: i64) -> i64 {
+    var i: i64 = 0;
+    while i < n {
+        yield i;
+        i = i + 1;
+    }
+}
+
+fn main() {
+    let g = counter(3);
+    let doubled = iter.collect(iter.map(g, |x: i64| x * 2));
+    println(doubled.len());
+}

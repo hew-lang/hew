@@ -4,8 +4,8 @@
 // the string into the new instantiation. 100k iterations surface a double-free
 // (SIGSEGV) or a leak.
 type Pair<A, B> {
-    first: A;
-    second: B;
+    first: A,
+    second: B,
 }
 
 fn swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {

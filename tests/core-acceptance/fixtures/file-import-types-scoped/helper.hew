@@ -1,0 +1,13 @@
+pub type Point {
+    x: i64,
+    y: i64,
+}
+
+pub const ORIGIN_X: i64 = 7;
+
+pub fn helper_sum(p: Point) -> i64 {
+    // The declaring file names its own type and constant without importing
+    // itself.
+    let origin = Point { x: ORIGIN_X, y: 0 };
+    return p.x + p.y + origin.x;
+}

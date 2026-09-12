@@ -1,6 +1,6 @@
 //! Go-style text/template rendering.
 //!
-//! Parse a template string with `parse` / `parse`, then render the compiled
+//! Parse a template string with `parse`, then render the compiled
 //! `Template` against a `Ctx` value. Directives inside `{{...}}` are
 //! substituted; all other text passes through verbatim.
 //!
@@ -18,8 +18,8 @@
 //!
 //! `parse` and `render_try` return `TemplateError`:
 //! `UnclosedDirective`, `UnclosedBlock`, `UnexpectedTag`, `DotOutsideRange`,
-//! or `UnknownDirective`. `parse` and `render_template` panic with the same
-//! human-readable message.
+//! or `UnknownDirective`. `render_template` panics with the same human-readable
+//! message.
 //!
 //! # Method-style rendering
 //!
@@ -35,7 +35,7 @@
 //! with two independent parallel-vector maps:
 //!
 //! - **scalar map** — `string` keys to `string` values (integers and bools
-//!   are stored pre-rendered via `ctx_set_int` / `ctx_set_bool`).
+//!   are stored pre-rendered via `Ctx.set_int` / `Ctx.set_bool`).
 //! - **list map** — `string` keys to flat-stored lists of `string` items,
 //!   indexed by per-entry start/length metadata.
 //!
@@ -57,15 +57,18 @@
 //! import std.text.template;
 //!
 //! fn main() {
-//!     let ctx = template.new_ctx();
-//!     template.ctx_set_str(ctx, "name", "Alice");
-//!     template.ctx_set_int(ctx, "age", 30);
-//!     let items: Vec<string> = Vec.new();
+//!     var ctx = template.new_ctx();
+//!     ctx.set_str("name", "Alice");
+//!     ctx.set_int("age", 30);
+//!     var items: Vec<string> = Vec.new();
 //!     items.push("red");
 //!     items.push("green");
-//!     template.ctx_set_list(ctx, "colours", items);
+//!     ctx.set_list("colours", items);
 //!
-//!     let t = template.parse("Hello {{.name}}, age {{.age}}!");
+//!     let t = match template.parse("Hello {{.name}}, age {{.age}}!") {
+//!         .Ok(template) => template,
+//!         .Err(_) => panic("template parse failed"),
+//!     };
 //!     let result = template.render_try(t, ctx);
 //!     match result {
 //!         .Ok(s) => println(s),
@@ -84,21 +87,21 @@
 // WHAT: the real shape is a single generic map from string to a recursive Value.
 /// Template rendering context.
 ///
-/// Construct with `new_ctx()`, then populate with `ctx_set_str`,
-/// `ctx_set_int`, `ctx_set_bool`, and `ctx_set_list`.
+/// Construct with `new_ctx()`, then populate through the `var self` methods
+/// `set_str`, `set_int`, `set_bool`, and `set_list`; the binding must be `var`.
 pub type Ctx {
     /// Keys for scalar (string-valued) entries.
-    skeys: Vec<string>;
+    skeys: Vec<string>,
     /// String-rendered values for scalar entries (parallel to `skeys`).
-    svals: Vec<string>;
+    svals: Vec<string>,
     /// Keys for list entries.
-    lkeys: Vec<string>;
+    lkeys: Vec<string>,
     /// Flat concatenation of all list items across all list entries.
-    litems: Vec<string>;
+    litems: Vec<string>,
     /// Start index into `litems` for each list entry (parallel to `lkeys`).
-    lstart: Vec<i64>;
+    lstart: Vec<i64>,
     /// Item count for each list entry (parallel to `lkeys`).
-    llen: Vec<i64>;
+    llen: Vec<i64>,
 }
 
 // ── Internal helper: (rendered-text, next-position) pair ─────────────
@@ -110,23 +113,23 @@ pub type Ctx {
 // WHEN: replace with `(string, i64)` tuple return once tuple returns land.
 // WHAT: the real shape is `Result<(string, i64), string>`.
 pub type RenderPair {
-    text: string;
-    next_pos: i64;
+    text: string,
+    next_pos: i64,
 }
 
 /// Opaque compiled template.
 pub type Template {
-    src: string;
+    src: string,
 }
 
 /// Structured template parse/render errors.
 pub enum TemplateError {
-    UnclosedDirective(string);
-    UnclosedBlock(string);
-    UnexpectedTag(string);
-    DotOutsideRange(string);
-    UnknownDirective(string);
-    DuplicateElse(string);
+    UnclosedDirective(string),
+    UnclosedBlock(string),
+    UnexpectedTag(string),
+    DotOutsideRange(string),
+    UnknownDirective(string),
+    DuplicateElse(string),
 }
 
 impl Display for TemplateError {
@@ -444,7 +447,7 @@ fn unclosed_block_error(block: string) -> TemplateError {
 }
 
 fn validate(tmpl: string) -> Result<i64, TemplateError> {
-    let stack: Vec<string> = Vec.new();
+    var stack: Vec<string> = Vec.new();
     var range_depth = 0;
     var pos = 0;
     let tlen = tmpl.len();
@@ -548,94 +551,93 @@ pub fn render_template(t: Template, ctx: Ctx) -> string {
 /// import std.text.template;
 ///
 /// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_str(ctx, "greeting", "hello");
+///     var ctx = template.new_ctx();
+///     ctx.set_str("greeting", "hello");
 /// }
 /// ```
 pub fn new_ctx() -> Ctx {
     Ctx { skeys: Vec.new(), svals: Vec.new(), lkeys: Vec.new(), litems: Vec.new(), lstart: Vec.new(), llen: Vec.new() }
 }
 
-/// Bind `key` to the string `val` in the context.
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_str(ctx, "name", "Alice");
-/// }
-/// ```
-pub fn ctx_set_str(ctx: Ctx, key: string, val: string) {
-    ctx.skeys.push(key);
-    ctx.svals.push(val);
-}
-
-/// Bind `key` to the integer `val` (stored as its decimal representation).
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_int(ctx, "count", 42);
-/// }
-/// ```
-pub fn ctx_set_int(ctx: Ctx, key: string, val: i64) {
-    ctx.skeys.push(key);
-    ctx.svals.push(f"{val}");
-}
-
-/// Bind `key` to the boolean `val` (`"true"` or `"false"`).
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_bool(ctx, "active", true);
-/// }
-/// ```
-pub fn ctx_set_bool(ctx: Ctx, key: string, val: bool) {
-    ctx.skeys.push(key);
-    ctx.svals.push(if val {
-        "true"
-    } else {
-        "false"
-    });
-}
-
-/// Bind `key` to the list of strings `items`.
-///
-/// Inside a `{{range .key}}...{{end}}` block, each element is bound to `{{.}}`.
-///
-/// # Examples
-///
-/// ```
-/// import std.text.template;
-///
-/// fn main() {
-///     let ctx = template.new_ctx();
-///     let colours: Vec<string> = Vec.new();
-///     colours.push("red");
-///     colours.push("blue");
-///     template.ctx_set_list(ctx, "colours", colours);
-/// }
-/// ```
-pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
-    let n = items.len();
-    let start = ctx.litems.len();
-    ctx.lkeys.push(key);
-    ctx.lstart.push(start);
-    ctx.llen.push(n);
-    for i in 0 .. n {
-        ctx.litems.push(items[i]);
+impl Ctx {
+    /// Bind `key` to the string `val` in the context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     ctx.set_str("name", "Alice");
+    /// }
+    /// ```
+    pub fn set_str(var self, key: string, val: string) {
+        self.skeys.push(key);
+        self.svals.push(val);
+    }
+    /// Bind `key` to the integer `val` (stored as its decimal representation).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     ctx.set_int("count", 42);
+    /// }
+    /// ```
+    pub fn set_int(var self, key: string, val: i64) {
+        self.skeys.push(key);
+        self.svals.push(f"{val}");
+    }
+    /// Bind `key` to the boolean `val` (`"true"` or `"false"`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     ctx.set_bool("active", true);
+    /// }
+    /// ```
+    pub fn set_bool(var self, key: string, val: bool) {
+        self.skeys.push(key);
+        self.svals.push(if val {
+            "true"
+        } else {
+            "false"
+        });
+    }
+    /// Bind `key` to the list of strings `items`.
+    ///
+    /// Inside a `{{range .key}}...{{end}}` block, each element is bound to `{{.}}`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// import std.text.template;
+    ///
+    /// fn main() {
+    ///     var ctx = template.new_ctx();
+    ///     var colours: Vec<string> = Vec.new();
+    ///     colours.push("red");
+    ///     colours.push("blue");
+    ///     ctx.set_list("colours", colours);
+    /// }
+    /// ```
+    pub fn set_list(var self, key: string, items: Vec<string>) {
+        let n = items.len();
+        let start = self.litems.len();
+        self.lkeys.push(key);
+        self.lstart.push(start);
+        self.llen.push(n);
+        for i in 0 .. n {
+            self.litems.push(items[i]);
+        }
     }
 }
 
@@ -651,9 +653,12 @@ pub fn ctx_set_list(ctx: Ctx, key: string, items: Vec<string>) {
 /// import std.text.template;
 ///
 /// fn main() {
-///     let ctx = template.new_ctx();
-///     template.ctx_set_str(ctx, "who", "world");
-///     let t = template.parse("hello {{.who}}!");
+///     var ctx = template.new_ctx();
+///     ctx.set_str("who", "world");
+///     let t = match template.parse("hello {{.who}}!") {
+///         .Ok(template) => template,
+///         .Err(_) => panic("template parse failed"),
+///     };
 ///     let r = template.render_try(t, ctx);
 ///     match r {
 ///         .Ok(s) => println(s),    // "hello world!"

@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use hew_parser::ast::{
-    Block, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    condition_exprs, Block, ConditionItem, Expr, Item, Pattern, Span, Stmt, StringPart, TraitItem,
+    TypeBodyItem,
 };
 use hew_parser::ParseResult;
 
@@ -309,10 +310,14 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
             {
                 self.starts.push(pattern.1.start);
             }
-            Stmt::IfLet { pattern, .. } | Stmt::WhileLet { pattern, .. }
-                if pattern_binds_name(&pattern.0, self.name) =>
-            {
-                self.starts.push(pattern.1.start);
+            Stmt::IfLet { conditions, .. } | Stmt::WhileLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        if pattern_binds_name(&pattern.0, self.name) {
+                            self.starts.push(pattern.1.start);
+                        }
+                    }
+                }
             }
             Stmt::Var {
                 name: binding_name, ..
@@ -333,8 +338,17 @@ impl<'ast> AstVisitor<'ast> for BindingStartsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, _span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
-            Expr::IfLet { pattern, .. } if pattern_binds_name(&pattern.0, self.name) => {
-                self.starts.push(pattern.1.start);
+            Expr::Handle { error, .. } if error.0 == self.name => {
+                self.starts.push(error.1.start);
+            }
+            Expr::IfLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        if pattern_binds_name(&pattern.0, self.name) {
+                            self.starts.push(pattern.1.start);
+                        }
+                    }
+                }
             }
             Expr::Match { arms, .. } => {
                 for arm in arms {
@@ -551,8 +565,12 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
             Stmt::Let { pattern, .. } | Stmt::For { pattern, .. } => {
                 self.push_pattern_matches(&pattern.0, &pattern.1);
             }
-            Stmt::IfLet { pattern, .. } | Stmt::WhileLet { pattern, .. } => {
-                self.push_pattern_matches(&pattern.0, &pattern.1);
+            Stmt::IfLet { conditions, .. } | Stmt::WhileLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        self.push_pattern_matches(&pattern.0, &pattern.1);
+                    }
+                }
             }
             Stmt::Match { arms, .. } => {
                 for arm in arms {
@@ -565,6 +583,9 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
 
     fn visit_expr(&mut self, expr: &'ast Expr, span: &'ast Span, _ctx: VisitContext<'ast>) {
         match expr {
+            Expr::Handle { error, .. } if error.0 == self.name => {
+                self.spans.push(error.1.clone());
+            }
             Expr::FieldAccess { field, .. } if field == self.name => {
                 self.spans
                     .push(field_access_name_span(self.source, span, field));
@@ -586,8 +607,12 @@ impl<'ast> AstVisitor<'ast> for RefsVisitor<'_> {
                     search_from = val.1.end;
                 }
             }
-            Expr::IfLet { pattern, .. } => {
-                self.push_pattern_matches(&pattern.0, &pattern.1);
+            Expr::IfLet { conditions, .. } => {
+                for item in conditions {
+                    if let ConditionItem::Let { pattern, .. } = item {
+                        self.push_pattern_matches(&pattern.0, &pattern.1);
+                    }
+                }
             }
             Expr::Match { arms, .. } => {
                 for arm in arms {
@@ -773,15 +798,16 @@ fn count_idents_in_stmt(stmt: &Stmt, counts: &mut HashMap<String, usize>) {
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            count_idents_in_expr(&expr.0, counts);
+            for expr in condition_exprs(conditions) {
+                count_idents_in_expr(&expr.0, counts);
+            }
             count_idents_in_block(body, counts);
-            if let Some(block) = else_body {
-                count_idents_in_block(block, counts);
+            if let Some(else_expr) = else_body {
+                count_idents_in_expr(&else_expr.0, counts);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -818,7 +844,13 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
         Expr::Identifier(ident) => {
             *counts.entry(ident.clone()).or_insert(0) += 1;
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             count_idents_in_expr(&left.0, counts);
             count_idents_in_expr(&right.0, counts);
         }
@@ -870,15 +902,16 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            count_idents_in_expr(&expr.0, counts);
+            for expr in condition_exprs(conditions) {
+                count_idents_in_expr(&expr.0, counts);
+            }
             count_idents_in_block(body, counts);
-            if let Some(block) = else_body {
-                count_idents_in_block(block, counts);
+            if let Some(else_expr) = else_body {
+                count_idents_in_expr(&else_expr.0, counts);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -903,9 +936,14 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&v.0, counts);
             }
         }
-        Expr::Tuple(elems) | Expr::Array(elems) | Expr::Join(elems) => {
+        Expr::Tuple(elems) | Expr::Race(elems) => {
             for elem in elems {
                 count_idents_in_expr(&elem.0, counts);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                count_idents_in_expr(&element.expr().0, counts);
             }
         }
         Expr::Select {
@@ -919,8 +957,10 @@ fn count_idents_in_expr(expr: &Expr, counts: &mut HashMap<String, usize>) {
                 count_idents_in_expr(&t.body.0, counts);
             }
         }
-        Expr::Timeout { expr: e, .. } => count_idents_in_expr(&e.0, counts),
-        Expr::Await(inner) | Expr::PostfixTry(inner) | Expr::Yield(Some(inner)) => {
+        Expr::Await(inner)
+        | Expr::ReturnError(inner)
+        | Expr::PostfixTry(inner)
+        | Expr::Yield(Some(inner)) => {
             count_idents_in_expr(&inner.0, counts);
         }
         Expr::Cast { expr: inner, .. } => count_idents_in_expr(&inner.0, counts),
@@ -1127,7 +1167,7 @@ mod tests {
 
     #[test]
     fn find_refs_struct_field_from_declaration() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
         let pr = parse(source);
         let offset = source
             .find("x: i32")
@@ -1154,7 +1194,7 @@ mod tests {
 
     #[test]
     fn find_refs_struct_field_from_access() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
         let pr = parse(source);
         let offset = source.find("p.x").expect("field access should exist") + 2;
         let result =
@@ -1314,7 +1354,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config());\n",
+            "    child w: Worker(init: make_config()),\n",
             "}",
         );
         let pr = parse(source);
@@ -1351,7 +1391,7 @@ mod tests {
             "    receive fn start() {}\n",
             "}\n",
             "supervisor Pool {\n",
-            "    child w: Worker(init: make_config());\n",
+            "    child w: Worker(init: make_config()),\n",
             "}",
         );
         let pr = parse(source);
@@ -1391,10 +1431,10 @@ mod tests {
             "fn compute() -> Int { 0 }\n",
             "machine Counter {\n",
             "    events {\n",
-            "        Start;\n",
+            "        Start,\n",
             "    }\n",
-            "    state Idle;\n",
-            "    state Running;\n",
+            "    state Idle,\n",
+            "    state Running,\n",
             "    on Start: Idle => Running { compute() }\n",
             "}",
         );
@@ -1429,11 +1469,11 @@ mod tests {
             "const flag: Bool = true;\n",
             "machine Gate {\n",
             "    events {\n",
-            "        Try;\n",
+            "        Try,\n",
             "    }\n",
-            "    state Locked;\n",
-            "    state Open;\n",
-            "    on Try: Locked => Open when flag { Open }\n",
+            "    state Locked,\n",
+            "    state Open,\n",
+            "    on Try: Locked => Open when flag,\n",
             "}",
         );
         let pr = parse(source);

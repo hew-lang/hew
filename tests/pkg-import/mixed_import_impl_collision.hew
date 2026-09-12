@@ -18,7 +18,7 @@ fn main() {
 
     // Package-import impl: testffi TestResult.rows()/get()/total()/free().
     let db = spawn testffi.Db(seed: 9);
-    match await db.query(3) {
+    match db.query(3) {
         .Ok(r) => {
             let n = r.rows();
             println(f"rows={n}");

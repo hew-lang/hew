@@ -1,9 +1,8 @@
 //! HIR is the first IR layer after parsing. It gives every binding and
-//! value-bearing expression a stable identity before later MIR ownership
-//! analysis attaches value-model decisions.
+//! value-bearing expression a stable identity before ownership SIR makes
+//! value-model decisions.
 
 pub mod builtin_type_classes;
-pub mod declared_release;
 pub mod diagnostic;
 pub mod dispatch;
 pub mod dump;
@@ -11,7 +10,6 @@ pub mod ids;
 pub mod intent;
 pub mod layout_mono;
 pub mod lower;
-pub mod machine_mono;
 pub mod mono;
 pub mod monomorph;
 pub mod node;
@@ -32,11 +30,9 @@ pub use lower::{
     lower_program, lower_program_host_target, lower_program_with_mono_cap, LowerOutput,
     ResolutionCtx, TargetArch,
 };
-pub use machine_mono::run_machine_mono_pass;
 pub use mono::{
-    machine_layout_key, mangle_instantiation, sanitize_for_symbol, ActorMonoKey,
-    ConstValue as MonoConstValue, FunctionMonoKey, MachineMonoEntry, MachineMonoKey, MonoKind,
-    SymbolClass,
+    mangle_instantiation, sanitize_for_symbol, ActorMonoKey, ConstValue as MonoConstValue,
+    FunctionMonoKey, MonoKind, SymbolClass,
 };
 pub use monomorph::{
     compiler_record_layout_key, layout_key_for_named, mangle, mangle_layout_key,
@@ -47,16 +43,14 @@ pub use monomorph::{
 pub use node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
     HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirConst,
-    HirConstValue, HirExpr, HirExprKind, HirExternFn, HirField, HirFn, HirGenCapture,
-    HirGenCaptureSource, HirItem, HirJoin, HirJoinBranch, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMachineBound, HirMachineDecl, HirMachineEvent,
-    HirMachineState, HirMachineTransition, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirProducedValueFact,
-    HirProducedValueProducer, HirProducedValueRelation, HirProducedValueSourceAnchor,
+    HirConstValue, HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirExternFn,
+    HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirLambdaCapture,
+    HirLifecycleHook, HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding,
+    HirMatchArmPredicate, HirModule, HirPayloadPredicate, HirPayloadVariantPredicate,
     HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind,
-    HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
-    WhereOrigin,
+    HirSelectionOrder, HirShutdownDirective, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget,
+    HirVariant, HirVariantKind, WhereOrigin,
 };
 pub use value_class::{
     contains_named_type, lookup_type_marker, lookup_type_marker_for_ty, named_type_components,

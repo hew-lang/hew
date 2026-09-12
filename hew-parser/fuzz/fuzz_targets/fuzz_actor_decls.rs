@@ -32,7 +32,7 @@ impl ActorInput {
         format!(
             r#"#[max_heap(4096)]
 actor FuzzWorker {{
-    let total: i64;
+    let total: i64,
 
     init() {{
         total = 0;
@@ -52,7 +52,7 @@ fn fuzz_channel_surfaces(
     stream: Stream<i64>,
     sink: Sink<i64>,
     duplex: Duplex<i64, string>,
-    local: LocalPid<FuzzWorker>,
+    local: FuzzWorker,
     remote: RemotePid<FuzzWorker>,
 ) {{
     sink.send(1);

@@ -6,10 +6,12 @@
 //! leaves every literal-based assertion passing. Heap-allocated strings make
 //! the same defect abort on a corrupted refcount header.
 
-fn mk(s: string) -> string { s + "!" }
+fn mk(s: string) -> string {
+    s + "!"
+}
 
 fn snapshot() -> Vec<(string, string)> {
-    let m: HashMap<string, string> = HashMap.new();
+    var m: HashMap<string, string> = HashMap.new();
     m.insert(mk("one"), mk("first"));
     m.insert(mk("two"), mk("second"));
     m.entries()
@@ -19,8 +21,16 @@ fn main() -> i64 {
     let entries = snapshot();
     var seen: i64 = 0;
     for pair in entries {
-        if pair.0 == "one!" && pair.1 == "first!" { seen = seen | 1; }
-        if pair.0 == "two!" && pair.1 == "second!" { seen = seen | 2; }
+        if pair.0 == "one!" && pair.1 == "first!" {
+            seen = seen | 1;
+        }
+        if pair.0 == "two!" && pair.1 == "second!" {
+            seen = seen | 2;
+        }
     }
-    if seen == 3 { 0 } else { 93 }
+    if seen == 3 {
+        0
+    } else {
+        93
+    }
 }

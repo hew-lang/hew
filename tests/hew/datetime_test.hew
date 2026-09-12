@@ -17,7 +17,10 @@ fn assert_parse_ok(actual: Result<i64, string>) -> i64 {
 #[test]
 fn test_try_parse_full_timestamp_formats_back_to_date() {
     let parsed = assert_parse_ok(datetime.parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
-    testing.assert_eq_str(datetime.format(parsed, "%Y-%m-%d"), "2025-07-10");
+    match datetime.format(parsed, "%Y-%m-%d") {
+        .Ok(formatted) => testing.assert_eq_str(formatted, "2025-07-10"),
+        .Err(message) => panic(message),
+    }
 }
 
 #[test]
@@ -27,7 +30,7 @@ fn test_try_parse_invalid_timestamp_returns_err() {
             panic(f"expected invalid parse to fail, got {value}");
             testing.assert_eq(value, 0);
         },
-        .Err(message) => testing.assert_true(message.len() > 0),
+        .Err(message) => testing.assert_true(!message.is_empty()),
     }
 }
 

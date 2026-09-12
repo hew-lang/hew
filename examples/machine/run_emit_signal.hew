@@ -1,69 +1,53 @@
 // Runnable fixture: machine with unit-event emit, executed end-to-end.
 //
-// Drives the MachineEmitPlaceholder → hew_machine_emit_push → hew_machine_emit_take
-// codegen path via `hew run`:
+// Drives the MachineEmitPlaceholder codegen path via `hew run`:
 //   1. Construct a `Signal` machine at its initial state.
 //   2. Step with `Start`, which triggers `emit Ready {}` then transitions
 //      to `Active`.
 //   3. Observe that the step succeeds and state_name() reflects the new state.
-//   4. Consume the emitted event with `take_emits(Ready)` and prove delivery:
-//      the first call removes the one queued `Ready` event (count 1); a
-//      second call finds nothing left (count 0); `take_emits(Stop)` was
-//      never emitted, so it is always 0.
+//   4. Read the emitted output from the step's own report: outputs are
+//      returned per-step (MACHINE-SPEC's `MStep.outputs`), not pulled from a
+//      separate queue — a later step with no `emit` reports an empty vector.
 //
 // The emit call (`emit Ready {}`) is a unit-payload Mealy output. It lowers
-// through `Instr::MachineEmitPlaceholder` → `call void @hew_machine_emit_push`
-// in the LLVM IR, tagged with the machine's stable type id. The thread-local
-// EmitQueue keeps the event (the step-exit wrapper calls
-// `hew_machine_emit_step_exit_keep`, never draining) until `m.take_emits(ev)`
-// removes it — delivery is per-thread, per-machine-TYPE (see
-// docs/specs/MACHINE-SPEC.md's emit section).
+// through `Instr::MachineEmitPlaceholder` in the LLVM IR, tagged with the
+// machine's stable type id, and is collected into the step's `MStep.outputs`
+// (see docs/specs/MACHINE-SPEC.md's emit section).
 //
 // `tests/exec/machine_exec.rs::run_emit_signal_fixture_executes` is the
 // end-to-end signal for this fixture.
 machine Signal {
     events {
-        Start;
-        Stop;
-        Ready;
+        Start,
+        Stop,
+        Ready,
     }
 
     emits {
-        Ready;
+        Ready,
     }
 
-    state Idle;
-    state Active;
+    state Idle,
+    state Active,
 
     on Start: Idle => Active {
         emit Ready {};
-        Signal.Active
+        Active
     }
-    on Stop: Active => Idle {
-        Signal.Idle
-    }
-    on Ready: Idle => Idle reenter {
-        Signal.Idle
-    }
-    on Ready: Active => Active reenter {
-        Signal.Active
-    }
-    on Start: Active => Active reenter {
-        Signal.Active
-    }
-    on Stop: Idle => Idle reenter {
-        Signal.Idle
-    }
+    on Stop: Active => Idle,
+    on Ready: Idle => Idle reenter,
+    on Ready: Active => Active reenter,
+    on Start: Active => Active reenter,
+    on Stop: Idle => Idle reenter,
 }
 
 fn main() {
     var s = Idle;
     println(s.state_name());
-    s.step(.Start);
+    let started = s.step(.Start);
     println(s.state_name());
-    println(s.take_emits(.Ready));
-    println(s.take_emits(.Ready));
-    println(s.take_emits(.Stop));
-    s.step(.Stop);
+    println(started.outputs.len());
+    let stopped = s.step(.Stop);
+    println(stopped.outputs.len());
     println(s.state_name());
 }

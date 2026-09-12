@@ -1,0 +1,27 @@
+//! A user type may be named `Sender`; the substrate endpoint is the one
+//! `std.channel` declares. The real endpoint still satisfies the parameter
+//! (the control below raises no diagnostic), while the user record is refused
+//! with both spellings named.
+
+import std.channel as chan;
+
+pub type Sender<T> {
+    tag: T,
+}
+
+fn wants_endpoint(tx: chan.Sender<i64>) {
+    tx.close();
+}
+
+fn main() {
+    let opened = chan.new<i64>(4);
+    match opened {
+        .Ok(parts) => {
+            let (tx, rx) = parts;
+            wants_endpoint(tx);
+            rx.close();
+        }
+        .Err(reason) => println(reason),
+    }
+    wants_endpoint(Sender { tag: 3 });
+}

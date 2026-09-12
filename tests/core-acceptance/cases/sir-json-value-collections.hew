@@ -1,0 +1,35 @@
+import std.encoding.json;
+
+fn total(values: Vec<json.Value>) -> i64 {
+    var sum = 0;
+    for value in values {
+        sum = sum + value.get_int().expect("integer");
+    }
+    sum
+}
+
+fn named() -> HashMap<string, json.Value> {
+    var index: HashMap<string, json.Value> = HashMap.new();
+    index.insert("count", json.from_int(2));
+    index.insert("name", json.from_string("south"));
+    index
+}
+
+fn main() {
+    let values = [json.from_int(7), json.from_string("north")];
+    println(values[0].get_int().expect("integer"));
+    println(values[1].get_string().expect("text"));
+    println(values.len());
+    println(total([json.from_int(4), json.from_int(5)]));
+
+    let index = named();
+    match index.get("count") {
+        .Some(count) => println(count.get_int().expect("count")),
+        .None => println("missing"),
+    }
+    match index.get("name") {
+        .Some(name) => println(name.get_string().expect("name")),
+        .None => println("missing"),
+    }
+    println(index.len());
+}

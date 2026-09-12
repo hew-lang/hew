@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-vec_f64_nonfinite_contains"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/vec_f64_nonfinite_contains.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "[nan].contains(nan)   true\n[nan].contains(inf)   false\n[inf].contains(-inf)  false\n[2.5].contains(2.5)   true\n[2.5].contains(nan)   false\n"
+exit = 0

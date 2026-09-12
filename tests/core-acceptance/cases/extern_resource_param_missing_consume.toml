@@ -1,0 +1,13 @@
+[[case]]
+id = "extern_resource_param_missing_consume"
+intent = "Reject fixture: extern_resource_param_missing_consume — a `#[resource]` handle passed by value to an `extern` fn must be declared `consume`."
+source = "../vertical-slice/reject/extern_resource_param_missing_consume.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ResourceBoundaryParamMustConsume"
+line = 35
+column = 5
+message = "E_HIR: `Handle` is a `#[resource]`/`#[linear]` handle passed by value to extern fn `hew_handle_touch`, whose body is not visible at the call site, so its borrow-vs-consume disposition cannot be inferred; annotate `consume h: Handle` to pin the by-move ownership transfer (the callee / foreign ABI owns and drops it), or pass an owned handle/id by value instead of the resource itself"

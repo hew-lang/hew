@@ -1,0 +1,26 @@
+// `Arena<T>::insert` is a generic direct callee that takes ownership of the
+// value it stores. A `#[resource]` carrier inserted into the arena is closed
+// exactly once — by the arena's own cleanup at scope end, never by the caller
+// and never twice.
+import std.arena;
+
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"closing token id={self.id}");
+    }
+}
+
+fn main() -> i64 {
+    var store: arena.Arena<Token> = arena.new();
+    println("before insert");
+    let _first = store.insert(Token { id: 41 });
+    let _second = store.insert(Token { id: 42 });
+    println(store.len());
+    println("after insert");
+    0
+}

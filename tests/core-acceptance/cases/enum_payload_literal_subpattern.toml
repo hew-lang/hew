@@ -1,0 +1,13 @@
+[[case]]
+id = "enum_payload_literal_subpattern"
+intent = "The fixture runs to completion and exits 2."
+source = "../vertical-slice/accept/enum_payload_literal_subpattern.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 2

@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-vec"
+intent = "A heterogeneous `Vec<dyn Named>` accepts both implementors and the consuming iterator moves each trait object out in order, dispatching on it; an early exit leaves the untaken one to the cursor's own release."
+source = "cases/dyn-trait-vec.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "count=3\nperson ada\nmachine 7\nseen=2\n"
+exit = 0

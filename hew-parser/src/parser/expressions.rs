@@ -13,8 +13,9 @@ impl Parser<'_> {
     /// suffix.  The scan is linear and its interior language is deliberately
     /// bounded to identifier/primitive type names, `.`, `,`, and
     /// balanced nested angle brackets.  The outer `>` commits only when the
-    /// following token is `(`, `.`, or `{`; once committed, a later type parse
-    /// error never backtracks into relational operators.
+    /// following token starts a postfix or ends the value expression; once
+    /// committed, a later type parse error never backtracks into relational
+    /// operators.
     fn generic_apply_suffix_commits(&self) -> bool {
         if self.peek() != Some(&Token::Less) {
             return false;
@@ -29,7 +30,16 @@ impl Parser<'_> {
                     if depth == 0 {
                         return matches!(
                             self.peek_at(idx + 1),
-                            Some(Token::LeftParen | Token::Dot | Token::LeftBrace)
+                            None | Some(
+                                Token::LeftParen
+                                    | Token::Dot
+                                    | Token::LeftBrace
+                                    | Token::Semicolon
+                                    | Token::Comma
+                                    | Token::RightParen
+                                    | Token::RightBracket
+                                    | Token::RightBrace
+                            )
                         );
                     }
                 }
@@ -38,7 +48,16 @@ impl Parser<'_> {
                     if depth == 0 {
                         return matches!(
                             self.peek_at(idx + 1),
-                            Some(Token::LeftParen | Token::Dot | Token::LeftBrace)
+                            None | Some(
+                                Token::LeftParen
+                                    | Token::Dot
+                                    | Token::LeftBrace
+                                    | Token::Semicolon
+                                    | Token::Comma
+                                    | Token::RightParen
+                                    | Token::RightBracket
+                                    | Token::RightBrace
+                            )
                         );
                     }
                 }
@@ -265,11 +284,11 @@ impl Parser<'_> {
         }
 
         // Prefix operators
-        let mut lhs = if self.peek_is_clone_prefix() {
+        let mut lhs = if self.peek_is_value_prefix("clone") {
             // Contextual `clone <operand>` duplication prefix. `clone` is not a
             // reserved word — it is also a method/free-fn name — so it only acts
             // as the prefix when it sits in operator position immediately
-            // followed by an operand token (`peek_is_clone_prefix`). Binds at
+            // followed by an operand token (`peek_is_value_prefix`). Binds at
             // unary precedence so `clone a + b` is `(clone a) + b` and
             // `clone x.field` / `clone foo()` clone the whole postfix chain.
             self.advance()?; // consume `clone`
@@ -291,34 +310,19 @@ impl Parser<'_> {
                     )
                 }
                 Token::Minus => {
-                    // Fold `-<digits>` into a single signed literal only when the
-                    // bare (positive) parse already failed -- today that's just
-                    // i64::MIN/isize::MIN's magnitude (one past i64::MAX), which
-                    // can't be tokenized as a positive i64 at all. Every literal
-                    // that DOES fit positively (including i8/i16/i32/isize-32-bit
-                    // MIN) is untouched here; that fold happens later, in HIR
-                    // lowering, once the checker has picked a concrete width.
-                    let folded = match self.peek() {
-                        Some(Token::Integer(s)) if parse_int_literal(s).is_err() => {
-                            parse_negated_int_literal(s).ok()
-                        }
-                        _ => None,
-                    };
-                    if let Some((value, radix)) = folded {
-                        self.advance(); // consume the integer token
-                        let end = self.peek_span().start;
-                        (Expr::Literal(Literal::Integer { value, radix }), start..end)
-                    } else {
-                        let operand = self.parse_expr_bp(rbp)?;
-                        let end = operand.1.end;
-                        (
-                            Expr::Unary {
-                                op: UnaryOp::Negate,
-                                operand: Box::new(operand),
-                            },
-                            start..end,
-                        )
-                    }
+                    // `-<literal>` stays a unary expression: the `i128` literal
+                    // carrier represents every magnitude the checker can admit,
+                    // so there is nothing the parser must fold early. HIR folds
+                    // it once the checker has picked a concrete width.
+                    let operand = self.parse_expr_bp(rbp)?;
+                    let end = operand.1.end;
+                    (
+                        Expr::Unary {
+                            op: UnaryOp::Negate,
+                            operand: Box::new(operand),
+                        },
+                        start..end,
+                    )
                 }
                 Token::Tilde => {
                     let operand = self.parse_expr_bp(rbp)?;
@@ -456,30 +460,6 @@ impl Parser<'_> {
                 continue;
             }
 
-            // Timeout combinator: expr | after duration
-            // Checked before infix so `| after` is not consumed as bitwise OR.
-            if self.peek() == Some(&Token::Pipe) {
-                let saved = self.save_pos();
-                self.advance(); // consume |
-                if self.peek() == Some(&Token::After) {
-                    // Binding power 13 (same as bitwise OR left bp)
-                    if 13 >= min_bp {
-                        self.advance(); // consume after
-                        let duration = self.parse_expr_bp(14)?;
-                        let end = duration.1.end;
-                        lhs = (
-                            Expr::Timeout {
-                                expr: Box::new(lhs),
-                                duration: Box::new(duration),
-                            },
-                            start..end,
-                        );
-                        continue;
-                    }
-                }
-                self.restore_pos(saved);
-            }
-
             // Detect removed `=~` and `!~` regex operators.  The lexer never
             // produced `EqTilde`/`BangTilde` tokens, so the character sequences
             // tokenise as adjacent `=`+`~` or `!`+`~`.  Neither `=` nor `!` has
@@ -534,11 +514,61 @@ impl Parser<'_> {
                 }
             }
 
+            // Optional recovery binds below logical/range operators. Defaults
+            // associate right: a ?? b ?? c means a ?? (b ?? c).
+            if self.peek() == Some(&Token::QuestionQuestion) && min_bp <= 2 {
+                self.advance();
+                let right = self.parse_expr_bp(2)?;
+                let end = right.1.end;
+                lhs = (
+                    Expr::Coalesce {
+                        left: Box::new(lhs),
+                        right: Box::new(right),
+                    },
+                    start..end,
+                );
+                continue;
+            }
+            // `handle` remains a contextual identifier: parameter and function
+            // names keep their ordinary meaning outside this infix position.
+            if matches!(self.peek(), Some(Token::Identifier("handle"))) && min_bp <= 1 {
+                self.advance();
+                let error_span = self.peek_span();
+                let error = self.expect_ident()?;
+                if error == "_" {
+                    self.error_at(
+                        "a handler requires a named error binding".to_string(),
+                        error_span,
+                    );
+                    return None;
+                }
+                let body_start = self.peek_span().start;
+                let body = self.parse_block()?;
+                let end = self.peek_span().start;
+                lhs = (
+                    Expr::Handle {
+                        operand: Box::new(lhs),
+                        error: (error, error_span),
+                        body: Box::new((Expr::Block(body), body_start..end)),
+                    },
+                    start..end,
+                );
+                continue;
+            }
+
             // Then try infix
             let Some((lbp, rbp)) = self.peek().and_then(infix_bp) else {
                 break;
             };
             if lbp < min_bp {
+                break;
+            }
+
+            // `&& let` joins the next operand of a pattern condition (§12.5),
+            // which only `parse_condition` can read. Leave the `&&` for it.
+            if self.peek() == Some(&Token::AmpAmp)
+                && self.peek_at(self.pos + 1) == Some(&Token::Let)
+            {
                 break;
             }
 
@@ -680,10 +710,6 @@ impl Parser<'_> {
                 let inner = unquote_str(s);
                 let tok_start = start;
                 let (unescaped, unescape_errs) = unescape_string(inner);
-                if unescaped.contains('\0') {
-                    self.errors
-                        .push(embedded_nul_string_error(start..self.peek_span().end));
-                }
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 1 + off;
                     self.errors.push(ParseError {
@@ -711,10 +737,6 @@ impl Parser<'_> {
             }
             Token::RawString(s) => {
                 let s = unquote_str(s).to_string();
-                if s.contains('\0') {
-                    self.errors
-                        .push(embedded_nul_string_error(start..self.peek_span().end));
-                }
                 self.advance();
                 Expr::Literal(Literal::String(s))
             }
@@ -725,7 +747,7 @@ impl Parser<'_> {
                     .and_then(|s| s.strip_suffix('"'))
                     .unwrap_or(s);
                 let tok_start = start;
-                let (unescaped, unescape_errs) = unescape_string(inner);
+                let (unescaped, unescape_errs) = unescape_bytes(inner);
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 2 + off;
                     self.errors.push(ParseError {
@@ -737,7 +759,7 @@ impl Parser<'_> {
                     });
                 }
                 self.advance();
-                Expr::ByteStringLiteral(unescaped.into_bytes())
+                Expr::ByteStringLiteral(unescaped)
             }
             Token::InterpolatedString(s) => {
                 let s = s.to_string();
@@ -765,6 +787,13 @@ impl Parser<'_> {
                 let name = (*label).to_string();
                 self.advance();
                 Expr::Identifier(name)
+            }
+            Token::Identifier("capture")
+                if self.peek_at(self.pos + 1) == Some(&Token::LeftParen)
+                    && self.peek_at(self.pos + 2) == Some(&Token::Var) =>
+            {
+                let captures = self.parse_private_capture_prefix()?;
+                self.parse_pipe_lambda(false, start, captures)?
             }
             Token::Identifier(name)
                 if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
@@ -800,6 +829,46 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightBracket)?;
                 Expr::ByteArrayLiteral(values)
+            }
+            // `try { ... }` / `catch { ... }` — retired blocks. Both words are
+            // ordinary identifiers now, so only the block form is redirected,
+            // and not in condition position: there `if try { .. }` reads the
+            // binding `try` and the `{` opens the then block.
+            Token::Identifier("try" | "catch")
+                if !self.no_struct_literal()
+                    && self.peek_at(self.pos + 1) == Some(&Token::LeftBrace) =>
+            {
+                self.error(
+                    "'try'/'catch' blocks have been removed; use the '?' operator instead"
+                        .to_string(),
+                );
+                return None;
+            }
+            // `emit Event { field: value }` — a machine transition body's emit
+            // statement. `emit` is contextual: only a following name makes it
+            // one, so `let emit = 1;` and `emit(x)` stay ordinary identifiers.
+            Token::Identifier("emit")
+                if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
+            {
+                self.advance();
+                let event_name = self.expect_ident()?;
+                let fields = if self.eat(&Token::LeftBrace) {
+                    let mut fields = Vec::new();
+                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                        let field_name = self.expect_ident()?;
+                        self.expect(&Token::Colon)?;
+                        let field_val = self.parse_expr()?;
+                        fields.push((field_name, field_val));
+                        if !self.eat(&Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(&Token::RightBrace)?;
+                    fields
+                } else {
+                    Vec::new()
+                };
+                Expr::MachineEmit { event_name, fields }
             }
             Token::Identifier(name) => {
                 let name = name.to_string();
@@ -845,7 +914,7 @@ impl Parser<'_> {
                                         // Inside the struct body the `{` is consumed, so any
                                         // nested bare-ident struct literal is unambiguous again.
                         let (fields, base) =
-                            self.with_struct_literals_allowed(Self::parse_struct_init_body)?;
+                            self.with_struct_literals_allowed(Self::parse_struct_init_fields)?;
                         Expr::StructInit {
                             name,
                             fields,
@@ -991,13 +1060,24 @@ impl Parser<'_> {
                     return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
                 }
 
-                let first = self.parse_expr()?;
-                if self.eat(&Token::Semicolon) {
+                let first = self.parse_array_element()?;
+                if self.peek() == Some(&Token::Semicolon) {
+                    let semicolon_span = self.peek_span();
+                    self.advance();
                     let count = self.parse_expr()?;
                     self.expect(&Token::RightBracket)?;
+                    let ArrayElement::Value(value) = first else {
+                        self.error_at(
+                            "a repeat literal `[value; count]` repeats one value; \
+                             spread `..` splices a collection and has no repeat count"
+                                .to_string(),
+                            semicolon_span,
+                        );
+                        return Some((Expr::Array(Vec::new()), start..self.peek_span().start));
+                    };
                     return Some((
                         Expr::ArrayRepeat {
-                            value: Box::new(first),
+                            value: Box::new(value),
                             count: Box::new(count),
                         },
                         start..self.peek_span().start,
@@ -1009,13 +1089,13 @@ impl Parser<'_> {
                     if self.peek() == Some(&Token::RightBracket) {
                         break;
                     }
-                    elements.push(self.parse_expr()?);
+                    elements.push(self.parse_array_element()?);
                 }
 
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
-            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start)?,
+            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start, Vec::new())?,
             Token::LeftBrace => {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
@@ -1040,24 +1120,29 @@ impl Parser<'_> {
             }
             Token::If => {
                 self.advance();
-                if self.eat(&Token::Let) {
-                    let pattern = Box::new(self.parse_pattern()?);
-                    self.expect(&Token::Equal)?;
-                    let expr = Box::new(self.parse_expr()?);
+                let mut conditions = self.parse_condition()?;
+                if conditions
+                    .iter()
+                    .any(|item| matches!(item, ConditionItem::Let { .. }))
+                {
                     let body = self.parse_block()?;
+                    // The `else` arm is an expression, exactly as it is for a
+                    // plain `if`: a block, another `if`, or another `if let`.
                     let else_body = if self.eat(&Token::Else) {
-                        Some(self.parse_block()?)
+                        Some(Box::new(self.parse_expr()?))
                     } else {
                         None
                     };
                     Expr::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     }
                 } else {
-                    let condition = Box::new(self.parse_cond_expr()?);
+                    let ConditionItem::Expr(condition) = conditions.remove(0) else {
+                        unreachable!("a condition with no `let` operand is one expression")
+                    };
+                    let condition = Box::new(condition);
                     let then_block = Box::new(self.parse_expr()?);
                     let else_block = if self.eat(&Token::Else) {
                         Some(Box::new(self.parse_expr()?))
@@ -1232,8 +1317,11 @@ impl Parser<'_> {
             }
             Token::Move => {
                 self.advance();
-                if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
-                    self.parse_pipe_lambda(true, start)?
+                if self.peek() == Some(&Token::Identifier("capture")) {
+                    let captures = self.parse_private_capture_prefix()?;
+                    self.parse_pipe_lambda(true, start, captures)?
+                } else if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
+                    self.parse_pipe_lambda(true, start, Vec::new())?
                 } else if self.peek() == Some(&Token::LeftParen) {
                     // Old `move (params) => body` form — detect and diagnose.
                     // Consume through the form for recovery, then emit a typed error.
@@ -1302,6 +1390,11 @@ impl Parser<'_> {
             }
             Token::Return => {
                 self.advance();
+                if self.eat_error_return_marker() {
+                    let value = self.parse_expr()?;
+                    let end = value.1.end;
+                    return Some((Expr::ReturnError(Box::new(value)), start..end));
+                }
                 // `return [expr]` in expression position. Unlike `Stmt::Return`
                 // there is NO trailing `;` here; the operand ends where the
                 // surrounding expression ends. Stop on any token that cannot
@@ -1354,86 +1447,45 @@ impl Parser<'_> {
                 })
             }
             Token::Scope => {
-                // `scope` is not a `Primary` (HEW-SPEC-2026 §4.2). Reaching it
-                // here means a value was expected — a `let` initialiser, a call
-                // argument, a match-arm body, an operand, a block's trailing
-                // expression — and `scope { .. }` produces none. Naming that
-                // beats the generic "expected expression, found scope", which
-                // reads as though the keyword were unknown. The statement
-                // spelling lives in `parse_stmt`.
-                self.error_with_hint(
-                    "E_SCOPE_IS_STATEMENT: `scope` cannot be used as a value; \
-                     `scope { .. }` is a statement that produces nothing"
-                        .to_string(),
-                    "use `join { .. }` for a value-producing fan-out",
-                );
-                return None;
+                self.advance();
+                let duration = if matches!(self.peek(), Some(Token::Identifier(word)) if *word == "within")
+                {
+                    self.advance();
+                    Some(Box::new(self.parse_cond_expr()?))
+                } else {
+                    None
+                };
+                let body = self.parse_block()?;
+                match duration {
+                    Some(duration) => Expr::ScopeDeadline { duration, body },
+                    None => Expr::Scope { body },
+                }
             }
             Token::Fork => {
-                let fork_span = self.peek_span();
                 self.advance();
-                // `fork` is now exclusively the child-start verb inside a scope block:
-                // `fork name = call(...);` or bare `fork call(...);`.
+                if self.peek().is_some_and(Self::is_ident_token)
+                    && self.peek_at(self.pos + 1) == Some(&Token::Equal)
+                {
+                    self.error_with_hint(
+                        "`fork name = expression` has been removed".to_string(),
+                        "bind the task with `let name = fork expression`",
+                    );
+                    return None;
+                }
                 if self.peek() == Some(&Token::LeftBrace) {
-                    if self.scope_expr_depth == 0 {
-                        self.error_at(
-                            "`fork { ... }` child-task blocks are only valid inside `scope { ... }`"
-                                .to_string(),
-                            fork_span,
-                        );
-                        return None;
+                    Expr::ForkBlock {
+                        body: self.parse_block()?,
                     }
-                    if self.fork_block_depth > 0 {
-                        self.error_at(
-                            "nested `fork { ... }` blocks are not a CT-2 surface; use an inner `scope { ... }`"
-                                .to_string(),
-                            fork_span,
-                        );
-                        return None;
-                    }
-                    self.fork_block_depth += 1;
-                    let body = self.parse_block()?;
-                    self.fork_block_depth -= 1;
-                    Expr::ForkBlock { body }
                 } else {
-                    let binding = if self.fork_starts_child_binding() {
-                        let name = self.expect_ident()?;
-                        self.expect(&Token::Equal)?;
-                        Some(name)
-                    } else {
-                        None
-                    };
-                    let expr = self.parse_expr()?;
                     Expr::ForkChild {
-                        binding,
-                        expr: Box::new(expr),
+                        expr: Box::new(self.parse_expr()?),
                     }
                 }
             }
             Token::After if self.looks_like_scope_deadline() => {
-                let after_span = self.peek_span();
-                if self.scope_expr_depth == 0 {
-                    self.error_at(
-                        "`after(duration) { ... }` deadline clauses are only valid inside `scope { ... }`"
-                            .to_string(),
-                        after_span,
-                    );
-                    return None;
-                }
-                self.advance();
-                self.expect(&Token::LeftParen)?;
-                let duration = self.parse_expr()?;
-                self.expect(&Token::RightParen)?;
-                let body = self.parse_block()?;
-                Expr::ScopeDeadline {
-                    duration: Box::new(duration),
-                    body,
-                }
-            }
-            Token::Try => {
-                self.error(
-                    "'try'/'catch' blocks have been removed; use the '?' operator instead"
-                        .to_string(),
+                self.error_with_hint(
+                    "deadline clauses have been replaced by a deadline on the scope".to_string(),
+                    "use `scope within duration { ... }`",
                 );
                 return None;
             }
@@ -1477,29 +1529,17 @@ impl Parser<'_> {
                 Expr::Select { arms, timeout }
             }
             Token::Race => {
-                self.error("'race' blocks have been removed; use 'select' instead".to_string());
-                return None;
-            }
-            Token::Join => {
                 self.advance();
-                // Accept either parentheses or braces for join
-                let (open, close) = if self.peek() == Some(&Token::LeftBrace) {
-                    (Token::LeftBrace, Token::RightBrace)
-                } else {
-                    (Token::LeftParen, Token::RightParen)
-                };
-                self.expect(&open)?;
-
-                let mut exprs = Vec::new();
-                while !self.at_end() && self.peek() != Some(&close) {
-                    exprs.push(self.parse_expr()?);
+                self.expect(&Token::LeftBrace)?;
+                let mut branches = Vec::new();
+                while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+                    branches.push(self.parse_expr()?);
                     if !self.eat(&Token::Comma) {
                         break;
                     }
                 }
-
-                self.expect(&close)?;
-                Expr::Join(exprs)
+                self.expect(&Token::RightBrace)?;
+                Expr::Race(branches)
             }
             Token::Yield => {
                 self.advance();
@@ -1509,38 +1549,6 @@ impl Parser<'_> {
                     Some(Box::new(self.parse_expr()?))
                 };
                 Expr::Yield(value)
-            }
-            Token::Cooperate => {
-                self.error(
-                    "'cooperate' is compiler-internal; explicit cooperate expressions are not supported"
-                        .to_string(),
-                );
-                return None;
-            }
-            Token::This => {
-                self.advance();
-                Expr::This
-            }
-            Token::Emit => {
-                self.advance();
-                let event_name = self.expect_ident()?;
-                let fields = if self.eat(&Token::LeftBrace) {
-                    let mut fields = Vec::new();
-                    while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-                        let field_name = self.expect_ident()?;
-                        self.expect(&Token::Colon)?;
-                        let field_val = self.parse_expr()?;
-                        fields.push((field_name, field_val));
-                        if !self.eat(&Token::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(&Token::RightBrace)?;
-                    fields
-                } else {
-                    Vec::new()
-                };
-                Expr::MachineEmit { event_name, fields }
             }
             // Contextual keywords that can be used as identifiers in expressions
             tok if Self::contextual_keyword_name(tok).is_some() => {
@@ -1562,7 +1570,33 @@ impl Parser<'_> {
         Some((expr, start..end))
     }
 
-    pub(crate) fn parse_pipe_lambda(&mut self, is_move: bool, start: usize) -> Option<Expr> {
+    fn parse_private_capture_prefix(&mut self) -> Option<Vec<Spanned<String>>> {
+        self.expect(&Token::Identifier("capture"))?;
+        self.expect(&Token::LeftParen)?;
+        let mut captures: Vec<Spanned<String>> = Vec::new();
+        loop {
+            self.expect(&Token::Var)?;
+            let span = self.peek_span();
+            let name = self.expect_ident()?;
+            if captures.iter().any(|(previous, _)| *previous == name) {
+                self.error_at(format!("duplicate private capture `{name}`"), span);
+                return None;
+            }
+            captures.push((name, span));
+            if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightParen) {
+                break;
+            }
+        }
+        self.expect(&Token::RightParen)?;
+        Some(captures)
+    }
+
+    pub(crate) fn parse_pipe_lambda(
+        &mut self,
+        is_move: bool,
+        start: usize,
+        private_captures: Vec<Spanned<String>>,
+    ) -> Option<Expr> {
         let params = if self.eat(&Token::PipePipe) {
             Vec::new()
         } else {
@@ -1586,6 +1620,15 @@ impl Parser<'_> {
             params
         };
 
+        for (name, span) in &private_captures {
+            if params.iter().any(|parameter| parameter.name == *name) {
+                self.error_at(
+                    format!("private capture `{name}` conflicts with a closure parameter"),
+                    span.clone(),
+                );
+                return None;
+            }
+        }
         let return_type = self.parse_opt_return_type()?;
         let body = if return_type.is_some() {
             if self.peek() != Some(&Token::LeftBrace) {
@@ -1617,6 +1660,7 @@ impl Parser<'_> {
 
         Some(Expr::Lambda {
             is_move,
+            private_captures,
             type_params: None,
             params,
             return_type,
@@ -1775,22 +1819,42 @@ impl Parser<'_> {
         }
     }
 
+    /// One item of a bracket literal: `..operand` splices, anything else is a
+    /// single element. `..` cannot start an expression, so no range spelling is
+    /// shadowed here.
+    fn parse_array_element(&mut self) -> Option<ArrayElement> {
+        if self.peek() == Some(&Token::DotDot) {
+            self.advance();
+            let operand = self.parse_expr()?;
+            return Some(ArrayElement::Spread(operand));
+        }
+        Some(ArrayElement::Value(self.parse_expr()?))
+    }
+
     pub(crate) fn parse_struct_init_fields(&mut self) -> Option<StructInitFields> {
         let mut fields = Vec::new();
         let mut base: Option<Box<Spanned<Expr>>> = None;
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             if self.peek() == Some(&Token::DotDot) {
+                let spread_span = self.peek_span();
                 self.advance(); // consume `..`
                 let base_expr = self.parse_expr()?;
-                base = Some(Box::new(base_expr));
-                self.eat(&Token::Comma);
-                if self.peek() != Some(&Token::RightBrace) {
-                    self.error(
-                        "functional-update `..base` must be the last item in the field list"
+                if base.is_some() {
+                    self.error_at_with_kind_and_hint(
+                        "a record literal takes one `..base`; the base supplies every field \
+                         the literal does not name"
                             .to_string(),
+                        spread_span.start..base_expr.1.end,
+                        "name the fields you want from the second value",
+                        ParseDiagnosticKind::DuplicateRecordBase,
                     );
+                } else {
+                    base = Some(Box::new(base_expr));
                 }
-                break;
+                if !self.eat(&Token::Comma) {
+                    break;
+                }
+                continue;
             }
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;

@@ -1,0 +1,30 @@
+// Reject fixture: `await` is never written on a select arm source. The select
+// is what waits (HEW-SPEC-2026 §4.11.1), so the arm names its source with
+// `from` alone. The checker refuses the spelling with a delete-it fix-it
+// instead of silently unwrapping it.
+//
+// Harness verb: hew check (must fail)
+// Expected diagnostic substring: "a select arm source never writes"
+actor Worker {
+    receive fn compute() -> i64 {
+        7
+    }
+}
+
+actor Driver {
+    let worker: Worker,
+
+    #[on(start)]
+    fn start() {
+        select {
+            reply from await worker.compute() => println(f"reply"),
+            after 1s => println("timeout"),
+        };
+    }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    let _d = spawn Driver(worker: worker);
+    sleep(20ms);
+}

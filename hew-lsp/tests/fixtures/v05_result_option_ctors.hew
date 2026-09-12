@@ -1,11 +1,11 @@
 enum Outcome<T, E> {
-    Ok(T);
-    Err(E);
+    Ok(T),
+    Err(E),
 }
 
 enum Maybe<T> {
-    Some(T);
-    None;
+    Some(T),
+    None,
 }
 
 fn result_option_probe() -> i64 {

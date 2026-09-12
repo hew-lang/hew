@@ -109,9 +109,18 @@ import std.fs;
 import std.encoding.json;
 
 fn main() {
-    let data = fs.read("config.json");
-    let obj = json.parse(data);
-    println(obj.stringify());
+    let data = fs.read("config.json") handle error {
+        println(f"cannot read config: {error}");
+        return;
+    };
+    let obj = json.parse(data) handle error {
+        println(f"invalid config: {error}");
+        return;
+    };
+    match obj.stringify() {
+        .Ok(text) => println(text),
+        .Err(error) => println(f"cannot encode config: {error}"),
+    }
 }
 ```
 
@@ -194,51 +203,44 @@ type UserMessage {
 
 See [`examples/playground/types/wire_types.hew`](examples/playground/types/wire_types.hew) for a runnable example.
 
-### Distributed Actors
+### Actor calls and concurrency
 
-Actors communicate across nodes with a wire-tagged message enum and `.send()`, transparently across the network. The runtime handles transport, registry gossip, and remote dispatch.
+An actor call waits for its handler to finish, including a handler with no
+return value. Handle the completion outcome with `match`, `?` or `handle`.
+`fork` creates a task; `await` joins a task or a vector of tasks. Ordinary
+calls can suspend without an `await` prefix.
 
 ```hew
-// shared by both nodes: the wire-tagged message enum, bound to the actor
-#[wire]
-enum CounterMsg { Increment(i64); }
-
 actor Counter {
-    var count: i64;
-    receive fn handle(msg: CounterMsg) {
-        match msg { CounterMsg::Increment(n) => { count = count + n; }, }
+    var count: i64 = 0,
+    receive fn add(n: i64) { count = count + n; }
+    receive fn total() -> i64 { count }
+}
+fn main() {
+    let counter = spawn Counter();
+    counter.add(42) handle error {
+        println(f"update failed: {error}");
+        return;
+    };
+    match counter.total() {
+        .Ok(value) => println(value),
+        .Err(error) => println(f"query failed: {error}"),
     }
-}
-
-impl ActorMsg for Counter {
-    type Msg = CounterMsg;
-    type Reply = ();
-}
-
-// server node
-Node.set_transport("quic-mesh");
-Node.load_keys("node.key");     // mints/loads this node's stable identity
-Node.start("127.0.0.1:9000");
-let counter = spawn Counter;
-Node.register("counter", counter);
-
-// client node (separate process)
-Node.set_transport("quic-mesh");
-Node.load_keys("client.key");
-Node.start("127.0.0.1:9001");
-Node.connect("127.0.0.1:9000");
-let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
-match found {
-    .Ok(counter) => { let _ = counter.send(CounterMsg.Increment(42)); },  // remote message
-    .Err(_) => println("counter actor not found"),
+    close(counter);
 }
 ```
 
-`impl ActorMsg for Counter { type Msg = CounterMsg; ... }` is what makes
-`RemotePid<Counter>::send` accept a `CounterMsg` — without it the remote send
-does not typecheck.
+Use `mailbox(target, on_full: ...)` for submission-only delivery and
+`policy(target, on_full: .Wait)` or the `.Reject` policy to choose completion-call admission.
+The intended rejected-call contract returns a sealed request for typed retry
+or redirection. That request recovery remains implementation work; the current
+reason-only rejection is not the final API.
 
-See [`examples/quic_mesh/`](examples/quic_mesh/) for a complete two-process QUIC mesh demo, and [`examples/distributed_hello.hew`](examples/distributed_hello.hew) for the full key-backed identity and peer-pinning sequence.
+Distributed actors share the call contract, with transport and liveness errors
+visible to callers. The native cutover still needs distributed acceptance and
+unified remote-handle integration; do not infer network parity from a local example.
+See the [actor guide](docs/hew-language-guide.md#actors) and
+[distributed protocol reference](docs/specs/HEW-DIST-SPEC.md).
 
 ## Architecture
 
@@ -366,7 +368,11 @@ compatibility alias for the same gate.
 
 ### Browser / Playground Validation
 
-The sandbox VM (`hew-sandbox-vm`) runs admitted Hew programs in a deterministic browser-hosted runtime with a virtual clock, seeded randomness, M4–M7 actor/channel/supervision semantics, and structured-concurrency coordination. Almost all of Hew runs in a browser today; the native-only class today is features that depend on OS threads (production supervision trees, real-time network I/O). A scoped browser runtime for those thread-dependent features (channel/select/sleep/supervisor/TCP) is a ratified v0.6.0 goal. Parallel work-stealing is a permanent native-only limitation — cooperative single-threaded execution is the final shape for the browser target, not an interim state.
+The browser runtime provides deterministic execution for its admitted subset.
+The current native cutover changes actor calls, suspension, ownership and
+collections; browser and WASM parity for that surface remains pending. Existing
+sandbox capabilities are not proof that a current native program runs there.
+See the [capability reference](docs/wasm-capability-matrix.md).
 
 This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
 

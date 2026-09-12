@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-methods"
+intent = "A handler calls actor methods by bare name that read, copy out and mutate state, while the actor owns a resource field released once at terminal cleanup."
+source = "cases/actor-methods.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "total count\ncount\n2\ntotal count\ncount\n5\nclosed\n"
+exit = 0

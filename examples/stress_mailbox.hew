@@ -5,9 +5,9 @@
 // Sends many messages to a bounded mailbox and verifies backpressure
 // doesn't deadlock and all messages are eventually processed.
 actor Counter {
-    var count: i64;
+    var count: i64,
 
-    mailbox 4 overflow block;
+    mailbox 4 overflow block,
     receive fn increment() {
         count = count + 1;
     }
@@ -17,15 +17,15 @@ actor Counter {
     }
 }
 
-fn send_batch(counter: LocalPid<Counter>, remaining: i64) {
+fn send_batch(counter: Counter, remaining: i64) {
     if remaining > 0 {
-        counter.increment();
+        let _ = counter.increment();
         send_batch(counter, remaining - 1);
     }
 }
 
-fn read_count(counter: LocalPid<Counter>) -> i64 {
-    let count_result = await counter.report();
+fn read_count(counter: Counter) -> i64 {
+    let count_result = counter.report();
     match count_result {
         .Ok(value) => value,
         .Err(_) => -1,
@@ -36,7 +36,7 @@ fn main() {
     println("=== Stress: Bounded Mailbox ===");
     let c = spawn Counter(count: 0);
     // Fill the bounded mailbox in deterministic batches without spelling out
-    // ten separate awaits in the main loop.
+    // ten separate completion calls in the main loop.
     for batch in 0 .. 100 {
         let batch_index: i64 = batch;
         send_batch(c, 10);

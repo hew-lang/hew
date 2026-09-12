@@ -64,7 +64,7 @@ fn lowers_checker_admitted_numeric_cast_to_hir_node() {
 fn lowers_try_to_numeric_method_to_hir_node() {
     let output = checked_lower(
         r"
-        fn main() -> Option<i32> {
+        fn sample() -> Option<i32> {
             let x: i64 = 300;
             x.try_to_i32()
         }
@@ -84,7 +84,7 @@ fn lowers_try_to_numeric_method_to_hir_node() {
     let HirItem::Function(function) = &output.module.items[0] else {
         panic!("expected function item");
     };
-    let tail = function.body.tail.as_deref().expect("main has tail expr");
+    let tail = function.body.tail.as_deref().expect("sample has tail expr");
     let HirExprKind::TryWidthCast {
         value: _,
         from_ty,

@@ -17,22 +17,22 @@ use std::{
 };
 
 use hew_parser::ast::{
-    ActorDecl, AttributeArg, BinaryOp, Block, CallArg, CompoundAssignOp, ConstDecl, Expr, FnDecl,
-    ImportSpec, Item, LambdaParam, Literal, MachineDecl, Param, Pattern, Program, ReceiveFnDecl,
-    RecordDecl, RecordKind, ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm,
-    ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
-    TimeoutClause, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, UnaryOp, VariantKind,
+    condition_exprs, ActorDecl, ArrayElement, AttributeArg, BinaryOp, Block, CallArg,
+    CompoundAssignOp, ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
+    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span,
+    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
+    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
+    VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
 use hew_types::{
     ActorMethodKind, ActorStateGuard, AssignTargetKind, AssignTargetShape, CallTarget, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ExecutionContextReader, ImplId,
-    LoweringFact, MethodCallReceiverKind, MethodCallRewrite, NumericMethodFamily,
-    NumericMethodLowering, OptionResultMethod, PatternKind, ProducedValueDependency,
-    ProducedValueFact, RcIntrinsicOp, ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TyPattern,
-    TypeCheckOutput, UserComparisonDispatch, WireCodecDirection,
+    ClosureCaptureFact, ClosureEscapeFact, ExecutionContextReader, LoweringFact,
+    MethodCallReceiverKind, MethodCallRewrite, OptionResultMethod, PatternKind, RcIntrinsicOp,
+    ResolvedTraitBound, ResolvedTy, SpanKey, Ty, TypeCheckOutput, UserComparisonDispatch,
+    WireCodecDirection,
 };
 
 use crate::builtin_type_classes::seed_builtin_type_classes;
@@ -45,35 +45,20 @@ use crate::monomorph::{
 };
 use crate::node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
-    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture, HirExpr,
-    HirExprKind, HirField, HirFn, HirGenCapture, HirGenCaptureSource, HirItem, HirJoin,
-    HirJoinBranch, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
-    HirMachineDecl, HirMachineEvent, HirMachineState, HirMachineTransition, HirMatchArm,
-    HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirPayloadVariantPredicate, HirProducedValueFact, HirProducedValueProducer,
-    HirProducedValueRelation, HirProducedValueSourceAnchor, HirRecordDecl, HirRegexLiteral,
+    HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture,
+    HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirField, HirFn,
+    HirGenCapture, HirGenCaptureSource, HirItem, HirLambdaCapture, HirLifecycleHook,
+    HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
+    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
     HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirShutdownDirective, HirStmt,
     HirStmtKind, HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker, ValueClass};
 
-/// A compiler-generated value wrapper may reuse an existing owner only when
-/// the checker proves that the wrapper owns the value and its generated CFG
-/// has one exact value-producing source. Zero sources have no owner to carry;
-/// multiple sources require a real join owner rather than an arbitrary
-/// identity choice.
-fn generated_single_source_identity_relation(
-    ownership: hew_types::ProducedValueOwnership,
-    sources: &[SiteId],
-) -> Option<HirProducedValueRelation> {
-    let [source] = sources else {
-        return None;
-    };
-    matches!(ownership, hew_types::ProducedValueOwnership::Owned { .. })
-        .then_some(HirProducedValueRelation::Identity(*source))
-}
+mod fork;
+mod race;
 
 /// Target architecture for compilation. Subset of the full `TargetSpec`
 /// from `hew-cli/src/target.rs`, exposed at the HIR boundary so target gates
@@ -110,6 +95,146 @@ fn nominal_path_leaf(path: &hew_parser::ast::Path) -> Option<&str> {
     path.segments.last().map(String::as_str)
 }
 
+/// Recursively push `id`'s leaves into `out`: a synthetic aggregate carrier
+/// found in `by_source` contributes its own fields (each possibly further
+/// nested) in its place; anything else is a leaf in its own right.
+fn expand_arm_binding_leaf(
+    id: BindingId,
+    name: &str,
+    ty: &ResolvedTy,
+    by_source: &std::collections::HashMap<BindingId, &[HirDestructureField]>,
+    out: &mut Vec<(String, BindingId, ResolvedTy)>,
+) {
+    if let Some(fields) = by_source.get(&id) {
+        for binding in fields.iter().filter_map(|field| field.binding.as_ref()) {
+            expand_arm_binding_leaf(binding.id, &binding.name, &binding.ty, by_source, out);
+        }
+    } else {
+        out.push((name.to_string(), id, ty.clone()));
+    }
+}
+
+/// Push every binding a nested constructor predicate tree introduces, at any
+/// depth. These live outside `HirMatchArm::bindings` because they name slots
+/// of a nested variant, not of the arm's own shape.
+fn expand_nested_predicate_bindings(
+    predicates: &[HirPayloadVariantPredicate],
+    out: &mut Vec<(String, BindingId, ResolvedTy)>,
+) {
+    for predicate in predicates {
+        for binding in &predicate.bindings {
+            out.push((binding.name.clone(), binding.binding, binding.ty.clone()));
+        }
+        expand_nested_predicate_bindings(&predicate.nested, out);
+    }
+}
+
+/// Expand a match arm's payload bindings into the leaves actually visible in
+/// the arm body. A top-level field that one of `prelude`'s `Destructure`
+/// statements further projects (an aggregate subpattern like `Ok((n, s))`) is
+/// a synthetic `__payload_*` carrier the source never wrote; its own leaf
+/// binders (`n`, `s`) take its place, recursing for a subpattern nested
+/// inside another. `nested` contributes the binders of nested constructor
+/// subpatterns (`Ok(Some(n))`, `(.Some(n), m)`), which the arm's own binding
+/// list does not carry. Keyed by `BindingId`, never by name.
+fn expand_arm_bindings(
+    bindings: &[HirMatchArmBinding],
+    nested: &[HirPayloadVariantPredicate],
+    prelude: &[HirStmt],
+) -> Vec<(String, BindingId, ResolvedTy)> {
+    let mut by_source: std::collections::HashMap<BindingId, &[HirDestructureField]> =
+        std::collections::HashMap::new();
+    for stmt in prelude {
+        if let HirStmtKind::Destructure { value, fields } = &stmt.kind {
+            if let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(id),
+                ..
+            } = &value.kind
+            {
+                by_source.insert(*id, fields);
+            }
+        }
+    }
+    let mut out = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        expand_arm_binding_leaf(
+            binding.binding,
+            &binding.name,
+            &binding.ty,
+            &by_source,
+            &mut out,
+        );
+    }
+    expand_nested_predicate_bindings(nested, &mut out);
+    out
+}
+
+/// The body of one arm handed to [`LowerCtx::lower_pattern_arms`].
+///
+/// `match` arms carry an expression; `if let` and `while let` carry a block
+/// that is lowered against the conditional's result type.
+enum PatternArmBody<'a> {
+    Expr(&'a Spanned<Expr>),
+    /// The rest of a pattern condition: the operands to the right of this
+    /// `let`, then the then block. Lowered inside the arm scope so those
+    /// operands and the block see the names this pattern bound.
+    Condition {
+        rest: &'a [ConditionItem],
+        body: &'a Block,
+        body_span: Span,
+        fallthrough: ConditionFallthrough<'a>,
+    },
+    /// `let PAT = expr else { ... }`'s success arm: pack the arm's bindings
+    /// (see [`LowerCtx::pack_arm_bindings`]) instead of lowering a source
+    /// body. `lower_let_else` destructures the packed value back into fresh
+    /// bindings that escape into the enclosing scope.
+    Bindings(Span),
+}
+
+/// What a pattern condition does when an operand fails: run `if let`'s `else`
+/// arm (unit when there is none), or leave `while let`'s loop.
+#[derive(Clone, Copy)]
+enum ConditionFallthrough<'a> {
+    Else(Option<&'a Spanned<Expr>>),
+    Break,
+}
+
+/// One pattern arm to lower. `match`, `if let`, `while let` and `let … else`
+/// all build these so the pattern shapes they accept have a single authority.
+struct PatternArm<'a> {
+    pattern: Spanned<Pattern>,
+    guard: Option<&'a Spanned<Expr>>,
+    body: PatternArmBody<'a>,
+}
+
+impl PatternArm<'_> {
+    /// End offset of the arm body, used to span the whole arm.
+    fn body_end(&self) -> usize {
+        match &self.body {
+            PatternArmBody::Expr(expr) => expr.1.end,
+            PatternArmBody::Condition { body_span, .. } => body_span.end,
+            PatternArmBody::Bindings(span) => span.end,
+        }
+    }
+}
+
+/// Expand `match` arms into pattern arms, flattening or-patterns into one arm
+/// per leaf alternative. The checker classified each leaf under its own span,
+/// so downstream lowering consumes the leaves, never the `Or` node.
+fn pattern_arms_from_match(arms: &[hew_parser::ast::MatchArm]) -> Vec<PatternArm<'_>> {
+    arms.iter()
+        .flat_map(|arm| {
+            flatten_or_pattern(&arm.pattern)
+                .into_iter()
+                .map(move |pattern| PatternArm {
+                    pattern,
+                    guard: arm.guard.as_ref(),
+                    body: PatternArmBody::Expr(&arm.body),
+                })
+        })
+        .collect()
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the exhaustive payload classifier keeps all pattern forms in one match"
@@ -121,13 +246,8 @@ fn collect_match_payload_predicates(
 ) -> Result<Vec<HirPayloadPredicate>, String> {
     match &pattern.0 {
         Pattern::Constructor { name, patterns } => {
-            let field_tys = ctx
-                .lookup_variant_ctor(name, Some(scrutinee_ty))
-                .map(|(_, _, kind)| match kind {
-                    HirVariantKind::Tuple(field_tys) => field_tys.clone(),
-                    HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                })
-                .unwrap_or_default();
+            let field_tys =
+                ctx.instantiated_pattern_payload_types(name, scrutinee_ty, patterns.len())?;
             Ok(patterns
                 .iter()
                 .enumerate()
@@ -138,11 +258,8 @@ fn collect_match_payload_predicates(
                     let Ok(field_idx) = u32::try_from(field_idx) else {
                         return None;
                     };
-                    let (literal, literal_ty) = literal_to_hir(lit);
-                    let ty = field_tys
-                        .get(field_idx as usize)
-                        .cloned()
-                        .unwrap_or(literal_ty);
+                    let (literal, _) = literal_to_hir(lit);
+                    let ty = field_tys[field_idx as usize].clone();
                     Some(HirPayloadPredicate {
                         field_idx,
                         literal,
@@ -209,13 +326,10 @@ fn collect_match_payload_predicates(
         Pattern::NominalPath { path, payload } => match payload.as_ref() {
             None => Ok(Vec::new()),
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                let field_tys = nominal_path_leaf(path)
-                    .and_then(|name| ctx.lookup_variant_ctor(name, Some(scrutinee_ty)))
-                    .map(|(_, _, kind)| match kind {
-                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
-                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                    })
-                    .unwrap_or_default();
+                let name = nominal_path_leaf(path)
+                    .ok_or_else(|| "tuple variant pattern has no constructor name".to_string())?;
+                let field_tys =
+                    ctx.instantiated_pattern_payload_types(name, scrutinee_ty, patterns.len())?;
                 Ok(patterns
                     .iter()
                     .enumerate()
@@ -226,11 +340,8 @@ fn collect_match_payload_predicates(
                         let Ok(field_idx) = u32::try_from(field_idx) else {
                             return None;
                         };
-                        let (literal, literal_ty) = literal_to_hir(literal);
-                        let ty = field_tys
-                            .get(field_idx as usize)
-                            .cloned()
-                            .unwrap_or(literal_ty);
+                        let (literal, _) = literal_to_hir(literal);
+                        let ty = field_tys[field_idx as usize].clone();
                         Some(HirPayloadPredicate {
                             field_idx,
                             literal,
@@ -269,13 +380,11 @@ fn collect_match_payload_predicates(
         Pattern::ContextVariant(context) => match context.payload.as_ref() {
             None => Ok(Vec::new()),
             Some(hew_parser::ast::NominalPatternPayload::Tuple(patterns)) => {
-                let field_tys = ctx
-                    .lookup_variant_ctor(&context.name, Some(scrutinee_ty))
-                    .map(|(_, _, kind)| match kind {
-                        HirVariantKind::Tuple(field_tys) => field_tys.clone(),
-                        HirVariantKind::Unit | HirVariantKind::Struct(_) => Vec::new(),
-                    })
-                    .unwrap_or_default();
+                let field_tys = ctx.instantiated_pattern_payload_types(
+                    &context.name,
+                    scrutinee_ty,
+                    patterns.len(),
+                )?;
                 Ok(patterns
                     .iter()
                     .enumerate()
@@ -286,11 +395,8 @@ fn collect_match_payload_predicates(
                         let Ok(field_idx) = u32::try_from(field_idx) else {
                             return None;
                         };
-                        let (literal, literal_ty) = literal_to_hir(literal);
-                        let ty = field_tys
-                            .get(field_idx as usize)
-                            .cloned()
-                            .unwrap_or(literal_ty);
+                        let (literal, _) = literal_to_hir(literal);
+                        let ty = field_tys[field_idx as usize].clone();
                         Some(HirPayloadPredicate {
                             field_idx,
                             literal,
@@ -470,7 +576,7 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 enum ForIterNextCall {
     BuiltinVecIter,
     VarSelf(HirVarSelfMethodTarget),
-    /// `for await x in rx` over `Receiver<T>` — each iteration borrows the
+    /// `for x in rx` over `Receiver<T>` — each iteration borrows the
     /// loop's receiver binding and emits the layout-witness runtime recv
     /// call (`hew_channel_recv_layout`, one symbol for every describable
     /// element type). MIR's existing `lower_direct_call` suspend flip turns
@@ -478,7 +584,7 @@ enum ForIterNextCall {
     /// callers, deriving the element type from the call's `Option<T>`
     /// return type.
     ChannelRecv,
-    /// `for await x in stream` over `Stream<T>` — each iteration borrows the
+    /// `for x in stream` over `Stream<T>` — each iteration borrows the
     /// stream binding and emits the layout-witness runtime recv call
     /// (`hew_stream_next_layout`), reusing MIR's existing
     /// `Terminator::SuspendingStreamNext` flip.
@@ -538,6 +644,7 @@ const SYNTHETIC_LOOKUP_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1000);
 /// => ... }` arms inside `Result<(), SendError>` matches resolve via
 /// `machine_ctor_registry`.
 const SYNTHETIC_SEND_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1001);
+const SYNTHETIC_NODE_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1010);
 /// `TimeoutError` is declared in `std/builtins.hew` and likewise invisible to
 /// the user-enum walk. Surface it so `match e { TimeoutError::Timeout => ... }`
 /// arms inside `Result<Option<T>, TimeoutError>` matches resolve via
@@ -551,8 +658,6 @@ const SYNTHETIC_TIMEOUT_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1005);
 /// `Err(LinkError::AlreadyLinked)` / `Err(LinkError::TargetDead)` match arms
 /// resolve via `machine_ctor_registry`.
 const SYNTHETIC_LINK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1004);
-const SYNTHETIC_ASK_ERROR_ITEM: ItemId = ItemId(u32::MAX - 1003);
-pub(crate) const SYNTHETIC_VEC_ITER_ITEM: ItemId = ItemId(u32::MAX - 1002);
 /// Sentinel `ItemId` for the synthetic `HashMapIter<K, V>` record — the
 /// `for (k, v) in m` desugar target. Like `VecIter`, it is declared in
 /// `std/builtins.hew` but never emitted as a HIR `Record`/`TypeDecl` item, so
@@ -574,18 +679,12 @@ pub(crate) struct SyntheticCursorLayoutSpec {
     pub(crate) type_params: &'static [&'static str],
 }
 
-pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] = &[
-    SyntheticCursorLayoutSpec {
-        builtin: BuiltinType::VecIter,
-        origin: SYNTHETIC_VEC_ITER_ITEM,
-        type_params: &["T"],
-    },
-    SyntheticCursorLayoutSpec {
+pub(crate) const SYNTHETIC_CURSOR_LAYOUT_SPECS: &[SyntheticCursorLayoutSpec] =
+    &[SyntheticCursorLayoutSpec {
         builtin: BuiltinType::HashMapIter,
         origin: SYNTHETIC_HASHMAP_ITER_ITEM,
         type_params: &["K", "V"],
-    },
-];
+    }];
 
 /// Resolve the declaration and substituted field shape for one synthetic
 /// cursor instantiation. Every origin-site and post-monomorphisation layout
@@ -601,28 +700,10 @@ pub(crate) fn synthetic_cursor_layout(
         .iter()
         .find(|spec| spec.builtin == builtin)?;
     let fields = match (builtin, type_args) {
-        (BuiltinType::VecIter, [elem]) => vec_iter_field_shape(elem),
         (BuiltinType::HashMapIter, [key, value]) => hashmap_iter_field_shape(key, value),
         _ => return None,
     };
     Some((spec, fields))
-}
-
-/// Field shape of the synthetic `VecIter<elem>` record — `{ vec: Vec<elem>,
-/// idx: i64 }` in declaration order.
-///
-/// This shape is selected by [`synthetic_cursor_layout`], the shared catalog
-/// path used by origin-site registration and per-monomorphisation discovery.
-/// The for-in / into-iter desugar constructs the `VecIter` literal with exactly
-/// these fields in this order.
-pub(crate) fn vec_iter_field_shape(elem_ty: &ResolvedTy) -> Vec<(String, ResolvedTy)> {
-    vec![
-        (
-            "vec".to_string(),
-            LowerCtx::resolved_vec_ty(elem_ty.clone()),
-        ),
-        ("idx".to_string(), ResolvedTy::I64),
-    ]
 }
 
 /// The single field-order/type authority for `HashMapIter<K, V>`, shared by the
@@ -654,7 +735,7 @@ const SYNTHETIC_LINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 9);
 const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// Synthetic-builtin sentinel `ItemId` for the user-facing `unlink` builtin.
 /// Mirrors `SYNTHETIC_LINK_ITEM` / `SYNTHETIC_MONITOR_ITEM`; the checker
-/// (`registration.rs`) registers `unlink` as a 1-arg `LocalPid<T> → Unit`
+/// (`registration.rs`) registers `unlink` as a 1-arg actor-handle → `Unit`
 /// builtin with no AST `fn` item. Resolves to
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
@@ -743,19 +824,16 @@ const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
 /// payload type-parameter names index into `type_params`.
 #[derive(Clone, Copy)]
 pub(crate) struct BuiltinEnumSpec {
-    /// Prelude spelling used only to publish compatibility aliases.
-    pub(crate) type_name: &'static str,
     /// Exact declaration identity used by every semantic registry.
     pub(crate) canonical_type_name: &'static str,
     pub(crate) item_id: ItemId,
     pub(crate) type_params: &'static [&'static str],
     variants: BuiltinEnumVariants,
-    variant_payloads: Option<&'static [&'static [&'static str]]>,
 }
 
 #[derive(Clone, Copy)]
 enum BuiltinEnumVariants {
-    Generic(&'static [&'static str]),
+    Generic(&'static [hew_types::builtin_type::BuiltinEnumVariant]),
     Monomorphic(&'static [BuiltinMonomorphicEnumVariant]),
 }
 
@@ -769,7 +847,9 @@ impl Iterator for BuiltinEnumVariantNames {
 
     fn next(&mut self) -> Option<Self::Item> {
         let name = match self.variants {
-            BuiltinEnumVariants::Generic(variants) => variants.get(self.index).copied(),
+            BuiltinEnumVariants::Generic(variants) => {
+                variants.get(self.index).map(|variant| variant.name)
+            }
             BuiltinEnumVariants::Monomorphic(variants) => {
                 variants.get(self.index).map(|variant| variant.name)
             }
@@ -798,38 +878,38 @@ impl BuiltinEnumSpec {
         }
     }
 
-    fn variant_payload(&self, index: usize) -> &'static [&'static str] {
+    fn variant_payload(&self, index: usize) -> Vec<&'static str> {
         match self.variants {
-            BuiltinEnumVariants::Generic(_) => self
-                .variant_payloads
-                .expect("generic builtin enum must declare variant payloads")
-                .get(index)
-                .copied()
-                .expect("generic builtin enum variant must have a matching payload"),
-            BuiltinEnumVariants::Monomorphic(_) => &[],
+            BuiltinEnumVariants::Generic(variants) => variants[index]
+                .payload_type_args
+                .iter()
+                .map(|parameter| self.type_params[*parameter])
+                .collect(),
+            BuiltinEnumVariants::Monomorphic(_) => Vec::new(),
         }
     }
 }
+
+/// The one receive handler every synthesized lambda actor declares.
+const LAMBDA_ACTOR_HANDLER: &str = "call";
 
 const MONOMORPHIC_BUILTIN_ENUMS: &[hew_types::builtin_enums::BuiltinMonomorphicEnum] =
     hew_types::builtin_enums::monomorphic_builtin_enums();
 const BUILTIN_ENUM_SPEC_COUNT: usize = 2 + MONOMORPHIC_BUILTIN_ENUMS.len();
 const EMPTY_BUILTIN_ENUM_SPEC: BuiltinEnumSpec = BuiltinEnumSpec {
-    type_name: "",
     canonical_type_name: "",
     item_id: ItemId(0),
     type_params: &[],
     variants: BuiltinEnumVariants::Generic(&[]),
-    variant_payloads: None,
 };
 /// HIR registration order is observable for duplicate bare variant names:
 /// later specs replace earlier entries in `machine_ctor_registry`.
 const MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER: &[(&str, ItemId)] = &[
     ("std.builtins.LookupError", SYNTHETIC_LOOKUP_ERROR_ITEM),
     ("std.builtins.SendError", SYNTHETIC_SEND_ERROR_ITEM),
+    ("std.builtins.NodeError", SYNTHETIC_NODE_ERROR_ITEM),
     ("std.builtins.TimeoutError", SYNTHETIC_TIMEOUT_ERROR_ITEM),
     ("std.builtins.LinkError", SYNTHETIC_LINK_ERROR_ITEM),
-    ("std.builtins.AskError", SYNTHETIC_ASK_ERROR_ITEM),
     ("std.failure.CrashAction", SYNTHETIC_CRASH_ACTION_ITEM),
     ("std.failure.CrashKind", SYNTHETIC_CRASH_KIND_ITEM),
     (
@@ -896,20 +976,20 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
 
     let mut specs = [EMPTY_BUILTIN_ENUM_SPEC; BUILTIN_ENUM_SPEC_COUNT];
     specs[0] = BuiltinEnumSpec {
-        type_name: "Option",
         canonical_type_name: "Option",
         item_id: SYNTHETIC_OPTION_ITEM,
-        type_params: &["T"],
-        variants: BuiltinEnumVariants::Generic(&["Some", "None"]),
-        variant_payloads: Some(&[&["T"], &[]]),
+        type_params: BuiltinType::Option.generic_enum().unwrap().type_params,
+        variants: BuiltinEnumVariants::Generic(
+            BuiltinType::Option.generic_enum().unwrap().variants,
+        ),
     };
     specs[1] = BuiltinEnumSpec {
-        type_name: "Result",
         canonical_type_name: "Result",
         item_id: SYNTHETIC_RESULT_ITEM,
-        type_params: &["T", "E"],
-        variants: BuiltinEnumVariants::Generic(&["Ok", "Err"]),
-        variant_payloads: Some(&[&["T"], &["E"]]),
+        type_params: BuiltinType::Result.generic_enum().unwrap().type_params,
+        variants: BuiltinEnumVariants::Generic(
+            BuiltinType::Result.generic_enum().unwrap().variants,
+        ),
     };
 
     let mut index = 0;
@@ -917,12 +997,10 @@ const fn derive_builtin_enum_specs() -> [BuiltinEnumSpec; BUILTIN_ENUM_SPEC_COUN
         let (canonical_type_name, item_id) = MONOMORPHIC_BUILTIN_ENUM_HIR_ORDER[index];
         let catalog_entry = monomorphic_builtin_enum(canonical_type_name);
         specs[index + 2] = BuiltinEnumSpec {
-            type_name: catalog_entry.name,
             canonical_type_name: catalog_entry.canonical_name,
             item_id,
             type_params: &[],
             variants: BuiltinEnumVariants::Monomorphic(catalog_entry.variants),
-            variant_payloads: None,
         };
         index += 1;
     }
@@ -1048,9 +1126,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
-                    | crate::HirDiagnosticKind::SpawnedClosureSignatureUnsupported { .. }
-                    | crate::HirDiagnosticKind::SpawnedClosureNonSendCapture { .. }
-                    | crate::HirDiagnosticKind::ForkBlockBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
                     | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
@@ -1611,18 +1686,51 @@ fn plan_imported_impl_bodies(
 /// Multiple inherent impls declaring `close` on the same nominal would be a
 /// duplicate-symbol error caught downstream; this collector keeps the first
 /// occurrence and ignores any later ones.
+/// The item list of every module a program's imports reach, each list once.
+///
+/// The module graph is the authority when a program has one: it holds a single
+/// node per module however many import paths reach it. A program assembled
+/// without a graph carries its modules only on the import declarations, and
+/// shared imports retain one `Arc` body per module, so the fallback walks those
+/// bodies keyed by identity.
+///
+/// Following the declarations by recursion instead expands a shared descendant
+/// once per import path, which is exponential in the number of paths: a depth-24
+/// diamond of 51 modules never finishes.
+fn imported_module_item_lists(program: &Program) -> Vec<&[(Item, Span)]> {
+    if let Some(graph) = &program.module_graph {
+        return graph
+            .topo_order
+            .iter()
+            .filter(|module_id| **module_id != graph.root)
+            .filter_map(|module_id| graph.modules.get(module_id))
+            .map(|module| module.items.as_slice())
+            .collect();
+    }
+    let mut seen: HashSet<*const Vec<Spanned<Item>>> = HashSet::new();
+    let mut out: Vec<&[(Item, Span)]> = Vec::new();
+    let mut queue: Vec<&[(Item, Span)]> = vec![program.items.as_slice()];
+    while let Some(items) = queue.pop() {
+        for (item, _) in items {
+            let Item::Import(decl) = item else { continue };
+            let Some(resolved) = decl.resolved_items.as_ref() else {
+                continue;
+            };
+            if !seen.insert(std::sync::Arc::as_ptr(resolved)) {
+                continue;
+            }
+            out.push(resolved.as_slice());
+            queue.push(resolved.as_slice());
+        }
+    }
+    out
+}
+
 fn collect_inherent_impl_close_methods(program: &Program) -> HashMap<String, ImplCloseSignature> {
     let mut out: HashMap<String, ImplCloseSignature> = HashMap::new();
     collect_inherent_impl_close_methods_from_items(&program.items, &mut out);
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if *module_id == module_graph.root {
-                continue;
-            }
-            if let Some(module) = module_graph.modules.get(module_id) {
-                collect_inherent_impl_close_methods_from_items(&module.items, &mut out);
-            }
-        }
+    for items in imported_module_item_lists(program) {
+        collect_inherent_impl_close_methods_from_items(items, &mut out);
     }
     out
 }
@@ -1632,12 +1740,6 @@ fn collect_inherent_impl_close_methods_from_items(
     out: &mut HashMap<String, ImplCloseSignature>,
 ) {
     for (item, _item_span) in items {
-        if let Item::Import(import_decl) = item {
-            if let Some(resolved_items) = &import_decl.resolved_items {
-                collect_inherent_impl_close_methods_from_items(resolved_items, out);
-            }
-            continue;
-        }
         let Item::Impl(impl_decl) = item else {
             continue;
         };
@@ -1680,22 +1782,15 @@ fn collect_inherent_impl_close_methods_from_items(
 }
 
 /// Walk the program and its module graph collecting the self-type names that
-/// declare at least one `consuming self` method in a sibling inherent-impl
+/// declare at least one `consume self` method in a sibling inherent-impl
 /// block. Trait impls (`impl T for U`) are skipped — the consume surface this
 /// records is the inherent `<T>::method` dispatch, the form that lowers to a
 /// callable symbol.
 fn collect_inherent_impl_consuming_methods(program: &Program) -> HashSet<String> {
     let mut out: HashSet<String> = HashSet::new();
     collect_inherent_impl_consuming_methods_from_items(&program.items, &mut out);
-    if let Some(module_graph) = &program.module_graph {
-        for module_id in &module_graph.topo_order {
-            if *module_id == module_graph.root {
-                continue;
-            }
-            if let Some(module) = module_graph.modules.get(module_id) {
-                collect_inherent_impl_consuming_methods_from_items(&module.items, &mut out);
-            }
-        }
+    for items in imported_module_item_lists(program) {
+        collect_inherent_impl_consuming_methods_from_items(items, &mut out);
     }
     out
 }
@@ -1705,12 +1800,6 @@ fn collect_inherent_impl_consuming_methods_from_items(
     out: &mut HashSet<String>,
 ) {
     for (item, _item_span) in items {
-        if let Item::Import(import_decl) = item {
-            if let Some(resolved_items) = &import_decl.resolved_items {
-                collect_inherent_impl_consuming_methods_from_items(resolved_items, out);
-            }
-            continue;
-        }
         let Item::Impl(impl_decl) = item else {
             continue;
         };
@@ -2015,8 +2104,8 @@ fn collect_opaque_type_short_names(
 /// handles substituting `Self` for the concrete type.
 fn trait_method_to_fn_decl(method: &TraitMethod) -> FnDecl {
     FnDecl {
+        origin: hew_parser::ast::DeclarationOrigin::Authored,
         attributes: vec![],
-        is_async: false,
         is_generator: false,
         visibility: hew_parser::ast::Visibility::Private,
         name: method.name.clone(),
@@ -2057,7 +2146,11 @@ fn render_type_expr(ty: &TypeExpr) -> String {
             }
             _ => name.clone(),
         },
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             format!(
                 "Result<{}, {}>",
                 render_type_expr(&ok.0),
@@ -2080,10 +2173,22 @@ fn render_type_expr(ty: &TypeExpr) -> String {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             let ps: Vec<String> = params.iter().map(|p| render_type_expr(&p.0)).collect();
             format!(
                 "fn({}) -> {}",
+                ps.join(", "),
+                render_type_expr(&return_type.0)
+            )
+        }
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let ps: Vec<String> = params.iter().map(|p| render_type_expr(&p.0)).collect();
+            format!(
+                "actor({}) -> {}",
                 ps.join(", "),
                 render_type_expr(&return_type.0)
             )
@@ -2116,7 +2221,10 @@ fn builtin_callable_impl_program() -> Option<Program> {
         .items
         .into_iter()
         .filter(|(item, _)| {
-            matches!(item, Item::Trait(_) | Item::TypeDecl(_)) || is_builtin_callable_impl(item)
+            matches!(
+                item,
+                Item::Trait(_) | Item::TypeDecl(_) | Item::ExternBlock(_)
+            ) || is_builtin_callable_impl(item)
         })
         .collect();
     Some(Program {
@@ -2142,10 +2250,7 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     };
     matches!(
         (trait_name, name.as_str()),
-        (
-            "Iterator",
-            "VecIter" | "HashMapIter" | "Generator" | "AsyncGenerator"
-        ) | ("IntoIterator", "Vec")
+        ("Iterator", "VecIter" | "HashMapIter" | "Generator") | ("IntoIterator", "Vec")
     )
 }
 
@@ -2155,65 +2260,47 @@ fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
 /// comes only from the parsed `BUILTINS_HEW_SOURCE` program; ordinary source
 /// declarations never call this projection.
 fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
-    SYNTHETIC_CURSOR_LAYOUT_SPECS
-        .iter()
-        .find(|spec| spec.builtin.canonical_name() == source_name)
-        .map_or(source_name, |spec| match spec.builtin {
-            BuiltinType::VecIter => "std.builtins.VecIter",
-            BuiltinType::HashMapIter => "std.builtins.HashMapIter",
-            _ => unreachable!("synthetic cursor catalog contains only cursor builtins"),
-        })
+    match source_name {
+        "VecIter" => "std.builtins.VecIter",
+        "HashMapIter" => "std.builtins.HashMapIter",
+        "ActorRequestOwner" => "std.builtins.ActorRequestOwner",
+        _ => source_name,
+    }
 }
 
-/// The pure-Hew `duration` constructor block in `std/builtins.hew`
-/// (`from_nanos` / `from_micros` / `from_millis` / `from_secs`).
-///
-/// Distinguished from the sibling `#[extern_symbol]` instance-method block on
-/// `duration` by carrying no trait bound and exactly the four static
-/// constructor methods, each with a single non-receiver `i64` parameter (a
-/// receiver param would have type `duration` or `Self`). Lowering this block
-/// through the user-impl spine registers `duration::from_*` as real HIR fns
-/// whose bodies (`n * 1<unit>`) run — without this, the checker accepts the
-/// call (the impl registers an `fn_sig`) but HIR has no binding and fails with
-/// `UnresolvedSymbol`.
-fn is_builtin_duration_ctor_impl(item: &Item) -> bool {
-    const CTORS: [&str; 4] = ["from_nanos", "from_micros", "from_millis", "from_secs"];
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    if impl_decl.trait_bound.is_some() {
-        return false;
-    }
-    let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
-        return false;
-    };
-    if name != "duration" {
-        return false;
-    }
-    impl_decl.methods.len() == CTORS.len()
-        && impl_decl.methods.iter().all(|method| {
-            CTORS.contains(&method.name.as_str())
-                && method
-                    .params
-                    .first()
-                    .is_none_or(|param| !is_duration_receiver_param(param))
-        })
-}
-
-fn is_duration_receiver_param(param: &Param) -> bool {
-    matches!(
-        &param.ty.0,
-        TypeExpr::Named { name, .. } if name == "Self" || name == "duration"
-    )
+/// An inherent `std/builtins.hew` implementation with executable Hew bodies.
+/// The embedded source is the authority: no receiver or method name selects
+/// this path. Declarative runtime shims carry `#[extern_symbol]` and remain
+/// metadata-only, while ordinary bodies are registered and lowered exactly as
+/// user bodies are.
+fn is_builtin_source_body_impl(item: &Item) -> bool {
+    matches!(item, Item::Impl(decl)
+    if decl.trait_bound.is_none()
+        && decl.type_params.is_none()
+        && matches!(&decl.target_type.0, TypeExpr::Named { type_args: None, .. })
+        && !decl.methods.is_empty()
+        && decl.methods.iter().all(|method| {
+            method.body.stmts.is_empty()
+                && method.body.trailing_expr.is_some()
+                && !method.attributes.iter().any(|attr| attr.name == "extern_symbol")
+        }))
 }
 
 fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item) || is_builtin_duration_ctor_impl(item)
+    is_builtin_vec_iterator_impl(item)
+        || is_builtin_source_body_impl(item)
+        || is_builtin_request_owner_impl(item)
+}
+
+fn is_builtin_request_owner_impl(item: &Item) -> bool {
+    matches!(item, Item::Impl(decl) if matches!(&decl.target_type.0,
+        TypeExpr::Named { name, .. } if name == "ActorRequestOwner" || name == "std.builtins.ActorRequestOwner"))
 }
 
 fn is_builtin_callable_impl(item: &Item) -> bool {
     matches!(item, Item::Impl(impl_decl) if impl_decl.trait_bound.is_some())
-        || is_builtin_duration_ctor_impl(item)
+        || is_builtin_source_body_impl(item)
+        || is_builtin_request_owner_impl(item)
 }
 
 fn impl_type_param_names(decl: &hew_parser::ast::ImplDecl) -> Vec<String> {
@@ -2232,6 +2319,12 @@ fn check_builtin_callable_impl_program(
     // collide with root user nominals of the same leaf. The executable HIR is
     // still lowered from the original source AST, preserving all source spans.
     let mut checker_program = program.clone();
+    // These externs are already registered under their std.builtins owner.
+    // Re-declaring them in the isolated checker's root would give a close
+    // wrapper a different release identity from its lifecycle contract.
+    checker_program
+        .items
+        .retain(|(item, _)| !matches!(item, Item::ExternBlock(_)));
     for (item, _) in &mut checker_program.items {
         let Item::Impl(impl_decl) = item else {
             continue;
@@ -2265,10 +2358,10 @@ fn check_builtin_callable_impl_program(
     Err(Box::new(HirDiagnostic::new(
         HirDiagnosticKind::CheckerBoundaryViolation {
             name: "std/builtins.hew callable impls".to_string(),
-            reason,
+            reason: reason.clone(),
         },
         0..0,
-        "compiler-injected callable impls were not lowered",
+        format!("compiler-injected callable impls were not lowered: {reason}"),
     )))
 }
 
@@ -2288,7 +2381,11 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
                 }
             }
         }
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             canonicalize_injected_cursor_type_expr(&mut ok.0);
             canonicalize_injected_cursor_type_expr(&mut err.0);
         }
@@ -2307,6 +2404,11 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
             canonicalize_injected_cursor_type_expr(&mut element.0);
         }
         TypeExpr::Function {
+            params,
+            return_type,
+            ..
+        }
+        | TypeExpr::ActorFn {
             params,
             return_type,
         } => {
@@ -2344,8 +2446,6 @@ fn canonicalize_injected_cursor_type_expr(ty: &mut TypeExpr) {
 /// every module present in `modules`. Returns a map from `program.items` index
 /// to module index; absent entries (genuine root items) are index 0.
 fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
-    use std::path::{Path, PathBuf};
-
     let mut map = HashMap::new();
     let Some(mg) = &program.module_graph else {
         return map;
@@ -2355,37 +2455,16 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
     // stamped `current_module_idx` with during its non-root body-check walk.
     let span_indices = mg.file_span_indices();
 
-    // Re-derive the flattened tail block, mirroring `flatten_file_import_items`:
-    // each file-path import decl contributed its resolved items (minus nested
-    // `Item::Import` stubs) to the tail, in decl order. Attribute each appended
-    // item to its own source file's module index via the parallel
-    // `resolved_item_source_paths`.
-    let mut appended: Vec<u32> = Vec::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved) = &decl.resolved_items else {
-            continue;
-        };
-        for (k, (ritem, _)) in resolved.iter().enumerate() {
-            if matches!(ritem, Item::Import(_)) {
-                continue;
-            }
-            let path: Option<&Path> = decl
-                .resolved_item_source_paths
-                .get(k)
-                .map(PathBuf::as_path)
-                .or_else(|| decl.resolved_source_paths.first().map(PathBuf::as_path));
-            let idx = path
-                .and_then(|p| span_indices.path_index(p))
-                .unwrap_or_default();
-            appended.push(idx);
-        }
-    }
+    // The spliced tail, from the same walk the frontend appended it with, so
+    // each entry keeps its own declaring file's index.
+    let appended: Vec<u32> = hew_parser::module::file_import_spliced_items(&program.items)
+        .into_iter()
+        .map(|(_, source)| {
+            source
+                .and_then(|path| span_indices.path_index(path))
+                .unwrap_or_default()
+        })
+        .collect();
 
     let total = appended.len();
     if total == 0 || total > program.items.len() {
@@ -2422,29 +2501,15 @@ fn file_import_item_module_indices(program: &Program) -> HashMap<usize, u32> {
 /// Server`). A bare-name skip would silently drop a package-import impl that
 /// merely shares a name with a file-import/root impl; an origin skip cannot.
 fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::ModuleId> {
-    use std::path::PathBuf;
-
     let mut ids = HashSet::new();
     let Some(mg) = &program.module_graph else {
         return ids;
     };
 
-    // Canonical source paths contributed by file-path imports.
-    let mut file_import_paths: HashSet<PathBuf> = HashSet::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        for p in &decl.resolved_source_paths {
-            file_import_paths.insert(p.clone());
-        }
-        for p in &decl.resolved_item_source_paths {
-            file_import_paths.insert(p.clone());
-        }
-    }
+    // Canonical source paths contributed by the root's file-import chain: a
+    // file the root imports may import a file in turn, and the splice carries
+    // that whole chain into `program.items`.
+    let file_import_paths = hew_parser::module::file_import_chain_sources(&program.items);
     if file_import_paths.is_empty() {
         return ids;
     }
@@ -2466,43 +2531,6 @@ fn file_import_module_ids(program: &Program) -> HashSet<hew_parser::module::Modu
         }
     }
     ids
-}
-
-/// Answer whether the source-order third pass already lowered this module's
-/// free functions, so the module-graph fourth pass must not lower them again.
-///
-/// A file-path import (`import "lib.hew";`) splices the imported module's items
-/// into `program.items`, so the third pass emits one `HirItem::Function` per pub
-/// free fn under its source-declared name. The same module is also in
-/// `mg.topo_order`, so the fourth pass would emit a SECOND body for the same
-/// declaration under the module-qualified spelling (`lib$twice`). Both items
-/// carry the resolver's single `declaration` `DefId`, so the module would then
-/// realize one callable identity twice: `build_direct_call_symbol_index` keeps
-/// the last spelling written (the qualified one) while any consumer that
-/// resolves the surface spelling — the fn-value shim in
-/// `hew-mir/src/lower/expr.rs` — keeps the first, and the two disagree.
-///
-/// The discriminator is the module's IDENTITY, exactly as in the `Item::Impl`
-/// and `Item::Actor` arms: only file-import SPLICED modules are reached by both
-/// passes. Package-import modules are never spliced, so they are lowered here
-/// exactly once and are unaffected.
-///
-/// A GENERIC declaration is exempt. Its origin body is never a realized
-/// callable — MIR routes it to the representation substrate, not to `raw_mir` —
-/// so two origin bodies are not two realizations of one identity. The
-/// monomorphisation registry keys each instance by the origin `ItemId` the call
-/// site resolved, which for a module-qualified call is the qualified
-/// registration; dropping that item would orphan every instance it owns.
-fn free_fn_already_lowered_by_source_order_pass(
-    file_import_modules: &HashSet<hew_parser::module::ModuleId>,
-    mod_id: &hew_parser::module::ModuleId,
-    func: &FnDecl,
-) -> bool {
-    file_import_modules.contains(mod_id)
-        && func
-            .type_params
-            .as_ref()
-            .is_none_or(std::vec::Vec::is_empty)
 }
 
 /// Identify, by PROVENANCE (file-set subsumption), the package-import graph
@@ -2719,53 +2747,48 @@ fn imported_type_name_collides(
         > 1
 }
 
-/// Build the root scope's bare imported-function bindings.
+/// The bare function bindings a module's own file imports contribute.
 ///
-/// The checker publishes selected names from `import module::{name}` and
-/// `import module.{name}`, but HIR emits the function body under its module-qualified
-/// symbol. Preserve that source-to-symbol mapping while root bodies lower, except
-/// where the checker's root value namespace already owns the same binding.
-fn root_imported_fn_rewrites(
-    program: &Program,
-    root_value_bindings: &HashSet<String>,
+/// `import "helper.hew";` inside a module publishes helper's pub free
+/// functions into that module's scope. Helper keeps its own module identity
+/// (only the ROOT's file-import chain is spliced into `program.items`), so its
+/// bodies are emitted under `{helper}.{name}` and the importing module's
+/// bodies reach them through this rewrite.
+fn module_file_import_fn_rewrites(
+    module: &hew_parser::module::Module,
+    mg: &hew_parser::module::ModuleGraph,
 ) -> HashMap<String, String> {
     let mut rewrites = HashMap::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
+    for (item, _) in &module.items {
+        let Item::Import(decl) = item else { continue };
+        if decl.file_path.is_none() {
             continue;
-        };
+        }
         let Some(resolved_items) = decl.resolved_items.as_ref() else {
             continue;
         };
-        let module_full_path = decl.path.join(".");
-        for (resolved_item, _) in resolved_items {
+        let Some(source) = decl.resolved_source_paths.first() else {
+            continue;
+        };
+        let Some(owner) = mg
+            .modules
+            .iter()
+            .find(|(_, candidate)| candidate.source_paths.first() == Some(source))
+            .map(|(id, _)| id.path.join("."))
+        else {
+            continue;
+        };
+        for (resolved_item, _) in resolved_items.iter() {
             let Item::Function(function) = resolved_item else {
                 continue;
             };
             if !function.visibility.is_pub() {
                 continue;
             }
-            let binding = match &decl.spec {
-                Some(ImportSpec::Names(names)) => names
-                    .iter()
-                    .find(|imported| imported.name == function.name)
-                    .map(|imported| {
-                        imported
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| function.name.clone())
-                    }),
-                None => None,
-            };
-            if let Some(binding) = binding {
-                if root_value_bindings.contains(&binding) {
-                    continue;
-                }
-                rewrites.insert(
-                    binding,
-                    crate::mangle_dotted_name(&format!("{module_full_path}.{}", function.name)),
-                );
-            }
+            rewrites.insert(
+                function.name.clone(),
+                crate::mangle_dotted_name(&format!("{owner}.{}", function.name)),
+            );
         }
     }
     rewrites
@@ -2796,6 +2819,16 @@ pub fn lower_program_host_target(
     ctx: &ResolutionCtx,
 ) -> LowerOutput {
     lower_program(program, type_check_output, ctx, TargetArch::host())
+}
+
+/// Linker-safe internal symbol for an authored `main` that is not the selected
+/// process entry. A single `$` delimiter cannot be written in Hew source and is
+/// distinct from the `$$` generic-instantiation separator.
+fn authored_main_callable_symbol(declaration: &hew_types::DefId) -> String {
+    format!(
+        "__hew_callable${}",
+        crate::mangle_dotted_name(declaration.full_path())
+    )
 }
 
 /// Construct the sole legacy surface key for a tagged-union constructor.
@@ -2832,7 +2865,12 @@ pub fn lower_program_with_mono_cap(
     mono_cap: usize,
     target_arch: TargetArch,
 ) -> LowerOutput {
+    let program = type_check_output
+        .normalized_machines
+        .as_ref()
+        .map_or(program, |normalized| &normalized.program);
     let mut ctx = LowerCtx::new(type_check_output, mono_cap, target_arch);
+    let entry_exit_plan = type_check_output.entry_exit_plan.clone();
     let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
         graph
             .modules
@@ -2912,12 +2950,14 @@ pub fn lower_program_with_mono_cap(
         }
     }
     ctx.seed_stdlib_fn_registry();
+    let builtin_declarations = builtin_callable_impl_program();
+    let mut builtin_impl_diagnostics = Vec::new();
     let (builtin_callable_impl_program, builtin_callable_impl_output) =
-        match builtin_callable_impl_program() {
+        match builtin_declarations.clone() {
             Some(program) => match check_builtin_callable_impl_program(&program) {
                 Ok(output) => (Some(program), Some(output)),
                 Err(diagnostic) => {
-                    ctx.diagnostics.push(*diagnostic);
+                    builtin_impl_diagnostics.push(*diagnostic);
                     (None, None)
                 }
             },
@@ -2931,7 +2971,13 @@ pub fn lower_program_with_mono_cap(
     // See [`collect_inherent_impl_close_methods`] for the precise contract
     // (W3.030 Q-α-B + Q-β-C ratifications).
     ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
-    // Harvest the self-type names that declare a `consuming self` inherent
+    if let Some(builtins) = &builtin_declarations {
+        for (name, signature) in collect_inherent_impl_close_methods(builtins) {
+            ctx.impl_close_methods
+                .insert(format!("std.builtins.{name}"), signature);
+        }
+    }
+    // Harvest the self-type names that declare a `consume self` inherent
     // method so the `#[linear]` validation accepts a sibling-inherent consuming
     // method as satisfying the must-declare-a-consumer contract — the inherent
     // form is the surface that lowers to a callable symbol.
@@ -2962,6 +3008,17 @@ pub fn lower_program_with_mono_cap(
         &mut ctx.opaque_type_short_names,
         &mut ctx.non_opaque_type_short_names,
     );
+    if let Some(builtins) = &builtin_declarations {
+        for (item, _) in &builtins.items {
+            if let Item::TypeDecl(decl) = item {
+                if decl.is_opaque {
+                    ctx.opaque_type_short_names.insert(decl.name.clone());
+                    ctx.opaque_type_short_names
+                        .insert(format!("std.builtins.{}", decl.name));
+                }
+            }
+        }
+    }
     ctx.root_opaque_type_short_names
         .extend(program.items.iter().filter_map(|(item, _)| {
             let Item::TypeDecl(decl) = item else {
@@ -3034,6 +3091,19 @@ pub fn lower_program_with_mono_cap(
             _ => {}
         }
     }
+    // The actor delivery declarations are authored in the embedded
+    // `std/builtins.hew` program rather than the module graph, but they are
+    // lowered under the same `std.builtins` owner every downstream stage looks
+    // them up by. Publish their identities alongside the graph's.
+    for name in hew_types::actor_delivery::DECLARATIONS {
+        let canonical = format!("std.builtins.{name}");
+        ctx.source_type_identities.insert(canonical.clone());
+        // A bare reference at root binds to the same owner. A root
+        // declaration of the same name still wins: the local-declaration
+        // check in `resolve_named_type_ref` runs before this alias.
+        ctx.file_import_root_type_aliases
+            .insert((*name).to_string(), canonical);
+    }
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
             if *module_id == module_graph.root {
@@ -3093,7 +3163,7 @@ pub fn lower_program_with_mono_cap(
     // references in call expressions resolve to the correct return type.
     // Diagnostics from this pass are discarded — the same types are re-lowered
     // in the second pass, which is where canonical diagnostics are emitted.
-    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
         ctx.current_module_name = span_indices
@@ -3101,7 +3171,18 @@ pub fn lower_program_with_mono_cap(
             .map(str::to_string);
         match item {
             Item::Function(func) => {
-                ctx.register_fn_entry(&func.name, func);
+                let item = ctx.register_fn_entry(&func.name, func);
+                if func.name == "main" {
+                    let declaration =
+                        ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
+                    if let (Some(plan), Some(declaration)) = (entry_exit_plan.as_ref(), declaration)
+                    {
+                        if plan.entry != declaration {
+                            ctx.fn_symbol_overrides
+                                .insert(item, authored_main_callable_symbol(&declaration));
+                        }
+                    }
+                }
             }
             Item::ExternBlock(block) => {
                 // Register extern fn signatures so call sites resolve them
@@ -3493,59 +3574,6 @@ pub fn lower_program_with_mono_cap(
                 }
                 ctx.current_module_idx = saved_module_idx;
                 ctx.current_module_name = saved_module_name;
-            }
-        }
-    }
-    ctx.imported_fn_rewrites = Some(root_imported_fn_rewrites(
-        program,
-        &type_check_output.root_value_bindings,
-    ));
-
-    // Selective/glob imports bind a pub const's bare (or aliased) name at
-    // root, but the pre-pass above registers imported consts only under the
-    // qualified `{module}.{CONST}` key. Alias the importer-visible binding to
-    // the same entry so a bare `MAX_RETRIES` resolves to the identical
-    // `ItemId`/descriptor a dotted `reasons.MAX_RETRIES` reaches. Root-owned
-    // consts registered by the root pre-pass keep precedence (`or_insert`),
-    // mirroring `root_imported_fn_rewrites` for functions.
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else {
-            continue;
-        };
-        if decl.path.is_empty() {
-            continue;
-        }
-        let Some(spec) = &decl.spec else {
-            continue;
-        };
-        let Some(resolved_items) = &decl.resolved_items else {
-            continue;
-        };
-        let module_full_path = decl.path.join(".");
-        for (resolved_item, _) in resolved_items {
-            let Item::Const(const_decl) = resolved_item else {
-                continue;
-            };
-            if !const_decl.visibility.is_pub() {
-                continue;
-            }
-            let binding = match spec {
-                ImportSpec::Names(names) => names
-                    .iter()
-                    .find(|imported| imported.name == const_decl.name)
-                    .map(|imported| {
-                        imported
-                            .alias
-                            .clone()
-                            .unwrap_or_else(|| const_decl.name.clone())
-                    }),
-            };
-            let Some(binding) = binding else {
-                continue;
-            };
-            let qualified = format!("{module_full_path}.{}", const_decl.name);
-            if let Some(entry) = ctx.const_registry.get(&qualified).cloned() {
-                ctx.const_registry.entry(binding).or_insert(entry);
             }
         }
     }
@@ -4024,12 +4052,6 @@ pub fn lower_program_with_mono_cap(
                     canonical,
                     (spec.canonical_type_name.to_string(), variant_idx),
                 );
-                // `Type::Variant` is a prelude presentation alias. Never let
-                // it replace an exact root declaration with the same leaf.
-                let qualified_alias = format!("{}::{variant_name}", spec.type_name);
-                ctx.machine_ctor_registry
-                    .entry(qualified_alias)
-                    .or_insert_with(|| (spec.canonical_type_name.to_string(), variant_idx));
                 // Register the bare form only when count == 1 (unique) AND
                 // the user has not declared their own variant with this name.
                 if bare_counts.get(variant_name).copied().unwrap_or(0) == 1
@@ -4080,6 +4102,7 @@ pub fn lower_program_with_mono_cap(
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
+    ctx.diagnostics.extend(builtin_impl_diagnostics);
 
     // P0.3 + P0.4: wasm32 blocking channel recv gate. Dispatched HERE (after
     // the diagnostics.clear above) so the gate's BlockingChannelRecvUnsupportedOnWasm
@@ -4088,11 +4111,6 @@ pub fn lower_program_with_mono_cap(
     if ctx.target_arch == TargetArch::Wasm32 {
         check_wasm_blocking_recv_gate(&mut ctx, program);
     }
-
-    // FC-P1-A1: Task/fork/deadline HIR pre-pass gates. Dispatched HERE (after
-    // ctx.diagnostics.clear()) so these fail-closed diagnostics survive into
-    // LowerOutput per the FC-P0 diagnostic survival ordering lesson.
-    check_task_gates(&mut ctx, program);
 
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
@@ -4134,11 +4152,14 @@ pub fn lower_program_with_mono_cap(
             ctx.current_module_name = span_indices
                 .module_name(ctx.current_module_idx)
                 .map(str::to_string);
-            let Some(hir_decl) = (if let Some(module) = ctx.current_module_name.clone() {
+            let diag_start = ctx.diagnostics.len();
+            let lowered = if let Some(module) = ctx.current_module_name.clone() {
                 ctx.lower_imported_type_decl(decl, span.clone(), &module)
             } else {
                 ctx.lower_type_decl(decl, span.clone())
-            }) else {
+            };
+            ctx.tag_spliced_diagnostics(diag_start);
+            let Some(hir_decl) = lowered else {
                 continue;
             };
             let marker = hir_decl.marker;
@@ -4190,11 +4211,17 @@ pub fn lower_program_with_mono_cap(
             // Snapshot the enum's variant descriptors so call/struct-init
             // lowering can resolve payload ctors to `MachineVariantCtor`
             // without re-walking the parser AST.
-            if !hir_decl.variants.is_empty() {
+            if hir_decl.kind == HirTypeDeclKind::Enum {
+                // Keep this metadata under the declaration identity, not the
+                // leaf spelling. The root program can define `Delivery`
+                // while the generated prelude also contributes
+                // `std.builtins.Delivery`; the latter must not replace the
+                // source enum's variants or layout origin.
+                let enum_name = hir_decl.qualified_name();
                 ctx.enum_variants_by_name
-                    .insert(hir_decl.name.clone(), hir_decl.variants.clone());
+                    .insert(enum_name.clone(), hir_decl.variants.clone());
                 if hir_decl.is_indirect {
-                    ctx.indirect_enum_names.insert(hir_decl.name.clone());
+                    ctx.indirect_enum_names.insert(enum_name);
                 }
             }
             // Snapshot type-params and ItemId for the enum-layout discovery
@@ -4207,9 +4234,10 @@ pub fn lower_program_with_mono_cap(
             // `try_register_enum_instantiation` for that enum silently
             // no-ops and codegen-front fails with registration-mismatch.
             if decl.kind == TypeDeclKind::Enum {
+                let enum_name = hir_decl.qualified_name();
                 ctx.enum_type_params
-                    .insert(hir_decl.name.clone(), hir_decl.type_params.clone());
-                ctx.enum_item_ids.insert(hir_decl.name.clone(), hir_decl.id);
+                    .insert(enum_name.clone(), hir_decl.type_params.clone());
+                ctx.enum_item_ids.insert(enum_name, hir_decl.id);
             }
             type_decl_cache.insert(decl as *const _, hir_decl);
         }
@@ -4233,7 +4261,7 @@ pub fn lower_program_with_mono_cap(
     ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -4256,7 +4284,7 @@ pub fn lower_program_with_mono_cap(
                                 continue;
                             };
                             let canonical_name = format!("{source_module}.{}", hir_decl.name);
-                            if !hir_decl.variants.is_empty() {
+                            if hir_decl.kind == HirTypeDeclKind::Enum {
                                 ctx.enum_variants_by_name
                                     .insert(canonical_name.clone(), hir_decl.variants.clone());
                                 if hir_decl.is_indirect {
@@ -4330,7 +4358,7 @@ pub fn lower_program_with_mono_cap(
     // is the HIR-side symmetric producer.
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -4392,7 +4420,7 @@ pub fn lower_program_with_mono_cap(
                             {
                                 qualified_entry.1 = close_method;
                             }
-                            if !hir_decl.variants.is_empty() {
+                            if hir_decl.kind == HirTypeDeclKind::Enum {
                                 ctx.enum_variants_by_name.insert(
                                     format!("{source_module}.{}", hir_decl.name),
                                     hir_decl.variants.clone(),
@@ -4406,7 +4434,7 @@ pub fn lower_program_with_mono_cap(
                             // overwrite `enum_type_params["Result"]` with an
                             // empty param list, silently turning every later
                             // `try_register_enum_instantiation` for that enum
-                            // into a no-op (the ask-site `Result<R, AskError>`
+                            // into a no-op (the ask-site `Result<R, ActorError>`
                             // layout then never registers and codegen-front
                             // fails closed with registration-mismatch).
                             if decl.kind == TypeDeclKind::Enum {
@@ -4600,7 +4628,7 @@ pub fn lower_program_with_mono_cap(
                 .values()
                 .filter(|d| {
                     d.marker == ResourceMarker::None
-                        && d.variants.is_empty()
+                        && d.kind == HirTypeDeclKind::Struct
                         && d.type_params.is_empty()
                         && !d.fields.is_empty()
                 })
@@ -4640,6 +4668,11 @@ pub fn lower_program_with_mono_cap(
     // receiver-specific cursor and duration impls retain their compiler owner.
     if let Some(program) = &builtin_callable_impl_program {
         for (item, _) in &program.items {
+            if let Item::ExternBlock(block) = item {
+                for function in &block.functions {
+                    ctx.register_extern_fn_entry(function);
+                }
+            }
             if let Item::Impl(impl_decl) = item {
                 if !is_builtin_callable_impl(item) {
                     continue;
@@ -4754,6 +4787,110 @@ pub fn lower_program_with_mono_cap(
     // the full path — not the short last segment — is what lets HIR's
     // `import_type_name_aliases` lookups hit the keys the checker wrote for
     // depth-≥2 importers.
+    // Prelude declarations must precede lazy body checking, independently of
+    // whether their executable methods are needed or have checked successfully.
+    let scope_failure = builtin_declarations.as_ref().and_then(|builtins| {
+        let (source, span) = builtins.items.iter().find_map(|(item, span)| match item {
+            Item::TypeDecl(decl) if decl.name == "ScopeFailure" => Some((decl, span)),
+            _ => None,
+        })?;
+        let canonical_name = "std.builtins.ScopeFailure";
+        let Some(declaration) = ctx.identity.declaration_by_path(canonical_name).cloned() else {
+            ctx.unsupported(
+                span.clone(),
+                "scope failure declaration identity",
+                "checker-boundary",
+            );
+            return None;
+        };
+        let mut source = source.clone();
+        source.name = canonical_name.to_string();
+        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+        ctx.type_classes
+            .insert(canonical_name.to_string(), (decl.marker, None));
+        ctx.type_member_tys.insert(
+            canonical_name.to_string(),
+            decl.variants
+                .iter()
+                .flat_map(hew_hir_variant_field_tys)
+                .collect(),
+        );
+        ctx.enum_variants_by_name
+            .insert(canonical_name.to_string(), decl.variants.clone());
+        ctx.enum_type_params
+            .insert(canonical_name.to_string(), decl.type_params.clone());
+        ctx.enum_item_ids
+            .insert(canonical_name.to_string(), decl.id);
+        for (index, variant) in decl.variants.iter().enumerate() {
+            ctx.machine_ctor_registry.insert(
+                format!("{canonical_name}::{}", variant.name),
+                (canonical_name.to_string(), index),
+            );
+        }
+        Some(decl)
+    });
+    let mut delivery_declarations = Vec::new();
+    if let Some(builtins) = builtin_declarations.as_ref() {
+        for name in hew_types::actor_delivery::DECLARATIONS {
+            let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
+                Item::TypeDecl(decl) if decl.name == *name => Some((decl, span)),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let canonical_name = format!("std.builtins.{name}");
+            let Some(declaration) = ctx.identity.declaration_by_path(&canonical_name).cloned()
+            else {
+                ctx.unsupported(
+                    span.clone(),
+                    "actor delivery declaration identity",
+                    "checker-boundary",
+                );
+                continue;
+            };
+            let mut source = source.clone();
+            source.name.clone_from(&canonical_name);
+            let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+            ctx.type_classes
+                .insert(canonical_name.clone(), (decl.marker, None));
+            ctx.type_member_tys.insert(
+                canonical_name.clone(),
+                decl.fields
+                    .iter()
+                    .map(|field| field.ty.clone())
+                    .chain(decl.variants.iter().flat_map(hew_hir_variant_field_tys))
+                    .collect(),
+            );
+            if decl.kind == HirTypeDeclKind::Struct {
+                ctx.record_registry.insert(
+                    canonical_name.clone(),
+                    RecordEntry {
+                        id: decl.id,
+                        type_params: decl.type_params.clone(),
+                        fields: decl
+                            .fields
+                            .iter()
+                            .map(|field| (field.name.clone(), field.ty.clone()))
+                            .collect(),
+                    },
+                );
+            }
+            if decl.kind == HirTypeDeclKind::Enum {
+                ctx.enum_variants_by_name
+                    .insert(canonical_name.clone(), decl.variants.clone());
+                ctx.enum_type_params
+                    .insert(canonical_name.clone(), decl.type_params.clone());
+                ctx.enum_item_ids.insert(canonical_name.clone(), decl.id);
+                for (index, variant) in decl.variants.iter().enumerate() {
+                    ctx.machine_ctor_registry.insert(
+                        format!("{canonical_name}::{}", variant.name),
+                        (canonical_name.clone(), index),
+                    );
+                }
+            }
+            delivery_declarations.push(decl);
+        }
+    }
     let mut items: Vec<HirItem> = Vec::new();
     let mut const_fold_module_idx = 0;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
@@ -4766,6 +4903,7 @@ pub fn lower_program_with_mono_cap(
             ctx.folded_integer_consts.clear();
             const_fold_module_idx = ctx.current_module_idx;
         }
+        let diag_start = ctx.diagnostics.len();
         match item {
             Item::TypeDecl(decl) => {
                 // Retrieve the already-lowered decl so diagnostics are not
@@ -4799,9 +4937,23 @@ pub fn lower_program_with_mono_cap(
                     // Either way, do not lower a body — the declaration is a
                     // typed substrate stub that must match an existing catalog entry.
                 } else {
-                    let Some(hir_fn) = ctx.lower_fn(func, span.clone()) else {
+                    let Some(mut hir_fn) = ctx.lower_fn(func, span.clone()) else {
+                        // A refused body already pushed its diagnostics; this
+                        // is the one path out of the loop that skips the tag
+                        // below.
+                        ctx.tag_spliced_diagnostics(diag_start);
                         continue;
                     };
+                    // The process adapter owns the external `main` symbol. If
+                    // a selected test displaces an authored source `main`, keep
+                    // that declaration as an ordinary callable and give it a
+                    // stable internal HIR symbol. The exact checker `DefId`
+                    // remains the call authority: MIR's direct-call index maps
+                    // that declaration to this symbol, so neither call sites
+                    // nor codegen rediscover the target from its spelling.
+                    if let Some(symbol) = ctx.fn_symbol_overrides.get(&hir_fn.id) {
+                        hir_fn.name.clone_from(symbol);
+                    }
                     // Positive root-origin record: a free function lowered from
                     // the root file (module index 0) has a body span that
                     // indexes the root compilation unit's source, so codegen may
@@ -4837,11 +4989,6 @@ pub fn lower_program_with_mono_cap(
                     false,
                     imported.as_ref(),
                 );
-            }
-            Item::Machine(machine) => {
-                if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
-                    items.push(HirItem::Machine(hir_machine));
-                }
             }
             Item::Actor(actor) => {
                 // P0.1: Fail-closed gate: actors require the actor runtime ABI.
@@ -4898,7 +5045,10 @@ pub fn lower_program_with_mono_cap(
                     items.push(HirItem::Supervisor(supervisor));
                 }
             }
-            Item::Import(_) | Item::TypeAlias(_) => {
+            Item::Import(_) | Item::TypeAlias(_) | Item::Machine(_) => {
+                // The checker normalizes every machine into ordinary enum,
+                // report and impl declarations before HIR, so no machine
+                // declaration reaches lowering.
                 // Imports are frontend-resolved: module-path imports
                 // (`import greeting;`) are lowered from `program.module_graph`
                 // below under their qualified mangled name (e.g. `greeting$hello`).
@@ -4993,6 +5143,7 @@ pub fn lower_program_with_mono_cap(
                 }
             }
         }
+        ctx.tag_spliced_diagnostics(diag_start);
     }
     // Restore the root index after the file-import-aware third pass so any
     // subsequent root-context reads default to 0 before the module-graph walk
@@ -5017,30 +5168,24 @@ pub fn lower_program_with_mono_cap(
     // `#[on(crash)]` bodies fail at MIR time because the payload record layout
     // is absent from `record_field_orders`.
     if let Some(ref mg) = program.module_graph {
-        // Impl blocks already emitted by the source-order third pass — both
-        // root-program impls and FILE-import impls that `flatten_file_import_items`
-        // spliced into `program.items`. The module-graph walk below ALSO visits
-        // file-import modules (they ARE in `mg.topo_order`) and would call
-        // `lower_impl_block` again, producing duplicate `HirItem::Function`
-        // entries with the same unqualified `<SelfType>::<method>` symbol.
-        // Two `RawMirFunction` entries with the same name cause codegen to
-        // declare the LLVM function twice; the second `add_function` with
-        // identical type returns the same `FunctionValue`, so `lower_function`
-        // is called twice on the same LLVM function, appending duplicate basic
-        // blocks. For file-import impls the resulting LLVM module fails
-        // verification with "Global is external, but doesn't have external or
-        // weak linkage!" (the internal-linkage bodyless declaration that the
-        // rename collision produces).
+        // A file-imported module's declarations are lowered by the source-order
+        // third pass: `flatten_file_import_items` splices them into
+        // `program.items` under the declaring file's module index, and that pass
+        // owns every kind they can carry. The same modules are also in
+        // `mg.topo_order`, so this walk skips them by identity — lowering an
+        // item twice emits two `HirItem`s for one declaration, which downstream
+        // reads as two realizations of one identity (duplicate
+        // `<SelfType>::<method>` symbols and LLVM verifier failures for impls,
+        // a doubled HIR refusal for an extern or type declaration, two
+        // lifecycle admissions for one `#[resource]` record).
         //
-        // The discriminator is module ORIGIN, not the impl's bare
-        // `"<type>:<trait>"` name: only the file-import SPLICED modules are
-        // lowered twice (third-pass splice + this fourth-pass walk), so the
-        // skip targets exactly those modules by identity. Keying by name would
-        // be unsound — Hew permits distinct modules to share a bare type/trait
-        // name (the single semantic authority principle), so a file-import/root
-        // impl could silently shadow a same-named but DISTINCT package-import
-        // impl. `file_import_module_ids` cannot misroute a package impl: package
-        // modules are never in the set, so this walk emits them exactly once.
+        // The discriminator is module ORIGIN, never a bare type/trait name:
+        // Hew permits distinct modules to declare same-named types and impls,
+        // so a name-keyed skip could silently drop a package-import declaration
+        // that merely shares a name. `file_import_module_ids` holds exactly the
+        // root's spliced file-import chain; package modules are never in it and
+        // are lowered here exactly once.
+        //
         // Prefer a source-specific package module's impl over a byte-identical
         // copy absorbed by a directory superset. Unique impls in the superset
         // still lower normally. See `preferred_package_module_ids`.
@@ -5050,7 +5195,7 @@ pub fn lower_program_with_mono_cap(
         // another file's entry and byte-offset collisions across files are
         // misread as same-file types.
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -5115,16 +5260,22 @@ pub fn lower_program_with_mono_cap(
                         ctx.register_fn_entry(&qualified, helper);
                     }
                 }
-                let same_module_fn_rewrites: HashMap<String, String> = same_module_pub_fns
-                    .iter()
-                    .chain(imported_private_closure.iter())
-                    .map(|name| {
-                        (
-                            name.clone(),
-                            crate::mangle_dotted_name(&format!("{source_module}.{name}")),
-                        )
-                    })
-                    .collect();
+                // A file this module imports publishes its pub free functions
+                // into THIS module's scope under bare names, while its bodies
+                // are emitted under its own module symbol. The module's own
+                // declarations are collected after, so a local name wins.
+                let mut same_module_fn_rewrites = module_file_import_fn_rewrites(module, mg);
+                same_module_fn_rewrites.extend(
+                    same_module_pub_fns
+                        .iter()
+                        .chain(imported_private_closure.iter())
+                        .map(|name| {
+                            (
+                                name.clone(),
+                                crate::mangle_dotted_name(&format!("{source_module}.{name}")),
+                            )
+                        }),
+                );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()
@@ -5176,13 +5327,6 @@ pub fn lower_program_with_mono_cap(
                         .unwrap_or(module_idx);
                     match item {
                         Item::Function(func) if func.visibility.is_pub() => {
-                            if free_fn_already_lowered_by_source_order_pass(
-                                &file_import_modules,
-                                mod_id,
-                                func,
-                            ) {
-                                continue;
-                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -5209,13 +5353,6 @@ pub fn lower_program_with_mono_cap(
                         Item::Function(func)
                             if imported_private_closure.contains(func.name.as_str()) =>
                         {
-                            if free_fn_already_lowered_by_source_order_pass(
-                                &file_import_modules,
-                                mod_id,
-                                func,
-                            ) {
-                                continue;
-                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -5276,29 +5413,6 @@ pub fn lower_program_with_mono_cap(
                                 hir_decl
                             };
                             items.push(HirItem::TypeDecl(hir_decl));
-                        }
-                        // Emit `HirItem::Machine` entries for imported
-                        // machines so MIR's `machine_layout_names` set (built
-                        // from `module.items`) includes their names. Without
-                        // this, the MIR `Builder::is_known_actor_runtime_ty`
-                        // classifies `Named { name: "Toggle" }` as
-                        // `ValueClass::Unknown` → `Strategy::UnknownBlocked` →
-                        // `DecisionMapTotal` + `UnknownType` diagnostics, even
-                        // though HIR's `machine_ctor_registry` already resolved
-                        // the qualified ctor reference. A private declaration
-                        // can still cross the module boundary through a public
-                        // function signature, so visibility cannot discard its
-                        // runtime layout and value-class identity here.
-                        Item::Machine(machine) => {
-                            // File imports are flattened into the source-order
-                            // pass above. Lowering them again here would mint
-                            // duplicate machine mono/layout entries.
-                            if file_import_modules.contains(mod_id) {
-                                continue;
-                            }
-                            if let Some(hir_machine) = ctx.lower_machine(machine, span.clone()) {
-                                items.push(HirItem::Machine(hir_machine));
-                            }
                         }
                         // Emit HirItem::ExternFn entries for extern declarations
                         // in imported modules so MIR/codegen sees them in the
@@ -5399,27 +5513,18 @@ pub fn lower_program_with_mono_cap(
                             // Skip impl blocks of FILE-import modules: their
                             // items were spliced into `program.items` and
                             // already lowered by the source-order third pass.
-                            // Re-lowering here would emit duplicate
-                            // `<SelfType>::<method>` symbols (see
-                            // `file_import_module_ids`). The guard is by module
-                            // identity, so a package-import impl that merely
-                            // shares a bare type/trait name with a file-import
-                            // or root impl is never skipped.
-                            //
                             // A directory module may absorb the same impl that a
                             // source-specific submodule also contributes. Keep
                             // the source-specific copy so its qualified type and
                             // impl symbol remain aligned; skip only the duplicate
                             // impl in the superset, not the superset's unique
                             // impls.
-                            if file_import_modules.contains(mod_id)
-                                || item_is_duplicated_in_preferred_module(
-                                    program,
-                                    &preferred_modules,
-                                    mod_id,
-                                    item,
-                                )
-                            {
+                            if item_is_duplicated_in_preferred_module(
+                                program,
+                                &preferred_modules,
+                                mod_id,
+                                item,
+                            ) {
                                 continue;
                             }
                             if let TypeExpr::Named {
@@ -5448,7 +5553,7 @@ pub fn lower_program_with_mono_cap(
                                 //    not resolve at the MIR boundary — a
                                 //    cross-module dotted type (`fs.IoError`) or a
                                 //    user trait/type used as a generic argument
-                                //    (`LocalPid<WebSocketHandler>`). Only
+                                //    (an actor handle such as `WebSocketHandler`). Only
                                 //    primitives/builtins and the impl's own self
                                 //    type are admitted.
                                 //
@@ -5535,7 +5640,7 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
-                        // Emit `HirItem::Actor` entries for imported pub actors
+                        // Emit `HirItem::Actor` entries for imported actors
                         // so MIR's actor-layout pass (which walks `module.items`)
                         // builds a layout keyed by the actor's bare name. Without
                         // it, `spawn module.Actor(...)` and the subsequent
@@ -5547,21 +5652,11 @@ pub fn lower_program_with_mono_cap(
                         // active (see `lower_imported_actor`) so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
-                        Item::Actor(actor) if actor.visibility.is_pub() => {
-                            // Skip actors of FILE-import modules: their items
-                            // were spliced into `program.items` and already
-                            // emitted (under the flat/root identity) by the
-                            // source-order pass; re-emitting here would
-                            // duplicate the layout. The guard is by module
-                            // PROVENANCE (`file_import_module_ids`), not bare
-                            // name: actor identity is the qualified
-                            // (module, name) pair, so a package actor that
-                            // merely shares a bare name with a root or
-                            // file-imported actor is a DISTINCT actor and must
-                            // still emit its own qualified layout here.
-                            if file_import_modules.contains(mod_id) {
-                                continue;
-                            }
+                        // Visibility governs what a program may name, not what
+                        // the module needs to run: a module's own non-pub actor
+                        // is still spawned by its pub functions, so it needs its
+                        // layout here.
+                        Item::Actor(actor) => {
                             // Fail-closed target gate: actors require the actor
                             // runtime ABI (x86_64/aarch64), same as the root-item
                             // actor arm in the source-order emit pass.
@@ -5626,12 +5721,14 @@ pub fn lower_program_with_mono_cap(
                         // Non-pub Function/TypeDecl/Actor fall here (not
                         // visible to importers). If a new Item variant is
                         // added, the compiler will force a conscious decision.
+                        // Machines are normalized into ordinary declarations
+                        // by the checker before HIR.
                         Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
                         | Item::Record(_)
-                        | Item::Actor(_)
+                        | Item::Machine(_)
                         | Item::Supervisor(_) => {}
                     }
                 }
@@ -5652,6 +5749,15 @@ pub fn lower_program_with_mono_cap(
         ctx.current_module_idx = 0;
         ctx.current_module_name = None;
     }
+
+    // Every `actor |msg| { .. }` lowered above synthesized an ordinary actor
+    // declaration. Publish them as items so the mono closure, the layout
+    // passes and SIR see them exactly as they see a named actor.
+    items.extend(
+        std::mem::take(&mut ctx.pending_lambda_actors)
+            .into_iter()
+            .map(HirItem::Actor),
+    );
 
     // Inject executable std builtins.hew impls through the same lowering path
     // as user and imported impls so direct method rewrites and the
@@ -5678,6 +5784,43 @@ pub fn lower_program_with_mono_cap(
                 .insert("None".to_string(), ("Option".to_string(), 1));
             let empty_rewrites = HashMap::new();
             for (item, span) in &program.items {
+                if let Item::ExternBlock(block) = item {
+                    for function in &block.functions {
+                        let owner = format!("std.builtins.{}", function.name);
+                        let Some(declaration) = ctx.identity.declaration_by_path(&owner).cloned()
+                        else {
+                            continue;
+                        };
+                        let provenance = extern_provenance(Some("std.builtins"));
+                        items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                            id: ctx.ids.item(),
+                            node: ctx.ids.node(),
+                            declaration,
+                            name: function.name.clone(),
+                            abi: block.abi.clone(),
+                            param_tys: function
+                                .params
+                                .iter()
+                                .map(|parameter| ctx.lower_type(&parameter.ty))
+                                .collect(),
+                            param_consume: function
+                                .params
+                                .iter()
+                                .map(|parameter| parameter.is_consume)
+                                .collect(),
+                            return_ty: function
+                                .return_type
+                                .as_ref()
+                                .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty)),
+                            runtime_capability: extern_runtime_capability(
+                                &provenance,
+                                &function.name,
+                            ),
+                            provenance,
+                            span: function.span.clone(),
+                        }));
+                    }
+                }
                 if let Item::Impl(impl_decl) = item {
                     if is_builtin_callable_impl(item) {
                         let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
@@ -5781,6 +5924,42 @@ pub fn lower_program_with_mono_cap(
         );
     }
 
+    // An `#[extern_symbol]` method declares its C boundary with its own Hew
+    // signature. Emit one extern declaration per dispatched method so later
+    // stages read the declared parameters, their `consume` dispositions and
+    // the return type from a single shape, exactly as for an `extern` block.
+    for ((declaration, _), signature) in std::mem::take(&mut ctx.extern_method_signatures) {
+        let (Ok(param_tys), Ok(return_ty)) = (
+            signature
+                .params
+                .iter()
+                .map(ResolvedTy::from_ty)
+                .collect::<Result<Vec<_>, _>>(),
+            ResolvedTy::from_ty(&signature.result),
+        ) else {
+            continue;
+        };
+        let provenance = extern_provenance(signature.declaring_module.as_deref());
+        let runtime_capability = extern_runtime_capability(&provenance, &signature.endpoint);
+        items.push(HirItem::ExternFn(crate::node::HirExternFn {
+            id: ctx.ids.item(),
+            node: ctx.ids.node(),
+            declaration,
+            name: signature.endpoint,
+            abi: "C".to_string(),
+            param_consume: signature.consumes,
+            param_tys,
+            return_ty,
+            provenance,
+            runtime_capability,
+            span: hew_parser::ast::Span::default(),
+        }));
+    }
+    items.extend(delivery_declarations.into_iter().map(HirItem::TypeDecl));
+    if let Some(decl) = scope_failure {
+        items.push(HirItem::TypeDecl(decl));
+    }
+
     // Monomorphic builtin enums (e.g. `LookupError`) intentionally do NOT
     // appear in `items` here. Their declarations live in
     // `std/builtins.hew` and their tagged-union layout is registered
@@ -5796,7 +5975,48 @@ pub fn lower_program_with_mono_cap(
     // `Result`) continue to flow through `EnumLayoutRegistry` per-instantiation
     // (see below).
 
-    let pending_produced_value_carrier = ctx.take_pending_produced_value_carrier();
+    // A `Result<(), E>` process entry calls the checker-selected
+    // `Display::fmt` target from its generated boundary adapter. That edge has
+    // no source call expression, so it must enter the same monomorphisation
+    // registry explicitly or a generic impl body is never materialized.
+    if let Some((declaration, type_args)) =
+        entry_exit_plan
+            .as_ref()
+            .and_then(|plan| match &plan.action {
+                hew_types::EntryExitAction::Result { display, .. } => match display {
+                    hew_types::EntryDisplayTarget::Declared {
+                        declaration,
+                        instance: hew_types::EntryCallableInstance::Generic { type_args },
+                    } => Some((declaration, type_args)),
+                    // A concrete target needs no specialization, and an erased
+                    // one dispatches through a vtable slot rather than a body.
+                    hew_types::EntryDisplayTarget::Declared { .. }
+                    | hew_types::EntryDisplayTarget::DynSlot { .. } => None,
+                },
+                hew_types::EntryExitAction::Unit | hew_types::EntryExitAction::Integer(_) => None,
+            })
+    {
+        if let Some(function) = items.iter().find_map(|item| match item {
+            HirItem::Function(function) if &function.declaration == declaration => Some(function),
+            _ => None,
+        }) {
+            let key = MonoKey {
+                origin: function.id,
+                declaration: declaration.clone(),
+                linker_symbol: function.name.clone(),
+                type_args: type_args.clone(),
+            };
+            if ctx.mono_registry.insert(key).is_err() && !ctx.mono_cap_diag_emitted {
+                ctx.mono_cap_diag_emitted = true;
+                ctx.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::MonomorphisationCapExceeded { cap: mono_cap },
+                    function.span.clone(),
+                    "the selected process entry Display implementation exceeds the function monomorphisation cap",
+                ));
+            }
+        }
+    }
+
     let mut monomorphisations = ctx.mono_registry.into_vec();
     let call_site_type_args = ctx.call_site_type_args;
     let mut record_layouts = ctx.record_layout_registry.into_vec();
@@ -5822,7 +6042,7 @@ pub fn lower_program_with_mono_cap(
     // a generic record/enum constructed only inside a generic fn body (e.g.
     // `fn make<T>() -> Box<T> { Box { value: x } }`) is observable as a
     // concrete `Box<i64>` layout only after `make` is substituted as
-    // `make$$i64`. Mirrors the `run_machine_mono_pass` ordering invariant.
+    // `make$$i64`.
     // The pass is purely additive: the origin-site path already registered
     // every concrete-site instantiation, and the dedup set is seeded from
     // those so nothing is double-counted. New entries are merged BEFORE
@@ -5890,15 +6110,6 @@ pub fn lower_program_with_mono_cap(
     // return-type slot — and BEFORE the `HirModule` is handed to MIR for
     // `machine_layouts` build (Stage 3, out of scope for this change).
     //
-    // Pass-ordering invariant — see `machine_mono.rs` module docs and
-    // the `machine_mono_pass_records_*` integration tests. Any future
-    // refactor that moves this call before `closure_under_substitution`
-    // (or parallelises the two passes) silently drops generic-mediated
-    // machine instantiations.
-    let (machine_instantiations, machine_mono_diagnostics) =
-        crate::machine_mono::run_machine_mono_pass(&items, &monomorphisations, mono_cap);
-    ctx.diagnostics.extend(machine_mono_diagnostics);
-
     admit_opaque_resource_lifecycles(
         &items,
         &ctx.opaque_resource_candidates,
@@ -5915,32 +6126,16 @@ pub fn lower_program_with_mono_cap(
     admit_resource_record_lifecycles(
         &items,
         &ctx.identity,
+        &ctx.resource_close_discipline_failures,
         &mut ctx.type_classes,
         &mut ctx.diagnostics,
     );
 
-    // The language's entry rule is applied here, once: the root compilation
-    // unit's monomorphic `main` declaration. Publishing the resolved `DefId`
-    // is what lets SIR and the strict driver select an entry callable without
-    // ever comparing a declaration path or an emitted symbol against "main".
-    let entry_declaration = items.iter().find_map(|item| match item {
-        HirItem::Function(function)
-            if function.name == "main"
-                && function.type_params.is_empty()
-                && ctx.root_item_ids.contains(&function.id) =>
-        {
-            Some(function.declaration.clone())
-        }
-        _ => None,
-    });
-
-    let mut module = HirModule {
+    let module = HirModule {
         items,
-        produced_value_facts: HashMap::new(),
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
-        entry_declaration,
-        caller_visible_param_projections: ctx.caller_visible_param_projections,
+        entry_exit_plan,
         wire_layouts: Arc::new(type_check_output.wire_layouts.clone()),
         type_classes: ctx.type_classes,
         monomorphisations,
@@ -5948,15 +6143,10 @@ pub fn lower_program_with_mono_cap(
         vec_generic_element_abi: type_check_output.vec_generic_element_abi.clone(),
         record_layouts,
         enum_layouts,
-        machine_instantiations,
         supervisor_child_slots,
         pool_accessor_sites,
         regex_literals: ctx.regex_literals,
     };
-    let occurrence_parents = crate::verify::collect_site_parents(&module);
-    module.produced_value_facts =
-        pending_produced_value_carrier.resolve(&occurrence_parents, &mut ctx.diagnostics);
-    module.produced_value_facts = crate::verify::complete_produced_value_facts(&module);
 
     LowerOutput {
         module,
@@ -5990,6 +6180,7 @@ fn impl_receiver_is(
 fn admit_resource_record_lifecycles(
     items: &[HirItem],
     identity: &hew_types::IdentityView,
+    resource_close_discipline_failures: &HashSet<hew_types::DefId>,
     type_classes: &mut crate::value_class::TypeClassTable,
     diagnostics: &mut Vec<HirDiagnostic>,
 ) {
@@ -5997,7 +6188,8 @@ fn admit_resource_record_lifecycles(
         HirItem::TypeDecl(decl)
             if !decl.is_opaque
                 && decl.marker == ResourceMarker::Resource
-                && decl.variants.is_empty() =>
+                && decl.kind == HirTypeDeclKind::Struct
+                && !resource_close_discipline_failures.contains(&decl.declaration) =>
         {
             Some(decl)
         }
@@ -6288,10 +6480,10 @@ fn admit_opaque_resource_lifecycles(
                 HirDiagnosticKind::OpaqueResourceCloseMismatch {
                     resource_type: candidate.resource_type.clone(),
                     expected_release: candidate.release_symbol.clone(),
-                    detail,
+                    detail: detail.clone(),
                 },
                 decl.span.clone(),
-                "the canonical close does not match the checker-admitted consuming release",
+                format!("the canonical close does not match the checker-admitted consuming release: {detail}"),
             )),
         }
     }
@@ -6325,7 +6517,7 @@ fn admit_declared_opaque_resource_lifecycles(
         }
         _ => None,
     }) {
-        if !decl.variants.is_empty() {
+        if decl.kind == HirTypeDeclKind::Enum {
             // Every sibling rejection under this filter emits a diagnostic;
             // a variant-bearing `#[resource]` opaque declaration has no
             // single-representation lifecycle boundary to admit and must not
@@ -6914,7 +7106,6 @@ fn record_source_modules_for_items(
         let id = match item {
             HirItem::Function(item) => item.id,
             HirItem::TypeDecl(item) => item.id,
-            HirItem::Machine(item) => item.id,
             HirItem::Record(item) => item.id,
             HirItem::Actor(item) => item.id,
             HirItem::Supervisor(item) => item.id,
@@ -6935,7 +7126,10 @@ fn collect_call_sites_in_stmt(
         HirStmtKind::Let(_, Some(e)) | HirStmtKind::Expr(e) | HirStmtKind::Return(Some(e)) => {
             collect_call_sites_in_expr(e, out, trait_out);
         }
-        HirStmtKind::Assign { target, value } => {
+        HirStmtKind::Destructure { value, .. } => {
+            collect_call_sites_in_expr(value, out, trait_out);
+        }
+        HirStmtKind::Assign { target, value, .. } => {
             collect_call_sites_in_expr(target, out, trait_out);
             collect_call_sites_in_expr(value, out, trait_out);
         }
@@ -6943,18 +7137,6 @@ fn collect_call_sites_in_stmt(
         HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
         HirStmtKind::Defer { body, .. } => {
             collect_call_sites_in_expr(body, out, trait_out);
-        }
-        HirStmtKind::LetElse {
-            scrutinee,
-            success_prelude,
-            else_body,
-            ..
-        } => {
-            collect_call_sites_in_expr(scrutinee, out, trait_out);
-            for stmt in success_prelude {
-                collect_call_sites_in_stmt(stmt, out, trait_out);
-            }
-            collect_call_sites_in_block(else_body, out, trait_out);
         }
     }
 }
@@ -6969,6 +7151,13 @@ fn collect_call_sites_in_expr(
     trait_out: &mut Vec<TraitMethodStaticSite>,
 ) {
     match &expr.kind {
+        HirExprKind::BindingRef {
+            name,
+            resolved: ResolvedRef::Item(_),
+        } => {
+            out.push((name.clone(), expr.site));
+        }
+
         HirExprKind::RcIntrinsic {
             receiver, value, ..
         } => {
@@ -6976,7 +7165,7 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(operand, out, trait_out);
             }
         }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             // Record the site if callee is a direct BindingRef name.
             if let HirExprKind::BindingRef { name, .. } = &callee.kind {
                 out.push((name.clone(), expr.site));
@@ -6991,7 +7180,8 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(arg, out, trait_out);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::ResolvedImplCall { receiver, args, .. }
@@ -7004,7 +7194,7 @@ fn collect_call_sites_in_expr(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_call_sites_in_expr(conn, out, trait_out);
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             collect_call_sites_in_expr(child, out, trait_out);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -7071,13 +7261,14 @@ fn collect_call_sites_in_expr(
         HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
             collect_call_sites_in_expr(operand, out, trait_out);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_call_sites_in_expr(value, out, trait_out);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_call_sites_in_expr(elem, out, trait_out);
             }
@@ -7110,16 +7301,22 @@ fn collect_call_sites_in_expr(
             collect_call_sites_in_expr(object, out, trait_out);
         }
         HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::Loop { body, .. } => {
             collect_call_sites_in_block(body, out, trait_out);
+        }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            collect_call_sites_in_expr(scope, out, trait_out);
+            collect_call_sites_in_expr(handler, out, trait_out);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_call_sites_in_expr(duration, out, trait_out);
             collect_call_sites_in_block(body, out, trait_out);
         }
         HirExprKind::TupleIndex { tuple, .. } => collect_call_sites_in_expr(tuple, out, trait_out),
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             collect_call_sites_in_expr(container, out, trait_out);
             collect_call_sites_in_expr(index, out, trait_out);
         }
@@ -7167,51 +7364,14 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_call_sites_in_expr(scrutinee, out, trait_out);
-            collect_call_sites_in_block(body, out, trait_out);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_call_sites_in_expr(scrutinee, out, trait_out);
-            collect_call_sites_in_block(body, out, trait_out);
-            if let Some(eb) = else_body {
-                collect_call_sites_in_block(eb, out, trait_out);
-            }
-        }
         HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 collect_call_sites_in_expr(value, out, trait_out);
             }
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_call_sites_in_expr(receiver, out, trait_out);
-            collect_call_sites_in_expr(arg, out, trait_out);
-        }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, e) in fields {
-                collect_call_sites_in_expr(e, out, trait_out);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        }
-        | HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            collect_call_sites_in_expr(receiver, out, trait_out);
-            collect_call_sites_in_expr(event, out, trait_out);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -7234,11 +7394,8 @@ fn collect_call_sites_in_expr(
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_call_sites_in_expr(stream, out, trait_out);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_call_sites_in_expr(actor, out, trait_out);
-                        for a in args {
-                            collect_call_sites_in_expr(a, out, trait_out);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        collect_call_sites_in_expr(call, out, trait_out);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_call_sites_in_expr(task, out, trait_out);
@@ -7253,22 +7410,11 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(&arm.body, out, trait_out);
             }
         }
-        HirExprKind::Join(join) => {
-            for branch in &join.branches {
-                collect_call_sites_in_expr(&branch.actor, out, trait_out);
-                for a in &branch.args {
-                    collect_call_sites_in_expr(a, out, trait_out);
-                }
-            }
-        }
         // Leaf variants: no sub-expressions, so no call sites to collect.
         HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::AwaitTask { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
@@ -7312,15 +7458,22 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
         }
         ResolvedTy::Array(elem, n) => ResolvedTy::Array(Box::new(substitute_ty(elem, subst)), *n),
         ResolvedTy::Slice(elem) => ResolvedTy::Slice(Box::new(substitute_ty(elem, subst))),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities: *capabilities,
             params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
             ret: Box::new(substitute_ty(ret, subst)),
         },
         ResolvedTy::Closure {
+            capabilities,
             params,
             ret,
             captures,
         } => ResolvedTy::Closure {
+            capabilities: *capabilities,
             params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
             ret: Box::new(substitute_ty(ret, subst)),
             captures: captures.iter().map(|c| substitute_ty(c, subst)).collect(),
@@ -7384,7 +7537,7 @@ fn contains_abstract_symbol(
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             contains_abstract_symbol(elem, fn_info)
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             params.iter().any(|p| contains_abstract_symbol(p, fn_info))
                 || contains_abstract_symbol(ret, fn_info)
         }
@@ -7392,6 +7545,7 @@ fn contains_abstract_symbol(
             params,
             ret,
             captures,
+            ..
         } => {
             params.iter().any(|p| contains_abstract_symbol(p, fn_info))
                 || contains_abstract_symbol(ret, fn_info)
@@ -7419,26 +7573,6 @@ fn contains_abstract_symbol(
     }
 }
 
-/// The syntactic position of an expression being lowered, as it bears on
-/// `await` legality (TI-4). The position is set on `LowerCtx` immediately
-/// before lowering an expression and consumed atomically at `lower_expr`
-/// entry, so recursive sub-expression lowering always sees [`Self::Other`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AwaitPosition {
-    /// Any position where `await` is NOT specially admitted: function
-    /// arguments, binary operands, return values, block tails, etc. A task
-    /// `await` here trips `AwaitOutOfPosition`.
-    Other,
-    /// The direct expression of a `Stmt::Expression` — the statement-expression
-    /// position inside a `scope{}` body where a unit/value `await t` is legal.
-    Statement,
-    /// The value of a `let` binding that the `Stmt::Let` path validated as a
-    /// bindable value-returning task await (`let x = await t`, `T != ()`). The
-    /// child's `T` is read on the resume edge; admitting the await here does
-    /// NOT admit it in arg / return / operand positions.
-    BindableValueLet,
-}
-
 type TraitMethodBindingKey = (Option<String>, u32, String, String);
 
 #[derive(Debug)]
@@ -7447,6 +7581,9 @@ struct LowerCtx {
     scopes: Vec<ScopeMap>,
     /// Maps function name → pre-allocated `ItemId` + return type + param types.
     fn_registry: HashMap<String, FnEntry>,
+    /// Item-keyed linker-symbol substitutions for source callables whose
+    /// surface spelling is reserved by a generated process adapter.
+    fn_symbol_overrides: HashMap<ItemId, String>,
     /// Source-declared `extern` symbols. A resource argument crosses one of
     /// these bodyless ABI boundaries by borrow only when the generated
     /// per-symbol/per-parameter ownership contract says so; ordinary Hew
@@ -7492,8 +7629,8 @@ struct LowerCtx {
     /// carry no `#[resource]` marker so the absence of their inherent
     /// impls in this map is harmless).
     impl_close_methods: HashMap<String, ImplCloseSignature>,
-    /// Self-type names that declare at least one `consuming self` method in a
-    /// sibling inherent-impl block (`impl T { fn m(consuming self) { … } }`).
+    /// Self-type names that declare at least one `consume self` method in a
+    /// sibling inherent-impl block (`impl T { fn m(consume self) { … } }`).
     ///
     /// A `#[linear]` type's required consuming method may live here instead of
     /// in the type body — the inherent-impl form is the one that actually lowers
@@ -7502,10 +7639,19 @@ struct LowerCtx {
     /// so `LinearNoConsumingMethods` only fires when NEITHER a type-body nor a
     /// sibling-inherent consuming method exists.
     impl_consuming_methods: HashSet<String>,
+    /// Resource declarations for which `check_resource_close_discipline`
+    /// already pushed a user-facing close-discipline diagnostic
+    /// (`ResourceMissingClose`, `ResourceCloseMustReturnUnit` or
+    /// `ResourceCloseSourceUnsupported`). `admit_resource_record_lifecycles`
+    /// consults this set so it never re-derives the same missing-or-invalid
+    /// close fact as a `CheckerBoundaryViolation`: that diagnostic means an
+    /// HIR-internal invariant broke on a program this pass already believes
+    /// is sound, and a declaration already reported here is known unsound,
+    /// not an invariant violation.
+    resource_close_discipline_failures: HashSet<hew_types::DefId>,
     diagnostics: Vec<HirDiagnostic>,
-    /// Checker-owned function and method signatures keyed by canonical function
-    /// symbol. Var-self write-back lowering reads `requires_mutable_receiver`
-    /// from this table instead of re-deriving it from syntax at call sites.
+    /// Checker-owned function and method signatures used for iterator dispatch
+    /// and concrete call instantiation.
     fn_sigs: HashMap<String, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
@@ -7547,15 +7693,13 @@ struct LowerCtx {
     /// position. These call sites borrow the original owner into the exact
     /// receiver/result alias instead of moving it away.
     method_call_preserves_receiver_identity: HashSet<SpanKey>,
-    /// Checker-owned integer opt-out method lowering decisions keyed by the
-    /// method-call expression span. HIR checks this before generic method-call
-    /// rewrites so numeric methods lower to a dedicated node without any
-    /// downstream method-name matching.
-    numeric_method_lowerings: HashMap<SpanKey, NumericMethodLowering>,
     /// Checker-owned width-conversion method lowering decisions keyed by the
-    /// method-call expression span. HIR checks this before `numeric_method_lowerings`
-    /// and `method_call_rewrites` to emit `NumericCast` (wrapping) or
-    /// `SaturatingWidthCast` (saturating) from a zero-arg method call.
+    /// method-call expression span. HIR checks this before `method_call_rewrites`
+    /// to emit `NumericCast` (wrapping) or `SaturatingWidthCast` (saturating)
+    /// from a zero-arg method call. Integer opt-out arithmetic
+    /// (`.wrapping_*`/`.checked_*`/`.saturating_*`) is an ordinary
+    /// `method_call_rewrites` entry (`RuntimeCallFamily::IntArith`), not a
+    /// separate side table.
     width_cast_lowerings: HashMap<SpanKey, hew_types::WidthCastLowering>,
     /// Checker-owned exact numeric conversion decisions keyed by method-call
     /// expression span. HIR emits `TryWidthCast` directly from this table.
@@ -7564,18 +7708,11 @@ struct LowerCtx {
     /// HIR consumes these to choose `ActorSend` / `ActorAsk` without reclassifying
     /// receiver types.
     actor_method_dispatch: HashMap<SpanKey, ActorMethodKind>,
+    actor_delivery_calls: HashMap<SpanKey, hew_types::actor_delivery::ActorDeliveryCall>,
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
     machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
-    /// Checker-owned `await conn.read()` suspending-read sites keyed by the inner
-    /// method-call span (NEW-1). `true` = `read_string` (string-wrapped), `false`
-    /// = raw `read`. HIR's `Expr::Await` arm consumes this to emit `ConnAwaitRead`.
-    conn_await_reads: HashMap<SpanKey, bool>,
-    /// Checker-owned `await listener.accept()` suspending-accept sites keyed by
-    /// the inner method-call span (NEW-2). HIR's `Expr::Await` arm consumes this
-    /// to emit `ListenerAwaitAccept` — the sibling of `conn_await_reads`.
-    listener_await_accepts: std::collections::HashSet<SpanKey>,
     /// Checker-owned function-tail Ok-coercion sites keyed by the tail
     /// expression's span. Each entry marks a `Result<Ok, Err>`-returning
     /// function tail whose value is the `Ok` payload; `lower_expr` wraps the
@@ -7583,6 +7720,12 @@ struct LowerCtx {
     /// constructor so it returns the declared `Result`. See
     /// `TypeCheckOutput::tail_ok_coercions`.
     tail_ok_coercions: std::collections::HashSet<SpanKey>,
+    result_return_coercions: HashMap<SpanKey, hew_types::ResultReturnKind>,
+    recovery_kinds: HashMap<SpanKey, hew_types::check::RecoveryKind>,
+    checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
+    select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
+    checked_fork_transfers: HashMap<SpanKey, hew_types::check::effects::ForkTransferFact>,
+    fork_call_inputs: Option<fork::ForkCallInputs>,
     /// Checker-owned method-call receiver classifications. These facts prevent
     /// HIR from reclassifying a lexical spelling as a module and fail closed
     /// when a classified module or actor call lacks its dispatch fact.
@@ -7627,34 +7770,20 @@ struct LowerCtx {
     /// type instance. HIR projects this fact but does not derive a second
     /// ownership answer from type shape.
     type_facts: std::collections::BTreeMap<hew_types::TypeInstanceKey, hew_types::TypeFacts>,
+    /// Checked declaration metadata supplies representation facts that the
+    /// source annotation and `Ty::Named` expression spelling cannot carry.
+    type_declarations: std::collections::BTreeMap<String, hew_types::value_class::DeclaredType>,
     interpolation_display_types: HashMap<SpanKey, Ty>,
     /// `==`/`!=`/`<`/`<=`/`>`/`>=` binary expressions dispatching to a user
     /// trait impl instead of the structural default (D340). Consulted at
     /// `Expr::Binary` lowering; see [`UserComparisonDispatch`].
     user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
-    /// Checker result-ownership rows waiting to be projected from their
-    /// source spans onto stable HIR expression sites.
-    produced_value_ownership: HashMap<SpanKey, ProducedValueFact>,
-    produced_value_dependencies: HashMap<SpanKey, ProducedValueDependency>,
-    /// Every source expression lowered through `lower_expr`, keyed exactly as
-    /// the checker keyed its result row.  Kept even where no row exists so a
-    /// receiver-identity row can resolve its receiver structurally.
-    produced_value_source_sites: HashMap<SpanKey, Vec<SiteId>>,
-    /// Site-keyed rows awaiting receiver-span resolution at module finish.
-    produced_value_fact_sites: HashMap<SiteId, HirProducedValueFact>,
-    /// Facts for compiler-generated expression roots that have no checker span
-    /// identity of their own. Kept disjoint from source-keyed facts until the
-    /// occurrence graph has resolved so a wrapper can never consume its
-    /// authored child's row merely because both share a source span.
-    generated_produced_value_facts: HashMap<SiteId, HirProducedValueFact>,
-    /// The checker key for each pending site fact.  This is retained until all
-    /// expressions have lowered, at which point every dependency edge can be
-    /// translated to its exact `SiteId` without relying on traversal order.
-    produced_value_fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
-    /// Depth while lowering compiler-synthesised AST whose root has a real
-    /// checker side-table row but whose cloned operands are not new checker
-    /// occurrences. The root is recorded explicitly after leaving this mode.
-    suppress_produced_value_recording_depth: usize,
+    numeric_operand_coercions: HashMap<SpanKey, Ty>,
+    /// Declared C-boundary signatures for the `#[extern_symbol]` methods every
+    /// checked module dispatched, accumulated across passes. Each becomes one
+    /// `HirItem::ExternFn`, so an extern method and an `extern` block reach
+    /// later stages through the same declaration shape.
+    extern_method_signatures: HashMap<(hew_types::DefId, String), hew_types::ExternMethodSignature>,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from
@@ -7698,11 +7827,6 @@ struct LowerCtx {
     /// Used by `Expr::PostfixTry` to synthesize `return Err(e)` / `return None`
     /// with the enclosing body's return type rather than the scrutinee type.
     current_return_type: Option<ResolvedTy>,
-    /// The syntactic position of the expression about to be lowered, as it
-    /// bears on `await` legality (TI-4). Set immediately before lowering an
-    /// expression and consumed by `lower_expr` via `mem::replace(…, Other)` at
-    /// entry, so every recursive (sub-expression) call sees `Other`.
-    await_position: AwaitPosition,
     /// `Some((let_id, let_name))` while lowering the body of an actor-lambda
     /// that is the value of `let <let_name> = actor |..| { .. }`. The
     /// capture-strength classifier inside the body walk compares each
@@ -7718,6 +7842,20 @@ struct LowerCtx {
     /// and the enclosing scope are both in hand, so lowering consumes the
     /// answer rather than re-deriving it from a mirror of the field names.
     actor_self_state_fields: HashSet<SpanKey>,
+    /// Type-annotation spans of state fields that `init` initializes (D447).
+    actor_deferred_field_decls: HashSet<SpanKey>,
+    /// Assignment target spans that are a deferred field's first store (D447).
+    actor_init_first_stores: HashSet<SpanKey>,
+    /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
+    borrowed_element_for_loops: HashSet<SpanKey>,
+    /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
+    borrowed_element_index_reads: HashSet<SpanKey>,
+    /// `get` sites whose element has no semantic clone: `Some` carries a loan
+    /// of the slot the collection still owns.
+    borrowed_element_option_reads: HashSet<SpanKey>,
+    /// `VecIter` cursor sites whose element has no semantic clone: `next()`
+    /// moves each element out instead of copying it.
+    owning_take_vec_cursors: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///
@@ -7784,15 +7922,22 @@ struct LowerCtx {
     /// the lowered HIR carries `protocol_descriptor: None` and downstream
     /// MIR fails closed when it tries to derive a `msg_id`.
     actor_protocol_descriptors: HashMap<String, hew_types::ActorProtocolDescriptor>,
+    /// Resolver-minted identities for each `actor |msg| { .. }` expression,
+    /// keyed by its span. See `TypeCheckOutput::lambda_actor_declarations`.
+    lambda_actor_declarations: HashMap<SpanKey, hew_types::actor_protocol::LambdaActorIdentity>,
+    /// Actor declarations synthesized from lambda actors during body
+    /// lowering, appended to the module's items once lowering finishes.
+    pending_lambda_actors: Vec<HirActorDecl>,
     /// Names of every `TypeDefKind::Actor` declaration in the program, lifted
     /// from `TypeCheckOutput.type_defs`. Consumed by `lower_actor` to recognise
     /// an actor-state field whose annotated type is a bare actor name (e.g.
-    /// `let out: W;` where `W` is an actor): such a field holds an actor handle
-    /// (a `LocalPid`), never the actor's state by value, so its lowered type is
-    /// canonicalised to `LocalPid<W>`. That canonical form is the one the MIR
-    /// state-clone classifier and codegen already lower (bit-copyable Pid),
-    /// matching `spawn W`'s `LocalPid<W>` result. Without it the bare `W` field
-    /// reaches MIR as an unresolvable nested user record and fails closed.
+    /// `let out: W;` where `W` is an actor): such a field holds an actor
+    /// handle, never the actor's state by value, so its lowered type is
+    /// canonicalised to `W`'s own actor-handle type. That canonical form is
+    /// the one the MIR state-clone classifier and codegen already lower
+    /// (bit-copyable pid), matching `spawn W`'s handle result. Without it
+    /// the bare `W` field reaches MIR as an unresolvable nested user record
+    /// and fails closed.
     actor_type_names: HashSet<String>,
     /// Distinct concrete instantiations of generic top-level user fns,
     /// accumulated as `Expr::Call` lowering walks the program. Drained
@@ -7931,42 +8076,6 @@ struct LowerCtx {
     /// allocated `literal_id`. Lookups via `alloc_regex_literal` avoid
     /// scanning the `Vec` linearly.
     regex_literal_index: HashMap<String, u32>,
-    /// Event names of the machine currently being lowered, set only while
-    /// lowering a machine body (transition bodies, entry/exit blocks). The
-    /// index position corresponds to `HirMachineDecl::events` ordering so
-    /// `Expr::MachineEmit` can resolve `event_idx` by name lookup.
-    ///
-    /// `None` outside of any machine body; `Some(names)` inside. Restored
-    /// via `mem::replace` at the end of each machine-body lowering.
-    current_machine_events: Option<Vec<String>>,
-    /// Name of the machine currently being lowered, set at the same boundaries
-    /// as `current_machine_events`. Used by `MachineVariantCtor` and
-    /// `MachineFieldAccess` resolution to carry the machine type name.
-    current_machine_name: Option<String>,
-    /// Exact generic self type of the machine currently being lowered.
-    ///
-    /// Machine-state constructor sites are not checker-typed expression sites:
-    /// HIR derives them from the enclosing declaration.  Keeping this symbolic
-    /// `Machine<T, ..>` type in the context (rather than reconstructing a bare
-    /// `Machine`) is what lets MIR's concrete machine-mono substitution retain
-    /// the registered instance identity through a generated step body.
-    current_machine_self_ty: Option<ResolvedTy>,
-    /// Ordered state descriptors for the machine currently being lowered.
-    /// Each entry is `(state_name, fields)` in declaration order, matching
-    /// `HirMachineDecl.states` indices. Used by bare state-name resolution
-    /// (`MachineVariantCtor`) and `self.field` resolution (`MachineFieldAccess`).
-    ///
-    /// `None` outside a machine body. Set alongside `current_machine_events`.
-    current_machine_states: Option<Vec<(String, Vec<HirField>)>>,
-    current_machine_transition_event: Option<(usize, Vec<HirField>)>,
-    /// Source-state index for the transition currently being lowered.
-    /// `Some(idx)` inside a transition body; `None` inside entry/exit blocks
-    /// (where `self.field` reads are not valid surface syntax today).
-    ///
-    /// Used by `MachineFieldAccess` to identify which variant's payload fields
-    /// are in scope. Set per-transition inside `lower_machine`; restored after
-    /// each `lower_machine_expr_filtered` call.
-    current_machine_source_state: Option<usize>,
     /// Module-scope registry of tagged-union unit constructors, keyed by the
     /// surface identifier the user writes at the construction site. Covers
     /// three surface forms that share one tagged-union substrate:
@@ -8001,7 +8110,7 @@ struct LowerCtx {
     /// Populates `ConstEnv` for subsequent const initializers; values are not
     /// used for ordinary expression lowering, which continues to resolve const
     /// references through `const_registry`.
-    folded_integer_consts: HashMap<String, i64>,
+    folded_integer_consts: HashMap<String, i128>,
     /// Per-enum variant descriptors keyed by the enum's type name. Populated
     /// between the type-decl second pass and the source-order third pass so
     /// `Expr::Call` (tuple variant ctors like `Shape::Line(5)`) and
@@ -8149,11 +8258,6 @@ struct LowerCtx {
     /// rendered against the root source ONLY for a proven-root function. A
     /// positive record — never inferred by absence-from-a-foreign-set.
     root_item_ids: HashSet<ItemId>,
-    /// Checker-proven caller-visible parameter projections translated from
-    /// declaration spans to stable `(ItemId, parameter index)` identities.
-    caller_visible_param_projections: HashSet<(ItemId, usize)>,
-    /// Declaration-span authority consumed while lowering each function.
-    caller_visible_param_spans: HashSet<SpanKey>,
     /// True while lowering items that are INJECTED at root `current_module_idx`
     /// but do NOT index the user's root source — currently the `std/builtins.hew`
     /// callable impls (and the Vec iterator harness), which are lowered
@@ -8204,6 +8308,21 @@ struct LowerCtx {
     /// `closableerr.CloseError` still resolves to
     /// `hew.closableerr.CloseError` without a leaf-name retry.
     module_import_bindings: HashMap<(Option<String>, u32, String), String>,
+    /// Exact owner identities for the bare constant bindings an import
+    /// published, keyed by the file that wrote the import. A file the root
+    /// pulled in with `import "sub.hew";` is spliced into `program.items`, so
+    /// its own `import lib.{ LIB_K };` never reaches HIR as an item; this fact
+    /// is how a bare `LIB_K` in that file resolves to `lib.LIB_K` under the
+    /// same scope the checker admitted it in.
+    published_bare_const_owners:
+        HashMap<(Option<String>, u32, String), std::collections::BTreeSet<String>>,
+    /// Exact owner identities for the bare function bindings an import
+    /// published, keyed by the file that wrote the import. The companion of
+    /// `published_bare_const_owners`; see `imported_rewrite_symbol`.
+    import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
+    /// Root-scope value bindings the program itself declares. A root
+    /// declaration outranks a name an import published into the root scope.
+    root_value_bindings: HashSet<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -8255,258 +8374,6 @@ fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering>
     aliases
 }
 
-struct PendingProducedValueCarrier {
-    facts: HashMap<SiteId, HirProducedValueFact>,
-    generated_facts: HashMap<SiteId, HirProducedValueFact>,
-    fact_keys: HashMap<SiteId, (SpanKey, Option<ProducedValueDependency>)>,
-    source_sites: HashMap<SpanKey, Vec<SiteId>>,
-    ownership: HashMap<SpanKey, ProducedValueFact>,
-}
-
-impl PendingProducedValueCarrier {
-    fn join_source_sites(
-        &self,
-        key: &SpanKey,
-        result: SiteId,
-        parents: &HashMap<SiteId, Option<SiteId>>,
-    ) -> Result<Vec<SiteId>, String> {
-        let Some(candidates) = self.source_sites.get(key) else {
-            return Err(format!("source key {key:?} lowered to no HIR site"));
-        };
-        let descendants: Vec<SiteId> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != result)
-            .filter(|candidate| {
-                let mut cursor = parents.get(candidate).copied().flatten();
-                while let Some(parent) = cursor {
-                    if parent == result {
-                        return true;
-                    }
-                    cursor = parents.get(&parent).copied().flatten();
-                }
-                false
-            })
-            .collect();
-        if !descendants.is_empty() {
-            // An or-pattern expands one checker-authored arm body into several
-            // HIR branches. A Join must retain every structural producer;
-            // singular relations continue to reject this ambiguity.
-            return Ok(descendants);
-        }
-        let parent = parents.get(&result).copied().flatten();
-        let siblings: Vec<SiteId> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != result)
-            .filter(|candidate| parents.get(candidate).copied().flatten() == parent)
-            .collect();
-        if siblings.is_empty() {
-            Err(format!(
-                "source key {key:?} has no candidate in result occurrence subtree or branch {result}"
-            ))
-        } else {
-            Ok(siblings)
-        }
-    }
-
-    fn source_site(
-        &self,
-        key: &SpanKey,
-        result: SiteId,
-        parents: &HashMap<SiteId, Option<SiteId>>,
-    ) -> Result<SiteId, String> {
-        let Some(candidates) = self.source_sites.get(key) else {
-            return Err(format!("source key {key:?} lowered to no HIR site"));
-        };
-        let descendants: Vec<SiteId> = candidates
-            .iter()
-            .copied()
-            .filter(|candidate| *candidate != result)
-            .filter(|candidate| {
-                let mut cursor = parents.get(candidate).copied().flatten();
-                while let Some(parent) = cursor {
-                    if parent == result {
-                        return true;
-                    }
-                    cursor = parents.get(&parent).copied().flatten();
-                }
-                false
-            })
-            .collect();
-        match descendants.as_slice() {
-            [site] => Ok(*site),
-            [] => {
-                // A few HIR desugarings (notably actor ask/await) consume the
-                // parsed child into a specialised node rather than retaining
-                // it as a HIR child.  The two occurrences remain siblings in
-                // the same cloned parent branch; admit only a unique sibling,
-                // never a global candidate or a self-edge.
-                let parent = parents.get(&result).copied().flatten();
-                let siblings: Vec<SiteId> = candidates
-                    .iter()
-                    .copied()
-                    .filter(|candidate| *candidate != result)
-                    .filter(|candidate| parents.get(candidate).copied().flatten() == parent)
-                    .collect();
-                match siblings.as_slice() {
-                    [site] => Ok(*site),
-                    [] => Err(format!(
-                        "source key {key:?} has no candidate in result occurrence subtree or branch {result}"
-                    )),
-                    sites => Err(format!(
-                        "source key {key:?} has ambiguous candidates in result occurrence branch {result}: {sites:?}"
-                    )),
-                }
-            }
-            sites => Err(format!(
-                "source key {key:?} has ambiguous candidates in result occurrence subtree {result}: {sites:?}"
-            )),
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one fail-closed pass resolves and diagnoses every carrier relation"
-    )]
-    fn resolve(
-        mut self,
-        parents: &HashMap<SiteId, Option<SiteId>>,
-        diagnostics: &mut Vec<HirDiagnostic>,
-    ) -> HashMap<SiteId, HirProducedValueFact> {
-        let sites: Vec<SiteId> = self.facts.keys().copied().collect();
-        for site in sites {
-            let Some((key, dependency)) = self.fact_keys.get(&site).cloned() else {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "produced value dependency".to_string(),
-                        reason: format!("HIR site {site} lost its checker source key"),
-                    },
-                    0..0,
-                    "produced-value fact must retain its checker source identity",
-                ));
-                if let Some(fact) = self.facts.get_mut(&site) {
-                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
-                }
-                continue;
-            };
-            if !parents.contains_key(&site) {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "produced value occurrence".to_string(),
-                        reason: format!(
-                            "checker key {key:?} projected to HIR site {site}, but a later rewrite removed that occurrence"
-                        ),
-                    },
-                    key.start..key.end,
-                    "specialised HIR rewrites must preserve consumed checker children as source anchors",
-                ));
-            }
-            let edge = |source: &SpanKey| self.source_site(source, site, parents);
-            let relation = match dependency.as_ref() {
-                Some(ProducedValueDependency::Leaf) => {
-                    Ok(crate::node::HirProducedValueRelation::Leaf)
-                }
-                Some(ProducedValueDependency::Identity(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::Identity)
-                }
-                Some(ProducedValueDependency::Subsumes(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::Subsumes)
-                }
-                Some(ProducedValueDependency::MoveOut(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::MoveOut)
-                }
-                Some(ProducedValueDependency::Projection(source)) => {
-                    edge(source).map(crate::node::HirProducedValueRelation::Projection)
-                }
-                Some(ProducedValueDependency::Join(sources)) => {
-                    let mut joined = Vec::new();
-                    let mut seen = HashSet::new();
-                    let mut error = None;
-                    for source in sources {
-                        match self.join_source_sites(source, site, parents) {
-                            Ok(source_sites) => {
-                                for source_site in source_sites {
-                                    if seen.insert(source_site) {
-                                        joined.push(source_site);
-                                    }
-                                }
-                            }
-                            Err(reason) => {
-                                error = Some(reason);
-                                break;
-                            }
-                        }
-                    }
-                    error.map_or_else(
-                        || Ok(crate::node::HirProducedValueRelation::Join(joined)),
-                        Err,
-                    )
-                }
-                None => {
-                    Err("checker output omitted this expression's closed relation row".to_string())
-                }
-            };
-            let receiver = self
-                .ownership
-                .get(&key)
-                .and_then(|source| source.receiver_span.as_ref())
-                .and_then(|source| edge(source).ok());
-            let fact = self
-                .facts
-                .get_mut(&site)
-                .expect("site collected from facts");
-            match relation {
-                Ok(relation) => fact.relation = relation,
-                Err(reason) => {
-                    diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "produced value dependency".to_string(),
-                            reason,
-                        },
-                        0..0,
-                        "produced-value dependency must resolve within its HIR occurrence subtree",
-                    ));
-                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
-                    fact.relation = crate::node::HirProducedValueRelation::Leaf;
-                }
-            }
-            fact.receiver = receiver;
-            if matches!(
-                fact.ownership,
-                hew_types::ProducedValueOwnership::ReceiverIdentity
-            ) && fact.receiver.is_none()
-            {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "produced value receiver identity".to_string(),
-                        reason: "receiver source did not resolve in result occurrence subtree"
-                            .to_string(),
-                    },
-                    0..0,
-                    "receiver identity must carry one structural receiver occurrence",
-                ));
-            }
-        }
-        for (site, fact) in self.generated_facts {
-            if self.facts.insert(site, fact).is_some() {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "generated produced value identity".to_string(),
-                        reason: format!("generated HIR site {site} collides with a source fact"),
-                    },
-                    0..0,
-                    "generated and authored produced-value facts must occupy disjoint sites",
-                ));
-                if let Some(fact) = self.facts.get_mut(&site) {
-                    fact.ownership = hew_types::ProducedValueOwnership::Unknown;
-                }
-            }
-        }
-        self.facts
-    }
-}
-
 /// Whether `ty` transitively carries a value whose SOLE ownership crosses an
 /// actor message boundary: a substrate handle (the builtin list owned by
 /// [`hew_types::BuiltinType::transfers_ownership_across_actor_boundary`],
@@ -8517,7 +8384,7 @@ impl PendingProducedValueCarrier {
 /// name, and only for `builtin: None` types — a user `record Sender` keeps
 /// ordinary copy treatment while the real builtin handle transfers.
 ///
-/// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+/// Actor references (`ActorHandle`, `BoxedActor`, `ActorFn`, `MonitorRef`)
 /// carry the `Resource` MARKER for drop elaboration but are shareable
 /// addresses; sending a pid must not consume the sender's own handle, so they
 /// are excluded on both sides.
@@ -8619,7 +8486,7 @@ fn transfers_ownership_to_mailbox_guarded(
 impl LowerCtx {
     #[allow(
         clippy::too_many_lines,
-        reason = "initializes the complete checker-to-HIR ownership fact carrier atomically"
+        reason = "initializes the complete checker-to-HIR typed context atomically"
     )]
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
@@ -8631,6 +8498,7 @@ impl LowerCtx {
             ids: IdGen::default(),
             scopes: Vec::new(),
             fn_registry: HashMap::new(),
+            fn_symbol_overrides: HashMap::new(),
             extern_fn_names: HashSet::new(),
             imported_fn_rewrites: None,
             imported_actor_rewrites: None,
@@ -8639,6 +8507,7 @@ impl LowerCtx {
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
             impl_close_methods: HashMap::new(),
             impl_consuming_methods: HashSet::new(),
+            resource_close_discipline_failures: HashSet::new(),
             diagnostics: Vec::new(),
             // Resolution spellings remain a checker lookup index. Declaration
             // identity comes only from `tc_output.identity`; HIR must never
@@ -8655,29 +8524,29 @@ impl LowerCtx {
             method_call_preserves_receiver_identity: tc_output
                 .method_call_preserves_receiver_identity
                 .clone(),
-            numeric_method_lowerings: tc_output.numeric_method_lowerings.clone(),
             width_cast_lowerings: tc_output.width_cast_lowerings.clone(),
             try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
+            actor_delivery_calls: tc_output.actor_delivery_calls.clone(),
             machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
-            conn_await_reads: tc_output.conn_await_reads.clone(),
-            listener_await_accepts: tc_output.listener_await_accepts.clone(),
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
+            result_return_coercions: tc_output.result_return_coercions.clone(),
+            recovery_kinds: tc_output.recovery_kinds.clone(),
+            checked_call_effects: tc_output.suspension_effects.calls.clone(),
+            select_sources: tc_output.select_sources.clone(),
+            checked_fork_transfers: tc_output.suspension_effects.fork_transfers.clone(),
+            fork_call_inputs: None,
             method_call_receiver_kinds: tc_output.method_call_receiver_kinds.clone(),
             dyn_trait_coercions: tc_output.dyn_trait_coercions.clone(),
             dyn_trait_method_calls: tc_output.dyn_trait_method_calls.clone(),
             resolved_calls: tc_output.resolved_calls.clone(),
             expr_types: tc_output.expr_types.clone(),
             type_facts: tc_output.type_facts.clone(),
+            type_declarations: tc_output.type_fact_context.declarations().clone(),
             interpolation_display_types: tc_output.interpolation_display_types.clone(),
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
-            produced_value_ownership: tc_output.produced_value_ownership.clone(),
-            produced_value_dependencies: tc_output.produced_value_dependencies.clone(),
-            produced_value_source_sites: HashMap::new(),
-            produced_value_fact_sites: HashMap::new(),
-            generated_produced_value_facts: HashMap::new(),
-            produced_value_fact_keys: HashMap::new(),
-            suppress_produced_value_recording_depth: 0,
+            numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
+            extern_method_signatures: tc_output.extern_method_signatures.clone(),
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
@@ -8686,9 +8555,14 @@ impl LowerCtx {
             scope_depth: 0,
             current_scope_id: ScopeId(0),
             current_return_type: None,
-            await_position: AwaitPosition::Other,
             current_actor_self: None,
             actor_self_state_fields: tc_output.actor_self_state_fields.clone(),
+            actor_deferred_field_decls: tc_output.actor_deferred_field_decls.clone(),
+            actor_init_first_stores: tc_output.actor_init_first_stores.clone(),
+            borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
+            borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
+            owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
+            borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
@@ -8696,10 +8570,20 @@ impl LowerCtx {
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
+            lambda_actor_declarations: tc_output.lambda_actor_declarations.clone(),
+            pending_lambda_actors: Vec::new(),
+            // A supervisor is addressed by its own type exactly as an actor is,
+            // so both declaration kinds name an actor handle.
             actor_type_names: tc_output
                 .type_defs
                 .iter()
-                .filter(|(_, td)| td.kind == hew_types::check::TypeDefKind::Actor)
+                .filter(|(_, td)| {
+                    matches!(
+                        td.kind,
+                        hew_types::check::TypeDefKind::Actor
+                            | hew_types::check::TypeDefKind::Supervisor
+                    )
+                })
                 .map(|(name, _)| name.clone())
                 .collect(),
             mono_registry: MonoRegistry::with_cap(mono_cap),
@@ -8723,12 +8607,6 @@ impl LowerCtx {
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),
             regex_literal_index: HashMap::new(),
-            current_machine_events: None,
-            current_machine_name: None,
-            current_machine_self_ty: None,
-            current_machine_states: None,
-            current_machine_transition_event: None,
-            current_machine_source_state: None,
             machine_ctor_registry: HashMap::new(),
             const_registry: HashMap::new(),
             folded_integer_consts: HashMap::new(),
@@ -8751,13 +8629,25 @@ impl LowerCtx {
             root_visible_source_type_short_names: HashSet::new(),
             file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
-            canonical_std_source_type_identities: HashSet::new(),
+            // The checker registers both lifecycle owners' declarations at
+            // bootstrap, with or without an import, so their canonical source
+            // identities are known before any module graph is walked. Without
+            // them a prelude-only spelling such as `CrashInfo` resolves to a
+            // canonical name with no representation authority, and its
+            // declaration facts are then looked up under a name nothing
+            // declares.
+            canonical_std_source_type_identities: hew_types::SOURCE_OWNED_LIFECYCLE_OWNERS
+                .iter()
+                .flat_map(|owner| {
+                    owner.declares.iter().map(|builtin| {
+                        format!("{}.{}", owner.canonical_path, builtin.canonical_name())
+                    })
+                })
+                .collect(),
             checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
             current_module_idx: 0,
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
-            caller_visible_param_projections: HashSet::new(),
-            caller_visible_param_spans: tc_output.caller_visible_param_projections.clone(),
             lowering_injected_items: false,
             current_module_name: None,
             declaration_module_by_file_index: HashMap::new(),
@@ -8766,6 +8656,9 @@ impl LowerCtx {
             resolving_type_aliases: HashSet::new(),
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
+            published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
+            import_fn_name_aliases: tc_output.import_fn_name_aliases.clone(),
+            root_value_bindings: tc_output.root_value_bindings.clone(),
             identity: tc_output.identity.clone(),
         }
     }
@@ -8815,14 +8708,23 @@ impl LowerCtx {
         tc_output: &TypeCheckOutput,
         f: impl FnOnce(&mut Self) -> T,
     ) -> T {
+        let saved_direct_calls = std::mem::replace(
+            &mut self.direct_call_targets,
+            tc_output.direct_call_targets.clone(),
+        );
+        let saved_numeric_coercions = std::mem::replace(
+            &mut self.numeric_operand_coercions,
+            tc_output.numeric_operand_coercions.clone(),
+        );
+        // Extern-method signatures accumulate: every module's dispatched
+        // declarations must reach the emitted extern items, not just the pass
+        // that happens to run last.
+        self.extern_method_signatures
+            .extend(tc_output.extern_method_signatures.clone());
         let saved = (
             std::mem::replace(
                 &mut self.method_call_rewrites,
                 tc_output.method_call_rewrites.clone(),
-            ),
-            std::mem::replace(
-                &mut self.numeric_method_lowerings,
-                tc_output.numeric_method_lowerings.clone(),
             ),
             std::mem::replace(
                 &mut self.width_cast_lowerings,
@@ -8833,6 +8735,7 @@ impl LowerCtx {
                 tc_output.try_width_cast_lowerings.clone(),
             ),
             std::mem::take(&mut self.actor_method_dispatch),
+            std::mem::take(&mut self.actor_delivery_calls),
             std::mem::take(&mut self.machine_method_dispatch),
             std::mem::take(&mut self.method_call_receiver_kinds),
             std::mem::take(&mut self.dyn_trait_coercions),
@@ -8840,16 +8743,19 @@ impl LowerCtx {
             std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
             std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
             std::mem::replace(
-                &mut self.produced_value_ownership,
-                tc_output.produced_value_ownership.clone(),
-            ),
-            std::mem::replace(
-                &mut self.produced_value_dependencies,
-                tc_output.produced_value_dependencies.clone(),
-            ),
-            std::mem::replace(
                 &mut self.resolved_expr_types,
                 tc_output.resolved_expr_types.clone(),
+            ),
+            std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
+            std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
+            std::mem::replace(
+                &mut self.checked_fork_transfers,
+                tc_output.suspension_effects.fork_transfers.clone(),
+            ),
+            std::mem::take(&mut self.fork_call_inputs),
+            std::mem::replace(
+                &mut self.checked_call_effects,
+                tc_output.suspension_effects.calls.clone(),
             ),
             std::mem::replace(
                 &mut self.record_init_type_args,
@@ -8861,21 +8767,26 @@ impl LowerCtx {
 
         (
             self.method_call_rewrites,
-            self.numeric_method_lowerings,
             self.width_cast_lowerings,
             self.try_width_cast_lowerings,
             self.actor_method_dispatch,
+            self.actor_delivery_calls,
             self.machine_method_dispatch,
             self.method_call_receiver_kinds,
             self.dyn_trait_coercions,
             self.dyn_trait_method_calls,
             self.resolved_calls,
             self.expr_types,
-            self.produced_value_ownership,
-            self.produced_value_dependencies,
             self.resolved_expr_types,
+            self.recovery_kinds,
+            self.select_sources,
+            self.checked_fork_transfers,
+            self.fork_call_inputs,
+            self.checked_call_effects,
             self.record_init_type_args,
         ) = saved;
+        self.direct_call_targets = saved_direct_calls;
+        self.numeric_operand_coercions = saved_numeric_coercions;
 
         result
     }
@@ -9100,7 +9011,7 @@ impl LowerCtx {
     /// before any function body is lowered, so a `Resource` / `Linear` marker
     /// is always available here.
     ///
-    /// Actor references (`LocalPid`, `BoxedActor`, `LambdaPid`, `MonitorRef`)
+    /// Actor references (`ActorHandle`, `BoxedActor`, `ActorFn`, `MonitorRef`)
     /// carry the `Resource` MARKER for drop elaboration but are shareable
     /// addresses, so they are excluded on both sides — sending a pid must not
     /// consume the sender's own handle.
@@ -9224,6 +9135,17 @@ impl LowerCtx {
         let _ = span;
     }
 
+    /// Tag diagnostics raised while lowering a spliced file-import item with
+    /// the file it was written in. The item's spans are that file's byte
+    /// offsets, so an untagged diagnostic renders against the root source and
+    /// points at whatever text happens to share the offset. A root item leaves
+    /// `current_module_name` unset and keeps the root's own attribution.
+    fn tag_spliced_diagnostics(&mut self, start: usize) {
+        if let Some(source_module) = self.current_module_name.clone() {
+            self.tag_diagnostics_since(start, &source_module);
+        }
+    }
+
     fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {
         debug_assert!(start <= self.diagnostics.len());
         for diagnostic in self.diagnostics.iter_mut().skip(start) {
@@ -9294,7 +9216,7 @@ impl LowerCtx {
             ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
                 self.contains_abstract_type_param(elem)
             }
-            ResolvedTy::Function { params, ret } => {
+            ResolvedTy::Function { params, ret, .. } => {
                 params.iter().any(|p| self.contains_abstract_type_param(p))
                     || self.contains_abstract_type_param(ret)
             }
@@ -9302,6 +9224,7 @@ impl LowerCtx {
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 params.iter().any(|p| self.contains_abstract_type_param(p))
                     || self.contains_abstract_type_param(ret)
@@ -9336,10 +9259,57 @@ impl LowerCtx {
             .any(|entry| entry.type_params.iter().any(|p| p == name))
     }
 
-    fn imported_rewrite_symbol(&self, name: &str) -> Option<&str> {
-        self.imported_fn_rewrites
+    /// The symbol HIR emitted a published declaration under.
+    ///
+    /// A package module's declaration keeps its `{owner}.{name}` identity. A
+    /// file import's declaration was spliced into the root namespace by the
+    /// frontend, so the same declaration is emitted under its bare name.
+    fn published_declaration_symbol(&self, source_identity: &str) -> String {
+        match source_identity.rsplit_once('.') {
+            Some((owner, name)) if self.file_import_module_names.contains(owner) => {
+                name.to_string()
+            }
+            _ => crate::mangle_dotted_name(source_identity),
+        }
+    }
+
+    /// The registry key HIR holds a published constant under: the bare name for
+    /// a file import's spliced declaration, the qualified identity otherwise.
+    fn published_const_key<'a>(&self, source_identity: &'a str) -> &'a str {
+        source_identity
+            .rsplit_once('.')
+            .filter(|(owner, _)| self.file_import_module_names.contains(*owner))
+            .map_or(source_identity, |(_, name)| name)
+    }
+
+    /// The emitted symbol a bare function name reaches from the file being
+    /// lowered: the same-module rewrite map while an imported module's bodies
+    /// lower, else the exact owner an import published into this file's scope.
+    ///
+    /// The published fact is keyed by file, so a file the root spliced in
+    /// (`import "sub.hew";`) resolves its own `import lib.{ bump };` here and a
+    /// file that never wrote that import does not see `bump`.
+    fn imported_rewrite_symbol(&self, name: &str) -> Option<String> {
+        if let Some(symbol) = self
+            .imported_fn_rewrites
             .as_ref()
-            .and_then(|rewrites| rewrites.get(name).map(String::as_str))
+            .and_then(|rewrites| rewrites.get(name))
+        {
+            return Some(symbol.clone());
+        }
+        // The root's own value namespace outranks a name an import published
+        // into it, exactly as it does in the checker's use-time gate.
+        if self.current_module_name.is_none() && self.root_value_bindings.contains(name) {
+            return None;
+        }
+        self.import_fn_name_aliases
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
+            .map(|owner| self.published_declaration_symbol(owner))
+            .filter(|symbol| self.fn_registry.contains_key(symbol))
     }
 
     fn record_var_self_direct_monomorphisation(
@@ -9453,11 +9423,11 @@ impl LowerCtx {
             return;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name).unwrap_or(name)
+            self.imported_rewrite_symbol(name)
+                .unwrap_or_else(|| name.clone())
         } else {
-            name
-        }
-        .to_string();
+            name.clone()
+        };
         self.register_free_fn_monomorphisation(&registry_name, None, call_span, call_site);
     }
 
@@ -9478,11 +9448,11 @@ impl LowerCtx {
             return false;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name).unwrap_or(name)
+            self.imported_rewrite_symbol(name)
+                .unwrap_or_else(|| name.clone())
         } else {
-            name
-        }
-        .to_string();
+            name.clone()
+        };
         let is_generic_user_fn = self
             .fn_registry
             .get(&registry_name)
@@ -9940,7 +9910,11 @@ fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
                 collect_type_expr_named_leaves(&arg.0, out);
             }
         }
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             collect_type_expr_named_leaves(&ok.0, out);
             collect_type_expr_named_leaves(&err.0, out);
         }
@@ -9957,6 +9931,11 @@ fn collect_type_expr_named_leaves(ty: &TypeExpr, out: &mut Vec<String>) {
             }
         }
         TypeExpr::Function {
+            params,
+            return_type,
+            ..
+        }
+        | TypeExpr::ActorFn {
             params,
             return_type,
         } => {
@@ -10046,7 +10025,7 @@ fn imported_impl_signature_type_is_safe(
             // a literal `Self` receiver/return normalises to that same self
             // type, so it is admitted on identical grounds. Scalar primitives
             // (`string`, `i64`, `bool`, …) and compound builtins (`Vec`,
-            // `Option`, `LocalPid`, …) are resolvable by name.
+            // `Option`, `ActorHandle`, …) are resolvable by name.
             let is_primitive = hew_types::ty::PRIMITIVE_ALIASES
                 .iter()
                 .any(|(canonical, aliases)| *canonical == name || aliases.contains(&name.as_str()));
@@ -10088,7 +10067,11 @@ fn imported_impl_signature_type_is_safe(
             generic_params,
             is_known_registered_type,
         ),
-        TypeExpr::Result { ok, err } => {
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => {
             imported_impl_signature_type_is_safe(
                 &ok.0,
                 self_type_name,
@@ -10116,6 +10099,7 @@ fn imported_impl_signature_type_is_safe(
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             params.iter().all(|p| {
                 imported_impl_signature_type_is_safe(
@@ -10251,15 +10235,16 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_private_refs(&expr.0, pf, out);
+            }
             scan_block_for_private_refs(body, pf, out);
-            if let Some(b) = else_body {
-                scan_block_for_private_refs(b, pf, out);
+            if let Some(eb) = else_body {
+                scan_expr_for_private_refs(&eb.0, pf, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -10282,8 +10267,12 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
             scan_expr_for_private_refs(&condition.0, pf, out);
             scan_block_for_private_refs(body, pf, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_private_refs(&expr.0, pf, out);
+            }
             scan_block_for_private_refs(body, pf, out);
         }
         Stmt::Break { value: Some(v), .. } => scan_expr_for_private_refs(&v.0, pf, out),
@@ -10301,6 +10290,13 @@ fn scan_stmt_for_private_refs(stmt: &Stmt, pf: Option<&HashSet<String>>, out: &m
 )]
 fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &mut CallNames) {
     match expr {
+        Expr::Identifier(name) if pf.is_some_and(|candidates| candidates.contains(name)) => {
+            out.bare.push(name.clone());
+        }
+        Expr::GenericApplySuffix { target, .. } => {
+            scan_expr_for_private_refs(&target.0, pf, out);
+        }
+
         Expr::Call { function, args, .. } => {
             if let Expr::Identifier(name) = &function.0 {
                 // `pf == None` collects every bare call name; `Some(set)` records
@@ -10314,16 +10310,27 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
                 scan_expr_for_private_refs(&arg.expr().0, pf, out);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_private_refs(&left.0, pf, out);
             scan_expr_for_private_refs(&right.0, pf, out);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             scan_expr_for_private_refs(&operand.0, pf, out);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_private_refs(&e.0, pf, out);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_private_refs(&element.expr().0, pf, out);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -10349,15 +10356,16 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_private_refs(&expr.0, pf, out);
+            }
             scan_block_for_private_refs(body, pf, out);
-            if let Some(b) = else_body {
-                scan_block_for_private_refs(b, pf, out);
+            if let Some(eb) = else_body {
+                scan_expr_for_private_refs(&eb.0, pf, out);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -10410,6 +10418,16 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
                 scan_expr_for_private_refs(&v.0, pf, out);
             }
         }
+        Expr::ContextVariant(context) => {
+            if let Some(record) = &context.record {
+                for (_, value) in &record.fields {
+                    scan_expr_for_private_refs(&value.0, pf, out);
+                }
+                if let Some(base) = &record.base {
+                    scan_expr_for_private_refs(&base.0, pf, out);
+                }
+            }
+        }
         Expr::InterpolatedString(parts) => {
             for part in parts {
                 if let hew_parser::ast::StringPart::Expr(e)
@@ -10428,10 +10446,6 @@ fn scan_expr_for_private_refs(expr: &Expr, pf: Option<&HashSet<String>>, out: &m
                 scan_expr_for_private_refs(&t.duration.0, pf, out);
                 scan_expr_for_private_refs(&t.body.0, pf, out);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_private_refs(&expr.0, pf, out);
-            scan_expr_for_private_refs(&duration.0, pf, out);
         }
         Expr::UnsafeBlock(b) => scan_block_for_private_refs(b, pf, out),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
@@ -10555,15 +10569,17 @@ impl LowerCtx {
             // `hew_node_api_lookup_location`) is a different callee identity than
             // the family's `c_symbol()`, and carrying the family there
             // would break the `Terminator::Call` builtin↔callee invariant.
-            let primary_family = hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(
-                builtin.name,
-            )
-            .or_else(|| {
-                builtin
-                    .linkage
-                    .runtime_symbol()
-                    .and_then(hew_types::runtime_call::RuntimeCallFamily::from_c_symbol)
-            });
+            let primary_family =
+                hew_types::runtime_call::RuntimeCallFamily::from_catalog_endpoint(builtin.name)
+                    .or_else(|| {
+                        hew_types::runtime_call::RuntimeCallFamily::from_c_symbol(builtin.name)
+                    })
+                    .or_else(|| {
+                        builtin
+                            .linkage
+                            .runtime_symbol()
+                            .and_then(hew_types::runtime_call::RuntimeCallFamily::from_c_symbol)
+                    });
             self.fn_registry.insert(
                 builtin.name.to_string(),
                 FnEntry {
@@ -10581,7 +10597,7 @@ impl LowerCtx {
 
     /// Seed the `link_remote(RemotePid<T>, PartitionPolicy) -> Result<(),
     /// LinkError>` builtin. Unlike `link`/`monitor`/`unlink` (1-arg
-    /// `LocalPid`, self synthesized), `link_remote` is 2-arg: the explicit remote
+    /// actor handle, self synthesized), `link_remote` is 2-arg: the explicit remote
     /// target and the `PartitionPolicy`. The linking subject (self) is resolved
     /// inside the runtime. The checker records the call-result type at the call
     /// site, so `return_ty` is a placeholder; the params carry arity. Resolves to
@@ -10635,21 +10651,21 @@ impl LowerCtx {
         // stdlib catalog IDs and the source-item sequence) — nothing
         // resolves through it anymore.
         //
-        // `supervisor_stop(sup: LocalPid<S>) -> ()`.  The param type is a
-        // `LocalPid<S>` (named "LocalPid" in resolved form), which is what
-        // the checker registers.  The exact inner type does not matter here
-        // because MIR passes the sup place opaquely.
+        // `supervisor_stop(sup: S) -> ()`, where `S` is the supervisor's own
+        // type. This seed carries arity only: MIR passes the sup place
+        // opaquely, so the entry names the handle discriminator and nothing
+        // resolves the supervisor from it.
         self.fn_registry.insert(
             "supervisor_stop".to_string(),
             FnEntry {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
                 param_tys: vec![ResolvedTy::Named {
-                    name: hew_types::BuiltinType::LocalPid
+                    name: hew_types::BuiltinType::ActorHandle
                         .canonical_name()
                         .to_string(),
                     args: vec![ResolvedTy::Unit],
-                    builtin: Some(hew_types::BuiltinType::LocalPid),
+                    builtin: Some(hew_types::BuiltinType::ActorHandle),
                     is_opaque: false,
                 }],
                 linkage: None,
@@ -10659,13 +10675,13 @@ impl LowerCtx {
         );
         // Actor `link(target)` / `monitor(target)` / `unlink(target)`
         // builtins.  The checker (`Checker::register_builtins`) registers
-        // them as **1-arg** `LocalPid<T>` — the linking/monitoring subject
+        // them as **1-arg** actor-handle — the linking/monitoring subject
         // is the implicit calling actor (`self`), matching Erlang/OTP
         // `link(Pid)` / `monitor(process, Pid)`.  They have no AST `fn`
         // item; `builtin_family` resolves them to `ResolvedRef::Builtin`,
         // and MIR's runtime-call producer synthesizes `hew_actor_self()`
         // as ABI arg0 with the user target as arg1.  The exact inner
-        // `LocalPid` arg matters only for arity; MIR passes the target
+        // actor-handle arg matters only for arity; MIR passes the target
         // place opaquely.
         for (name, id, family) in [
             ("link", SYNTHETIC_LINK_ITEM, RuntimeCallFamily::ActorLink),
@@ -10686,11 +10702,11 @@ impl LowerCtx {
                     id,
                     return_ty: ResolvedTy::Unit,
                     param_tys: vec![ResolvedTy::Named {
-                        name: hew_types::BuiltinType::LocalPid
+                        name: hew_types::BuiltinType::ActorHandle
                             .canonical_name()
                             .to_string(),
                         args: vec![ResolvedTy::Unit],
-                        builtin: Some(hew_types::BuiltinType::LocalPid),
+                        builtin: Some(hew_types::BuiltinType::ActorHandle),
                         is_opaque: false,
                     }],
                     linkage: None,
@@ -10830,7 +10846,7 @@ impl LowerCtx {
         }
     }
 
-    fn register_fn_entry(&mut self, name: &str, func: &FnDecl) {
+    fn register_fn_entry(&mut self, name: &str, func: &FnDecl) -> ItemId {
         // A later ordinary function registration must not inherit a stale
         // extern privilege merely by reusing its symbol spelling.
         self.extern_fn_names.remove(name);
@@ -10856,6 +10872,7 @@ impl LowerCtx {
                 builtin_family: None,
             },
         );
+        id
     }
 
     fn register_impl_method_fn_entry(
@@ -10998,12 +11015,6 @@ impl LowerCtx {
         }
     }
 
-    fn signature_requires_mutable_receiver(&self, symbol: &str) -> bool {
-        self.fn_sigs
-            .get(symbol)
-            .is_some_and(|sig| sig.requires_mutable_receiver)
-    }
-
     fn make_unit_expr(&mut self, span: Span) -> HirExpr {
         HirExpr {
             node: self.ids.node(),
@@ -11016,6 +11027,42 @@ impl LowerCtx {
         }
     }
 
+    /// Build the `match` that `if let` and `while let` desugar to: the success
+    /// arms from `lower_pattern_arms` (one per or-pattern leaf), then a
+    /// wildcard arm for the fallthrough. Everything downstream sees one
+    /// ordered match instead of a second pattern form.
+    fn pattern_conditional_match(
+        &mut self,
+        scrutinee: HirExpr,
+        mut arms: Vec<HirMatchArm>,
+        fallthrough: HirExpr,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        arms.push(HirMatchArm {
+            scope: None,
+            predicate: HirMatchArmPredicate::Wildcard,
+            bindings: Vec::new(),
+            payload_predicates: Vec::new(),
+            payload_variant_predicates: Vec::new(),
+            guard: None,
+            body: fallthrough,
+            span: span.clone(),
+        });
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            ty: result_ty.clone(),
+            value_class: ValueClass::of_ty(result_ty, &self.type_classes),
+            intent: IntentKind::Read,
+            kind: HirExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            span: span.clone(),
+        }
+    }
+
     fn wrap_var_self_function_returns(
         &mut self,
         block: &mut HirBlock,
@@ -11023,11 +11070,10 @@ impl LowerCtx {
         abi_return_ty: &ResolvedTy,
     ) {
         self.wrap_var_self_explicit_returns_in_block(block, receiver, abi_return_ty);
-        let mut tail = block
+        let tail = block
             .tail
             .take()
             .map_or_else(|| self.make_unit_expr(block.span.clone()), |tail| *tail);
-        self.wrap_var_self_explicit_expr_returns(&mut tail, receiver, abi_return_ty);
         let span = tail.span.clone();
         block.tail = Some(Box::new(self.make_var_self_return_expr(
             tail,
@@ -11078,24 +11124,15 @@ impl LowerCtx {
             HirStmtKind::Let(_, Some(expr)) | HirStmtKind::Expr(expr) => {
                 self.wrap_var_self_explicit_expr_returns(expr, receiver, abi_return_ty);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Destructure { value, .. } => {
+                self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
+            }
+            HirStmtKind::Assign { target, value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
             HirStmtKind::Defer { body, .. } => {
                 self.wrap_var_self_explicit_expr_returns(body, receiver, abi_return_ty);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
-                for stmt in success_prelude.iter_mut() {
-                    self.wrap_var_self_stmt_returns(stmt, receiver, abi_return_ty);
-                }
-                self.wrap_var_self_explicit_returns_in_block(else_body, receiver, abi_return_ty);
             }
             HirStmtKind::Let(_, None) => {}
         }
@@ -11123,6 +11160,7 @@ impl LowerCtx {
             }
             HirExprKind::Block(block)
             | HirExprKind::Scope { body: block }
+            | HirExprKind::Race { body: block }
             | HirExprKind::ForkBlock { body: block, .. } => {
                 self.wrap_var_self_explicit_returns_in_block(block, receiver, abi_return_ty);
             }
@@ -11155,24 +11193,6 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
-            HirExprKind::WhileLet {
-                scrutinee, body, ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
-            }
-            HirExprKind::IfLet {
-                scrutinee,
-                body,
-                else_body,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(scrutinee, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
-                if let Some(eb) = else_body {
-                    self.wrap_var_self_explicit_returns_in_block(eb, receiver, abi_return_ty);
-                }
-            }
             HirExprKind::Loop { body, .. } => {
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
@@ -11189,14 +11209,18 @@ impl LowerCtx {
                     );
                 }
             }
-            HirExprKind::Call { callee, args, .. }
-            | HirExprKind::SpawnedCall { callee, args, .. } => {
+            HirExprKind::Call { callee, args, .. } => {
                 self.wrap_var_self_explicit_expr_returns(callee, receiver, abi_return_ty);
                 for arg in args {
                     self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::ActorSend {
+            HirExprKind::ActorDelivery {
+                receiver: target,
+                args,
+                ..
+            }
+            | HirExprKind::ActorMessage {
                 receiver: target,
                 args,
                 ..
@@ -11254,13 +11278,14 @@ impl LowerCtx {
             HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
                 self.wrap_var_self_explicit_expr_returns(operand, receiver, abi_return_ty);
             }
-            HirExprKind::NumericCast { value, .. }
+            HirExprKind::ArrayRepeat { value }
+            | HirExprKind::NumericCast { value, .. }
             | HirExprKind::SaturatingWidthCast { value, .. }
             | HirExprKind::TryWidthCast { value, .. }
             | HirExprKind::CoerceToDynTrait { value, .. } => {
                 self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
             }
-            HirExprKind::TupleLiteral { elements } => {
+            HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
                 for elem in elements {
                     self.wrap_var_self_explicit_expr_returns(elem, receiver, abi_return_ty);
                 }
@@ -11275,9 +11300,6 @@ impl LowerCtx {
             }
             HirExprKind::FieldAccess { object, .. }
             | HirExprKind::TupleIndex { tuple: object, .. }
-            | HirExprKind::MachineStateName {
-                receiver: object, ..
-            }
             | HirExprKind::CancellationTokenIsCancelled { receiver: object }
             | HirExprKind::GeneratorNext {
                 receiver: object, ..
@@ -11285,7 +11307,10 @@ impl LowerCtx {
             | HirExprKind::RecordCloneCall { src: object, .. }
             | HirExprKind::SubsumedValue { source: object, .. }
             | HirExprKind::ConnAwaitRead { conn: object, .. }
-            | HirExprKind::AwaitRestart { child: object } => {
+            | HirExprKind::AwaitRestart { child: object }
+            | HirExprKind::AwaitTask {
+                operand: object, ..
+            } => {
                 self.wrap_var_self_explicit_expr_returns(object, receiver, abi_return_ty);
             }
             HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -11300,7 +11325,8 @@ impl LowerCtx {
             HirExprKind::StreamRecvAwait { stream, .. } => {
                 self.wrap_var_self_explicit_expr_returns(stream, receiver, abi_return_ty);
             }
-            HirExprKind::Index { container, index } => {
+            HirExprKind::Index { container, index }
+            | HirExprKind::BorrowedIndex { container, index } => {
                 self.wrap_var_self_explicit_expr_returns(container, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(index, receiver, abi_return_ty);
             }
@@ -11318,8 +11344,7 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::MachineEmit { fields, .. }
-            | HirExprKind::MachineVariantCtor {
+            HirExprKind::MachineVariantCtor {
                 payload: Some(fields),
                 ..
             } => {
@@ -11327,18 +11352,9 @@ impl LowerCtx {
                     self.wrap_var_self_explicit_expr_returns(field_expr, receiver, abi_return_ty);
                 }
             }
-            HirExprKind::MachineStep {
-                receiver: target,
-                event,
-                ..
-            }
-            | HirExprKind::MachineTakeEmits {
-                receiver: target,
-                event,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_expr_returns(event, receiver, abi_return_ty);
+            HirExprKind::ScopeRecovery { scope, handler, .. } => {
+                self.wrap_var_self_explicit_expr_returns(scope, receiver, abi_return_ty);
+                self.wrap_var_self_explicit_expr_returns(handler, receiver, abi_return_ty);
             }
             HirExprKind::ScopeDeadline { duration, body } => {
                 self.wrap_var_self_explicit_expr_returns(duration, receiver, abi_return_ty);
@@ -11354,19 +11370,8 @@ impl LowerCtx {
                                 abi_return_ty,
                             );
                         }
-                        HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                            self.wrap_var_self_explicit_expr_returns(
-                                actor,
-                                receiver,
-                                abi_return_ty,
-                            );
-                            for arg in args {
-                                self.wrap_var_self_explicit_expr_returns(
-                                    arg,
-                                    receiver,
-                                    abi_return_ty,
-                                );
-                            }
+                        HirSelectArmKind::ActorAsk { call } => {
+                            self.wrap_var_self_explicit_expr_returns(call, receiver, abi_return_ty);
                         }
                         HirSelectArmKind::TaskAwait { task } => {
                             self.wrap_var_self_explicit_expr_returns(task, receiver, abi_return_ty);
@@ -11389,32 +11394,12 @@ impl LowerCtx {
                     );
                 }
             }
-            HirExprKind::Join(join) => {
-                for branch in &mut join.branches {
-                    self.wrap_var_self_explicit_expr_returns(
-                        &mut branch.actor,
-                        receiver,
-                        abi_return_ty,
-                    );
-                    for arg in &mut branch.args {
-                        self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
-                    }
-                }
-            }
             HirExprKind::Yield { value, .. }
             | HirExprKind::Break { value, .. }
             | HirExprKind::Return { value } => {
                 if let Some(value) = value {
                     self.wrap_var_self_explicit_expr_returns(value, receiver, abi_return_ty);
                 }
-            }
-            HirExprKind::NumericMethod {
-                receiver: target,
-                arg,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(target, receiver, abi_return_ty);
-                self.wrap_var_self_explicit_expr_returns(arg, receiver, abi_return_ty);
             }
             HirExprKind::Spawn { args, .. } => {
                 for (_, arg) in args {
@@ -11427,10 +11412,7 @@ impl LowerCtx {
             | HirExprKind::Literal(_)
             | HirExprKind::RegexLiteralRef { .. }
             | HirExprKind::BindingRef { .. }
-            | HirExprKind::AwaitTask { .. }
             | HirExprKind::ContextReader { .. }
-            | HirExprKind::MachineFieldAccess { .. }
-            | HirExprKind::MachineEventFieldAccess { .. }
             | HirExprKind::Continue { .. }
             | HirExprKind::ActorSelf
             | HirExprKind::MachineVariantCtor { payload: None, .. }
@@ -11567,16 +11549,10 @@ impl LowerCtx {
         match target.map(|target| {
             hew_types::check::const_eval::eval_integer_const_expr(&spanned, &env, target)
         }) {
-            Some(Ok(value)) => match i64::try_from(value) {
-                Ok(value) => return crate::node::HirConstValue::Integer(value),
-                Err(_) => {
-                    self.const_integer_evaluation_error(
-                        span,
-                        "out-of-range",
-                        "constant initializer value exceeds the supported HIR integer carrier",
-                    );
-                }
-            },
+            // The const evaluator and the HIR carrier are both `i128`, and the
+            // evaluator has already range-checked the value against the
+            // declared type, so the folded value passes through exactly.
+            Some(Ok(value)) => return crate::node::HirConstValue::Integer(value),
             Some(Err(hew_types::check::const_eval::ConstEvalError::UnknownConst(_))) => {
                 self.unsupported(
                     span,
@@ -11648,7 +11624,7 @@ impl LowerCtx {
     fn const_eval_env_from_folded_integer_consts(&self) -> hew_types::check::const_eval::ConstEnv {
         let mut env = hew_types::check::const_eval::ConstEnv::new();
         for (name, value) in &self.folded_integer_consts {
-            env.insert(name.clone(), i128::from(*value));
+            env.insert(name.clone(), *value);
         }
         env
     }
@@ -11692,6 +11668,7 @@ impl LowerCtx {
             )
         };
         let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: param_tys,
             ret: Box::new(return_ty),
         };
@@ -11803,6 +11780,7 @@ impl LowerCtx {
             (entry.id, entry.param_tys.clone(), entry.return_ty.clone())
         };
         let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: param_tys,
             ret: Box::new(return_ty.clone()),
         };
@@ -11956,6 +11934,35 @@ impl LowerCtx {
             args,
             ret_ty,
         }
+    }
+
+    /// Preserve method-level instantiation facts until SIR selects the impl
+    /// from the concrete receiver. Impl parameters are bound there separately;
+    /// the checker recorded only the method's parameters at this call site.
+    fn record_static_trait_type_args(&mut self, span: &Span, site: SiteId) {
+        let Some(arguments) = self.call_type_args.get(&self.mk_key(span)).cloned() else {
+            return;
+        };
+        let mut resolved = Vec::with_capacity(arguments.len());
+        for argument in &arguments {
+            match ResolvedTy::from_ty(argument) {
+                Ok(argument) => {
+                    resolved.push(self.qualify_current_module_record_ty(argument));
+                }
+                Err(error) => {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "static trait method type arguments".to_string(),
+                            reason: error.to_string(),
+                        },
+                        span.clone(),
+                        "static trait method requires checker-resolved type arguments",
+                    ));
+                    return;
+                }
+            }
+        }
+        self.call_site_type_args.insert(site, resolved);
     }
 
     /// Emit a `Display::fmt` static trait-dispatch over an abstract type
@@ -12123,13 +12130,10 @@ impl LowerCtx {
             | ResolvedTy::U64
             | ResolvedTy::Isize
             | ResolvedTy::Usize
+            | ResolvedTy::F32
             | ResolvedTy::F64
             | ResolvedTy::Bool
-            | ResolvedTy::Char => {
-                let builtin = scalar_display_builtin(&ty);
-                self.build_catalog_call(builtin, vec![value], span)
-            }
-            ResolvedTy::F32 => self.lower_f32_display(value, span),
+            | ResolvedTy::Char => self.lower_scalar_display(value, &ty, span),
             // `duration` has a pure-Hew `impl Display for duration` in
             // `std/builtins.hew`, discovered and lowered like any imported
             // module's impl (see `insert_builtins_display_module`), so
@@ -12139,6 +12143,7 @@ impl LowerCtx {
             // even though the checker admitted it.
             ResolvedTy::Duration => self.dispatch_display_to_named_impl(
                 "std.builtins.duration",
+                &[],
                 &method_name,
                 value,
                 span,
@@ -12155,8 +12160,7 @@ impl LowerCtx {
                 // satisfaction path. Handled before the general `Named` arm,
                 // which would otherwise route to a non-existent `instant::fmt`
                 // impl symbol and fail closed.
-                let builtin = scalar_display_builtin(&ResolvedTy::I64);
-                self.build_catalog_call(builtin, vec![value], span)
+                self.lower_scalar_display(value, &ResolvedTy::I64, span)
             }
             ResolvedTy::Named {
                 builtin: Some(BuiltinType::NodeId),
@@ -12170,7 +12174,7 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::RemotePid),
                 ..
             } => self.build_catalog_call("hew_remote_pid_display", vec![value], span),
-            ResolvedTy::Named { name, .. } => {
+            ResolvedTy::Named { name, args, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
                 // dispatch; a concrete user type calls its `impl Display` fmt
@@ -12187,7 +12191,8 @@ impl LowerCtx {
                     );
                 }
                 let name = name.clone();
-                self.dispatch_display_to_named_impl(&name, &method_name, value, span)
+                let type_args = args.clone();
+                self.dispatch_display_to_named_impl(&name, &type_args, &method_name, value, span)
             }
             ResolvedTy::TypeParam { name } => {
                 // Abstract type parameter `T` carrying a `Display` bound — the
@@ -12224,6 +12229,7 @@ impl LowerCtx {
 
     fn build_structural_format_call(&mut self, value: HirExpr, span: Span) -> HirExpr {
         let fn_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: vec![value.ty.clone()],
             ret: Box::new(ResolvedTy::String),
         };
@@ -12253,22 +12259,31 @@ impl LowerCtx {
         }
     }
 
-    fn lower_f32_display(&mut self, value: HirExpr, span: Span) -> HirExpr {
-        // `hew_float_to_string` takes an f64, matching the stdlib Display impl.
-        let widened = HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            value_class: ValueClass::of_ty(&ResolvedTy::F64, &self.type_classes),
-            ty: ResolvedTy::F64,
-            intent: IntentKind::Read,
-            kind: HirExprKind::NumericCast {
-                value: Box::new(value),
-                from_ty: ResolvedTy::F32,
-                to_ty: ResolvedTy::F64,
-            },
-            span: span.clone(),
+    /// Render one scalar through its `to_string_*` catalog builtin, widening
+    /// first when the scalar is narrower than the conversion's ABI type
+    /// (`f32`/`i8`/`i16`/`u16`/`isize`/`usize`). The runtime exports one entry
+    /// per canonical width, so the cast is what lets the narrow widths share
+    /// it, and it keeps the argument type equal to the runtime contract's.
+    fn lower_scalar_display(&mut self, value: HirExpr, ty: &ResolvedTy, span: Span) -> HirExpr {
+        let (builtin, abi_ty) = scalar_display_builtin(ty);
+        let argument = if *ty == abi_ty {
+            value
+        } else {
+            HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                value_class: ValueClass::of_ty(&abi_ty, &self.type_classes),
+                ty: abi_ty.clone(),
+                intent: IntentKind::Read,
+                kind: HirExprKind::NumericCast {
+                    value: Box::new(value),
+                    from_ty: ty.clone(),
+                    to_ty: abi_ty,
+                },
+                span: span.clone(),
+            }
         };
-        self.build_catalog_call("to_string_f64", vec![widened], span)
+        self.build_catalog_call(builtin, vec![argument], span)
     }
 
     /// Dispatch a `Display::fmt` call to a concrete named/builtin type's impl
@@ -12282,12 +12297,14 @@ impl LowerCtx {
     fn dispatch_display_to_named_impl(
         &mut self,
         type_name: &str,
+        type_args: &[ResolvedTy],
         method_name: &str,
         value: HirExpr,
         span: Span,
     ) -> HirExpr {
         let symbol = crate::node::HirImplBlock::method_symbol(type_name, method_name);
         if let Some(call) = self.build_user_fn_call(&symbol, vec![value], span.clone()) {
+            self.register_display_impl_monomorphisation(&symbol, type_args, &span, call.site);
             return call;
         }
         self.diagnostics.push(HirDiagnostic::new(
@@ -12300,6 +12317,71 @@ impl LowerCtx {
              corresponding impl symbol — checker–HIR contract violation",
         ));
         self.unsupported_expr(span, format!("display dispatch: missing {symbol}"))
+    }
+
+    /// Interpolating a value whose `impl Display` block is generic
+    /// (`impl<E> Display for ActorError<E>`) needs the same
+    /// per-instantiation monomorphisation an ordinary `value.fmt()` call gets.
+    /// The f-string spine synthesises its own call site, so no checker
+    /// `call_type_args` entry exists for it; the concrete type's own arguments
+    /// are the substitution, taken positionally against the impl block's
+    /// declared parameters.
+    fn register_display_impl_monomorphisation(
+        &mut self,
+        symbol: &str,
+        type_args: &[ResolvedTy],
+        span: &Span,
+        call_site: SiteId,
+    ) {
+        let Some(entry) = self.fn_registry.get(symbol) else {
+            return;
+        };
+        if entry.linkage.is_some() || entry.type_params.is_empty() {
+            return;
+        }
+        let origin = entry.id;
+        let builtin_family = entry.builtin_family;
+        if entry.type_params.len() != type_args.len() {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.to_string(),
+                    reason: format!(
+                        "generic Display impl declares {} parameters, interpolated type carries {}",
+                        entry.type_params.len(),
+                        type_args.len()
+                    ),
+                },
+                span.clone(),
+                "a generic Display impl must be parameterised by its own self type's arguments",
+            ));
+            return;
+        }
+        let type_args = type_args.to_vec();
+        self.call_site_type_args
+            .insert(call_site, type_args.clone());
+        if builtin_family.is_some() {
+            return;
+        }
+        if type_args
+            .iter()
+            .any(|ty| self.contains_abstract_type_param(ty))
+        {
+            return;
+        }
+        let Some(declaration) = self
+            .impl_method_body_symbols
+            .iter()
+            .chain(self.impl_body_plan.symbols.iter())
+            .find_map(|(declaration, emitted)| (emitted == symbol).then(|| declaration.clone()))
+        else {
+            return;
+        };
+        let _ = self.mono_registry.insert(MonoKey {
+            origin,
+            declaration,
+            linker_symbol: symbol.to_string(),
+            type_args,
+        });
     }
 
     /// #1565: route `println` / `print` / `to_string` of a value whose type
@@ -12372,6 +12454,201 @@ impl LowerCtx {
         Ok(lowered)
     }
 
+    /// Normalize `assert_eq(a, b)` / `assert_ne(a, b)` into ordinary HIR.
+    ///
+    /// The checker registers both as generic builtins over one type parameter
+    /// `T: Eq + Display` (`registration.rs`), so by the time lowering runs the
+    /// operands share a type that carries a selected equality and a renderable
+    /// `Display`. Nothing downstream needs an assertion concept: the call
+    /// becomes
+    ///
+    /// ```text
+    /// {
+    ///     let __hew_assert_left_N  = <left>;
+    ///     let __hew_assert_right_N = <right>;
+    ///     if __hew_assert_left_N != __hew_assert_right_N {
+    ///         panic("assertion failed: left != right\n  left: …\n  right: …");
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Binding both operands first is what makes each argument expression
+    /// evaluate exactly once even though the comparison and the failure message
+    /// each read them. The comparison is the ordinary `!=` / `==` the language
+    /// already lowers, so SIR selects the same `Eq` capability it selects for a
+    /// hand-written comparison, and the two locals are ordinary owned bindings
+    /// released on every exit including the fault path. `panic` reuses the one
+    /// logical-fault path `assert` uses.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the desugar is one shape; splitting it would scatter the bindings it threads"
+    )]
+    fn lower_equality_assertion(
+        &mut self,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let expect_equal = name == "assert_eq";
+        let Ok([left, right]) = <[HirExpr; 2]>::try_from(args) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: name.to_string(),
+                    reason: "equality assertion did not receive exactly two operands".to_string(),
+                },
+                span.clone(),
+                "checker must reject an equality assertion with the wrong arity",
+            ));
+            return (
+                HirExprKind::Unsupported(format!("`{name}` requires exactly two operands")),
+                ResolvedTy::Unit,
+            );
+        };
+        let operand_ty = left.ty.clone();
+
+        let block_scope = self.ids.scope();
+        self.push_scope();
+        let left_name = format!("__hew_assert_left_{}", self.ids.binding().0);
+        let left_binding = self.bind(left_name.clone(), operand_ty.clone(), false, span.clone());
+        let left_id = left_binding.id;
+        let right_name = format!("__hew_assert_right_{}", self.ids.binding().0);
+        let right_binding = self.bind(right_name.clone(), operand_ty.clone(), false, span.clone());
+        let right_id = right_binding.id;
+        let mut statements = vec![
+            HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(left_binding, Some(left)),
+                span: span.clone(),
+            },
+            HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(right_binding, Some(right)),
+                span: span.clone(),
+            },
+        ];
+
+        // The failure condition is the negation of what the assertion claims.
+        let condition_op = if expect_equal {
+            hew_parser::ast::BinaryOp::NotEqual
+        } else {
+            hew_parser::ast::BinaryOp::Equal
+        };
+        let condition_left = self.make_binding_ref(
+            left_name.clone(),
+            left_id,
+            operand_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let condition_right = self.make_binding_ref(
+            right_name.clone(),
+            right_id,
+            operand_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: condition_op,
+                left: Box::new(condition_left),
+                right: Box::new(condition_right),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let left_ref = self.make_binding_ref(
+            left_name,
+            left_id,
+            operand_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let right_ref = self.make_binding_ref(
+            right_name,
+            right_id,
+            operand_ty,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let message = self.assertion_failure_message(expect_equal, left_ref, right_ref, span);
+        let panic_call = self.build_catalog_call("panic", vec![message], span.clone());
+        let then_scope = self.ids.scope();
+        let then_block = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&ResolvedTy::Never, &self.type_classes),
+            ty: ResolvedTy::Never,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: then_scope,
+                statements: Vec::new(),
+                tail: Some(Box::new(panic_call)),
+                ty: ResolvedTy::Never,
+                span: span.clone(),
+            }),
+            span: span.clone(),
+        };
+        let guard = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_block),
+                else_expr: None,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(guard),
+            span: span.clone(),
+        });
+        self.pop_scope();
+
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: block_scope,
+                statements,
+                tail: None,
+                ty: ResolvedTy::Unit,
+                span: span.clone(),
+            }),
+            ResolvedTy::Unit,
+        )
+    }
+
+    /// Build the string an equality assertion panics with, rendering both
+    /// operands through the same `Display` spine f-string interpolation uses.
+    fn assertion_failure_message(
+        &mut self,
+        expect_equal: bool,
+        left: HirExpr,
+        right: HirExpr,
+        span: &Span,
+    ) -> HirExpr {
+        let claim = if expect_equal {
+            "assertion failed: left != right\n  left: "
+        } else {
+            "assertion failed: left == right\n  left: "
+        };
+        let mut message = self.build_string_literal_expr(claim.to_string(), span.clone());
+        for (separator, operand) in [(None, left), (Some("\n  right: "), right)] {
+            if let Some(separator) = separator {
+                let literal = self.build_string_literal_expr(separator.to_string(), span.clone());
+                message =
+                    self.build_catalog_call("string_concat", vec![message, literal], span.clone());
+            }
+            let rendered = self.lower_display_dispatch(operand, span.clone());
+            message =
+                self.build_catalog_call("string_concat", vec![message, rendered], span.clone());
+        }
+        message
+    }
+
     /// Lower an `Expr::InterpolatedString` to a chain of `string_concat` calls
     /// joining literal segments with `Display::fmt(…)` results.  Empty
     /// interpolations collapse to the empty-string literal.  The result type
@@ -12393,30 +12670,20 @@ impl LowerCtx {
                 StringPart::Expr((expr, expr_span)) => {
                     let authored =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
-                    let producer = HirProducedValueProducer::classify(&authored.kind);
+
                     let anchor_site = self.ids.site();
-                    let value = self.subsumed_value(
-                        anchor_site,
-                        expr_span,
-                        IntentKind::Read,
-                        authored,
-                        producer,
-                    );
+                    let value =
+                        self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
                     let rendered = self.lower_display_dispatch(value, expr_span.clone());
                     segments.push(rendered);
                 }
                 StringPart::StructuralExpr((expr, expr_span)) => {
                     let authored =
                         self.lower_expr(&(expr.clone(), expr_span.clone()), IntentKind::Read);
-                    let producer = HirProducedValueProducer::classify(&authored.kind);
+
                     let anchor_site = self.ids.site();
-                    let value = self.subsumed_value(
-                        anchor_site,
-                        expr_span,
-                        IntentKind::Read,
-                        authored,
-                        producer,
-                    );
+                    let value =
+                        self.subsumed_value(anchor_site, expr_span, IntentKind::Read, authored);
                     let dispatch_ty = self
                         .interpolation_display_types
                         .get(&self.mk_key(expr_span))
@@ -12441,9 +12708,18 @@ impl LowerCtx {
         for next in iter {
             acc = self.build_catalog_call("string_concat", vec![acc, next], span.clone());
         }
-        // Unwrap the outer HirExpr into (kind, ty) so the caller can re-wrap
-        // with its own site / value-class layer like other arms.
-        (acc.kind, acc.ty)
+        // The caller re-wraps `(kind, ty)` with its own site, so returning the
+        // last segment's kind directly would drop that segment's site along
+        // with every side table keyed on it (a generic `Display` impl records
+        // its per-instantiation type arguments there). Keep the segment whole
+        // inside a transparent subsumed value.
+        let ty = acc.ty.clone();
+        (
+            HirExprKind::SubsumedValue {
+                source: Box::new(acc),
+            },
+            ty,
+        )
     }
 
     /// Lower a module-qualified direct call (`module.fn(args)` /
@@ -12551,6 +12827,7 @@ impl LowerCtx {
                 }),
         };
         let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
         };
@@ -12640,26 +12917,6 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         }
-        let source_name = Self::ordinary_call_presentation_name(function);
-        if hew_types::has_builtin_associated_item_identity(
-            &source_name,
-            BuiltinType::LambdaActorHandle,
-            "new",
-        ) {
-            self.discard_rejected_call_child_facts(span);
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CallableUnsupportedInMir {
-                    name: source_name.clone(),
-                },
-                span.clone(),
-                "`LambdaActorHandle.new` is not a public constructor; use \
-                 `actor |params| { body }` to create a lambda actor",
-            ));
-            return (
-                HirExprKind::Unsupported(format!("diagnosed: unsupported call to `{source_name}`")),
-                ResolvedTy::Unit,
-            );
-        }
         let Some(target) = self.ordinary_call_target(span) else {
             // Preserve source-resolution diagnostics when the checker rejected
             // the callee before it could publish an executable target.  This is
@@ -12691,6 +12948,18 @@ impl LowerCtx {
                     "ordinary call has unsupported checker target".to_string(),
                 ),
                 ResolvedTy::Unit,
+            );
+        }
+        // Named imports may bind a canonical runtime declaration under an
+        // arbitrary alias. Its checked target is sufficient; resolving the
+        // alias as a source body would invent an unnecessary callable stub.
+        if let CallTarget::Runtime(family) = target {
+            return self.lower_module_qualified_direct_call_lowered(
+                target,
+                family.c_symbol(),
+                args,
+                span,
+                site,
             );
         }
         let callee = self.lower_expr(function, IntentKind::Read);
@@ -12985,32 +13254,6 @@ impl LowerCtx {
         false
     }
 
-    /// Remove checker-fact occurrences for children of a call rejected before
-    /// those children become HIR nodes. The call root itself remains live as an
-    /// `Unsupported` expression and retains its own fact for finalization.
-    fn discard_rejected_call_child_facts(&mut self, span: &Span) {
-        let call_key = self.mk_key(span);
-        let discarded: HashSet<SiteId> = self
-            .produced_value_fact_keys
-            .iter()
-            .filter_map(|(site, (key, _))| {
-                (key != &call_key && key.start >= call_key.start && key.end <= call_key.end)
-                    .then_some(*site)
-            })
-            .collect();
-        for sites in self.produced_value_source_sites.values_mut() {
-            sites.retain(|site| !discarded.contains(site));
-        }
-        self.produced_value_source_sites
-            .retain(|_, sites| !sites.is_empty());
-        self.produced_value_fact_sites
-            .retain(|site, _| !discarded.contains(site));
-        self.generated_produced_value_facts
-            .retain(|site, _| !discarded.contains(site));
-        self.produced_value_fact_keys
-            .retain(|site, _| !discarded.contains(site));
-    }
-
     /// Return the checker-owned target for a compiler-synthesised call to an
     /// already registered symbol.  Synthetic lowering is not allowed to turn
     /// that presentation string back into a declaration ID: either the
@@ -13258,9 +13501,24 @@ impl LowerCtx {
         // User-source inherent impls on VecIter still take the guard below.
         let is_std_iter_vec_iter_extension = builtin_impl_kind == Some(BuiltinType::VecIter)
             && self.current_module_name.as_deref() == Some("std.iter");
+        // Encoding values retain a compiler representation, but their methods
+        // are ordinary source bodies in the checked declaration's own module.
+        let is_declaring_encoding_impl = builtin_impl_kind
+            .is_some_and(BuiltinType::is_encoding_value)
+            && matches!(&resolved_impl_self_ty, ResolvedTy::Named { name, .. } if {
+                self.identity.declarations().any(|(occurrence, declaration)| {
+                    self.identity.declaration_by_path(name) == Some(declaration)
+                        && occurrence.module().is_some_and(|module| {
+                            Some(self.identity.module_path(module))
+                                == self.current_module_name.as_deref()
+                                    .or_else(|| self.identity.root_module_path())
+                        })
+                })
+            });
         if !target_is_alias
             && !is_duration_ctor_block
             && !is_std_iter_vec_iter_extension
+            && !is_declaring_encoding_impl
             && decl.trait_bound.is_none()
             && builtin_impl_kind.is_some()
         {
@@ -13287,11 +13545,11 @@ impl LowerCtx {
                         Some(BuiltinType::Option) => decl.methods.iter().all(|m| {
                             matches!(
                                 m.name.as_str(),
-                                "is_some" | "is_none" | "unwrap" | "unwrap_or"
+                                "is_some" | "is_none" | "expect" | "unwrap_or"
                             )
                         }),
                         Some(BuiltinType::Result) => decl.methods.iter().all(|m| {
-                            matches!(m.name.as_str(), "is_ok" | "is_err" | "unwrap" | "unwrap_or")
+                            matches!(m.name.as_str(), "is_ok" | "is_err" | "expect" | "unwrap_or")
                         }),
                         _ => false,
                     };
@@ -13378,7 +13636,13 @@ impl LowerCtx {
                         .map_or_else(|| name.clone(), |local| format!("{module}.{local}"))
                 },
             ),
-            _ => base_symbol_self_name.to_string(),
+            _ => {
+                crate::dispatch::receiver_self_type_for_impl_lookup_instance(&resolved_impl_self_ty)
+                    .map_or_else(
+                        || base_symbol_self_name.to_string(),
+                        |instance| instance.nominal.declaration().full_path().to_string(),
+                    )
+            }
         };
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
@@ -13778,31 +14042,11 @@ impl LowerCtx {
         }
     }
 
-    /// Lower an imported free function while applying the `#[intrinsic]` floor
-    /// policy (W5.005 / F1b, D343).
-    ///
-    /// `source_module` is the dotted module path (e.g. `std.mem`) used to
-    /// reconstruct the checker's qualified intrinsic key
-    /// (`scoped_module_item_name`, e.g. `std.mem.alloc`). The bare-name
-    /// root-item path (`Item::Function` third pass) cannot reach floor
-    /// modules — they are always imported — so the keying happens only here.
-    ///
-    /// Returns:
-    /// - `Some(HirFn)` for ordinary functions (unchanged behaviour);
-    /// - `Some(HirFn)` tagged with `intrinsic_id` for a **callable** floor
-    ///   intrinsic (`mem.*`, catalog linkage `CalleeNameDispatchOnly`): the
-    ///   function is kept so its mangled symbol stays in MIR's
-    ///   `module_fn_names` and calls dispatch to it, while codegen synthesizes
-    ///   the trampoline body from the tagged id (the bodyless placeholder MIR
-    ///   is discarded by `lower_fn`);
-    /// - `None` for a numeric intrinsic (`math.*`, linkage `CompilerIntrinsic`)
-    ///   or an unknown key: these must NOT be emitted as a `HirItem::Function`.
-    ///   Numeric intrinsics route through builtin method-rewrites; emitting a
-    ///   dead empty-body shell would waste a symbol and (post-Slice-3b) trip
-    ///   the codegen fail-closed authority on an id it cannot synthesize.
-    ///
-    /// Fail-closed: an intrinsic key absent from the stdlib catalog emits
-    /// `UnknownIntrinsic` and is dropped, never lowered to a silent no-op.
+    /// Lower ordinary imported bodies and retain callable memory-floor stubs.
+    /// Checker-admitted semantic runtime operations have no source body: their
+    /// calls already carry a typed runtime family. Verify the same signature
+    /// contract before suppressing them, so inconsistent checker/HIR facts
+    /// cannot silently discard an ordinary function.
     fn lower_imported_fn_floor_aware(
         &mut self,
         func: &FnDecl,
@@ -13811,14 +14055,9 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         rewrites: &HashMap<String, String>,
     ) -> Option<HirFn> {
-        let intrinsic_key = self
-            .intrinsic_declarations
-            .get(&format!("{source_module}.{}", func.name))
-            .cloned();
-        let mut lowered =
-            self.lower_imported_fn_with_name(func, qualified, span.clone(), rewrites)?;
-        let Some(intrinsic_key) = intrinsic_key else {
-            return Some(lowered);
+        let source_key = format!("{source_module}.{}", func.name);
+        let Some(intrinsic_key) = self.intrinsic_declarations.get(&source_key).cloned() else {
+            return self.lower_imported_fn_with_name(func, qualified, span, rewrites);
         };
         let Some(entry) = crate::stdlib_catalog::entries()
             .iter()
@@ -13830,13 +14069,48 @@ impl LowerCtx {
                     intrinsic_key,
                 },
                 span,
-                "intrinsic key not found in stdlib catalog; \
-                 check the #[intrinsic(\"..\")] argument matches a catalog entry name",
+                "intrinsic key not found in stdlib catalogue; \
+                 check the #[intrinsic(\"..\")] argument matches a catalogue entry name",
             ));
             return None;
         };
+        if let Some(family) =
+            hew_types::runtime_call::RuntimeCallFamily::from_catalog_endpoint(&intrinsic_key)
+        {
+            if let Some(contract) = family.semantic_contract() {
+                let matches = self.fn_registry.get(qualified).is_some_and(|signature| {
+                    signature
+                        .type_params
+                        .iter()
+                        .map(String::as_str)
+                        .eq(family.source_intrinsic_type_params().iter().copied())
+                        && !func.is_generator
+                        && !func
+                            .params
+                            .iter()
+                            .any(|param| param.is_consume || param.is_mutable)
+                        && family
+                            .source_intrinsic_declaration()
+                            .is_none_or(|expected| expected == source_key)
+                        && contract.matches_signature(&signature.param_tys, &signature.return_ty)
+                });
+                if !matches {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: source_key,
+                            reason: format!("intrinsic `{intrinsic_key}` signature differs from its semantic runtime contract"),
+                        },
+                        span,
+                        "cannot suppress an imported floor body with inconsistent signature facts",
+                    ));
+                }
+                return None;
+            }
+        }
         match entry.linkage {
             crate::stdlib_catalog::BuiltinLinkage::CalleeNameDispatchOnly => {
+                let mut lowered =
+                    self.lower_imported_fn_with_name(func, qualified, span, rewrites)?;
                 lowered.intrinsic_id = Some(intrinsic_key);
                 Some(lowered)
             }
@@ -13896,15 +14170,9 @@ impl LowerCtx {
                 .collect(),
         );
         let mut params = Vec::new();
-        for (param_index, param) in func.params.iter().enumerate() {
-            if self
-                .caller_visible_param_spans
-                .contains(&self.mk_key(&param.ty.1))
-            {
-                self.caller_visible_param_projections
-                    .insert((id, param_index));
-            }
-            let binding = self.bind_param(param);
+        for (index, param) in func.params.iter().enumerate() {
+            let mut binding = self.bind_param(param);
+            binding.is_consume |= index == 0 && func.consumes_self;
             params.push(binding);
         }
 
@@ -13930,6 +14198,7 @@ impl LowerCtx {
                 name: name.to_string(),
                 type_params: Self::concat_type_params(impl_type_params, func),
                 params,
+                var_self_receiver: None,
                 return_ty: generator_ty,
                 body,
                 span,
@@ -13949,7 +14218,15 @@ impl LowerCtx {
             None
         };
         let mut body = self.with_current_return_type(source_return_ty.clone(), |ctx| {
-            ctx.lower_block(&func.body, &source_return_ty)
+            let mut body = ctx.lower_block(&func.body, &source_return_ty);
+            if let Some(annotation) = func.return_type.as_ref().filter(|annotation| {
+                ctx.result_return_coercions
+                    .contains_key(&ctx.mk_key(&annotation.1))
+            }) {
+                let value = ctx.make_unit_expr(annotation.1.clone());
+                body.tail = Some(Box::new(ctx.wrap_tail_ok(value, &annotation.1)));
+            }
+            body
         });
         let return_ty = if let Some(receiver) = &var_self_receiver {
             let abi_return_ty =
@@ -13969,6 +14246,7 @@ impl LowerCtx {
             name: name.to_string(),
             type_params: Self::concat_type_params(impl_type_params, func),
             params,
+            var_self_receiver: var_self_receiver.map(|receiver| receiver.id),
             return_ty,
             body,
             span,
@@ -14084,7 +14362,7 @@ impl LowerCtx {
             .filter(|(_, p)| !p.is_consume)
             .filter_map(|(index, p)| match &p.ty.0 {
                 TypeExpr::Named { name, .. } => {
-                    // Builtin affine handles (LocalPid/RemotePid/LambdaPid,
+                    // Builtin affine handles (ActorHandle/RemotePid/ActorFn,
                     // channel halves, CancellationToken, MonitorRef, ...) are
                     // runtime-managed pointer words: their drop is dispatched
                     // by the runtime on a coherent path, and their disposition
@@ -14178,20 +14456,27 @@ impl LowerCtx {
     ///
     ///   3. Otherwise no `close` is reachable from any surface;
     ///      emit `ResourceMissingClose` as before.
-    fn check_resource_close_discipline(&mut self, decl: &TypeDecl, span: &Span) {
+    fn check_resource_close_discipline(
+        &mut self,
+        decl: &TypeDecl,
+        span: &Span,
+        declaration: &hew_types::DefId,
+    ) {
         let inline_close = decl
             .body
             .iter()
             .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == "close"));
         if inline_close {
+            self.resource_close_discipline_failures
+                .insert(declaration.clone());
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceCloseSourceUnsupported {
                     name: decl.name.clone(),
                 },
                 span.clone(),
                 "`#[resource]` types must declare `close` in a sibling \
-                 inherent-impl block (`impl T { fn close(self) { ... } }`); \
-                 the inline `type T { fn close(consuming self) ... }` \
+                 inherent-impl block (`impl T { fn close(consume self) { ... } }`); \
+                 the inline `type T { fn close(consume self) ... }` \
                  surface is not lowered in v0.5 and would silently fail \
                  link-time drop dispatch",
             ));
@@ -14201,6 +14486,8 @@ impl LowerCtx {
             if !sig.return_ty_unit {
                 let display = sig.return_ty_display.clone();
                 let decl_span = sig.decl_span.clone();
+                self.resource_close_discipline_failures
+                    .insert(declaration.clone());
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::ResourceCloseMustReturnUnit {
                         name: decl.name.clone(),
@@ -14219,13 +14506,15 @@ impl LowerCtx {
             }
             return;
         }
+        self.resource_close_discipline_failures
+            .insert(declaration.clone());
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::ResourceMissingClose {
                 name: decl.name.clone(),
             },
             span.clone(),
-            "`#[resource]` type must declare `fn close(self) { ... }` in a \
-             sibling inherent-impl block (`impl T { fn close(self) { ... } }`); \
+            "`#[resource]` type must declare `fn close(consume self) { ... }` in a \
+             sibling inherent-impl block (`impl T { fn close(consume self) { ... } }`); \
              the implicit drop contract dispatches to this method on every \
              scope-exit path",
         ));
@@ -14233,13 +14522,13 @@ impl LowerCtx {
 
     /// Enforce the `#[linear]` consuming-method discipline.
     ///
-    /// A `#[linear]` type must declare at least one `consuming self` method so
+    /// A `#[linear]` type must declare at least one `consume self` method so
     /// that some exit path can exhaust a binding of the type (the
     /// `MirCheck::MustConsume` enforcement target). The supported surface is a
-    /// sibling inherent-impl block (`impl T { fn commit(consuming self) { … } }`)
+    /// sibling inherent-impl block (`impl T { fn commit(consume self) { … } }`)
     /// — the form that lowers to a callable consume target.
     ///
-    ///   1. A type-body `consuming self` method (`type T { fn m(consuming self)
+    ///   1. A type-body `consume self` method (`type T { fn m(consume self)
     ///      … }`) is rejected: it is not lowered to a callable symbol, so a call
     ///      raises `IndirectCallUnsupported` at the call site, leaving the type
     ///      unusable. Fail-close here at the declaration with a directive to the
@@ -14259,9 +14548,9 @@ impl LowerCtx {
                     name: decl.name.clone(),
                 },
                 span.clone(),
-                "`#[linear]` types must declare their `consuming self` method in a \
-                 sibling inherent-impl block (`impl T { fn commit(consuming self) \
-                 { ... } }`); the inline `type T { fn commit(consuming self) ... }` \
+                "`#[linear]` types must declare their `consume self` method in a \
+                 sibling inherent-impl block (`impl T { fn commit(consume self) \
+                 { ... } }`); the inline `type T { fn commit(consume self) ... }` \
                  surface is not lowered to a callable consume target",
             ));
         } else if !self.impl_consuming_methods.contains(&decl.name) {
@@ -14270,18 +14559,32 @@ impl LowerCtx {
                     name: decl.name.clone(),
                 },
                 span.clone(),
-                "`#[linear]` type must declare at least one `consuming self` method \
+                "`#[linear]` type must declare at least one `consume self` method \
                  in a sibling inherent-impl block; without one no exit path could \
                  exhaust a binding of this type",
             ));
         }
     }
 
-    fn lower_type_decl(
+    fn lower_type_decl(&mut self, decl: &TypeDecl, span: Span) -> Option<HirTypeDecl> {
+        let declaration = self.source_declaration(
+            &span,
+            if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                hew_types::DeclarationKind::Machine
+            } else {
+                hew_types::DeclarationKind::Type
+            },
+            0,
+        )?;
+        Some(self.lower_type_decl_with_identity(decl, span, declaration))
+    }
+
+    fn lower_type_decl_with_identity(
         &mut self,
         decl: &TypeDecl,
-        span: std::ops::Range<usize>,
-    ) -> Option<HirTypeDecl> {
+        span: Span,
+        declaration: hew_types::DefId,
+    ) -> HirTypeDecl {
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
@@ -14298,7 +14601,7 @@ impl LowerCtx {
 
         match decl.resource_marker {
             AstResourceMarker::Resource => {
-                self.check_resource_close_discipline(decl, &span);
+                self.check_resource_close_discipline(decl, &span, &declaration);
             }
             AstResourceMarker::Linear => {
                 self.check_linear_consume_discipline(decl, &span);
@@ -14323,6 +14626,7 @@ impl LowerCtx {
                     ty: self.lower_type(ty),
                     default: None,
                     is_mutable: false,
+                    deferred: false,
                     span: field_span.clone(),
                 });
             }
@@ -14393,10 +14697,14 @@ impl LowerCtx {
         } else {
             ResourceMarker::from(decl.resource_marker)
         };
-        Some(HirTypeDecl {
+        HirTypeDecl {
+            kind: match decl.kind {
+                TypeDeclKind::Struct => HirTypeDeclKind::Struct,
+                TypeDeclKind::Enum => HirTypeDeclKind::Enum,
+            },
             id,
             node: self.ids.node(),
-            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Type, 0)?,
+            declaration,
             name: decl.name.clone(),
             // Root/local identity by default; the imported-module carrier
             // (`lower_imported_type_decl`) stamps `Some(module_short)` for
@@ -14410,7 +14718,7 @@ impl LowerCtx {
             fields,
             variants,
             span,
-        })
+        }
     }
 
     /// Lower a `record` declaration into `HirRecordDecl`.
@@ -14438,6 +14746,7 @@ impl LowerCtx {
                         ty: self.lower_type(&rf.ty),
                         default: None,
                         is_mutable: false,
+                        deferred: false,
                         span: rf.span.clone(),
                     })
                     .collect(),
@@ -14517,6 +14826,13 @@ impl LowerCtx {
     fn lower_supervisor(&mut self, decl: &SupervisorDecl, span: Span) -> Option<HirSupervisorDecl> {
         let (declaration, bootstrap_declaration) = self.source_supervisor_declarations(&span)?;
         let strategy = decl.strategy.map(lower_supervisor_strategy);
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            decl.type_params
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
+        );
 
         // Bind the construction-time config params in a fresh scope so the child
         // init-arg exprs lowered below can reference them (`config.field`). Mirror
@@ -14547,24 +14863,20 @@ impl LowerCtx {
                     static_slot += 1;
                     idx
                 };
-                let child_ty = self
-                    .canonical_supervisor_child_ty(&child.actor_type)
-                    .unwrap_or_else(|| {
-                        self.diagnostics.push(
-                            HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: child.actor_type.clone(),
-                                    reason: "supervisor child has no lexical actor authority"
-                                        .to_string(),
-                                },
-                                child.span.clone(),
-                                "a dotted supervisor child must resolve through the checker's \
-                                 exact module binding",
-                            )
-                            .with_source_module(self.current_module_name.clone()),
-                        );
-                        format!("<invalid-supervisor-child:{}>", child.actor_type)
-                    });
+                let child_ty = self.checked_ty(&child.span).cloned().unwrap_or_else(|| {
+                    self.diagnostics.push(
+                        HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: child.actor_type.clone(),
+                                reason: "supervisor child has no checked handle type".to_string(),
+                            },
+                            child.span.clone(),
+                            "supervisor child types must survive checker resolution",
+                        )
+                        .with_source_module(self.current_module_name.clone()),
+                    );
+                    ResolvedTy::Unit
+                });
                 HirSupervisorChild {
                     name: child.name.clone(),
                     ty: child_ty,
@@ -14613,6 +14925,7 @@ impl LowerCtx {
 
         // Pop the param scope now that every child's init-arg expr is lowered.
         self.pop_scope();
+        self.current_fn_type_params = previous_type_params;
 
         Some(HirSupervisorDecl {
             id: self.ids.item(),
@@ -14620,6 +14933,11 @@ impl LowerCtx {
             declaration,
             bootstrap_declaration,
             name: decl.name.clone(),
+            type_params: decl
+                .type_params
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
             params,
             strategy,
             // Decompose the fused `intensity` AST field into the two HIR fields
@@ -14695,537 +15013,6 @@ impl LowerCtx {
             .insert(event_type_name, event_variants);
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "machine lowering has three distinct phases (structure, checks, assembly) \
-                  that read more clearly as a single function than as multiple helpers"
-    )]
-    fn lower_machine(
-        &mut self,
-        decl: &MachineDecl,
-        span: std::ops::Range<usize>,
-    ) -> Option<HirMachineDecl> {
-        // Collect declared state names up front; the machine-body diagnostic
-        // filter uses this to recognise the semicolon-shorthand transition
-        // body (`Expr::Identifier(target_state)`) and avoid leaking its
-        // expected `UnresolvedSymbol` diagnostic, while leaving every other
-        // unresolved identifier visible.
-        let state_names: HashSet<String> = decl.states.iter().map(|s| s.name.clone()).collect();
-
-        // Collect event names in declaration order so `Expr::MachineEmit` can
-        // resolve its event_idx by position lookup during body lowering.
-        let event_names: Vec<String> = decl.events.iter().map(|ev| ev.name.clone()).collect();
-
-        // Pre-lower state field types and build the `current_machine_states`
-        // descriptor table. This is used during transition-body and entry/exit-block
-        // lowering to resolve bare state-name identifiers (`MachineVariantCtor`)
-        // and `self.field` accesses (`MachineFieldAccess`) without re-reading the
-        // AST during expression lowering.
-        //
-        // WHY HIR-side authority: the type checker does not produce side-table
-        // entries for machine state-name identifier references or self-field
-        // accesses inside transition bodies. HIR derives these types from the
-        // machine declaration itself, which is local to this pass.
-        let machine_state_descriptors: Vec<(String, Vec<HirField>)> = decl
-            .states
-            .iter()
-            .map(|s| {
-                let fields: Vec<HirField> = s
-                    .fields
-                    .iter()
-                    .map(|(name, ty)| HirField {
-                        name: name.clone(),
-                        ty: self.lower_type(ty),
-                        default: None,
-                        // Machine state fields are written by transition
-                        // bodies; there is no `let`/`var` surface on them.
-                        is_mutable: true,
-                        span: ty.1.clone(),
-                    })
-                    .collect();
-                (s.name.clone(), fields)
-            })
-            .collect();
-
-        // Install machine context so nested `lower_expr` calls can resolve
-        // state-name references and self-field accesses.  State constructors
-        // do not receive a checker expression-type entry, so retain the
-        // declaration's symbolic generic arguments here; MIR substitutes them
-        // using the concrete `MachineMonoEntry` while synthesising each step.
-        // Restored at the end of `lower_machine` via `mem::replace`.
-        let prev_machine_name = self.current_machine_name.replace(decl.name.clone());
-        let machine_origin = self.current_module_name.as_ref().map_or_else(
-            || decl.name.clone(),
-            |module| format!("{module}.{}", decl.name),
-        );
-        let machine_self_ty = ResolvedTy::named_user(
-            machine_origin,
-            decl.type_params
-                .iter()
-                .map(|param| ResolvedTy::named_user(param.name.clone(), Vec::new()))
-                .collect(),
-        );
-        let prev_machine_self_ty = self.current_machine_self_ty.replace(machine_self_ty);
-        let prev_machine_states = self
-            .current_machine_states
-            .replace(machine_state_descriptors.clone());
-
-        // Lower states.
-        let mut hir_states = Vec::new();
-        for (state_index, state) in decl.states.iter().enumerate() {
-            let fields: Vec<HirField> = machine_state_descriptors
-                .iter()
-                .find(|(name, _)| name == &state.name)
-                .map(|(_, fields)| fields.clone())
-                .unwrap_or_default();
-
-            // Shallow-scan the entry and exit blocks for field-assignment targets.
-            // Body-level effect-parity checking still uses the AST summary
-            // walk; the lowered HIR block below is structural substrate.
-            let entry_writes = state
-                .entry
-                .as_ref()
-                .map(collect_assigned_field_names)
-                .unwrap_or_default();
-            let exit_writes = state
-                .exit
-                .as_ref()
-                .map(collect_assigned_field_names)
-                .unwrap_or_default();
-
-            // Lower entry/exit blocks. The filter drops only the explicitly
-            // expected diagnostics for the machine-body forms not yet wired
-            // through HIR (state-name identifier refs, `this`); emit now
-            // lowers to `HirExprKind::MachineEmit` so it no longer needs
-            // filtering here.
-            let entry = state.entry.as_ref().map(|block| {
-                self.lower_machine_block_filtered(block, &state_names, event_names.clone())
-            });
-            let exit = state.exit.as_ref().map(|block| {
-                self.lower_machine_block_filtered(block, &state_names, event_names.clone())
-            });
-
-            let entry_declaration = if state.entry.is_some() {
-                Some(self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineStateEntry,
-                    state_index,
-                )?)
-            } else {
-                None
-            };
-            let exit_declaration = if state.exit.is_some() {
-                Some(self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineStateExit,
-                    state_index,
-                )?)
-            } else {
-                None
-            };
-            hir_states.push(HirMachineState {
-                declaration: self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineState,
-                    state_index,
-                )?,
-                entry_declaration,
-                exit_declaration,
-                name: state.name.clone(),
-                fields,
-                has_entry: state.entry.is_some(),
-                has_exit: state.exit.is_some(),
-                entry_writes,
-                exit_writes,
-                entry,
-                exit,
-                span: span.clone(),
-            });
-        }
-
-        // Lower events.
-        let hir_events: Vec<HirMachineEvent> = decl
-            .events
-            .iter()
-            .enumerate()
-            .map(|(event_index, ev)| {
-                let fields = ev
-                    .fields
-                    .iter()
-                    .map(|(name, ty)| HirField {
-                        name: name.clone(),
-                        ty: self.lower_type(ty),
-                        default: None,
-                        is_mutable: false,
-                        span: ty.1.clone(),
-                    })
-                    .collect();
-                Some(HirMachineEvent {
-                    declaration: self.source_declaration(
-                        &span,
-                        hew_types::DeclarationKind::MachineEvent,
-                        event_index,
-                    )?,
-                    name: ev.name.clone(),
-                    fields,
-                    span: span.clone(),
-                })
-            })
-            .collect::<Option<Vec<_>>>()?;
-
-        // Lower transitions — record names, guard presence, body writes,
-        // and emitted event names (for static checks). The body is also
-        // lowered to `HirExpr`; see `lower_machine_expr_filtered` for the
-        // narrow diagnostic-filter contract.
-        let mut hir_transitions: Vec<HirMachineTransition> =
-            Vec::with_capacity(decl.transitions.len());
-        for (transition_index, tr) in decl.transitions.iter().enumerate() {
-            let is_self_transition = tr.source_state == tr.target_state && tr.source_state != "_";
-            let body_writes = collect_assigned_field_names_expr(&tr.body.0);
-            // Set the source-state index so `lower_expr` can resolve `self.field`
-            // accesses to `MachineFieldAccess` nodes. Wildcard source `_` has no
-            // concrete state index, so leave it as `None` — `self.field` access
-            // inside a wildcard transition body cannot resolve to a specific
-            // variant's fields and will be rejected by the `MachineFieldAccess`
-            // producer with a diagnostic.
-            let src_state_idx = decl.states.iter().position(|s| s.name == tr.source_state);
-            let prev_source_state = self.current_machine_source_state;
-            self.current_machine_source_state = src_state_idx;
-            let prev_transition_event = self.current_machine_transition_event.take();
-            self.current_machine_transition_event = hir_events
-                .iter()
-                .position(|ev| ev.name == tr.event_name)
-                .map(|idx| (idx, hir_events[idx].fields.clone()));
-            let body =
-                self.lower_machine_expr_filtered(&tr.body, &state_names, event_names.clone());
-            // Lower the guard expression (if any) through the same
-            // machine-body filter so the guard sees the same implicit
-            // bindings (`self`, source-state alias, event-field aliases) the
-            // body sees, and so machine-body walkers can recurse into it.
-            // Without this, FC-P1-B (call-shape gates), FC-P1-D/A3/E
-            // (blocking-recv gates), and every future machine-body walker
-            // would silently treat guarded transitions as if the guard
-            // position contained no expressions at all.
-            let guard = tr
-                .guard
-                .as_ref()
-                .map(|g| self.lower_machine_expr_filtered(g, &state_names, event_names.clone()));
-            self.current_machine_source_state = prev_source_state;
-            self.current_machine_transition_event = prev_transition_event;
-            // body_emits is derived from the lowered HIR body by walking
-            // `HirExprKind::MachineEmit { event_idx, .. }` rather than the
-            // AST summary shape, so emit expressions nested inside
-            // conditionals or match arms are correctly detected.
-            let body_emits = collect_hir_emitted_events(&body, &event_names);
-            hir_transitions.push(HirMachineTransition {
-                declaration: self.source_declaration(
-                    &span,
-                    hew_types::DeclarationKind::MachineTransition,
-                    transition_index,
-                )?,
-                event_name: tr.event_name.clone(),
-                source_state: tr.source_state.clone(),
-                target_state: tr.target_state.clone(),
-                guard,
-                is_self_transition,
-                reenter: tr.reenter,
-                body_writes,
-                body_emits,
-                body,
-                span: tr.body.1.clone(),
-            });
-        }
-
-        // ── Static checks ────────────────────────────────────────────────────
-
-        // 1. Exhaustiveness: every concrete (state, event) pair must have a
-        //    transition, or a `default` arm must exist, or a wildcard source `_`
-        //    covers it.
-        if !decl.has_default {
-            let mut missing: Vec<(String, String)> = Vec::new();
-            for state in &decl.states {
-                for event in &decl.events {
-                    let covered = decl.transitions.iter().any(|tr| {
-                        tr.event_name == event.name
-                            && (tr.source_state == state.name || tr.source_state == "_")
-                    });
-                    if !covered {
-                        missing.push((state.name.clone(), event.name.clone()));
-                    }
-                }
-            }
-            if !missing.is_empty() {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MachineExhaustivenessViolation {
-                        machine_name: decl.name.clone(),
-                        missing,
-                    },
-                    span.clone(),
-                    format!(
-                        "machine `{}` does not handle all (state, event) pairs; \
-                         add the missing transitions or a `default` arm",
-                        decl.name
-                    ),
-                ));
-                // Restore machine context before early return so the next
-                // top-level item lowers in a clean context.
-                self.current_machine_name = prev_machine_name;
-                self.current_machine_self_ty = prev_machine_self_ty;
-                self.current_machine_states = prev_machine_states;
-                return None;
-            }
-        }
-
-        // 2. Self-transition @reenter rule: a non-empty self-loop body without
-        //    @reenter is a compile error. Empty body OR @reenter are both OK.
-        //    "Empty" means the body resolves to `Expr::Identifier(target_state)`
-        //    (the no-body semicolon shorthand) or an `Expr::Block` with no stmts
-        //    and no trailing expression.
-        for tr in decl.transitions.iter().zip(hir_transitions.iter()) {
-            let (ast_tr, hir_tr) = tr;
-            if !hir_tr.is_self_transition || hir_tr.reenter {
-                continue;
-            }
-            let body_is_empty = is_empty_self_body(&ast_tr.body.0, &hir_tr.target_state);
-            if !body_is_empty {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MachineSelfTransitionNeedsReenter {
-                        machine_name: decl.name.clone(),
-                        state_name: hir_tr.source_state.clone(),
-                        event_name: hir_tr.event_name.clone(),
-                    },
-                    hir_tr.span.clone(),
-                    format!(
-                        "self-transition `on {event}` in state `{state}` has a non-empty body \
-                         but is not marked `reenter`; write `=> {state} reenter {{ … }}` to opt \
-                         in to Mealy re-entry semantics, or remove the body",
-                        event = hir_tr.event_name,
-                        state = hir_tr.source_state,
-                    ),
-                ));
-            }
-        }
-
-        // 3. Effect-parity: a transition body that writes a field also written
-        //    by the *target* state's `entry` block or the *source* state's `exit`
-        //    block creates ambiguous initialization/teardown order.
-        for tr in &hir_transitions {
-            if tr.body_writes.is_empty() {
-                continue;
-            }
-            // Check target entry conflict.
-            if let Some(target) = hir_states.iter().find(|s| s.name == tr.target_state) {
-                for field in &tr.body_writes {
-                    if let Some((_, entry_assign_span)) =
-                        target.entry_writes.iter().find(|(n, _)| n == field)
-                    {
-                        self.diagnostics.push(
-                            HirDiagnostic::new(
-                                HirDiagnosticKind::MachineEffectParityViolation {
-                                    machine_name: decl.name.clone(),
-                                    state_name: tr.target_state.clone(),
-                                    field_name: field.clone(),
-                                    transition_event: tr.event_name.clone(),
-                                    is_entry_conflict: true,
-                                },
-                                tr.span.clone(),
-                                format!(
-                                    "transition `on {}` body and state `{}` entry block both \
-                                     write field `{}`; remove the write from one site",
-                                    tr.event_name, tr.target_state, field
-                                ),
-                            )
-                            .with_secondary_spans(vec![(
-                                entry_assign_span.clone(),
-                                format!(
-                                    "state `{}` entry block assigns `{}` here",
-                                    tr.target_state, field
-                                ),
-                            )]),
-                        );
-                    }
-                }
-            }
-            // Check source exit conflict.
-            if let Some(source) = hir_states.iter().find(|s| s.name == tr.source_state) {
-                for field in &tr.body_writes {
-                    if let Some((_, exit_assign_span)) =
-                        source.exit_writes.iter().find(|(n, _)| n == field)
-                    {
-                        self.diagnostics.push(
-                            HirDiagnostic::new(
-                                HirDiagnosticKind::MachineEffectParityViolation {
-                                    machine_name: decl.name.clone(),
-                                    state_name: tr.source_state.clone(),
-                                    field_name: field.clone(),
-                                    transition_event: tr.event_name.clone(),
-                                    is_entry_conflict: false,
-                                },
-                                tr.span.clone(),
-                                format!(
-                                    "transition `on {}` body and state `{}` exit block both \
-                                     write field `{}`; remove the write from one site",
-                                    tr.event_name, tr.source_state, field
-                                ),
-                            )
-                            .with_secondary_spans(vec![(
-                                exit_assign_span.clone(),
-                                format!(
-                                    "state `{}` exit block assigns `{}` here",
-                                    tr.source_state, field
-                                ),
-                            )]),
-                        );
-                    }
-                }
-            }
-        }
-
-        // 4. Emit-cycle: `on E` transition that directly emits `E` would
-        //    immediately re-trigger its own handler.
-        for tr in &hir_transitions {
-            if tr.body_emits.contains(&tr.event_name) {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::MachineEmitCycle {
-                        machine_name: decl.name.clone(),
-                        event_name: tr.event_name.clone(),
-                    },
-                    tr.span.clone(),
-                    format!(
-                        "transition `on {}` emits `{}` which immediately re-triggers itself; \
-                         rename the emitted event or remove the emit",
-                        tr.event_name, tr.event_name
-                    ),
-                ));
-            }
-        }
-
-        // 5. Emits-manifest cross-check: when the machine declares an
-        //    `emits { … }` header, every event named by an `emit` statement in
-        //    any transition body must appear in that manifest. The manifest is
-        //    an auditable allowlist of permitted Mealy outputs.
-        if !decl.emits.is_empty() {
-            for tr in &hir_transitions {
-                for emitted in &tr.body_emits {
-                    if !decl.emits.contains(emitted) {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::MachineEmitNotInManifest {
-                                machine_name: decl.name.clone(),
-                                event_name: emitted.clone(),
-                            },
-                            tr.span.clone(),
-                            format!(
-                                "transition `on {}` emits `{}`, which is not declared in the \
-                                 `emits {{ … }}` manifest of machine `{}`; add `{}` to `emits` \
-                                 or remove the emit",
-                                tr.event_name, emitted, decl.name, emitted
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-
-        // Fail-closed: if any diagnostic was pushed for this machine, abort.
-        // (Effect-parity, self-transition, and emit-cycle diagnostics are not
-        // return-None by themselves but we abort to avoid a partially-valid
-        // machine in HIR.)
-        let has_machine_errors = self.diagnostics.iter().any(|d| {
-            matches!(
-                &d.kind,
-                HirDiagnosticKind::MachineSelfTransitionNeedsReenter { machine_name, .. }
-                | HirDiagnosticKind::MachineEffectParityViolation { machine_name, .. }
-                | HirDiagnosticKind::MachineEmitCycle { machine_name, .. }
-                | HirDiagnosticKind::MachineEmitNotInManifest { machine_name, .. }
-                if machine_name == &decl.name
-            )
-        });
-        if has_machine_errors {
-            // Restore machine context before early return.
-            self.current_machine_name = prev_machine_name;
-            self.current_machine_self_ty = prev_machine_self_ty;
-            self.current_machine_states = prev_machine_states;
-            return None;
-        }
-
-        // Restore machine context before returning.
-        self.current_machine_name = prev_machine_name;
-        self.current_machine_self_ty = prev_machine_self_ty;
-        self.current_machine_states = prev_machine_states;
-
-        // Lower trait bounds declared on the machine's type parameters.
-        // Both the inline `<T: Trait>` form and the trailing
-        // `where T: Trait` clause are flattened into a single
-        // `Vec<HirMachineBound>` in authored order: inline bounds
-        // first (in the order their owning `TypeParam` appears, with
-        // each param's `bounds` walked in their authored order), then
-        // where-clause predicates. Per Q230-B the carrier is flat —
-        // duplicate `(param, trait)` pairs from inline+where are
-        // preserved at this layer with distinct `origin`s and dedup'd
-        // downstream by the checker's per-machine bound table. The
-        // span on `WhereOrigin::WhereClause` is the `WherePredicate.ty`
-        // span (the LHS of the predicate), used by downstream
-        // diagnostics that want to point at the predicate's source.
-        let mut type_param_bounds: Vec<crate::node::HirMachineBound> = Vec::new();
-        for tp in &decl.type_params {
-            for tb in &tp.bounds {
-                let trait_bound = self.lower_machine_trait_bound(tb);
-                type_param_bounds.push(crate::node::HirMachineBound {
-                    param: tp.name.clone(),
-                    trait_bound,
-                    origin: crate::node::WhereOrigin::Inline,
-                });
-            }
-        }
-        if let Some(where_clause) = &decl.where_clause {
-            for predicate in &where_clause.predicates {
-                // The LHS `ty` of a where predicate on a machine
-                // type-param is parsed as a `TypeExpr::Named { name, .. }`
-                // where `name` is the bare type-param symbol; this
-                // matches the checker's `validate_machine_type_param_bounds`
-                // contract that rejects anything else as `UndefinedType`.
-                // Extract the param name; fall back to the displayed
-                // form for resilience when the upstream parser admits
-                // a non-Named LHS that has slipped past the checker
-                // (defensive — should be unreachable in well-formed
-                // programs).
-                let param_name = match &predicate.ty.0 {
-                    hew_parser::ast::TypeExpr::Named { name, .. } => name.clone(),
-                    other => format!("{other:?}"),
-                };
-                let lhs_span = predicate.ty.1.clone();
-                for tb in &predicate.bounds {
-                    let trait_bound = self.lower_machine_trait_bound(tb);
-                    type_param_bounds.push(crate::node::HirMachineBound {
-                        param: param_name.clone(),
-                        trait_bound,
-                        origin: crate::node::WhereOrigin::WhereClause(lhs_span.clone()),
-                    });
-                }
-            }
-        }
-
-        let defining_module = self.current_module_name.clone();
-        Some(HirMachineDecl {
-            id: self.ids.item(),
-            node: self.ids.node(),
-            // Mint the machine's declaration identity here, the same way
-            // `lower_type_decl` mints a type declaration's: the dotted owner
-            // path when the machine came from a module, the bare spelling for
-            // a root-program machine. Consumers project this field.
-            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Machine, 0)?,
-            name: decl.name.clone(),
-            defining_module,
-            type_params: decl.type_params.iter().map(|p| p.name.clone()).collect(),
-            type_param_bounds,
-            states: hir_states,
-            events: hir_events,
-            transitions: hir_transitions,
-            has_default: decl.has_default,
-            span,
-        })
-    }
-
     /// Lower a parser `TraitBound` (used in a machine's type-param
     /// bound list or where-clause predicate) into the cross-layer
     /// `ResolvedTraitBound` carrier. Trait `args` and
@@ -15255,91 +15042,14 @@ impl LowerCtx {
         }
     }
 
-    /// Lower a machine transition body expression to `HirExpr` so MIR /
-    /// codegen has a typed-HIR tree to consume. The body's surface still
-    /// uses constructs that aren't yet wired through HIR — direct
-    /// state-name references (the semicolon-shorthand body
-    /// `Expr::Identifier(target_state)`) and `Expr::This`. Those produce
-    /// specific, expected diagnostics that the AST-summary walks
-    /// (`body_writes` / `body_emits`) and the per-machine static checks
-    /// (exhaustiveness, self-transition rules, effect-parity, emit-cycle)
-    /// already cover; this helper filters out *only those exact* diagnostics
-    /// whose span matches an allowlisted construct in the AST. Unrelated
-    /// diagnostics — unresolved user symbols, type mismatches, malformed
-    /// checker output, etc. — flow through unchanged so a buggy machine body
-    /// still fails closed.
-    ///
-    /// `event_names` is the ordered list of event names for the enclosing
-    /// machine (corresponding to `HirMachineDecl::events`). Set as
-    /// `current_machine_events` during lowering so `Expr::MachineEmit` can
-    /// resolve its `event_idx`.
-    fn lower_machine_expr_filtered(
-        &mut self,
-        body: &Spanned<Expr>,
-        state_names: &HashSet<String>,
-        event_names: Vec<String>,
-    ) -> HirExpr {
-        let mut allowlist = MachineBodyAllowlist::default();
-        walk_expr_for_machine_allowlist(body, state_names, &mut allowlist);
-        let diag_snapshot = self.diagnostics.len();
-        self.push_scope();
-        self.bind_machine_transition_implicits(body.1.clone());
-        let prev_events = self.current_machine_events.replace(event_names);
-        let expr = self.lower_expr(body, IntentKind::Read);
-        self.current_machine_events = prev_events;
-        self.pop_scope();
-        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
-        expr
-    }
-
-    /// Lower a machine state's `entry { ... }` / `exit { ... }` block,
-    /// applying the same allowlist filter as `lower_machine_expr_filtered`.
-    ///
-    /// `event_names` is the ordered list of event names for the enclosing
-    /// machine; see `lower_machine_expr_filtered` for details.
-    fn lower_machine_block_filtered(
-        &mut self,
-        block: &Block,
-        state_names: &HashSet<String>,
-        event_names: Vec<String>,
-    ) -> HirBlock {
-        let mut allowlist = MachineBodyAllowlist::default();
-        walk_block_for_machine_allowlist(block, state_names, &mut allowlist);
-        let diag_snapshot = self.diagnostics.len();
-        let prev_events = self.current_machine_events.replace(event_names);
-        let lowered = self.lower_block(block, &ResolvedTy::Unit);
-        self.current_machine_events = prev_events;
-        self.retain_or_drop_machine_body_diags(diag_snapshot, &allowlist);
-        lowered
-    }
-
-    /// Filter diagnostics produced since `snapshot_len`: drop only those
-    /// whose `(kind, span)` matches an entry in `allowlist`. Anything else
-    /// — including diagnostics with the same *kind* but a different span,
-    /// or with the same span but a different kind — is preserved.
-    fn retain_or_drop_machine_body_diags(
-        &mut self,
-        snapshot_len: usize,
-        allowlist: &MachineBodyAllowlist,
-    ) {
-        if snapshot_len >= self.diagnostics.len() {
-            return;
-        }
-        let tail: Vec<_> = self.diagnostics.drain(snapshot_len..).collect();
-        for diag in tail {
-            if !allowlist.permits(&diag) {
-                self.diagnostics.push(diag);
-            }
-        }
-    }
-
     /// Canonicalise an actor-state field's lowered type: a field annotated with
     /// a bare actor name (e.g. `let out: W;` where `W` is a `TypeDefKind::Actor`)
     /// holds an actor *handle*, never the actor by value — actors are reference
-    /// types and cannot be embedded inline. Wrap such a field in `LocalPid<W>`,
-    /// the same canonical handle representation `spawn W` produces, so the MIR
-    /// state-clone classifier and codegen lower it as a bit-copyable Pid instead
-    /// of failing closed on an unresolvable nested user record. Non-actor field
+    /// types and cannot be embedded inline. Canonicalise such a field to `W`'s
+    /// own actor-handle type, the same canonical handle representation
+    /// `spawn W` produces, so the MIR state-clone classifier and codegen
+    /// lower it as a bit-copyable pid instead of failing closed on an
+    /// unresolvable nested user record. Non-actor field
     /// types (records, enums, primitives, containers, real handle wrappers) are
     /// returned unchanged. Bare actor names nested inside containers/records are
     /// intentionally NOT rewritten here — that exotic shape stays fail-closed at
@@ -15369,42 +15079,12 @@ impl LowerCtx {
     ) -> ResolvedTy {
         if let ResolvedTy::Named {
             name,
-            mut args,
-            builtin: Some(BuiltinType::LocalPid),
-            is_opaque,
-        } = ty
-        {
-            if let [ResolvedTy::Named {
-                name: actor_name,
-                args: actor_args,
-                builtin: None,
-                ..
-            }] = args.as_mut_slice()
-            {
-                if actor_args.is_empty() && !actor_name.contains('.') {
-                    if let Some(module) = decl_module {
-                        let qualified = format!("{module}.{actor_name}");
-                        if self.actor_type_names.contains(&qualified) {
-                            actor_name.clone_from(&qualified);
-                        }
-                    }
-                }
-            }
-            return ResolvedTy::Named {
-                name,
-                args,
-                builtin: Some(BuiltinType::LocalPid),
-                is_opaque,
-            };
-        }
-        if let ResolvedTy::Named {
-            name,
             args,
             builtin,
             ..
         } = &ty
         {
-            if builtin.is_none() && args.is_empty() {
+            if builtin.is_none() && !self.current_fn_type_params.contains(name) {
                 let actor_name = if self.actor_type_names.contains(name) {
                     Some(name.clone())
                 } else if !name.contains('.') {
@@ -15420,9 +15100,9 @@ impl LowerCtx {
 
                 if let Some(actor_name) = actor_name {
                     return ResolvedTy::Named {
-                        name: BuiltinType::LocalPid.canonical_name().to_string(),
-                        args: vec![ResolvedTy::named_user(actor_name, Vec::new())],
-                        builtin: Some(BuiltinType::LocalPid),
+                        name: actor_name,
+                        args: args.clone(),
+                        builtin: Some(BuiltinType::ActorHandle),
                         is_opaque: false,
                     };
                 }
@@ -15438,6 +15118,10 @@ impl LowerCtx {
     /// an actor lowered via [`lower_imported_actor`](Self::lower_imported_actor);
     /// it scopes `canonicalize_actor_ref_field_ty`'s bare-name resolution to
     /// the module the actor is actually declared in.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the actor declaration owns one generic scope across all of its members"
+    )]
     fn lower_actor(
         &mut self,
         decl: &ActorDecl,
@@ -15479,6 +15163,13 @@ impl LowerCtx {
             let key = crate::mangle_dotted_name(&format!("{registry_owner}::{}", method.name));
             self.register_fn_entry(&key, method);
         }
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            decl.type_params
+                .iter()
+                .map(|parameter| parameter.name.clone())
+                .collect(),
+        );
         let state_fields: Vec<HirField> = decl
             .fields
             .iter()
@@ -15495,18 +15186,22 @@ impl LowerCtx {
                     // already rejected writes to immutable fields outside
                     // `init`, so this is the enforced mutability.
                     is_mutable: f.is_mutable,
+                    deferred: self
+                        .actor_deferred_field_decls
+                        .contains(&self.mk_key(&f.ty.1)),
                     span: f.ty.1.clone(),
                 }
             })
             .collect();
 
         let init = decl.init.as_ref().map(|init| {
-            let (params, body) =
+            let (state_bindings, params, body) =
                 self.lower_actor_body(&state_fields, &init.params, &init.body, &ResolvedTy::Unit);
             HirActorInit {
                 declaration: init_declaration
                     .clone()
                     .expect("actor init identity preflighted above"),
+                state_bindings,
                 params,
                 body,
             }
@@ -15537,6 +15232,8 @@ impl LowerCtx {
             .cloned();
         let cycle_capable = self.cycle_capable_actors.contains(&actor_identity);
 
+        self.current_fn_type_params = previous_type_params;
+
         Some(HirActorDecl {
             id: self.ids.item(),
             node: self.ids.node(),
@@ -15564,6 +15261,7 @@ impl LowerCtx {
             overflow_policy: decl.overflow_policy.clone(),
             cycle_capable,
             protocol_descriptor,
+            lambda_handle_ty: None,
             span,
         })
     }
@@ -15574,25 +15272,28 @@ impl LowerCtx {
         params: &[Param],
         body: &Block,
         expected_ty: &ResolvedTy,
-    ) -> (Vec<HirBinding>, HirBlock) {
+    ) -> (Vec<HirBinding>, Vec<HirBinding>, HirBlock) {
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
         self.push_scope();
-        for field in state_fields {
-            self.bind(
-                field.name.clone(),
-                field.ty.clone(),
-                true,
-                field.span.clone(),
-            );
-        }
+        let state_bindings = state_fields
+            .iter()
+            .map(|field| {
+                self.bind(
+                    field.name.clone(),
+                    field.ty.clone(),
+                    true,
+                    field.span.clone(),
+                )
+            })
+            .collect();
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
         let body = self.with_current_return_type(expected_ty.clone(), |ctx| {
             ctx.lower_block(body, expected_ty)
         });
         self.pop_scope();
         self.scope_depth = saved_scope_depth;
-        (params, body)
+        (state_bindings, params, body)
     }
 
     /// Lower a `receive gen fn` handler body into a generator-shell block.
@@ -15611,12 +15312,13 @@ impl LowerCtx {
         body: &Block,
         yield_ty: ResolvedTy,
         span: &Span,
-    ) -> (Vec<HirBinding>, HirBlock) {
+    ) -> (Vec<HirBinding>, Vec<HirBinding>, HirBlock) {
         let gen_return_ty = ResolvedTy::Unit;
         let saved_scope_depth = self.scope_depth;
         self.scope_depth = 0;
         self.push_scope();
         let mut state_field_bindings: HashSet<BindingId> = HashSet::new();
+        let mut state_bindings = Vec::with_capacity(state_fields.len());
         for field in state_fields {
             let binding = self.bind(
                 field.name.clone(),
@@ -15625,6 +15327,7 @@ impl LowerCtx {
                 field.span.clone(),
             );
             state_field_bindings.insert(binding.id);
+            state_bindings.push(binding);
         }
         let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
 
@@ -15685,7 +15388,7 @@ impl LowerCtx {
             ty: generator_ty,
             span: span.clone(),
         };
-        (params, wrapped)
+        (state_bindings, params, wrapped)
     }
 
     fn lower_actor_receive_fn(
@@ -15703,7 +15406,7 @@ impl LowerCtx {
         } else {
             return_ty.clone()
         };
-        let (params, body) = if rf.is_generator {
+        let (state_bindings, params, body) = if rf.is_generator {
             // A `receive gen fn` lowers its body through the same `GenBlock`
             // generator-shell path a standalone `gen fn` uses
             // (`lower_generator_fn_body`): the declared `-> T` is the Yield
@@ -15723,7 +15426,23 @@ impl LowerCtx {
                 &rf.span,
             )
         } else {
-            self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty)
+            let (state_bindings, params, mut body) =
+                self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
+            // A `fails` handler whose body falls off the end with unit returns
+            // the declared `Ok(())`, exactly as a `fails` fn does.
+            if let Some(annotation) = rf.return_type.as_ref().filter(|annotation| {
+                self.result_return_coercions
+                    .contains_key(&self.mk_key(&annotation.1))
+            }) {
+                let span = annotation.1.clone();
+                let value = self.make_unit_expr(span.clone());
+                body.tail = Some(Box::new(
+                    self.with_current_return_type(return_ty.clone(), |ctx| {
+                        ctx.wrap_tail_ok(value, &span)
+                    }),
+                ));
+            }
+            (state_bindings, params, body)
         };
         let state_guard = match self
             .actor_handler_state_guards
@@ -15750,6 +15469,7 @@ impl LowerCtx {
             .and_then(AttributeArg::as_duration_ns);
         HirActorReceiveFn {
             declaration,
+            state_bindings,
             name: rf.name.clone(),
             is_generator: rf.is_generator,
             params,
@@ -15780,7 +15500,7 @@ impl LowerCtx {
                 .return_type
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-            let (params, body) =
+            let (state_bindings, params, body) =
                 self.lower_actor_body(state_fields, &method.params, &method.body, &return_ty);
             let hook_attr = method.attributes.iter().find(|a| a.name == "on");
             let hook_kind = hook_attr
@@ -15797,6 +15517,7 @@ impl LowerCtx {
             match hook_kind {
                 Some(kind) => hooks.push(HirLifecycleHook {
                     declaration: declaration.clone(),
+                    state_bindings,
                     kind,
                     name: method.name.clone(),
                     params,
@@ -15806,6 +15527,7 @@ impl LowerCtx {
                 }),
                 None => plain.push(HirActorMethod {
                     declaration: declaration.clone(),
+                    state_bindings,
                     name: method.name.clone(),
                     params,
                     return_ty,
@@ -15818,15 +15540,6 @@ impl LowerCtx {
     }
 
     fn lower_block(&mut self, block: &Block, expected_ty: &ResolvedTy) -> HirBlock {
-        // Nested control-flow bodies (while, loop, if, match) must not
-        // inherit the parent's `scope_depth`. The `scope_depth > 0` guard
-        // in `lower_expression_stmt_kind` is intended to intercept only the
-        // DIRECT statement-expressions of a `scope { }` body (handled by
-        // `lower_scope_block`). Resetting to 0 here ensures that a call
-        // inside `scope { while { call() } }` is NOT treated as a spawned
-        // task — only the top-level scope statements are spawn candidates.
-        let saved_scope_depth = self.scope_depth;
-        self.scope_depth = 0;
         self.push_scope();
         let scope = self.ids.scope();
         let prev_scope_id = std::mem::replace(&mut self.current_scope_id, scope);
@@ -15858,7 +15571,6 @@ impl LowerCtx {
         );
         self.current_scope_id = prev_scope_id;
         self.pop_scope();
-        self.scope_depth = saved_scope_depth;
 
         HirBlock {
             node: self.ids.node(),
@@ -15873,19 +15585,12 @@ impl LowerCtx {
     /// Lower a statement, returning zero or more `HirStmt`s.
     ///
     /// Most statements produce exactly one `HirStmt` (delegated to `lower_stmt`).
-    /// `let (a, b) = expr;` (Q33 tuple-let) produces:
-    ///   1. `let __tuple_N = expr;`    — binds the tuple value to a synthetic temp
-    ///   2. `let a = __tuple_N.0;`     — per-element projection (as many as elements)
-    ///   3. `let b = __tuple_N.1;`
-    ///
-    /// The element projections use a synthetic `HirExprKind::TupleIndex` node.
-    /// Downstream MIR lowering handles tuple projections in the `Expr::Call` return
-    /// path for `duplex_pair`.
+    /// An irrefutable tuple or record pattern produces one typed destructure
+    /// group, followed by another group for each nested aggregate field.
     #[expect(
         clippy::too_many_lines,
-        reason = "tuple-let expansion has three phases (validation, temp-bind, per-element loop) \
-                  that read more clearly as a single function; splitting would obscure the \
-                  invariant that temp-bind and per-element refs share the same temp_name"
+        reason = "aggregate let validation and checker-plan materialisation stay together so \
+                  every canonical field is represented in the ordered destructure group"
     )]
     fn lower_stmt_multi(
         &mut self,
@@ -15904,7 +15609,7 @@ impl LowerCtx {
         } = stmt
         {
             if let Pattern::Tuple(element_patterns) = &pattern.0 {
-                // Lower the tuple value once into a synthetic temp binding.
+                // Lower the tuple value once as the group's sole source.
                 let tuple_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let tuple_ty = tuple_val.ty.clone();
 
@@ -15947,86 +15652,19 @@ impl LowerCtx {
                     }];
                 };
 
-                // Synthetic temp name — unlikely to collide with user identifiers.
-                let temp_name = format!("__tuple_{}", self.ids.binding().0);
-                let temp_binding =
-                    self.bind(temp_name.clone(), tuple_ty.clone(), false, span.clone());
-                // Capture the binding id before `temp_binding` is moved into
-                // the `HirStmt` below.  MIR lowering's `TupleIndex` arm needs
-                // `ResolvedRef::Binding(temp_id)` to look up the proxy Place in
-                // `binding_locals`; `Unresolved` would return `None` and break
-                // the `tuple_decomp` lookup for non-BitCopy element types.
-                let temp_id = temp_binding.id;
-                let temp_stmt = HirStmt {
-                    node: self.ids.node(),
-                    kind: HirStmtKind::Let(temp_binding, Some(tuple_val)),
-                    span: span.clone(),
-                };
-
-                let mut stmts = vec![temp_stmt];
-
-                // Per-element projection lets.
-                for (idx, (elem_pat, elem_ty)) in
-                    element_patterns.iter().zip(element_tys).enumerate()
-                {
-                    // Build a TupleIndex expression: `__tuple_N.<idx>`.
-                    // Use `ResolvedRef::Binding(temp_id)` so MIR can resolve
-                    // the proxy local from `binding_locals` and recover the
-                    // per-element `Place` via `tuple_decomp`.
-                    let temp_ref = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&tuple_ty, &self.type_classes),
-                        ty: tuple_ty.clone(),
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::BindingRef {
-                            name: temp_name.clone(),
-                            resolved: ResolvedRef::Binding(temp_id),
-                        },
-                        span: span.clone(),
-                    };
-                    let projection = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
-                        ty: elem_ty.clone(),
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::TupleIndex {
-                            tuple: Box::new(temp_ref),
-                            index: idx,
-                        },
-                        span: elem_pat.1.clone(),
-                    };
-
-                    if matches!(elem_pat.0, Pattern::Wildcard) {
-                        self.push_pattern_binding_stmt(
-                            format!("_{idx}"),
-                            elem_ty,
-                            projection,
-                            &mut stmts,
-                            elem_pat.1.clone(),
-                        );
-                    } else {
-                        self.lower_pattern_value_into_stmts(
-                            elem_pat,
-                            projection,
-                            elem_ty,
-                            &mut stmts,
-                            elem_pat.1.clone(),
-                        );
-                    }
-                }
-
+                let mut stmts = Vec::new();
+                self.lower_tuple_pattern_value_into_stmts(
+                    element_patterns,
+                    tuple_val,
+                    &ResolvedTy::Tuple(element_tys),
+                    &mut stmts,
+                    span,
+                );
                 return stmts;
             }
 
             // Record-let: `let Point { x, y } = value_expr;`
             // and shorthand: `let { x, y } = value_expr;`
-            //
-            // Desugar into the same three-phase template as tuple-let:
-            //   1. `let __rec_N = expr;`         — synthetic temp binds the record
-            //   2. `let x = __rec_N.x;`          — per-field FieldAccess projection
-            //   3. `let y = __rec_N.y;`
             //
             // Checker authority: the refutability gate (Stage 1) has already
             // rejected non-product-type scrutinee patterns before HIR lowers.
@@ -16129,60 +15767,14 @@ impl LowerCtx {
 
                 let rec_val = self.lower_expr(value_expr, IntentKind::Consume);
                 let rec_ty = rec_val.ty.clone();
-
-                // Phase 1: bind the record value to a synthetic temp.
-                let temp_name = format!("__rec_{}", self.ids.binding().0);
-                let temp_binding =
-                    self.bind(temp_name.clone(), rec_ty.clone(), false, span.clone());
-                let temp_id = temp_binding.id;
-                let temp_stmt = HirStmt {
-                    node: self.ids.node(),
-                    kind: HirStmtKind::Let(temp_binding, Some(rec_val)),
-                    span: span.clone(),
-                };
-
-                let mut stmts = vec![temp_stmt];
-
-                // Phase 2: per-field projection lets.
-                for (field_name, field_ty, field_pattern) in planned_fields {
-                    // Build a FieldAccess expression: `__rec_N.<field_name>`.
-                    // `ResolvedRef::Binding(temp_id)` — same as the tuple-let path
-                    // (`:9579`) — so MIR resolves the proxy local from
-                    // `binding_locals` via its BindingId.
-                    let temp_ref = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&rec_ty, &self.type_classes),
-                        ty: rec_ty.clone(),
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::BindingRef {
-                            name: temp_name.clone(),
-                            resolved: ResolvedRef::Binding(temp_id),
-                        },
-                        span: span.clone(),
-                    };
-                    let projection = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::of_ty(&field_ty, &self.type_classes),
-                        ty: field_ty.clone(),
-                        intent: IntentKind::Consume,
-                        kind: HirExprKind::FieldAccess {
-                            object: Box::new(temp_ref),
-                            field: field_name.clone(),
-                        },
-                        span: field_pattern.1.clone(),
-                    };
-
-                    self.lower_pattern_value_into_stmts(
-                        &field_pattern,
-                        projection,
-                        field_ty,
-                        &mut stmts,
-                        field_pattern.1.clone(),
-                    );
-                }
-
+                let mut stmts = Vec::new();
+                self.lower_planned_record_pattern_value_into_stmts(
+                    planned_fields,
+                    rec_val,
+                    &rec_ty,
+                    &mut stmts,
+                    span,
+                );
                 return stmts;
             }
         }
@@ -16252,6 +15844,41 @@ impl LowerCtx {
         binding_id
     }
 
+    /// The binding one destructured field introduces, and whether it carries a
+    /// nested subpattern. A wildcard field introduces no binding: it names
+    /// nothing, so nothing is taken out of the source for it.
+    fn bind_destructure_field(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        ty: ResolvedTy,
+    ) -> (Option<HirBinding>, bool) {
+        let (name, nested) = match &pattern.0 {
+            Pattern::Identifier(name) => (name.clone(), false),
+            Pattern::Wildcard => return (None, false),
+            Pattern::Tuple(_) | Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
+                (format!("__destructure_{}", self.ids.binding().0), true)
+            }
+            Pattern::Constructor { .. }
+            | Pattern::Literal(_)
+            | Pattern::Or(_, _)
+            | Pattern::Regex { .. }
+            | Pattern::NominalPath { .. }
+            | Pattern::ContextVariant(_) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::NotYetImplemented {
+                        construct: "unsupported nested let pattern".into(),
+                        owning_pass: "pattern-matching".into(),
+                    },
+                    pattern.1.clone(),
+                    "let destructure supports nested tuple and record patterns here; \
+                     refutable patterns remain reserved for match/if-let",
+                ));
+                (format!("__unsupported_{}", self.ids.binding().0), false)
+            }
+        };
+        (Some(self.bind(name, ty, false, pattern.1.clone())), nested)
+    }
+
     fn lower_tuple_pattern_value_into_stmts(
         &mut self,
         elements: &[Spanned<Pattern>],
@@ -16282,35 +15909,40 @@ impl LowerCtx {
                 vec![ResolvedTy::Unit; elements.len()]
             }
         };
-        let temp_name = format!("__tuple_nested_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
-        let temp_id = temp_binding.id;
+        let mut fields = Vec::with_capacity(elements.len());
+        let mut nested = Vec::new();
+        for (idx, (elem_pat, elem_ty)) in elements.iter().zip(element_tys).enumerate() {
+            let (binding, is_nested) = self.bind_destructure_field(elem_pat, elem_ty.clone());
+            if let (true, Some(carrier)) = (is_nested, binding.clone()) {
+                nested.push((elem_pat.clone(), carrier));
+            }
+            fields.push(HirDestructureField {
+                selector: HirDestructureSelector::Tuple(
+                    u32::try_from(idx).expect("tuple pattern index must fit in u32"),
+                ),
+                binding,
+                nested: is_nested,
+            });
+        }
         stmts.push(HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding, Some(value)),
+            kind: HirStmtKind::Destructure { value, fields },
             span: span.clone(),
         });
-        for (idx, (elem_pat, elem_ty)) in elements.iter().zip(element_tys).enumerate() {
-            let temp_ref =
-                self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
-            let projection = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                value_class: ValueClass::of_ty(&elem_ty, &self.type_classes),
-                ty: elem_ty.clone(),
-                intent: IntentKind::Read,
-                kind: HirExprKind::TupleIndex {
-                    tuple: Box::new(temp_ref),
-                    index: idx,
-                },
-                span: elem_pat.1.clone(),
-            };
+        for (pattern, binding) in nested {
+            let binding_ty = binding.ty.clone();
+            let binding_ref = self.binding_ref_expr(
+                binding.name,
+                binding.id,
+                binding_ty.clone(),
+                pattern.1.clone(),
+            );
             self.lower_pattern_value_into_stmts(
-                elem_pat,
-                projection,
-                elem_ty,
+                &pattern,
+                binding_ref,
+                binding_ty,
                 stmts,
-                elem_pat.1.clone(),
+                pattern.1.clone(),
             );
         }
     }
@@ -16398,33 +16030,54 @@ impl LowerCtx {
             planned_fields.push((field.name, field_ty, field_pattern));
         }
 
-        let temp_name = format!("__rec_nested_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), value_ty.clone(), false, span.clone());
-        let temp_id = temp_binding.id;
+        self.lower_planned_record_pattern_value_into_stmts(
+            planned_fields,
+            value,
+            value_ty,
+            stmts,
+            span,
+        );
+    }
+
+    fn lower_planned_record_pattern_value_into_stmts(
+        &mut self,
+        planned_fields: Vec<(String, ResolvedTy, Spanned<Pattern>)>,
+        value: HirExpr,
+        _value_ty: &ResolvedTy,
+        stmts: &mut Vec<HirStmt>,
+        span: Span,
+    ) {
+        let mut fields = Vec::with_capacity(planned_fields.len());
+        let mut nested = Vec::new();
+        for (field_name, field_ty, field_pattern) in planned_fields {
+            let (binding, is_nested) =
+                self.bind_destructure_field(&field_pattern, field_ty.clone());
+            if let (true, Some(carrier)) = (is_nested, binding.clone()) {
+                nested.push((field_pattern, carrier));
+            }
+            fields.push(HirDestructureField {
+                selector: HirDestructureSelector::Record(field_name),
+                binding,
+                nested: is_nested,
+            });
+        }
         stmts.push(HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding, Some(value)),
+            kind: HirStmtKind::Destructure { value, fields },
             span: span.clone(),
         });
-        for (field_name, field_ty, field_pattern) in planned_fields {
-            let temp_ref =
-                self.binding_ref_expr(temp_name.clone(), temp_id, value_ty.clone(), span.clone());
-            let projection = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                value_class: ValueClass::of_ty(&field_ty, &self.type_classes),
-                ty: field_ty.clone(),
-                intent: IntentKind::Consume,
-                kind: HirExprKind::FieldAccess {
-                    object: Box::new(temp_ref),
-                    field: field_name.clone(),
-                },
-                span: field_pattern.1.clone(),
-            };
+        for (field_pattern, binding) in nested {
+            let binding_ty = binding.ty.clone();
+            let binding_ref = self.binding_ref_expr(
+                binding.name,
+                binding.id,
+                binding_ty.clone(),
+                field_pattern.1.clone(),
+            );
             self.lower_pattern_value_into_stmts(
                 &field_pattern,
-                projection,
-                field_ty,
+                binding_ref,
+                binding_ty,
                 stmts,
                 field_pattern.1.clone(),
             );
@@ -16453,27 +16106,7 @@ impl LowerCtx {
     }
 
     fn lower_expression_stmt_kind(&mut self, expr: &Spanned<Expr>) -> HirStmtKind {
-        // Inside a scope{} body, statement-expression calls are child-task
-        // spawns (TI-1). Outside scope{} bodies all calls are synchronous
-        // (TI-3). The TI-1 rewrite only applies when the expression is a
-        // direct call — nested calls inside sub-expressions remain sync.
-        //
-        // Mark this as statement position before lowering so that
-        // `lower_expr`'s `Expr::Await` arm can enforce TI-4 (await is
-        // only legal in statement-expression position, not as a
-        // sub-expression). The position is consumed by `mem::replace` at the
-        // top of `lower_expr`, so recursive calls see `AwaitPosition::Other`.
-        self.await_position = AwaitPosition::Statement;
-        if self.scope_depth > 0 {
-            if let Expr::Call { .. } = &expr.0 {
-                let spawned = self.lower_spawned_call(expr);
-                HirStmtKind::Expr(spawned)
-            } else {
-                HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
-            }
-        } else {
-            HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
-        }
+        HirStmtKind::Expr(self.lower_expr(expr, IntentKind::Read))
     }
 
     /// True when the `await`'s inner expression is a suspending typed-stream
@@ -16509,19 +16142,6 @@ impl LowerCtx {
         )
     }
 
-    /// True when the method call at `key` is a channel `recv` (the
-    /// checker-resolved descriptor family is `ChannelRecvLayout`). The
-    /// element type is carried
-    /// by the checker-resolved `Receiver<T>` receiver type, not by the
-    /// symbol name.
-    fn is_channel_recv_rewrite(&self, key: &SpanKey) -> bool {
-        matches!(
-            self.method_call_rewrites.get(key),
-            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
-                if d.family() == hew_types::runtime_call::RuntimeCallFamily::ChannelRecvLayout
-        )
-    }
-
     /// True when the `await`'s inner expression is a suspending typed-stream
     /// `send()` over any describable `Sink<T>` — i.e. the checker-resolved
     /// descriptor's family classifies as [`AsyncSuspendKind::SinkSend`]
@@ -16538,24 +16158,6 @@ impl LowerCtx {
             Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
                 if d.is_async_suspending()
                     == Some(hew_types::runtime_call::AsyncSuspendKind::SinkSend)
-        )
-    }
-
-    /// True when the `await`'s inner expression is a VALUE-returning task
-    /// handle — `await t` over a `Task<T>` with `T != ()`. Such an await is
-    /// bindable (`let x = await t`): it produces the child's `T`, read back on
-    /// the resume edge through `hew_task_get_result`. A `Task<()>` await is the
-    /// unit "wait until Done" form, which binds nothing and is statement-only;
-    /// this predicate excludes it so the unit reroute keeps its position rules.
-    ///
-    /// The element type rides the checker-resolved type of the inner operand
-    /// (the `Task<T>` binding), the same table `check_await_task_result`
-    /// consults — not a method-call rewrite descriptor, since `await t` over a
-    /// bare binding has no method call.
-    fn is_value_task_await(&self, inner_key: &SpanKey) -> bool {
-        matches!(
-            self.resolved_expr_types.get(inner_key),
-            Some(ResolvedTy::Task(inner)) if !matches!(**inner, ResolvedTy::Unit)
         )
     }
 
@@ -16577,10 +16179,9 @@ impl LowerCtx {
                 else_block,
             } => {
                 // let-else: `let Pat = scrutinee else { <divergent block> };`.
-                // The Ok-path binders escape into the enclosing scope and the
-                // else block (proven divergent by the checker) runs on a failed
-                // match. Lower to the dedicated `HirStmtKind::LetElse` node and
-                // return early — the ordinary-let machinery below does not apply
+                // Desugars through `lower_let_else` to a match on Pat plus a
+                // destructure of its bindings into the enclosing scope — return
+                // early, since the ordinary-let machinery below does not apply
                 // (it binds a single name; let-else binds payload fields).
                 if let Some(else_blk) = else_block {
                     if let Some(value_expr) = value {
@@ -16600,85 +16201,6 @@ impl LowerCtx {
                         ),
                         span,
                     };
-                }
-                // `await` on task handles is only legal as a statement-expression
-                // inside a `scope{}` body. Actor asks are value-producing expressions
-                // (the reply lands in MIR's `reply_dest`) and are handled by the
-                // `Expr::Await` arm after typecheck's actor-dispatch classification.
-                if let Some(val_expr) = value {
-                    // A bindable `await` produces a value: an actor ask
-                    // (`Result<R, AskError>`) or a non-blocking connection read
-                    // (`bytes`/`string`, NEW-1). Both lower to a suspend carrier
-                    // whose resume edge binds the value.
-                    let is_bindable_await = match &val_expr.0 {
-                        Expr::Await(inner) => {
-                            // For the actor-ask dispatch check: unwrap a bare block
-                            // wrapping a single trailing method call
-                            // (`await { method() }`) to recover the method call's
-                            // span — the checker recorded `ActorMethodKind::Ask`
-                            // under the method call's span, not the surrounding
-                            // block's span.
-                            //
-                            // All other side-table checks (conn_await_reads,
-                            // listener_await_accepts, stream/channel recv) use the
-                            // ORIGINAL `inner.1` span, matching the key the checker
-                            // recorded and the key the corresponding Expr::Await
-                            // lowering arms use. Widening the unwrap to those tables
-                            // would create a guard/lowering span mismatch: the guard
-                            // would pass on the trailing-call key while the lowering
-                            // arm's lookup would find nothing (it uses the block's
-                            // span), leaving the await unbindable.
-                            let ask_key = {
-                                let ask_span = match &inner.0 {
-                                    Expr::Block(block)
-                                        if block.stmts.is_empty()
-                                            && block.trailing_expr.as_deref().is_some_and(
-                                                |(e, _)| matches!(e, Expr::MethodCall { .. }),
-                                            ) =>
-                                    {
-                                        &block.trailing_expr.as_deref().unwrap().1
-                                    }
-                                    _ => &inner.1,
-                                };
-                                self.mk_key(ask_span)
-                            };
-                            let original_key = self.mk_key(&inner.1);
-                            matches!(
-                                self.actor_method_dispatch.get(&ask_key),
-                                Some(ActorMethodKind::Ask(_, _))
-                            ) || self.conn_await_reads.contains_key(&original_key)
-                                || self.listener_await_accepts.contains(&original_key)
-                                || self.is_stream_recv_await(&original_key)
-                                || self.is_channel_recv_await(&original_key)
-                                // `let x = await t` over a value-returning task:
-                                // the child's `T` is read back on the resume edge.
-                                || self.is_value_task_await(&original_key)
-                        }
-                        _ => false,
-                    };
-                    if matches!(&val_expr.0, Expr::Await(_)) && !is_bindable_await {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            val_expr.1.clone(),
-                            "`await` cannot be used as a let-value; \
-                             only actor ask awaits and `await conn.read()` \
-                             produce a bindable value",
-                        ));
-                        let name = self
-                            .pattern_name(pattern)
-                            .unwrap_or_else(|| "_".to_string());
-                        let binding_ty = ty
-                            .as_ref()
-                            .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-                        let binding = self.bind(name, binding_ty, false, pattern.1.clone());
-                        let unsupported =
-                            self.unsupported_expr(val_expr.1.clone(), "`await` in let-value");
-                        return HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Let(binding, Some(unsupported)),
-                            span,
-                        };
-                    }
                 }
                 if let (Pattern::Wildcard, Some(value_expr)) = (&pattern.0, value.as_ref()) {
                     return HirStmt {
@@ -16739,15 +16261,6 @@ impl LowerCtx {
                         span,
                     };
                 }
-                // A `let x = await t` over a value-returning task is a bindable
-                // let-value. Flag the position so the `Expr::Await` arm admits
-                // it (the position is consumed atomically at `lower_expr` entry,
-                // so only this direct await sees it — not nested sub-expressions).
-                if let Some((Expr::Await(inner), _)) = value.as_ref() {
-                    if self.is_value_task_await(&self.mk_key(&inner.1)) {
-                        self.await_position = AwaitPosition::BindableValueLet;
-                    }
-                }
                 let value = value
                     .as_ref()
                     .map(|expr| self.lower_expr(expr, IntentKind::Consume));
@@ -16784,18 +16297,24 @@ impl LowerCtx {
                 if let Some(op) = op {
                     self.lower_compound_assignment(target, *op, value, &span)
                 } else {
+                    let first_store = self
+                        .actor_init_first_stores
+                        .contains(&self.mk_key(&target.1));
                     let target = self.lower_expr(target, IntentKind::Modify);
                     let value = self.lower_expr(value, IntentKind::Consume);
                     HirStmtKind::Assign {
                         target,
                         value: Box::new(value),
+                        first_store,
                     }
                 }
             }
             Stmt::Expression(expr) => self.lower_expression_stmt_kind(expr),
             Stmt::Return(value) => {
+                let return_ty = self.current_return_type.clone().unwrap_or(return_ty);
                 if let Some(value) = value {
                     let expr = self.lower_expr(value, IntentKind::Consume);
+                    let expr = self.apply_result_return_coercion(expr, &span);
                     // TI-5 escape check: a `Task<T>` value must not escape via
                     // return, whether the type was user-written or inferred. The
                     // `lower_type` wall blocks user-written `Task<T>` annotations;
@@ -16807,7 +16326,16 @@ impl LowerCtx {
                             "a `Task<T>` handle cannot escape via `return`; \
                              await it inside the `scope{}` body with `await name`",
                         ));
-                    } else if expr.ty != return_ty && return_ty != ResolvedTy::Unit {
+                    } else if expr.ty != return_ty
+                        && return_ty != ResolvedTy::Unit
+                        && !(expr.ty.to_ty().contains_callable()
+                            && hew_types::unify::coerce(
+                                &mut hew_types::ty::Substitution::new(),
+                                &return_ty.to_ty(),
+                                &expr.ty.to_ty(),
+                            )
+                            .is_ok())
+                    {
                         self.diagnostics.push(HirDiagnostic::new(
                             HirDiagnosticKind::ReturnTypeMismatch {
                                 expected: return_ty,
@@ -16819,7 +16347,14 @@ impl LowerCtx {
                     }
                     HirStmtKind::Return(Some(expr))
                 } else {
-                    HirStmtKind::Return(None)
+                    let value = self
+                        .result_return_coercions
+                        .contains_key(&self.mk_key(&span))
+                        .then(|| {
+                            let value = self.make_unit_expr(span.clone());
+                            self.apply_result_return_coercion(value, &span)
+                        });
+                    HirStmtKind::Return(value)
                 }
             }
             Stmt::If {
@@ -16880,6 +16415,7 @@ impl LowerCtx {
                     }
                 });
                 let if_ty = if_branch_result_ty(&then_ty, else_expr.as_ref().map(|e| &e.ty));
+                let if_ty = self.callable_join_type(&span, if_ty);
                 let if_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -16921,313 +16457,54 @@ impl LowerCtx {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
-                // `while let <Ctor>(bindings) = scrutinee { body }` — lowered
-                // to a HIR `WhileLet` expression so that MIR can build the
-                // header/body/exit CFG shape (mirroring `While` + enum-tag
-                // `Match`).
-                //
-                // Pattern scope: only a single payload-bearing enum
-                // constructor pattern (`Some(x)`) is accepted here. Unit
-                // variants (`None`), or-patterns, guards, literals, and
-                // plain bindings fail closed with a typed diagnostic, the
-                // same fail-closed shape used by `Match` lowering.
-                //
-                // The checker's `pattern_resolutions` side-table carries the
-                // resolved variant identity + payload binding metadata;
-                // missing entries (or-pattern / checker-rejected shapes)
-                // surface a single `NotYetImplemented` diagnostic so callers
-                // never see a half-built node.
-                let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
-                // Register a generic-enum instantiation if the scrutinee's
-                // type is a parameterised enum (`Option<i64>`). No-op for
-                // monomorphic enums; required so MIR/codegen find the
-                // `Option$$i64` layout — matches the Match path's
-                // `try_register_enum_instantiation(scrutinee.1)` call.
-                self.try_register_enum_instantiation(&expr.1);
-
-                let pattern_span = &pattern.1;
-                let key = self.mk_key(pattern_span);
-                let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "while-let pattern has no resolution; \
-                         only single payload-bearing enum-variant patterns are supported",
-                        "while-let-substrate",
-                    );
-                    // Walk the body for checker-stream coverage.
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
+                // `while <condition> { body }` with a `let` operand is a bare
+                // loop whose every iteration re-evaluates the condition and
+                // breaks on the fallthrough arm. `break` and `continue` inside
+                // `body` target this loop, and the arm body's scope gives
+                // per-iteration defer cleanup.
+                let body_span = span.clone();
+                let match_expr = self.lower_condition_chain(
+                    conditions,
+                    body,
+                    &body_span,
+                    ConditionFallthrough::Break,
+                    &ResolvedTy::Unit,
+                    &span,
+                );
+                let loop_body = HirBlock {
+                    node: self.ids.node(),
+                    scope: self.ids.scope(),
+                    statements: vec![HirStmt {
                         node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let with unsupported pattern shape".into(),
-                        ),
+                        kind: HirStmtKind::Expr(match_expr),
                         span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
+                    }],
+                    tail: None,
+                    ty: ResolvedTy::Unit,
+                    span: span.clone(),
                 };
-
-                // Uniform plan authority: a record-shaped pattern (incl. enum
-                // struct-variant `Packet::Data { a, .. }`) with no checker
-                // `PatternPlan` fails closed here rather than lowering off the
-                // AST-derived resolution.
-                if self.record_shape_missing_plan(pattern) {
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let record-shaped pattern missing PatternPlan".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                }
-
-                if let PatternKind::Literal = resolution.pattern_kind {
-                    let Pattern::Literal(lit) = &pattern.0 else {
-                        self.unsupported(
-                            pattern_span.clone(),
-                            "while-let literal resolution on non-literal pattern",
-                            "while-let-substrate",
-                        );
-                        let unsupported_expr = HirExpr {
-                            node: self.ids.node(),
-                            site: self.ids.site(),
-                            ty: ResolvedTy::Unit,
-                            value_class: ValueClass::BitCopy,
-                            intent: IntentKind::Read,
-                            kind: HirExprKind::Unsupported(
-                                "while-let with invalid literal resolution".into(),
-                            ),
-                            span: span.clone(),
-                        };
-                        return HirStmt {
-                            node: self.ids.node(),
-                            kind: HirStmtKind::Expr(unsupported_expr),
-                            span: span.clone(),
-                        };
-                    };
-                    let condition =
-                        self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
-                    let body_block = self.lower_block(body, &ResolvedTy::Unit);
-                    let while_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::While {
-                            label: label.clone(),
-                            condition: Box::new(condition),
-                            body: body_block,
-                        },
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(while_expr),
-                        span: span.clone(),
-                    };
-                }
-
-                // Only variant-constructor patterns with at least one
-                // payload binding are lowered. Unit-variant patterns
-                // (`None`), wildcards, literals, and plain bindings fail
-                // closed — a `while let None = ...` would never terminate
-                // (the condition is "tag matches None") and a plain
-                // identifier pattern is semantically a `while true` with
-                // a re-bind which is not what users mean.
-                let (PatternKind::VariantCtor, Some(mut variant_match)) =
-                    (resolution.pattern_kind, resolution.variant_match)
-                else {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "while-let supports only payload-bearing enum-variant patterns \
-                         (e.g. `Some(x)`); unit variants, wildcards, literals, \
-                         plain bindings, and or-patterns are reserved for a future lane",
-                        "while-let-substrate",
-                    );
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let with unsupported pattern shape".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                };
-
-                // Resolve variant_idx via `machine_ctor_registry` (same
-                // qualified-key lookup used by `lower_match_expr` so that
-                // MIR/codegen consume identical indices).
-                let Some((registered_type, idx_usize, _)) =
-                    self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
-                else {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        "while-let variant not registered in machine/enum ctor registry",
-                        "while-let-substrate",
-                    );
-                    self.push_scope();
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported("while-let variant index unresolved".into()),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                };
-                variant_match.type_name = registered_type;
-                let variant_idx = u32::try_from(idx_usize)
-                    .expect("variant index exceeds u32::MAX — impossible in Hew");
-
-                // Build per-arm bindings (same shape as `Match`).
-                let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
-                let mut binding_error = false;
-                for payload in &resolution.payload_bindings {
-                    let ty = match ResolvedTy::from_ty(&payload.ty) {
-                        Ok(ty) => self.qualify_current_module_record_ty(ty),
-                        Err(err) => {
-                            self.unsupported(
-                                pattern_span.clone(),
-                                format!("unresolved payload binding type in while-let ({err:?})"),
-                                "while-let-substrate",
-                            );
-                            binding_error = true;
-                            continue;
-                        }
-                    };
-                    let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                        self.unsupported(
-                            pattern_span.clone(),
-                            "while-let payload binding field index exceeds u32::MAX",
-                            "while-let-substrate",
-                        );
-                        binding_error = true;
-                        continue;
-                    };
-                    binding_specs.push((field_idx, payload.binding_name.clone(), ty));
-                }
-
-                self.push_scope();
-                let bindings: Vec<HirMatchArmBinding> = if binding_error {
-                    Vec::new()
-                } else {
-                    binding_specs
-                        .into_iter()
-                        .map(|(field_idx, name, ty)| {
-                            let bound =
-                                self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
-                            HirMatchArmBinding {
-                                binding: bound.id,
-                                field_idx,
-                                name,
-                                ty,
-                            }
-                        })
-                        .collect()
-                };
-                let mut payload_variant_predicates =
-                    Vec::with_capacity(resolution.payload_variant_patterns.len());
-                let mut pvp_error = false;
-                for pvp in &resolution.payload_variant_patterns {
-                    if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
-                        payload_variant_predicates.push(pred);
-                    } else {
-                        pvp_error = true;
-                        break;
-                    }
-                }
-                let body_block = self.lower_block(body, &ResolvedTy::Unit);
-                self.pop_scope();
-
-                if binding_error || pvp_error {
-                    let unsupported_expr = HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        ty: ResolvedTy::Unit,
-                        value_class: ValueClass::BitCopy,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "while-let payload binding could not be resolved".into(),
-                        ),
-                        span: span.clone(),
-                    };
-                    return HirStmt {
-                        node: self.ids.node(),
-                        kind: HirStmtKind::Expr(unsupported_expr),
-                        span: span.clone(),
-                    };
-                }
-
-                let while_let_expr = HirExpr {
+                let loop_expr = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     ty: ResolvedTy::Unit,
                     value_class: ValueClass::BitCopy,
                     intent: IntentKind::Read,
-                    kind: HirExprKind::WhileLet {
+                    kind: HirExprKind::Loop {
                         label: label.clone(),
-                        scrutinee: Box::new(scrutinee_hir),
-                        variant_match,
-                        variant_idx,
-                        bindings,
-                        payload_variant_predicates,
-                        body: body_block,
+                        body: loop_body,
                     },
                     span: span.clone(),
                 };
-                HirStmtKind::Expr(while_let_expr)
+                HirStmtKind::Expr(loop_expr)
             }
             Stmt::For {
                 label,
                 pattern,
                 iterable,
                 body,
-                is_await,
             } => {
                 // Lower `for pat in iterable { body }`.
                 // Only `Range`-typed iterables are supported in this slice:
@@ -17392,7 +16669,6 @@ impl LowerCtx {
                         body,
                         label.as_ref(),
                         span.clone(),
-                        *is_await,
                     ),
                     _ => {
                         // Non-identifier range pattern: not supported in this slice.
@@ -17523,35 +16799,22 @@ impl LowerCtx {
                 HirStmtKind::Expr(continue_expr)
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                // `if let PAT = scrutinee { then } else { else }` in statement
-                // position — result type is always Unit. Delegates to the shared
-                // `lower_if_let_inner` helper (same one used by expression position).
-                let kind = match self.lower_if_let_inner(
-                    pattern,
-                    expr,
+                // A pattern condition in statement position — result type is
+                // always Unit. The chain lowers to nested matches and boolean
+                // branches; `lower_condition_chain` is the one authority.
+                let body_span = span.clone();
+                let if_let_expr = self.lower_condition_chain(
+                    conditions,
                     body,
-                    else_body.as_ref(),
+                    &body_span,
+                    ConditionFallthrough::Else(else_body.as_deref()),
                     &ResolvedTy::Unit,
                     &span,
-                ) {
-                    Some(k) => k,
-                    None => HirExprKind::Unsupported("if-let lowering failed".into()),
-                };
-                let if_let_expr = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: ResolvedTy::Unit,
-                    value_class: ValueClass::BitCopy,
-                    intent: IntentKind::Read,
-                    kind,
-                    span: span.clone(),
-                };
+                );
                 HirStmtKind::Expr(if_let_expr)
             }
         };
@@ -17760,24 +17023,21 @@ impl LowerCtx {
         (prelude, had_error)
     }
 
-    /// Lower `let PAT = scrutinee else { <divergent block> };` to the dedicated
-    /// `HirStmtKind::LetElse` node.
-    ///
-    /// Unlike `lower_if_let_inner`, the success-path payload bindings are
-    /// allocated in the ENCLOSING scope (no `push_scope`/`pop_scope` brackets
-    /// them) so they escape the statement and are live for the rest of the
-    /// enclosing block. The else block is lowered in its own scope and is
-    /// guaranteed divergent by the type checker (it proved `Ty::Never`); MIR
-    /// runs it on the no-match path so control never reaches an unbound binder.
+    /// Lower `let PAT = scrutinee else { <divergent block> };` through the
+    /// same pattern authority as `match`/`if let`/`while let`: desugar to
+    /// `let tmp = match scrutinee { PAT => <bindings>, _ => <else block> };`
+    /// then destructure `tmp` into fresh bindings that escape into the
+    /// enclosing scope. `<bindings>` is `PAT`'s bound names packed by
+    /// [`Self::pack_arm_bindings`] — `Unit` for none, the value directly for
+    /// one, a name-ordered tuple for more — and the destructure step (a plain
+    /// `Let` or `Destructure` statement) unpacks that shape back into the
+    /// escaping names. The checker has already proven the else block
+    /// diverges (`Ty::Never`), so `pattern_conditional_match`'s wildcard arm
+    /// never falls through to a continuation that could see an unbound
+    /// binder.
     ///
     /// Returns `Some(HirStmt)` on success, `None` on a fail-closed error
-    /// (diagnostics already pushed). Pattern scope mirrors `if let`: only
-    /// single payload-bearing enum-variant constructor patterns (e.g. `Ok(n)`).
-    #[allow(
-        clippy::too_many_lines,
-        reason = "mirrors lower_if_let_inner; splitting would obscure the parallel \
-                  error-handling paths"
-    )]
+    /// (diagnostics already pushed by `lower_pattern_arms`).
     fn lower_let_else(
         &mut self,
         pattern: &Spanned<Pattern>,
@@ -17788,427 +17048,94 @@ impl LowerCtx {
         let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
         self.try_register_enum_instantiation(&scrutinee_expr.1);
 
-        let pattern_span = &pattern.1;
-        let key = self.mk_key(pattern_span);
-        let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-            self.unsupported(
-                pattern_span.clone(),
-                "let-else pattern has no resolution; \
-                 only single payload-bearing enum-variant patterns are supported",
-                "let-else-substrate",
-            );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
-            return None;
-        };
+        let pattern_span = pattern.1.clone();
+        let arms: Vec<PatternArm<'_>> = flatten_or_pattern(pattern)
+            .into_iter()
+            .map(|leaf| PatternArm {
+                pattern: leaf,
+                guard: None,
+                body: PatternArmBody::Bindings(pattern_span.clone()),
+            })
+            .collect();
 
-        // Uniform plan authority: a record-shaped pattern (incl. enum
-        // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
-        // fails closed here rather than lowering off the AST-derived resolution.
-        if self.record_shape_missing_plan(pattern) {
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
-            return None;
-        }
-
-        let (PatternKind::VariantCtor, Some(variant_match)) =
-            (resolution.pattern_kind, resolution.variant_match)
+        // `block_result_ty` only matters to `PatternArmBody::Condition`; our
+        // synthesized arms carry `Bindings`, which ignores it.
+        let Some((hir_arms, result_ty)) =
+            self.lower_pattern_arms(&scrutinee_hir, &arms, &ResolvedTy::Unit)
         else {
-            self.unsupported(
-                pattern_span.clone(),
-                "let-else supports only payload-bearing enum-variant patterns \
-                 (e.g. `Ok(n)`); unit variants, wildcards, literals, plain \
-                 bindings, and or-patterns are reserved for a future lane",
-                "let-else-substrate",
-            );
             let _ = self.lower_block(else_block, &ResolvedTy::Unit);
             return None;
         };
 
-        let Some((_, idx_usize, _)) =
-            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
-        else {
-            self.unsupported(
-                pattern_span.clone(),
-                "let-else variant not registered in machine/enum ctor registry",
-                "let-else-substrate",
-            );
-            let _ = self.lower_block(else_block, &ResolvedTy::Unit);
-            return None;
+        // `lower_pattern_arms`'s inference skips `Unit`-typed arms, which is
+        // exactly the "no bindings" shape here, so the fallback is correct.
+        let packed_ty = result_ty.unwrap_or(ResolvedTy::Unit);
+
+        // Every or-pattern leaf binds the same names (the checker requires
+        // it for the shared body to type-check), so any arm's expanded
+        // binding list names the escaping shape; sort by name to match
+        // `pack_arm_bindings`. The arm's aggregate-destructure prelude (if
+        // any) rode along as the leading statements of its wrapped body.
+        let arm0_prelude: &[HirStmt] = match &hir_arms[0].body.kind {
+            HirExprKind::Block(block) => &block.statements,
+            _ => &[],
         };
-        let variant_idx =
-            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
+        let mut escapees: Vec<(String, ResolvedTy)> = expand_arm_bindings(
+            &hir_arms[0].bindings,
+            &hir_arms[0].payload_variant_predicates,
+            arm0_prelude,
+        )
+        .into_iter()
+        .map(|(name, _, ty)| (name, ty))
+        .collect();
+        escapees.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // Build the payload-binding specs (same shape as if-let / match).
-        let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
-        let mut binding_error = false;
-        for payload in &resolution.payload_bindings {
-            let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
-                Err(err) => {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        format!("unresolved payload binding type in let-else ({err:?})"),
-                        "let-else-substrate",
-                    );
-                    binding_error = true;
-                    continue;
-                }
-            };
-            let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "let-else payload binding field index exceeds u32::MAX",
-                    "let-else-substrate",
-                );
-                binding_error = true;
-                continue;
-            };
-            binding_specs.push((field_idx, payload.binding_name.clone(), ty));
-        }
-
-        // The else block runs on the FAILURE path, where the Ok binders are NOT
-        // in scope. Lower it FIRST, in its own scope, BEFORE binding the
-        // payload into the enclosing scope — so the else block cannot see the
-        // escaping binders (matching the checker's failure-path scoping).
-        self.push_scope();
-        let else_body = self.lower_block(else_block, &ResolvedTy::Unit);
-        self.pop_scope();
-
-        // Bind the payload fields into the ENCLOSING scope (no push/pop) so the
-        // Ok-path binders escape and are live for the rest of the enclosing
-        // block — the defining property of let-else.
-        let mut bindings: Vec<HirMatchArmBinding> = if binding_error {
-            Vec::new()
-        } else {
-            binding_specs
-                .into_iter()
-                .map(|(field_idx, name, ty)| {
-                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
-                    HirMatchArmBinding {
-                        binding: bound.id,
-                        field_idx,
-                        name,
-                        ty,
-                    }
-                })
-                .collect()
+        let else_hir_block = self.lower_block(else_block, &packed_ty);
+        let else_ty = else_hir_block.ty.clone();
+        let fallthrough = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
+            ty: else_ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Block(else_hir_block),
+            span: span.clone(),
         };
 
-        // Destructure aggregate payload subpatterns (`Ok((n, s))`) into their
-        // leaf binders, mirroring `match`. The prelude runs on the SUCCESS path
-        // after the top-level payload fields bind; its leaf binders escape into
-        // the enclosing scope just like `bindings`. Plain bindings / wildcards
-        // produce no prelude.
-        let success_prelude = if binding_error {
-            Vec::new()
-        } else if let Some((name, patterns)) = tuple_variant_pattern_parts(&pattern.0) {
-            let (prelude, had_error) = self.lower_constructor_payload_aggregates(
-                name,
-                patterns,
-                &scrutinee_hir.ty,
-                &mut bindings,
-                "let-else-substrate",
-            );
-            binding_error |= had_error;
-            prelude
-        } else if let Some((name, fields)) = struct_variant_pattern_parts(&pattern.0) {
-            let (prelude, had_error) = self.lower_struct_variant_payload_aggregates(
-                name,
-                fields,
-                &scrutinee_hir.ty,
-                &mut bindings,
-                "let-else-substrate",
-            );
-            binding_error |= had_error;
-            prelude
-        } else {
-            Vec::new()
-        };
+        let match_expr =
+            self.pattern_conditional_match(scrutinee_hir, hir_arms, fallthrough, &packed_ty, span);
 
-        let mut payload_variant_predicates =
-            Vec::with_capacity(resolution.payload_variant_patterns.len());
-        let mut pvp_error = false;
-        for pvp in &resolution.payload_variant_patterns {
-            if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
-                payload_variant_predicates.push(pred);
-            } else {
-                pvp_error = true;
-                break;
+        let kind = match escapees.len() {
+            0 => HirStmtKind::Expr(match_expr),
+            1 => {
+                let (name, ty) = escapees.into_iter().next().expect("checked len == 1");
+                let bound = self.bind(name, ty, false, pattern_span.clone());
+                HirStmtKind::Let(bound, Some(match_expr))
             }
-        }
-
-        if binding_error || pvp_error {
-            return None;
-        }
+            _ => {
+                let fields = escapees
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, (name, ty))| HirDestructureField {
+                        selector: HirDestructureSelector::Tuple(
+                            u32::try_from(idx).expect("let-else binding count exceeds u32::MAX"),
+                        ),
+                        binding: Some(self.bind(name, ty, false, pattern_span.clone())),
+                        nested: false,
+                    })
+                    .collect();
+                HirStmtKind::Destructure {
+                    value: match_expr,
+                    fields,
+                }
+            }
+        };
 
         Some(HirStmt {
             node: self.ids.node(),
-            kind: HirStmtKind::LetElse {
-                scrutinee: Box::new(scrutinee_hir),
-                variant_idx,
-                bindings,
-                success_prelude,
-                payload_variant_predicates,
-                else_body,
-            },
+            kind,
             span: span.clone(),
         })
-    }
-
-    /// Shared core of `if let PAT = scrutinee { body } else { else_body }`.
-    ///
-    /// Used by both statement position (`Stmt::IfLet`, `result_ty` = Unit) and
-    /// expression position (`Expr::IfLet`, `result_ty` = unified branch type).
-    /// Returns `Some(HirExprKind::IfLet { ... })` on success, `None` on a
-    /// fail-closed error (diagnostics already pushed). The `else_body` block
-    /// is lowered with `result_ty` so that expression-position branches are
-    /// type-consistent.
-    ///
-    /// Pattern scope (v0.5 substrate): only single payload-bearing enum-variant
-    /// constructor patterns (e.g. `Some(x)`) are accepted — the same restriction
-    /// as `WhileLet`.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "mirrors lower_while_let in structure; splitting would obscure the \
-                  parallel error-handling paths"
-    )]
-    fn lower_if_let_inner(
-        &mut self,
-        pattern: &Spanned<Pattern>,
-        scrutinee_expr: &Spanned<Expr>,
-        body: &Block,
-        else_body: Option<&Block>,
-        result_ty: &ResolvedTy,
-        span: &Span,
-    ) -> Option<HirExprKind> {
-        let scrutinee_hir = self.lower_expr(scrutinee_expr, IntentKind::Read);
-        // Register a generic-enum instantiation so MIR/codegen find the
-        // mangled layout — matches the WhileLet/Match path.
-        self.try_register_enum_instantiation(&scrutinee_expr.1);
-
-        let pattern_span = &pattern.1;
-        let key = self.mk_key(pattern_span);
-        let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-            self.unsupported(
-                pattern_span.clone(),
-                "if-let pattern has no resolution; \
-                 only single payload-bearing enum-variant patterns are supported",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
-            }
-            return None;
-        };
-
-        // Uniform plan authority: a record-shaped pattern (incl. enum
-        // struct-variant `Packet::Data { a, .. }`) with no checker `PatternPlan`
-        // fails closed here rather than lowering off the AST-derived resolution.
-        if self.record_shape_missing_plan(pattern) {
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
-            }
-            return None;
-        }
-
-        if let PatternKind::Literal = resolution.pattern_kind {
-            let Pattern::Literal(lit) = &pattern.0 else {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "if-let literal resolution on non-literal pattern",
-                    "if-let-substrate",
-                );
-                self.push_scope();
-                let _ = self.lower_block(body, &ResolvedTy::Unit);
-                self.pop_scope();
-                if let Some(eb) = else_body {
-                    let _ = self.lower_block(eb, &ResolvedTy::Unit);
-                }
-                return None;
-            };
-            let condition =
-                self.literal_pattern_condition(scrutinee_hir, lit, pattern_span.clone());
-            let then_block = self.lower_block(body, result_ty);
-            let then_ty = then_block.ty.clone();
-            let then_expr = HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                ty: then_ty.clone(),
-                value_class: ValueClass::of_ty(&then_ty, &self.type_classes),
-                intent: IntentKind::Read,
-                kind: HirExprKind::Block(then_block),
-                span: span.clone(),
-            };
-            let else_expr = else_body.map(|eb| {
-                let else_block = self.lower_block(eb, result_ty);
-                let else_ty = else_block.ty.clone();
-                Box::new(HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: else_ty.clone(),
-                    value_class: ValueClass::of_ty(&else_ty, &self.type_classes),
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::Block(else_block),
-                    span: span.clone(),
-                })
-            });
-            return Some(HirExprKind::If {
-                condition: Box::new(condition),
-                then_expr: Box::new(then_expr),
-                else_expr,
-            });
-        }
-
-        let (PatternKind::VariantCtor, Some(mut variant_match)) =
-            (resolution.pattern_kind, resolution.variant_match)
-        else {
-            self.unsupported(
-                pattern_span.clone(),
-                "if-let supports only payload-bearing enum-variant patterns \
-                 (e.g. `Some(x)`); unit variants, wildcards, literals, \
-                 plain bindings, and or-patterns are reserved for a future lane",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
-            }
-            return None;
-        };
-
-        let Some((registered_type, idx_usize, _)) =
-            self.lookup_variant_ctor(&variant_match.variant_name, Some(&scrutinee_hir.ty))
-        else {
-            self.unsupported(
-                pattern_span.clone(),
-                "if-let variant not registered in machine/enum ctor registry",
-                "if-let-substrate",
-            );
-            self.push_scope();
-            let _ = self.lower_block(body, &ResolvedTy::Unit);
-            self.pop_scope();
-            if let Some(eb) = else_body {
-                let _ = self.lower_block(eb, &ResolvedTy::Unit);
-            }
-            return None;
-        };
-        variant_match.type_name = registered_type;
-        let variant_idx =
-            u32::try_from(idx_usize).expect("variant index exceeds u32::MAX — impossible in Hew");
-
-        // Build per-arm bindings (same shape as Match / WhileLet).
-        let mut binding_specs = Vec::with_capacity(resolution.payload_bindings.len());
-        let mut binding_error = false;
-        for payload in &resolution.payload_bindings {
-            let ty = match ResolvedTy::from_ty(&payload.ty) {
-                Ok(ty) => self.qualify_current_module_record_ty(ty),
-                Err(err) => {
-                    self.unsupported(
-                        pattern_span.clone(),
-                        format!("unresolved payload binding type in if-let ({err:?})"),
-                        "if-let-substrate",
-                    );
-                    binding_error = true;
-                    continue;
-                }
-            };
-            let Ok(field_idx) = u32::try_from(payload.field_idx) else {
-                self.unsupported(
-                    pattern_span.clone(),
-                    "if-let payload binding field index exceeds u32::MAX",
-                    "if-let-substrate",
-                );
-                binding_error = true;
-                continue;
-            };
-            binding_specs.push((field_idx, payload.binding_name.clone(), ty));
-        }
-
-        self.push_scope();
-        let bindings: Vec<HirMatchArmBinding> = if binding_error {
-            Vec::new()
-        } else {
-            binding_specs
-                .into_iter()
-                .map(|(field_idx, name, ty)| {
-                    let bound = self.bind(name.clone(), ty.clone(), false, pattern_span.clone());
-                    HirMatchArmBinding {
-                        binding: bound.id,
-                        field_idx,
-                        name,
-                        ty,
-                    }
-                })
-                .collect()
-        };
-        let mut payload_variant_predicates =
-            Vec::with_capacity(resolution.payload_variant_patterns.len());
-        let mut pvp_error = false;
-        for pvp in &resolution.payload_variant_patterns {
-            if let Some(pred) = self.build_payload_variant_predicate(pvp, pattern_span) {
-                payload_variant_predicates.push(pred);
-            } else {
-                pvp_error = true;
-                break;
-            }
-        }
-        let body_block = self.lower_block(body, result_ty);
-        self.pop_scope();
-
-        let else_block = else_body.as_ref().map(|eb| self.lower_block(eb, result_ty));
-
-        if binding_error || pvp_error {
-            return None;
-        }
-
-        Some(HirExprKind::IfLet {
-            scrutinee: Box::new(scrutinee_hir),
-            variant_match,
-            variant_idx,
-            bindings,
-            payload_variant_predicates,
-            body: body_block,
-            else_body: else_block,
-            result_ty: result_ty.clone(),
-        })
-    }
-
-    fn literal_pattern_condition(
-        &mut self,
-        scrutinee: HirExpr,
-        lit: &Literal,
-        span: Span,
-    ) -> HirExpr {
-        let (literal, _) = literal_to_hir(lit);
-        let literal_expr = HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            ty: scrutinee.ty.clone(),
-            value_class: ValueClass::of_ty(&scrutinee.ty, &self.type_classes),
-            intent: IntentKind::Read,
-            kind: HirExprKind::Literal(literal),
-            span: span.clone(),
-        };
-        HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            ty: ResolvedTy::Bool,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind: HirExprKind::Binary {
-                op: BinaryOp::Equal,
-                left: Box::new(scrutinee),
-                right: Box::new(literal_expr),
-            },
-            span,
-        }
     }
 
     fn lower_compound_assignment(
@@ -18238,6 +17165,7 @@ impl LowerCtx {
         HirStmtKind::Assign {
             target: target_write,
             value: Box::new(value),
+            first_store: false,
         }
     }
 
@@ -18256,8 +17184,39 @@ impl LowerCtx {
         }
     }
 
+    /// Turn an inclusive slice bound into the exclusive one HIR carries.
+    ///
+    /// `xs[a..=b]` is `xs[a..b + 1]`; the added checked arithmetic traps on
+    /// overflow, and the bounds check downstream is then the single one the
+    /// exclusive form already performs.
+    fn exclusive_slice_bound(&mut self, bound: HirExpr, span: &Span) -> HirExpr {
+        let ty = bound.ty.clone();
+        let one = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty: ty.clone(),
+            intent: IntentKind::Read,
+            kind: HirExprKind::Literal(HirLiteral::Integer(1)),
+            span: span.clone(),
+        };
+        HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::BitCopy,
+            ty,
+            intent: IntentKind::Read,
+            kind: HirExprKind::Binary {
+                op: BinaryOp::Add,
+                left: Box::new(bound),
+                right: Box::new(one),
+            },
+            span: span.clone(),
+        }
+    }
+
     fn lower_expr(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        let mut lowered = self.lower_expr_without_root_fact(expr, intent);
+        let mut lowered = self.lower_expr_with_tail_coercion(expr, intent);
         let normalized_ty = self.qualify_current_module_record_ty(lowered.ty.clone());
         lowered.value_class = self
             .checked_ty(&expr.1)
@@ -18271,19 +17230,31 @@ impl LowerCtx {
                 hew_types::ValueClass::Linear => ValueClass::Linear,
             });
         lowered.ty = normalized_ty;
-        if !self
-            .generated_produced_value_facts
-            .contains_key(&lowered.site)
-        {
-            self.record_produced_value_fact(&expr.1, &lowered);
+
+        if let Some(target) = self.numeric_operand_coercions.get(&self.mk_key(&expr.1)) {
+            if let Ok(to_ty) = ResolvedTy::from_ty(target) {
+                if lowered.ty != to_ty {
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::BitCopy,
+                        ty: to_ty.clone(),
+                        intent,
+                        span: expr.1.clone(),
+                        kind: HirExprKind::NumericCast {
+                            from_ty: lowered.ty.clone(),
+                            to_ty,
+                            value: Box::new(lowered),
+                        },
+                    };
+                }
+            }
         }
         lowered
     }
 
-    /// Lower an authored expression while leaving its root occurrence for a
-    /// specialised caller to publish. Recursive child expressions still use
-    /// `lower_expr` and therefore retain their ordinary checker facts.
-    fn lower_expr_without_root_fact(
+    /// Apply the checker's explicit function-tail Result coercion.
+    fn lower_expr_with_tail_coercion(
         &mut self,
         expr: &Spanned<Expr>,
         intent: IntentKind,
@@ -18298,212 +17269,9 @@ impl LowerCtx {
         // tail span and is set only at genuine tail positions, so this fires
         // exactly once per coerced tail and never on a non-tail sub-expression.
         if self.tail_ok_coercions.contains(&self.mk_key(&expr.1)) {
-            self.record_produced_value_fact(&expr.1, &lowered);
-            let wrapped = self.wrap_tail_ok(lowered, &expr.1);
-            self.record_generated_produced_value_fact(
-                &wrapped,
-                hew_types::ProducedValueOwnership::Unknown,
-            );
-            wrapped
+            self.wrap_tail_ok(lowered, &expr.1)
         } else {
             lowered
-        }
-    }
-
-    fn record_generated_produced_value_fact(
-        &mut self,
-        lowered: &HirExpr,
-        ownership: hew_types::ProducedValueOwnership,
-    ) {
-        let previous = self.generated_produced_value_facts.insert(
-            lowered.site,
-            HirProducedValueFact {
-                producer: HirProducedValueProducer::classify(&lowered.kind),
-                ownership,
-                relation: HirProducedValueRelation::Leaf,
-                receiver: None,
-                receiver_boundary: None,
-                arguments: Vec::new(),
-            },
-        );
-        assert!(previous.is_none(), "generated HIR site published twice");
-    }
-
-    /// Replace an authored expression's pre-materialization source occurrence
-    /// with the generated value that crosses its type-directed boundary.
-    /// Both occurrences retain facts, but parent identity/join relations must
-    /// converge on the value after representation-changing materialization.
-    fn replace_produced_value_source_site(
-        &mut self,
-        span: &Span,
-        source: SiteId,
-        materialized: SiteId,
-    ) {
-        let key = self.mk_key(span);
-        let sites = self
-            .produced_value_source_sites
-            .get_mut(&key)
-            .expect("materialization source must already be registered");
-        let source_index = sites
-            .iter()
-            .rposition(|site| *site == source)
-            .expect("materialization source site must be registered");
-        sites[source_index] = materialized;
-    }
-
-    /// Publish a synthetic expression root that deliberately has no checker
-    /// span identity of its own. Actor-lambda bodies can share the enclosing
-    /// spawn span, so consuming the spawn's fresh-handle fact for the body
-    /// would mint an owner of the wrong type. Bit-copy bodies are exactly
-    /// `NoOwner`; all other body roots fail closed as `Unknown` while their
-    /// authored child facts remain intact.
-    fn record_synthetic_body_fact(&mut self, span: &Span, lowered: &HirExpr) {
-        let key = self.mk_key(span);
-        self.produced_value_source_sites
-            .entry(key.clone())
-            .or_default()
-            .push(lowered.site);
-        self.produced_value_fact_keys
-            .insert(lowered.site, (key, Some(ProducedValueDependency::Leaf)));
-        let ownership = if lowered.value_class == ValueClass::BitCopy {
-            hew_types::ProducedValueOwnership::NoOwner
-        } else {
-            hew_types::ProducedValueOwnership::Unknown
-        };
-        self.produced_value_fact_sites.insert(
-            lowered.site,
-            HirProducedValueFact {
-                producer: HirProducedValueProducer::classify(&lowered.kind),
-                ownership,
-                relation: HirProducedValueRelation::Leaf,
-                receiver: None,
-                receiver_boundary: None,
-                arguments: Vec::new(),
-            },
-        );
-    }
-
-    /// Project the checker fact for one parsed expression onto its stable HIR
-    /// site.  The receiver relation remains a span-key lookup until every
-    /// expression has lowered; this avoids using source/display names as an
-    /// identity fallback and also supports nested receivers naturally.
-    fn record_produced_value_fact(&mut self, span: &Span, lowered: &HirExpr) {
-        if self.suppress_produced_value_recording_depth != 0 {
-            return;
-        }
-        let key = self.mk_key(span);
-        self.produced_value_source_sites
-            .entry(key.clone())
-            .or_default()
-            .push(lowered.site);
-        if let Some(fact) = self.produced_value_ownership.get(&key).cloned() {
-            // Resolve dependency and receiver edges only after all HIR source
-            // expressions have registered their sites.  Branch joins and
-            // wrappers may lower their result before a sibling source, so
-            // eager resolution would make traversal order semantic.
-            self.produced_value_fact_keys.insert(
-                lowered.site,
-                (
-                    key.clone(),
-                    self.produced_value_dependencies.get(&key).cloned(),
-                ),
-            );
-            self.produced_value_fact_sites.insert(
-                lowered.site,
-                HirProducedValueFact {
-                    producer: crate::node::HirProducedValueProducer::classify(&lowered.kind),
-                    ownership: fact.ownership,
-                    relation: crate::node::HirProducedValueRelation::Leaf,
-                    receiver: None,
-                    receiver_boundary: fact.receiver_boundary,
-                    arguments: fact.arguments,
-                },
-            );
-        }
-    }
-
-    /// Lower a compiler-synthesised expression whose root corresponds to a
-    /// checker-authored synthetic side-table row, while keeping cloned operand
-    /// AST out of the occurrence map. This prevents one source receiver span
-    /// from acquiring facts for every generated `.keys()`/`.values()`/`to_vec()`
-    /// reread.
-    fn lower_synthetic_checker_root(
-        &mut self,
-        expr: &Spanned<Expr>,
-        intent: IntentKind,
-    ) -> HirExpr {
-        self.suppress_produced_value_recording_depth += 1;
-        let lowered = self.lower_expr(expr, intent);
-        self.suppress_produced_value_recording_depth -= 1;
-        self.record_produced_value_fact(&expr.1, &lowered);
-        lowered
-    }
-
-    fn lower_synthetic_operand(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        self.suppress_produced_value_recording_depth += 1;
-        let lowered = self.lower_expr(expr, intent);
-        self.suppress_produced_value_recording_depth -= 1;
-        lowered
-    }
-
-    /// Retain a checker child occurrence that a specialised HIR node consumes.
-    /// The returned anchor participates in HIR structure and ownership facts,
-    /// but is intentionally not executable MIR.
-    fn produced_value_source_anchor(
-        &mut self,
-        span: &Span,
-        ty: ResolvedTy,
-        intent: IntentKind,
-        producer: HirProducedValueProducer,
-    ) -> HirProducedValueSourceAnchor {
-        let site = self.ids.site();
-        let key = self.mk_key(span);
-        self.produced_value_source_sites
-            .entry(key.clone())
-            .or_default()
-            .push(site);
-        if let Some(fact) = self.produced_value_ownership.get(&key).cloned() {
-            self.produced_value_fact_keys.insert(
-                site,
-                (
-                    key.clone(),
-                    self.produced_value_dependencies.get(&key).cloned(),
-                ),
-            );
-            self.produced_value_fact_sites.insert(
-                site,
-                HirProducedValueFact {
-                    producer,
-                    ownership: fact.ownership,
-                    relation: crate::node::HirProducedValueRelation::Leaf,
-                    receiver: None,
-                    receiver_boundary: fact.receiver_boundary,
-                    arguments: fact.arguments,
-                },
-            );
-        }
-        HirProducedValueSourceAnchor {
-            node: self.ids.node(),
-            site,
-            value_class: ValueClass::of_ty(&ty, &self.type_classes),
-            ty,
-            intent,
-            producer,
-            span: span.clone(),
-            source: None,
-        }
-    }
-
-    fn source_anchor_from_lowered(lowered: &HirExpr) -> HirProducedValueSourceAnchor {
-        HirProducedValueSourceAnchor {
-            node: lowered.node,
-            site: lowered.site,
-            ty: lowered.ty.clone(),
-            value_class: lowered.value_class,
-            intent: lowered.intent,
-            producer: HirProducedValueProducer::classify(&lowered.kind),
-            span: lowered.span.clone(),
-            source: None,
         }
     }
 
@@ -18513,7 +17281,6 @@ impl LowerCtx {
         span: &Span,
         intent: IntentKind,
         source: HirExpr,
-        producer: HirProducedValueProducer,
     ) -> HirExpr {
         let ty = source.ty.clone();
         HirExpr {
@@ -18524,19 +17291,8 @@ impl LowerCtx {
             intent,
             kind: HirExprKind::SubsumedValue {
                 source: Box::new(source),
-                producer,
             },
             span: span.clone(),
-        }
-    }
-
-    fn take_pending_produced_value_carrier(&mut self) -> PendingProducedValueCarrier {
-        PendingProducedValueCarrier {
-            facts: std::mem::take(&mut self.produced_value_fact_sites),
-            generated_facts: std::mem::take(&mut self.generated_produced_value_facts),
-            fact_keys: std::mem::take(&mut self.produced_value_fact_keys),
-            source_sites: std::mem::take(&mut self.produced_value_source_sites),
-            ownership: std::mem::take(&mut self.produced_value_ownership),
         }
     }
 
@@ -18546,16 +17302,10 @@ impl LowerCtx {
         reason = "single large match on expr variants; splitting would hurt readability"
     )]
     fn lower_expr_inner(&mut self, expr: &Spanned<Expr>, intent: IntentKind) -> HirExpr {
-        // Consume the await-position atomically. Every recursive call to
-        // `lower_expr` (for arguments, operands, return values, block tails,
-        // etc.) therefore sees `AwaitPosition::Other`. Only the
-        // `Stmt::Expression` arm (Statement) and the `Stmt::Let` bindable path
-        // (BindableValueLet) set a non-Other position immediately before
-        // calling us.
-        let await_position = std::mem::replace(&mut self.await_position, AwaitPosition::Other);
-        let in_stmt_position = await_position == AwaitPosition::Statement;
-        let in_bindable_value_position = await_position == AwaitPosition::BindableValueLet;
         let span = expr.1.clone();
+        if let Some(input) = self.fork_input(&span, intent) {
+            return input;
+        }
         // `self.count` inside an actor body names the state binding `count`.
         // The checker resolved the projection to that binding and published the
         // span, so rewrite the receiver spelling to the bare name and lower it
@@ -18616,13 +17366,7 @@ impl LowerCtx {
                 if let [arg] = args.as_slice() {
                     let site = self.ids.site();
                     let lowered = self.lower_expr(arg.expr(), IntentKind::Consume);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        lowered,
-                        HirProducedValueProducer::Call,
-                    );
+                    return self.subsumed_value(site, &span, intent, lowered);
                 }
             }
             if let Expr::GenericApplySuffix { target, type_args } = &receiver.0 {
@@ -18695,6 +17439,133 @@ impl LowerCtx {
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
         let site = self.ids.site();
+        if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
+            use hew_types::actor_delivery::ActorDeliveryCall;
+            let (receiver, args) = match (&operation, &expr.0) {
+                (
+                    ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
+                    Expr::Call { args, .. },
+                ) if args.len() == 1 => (
+                    self.lower_expr(args[0].expr(), IntentKind::Read),
+                    Vec::new(),
+                ),
+                (
+                    ActorDeliveryCall::Close | ActorDeliveryCall::AwaitClosed,
+                    Expr::MethodCall { receiver, args, .. },
+                ) if args.is_empty() => (self.lower_expr(receiver, IntentKind::Read), Vec::new()),
+                (ActorDeliveryCall::Policy { .. }, Expr::Call { args, .. }) if args.len() == 2 => (
+                    self.lower_expr(args[0].expr(), IntentKind::Read),
+                    Vec::new(),
+                ),
+                (
+                    ActorDeliveryCall::Readdress { .. } | ActorDeliveryCall::Resume { .. },
+                    Expr::MethodCall { receiver, args, .. },
+                ) => (
+                    self.lower_expr(receiver, IntentKind::Consume),
+                    args.iter()
+                        .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect(),
+                ),
+                (ActorDeliveryCall::Submit { .. }, Expr::MethodCall { receiver, args, .. })
+                    if args.is_empty() =>
+                {
+                    (self.lower_expr(receiver, IntentKind::Consume), Vec::new())
+                }
+                _ => {
+                    return self.unsupported_expr(
+                        span,
+                        "actor delivery operation disagrees with its checked source",
+                    )
+                }
+            };
+            let Some(ty) = self.checker_expr_ty_if_present(&span) else {
+                return self.unsupported_expr(span, "actor delivery operation has no checked type");
+            };
+            self.try_register_enum_instantiation_ty(&ty, &span);
+            // `.to(actor)` readdresses AND resubmits in one call: the
+            // readdressed description is an internal temporary that never
+            // reaches a binding, so it is built and submitted here.
+            if let ActorDeliveryCall::Readdress { policy, .. } = operation {
+                let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+                    return self.unsupported_expr(
+                        span,
+                        "readdressed submission has no checked message type",
+                    );
+                };
+                let readdressed = HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
+                    ty: message_ty,
+                    intent: IntentKind::Consume,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(receiver),
+                        args,
+                        operation,
+                    },
+                    span: span.clone(),
+                };
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(readdressed),
+                        args: Vec::new(),
+                        operation: ActorDeliveryCall::Submit { policy },
+                    },
+                    span,
+                };
+            }
+            // `close(actor)` requests the stop AND waits for terminal cleanup:
+            // the request yields the same handle back, and the wait consumes it.
+            // `fork close(actor)` is how the request runs without waiting, and
+            // `closed(actor)` is the wait on its own.
+            if let ActorDeliveryCall::Close = operation {
+                let handle_ty = receiver.ty.clone();
+                let requested = HirExpr {
+                    node: self.ids.node(),
+                    site,
+                    value_class: ValueClass::of_ty(&handle_ty, &self.type_classes),
+                    ty: handle_ty,
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(receiver),
+                        args,
+                        operation,
+                    },
+                    span: span.clone(),
+                };
+                return HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty,
+                    intent,
+                    kind: HirExprKind::ActorDelivery {
+                        receiver: Box::new(requested),
+                        args: Vec::new(),
+                        operation: ActorDeliveryCall::AwaitClosed,
+                    },
+                    span,
+                };
+            }
+            return HirExpr {
+                node: self.ids.node(),
+                site,
+                value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                ty,
+                intent,
+                kind: HirExprKind::ActorDelivery {
+                    receiver: Box::new(receiver),
+                    args,
+                    operation,
+                },
+                span,
+            };
+        }
         let (kind, ty) = match &expr.0 {
             Expr::Literal(lit) => {
                 let (kind, default_ty) = Self::lower_literal(lit);
@@ -18758,6 +17629,68 @@ impl LowerCtx {
                     resolved_ty,
                 )
             }
+            Expr::Identifier(name) if name == "self" && self.lookup(name).is_none() => {
+                // Bare `self` inside an actor `receive fn` — the actor's own
+                // handle, whose type is the actor. The checker records it in
+                // `expr_types`, but ONLY inside an actor; elsewhere it reports
+                // an undefined variable and records nothing usable. HIR is
+                // checker-authoritative here: it READS that recorded type, it
+                // does NOT re-derive the actor identity from the AST. A
+                // `self.field` access is intercepted earlier and never reaches
+                // here, and an impl/trait method's `self` receiver is a real
+                // binding, so `lookup` resolves it before this arm applies.
+                let checker_key = self.mk_key(&span);
+                match self.expr_types.get(&checker_key).cloned() {
+                    Some(ty) => match ResolvedTy::from_ty(&ty) {
+                        Ok(
+                            resolved @ ResolvedTy::Named {
+                                builtin: Some(BuiltinType::ActorHandle),
+                                ..
+                            },
+                        ) => (HirExprKind::ActorSelf, resolved),
+                        // The checker recorded a type for `self` that is not an
+                        // actor handle. The only authoritative producer is the
+                        // actor-handler synthesis (`Self` is the actor type);
+                        // anything else is a boundary violation — fail closed,
+                        // never fabricate a self-handle.
+                        Ok(other) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "self".to_string(),
+                                    reason: format!(
+                                        "expected the actor's own handle type recorded by \
+                                         the checker, got `{}`",
+                                        other.user_facing()
+                                    ),
+                                },
+                                span.clone(),
+                                "`self` is the actor self-handle; its checker type must be \
+                                 `Self`, the actor's own type",
+                            ));
+                            return self
+                                .unsupported_expr(span, "`self` with a non-actor-handle type");
+                        }
+                        Err(err) => {
+                            self.diagnostics.push(HirDiagnostic::new(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "self".to_string(),
+                                    reason: err.to_string(),
+                                },
+                                span.clone(),
+                                "`self` self-handle type failed the checker boundary conversion",
+                            ));
+                            return self.unsupported_expr(span, "`self` type boundary conversion");
+                        }
+                    },
+                    // No recorded type means the checker did not synthesize a
+                    // handle here; its diagnostic already fired. Fail closed
+                    // without papering over it.
+                    None => {
+                        return self
+                            .unsupported_expr(span, "`self` outside an actor receive handler");
+                    }
+                }
+            }
             Expr::Identifier(name) => {
                 // Inside a machine body, check if the identifier names one of the
                 // enclosing machine's states (unit state ctor, e.g. `Green`).
@@ -18768,21 +17701,7 @@ impl LowerCtx {
                 // HIR-side authority: the type checker does not record a side-table
                 // entry for this expression; the result type is derived from the
                 // machine declaration context held in `current_machine_states`.
-                if let Some((machine_name, state_idx)) = self.resolve_machine_state_name(name) {
-                    let machine_ty = self.current_machine_self_ty.clone().expect(
-                        "machine-state resolution requires the enclosing machine self type",
-                    );
-                    (
-                        HirExprKind::MachineVariantCtor {
-                            machine_name,
-                            state_idx,
-                            payload: None,
-                        },
-                        machine_ty,
-                    )
-                } else {
-                    self.lower_identifier(name, span.clone())
-                }
+                self.lower_identifier(name, span.clone(), site)
             }
             Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
                 unreachable!("compatibility suffix expressions are lowered before site allocation")
@@ -18847,23 +17766,12 @@ impl LowerCtx {
                         span,
                     };
                 }
-                let mut ty = Self::binary_ty(*op, &left.ty, &right.ty);
-                // `instant - instant -> duration`: both operands erase to i64
-                // (instant canonicalises to i64), so `binary_ty` over the operand
-                // types yields i64 and cannot recover the Duration result. The
-                // checker typed this subtraction as Duration; prefer its recorded
-                // type so the result drives Display and the duration accessors
-                // (checker–HIR contract). Only adopt the recorded Duration when
-                // `binary_ty` did not already produce it, so genuine i64
-                // arithmetic is untouched.
-                if ty != ResolvedTy::Duration {
-                    let checker_key = self.mk_key(&span);
-                    if let Some(checker_ty) = self.expr_types.get(&checker_key) {
-                        if matches!(ResolvedTy::from_ty(checker_ty), Ok(ResolvedTy::Duration)) {
-                            ty = ResolvedTy::Duration;
-                        }
-                    }
-                }
+                let Some(checked_ty) = self.expr_types.get(&dispatch_key) else {
+                    return self.unsupported_expr(span, "binary expression has no checked type");
+                };
+                let Ok(ty) = ResolvedTy::from_ty(checked_ty) else {
+                    return self.unsupported_expr(span, "binary expression type is unresolved");
+                };
                 (
                     HirExprKind::Binary {
                         op: *op,
@@ -18876,6 +17784,74 @@ impl LowerCtx {
             Expr::Unary { op, operand } => self.lower_unary_expr(*op, operand, &span),
             Expr::Call { function, args, .. } => {
                 let rewrite_key = self.mk_key(&span);
+                // `handle(msg)` on a lambda actor is a completion call, not a
+                // callable-value invocation: the checker records it as an ask.
+                if let Some(ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty,
+                    policy,
+                    argument_order,
+                }) = self
+                    .actor_method_dispatch
+                    .get(&rewrite_key)
+                    .filter(|dispatch| {
+                        matches!(dispatch, ActorMethodKind::Ask { method_id, .. }
+                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                    })
+                    .cloned()
+                {
+                    let (kind, ty) = self.lower_lambda_actor_call(
+                        function,
+                        args,
+                        &method_id,
+                        &reply_ty,
+                        policy,
+                        argument_order,
+                        &span,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
+                // `mailbox(handle, ..)(msg)` submits one way: the checker
+                // records the same lambda dispatch as a `Message`.
+                if let Some(ActorMethodKind::Message {
+                    method_id,
+                    policy,
+                    argument_order,
+                }) = self
+                    .actor_method_dispatch
+                    .get(&rewrite_key)
+                    .filter(|dispatch| {
+                        matches!(dispatch, ActorMethodKind::Message { method_id, .. }
+                            if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+                    })
+                    .cloned()
+                {
+                    let (kind, ty) = self.lower_lambda_actor_submission(
+                        function,
+                        args,
+                        &method_id,
+                        policy,
+                        argument_order,
+                        &span,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 if let Some(MethodCallRewrite::GenericWireCodec {
                     direction,
                     value_ty,
@@ -18939,13 +17915,7 @@ impl LowerCtx {
                     Some(MethodCallRewrite::VecFrom)
                 ) {
                     if args.len() == 1 {
-                        return self.subsumed_value(
-                            site,
-                            &span,
-                            intent,
-                            args.remove(0),
-                            HirProducedValueProducer::Call,
-                        );
+                        return self.subsumed_value(site, &span, intent, args.remove(0));
                     }
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -19027,6 +17997,8 @@ impl LowerCtx {
                         // Fall through to regular-call to keep checker-stream
                         // coverage for the malformed source.
                         self.lower_regular_call(function, args, &span, site)
+                    } else if matches!(name.as_str(), "assert_eq" | "assert_ne") {
+                        self.lower_equality_assertion(name, args, &span)
                     } else if stdlib_catalog::is_overloaded_builtin(name) {
                         let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
                         if let Some(entry) = stdlib_catalog::resolve_overload(name, &arg_tys) {
@@ -19111,6 +18083,7 @@ impl LowerCtx {
                 // unannotated `let x = if c { v } else { return … }` would carry
                 // the else's `Never` and break a later `x + 1` at MIR lowering.
                 let ty = if_branch_result_ty(&then_expr.ty, else_expr.as_ref().map(|e| &e.ty));
+                let ty = self.callable_join_type(&span, ty);
                 (
                     HirExprKind::If {
                         condition: Box::new(condition),
@@ -19273,44 +18246,6 @@ impl LowerCtx {
                         },
                         result_ty,
                     )
-                } else if let Some((machine_name, state_idx)) =
-                    self.resolve_machine_state_name(name)
-                {
-                    // Reject functional-update syntax (`SynReceived { ..base }`) on
-                    // machine state constructors — the semantics differ from records.
-                    if base.is_some() {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "functional-update syntax on machine state constructors"
-                                    .to_string(),
-                                owning_pass: "machine state constructor validation".to_string(),
-                            },
-                            span.clone(),
-                            "machine state constructors do not support `..base` syntax",
-                        ));
-                    }
-                    // Resolve payload field expressions against the state's declared fields.
-                    // Field order follows source declaration; unknown field names are
-                    // carried through (MIR validates against the state schema at Slice 4b).
-                    let hir_payload: Vec<(String, HirExpr)> = fields
-                        .iter()
-                        .map(|(fname, expr)| {
-                            (fname.clone(), self.lower_expr(expr, IntentKind::Read))
-                        })
-                        .collect();
-                    let machine_ty = self.current_machine_self_ty.clone().expect(
-                        "machine-state resolution requires the enclosing machine self type",
-                    );
-                    // Break out of the match to let the outer wrapper build the HirExpr.
-                    // We use a nested block that evaluates to `(kind, ty)`.
-                    (
-                        HirExprKind::MachineVariantCtor {
-                            machine_name,
-                            state_idx,
-                            payload: Some(hir_payload),
-                        },
-                        machine_ty,
-                    )
                 } else {
                     // Not a machine state — regular record init path.
                     // Record the per-instantiation `RecordLayout` for
@@ -19326,7 +18261,18 @@ impl LowerCtx {
                     // Select the current source owner before looking up the
                     // generic layout entry; the bare registry key is only a
                     // compatibility alias and may name a same-leaf sibling.
-                    let record_identity = self.canonical_current_module_record_name(name);
+                    let record_identity = self
+                        .expr_types
+                        .get(&self.mk_key(&span))
+                        .and_then(|ty| match ty {
+                            Ty::Named {
+                                name,
+                                builtin: None,
+                                ..
+                            } if self.record_registry.contains_key(name) => Some(name.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| self.canonical_current_module_record_name(name));
                     let resolved_type_args = self
                         .record_record_layout(&record_identity, &span)
                         .unwrap_or_default();
@@ -19394,6 +18340,11 @@ impl LowerCtx {
                         })
                         .unwrap_or_else(|| name.clone());
                     let result_name = self.canonical_current_module_record_name(&result_name);
+                    let result_name = if name == "NodeConfig" {
+                        "std.builtins.NodeConfig".to_string()
+                    } else {
+                        result_name
+                    };
                     (
                         HirExprKind::StructInit {
                             name: result_name.clone(),
@@ -19411,125 +18362,96 @@ impl LowerCtx {
                 }
             }
             Expr::Scope { body } => {
-                // A `scope{}` block lowers to `HirExprKind::Scope`. Inside the
-                // body, statement-calls become spawned-call nodes (TI-1) and
-                // `fork name = call(...)` statements introduce `Task<T>` bindings
-                // (TI-2). The scope block's type is `Unit` — it is a lifetime
-                // boundary, not a value-producing expression.
+                let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
+                    return self.unsupported_expr(span, "scope has no checked result type");
+                };
+                let Ok(result_ty) = ResolvedTy::from_ty(checked_ty) else {
+                    return self.unsupported_expr(span, "scope result type is unresolved");
+                };
                 self.scope_depth += 1;
-                let hir_body = self.lower_scope_block(body);
+                let hir_body = self.lower_block(body, &result_ty);
                 self.scope_depth -= 1;
-                (HirExprKind::Scope { body: hir_body }, ResolvedTy::Unit)
+                (HirExprKind::Scope { body: hir_body }, result_ty)
             }
-            Expr::ForkChild { binding, expr } => {
-                // `fork name = expr` outside a `scope{}` body: no spawn context,
-                // so this is malformed. Emit NotYetImplemented — the grammar
-                // accepts this form but HIR-lowering requires scope context.
-                // (Inside scope{} bodies this variant is handled by lower_scope_block,
-                // not by lower_expr directly.)
-                if self.scope_depth == 0 {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::AwaitOutOfPosition,
-                        span.clone(),
-                        "`fork name = expr` is only valid inside a `scope{}` body",
-                    ));
-                    (
-                        HirExprKind::Unsupported(
-                            "`fork name = expr` outside scope body".to_string(),
-                        ),
-                        ResolvedTy::Unit,
-                    )
-                } else {
-                    // Inside a scope body, lower_scope_block handles this case;
-                    // reaching here means the expression appeared in a non-statement
-                    // position (e.g. tail expression). Reject: task handles cannot
-                    // be used as values.
-                    let _ = binding;
-                    let _ = expr;
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::AwaitOutOfPosition,
-                        span.clone(),
-                        "`fork name = expr` must be a statement, not an expression value",
-                    ));
-                    (
-                        HirExprKind::Unsupported("`fork name = expr` as expression".to_string()),
-                        ResolvedTy::Unit,
-                    )
-                }
-            }
-            Expr::ForkBlock { body } => {
-                if self.scope_depth == 0 || !in_stmt_position {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::AwaitOutOfPosition,
-                        span.clone(),
-                        "`fork { ... }` child-task blocks are only legal as statements inside a `scope{}` body",
-                    ));
-                    (
-                        HirExprKind::Unsupported(
-                            "`fork { ... }` outside scope statement".to_string(),
-                        ),
-                        ResolvedTy::Unit,
-                    )
-                } else {
-                    let task_ty = ResolvedTy::Task(Box::new(ResolvedTy::Unit));
-                    let outer_bindings = self.visible_outer_bindings();
-                    let lowered_body = self.lower_cancellation_clause_block(body);
-                    let checker_key = self.mk_key(&span);
-                    let checker_facts = if let Some(facts) =
-                        self.closure_capture_facts.get(&checker_key)
-                    {
-                        facts.clone()
-                    } else {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "fork block".to_string(),
-                                reason: "closure_capture_facts has no record for fork block span"
-                                    .to_string(),
-                            },
-                            span.clone(),
-                            "fork block reached HIR without checker capture metadata",
-                        ));
-                        Vec::new()
+            Expr::ForkChild { expr } => {
+                let array_branches: Option<Vec<Spanned<Expr>>> = match &expr.0 {
+                    Expr::Array(elements) => Some(
+                        elements
+                            .iter()
+                            .map(|element| element.expr().clone())
+                            .collect(),
+                    ),
+                    _ => None,
+                };
+                if let Some(branches) = array_branches.as_deref().or(match &expr.0 {
+                    Expr::Tuple(branches) => Some(branches.as_slice()),
+                    _ => None,
+                }) {
+                    let Some(Ty::Task(output)) = self.expr_types.get(&self.mk_key(&span)) else {
+                        return self
+                            .unsupported_expr(span, "fork batch has no checked task result");
                     };
-                    let captures = self.materialize_closure_block_captures(
-                        &lowered_body,
-                        &outer_bindings,
-                        checker_facts,
-                        span.clone(),
-                    );
-                    (
-                        HirExprKind::ForkBlock {
-                            body: lowered_body,
-                            task_ty: task_ty.clone(),
-                            captures,
-                        },
-                        task_ty,
-                    )
+                    let Ok(output_ty) = ResolvedTy::from_ty(output) else {
+                        return self.unsupported_expr(span, "fork batch result type is unresolved");
+                    };
+                    let batch = self.lower_fork_batch(branches, output_ty, span.clone());
+                    (batch.kind, batch.ty)
+                } else {
+                    let child = self.lower_fork_invocation(expr);
+                    (child.kind, child.ty)
                 }
+            }
+
+            Expr::ForkBlock { body } => {
+                let checker_key = self.mk_key(&span);
+                let Some(Ty::Task(output)) = self.expr_types.get(&checker_key) else {
+                    return self.unsupported_expr(span, "fork block has no checked task result");
+                };
+                let Ok(output_ty) = ResolvedTy::from_ty(output) else {
+                    return self.unsupported_expr(span, "fork block result type is unresolved");
+                };
+                let task_ty = ResolvedTy::Task(Box::new(output_ty.clone()));
+                let outer_bindings = self.visible_outer_bindings();
+                let lowered_body = self.with_current_return_type(output_ty.clone(), |ctx| {
+                    ctx.lower_block(body, &output_ty)
+                });
+                let Some(checker_facts) = self.closure_capture_facts.get(&checker_key).cloned()
+                else {
+                    return self.unsupported_expr(span, "fork block has no checked captures");
+                };
+                let captures = self.materialize_closure_block_captures(
+                    &lowered_body,
+                    &outer_bindings,
+                    checker_facts,
+                    span.clone(),
+                );
+                (
+                    HirExprKind::ForkBlock {
+                        body: lowered_body,
+                        task_ty: task_ty.clone(),
+                        captures,
+                    },
+                    task_ty,
+                )
             }
             Expr::ScopeDeadline { duration, body } => {
-                if self.scope_depth == 0 || !in_stmt_position {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::AwaitOutOfPosition,
-                        span.clone(),
-                        "`after(duration) { ... }` deadline clauses are only legal as statements inside a `scope{}` body",
-                    ));
-                    (
-                        HirExprKind::Unsupported(
-                            "`after(duration) { ... }` outside scope statement".to_string(),
-                        ),
-                        ResolvedTy::Unit,
-                    )
-                } else {
-                    let duration = self.lower_expr(duration, IntentKind::Read);
-                    (
-                        HirExprKind::ScopeDeadline {
-                            duration: Box::new(duration),
-                            body: self.lower_cancellation_clause_block(body),
-                        },
-                        ResolvedTy::Unit,
-                    )
-                }
+                let Some(checked_ty) = self.expr_types.get(&self.mk_key(&span)) else {
+                    return self.unsupported_expr(span, "scope has no checked result type");
+                };
+                let Ok(result_ty) = ResolvedTy::from_ty(checked_ty) else {
+                    return self.unsupported_expr(span, "scope result type is unresolved");
+                };
+                let duration = self.lower_expr(duration, IntentKind::Read);
+                self.scope_depth += 1;
+                let body = self.lower_block(body, &result_ty);
+                self.scope_depth -= 1;
+                (
+                    HirExprKind::ScopeDeadline {
+                        duration: Box::new(duration),
+                        body,
+                    },
+                    result_ty,
+                )
             }
             Expr::AwaitRestart(inner) => {
                 // `await_restart sup.child` — suspend until the static supervised
@@ -19553,87 +18475,8 @@ impl LowerCtx {
                 )
             }
             Expr::Await(inner) => {
-                // NEW-1: `await conn.read()` / `await conn.read_string()` — the
-                // checker recorded the inner method-call span as a suspending
-                // read. Lower to `ConnAwaitRead` (MIR emits `SuspendingRead` for
-                // a suspendable caller, else the blocking read). The HIR type is
-                // the method's return type (`bytes` for read, `string` for
-                // read_string), already assigned to `expr` by the checker.
-                if let Some(&to_string) = self.conn_await_reads.get(&self.mk_key(&inner.1)) {
-                    if let Expr::MethodCall { receiver, .. } = &inner.0 {
-                        let conn = self.lower_expr(receiver, IntentKind::Read);
-                        // The await's value type is the read's return type:
-                        // `string` for `read_string`, `bytes` for raw `read`.
-                        let result_ty = if to_string {
-                            ResolvedTy::String
-                        } else {
-                            ResolvedTy::Bytes
-                        };
-                        let source_anchor = self.produced_value_source_anchor(
-                            &inner.1,
-                            result_ty.clone(),
-                            intent,
-                            HirProducedValueProducer::ConnAwaitRead,
-                        );
-                        let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class,
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ConnAwaitRead {
-                                conn: Box::new(conn),
-                                to_string,
-                                deadline_ns: None,
-                                source_anchor,
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                }
-                // NEW-2: `await listener.accept()` — the checker recorded the
-                // inner method-call span as a suspending accept. Lower to
-                // `ListenerAwaitAccept` (MIR emits `SuspendingAccept` for a
-                // suspendable caller, else the blocking accept). The value type is
-                // the accept's return type (`Connection`), captured from the
-                // checker's resolved type table (falling back to the qualified
-                // opaque name, which the codegen handle map recognises).
-                if self.listener_await_accepts.contains(&self.mk_key(&inner.1)) {
-                    if let Expr::MethodCall { receiver, .. } = &inner.0 {
-                        let listener = self.lower_expr(receiver, IntentKind::Read);
-                        let result_ty = self
-                            .resolved_expr_types
-                            .get(&self.mk_key(&inner.1))
-                            .cloned()
-                            .unwrap_or(ResolvedTy::Named {
-                                name: hew_types::stdlib::STD_NET_CONNECTION.to_string(),
-                                args: vec![],
-                                builtin: None,
-                                is_opaque: true,
-                            });
-                        let source_anchor = self.produced_value_source_anchor(
-                            &inner.1,
-                            result_ty.clone(),
-                            intent,
-                            HirProducedValueProducer::ListenerAwaitAccept,
-                        );
-                        let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class,
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ListenerAwaitAccept {
-                                listener: Box::new(listener),
-                                deadline_ns: None,
-                                source_anchor,
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                }
+                // TCP methods retain their authored wrapper and checked return
+                // type. Their canonical extern call owns native I/O suspension.
                 // NEW-7: `await stream.recv()` over a `Stream<T>` — the
                 // checker wired the inner method call to the layout-witness
                 // `hew_stream_next_layout` entry (one symbol for every
@@ -19645,13 +18488,7 @@ impl LowerCtx {
                 // actor-ask / conn-read bindable-await paths.
                 if self.is_stream_recv_await(&self.mk_key(&inner.1)) {
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
                 // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
                 // the checker wired the inner method call to the layout-witness
@@ -19663,315 +18500,70 @@ impl LowerCtx {
                 // conn-read bindable-await paths.
                 if self.is_channel_recv_await(&self.mk_key(&inner.1)) {
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
                 // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
                 // wired the inner method call to `hew_sink_write_bytes`. Strip the
                 // `await` and lower the inner send directly (unit); the MIR
                 // `SuspendingStreamSend` suspends on a full ring. Statement
-                // position only (unit value), like `await actor.close()`.
+                // position only (unit value), like `actor.close()`.
                 if self.is_stream_send_await(&self.mk_key(&inner.1)) {
-                    if !in_stmt_position {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            span.clone(),
-                            "`await sink.send(x)` is only legal as a statement-expression in v0.5",
-                        ));
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site: self.ids.site(),
-                            value_class: ValueClass::BitCopy,
-                            ty: ResolvedTy::Unit,
-                            intent,
-                            kind: HirExprKind::Unsupported(
-                                "`await sink.send(x)` out of position".to_string(),
-                            ),
-                            span,
-                        };
-                    }
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
-                // Unwrap a bare block wrapping a single trailing method call
-                // (`await { method() }`) to recover the effective inner expression
-                // and its span for the dispatch-map lookup.  The checker recorded
-                // the `ActorMethodKind::Ask` entry under the method call's span,
-                // not the surrounding block's span.
-                let (effective_inner_expr, effective_inner_span): (&Spanned<Expr>, &Span) =
-                    match &inner.0 {
-                        Expr::Block(block)
-                            if block.stmts.is_empty()
-                                && block
-                                    .trailing_expr
-                                    .as_deref()
-                                    .is_some_and(|(e, _)| matches!(e, Expr::MethodCall { .. })) =>
-                        {
-                            let trailing = block.trailing_expr.as_deref().unwrap();
-                            (trailing, &trailing.1)
-                        }
-                        _ => (inner, &inner.1),
-                    };
-                let has_block_wrapper = !std::ptr::eq(effective_inner_expr, inner.as_ref());
-                if let Some(ActorMethodKind::Ask(method_id, reply_ty)) = self
-                    .actor_method_dispatch
-                    .get(&self.mk_key(effective_inner_span))
-                    .cloned()
-                {
-                    // Lower the inner ask expression (type = raw reply_ty) then
-                    // upgrade its HIR type to `Result<reply_ty, AskError>` so
-                    // that downstream HIR consumers (PostfixTry, MIR lowering)
-                    // see the unified result type.  The MIR `lower_actor_ask`
-                    // reads `expr.ty` to allocate the `result_dest` slot.
-                    let ask_error_ty =
-                        hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("AskError")
-                            .expect("generated builtin enum catalog must contain AskError");
-                    let result_ty = match ResolvedTy::from_ty(&reply_ty) {
-                        Ok(r) => ResolvedTy::Named {
-                            name: "Result".to_string(),
-                            // Owner-qualify the reply record identity to the
-                            // asked actor's declaring module when it collides,
-                            // so the `Result<reply, AskError>` layout field and
-                            // the qualified handler-return value the ask
-                            // produces agree (#2208).
-                            args: vec![
-                                Self::actor_module_short_of_method_id(&method_id).map_or_else(
-                                    || r.clone(),
-                                    |module_short| {
-                                        self.qualify_colliding_module_record_ty(&r, module_short)
-                                    },
-                                ),
-                                ask_error_ty,
-                            ],
-                            builtin: Some(BuiltinType::Result),
-                            is_opaque: false,
-                        },
-                        Err(_) => {
-                            // Fallback: return raw expr if reply_ty doesn't resolve;
-                            // the checker already emitted an error in this case.
-                            let source = self.lower_expr(inner, intent);
-                            return self.subsumed_value(
-                                site,
-                                &span,
-                                intent,
-                                source,
-                                HirProducedValueProducer::Await,
-                            );
-                        }
-                    };
-                    // Register the `Result<reply_ty, AskError>` instantiation at
-                    // the ask site itself, independent of surrounding context.
-                    // Local asks usually get the layout registered by their
-                    // consumer (match scrutinee, `let ?` binding, return-type
-                    // walk), but an IMPORTED actor's ask has no such guarantee:
-                    // without this seed the importing crate's
-                    // `enum_layout_registry` lacks `Result$$<reply>$AskError`
-                    // and codegen-front fails closed (registration-mismatch).
-                    // The registry dedups by `EnumMonoKey`, so the double
-                    // registration on the local path is a no-op. Mirrors the
-                    // `ResolvedImplCall` / `RewriteToFunction` /
-                    // `RemoteActorAsk` sibling arms.
-                    self.try_register_enum_instantiation_ty(&result_ty, &span);
-                    let ask_expr = self.lower_expr(effective_inner_expr, intent);
-                    let HirExpr {
-                        node: anchor_node,
-                        site: anchor_site,
-                        ty: _,
-                        value_class: _,
-                        intent: anchor_intent,
-                        kind: ask_kind,
-                        span: anchor_span,
-                    } = ask_expr;
-                    if let HirExprKind::ActorAsk {
-                        receiver,
-                        method_id,
-                        args,
-                        reply_ty,
-                        deadline_ns,
-                        source_anchor: None,
-                    } = ask_kind
-                    {
-                        let method_anchor = HirProducedValueSourceAnchor {
-                            node: anchor_node,
-                            site: anchor_site,
-                            ty: result_ty.clone(),
-                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                            intent: anchor_intent,
-                            producer: HirProducedValueProducer::ActorAsk,
-                            span: anchor_span,
-                            source: None,
-                        };
-                        let source_anchor = if has_block_wrapper {
-                            let mut block_anchor = self.produced_value_source_anchor(
-                                &inner.1,
-                                result_ty.clone(),
-                                intent,
-                                HirProducedValueProducer::Block,
-                            );
-                            block_anchor.source = Some(Box::new(method_anchor));
-                            block_anchor
-                        } else {
-                            method_anchor
-                        };
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site,
-                            value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                            ty: result_ty,
-                            intent,
-                            kind: HirExprKind::ActorAsk {
-                                receiver,
-                                method_id,
-                                args,
-                                reply_ty,
-                                deadline_ns,
-                                source_anchor: Some(source_anchor),
-                            },
-                            span: span.clone(),
-                        };
-                    }
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "await actor ask".to_string(),
-                            reason: "checker actor dispatch did not lower to one direct ActorAsk"
-                                .to_string(),
-                        },
-                        span.clone(),
-                        "await actor ask must retain its consumed method-call occurrence",
-                    ));
-                    return self.unsupported_expr(span, "malformed awaited actor ask");
-                }
-                // `await actor.close()` — lambda-actor (Duplex) close is awaitable
-                // in statement position at any scope depth.  The checker-resolved
+                // `actor.close()` — lambda-actor (Duplex) close is admitted in
+                // statement position at any scope depth.  The checker-resolved
                 // descriptor's family classifies as `AsyncSuspendKind::DuplexClose`
                 // (`hew_duplex_close`); the `await` is stripped and the inner close
-                // call is lowered directly, matching the existing
-                // `ActorMethodKind::Ask` path above.
+                // call is lowered directly.
                 if matches!(
                     self.method_call_rewrites.get(&self.mk_key(&inner.1)),
                     Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
                         if d.is_async_suspending()
                             == Some(hew_types::runtime_call::AsyncSuspendKind::DuplexClose)
                 ) {
-                    if !in_stmt_position {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            span.clone(),
-                            "`await actor.close()` is only legal as a statement-expression in v0.5",
-                        ));
-                        return HirExpr {
-                            node: self.ids.node(),
-                            site: self.ids.site(),
-                            value_class: ValueClass::BitCopy,
-                            ty: ResolvedTy::Unit,
-                            intent,
-                            kind: HirExprKind::Unsupported(
-                                "`await actor.close()` out of position".to_string(),
-                            ),
-                            span,
-                        };
-                    }
                     let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(
-                        site,
-                        &span,
-                        intent,
-                        source,
-                        HirProducedValueProducer::Await,
-                    );
+                    return self.subsumed_value(site, &span, intent, source);
                 }
-                // `await expr` — only legal as the direct statement-expression
-                // inside a `scope{}` body in v0.5 (TI-4). Sub-expression positions
-                // (return value, function argument, binary operand, block tail,
-                // etc.) are rejected with `AwaitOutOfPosition`.
-                // `in_stmt_position` is set by `Stmt::Expression` in `lower_stmt`
-                // and consumed by `mem::replace` at the top of this function, so
-                // recursive calls always see `false`.
-                //
-                // A VALUE-returning task await (`let x = await t` over a
-                // `Task<T>`, `T != ()`) is additionally legal as a bindable
-                // let-value: it produces the child's `T`, read back on the resume
-                // edge, like the actor-ask / conn-read forms above. The
-                // `Stmt::Let` path validates that position and sets
-                // `bindable_value_await_position`, which admits the await HERE
-                // without admitting it in arg / return / binary-operand positions
-                // (those keep the TI-4 rejection). A unit `await t` (a "wait until
-                // Done" with nothing to bind) stays statement-only.
-                let inner_is_value_task = self.is_value_task_await(&self.mk_key(&inner.1));
-                let value_await_in_let = inner_is_value_task && in_bindable_value_position;
-                if !value_await_in_let && (self.scope_depth == 0 || !in_stmt_position) {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::AwaitOutOfPosition,
-                        span.clone(),
-                        "`await` is only legal as a statement-expression inside a `scope{}` body \
-                         in v0.5. It cannot be used as a return value, function argument, \
-                         binary operand, or let-value. Move the await to its own statement.",
-                    ));
-                    return HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::BitCopy,
-                        ty: ResolvedTy::Unit,
-                        intent,
-                        kind: HirExprKind::Unsupported("`await` out of position".to_string()),
-                        span,
-                    };
-                }
-                // Resolve the inner expression. It must be a binding-ref with a
-                // `Task<T>` type to be awaitable.
                 let inner_hir = self.lower_expr(inner, IntentKind::Consume);
-                let source_anchor = Self::source_anchor_from_lowered(&inner_hir);
                 match &inner_hir.ty {
                     ResolvedTy::Task(output_ty) => {
                         let output_ty = *output_ty.clone();
-                        // Extract the binding name and id for the AwaitTask node.
-                        // The inner expression must be a direct binding-ref; await
-                        // on a complex expression is not supported in v0.5.
-                        if let HirExprKind::BindingRef {
-                            name: binding_name,
-                            resolved: ResolvedRef::Binding(binding_id),
-                        } = &inner_hir.kind
-                        {
-                            let (binding_name, binding_id) = (binding_name.clone(), *binding_id);
-                            let value_class = ValueClass::of_ty(&output_ty, &self.type_classes);
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site: self.ids.site(),
-                                value_class,
-                                ty: output_ty.clone(),
-                                intent,
-                                kind: HirExprKind::AwaitTask {
-                                    binding_name,
-                                    binding_id,
-                                    output_ty,
-                                    source_anchor,
-                                },
-                                span,
-                            };
-                        }
-                        // Await on a non-binding-ref Task<T>: reject. The form
-                        // `await (some_expr)` where the expr is not a name is not
-                        // supported — only named bindings can be awaited.
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::AwaitOutOfPosition,
-                            span.clone(),
-                            "`await` requires a named task binding, not an expression",
-                        ));
                         (
-                            HirExprKind::Unsupported("`await` on non-binding-ref task".to_string()),
-                            ResolvedTy::Unit,
+                            HirExprKind::AwaitTask {
+                                operand: Box::new(inner_hir),
+                                output_ty: output_ty.clone(),
+                            },
+                            output_ty,
                         )
+                    }
+                    ResolvedTy::Named {
+                        name,
+                        builtin: Some(BuiltinType::Vec),
+                        args,
+                        ..
+                    } if matches!(args.first(), Some(ResolvedTy::Task(_))) => {
+                        let ResolvedTy::Task(output_ty) = args[0].clone() else {
+                            unreachable!("matched a vector of task handles")
+                        };
+                        let results_ty = ResolvedTy::named_builtin(
+                            name.clone(),
+                            BuiltinType::Vec,
+                            vec![(*output_ty).clone()],
+                        );
+                        let block = self.lower_vector_await(
+                            inner_hir,
+                            &output_ty,
+                            &results_ty,
+                            span.clone(),
+                        );
+                        (HirExprKind::Block(block), results_ty)
+                    }
+                    _ if self
+                        .checked_call_effects
+                        .contains_key(&self.mk_key(&inner.1)) =>
+                    {
+                        return self.subsumed_value(site, &span, intent, inner_hir);
                     }
                     found_ty => {
                         // The operand is not a Task<T> — reject with AwaitNonTask.
@@ -19994,20 +18586,15 @@ impl LowerCtx {
             Expr::Select { arms, timeout } => {
                 self.lower_select(arms, timeout.as_deref(), span.clone())
             }
-            Expr::Join(branches) => self.lower_join(branches, span.clone()),
+            Expr::Race(branches) => self.lower_race(branches, span.clone()),
             Expr::Spawn { target, args, .. } => self.lower_spawn(target, args, span.clone()),
             Expr::SpawnLambdaActor {
                 params,
                 return_type,
                 body,
                 ..
-            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body),
-            Expr::Lambda {
-                params,
-                return_type,
-                body,
-                ..
-            } => self.lower_closure(params, return_type.as_ref(), body, span.clone()),
+            } => self.lower_spawn_lambda_actor(params, return_type.as_ref(), body, &span),
+            Expr::Lambda { params, body, .. } => self.lower_closure(params, body, span.clone()),
             Expr::GenBlock { body } => self.lower_gen_block(body, span.clone()),
             Expr::Yield(value) => {
                 let value = value
@@ -20039,6 +18626,16 @@ impl LowerCtx {
                 let value = value
                     .as_deref()
                     .map(|value| Box::new(self.lower_expr(value, IntentKind::Consume)));
+                let value = if self
+                    .result_return_coercions
+                    .contains_key(&self.mk_key(&span))
+                {
+                    let value =
+                        value.map_or_else(|| self.make_unit_expr(span.clone()), |value| *value);
+                    Some(Box::new(self.apply_result_return_coercion(value, &span)))
+                } else {
+                    value
+                };
                 // TI-5 escape check (defense-in-depth, mirrors the statement
                 // form): a `Task<T>` handle must not escape via `return`.
                 if let Some(expr) = &value {
@@ -20052,6 +18649,25 @@ impl LowerCtx {
                     }
                 }
                 (HirExprKind::Return { value }, ResolvedTy::Never)
+            }
+            Expr::ReturnError(value) => {
+                if self.result_return_coercions.get(&self.mk_key(&span))
+                    == Some(&hew_types::ResultReturnKind::Error)
+                {
+                    let value = self.lower_expr(value, IntentKind::Consume);
+                    let value = self.apply_result_return_coercion(value, &span);
+                    (
+                        HirExprKind::Return {
+                            value: Some(Box::new(value)),
+                        },
+                        ResolvedTy::Never,
+                    )
+                } else {
+                    self.unsupported_postfix_try(
+                        &span,
+                        "error return without checked failure selection",
+                    )
+                }
             }
             Expr::MethodCall {
                 receiver,
@@ -20120,15 +18736,19 @@ impl LowerCtx {
                     let lowered_start = start
                         .as_ref()
                         .map(|s| Box::new(self.lower_expr(s, IntentKind::Read)));
-                    let lowered_end = end
-                        .as_ref()
-                        .map(|e| Box::new(self.lower_expr(e, IntentKind::Read)));
+                    let lowered_end = end.as_ref().map(|e| {
+                        let bound = self.lower_expr(e, IntentKind::Read);
+                        Box::new(if *inclusive {
+                            self.exclusive_slice_bound(bound, &e.1)
+                        } else {
+                            bound
+                        })
+                    });
                     (
                         HirExprKind::Slice {
                             container: Box::new(container),
                             start: lowered_start,
                             end: lowered_end,
-                            inclusive: *inclusive,
                         },
                         result_ty,
                     )
@@ -20173,40 +18793,6 @@ impl LowerCtx {
                         };
                     }
 
-                    if intent == IntentKind::Modify
-                        && matches!(
-                            &container.ty,
-                            ResolvedTy::Named {
-                                builtin: Some(BuiltinType::Vec),
-                                ..
-                            }
-                        )
-                    {
-                        if let Some(resolved) =
-                            self.resolved_calls.get(&self.mk_key(&span)).cloned()
-                        {
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                value_class: ValueClass::of_ty(&result_ty, &self.type_classes),
-                                ty: result_ty.clone(),
-                                intent,
-                                kind: HirExprKind::ResolvedImplCall {
-                                    receiver: Box::new(container),
-                                    target: resolved.target,
-                                    impl_id: resolved.impl_id,
-                                    method_name: resolved.method_name,
-                                    target_symbol: resolved.method_target.symbol_name,
-                                    target_family: resolved.method_target.family,
-                                    type_args: resolved.type_args,
-                                    args: vec![index_expr],
-                                    ret_ty: result_ty.clone(),
-                                },
-                                span: span.clone(),
-                            };
-                        }
-                    }
-
                     // `m[k]` over a `HashMap<K, V>` in READ position is the
                     // trapping `Index::at` accessor (`-> V`): a missing key
                     // aborts with IndexOutOfBounds (the map analogue of `v[i]`
@@ -20229,6 +18815,7 @@ impl LowerCtx {
                         {
                             let target = self.registered_symbol_target(&callee_name);
                             let callee_ty = ResolvedTy::Function {
+                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                                 params: vec![container.ty.clone(), index_expr.ty.clone()],
                                 ret: Box::new(result_ty.clone()),
                             };
@@ -20267,10 +18854,18 @@ impl LowerCtx {
                     }
 
                     // C-2 single-element Vec indexing: result type is element type T.
+                    // D432: the checker records the reads whose element has no
+                    // clone; those bind a loan of the slot instead of copying.
+                    let borrowed = self
+                        .borrowed_element_index_reads
+                        .contains(&self.mk_key(&span));
+                    let container = Box::new(container);
+                    let index = Box::new(index_expr);
                     (
-                        HirExprKind::Index {
-                            container: Box::new(container),
-                            index: Box::new(index_expr),
+                        if borrowed {
+                            HirExprKind::BorrowedIndex { container, index }
+                        } else {
+                            HirExprKind::Index { container, index }
                         },
                         result_ty,
                     )
@@ -20303,40 +18898,6 @@ impl LowerCtx {
                 }
             }
             Expr::FieldAccess { object, field } => {
-                // Inside a machine transition body, `self.field` accesses are
-                // `Expr::FieldAccess { object: Expr::This, field }`. Resolve to
-                // `MachineFieldAccess` using the source state's declared payload fields.
-                //
-                // HIR-side authority: the checker does not produce `expr_types` entries
-                // for `self.field` inside machine bodies. The result type and field_idx
-                // are derived from `current_machine_states[source_state_idx].fields`.
-                // The parser emits `Expr::This` for the dedicated `this`
-                // keyword and `Expr::Identifier("self")` for the bare `self`
-                // identifier (the conventional machine-body receiver). Both
-                // forms route to the same machine-self-field resolver inside
-                // a machine transition body.
-                let is_self_receiver = matches!(&object.0, Expr::This)
-                    || matches!(&object.0, Expr::Identifier(name) if name == "self")
-                        && self.current_machine_name.is_some();
-                if is_self_receiver {
-                    if let Some(hir_expr) = self
-                        .try_lower_machine_self_field_access(field, &object.1, &span, site, intent)
-                    {
-                        return hir_expr;
-                    }
-                    // If we're not in a machine body with a known source state, fall
-                    // through to the catch-all below (which will emit `NotYetImplemented`
-                    // because `Expr::This` is not otherwise handled).
-                }
-                if matches!(&object.0, Expr::Identifier(name) if name == "event")
-                    && self.current_machine_name.is_some()
-                {
-                    if let Some(hir_expr) = self
-                        .try_lower_machine_event_field_access(field, &object.1, &span, site, intent)
-                    {
-                        return hir_expr;
-                    }
-                }
                 // Dotted module-qualified unit constructor:
                 // `module.Type.Variant`. The checker has already resolved
                 // this nested field-access surface to the exact tagged-union
@@ -20392,7 +18953,12 @@ impl LowerCtx {
                 // binding must cross the same owner map used by type checking.
                 if let Expr::Identifier(module_name) = &object.0 {
                     let qualified_key = self.imported_module_member_key(module_name, field);
-                    if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
+                    // A file import's declaration is spliced into the root
+                    // namespace and registered under its bare name, so the
+                    // qualified spelling reaches it through the same mapping a
+                    // bare reference uses.
+                    let registry_key = self.published_const_key(&qualified_key).to_string();
+                    if let Some(entry) = self.const_registry.get(&registry_key).cloned() {
                         let ty = entry.ty.clone();
                         let id = entry.id;
                         return HirExpr {
@@ -20410,150 +18976,28 @@ impl LowerCtx {
                     }
                 }
 
-                // Pre-dispatch: module-qualified function reference in value
-                // position, e.g. `module_short.fn_name` stored, passed, or
-                // returned (not called). The checker accepted this and
-                // recorded a `Ty::Function` in `expr_types`; the HIR must
-                // produce a `BindingRef { Item(id) }` carrying the mangled
-                // symbol (e.g. `helpers$double`) so MIR's named-fn-value shim
-                // machinery resolves it through `module_fn_names` exactly
-                // like a same-module named fn.
-                //
-                // Guard: object is a bare `Expr::Identifier`, the mangled
-                // qualified key is in `fn_registry`, AND the checker-recorded
-                // expression type is actually `ResolvedTy::Function`.  The
-                // third condition mirrors the checker's `receiver_is_binding`
-                // discipline: when a local binding shadows an imported module
-                // name (e.g. `let helpers = Fake { double: 7 }; helpers.double`)
-                // the checker resolves the expression as a record-field access
-                // (i64), not a function.  Without this guard the registry hit
-                // would silently hijack the field access into a fn BindingRef,
-                // producing wrong-code with exit 0.
-                //
-                // Generic cross-module fns now reach here via the
-                // `check_against` arm (A156): when the checker accepted a
-                // `module.generic_fn` used as a value it recorded both a
-                // concrete `ResolvedTy::Function` in `expr_types` AND the
-                // inferred type args in `call_type_args` at this span.  The
-                // non-generic arm below handles the non-generic case (no
-                // `call_type_args` entry); this arm handles the generic one.
+                // Resolve a module function value through its lexical owner.
+                // A local record with the same name remains a field access.
                 if let Expr::Identifier(module_name) = &object.0 {
-                    let qualified_key = format!("{module_name}.{field}");
-                    let mangled = crate::mangle_dotted_name(&qualified_key);
-                    if let Some(entry) = self.fn_registry.get(&mangled).cloned() {
-                        // LESSONS: `checker-authority` P0 — honour the checker's
-                        // resolution before consulting the registry.  Only take
-                        // the fn-value path when the checker itself recorded a
-                        // Function type for this expression.  A non-Function
-                        // result (e.g. i64 from a shadowing field access) means
-                        // the checker resolved it differently; fall through to
-                        // the generic field-access lowering below.
-                        let checker_ty = self.checker_expr_ty(&span, "cross-module fn value");
-                        if let Some(ResolvedTy::Function { .. }) = &checker_ty {
-                            let ty = checker_ty.unwrap();
-
-                            // Generic fn-value: the checker recorded concrete
-                            // type args — look them up and register the
-                            // monomorphisation so MIR's `module_fn_names` finds
-                            // the mangled symbol.  The non-generic case has an
-                            // empty `type_params` on the registry entry and
-                            // produces no monomorphisation.
-                            let fn_mangled_symbol = if entry.type_params.is_empty() {
-                                // Non-generic cross-module fn — no monomorphisation needed.
-                                mangled.clone()
-                            } else {
-                                let span_key = self.mk_key(&span);
-                                if let Some(type_args_raw) =
-                                    self.call_type_args.get(&span_key).cloned()
-                                {
-                                    let mut type_args: Vec<ResolvedTy> =
-                                        Vec::with_capacity(type_args_raw.len());
-                                    let mut boundary_ok = true;
-                                    for raw_ty in &type_args_raw {
-                                        match ResolvedTy::from_ty(raw_ty) {
-                                            Ok(resolved) => type_args.push(resolved),
-                                            Err(err) => {
-                                                self.diagnostics.push(HirDiagnostic::new(
-                                                    HirDiagnosticKind::MonomorphisationCallTypeArgsViolation {
-                                                        callee: mangled.clone(),
-                                                        reason: err.to_string(),
-                                                    },
-                                                    span.clone(),
-                                                    "checker-authoritative call_type_args entry \
-                                                     for generic fn-value failed boundary conversion",
-                                                ));
-                                                boundary_ok = false;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                    if boundary_ok
-                                        && !type_args
-                                            .iter()
-                                            .any(|t| self.contains_abstract_type_param(t))
-                                    {
-                                        if let Some(declaration) =
-                                            self.direct_monomorph_declaration(&span)
-                                        {
-                                            let mono_key = MonoKey {
-                                                origin: entry.id,
-                                                declaration,
-                                                linker_symbol: mangled.clone(),
-                                                type_args: type_args.clone(),
-                                            };
-                                            let mono_sym =
-                                                crate::monomorph::function_monomorph_symbol(
-                                                    &mangled, &type_args,
-                                                );
-                                            if let Err(()) = self.mono_registry.insert(mono_key) {
-                                                if !self.mono_cap_diag_emitted {
-                                                    self.mono_cap_diag_emitted = true;
-                                                    let cap = self.mono_registry.cap();
-                                                    self.diagnostics.push(HirDiagnostic::new(
-                                                        HirDiagnosticKind::MonomorphisationCapExceeded {
-                                                            cap,
-                                                        },
-                                                        span.clone(),
-                                                        "too many distinct generic-function \
-                                                         instantiations; cap exceeded at fn-value site",
-                                                    ));
-                                                }
-                                            }
-                                            // Record per-site type args for the
-                                            // closure-under-substitution pass.
-                                            self.call_site_type_args.insert(site, type_args);
-                                            mono_sym
-                                        } else {
-                                            mangled.clone()
-                                        }
-                                    } else {
-                                        mangled.clone()
-                                    }
-                                } else {
-                                    // No call_type_args at this span — checker
-                                    // should have diagnosed this as ambiguous; fall
-                                    // back to the generic origin symbol (MIR will
-                                    // fail closed if it can't find it in
-                                    // module_fn_names).
-                                    mangled.clone()
-                                }
-                            };
-
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                value_class: ValueClass::of_ty(&ty, &self.type_classes),
-                                ty,
-                                intent,
-                                kind: HirExprKind::BindingRef {
-                                    name: fn_mangled_symbol,
-                                    resolved: ResolvedRef::Item(entry.id),
-                                },
-                                span,
-                            };
-                        }
-                        // checker_ty is None (boundary violation already
-                        // pushed) or a non-Function type — fall through.
+                    let key = self.imported_module_member_key(module_name, field);
+                    let symbol = crate::mangle_dotted_name(&key);
+                    if self.lookup(module_name).is_none()
+                        && self.fn_registry.contains_key(&symbol)
+                        && matches!(
+                            self.checker_expr_ty_if_present(&span),
+                            Some(ResolvedTy::Function { .. })
+                        )
+                    {
+                        let (kind, ty) = self.lower_function_value(&symbol, &span, site);
+                        return HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                            ty,
+                            intent,
+                            kind,
+                            span,
+                        };
                     }
                 }
 
@@ -20717,51 +19161,30 @@ impl LowerCtx {
                     }
                 }
             }
-            Expr::MachineEmit { event_name, fields } => {
-                // Lower `emit EventName { field: value, ... }` to
-                // `HirExprKind::MachineEmit { event_idx, fields }`.
-                //
-                // Resolution: look up the event name in `current_machine_events`
-                // (set by `lower_machine_expr_filtered` / `lower_machine_block_filtered`).
-                // Outside a machine body (e.g. a bare `emit` in a function) the
-                // context is absent and we produce `UnresolvedSymbol` to fail
-                // closed — `emit` outside a machine body is already rejected by
-                // the parser / static checks.
-                let event_idx_opt = self
-                    .current_machine_events
-                    .as_ref()
-                    .and_then(|names| names.iter().position(|n| n == event_name));
-                if let Some(event_idx) = event_idx_opt {
-                    let lowered_fields: Vec<(String, HirExpr)> = fields
-                        .iter()
-                        .map(|(fname, fval)| {
-                            let hir_val = self.lower_expr(fval, IntentKind::Read);
-                            (fname.clone(), hir_val)
-                        })
-                        .collect();
-                    (
-                        HirExprKind::MachineEmit {
-                            event_idx,
-                            fields: lowered_fields,
-                        },
-                        ResolvedTy::Unit,
-                    )
-                } else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::UnresolvedSymbol {
-                            name: event_name.clone(),
-                        },
-                        span.clone(),
-                        format!("emitted event `{event_name}` is not declared in this machine"),
-                    ));
-                    (
-                        HirExprKind::Unsupported(format!("unresolved emit event `{event_name}`")),
-                        ResolvedTy::Unit,
-                    )
-                }
+            // `emit` only appears inside a machine body, which the checker
+            // normalizes into an ordinary push onto the step's output vector
+            // before HIR. Reaching this arm means an un-normalized program.
+            Expr::MachineEmit { event_name, .. } => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::UnresolvedSymbol {
+                        name: event_name.clone(),
+                    },
+                    span.clone(),
+                    "`emit` outside a normalized machine body has no output vector",
+                ));
+                (
+                    HirExprKind::Unsupported(format!("emit `{event_name}` outside a machine")),
+                    ResolvedTy::Unit,
+                )
             }
             Expr::Match { scrutinee, arms } => self.lower_match_expr(scrutinee, arms, &span),
             Expr::PostfixTry(inner) => self.lower_postfix_try(inner, &span),
+            Expr::Coalesce { left, right } => self.lower_local_recovery(left, right, None, &span),
+            Expr::Handle {
+                operand,
+                error,
+                body,
+            } => self.lower_local_recovery(operand, body, Some(error), &span),
             Expr::InterpolatedString(parts) => self.lower_interpolated_string(parts, span.clone()),
             Expr::Tuple(elems) => self.lower_tuple_literal(elems, &span),
             Expr::Array(elems) => self.lower_array_literal(elems, &span),
@@ -20769,12 +19192,12 @@ impl LowerCtx {
             Expr::MapLiteral { entries } => self.lower_map_literal(entries, &span),
             Expr::Cast { expr: value, ty } => self.lower_numeric_cast_expr(value, ty, &span),
             Expr::IfLet {
-                pattern,
-                expr: scrutinee_expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                // Expression-position `if let` — delegates to the shared helper.
+                // Expression-position pattern condition — delegates to the
+                // shared chain lowering.
                 // The result type is looked up from the checker's `resolved_expr_types`
                 // side-table, mirroring `Expr::If` (same authority path).
                 let result_ty = self
@@ -20782,39 +19205,15 @@ impl LowerCtx {
                     .get(&self.mk_key(&span))
                     .cloned()
                     .unwrap_or(ResolvedTy::Unit);
-                match self.lower_if_let_inner(
-                    pattern,
-                    scrutinee_expr,
+                let lowered = self.lower_condition_chain(
+                    conditions,
                     body,
-                    else_body.as_ref(),
+                    &span,
+                    ConditionFallthrough::Else(else_body.as_deref()),
                     &result_ty,
                     &span,
-                ) {
-                    Some(kind) => (kind, result_ty),
-                    None => (
-                        HirExprKind::Unsupported("if-let lowering failed".into()),
-                        ResolvedTy::Unit,
-                    ),
-                }
-            }
-            Expr::Timeout {
-                expr: timeout_inner,
-                duration,
-            } => {
-                let source = self.lower_await_deadline(timeout_inner, duration, &span, intent);
-                let ty = source.ty.clone();
-                return HirExpr {
-                    node: self.ids.node(),
-                    site,
-                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
-                    ty,
-                    intent,
-                    kind: HirExprKind::SubsumedValue {
-                        source: Box::new(source),
-                        producer: HirProducedValueProducer::Timeout,
-                    },
-                    span: span.clone(),
-                };
+                );
+                (lowered.kind, result_ty)
             }
             // `b"AB"` — byte-string literal. The parser already decoded the
             // escape sequences; `inner` is the raw byte sequence.
@@ -20828,72 +19227,6 @@ impl LowerCtx {
                 HirExprKind::Literal(HirLiteral::Bytes(elems.clone())),
                 ResolvedTy::Bytes,
             ),
-            // `this` as a value inside an actor `receive fn` — the actor's own
-            // handle. The checker (`Expr::This` synthesis) records its type as
-            // `LocalPid<Self>` in `expr_types`, but ONLY when `this` is used
-            // inside an actor; outside an actor it reports
-            // "`this` can only be used inside an actor" and records `Ty::Error`.
-            // HIR is checker-authoritative here: it READS that recorded type, it
-            // does NOT re-derive the actor identity from the AST. A `this.field`
-            // access in a machine transition body is intercepted earlier by the
-            // `Expr::FieldAccess { object: Expr::This, .. }` arm and never
-            // reaches here. A bare machine-body `this` is suppressed downstream
-            // by `MachineBodyAllowlist`; it has no `LocalPid<Actor>` entry, so
-            // this arm fails closed for it rather than fabricating a handle.
-            Expr::This => {
-                let checker_key = self.mk_key(&span);
-                match self.expr_types.get(&checker_key).cloned() {
-                    Some(ty) => match ResolvedTy::from_ty(&ty) {
-                        Ok(
-                            resolved @ ResolvedTy::Named {
-                                builtin: Some(BuiltinType::LocalPid),
-                                ..
-                            },
-                        ) => (HirExprKind::ActorSelf, resolved),
-                        // The checker recorded a type for `this` that is not a
-                        // `LocalPid<_>`. The only authoritative producer is the
-                        // actor-handler synthesis (`LocalPid<Self>`); anything
-                        // else is a boundary violation — fail closed, never
-                        // fabricate a self-handle.
-                        Ok(other) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "this".to_string(),
-                                    reason: format!(
-                                        "expected `LocalPid<Self>` recorded by the checker, \
-                                         got `{}`",
-                                        other.user_facing()
-                                    ),
-                                },
-                                span.clone(),
-                                "`this` is the actor self-handle; its checker type must be \
-                                 `LocalPid<Self>`",
-                            ));
-                            return self.unsupported_expr(span, "`this` with non-LocalPid type");
-                        }
-                        Err(err) => {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::CheckerBoundaryViolation {
-                                    name: "this".to_string(),
-                                    reason: err.to_string(),
-                                },
-                                span.clone(),
-                                "`this` self-handle type failed the checker boundary conversion",
-                            ));
-                            return self.unsupported_expr(span, "`this` type boundary conversion");
-                        }
-                    },
-                    // No recorded type means the checker did not synthesize
-                    // `this` here — it errored ("`this` can only be used inside
-                    // an actor") and recorded nothing usable. The checker
-                    // diagnostic already fired; fail closed without papering
-                    // over it.
-                    None => {
-                        return self
-                            .unsupported_expr(span, "`this` outside an actor receive handler");
-                    }
-                }
-            }
             Expr::Range { .. } => {
                 self.unsupported(span.clone(), "expression", "slice-2");
                 (
@@ -20902,6 +19235,7 @@ impl LowerCtx {
                 )
             }
         };
+        let kind = self.normalize_collection_call(kind, &ty, &span);
         let inner = HirExpr {
             node: self.ids.node(),
             site,
@@ -21004,8 +19338,7 @@ impl LowerCtx {
                     return inner;
                 }
             };
-            let source_site = inner.site;
-            self.record_produced_value_fact(&span, &inner);
+
             let wrapped = HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
@@ -21021,29 +19354,90 @@ impl LowerCtx {
                 },
                 span,
             };
-            self.record_generated_produced_value_fact(
-                &wrapped,
-                hew_types::ProducedValueOwnership::owned(
-                    hew_types::ProducedValueAcquisition::Fresh,
-                ),
-            );
-            self.replace_produced_value_source_site(&wrapped.span, source_site, wrapped.site);
+
             return wrapped;
         }
         inner
     }
 
+    /// Preserve the checked call result separately from the raw actor reply ABI.
+    /// The addressed description a submission consumes, read out of the
+    /// checked `Result<Delivery, SendFailure<M>>` the call site carries.
+    fn submitted_message_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
+        let ResolvedTy::Named {
+            builtin: Some(BuiltinType::Result),
+            args,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        let [_, ResolvedTy::Named { name, args, .. }] = args.as_slice() else {
+            return None;
+        };
+        if name != hew_types::actor_delivery::FAILURE_TYPE {
+            return None;
+        }
+        let [message] = args.as_slice() else {
+            return None;
+        };
+        Some(message.clone())
+    }
+
+    fn checked_actor_ask_result_ty(&mut self, span: &Span, method_id: &str) -> Option<ResolvedTy> {
+        let result = self
+            .expr_types
+            .get(&self.mk_key(span))
+            .ok_or_else(|| "missing checker expression type".to_string())
+            .and_then(|ty| ResolvedTy::from_ty(ty).map_err(|err| err.to_string()));
+        let result_ty = match result {
+            Ok(
+                ty @ ResolvedTy::Named {
+                    builtin: Some(BuiltinType::Result),
+                    ..
+                },
+            ) => ty,
+            Ok(ty) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor ask result".to_string(),
+                        reason: format!("expected checked Result, found {ty}"),
+                    },
+                    span.clone(),
+                    "actor ask calls must preserve their checked error result",
+                ));
+                return None;
+            }
+            Err(reason) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "actor ask result".to_string(),
+                        reason,
+                    },
+                    span.clone(),
+                    "actor ask result must cross the checker/HIR boundary exactly",
+                ));
+                return None;
+            }
+        };
+        let result_ty = Self::actor_module_short_of_method_id(method_id).map_or_else(
+            || result_ty.clone(),
+            |module| self.qualify_colliding_module_record_ty(&result_ty, module),
+        );
+        self.try_register_enum_instantiation_ty(&result_ty, span);
+        Some(result_ty)
+    }
+
     /// Derive the HIR binding type for a select arm's named pattern.
     ///
-    /// For `ActorAsk` arms the reply type comes from the checker-authoritative
-    /// `actor_method_dispatch` table keyed on the arm source expression's span.
+    /// For `ActorAsk` arms the full result comes from the checked call type,
+    /// keyed on the arm source expression's span.
     /// The source expression's checker-resolved builtin discriminator is the
     /// sole authority for channel and stream carriers. A malformed carrier
     /// returns `None` after recording a boundary diagnostic; it must never be
     /// represented as `Unit`, because MIR would otherwise treat that placeholder
     /// as a real runtime layout witness.
     #[expect(
-        clippy::too_many_lines,
         clippy::single_match_else,
         reason = "each sealed select carrier has a distinct exact-type diagnostic"
     )]
@@ -21053,65 +19447,7 @@ impl LowerCtx {
         source_span: &std::ops::Range<usize>,
     ) -> Option<ResolvedTy> {
         match kind {
-            HirSelectArmKind::ActorAsk { .. } => {
-                match self
-                    .actor_method_dispatch
-                    .get(&self.mk_key(source_span))
-                    .cloned()
-                {
-                    Some(ActorMethodKind::Ask(_, reply_ty)) => {
-                        // W4.047 P1.2: the actor-ask reply type comes from the
-                        // checker-authoritative `actor_method_dispatch` table
-                        // (materialized at the checker boundary), not from
-                        // `expr_types`. The fail-open `.unwrap_or(Unit)` below
-                        // would silently install the *wrong* reply-channel ABI
-                        // if `from_ty` ever failed. Prove it cannot for a
-                        // concrete reply type: a conversion failure is only
-                        // admissible for a covered generic var (resolved at
-                        // monomorphization). No behaviour change.
-                        debug_assert!(
-                            ResolvedTy::from_ty(&reply_ty).is_ok() || reply_ty.has_inference_var(),
-                            "W4.047 totality: actor-ask reply type {reply_ty:?} fails \
-                             ResolvedTy::from_ty without being a covered generic var — \
-                             the fail-open .unwrap_or(Unit) would install the wrong \
-                             reply-channel ABI"
-                        );
-                        match ResolvedTy::from_ty(&reply_ty) {
-                            Ok(ty) => Some(ty),
-                            Err(err) => {
-                                self.diagnostics.push(HirDiagnostic::new(
-                                    HirDiagnosticKind::CheckerBoundaryViolation {
-                                        name: "select actor-ask reply".to_string(),
-                                        reason: err.to_string(),
-                                    },
-                                    source_span.clone(),
-                                    "select reply type must cross the checker/HIR boundary exactly",
-                                ));
-                                None
-                            }
-                        }
-                    }
-                    // A `receive gen fn` dispatch never reaches a `select`
-                    // ActorAsk arm — `for await` is its only consumer surface.
-                    Some(
-                        ActorMethodKind::Fire(_)
-                        | ActorMethodKind::BlockingFire(_)
-                        | ActorMethodKind::CheckedFire(_)
-                        | ActorMethodKind::StreamProducer(_, _),
-                    )
-                    | None => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "select actor-ask reply".to_string(),
-                                reason: "missing checker-authoritative ask dispatch".to_string(),
-                            },
-                            source_span.clone(),
-                            "a select actor-ask arm must carry an ask reply type",
-                        ));
-                        None
-                    }
-                }
-            }
+            HirSelectArmKind::ActorAsk { call } => Some(call.ty.clone()),
             HirSelectArmKind::ChannelRecv { receiver } => {
                 // The binding receives `Option<T>` — the same shape the awaited
                 // `rx.recv()` produces. `None` is the channel-closed signal.
@@ -21188,19 +19524,8 @@ impl LowerCtx {
         }
     }
 
-    /// Lower a parsed `select { ... }` expression to HIR.
-    ///
-    /// Per HEW-SPEC-2026 §4.11.1 the four arm forms are exhaustive:
-    ///   1. `pat from next(<stream-expr>) => body`
-    ///   2. `pat from <actor-expr>.<method>(<args>) => body`   (actor ask)
-    ///   3. `pat from await <task-expr> => body`
-    ///   4. `after <duration-expr> => body`                    (timer)
-    ///
-    /// Any other arm source shape is rejected with
-    /// `SelectArmNotSealedForm`. Body-type disagreement is rejected
-    /// with `SelectArmTypeMismatch`. Empty selects and multiple-after
-    /// arms are rejected with `SelectNoArms` and
-    /// `SelectMultipleAfterArms` respectively.
+    /// Lower selection using the checker's source-arm classifications.
+    /// Preparation preserves task handles; the selected edge consumes its task.
     #[allow(
         clippy::too_many_lines,
         reason = "sealed select lowering keeps arm scope publication, binding, and result-type checks in one auditable pass"
@@ -21211,19 +19536,6 @@ impl LowerCtx {
         timeout: Option<&TimeoutClause>,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
-        // Empty select — neither arms nor a timer — fires nothing.
-        if arms.is_empty() && timeout.is_none() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::SelectNoArms,
-                span.clone(),
-                "select expression contains no arms",
-            ));
-            return (
-                HirExprKind::Unsupported("empty select".into()),
-                ResolvedTy::Unit,
-            );
-        }
-
         // Multiple `after` arms have no meaningful join semantics and are
         // rejected. An `Expr::Timeout`-sourced arm in the `arms` vec is
         // treated as an `AfterTimer` arm; if that is combined with the
@@ -21231,12 +19543,25 @@ impl LowerCtx {
         // second one triggers `SelectMultipleAfterArms`.
 
         let mut hir_arms: Vec<HirSelectArm> = Vec::with_capacity(arms.len() + 1);
-        let mut expected_ty: Option<ResolvedTy> = None;
+        let Some(result_ty) = self.checker_expr_ty(&span, "select result") else {
+            return (
+                HirExprKind::Unsupported("untyped select".into()),
+                ResolvedTy::Unit,
+            );
+        };
         let mut first_after_span: Option<std::ops::Range<usize>> = None;
 
-        for arm in arms {
+        let checked_sources = self.select_sources.get(&self.mk_key(&span)).cloned();
+        for (arm_index, arm) in arms.iter().enumerate() {
             let binding_name = self.pattern_name(&arm.binding);
-            let kind = self.recognize_sealed_arm_source(&arm.source);
+            let checked_source = checked_sources
+                .as_ref()
+                .and_then(|sources| sources.get(arm_index));
+            let kind = self.lower_checked_select_source(&arm.source, checked_source);
+            let binding_span = match &arm.source.0 {
+                Expr::Await(inner) => &inner.1,
+                _ => &arm.source.1,
+            };
             if matches!(kind, HirSelectArmKind::AfterTimer { .. }) {
                 if first_after_span.is_some() {
                     self.diagnostics.push(HirDiagnostic::new(
@@ -21263,7 +19588,7 @@ impl LowerCtx {
             let previous_scope_id =
                 arm_scope.map(|scope| std::mem::replace(&mut self.current_scope_id, scope));
             let binding_id = if let Some(ref name) = binding_name {
-                self.select_arm_binding_ty(&kind, &arm.source.1)
+                self.select_arm_binding_ty(&kind, binding_span)
                     .map(|binding_ty| {
                         self.bind(name.clone(), binding_ty, false, arm.binding.1.clone())
                             .id
@@ -21276,20 +19601,16 @@ impl LowerCtx {
                 self.current_scope_id = previous;
             }
             self.pop_scope();
-            if let Some(expected) = expected_ty.as_ref() {
-                if &body.ty != expected {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SelectArmTypeMismatch {
-                            arm_index: hir_arms.len(),
-                            expected: expected.clone(),
-                            actual: body.ty.clone(),
-                        },
-                        arm.body.1.clone(),
-                        "select arm body type differs from the first arm body type",
-                    ));
-                }
-            } else {
-                expected_ty = Some(body.ty.clone());
+            if body.ty != result_ty && body.ty != ResolvedTy::Never {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::SelectArmTypeMismatch {
+                        arm_index: hir_arms.len(),
+                        expected: result_ty.clone(),
+                        actual: body.ty.clone(),
+                    },
+                    arm.body.1.clone(),
+                    "select arm body type differs from the first arm body type",
+                ));
             }
             hir_arms.push(HirSelectArm {
                 scope: arm_scope,
@@ -21310,20 +19631,16 @@ impl LowerCtx {
             }
             let duration = self.lower_expr(&timeout.duration, IntentKind::Read);
             let body = self.lower_expr(&timeout.body, IntentKind::Read);
-            if let Some(expected) = expected_ty.as_ref() {
-                if &body.ty != expected {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SelectArmTypeMismatch {
-                            arm_index: hir_arms.len(),
-                            expected: expected.clone(),
-                            actual: body.ty.clone(),
-                        },
-                        timeout.body.1.clone(),
-                        "select after-arm body type differs from earlier arm body types",
-                    ));
-                }
-            } else {
-                expected_ty = Some(body.ty.clone());
+            if body.ty != result_ty && body.ty != ResolvedTy::Never {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::SelectArmTypeMismatch {
+                        arm_index: hir_arms.len(),
+                        expected: result_ty.clone(),
+                        actual: body.ty.clone(),
+                    },
+                    timeout.body.1.clone(),
+                    "select after-arm body type differs from earlier arm body types",
+                ));
             }
             hir_arms.push(HirSelectArm {
                 scope: None,
@@ -21336,155 +19653,16 @@ impl LowerCtx {
             });
         }
 
-        let result_ty = expected_ty.unwrap_or(ResolvedTy::Unit);
-        (HirExprKind::Select(HirSelect { arms: hir_arms }), result_ty)
-    }
-
-    /// Lower a parsed `join { ... }` expression to HIR — the wait-ALL
-    /// sibling of `lower_select`.
-    ///
-    /// Per HEW-SPEC-2026 §4.11.2 every branch must be an actor receive
-    /// handler call (`<actor-expr>.<method>(<args>)`, optionally written
-    /// `await <actor>.<method>(...)` — the `await` is redundant inside
-    /// `join`). Each branch is issued concurrently; the construct waits
-    /// for ALL replies and binds a tuple of the per-branch reply values
-    /// in declaration order. A branch trap cancels the remaining branches
-    /// and propagates (handled at codegen).
-    ///
-    /// Non-actor-call branches are rejected with `JoinBranchNotActorAsk`
-    /// (defence-in-depth — the checker already restricts join branches via
-    /// `synthesize_actor_concurrency_source`). An empty join is rejected
-    /// with `JoinNoBranches`.
-    fn lower_join(
-        &mut self,
-        branches: &[Spanned<Expr>],
-        span: std::ops::Range<usize>,
-    ) -> (HirExprKind, ResolvedTy) {
-        if branches.is_empty() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::JoinNoBranches,
-                span.clone(),
-                "join expression contains no branches",
-            ));
-            return (
-                HirExprKind::Unsupported("empty join".into()),
-                ResolvedTy::Unit,
-            );
-        }
-
-        let mut hir_branches: Vec<HirJoinBranch> = Vec::with_capacity(branches.len());
-        for branch in branches {
-            hir_branches.push(self.lower_join_branch(branch));
-        }
-
-        // The construct's static type is the checker-authoritative tuple
-        // recorded on the join span; fall back to a tuple built from the
-        // per-branch reply types when the checker has no entry (e.g. a
-        // standalone HIR test driver). A single-branch join is the branch
-        // reply type itself, mirroring the checker's `Expr::Join` rule.
-        let result_ty = self
-            .expr_types
-            .get(&self.mk_key(&span))
-            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
-            .unwrap_or_else(|| {
-                if hir_branches.len() == 1 {
-                    hir_branches[0].reply_ty.clone()
-                } else {
-                    ResolvedTy::Tuple(hir_branches.iter().map(|b| b.reply_ty.clone()).collect())
-                }
-            });
-
         (
-            HirExprKind::Join(HirJoin {
-                branches: hir_branches,
+            HirExprKind::Select(HirSelect {
+                order: crate::HirSelectionOrder::Source,
+                arms: hir_arms,
             }),
             result_ty,
         )
     }
 
-    /// Lower a single `join` branch into a [`HirJoinBranch`]. The branch
-    /// must be an actor method call; `await <call>` is unwrapped (the
-    /// `await` is redundant inside `join`). The reply type is harvested
-    /// from the checker-authoritative `actor_method_dispatch` table keyed
-    /// on the method-call span, exactly as `select_arm_binding_ty` does.
-    fn lower_join_branch(&mut self, branch: &Spanned<Expr>) -> HirJoinBranch {
-        let (call_expr, call_span) = match &branch.0 {
-            Expr::Await(inner) => (&inner.0, &inner.1),
-            _ => (&branch.0, &branch.1),
-        };
-        // §4.11.2: every join branch must be an actor receive-handler ask
-        // (`<actor>.<method>(<args>)` with a return type). The method-call
-        // SHAPE alone is not sufficient — the branch must carry a
-        // checker-authoritative actor-ask dispatch. A non-actor method call
-        // (e.g. a channel `rx.recv()`, which `select` legitimately accepts but
-        // `join` does not, or a fire/tell handler with no reply) has no `Ask`
-        // dispatch and is rejected here with `JoinBranchNotActorAsk` at CHECK
-        // time — never silently lowered to `Unit` (which would later surface as
-        // an opaque MIR error or a no-op compile). This validator runs only on
-        // the join path, so `select`'s valid recv/stream arms are untouched.
-        if let Expr::MethodCall {
-            receiver,
-            method,
-            args,
-        } = call_expr
-        {
-            if let Some(ActorMethodKind::Ask(_, reply_ty)) = self
-                .actor_method_dispatch
-                .get(&self.mk_key(call_span))
-                .cloned()
-            {
-                let actor = self.lower_expr(receiver, IntentKind::Read);
-                // Join branches are issued together, like select arm sources:
-                // the same owned value in two branches is a double transfer.
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| {
-                        let spanned = arg.expr();
-                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
-                    })
-                    .collect();
-                let reply_ty = ResolvedTy::from_ty(&reply_ty).unwrap_or(ResolvedTy::Unit);
-                return HirJoinBranch {
-                    actor: Box::new(actor),
-                    method: method.clone(),
-                    args: lowered_args,
-                    reply_ty,
-                };
-            }
-        }
-
-        let shape = describe_select_source_shape(call_expr);
-        self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::JoinBranchNotActorAsk {
-                source_shape: shape,
-            },
-            branch.1.clone(),
-            "join branch must be an actor receive-handler call (`actor.method(args)`)",
-        ));
-        // The branch is already rejected (error severity halts the pipeline
-        // before MIR), so this placeholder is never lowered or codegen'd. Use a
-        // benign unit value rather than an `Unsupported` node so the HIR
-        // verifier does not append a spurious `NotYetImplemented` — the
-        // `JoinBranchNotActorAsk` above is the single, authoritative diagnostic.
-        HirJoinBranch {
-            actor: Box::new(HirExpr {
-                node: self.ids.node(),
-                site: self.ids.site(),
-                ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
-                intent: IntentKind::Unknown,
-                kind: HirExprKind::TupleLiteral {
-                    elements: Vec::new(),
-                },
-                span: branch.1.clone(),
-            }),
-            method: String::new(),
-            args: Vec::new(),
-            reply_ty: ResolvedTy::Unit,
-        }
-    }
-
-    /// Build the `LambdaPid<Msg, Reply>` `ResolvedTy` for an actor-lambda
+    /// Build the `actor(Msg) -> Reply` handle `ResolvedTy` for an actor-lambda
     /// from its parameter list and optional return-type annotation.
     /// Mirrors the forward-bind logic in `hew-types::check::statements`:
     /// zero params → Unit message; one param → that param's type;
@@ -21529,16 +19707,16 @@ impl LowerCtx {
             .as_ref()
             .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
         ResolvedTy::Named {
-            name: "LambdaPid".to_string(),
+            name: BuiltinType::ActorFn.canonical_name().to_string(),
             args: vec![msg_ty, reply_ty],
-            builtin: Some(hew_types::BuiltinType::LambdaPid),
+            builtin: Some(hew_types::BuiltinType::ActorFn),
             is_opaque: false,
         }
     }
 
     fn closure_signature_from_ty(ty: &ResolvedTy) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
         match ty {
-            ResolvedTy::Function { params, ret } | ResolvedTy::Closure { params, ret, .. } => {
+            ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
                 Some((params.clone(), ret.as_ref().clone()))
             }
             _ => None,
@@ -21695,113 +19873,79 @@ impl LowerCtx {
         (args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
     }
 
+    fn reject_closure_boundary(
+        &mut self,
+        span: std::ops::Range<usize>,
+        reason: impl Into<String>,
+    ) -> (HirExprKind, ResolvedTy) {
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "closure literal".to_string(),
+                reason: reason.into(),
+            },
+            span,
+            "closure literal reached HIR without valid checker-owned facts",
+        ));
+        (HirExprKind::Literal(HirLiteral::Unit), ResolvedTy::Unit)
+    }
+
     fn lower_closure(
         &mut self,
         params: &[LambdaParam],
-        return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
         span: std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let checker_key = self.mk_key(&span);
-        let closure_ty = if let Some(ty) = self.expr_types.get(&checker_key).cloned() {
-            match ResolvedTy::from_ty(&ty) {
-                Ok(resolved) => resolved,
-                Err(err) => {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "closure literal".to_string(),
-                            reason: err.to_string(),
-                        },
-                        span.clone(),
-                        "closure literal type failed checker-boundary conversion",
-                    ));
-                    ResolvedTy::Function {
-                        params: vec![],
-                        ret: Box::new(ResolvedTy::Unit),
-                    }
-                }
-            }
-        } else {
-            let param_tys: Vec<ResolvedTy> = params
-                .iter()
-                .map(|p| {
-                    p.ty.as_ref()
-                        .map_or(ResolvedTy::Unit, |annotation| self.lower_type(annotation))
-                })
-                .collect();
-            let ret_ty = return_type
-                .as_ref()
-                .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-            ResolvedTy::Function {
-                params: param_tys,
-                ret: Box::new(ret_ty),
-            }
+        let Some(ty) = self.expr_types.get(&checker_key) else {
+            return self.reject_closure_boundary(
+                span,
+                "expr_types has no callable type for closure literal span",
+            );
         };
-
-        let (signature_params, ret_ty) = Self::closure_signature_from_ty(&closure_ty)
-            .unwrap_or_else(|| {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "closure literal".to_string(),
-                        reason: format!("expected Function/Closure type, got {closure_ty:?}"),
-                    },
-                    span.clone(),
-                    "closure literal did not type as a callable value",
-                ));
-                (vec![], ResolvedTy::Unit)
-            });
-
+        let closure_ty = match ResolvedTy::from_ty(ty) {
+            Ok(ty) => ty,
+            Err(error) => return self.reject_closure_boundary(span, error.to_string()),
+        };
+        let Some((signature_params, ret_ty)) = Self::closure_signature_from_ty(&closure_ty) else {
+            return self.reject_closure_boundary(
+                span,
+                format!("expected Function/Closure type, got {closure_ty:?}"),
+            );
+        };
+        if signature_params.len() != params.len() {
+            return self.reject_closure_boundary(
+                span,
+                "checker callable signature does not match closure parameter count",
+            );
+        }
+        let Some(checker_facts) = self.closure_capture_facts.get(&checker_key).cloned() else {
+            return self.reject_closure_boundary(
+                span,
+                "closure_capture_facts has no record for closure literal span",
+            );
+        };
+        let Some(escape_kind) = self
+            .closure_escape_facts
+            .get(&checker_key)
+            .map(|fact| fact.kind)
+        else {
+            return self.reject_closure_boundary(
+                span,
+                "closure_escape_facts has no record for closure literal span",
+            );
+        };
         let outer_bindings = self.visible_outer_bindings();
         self.push_scope();
-        let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
-        for (idx, param) in params.iter().enumerate() {
-            let ty = signature_params
-                .get(idx)
-                .cloned()
-                .or_else(|| {
-                    param
-                        .ty
-                        .as_ref()
-                        .map(|annotation| self.lower_type(annotation))
-                })
-                .unwrap_or(ResolvedTy::Unit);
-            let binding = self.bind(param.name.clone(), ty, false, 0..0);
-            hir_params.push(binding);
-        }
+        let hir_params = params
+            .iter()
+            .zip(signature_params)
+            .map(|(param, ty)| self.bind(param.name.clone(), ty, false, param.name_span.clone()))
+            .collect();
         let lowered_body = self
             .with_current_return_type(ret_ty.clone(), |ctx| ctx.lower_expr(body, IntentKind::Read));
         self.pop_scope();
-
-        let checker_facts = if let Some(facts) = self.closure_capture_facts.get(&checker_key) {
-            facts.clone()
-        } else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "closure literal".to_string(),
-                    reason: "closure_capture_facts has no record for closure literal span"
-                        .to_string(),
-                },
-                span.clone(),
-                "closure literal reached HIR without checker capture metadata",
-            ));
-            Vec::new()
-        };
-
         let captures =
             self.materialize_closure_captures(&lowered_body, &outer_bindings, checker_facts, span);
-
-        // Conservative escape classification: when the checker did not emit
-        // a `closure_escape_facts` entry for this literal (which would be a
-        // boundary-fail-closed violation if it ever happened in steady
-        // state), treat the closure as `Escapes` per R242=B. We do not
-        // synthesize a `CheckerBoundaryViolation` here because the
-        // boundary-pin runs in `into_result()` and the conservative
-        // fall-through keeps the MIR path well-formed.
-        let escape_kind = self
-            .closure_escape_facts
-            .get(&checker_key)
-            .map_or(ClosureEscapeKind::Escapes, |fact| fact.kind);
-
         (
             HirExprKind::Closure {
                 params: hir_params,
@@ -21857,18 +20001,6 @@ impl LowerCtx {
                         .as_ref()
                         .is_some_and(|fact_def_span| *fact_def_span == def_span)
             });
-            let fact_idx = fact_idx.or_else(|| {
-                let mut matches = remaining_facts
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, fact)| fact.name == name);
-                let first = matches.next()?;
-                if matches.next().is_none() {
-                    Some(first.0)
-                } else {
-                    None
-                }
-            });
             let Some(fact_idx) = fact_idx else {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
@@ -21901,7 +20033,9 @@ impl LowerCtx {
                 binding,
                 name,
                 ty,
-                mode: fact.mode,
+                acquisition: fact.acquisition,
+                access: fact.access,
+                consumption: fact.consumption,
                 is_send: fact.is_send,
                 is_sync: fact.is_sync,
             });
@@ -21930,8 +20064,8 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         // Syntactic fallback only. The checker's spawn result type
-        // (`LocalPid<bank.Account>`) is the identity authority below; the
-        // dotted `{module}.{field}` spelling here mirrors the checker's
+        // (`bank.Account`'s own actor-handle type) is the identity authority
+        // below; the dotted `{module}.{field}` spelling here mirrors the checker's
         // qualified-spawn resolution for the diagnostic-recovery paths where
         // no expr_types entry exists.
         let actor_name = match &target.0 {
@@ -21990,13 +20124,13 @@ impl LowerCtx {
             ));
             ResolvedTy::Unit
         };
-        // The checker's `LocalPid<T>` inner name is the actor's resolved
-        // identity: dotted (`bank.Account`) for module actors, bare for
-        // root/flat actors. It already encodes the local-first bare-name
-        // resolution (a bare `spawn Account()` inside module `bank` resolves
-        // to `bank.Account`), so it overrides the syntactic spelling. MIR
-        // actor layouts key on the same identity (`qualified_name()`).
-        if let Some(inner) = Self::local_pid_actor_identity(&ty) {
+        // The checker's handle type names the actor's resolved identity:
+        // dotted (`bank.Account`) for module actors, bare for root/flat
+        // actors. It already encodes the local-first bare-name resolution (a
+        // bare `spawn Account()` inside module `bank` resolves to
+        // `bank.Account`), so it overrides the syntactic spelling. MIR actor
+        // layouts key on the same identity (`qualified_name()`).
+        if let Some(inner) = Self::actor_handle_identity(&ty) {
             inner.clone_into(&mut actor_name);
         }
         if let Some(qualified) = self
@@ -22015,16 +20149,13 @@ impl LowerCtx {
         )
     }
 
-    fn local_pid_actor_identity(ty: &ResolvedTy) -> Option<&str> {
+    fn actor_handle_identity(ty: &ResolvedTy) -> Option<&str> {
         let ResolvedTy::Named {
-            args,
-            builtin: Some(BuiltinType::LocalPid),
+            name,
+            builtin: Some(BuiltinType::ActorHandle),
             ..
         } = ty
         else {
-            return None;
-        };
-        let [ResolvedTy::Named { name, .. }] = args.as_slice() else {
             return None;
         };
         Some(name)
@@ -22043,15 +20174,14 @@ impl LowerCtx {
     /// classifies the strength: `id == current_actor_self.0` → Weak
     /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
     ///
-    /// The HIR `expr.ty` is the `LambdaPid<Msg, Reply>` handle type. The
-    /// MIR producer wires this directly into a
-    /// `Place::LambdaActorHandle` whose drop selects
-    /// `DropKind::LambdaActorRelease`.
+    /// The HIR `expr.ty` is the `ActorFn` handle type (`actor(Msg) -> Reply`),
+    /// whose drop releases the runtime wrapper.
     fn lower_spawn_lambda_actor(
         &mut self,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
+        span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
         let actor_ty = self.actor_lambda_handle_ty(params, return_type);
         let reply_ty = match &actor_ty {
@@ -22071,7 +20201,7 @@ impl LowerCtx {
                 .ty
                 .as_ref()
                 .map_or(ResolvedTy::Unit, |ann| self.lower_type(ann));
-            let binding = self.bind(param.name.clone(), ty, false, 0..0);
+            let binding = self.bind(param.name.clone(), ty, false, param.name_span.clone());
             param_ids.insert(binding.id);
             hir_params.push(binding);
         }
@@ -22088,21 +20218,300 @@ impl LowerCtx {
         // prior value on exit.
         let my_self_id = self.current_actor_self.take();
         let lowered_body = self.with_current_return_type(reply_ty.clone(), |ctx| {
-            let body = ctx.lower_expr_without_root_fact(body, IntentKind::Read);
-            ctx.record_synthetic_body_fact(&body.span, &body);
-            body
+            ctx.lower_expr_with_tail_coercion(body, IntentKind::Read)
         });
         self.current_actor_self = my_self_id;
         self.pop_scope();
         let captures = self.collect_lambda_captures(&lowered_body, &param_ids);
+        self.synthesize_lambda_actor(span, hir_params, lowered_body, captures, actor_ty)
+    }
+
+    /// Build and record the actor declaration one lambda actor lowers to.
+    fn push_lambda_actor_declaration(
+        &mut self,
+        span: &Span,
+        identity: &hew_types::actor_protocol::LambdaActorIdentity,
+        params: Vec<HirBinding>,
+        body: HirExpr,
+        captures: &[HirLambdaCapture],
+        handle_ty: &ResolvedTy,
+    ) {
+        // The handle carries the protocol: `actor(Msg) -> Reply`.
+        let reply_ty = match handle_ty {
+            ResolvedTy::Named { args, .. } if args.len() == 2 => args[1].clone(),
+            _ => ResolvedTy::Unit,
+        };
+        let state_fields: Vec<HirField> = captures
+            .iter()
+            .map(|capture| HirField {
+                name: capture.name.clone(),
+                ty: capture.ty.clone(),
+                default: None,
+                is_mutable: false,
+                deferred: false,
+                span: span.clone(),
+            })
+            .collect();
+        // The body already refers to each capture by its original binding id;
+        // binding the state seat to those same ids is what makes the captured
+        // environment and the actor's state one thing.
+        let state_bindings: Vec<HirBinding> = captures
+            .iter()
+            .map(|capture| HirBinding {
+                id: capture.binding,
+                name: capture.name.clone(),
+                ty: capture.ty.clone(),
+                mutable: false,
+                span: span.clone(),
+                is_consume: false,
+            })
+            .collect();
+
+        let param_tys: Vec<ResolvedTy> = params.iter().map(|param| param.ty.clone()).collect();
+        let handler_name = LAMBDA_ACTOR_HANDLER.to_string();
+        let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers_with_ids(
+            identity.path.clone(),
+            &[(
+                hew_types::actor_protocol::ActorHandlerSpec {
+                    name: handler_name.clone(),
+                    param_tys,
+                    return_ty: reply_ty.clone(),
+                    symbol: format!("{}__{handler_name}", identity.path),
+                },
+                hew_types::actor_protocol::LAMBDA_ACTOR_MESSAGE_ID,
+            )],
+        )
+        .ok();
+
+        let body_block = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements: Vec::new(),
+            ty: body.ty.clone(),
+            tail: Some(Box::new(body)),
+            span: span.clone(),
+        };
+        self.pending_lambda_actors.push(HirActorDecl {
+            id: self.ids.item(),
+            node: self.ids.node(),
+            declaration: identity.actor.clone(),
+            name: identity.path.clone(),
+            defining_module: None,
+            type_params: Vec::new(),
+            state_fields,
+            init: None,
+            receive_handlers: vec![HirActorReceiveFn {
+                declaration: identity.handler.clone(),
+                state_bindings,
+                name: handler_name,
+                is_generator: false,
+                params,
+                return_ty: reply_ty,
+                body: body_block,
+                state_guard: HirActorStateGuard::Exclusive,
+                every_ns: None,
+                span: span.clone(),
+            }],
+            methods: Vec::new(),
+            lifecycle_hooks: Vec::new(),
+            max_heap_bytes: None,
+            is_isolated: false,
+            mailbox_capacity: None,
+            overflow_policy: None,
+            cycle_capable: false,
+            protocol_descriptor,
+            lambda_handle_ty: Some(Box::new(handle_ty.clone())),
+            span: span.clone(),
+        });
+    }
+
+    /// Lower `handle(msg)` on a lambda actor to the completion call it is.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the checker's recorded ask facts travel together"
+    )]
+    fn lower_lambda_actor_call(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: &[CallArg],
+        method_id: &str,
+        reply_ty: &hew_types::Ty,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let receiver = self.lower_expr(function, IntentKind::Read);
+        let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
+        let Ok(reply_ty) = ResolvedTy::from_ty(reply_ty) else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "lambda actor call".to_string(),
+                    reason: "the recorded reply type is not concrete".to_string(),
+                },
+                span.clone(),
+                "a completion call needs its checked reply type",
+            ));
+            return (
+                HirExprKind::Unsupported("lambda actor call has no reply type".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some(result_ty) = self.checked_actor_ask_result_ty(span, method_id) else {
+            return (
+                HirExprKind::Unsupported("lambda actor call has no checked result".to_string()),
+                ResolvedTy::Unit,
+            );
+        };
         (
-            HirExprKind::SpawnLambdaActor {
-                params: hir_params,
+            HirExprKind::ActorAsk {
+                receiver: Box::new(receiver),
+                method_id: method_id.to_string(),
+                args: lowered_args,
+                argument_order,
                 reply_ty,
-                body: Box::new(lowered_body),
-                captures,
+                policy,
+                deadline_ns: None,
             },
-            actor_ty,
+            result_ty,
+        )
+    }
+
+    /// `mailbox(handle, ..)(msg)` on a lambda actor: build the addressed
+    /// message and submit it at the same site, exactly as a `receive fn`
+    /// without a reply does through a named actor's mailbox view.
+    fn lower_lambda_actor_submission(
+        &mut self,
+        function: &Spanned<Expr>,
+        args: &[CallArg],
+        method_id: &str,
+        policy: hew_types::actor_delivery::SendPolicy,
+        argument_order: Vec<usize>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let receiver = self.lower_expr(function, IntentKind::Read);
+        let lowered_args: Vec<HirExpr> = args
+            .iter()
+            .map(|arg| {
+                let spanned = arg.expr();
+                self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
+            })
+            .collect();
+        let Some(ty) = self.checker_expr_ty_if_present(span) else {
+            return (
+                HirExprKind::Unsupported("message submission has no checked type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+            return (
+                HirExprKind::Unsupported("message submission has no checked message type".into()),
+                ResolvedTy::Unit,
+            );
+        };
+        self.try_register_enum_instantiation_ty(&ty, span);
+        let message = HirExpr {
+            node: self.ids.node(),
+            site: self.ids.site(),
+            value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
+            ty: message_ty,
+            intent: IntentKind::Consume,
+            kind: HirExprKind::ActorMessage {
+                receiver: Box::new(receiver),
+                method_id: method_id.to_string(),
+                args: lowered_args,
+                policy,
+                argument_order,
+            },
+            span: span.clone(),
+        };
+        (
+            HirExprKind::ActorDelivery {
+                receiver: Box::new(message),
+                args: Vec::new(),
+                operation: hew_types::actor_delivery::ActorDeliveryCall::Submit { policy },
+            },
+            ty,
+        )
+    }
+
+    /// Turn one lowered lambda actor into an ordinary actor declaration plus
+    /// the spawn that starts it.
+    ///
+    /// The captures become the actor's state fields in capture order, and the
+    /// body becomes its single receive handler. The handler's state bindings
+    /// carry the captures' original `BindingId`s, so every reference the body
+    /// already lowered resolves to the state seat with no rewriting: a
+    /// capture and an actor state field are the same thing to the body.
+    fn synthesize_lambda_actor(
+        &mut self,
+        span: &Span,
+        params: Vec<HirBinding>,
+        body: HirExpr,
+        captures: Vec<HirLambdaCapture>,
+        handle_ty: ResolvedTy,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some(identity) = self
+            .lambda_actor_declarations
+            .get(&SpanKey::from(span))
+            .cloned()
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "lambda actor".to_string(),
+                    reason: "the checker minted no declaration identity for this `actor |..|` expression"
+                        .to_string(),
+                },
+                span.clone(),
+                "a lambda actor lowers to a synthesized actor declaration, which needs the resolver-minted identity for its span",
+            ));
+            return (HirExprKind::Literal(HirLiteral::Unit), handle_ty);
+        };
+        if let Some(weak) = captures
+            .iter()
+            .find(|capture| capture.kind == HirCaptureKind::Weak)
+        {
+            // A lambda that names itself is a reference cycle between the
+            // handle and its own state seat. The named-actor path has no
+            // equivalent, so refuse it rather than synthesize a declaration
+            // whose state owns its own handle.
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::RecursiveLambdaActorHandle {
+                    name: weak.name.clone(),
+                },
+                span.clone(),
+                "give the recursive actor a name and spawn it, so the handle and the state it reaches are separate declarations",
+            ));
+            return (HirExprKind::Literal(HirLiteral::Unit), handle_ty);
+        }
+
+        self.push_lambda_actor_declaration(span, &identity, params, body, &captures, &handle_ty);
+
+        // The spawn supplies the captured environment as the actor's state,
+        // field by field, exactly as a named actor's spawn supplies its own.
+        let args = captures
+            .into_iter()
+            .map(|capture| {
+                let value = HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&capture.ty, &self.type_classes),
+                    ty: capture.ty.clone(),
+                    intent: IntentKind::Consume,
+                    kind: HirExprKind::BindingRef {
+                        name: capture.name.clone(),
+                        resolved: ResolvedRef::Binding(capture.binding),
+                    },
+                    span: span.clone(),
+                };
+                (capture.name, value)
+            })
+            .collect();
+        (
+            HirExprKind::Spawn {
+                actor_name: identity.path,
+                args,
+            },
+            handle_ty,
         )
     }
 
@@ -22128,138 +20537,54 @@ impl LowerCtx {
         captures
     }
 
-    /// Recognise the sealed-form discriminator for a `select` arm
-    /// source expression. Emits a `SelectArmNotSealedForm` /
-    /// `SelectStreamNextSurface` / `SelectStreamNextArity` diagnostic
-    /// on miss and returns a placeholder `AfterTimer` arm kind (the
-    /// callers tolerate the placeholder because the diagnostic has
-    /// already been emitted; MIR lowering treats any select with HIR
-    /// diagnostics as fail-closed downstream).
-    fn recognize_sealed_arm_source(&mut self, source: &Spanned<Expr>) -> HirSelectArmKind {
-        let span = source.1.clone();
-        match &source.0 {
-            // Form 1: `next(<stream-expr>)` — a call where the callee
-            // is the bare identifier `next`. `next` is not a lexer
-            // keyword; the sealed-form discriminator is the callee
-            // name.
-            Expr::Call { function, args, .. } => {
-                if let Expr::Identifier(name) = &function.0 {
-                    if name == "next" {
-                        if args.len() != 1 {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::SelectStreamNextArity {
-                                    arg_count: args.len(),
-                                },
-                                span.clone(),
-                                "next(<stream>) takes exactly one argument",
-                            ));
-                            return HirSelectArmKind::StreamNext {
-                                stream: Box::new(
-                                    self.unsupported_expr(span, "stream-next arity mismatch"),
-                                ),
-                            };
-                        }
-                        let stream = self.lower_expr(args[0].expr(), IntentKind::Read);
-                        return HirSelectArmKind::StreamNext {
-                            stream: Box::new(stream),
-                        };
-                    }
-                }
-                // Some other function call — not a sealed form.
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SelectArmNotSealedForm {
-                        source_shape: "function call".into(),
-                    },
-                    span.clone(),
-                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
-                ));
-                HirSelectArmKind::StreamNext {
-                    stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
-                }
+    fn lower_checked_select_source(
+        &mut self,
+        source: &Spanned<Expr>,
+        checked: Option<&hew_types::check::CheckedSelectSource>,
+    ) -> HirSelectArmKind {
+        use hew_types::check::CheckedSelectSource;
+        // The checker refuses `await` in an arm source; a malformed arm still
+        // reaches here behind an error type, so unwrap the operand rather than
+        // key on a span the checker never recorded.
+        let operand = match &source.0 {
+            Expr::Await(inner) => inner.as_ref(),
+            _ => source,
+        };
+        let key = self.mk_key(&operand.1);
+        match checked {
+            Some(CheckedSelectSource::TaskAwait {
+                operand: checked_key,
+            }) if checked_key == &key => {
+                return HirSelectArmKind::TaskAwait {
+                    task: Box::new(self.lower_expr(operand, IntentKind::Read)),
+                };
             }
-            // Form 2: `<actor>.<method>(<args>)` — method call on an
-            // actor expression. Per HEW-SPEC-2026 §4.11.1 this is the
-            // actor-ask arm. `ask` is reserved as a future syntactic
-            // marker (see HEW-FUTURE) but is not lexer-recognised in
-            // edition 2026; the sealed-form discriminator is the
-            // method-call surface.
-            Expr::MethodCall {
-                receiver,
-                method,
-                args,
-            } => {
-                // NEW-4: `pat from rx.recv()` — a std/channel receive arm. The
-                // checker recorded the runtime rewrite (hew_channel_recv_layout)
-                // on this method-call span; recognise it as a ChannelRecv arm
-                // before the generic actor-ask interpretation. The element
-                // type rides the checker-resolved `Receiver<T>` receiver type.
-                if method == "recv" && self.is_channel_recv_rewrite(&self.mk_key(&span)) {
-                    let recv = self.lower_expr(receiver, IntentKind::Read);
+            Some(CheckedSelectSource::ActorAsk { call }) if call == &key => {
+                return HirSelectArmKind::ActorAsk {
+                    call: Box::new(self.lower_expr(operand, IntentKind::Read)),
+                };
+            }
+            Some(CheckedSelectSource::ChannelReceive { call }) if call == &key => {
+                if let Expr::MethodCall { receiver, .. } = &operand.0 {
                     return HirSelectArmKind::ChannelRecv {
-                        receiver: Box::new(recv),
+                        receiver: Box::new(self.lower_expr(receiver, IntentKind::Read)),
                     };
                 }
-                let actor = self.lower_expr(receiver, IntentKind::Read);
-                // A select arm source is SEQUENTIAL setup: every arm's ask is
-                // issued before dispatch picks a winner, so an owned argument
-                // handed to two arms is a real double transfer. MIR lowers each
-                // arm's args through `lower_value_for_move`; stamp the matching
-                // intent so the dataflow checker sees the consume.
-                let lowered_args: Vec<HirExpr> = args
-                    .iter()
-                    .map(|arg| {
-                        let spanned = arg.expr();
-                        self.lower_expr(spanned, self.actor_message_arg_intent(&spanned.1))
-                    })
-                    .collect();
-                HirSelectArmKind::ActorAsk {
-                    actor: Box::new(actor),
-                    method: method.clone(),
-                    args: lowered_args,
-                }
             }
-            // Form 3: `await <task-expr>` — explicit await keyword.
-            Expr::Await(task_expr) => {
-                let task = self.lower_expr(task_expr, IntentKind::Read);
-                HirSelectArmKind::TaskAwait {
-                    task: Box::new(task),
-                }
-            }
-            // Form 4 (arm-position): `after <duration>` written as an
-            // arm source rather than the dedicated `timeout` field.
-            // Recognised here so the `lower_select` multiple-after check
-            // can fire; the duplicate check in `lower_select` emits the
-            // diagnostic when this arm coexists with another after arm.
-            Expr::Timeout { duration, .. } => {
-                let dur = self.lower_expr(duration, IntentKind::Read);
-                HirSelectArmKind::AfterTimer {
-                    duration: Box::new(dur),
-                }
-            }
-            // Method-call dressed up as `stream.next()` — sealed
-            // surface is `next(stream)`. Diagnose specifically so the
-            // user can fix the form.
-            // (Already handled by the MethodCall arm above as a
-            // generic actor-ask. The dedicated diagnostic for the
-            // `.next()` shape would shadow the actor-ask recognition;
-            // we keep the more general actor-ask interpretation and
-            // rely on the SelectStreamNextSurface diagnostic only if
-            // we later choose to special-case it. For now, `s.next()`
-            // is recognised as an actor-ask of the `next` method on
-            // `s`, which is the lower-noise default.)
-            other => {
-                let shape = describe_select_source_shape(other);
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SelectArmNotSealedForm {
-                        source_shape: shape,
-                    },
-                    span.clone(),
-                    "select arm source must be an actor method call, a channel `rx.recv()`, or `after <duration>`",
-                ));
-                HirSelectArmKind::StreamNext {
-                    stream: Box::new(self.unsupported_expr(span, "non-sealed arm source")),
-                }
-            }
+            _ => {}
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: "select source".to_string(),
+                reason: "missing or inconsistent checked source-arm classification".to_string(),
+            },
+            source.1.clone(),
+            "select source requires checker-owned classification",
+        ));
+        HirSelectArmKind::TaskAwait {
+            task: Box::new(
+                self.unsupported_expr(source.1.clone(), "invalid checked select source"),
+            ),
         }
     }
 
@@ -22299,11 +20624,10 @@ impl LowerCtx {
     /// (same `expr_types` lookup, same `unwrap_or(default_ty)` fallback):
     /// after the fold this expression IS semantically a literal, so it
     /// inherits the literal contract rather than the compound-expression one.
-    /// `value` is always non-negative here -- the parser only ever hands
-    /// `lower_unary_expr` a bare `Literal` operand under `Negate` when the
-    /// digits parsed positively (see `parse_negated_int_literal`), so
-    /// `-value` never itself overflows `i64`.
-    fn lower_negated_int_literal(&mut self, value: i64, span: &Span) -> (HirExprKind, ResolvedTy) {
+    /// `value` is always non-negative here -- the parser hands
+    /// `lower_unary_expr` a bare `Literal` operand under `Negate` and every
+    /// literal magnitude fits the `i128` carrier, so `-value` cannot overflow.
+    fn lower_negated_int_literal(&mut self, value: i128, span: &Span) -> (HirExprKind, ResolvedTy) {
         let negated = -value;
         let default_ty = ResolvedTy::I64;
         let ty = {
@@ -22386,6 +20710,16 @@ impl LowerCtx {
         )
     }
 
+    /// Callable joins carry the guarantee intersection selected by the checker.
+    /// Arm order cannot select the ownership contract of the resulting value.
+    fn callable_join_type(&mut self, span: &Span, inferred: ResolvedTy) -> ResolvedTy {
+        if !inferred.to_ty().contains_callable() {
+            return inferred;
+        }
+        self.checker_expr_ty(span, "callable join")
+            .unwrap_or(ResolvedTy::Unit)
+    }
+
     fn checker_expr_ty(&mut self, span: &Span, label: &str) -> Option<ResolvedTy> {
         let key = self.mk_key(span);
         let Some(ty) = self.expr_types.get(&key).cloned() else {
@@ -22395,7 +20729,7 @@ impl LowerCtx {
                     reason: "missing expr_types entry".to_string(),
                 },
                 span.clone(),
-                "checker-authoritative expression type is required for unary lowering",
+                "checker-authoritative expression type is required for lowering",
             ));
             return None;
         };
@@ -22408,7 +20742,7 @@ impl LowerCtx {
                         reason: err.to_string(),
                     },
                     span.clone(),
-                    "checker-authoritative unary type failed boundary conversion",
+                    "checker-authoritative expression type failed boundary conversion",
                 ));
                 None
             }
@@ -22469,7 +20803,7 @@ impl LowerCtx {
                         reason: "missing expr_types entry".to_string(),
                     },
                     operand.1.clone(),
-                    "checker-authoritative expression type is required for unary lowering",
+                    "checker-authoritative expression type is required for lowering",
                 ));
                 None
             }
@@ -22606,7 +20940,7 @@ impl LowerCtx {
         )
     }
 
-    fn array_literal_vec_ty(&mut self, span: &Span) -> Option<(ResolvedTy, ResolvedTy)> {
+    fn array_literal_ty(&mut self, span: &Span) -> Option<(ResolvedTy, ResolvedTy)> {
         let key = self.mk_key(span);
         let Some(ty) = self.expr_types.get(&key).cloned() else {
             self.diagnostics.push(HirDiagnostic::new(
@@ -22615,7 +20949,7 @@ impl LowerCtx {
                     reason: "missing expr_types entry".to_string(),
                 },
                 span.clone(),
-                "array literal lowering requires the checker element type; HIR desugars to Vec<T>, never to a fixed-size Array<T, N>",
+                "array literal lowering requires its exact checker result type",
             ));
             return None;
         };
@@ -22639,9 +20973,9 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => Some((Self::resolved_vec_ty(args[0].clone()), args[0].clone())),
-            ResolvedTy::Array(elem_ty, _) => {
+            ResolvedTy::Array(elem_ty, len) => {
                 let elem_ty = *elem_ty;
-                Some((Self::resolved_vec_ty(elem_ty.clone()), elem_ty))
+                Some((ResolvedTy::Array(Box::new(elem_ty.clone()), len), elem_ty))
             }
             other => {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -22650,7 +20984,7 @@ impl LowerCtx {
                         reason: format!("checker produced non-array type `{other}`"),
                     },
                     span.clone(),
-                    "array literal lowering requires the checker element type; HIR desugars to Vec<T>, never to a fixed-size Array<T, N>",
+                    "array literal lowering requires its exact checker result type",
                 ));
                 None
             }
@@ -22668,12 +21002,8 @@ impl LowerCtx {
 
     fn is_hashmap_ty(ty: &ResolvedTy) -> bool {
         matches!(
-            ty,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::HashMap),
-                args,
-                ..
-            } if args.len() == 2
+            hew_types::runtime_call::collection_type_arguments(ty),
+            Some((BuiltinType::HashMap, _))
         )
     }
 
@@ -22707,86 +21037,26 @@ impl LowerCtx {
                 return None;
             }
         };
-        match &result_ty {
-            ResolvedTy::Named {
-                args,
-                builtin: Some(BuiltinType::HashMap),
-                ..
-            } if args.len() == 2 => Some((result_ty.clone(), args[0].clone(), args[1].clone())),
-            other => {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "map literal".to_string(),
-                        reason: format!("checker produced non-HashMap type `{other}`"),
-                    },
-                    span.clone(),
-                    "map literal lowering requires the checker HashMap<K, V> type",
-                ));
-                None
-            }
-        }
-    }
-
-    #[allow(
-        clippy::match_same_arms,
-        reason = "tuple, nested-collection, and closure-pair arms intentionally stay \
-                  separate to document distinct ownership/release contracts, even where \
-                  two arms emit the same push symbol at this layer"
-    )]
-    fn vec_push_symbol_for_elem(&self, elem_ty: &ResolvedTy) -> Option<&'static str> {
-        match elem_ty {
-            ResolvedTy::Bool => Some("hew_vec_push_bool"),
-            ResolvedTy::I8 => Some("hew_vec_push_i8"),
-            ResolvedTy::U8 => Some("hew_vec_push_u8"),
-            ResolvedTy::I16 => Some("hew_vec_push_i16"),
-            ResolvedTy::U16 => Some("hew_vec_push_u16"),
-            ResolvedTy::Char | ResolvedTy::I32 | ResolvedTy::U32 => Some("hew_vec_push_i32"),
-            ResolvedTy::I64 | ResolvedTy::U64 => Some("hew_vec_push_i64"),
-            ResolvedTy::F32 => Some("hew_vec_push_f32"),
-            ResolvedTy::F64 => Some("hew_vec_push_f64"),
-            ResolvedTy::String => Some("hew_vec_push_str"),
-            ResolvedTy::Tuple(_) => Some("hew_vec_push_layout"),
-            // A closure-pair `Vec<fn>` / `Vec<closure>` element keeps the
-            // pointer push; the stamped Vec descriptor owns recursive release.
-            // Checked before
-            // the general collection arm so it is never routed to copy-in.
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Vec),
-                args,
-                ..
-            } if args.first().is_some_and(|e| {
-                matches!(e, ResolvedTy::Function { .. } | ResolvedTy::Closure { .. })
-            }) =>
-            {
-                Some("hew_vec_push_ptr")
-            }
-            // Nested collection handles (Vec<T> / HashMap / HashSet) push
-            // through the layout-descriptor symbol; the MIR push-upgrade
-            // override (`vec_receiver_has_owned_element`) rewrites it to
-            // `hew_vec_push_owned` (COPY-IN) so each pushed collection is
-            // deep-copied and the outer Vec owns its storage (#1722).
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet),
-                ..
-            } => Some("hew_vec_push_layout"),
-            // Closure-pair elements ride the pointer convention: codegen's
-            // push marshalling boxes the 16-byte pair behind a heap handle
-            // (same pointer ABI classified by `vec_authority`).
-            ResolvedTy::Function { .. } | ResolvedTy::Closure { .. } => Some("hew_vec_push_ptr"),
-            ResolvedTy::Named { .. } => match ValueClass::of_ty(elem_ty, &self.type_classes) {
-                ValueClass::CowValue
-                | ValueClass::PersistentShare
-                | ValueClass::AffineResource
-                | ValueClass::Linear => Some("hew_vec_push_ptr"),
-                ValueClass::BitCopy | ValueClass::Unknown => Some("hew_vec_push_layout"),
-                ValueClass::View => None,
-            },
-            _ => None,
+        if let Some((BuiltinType::HashMap, args)) =
+            hew_types::runtime_call::collection_type_arguments(&result_ty)
+        {
+            Some((result_ty.clone(), args[0].clone(), args[1].clone()))
+        } else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "map literal".to_string(),
+                    reason: format!("checker produced non-HashMap type `{result_ty}`"),
+                },
+                span.clone(),
+                "map literal lowering requires the checker HashMap<K, V> type",
+            ));
+            None
         }
     }
 
     fn make_vec_new_expr(&mut self, vec_ty: ResolvedTy, span: Span) -> HirExpr {
         let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(vec_ty.clone()),
         };
@@ -22805,7 +21075,9 @@ impl LowerCtx {
         );
         self.make_expr(
             HirExprKind::Call {
-                target: CallTarget::Runtime(hew_types::runtime_call::RuntimeCallFamily::VecNew),
+                target: CallTarget::Runtime(hew_types::RuntimeCallFamily::Vector(
+                    hew_types::VecValueOp::New,
+                )),
                 callee: Box::new(callee),
                 args: Vec::new(),
             },
@@ -22816,39 +21088,13 @@ impl LowerCtx {
     }
 
     fn make_hashmap_new_expr(&mut self, hashmap_ty: ResolvedTy, span: Span) -> HirExpr {
-        let call_type_args = match &hashmap_ty {
-            ResolvedTy::Named { args, .. } => args.clone(),
-            _ => Vec::new(),
-        };
-        let callee_ty = ResolvedTy::Function {
-            params: Vec::new(),
-            ret: Box::new(hashmap_ty.clone()),
-        };
-        let callee = self.make_expr(
-            HirExprKind::BindingRef {
-                name: "HashMap::new".to_string(),
-                resolved: ResolvedRef::Builtin(
-                    hew_types::runtime_call::RuntimeCallFamily::HashMapNew,
-                ),
-            },
-            callee_ty,
-            IntentKind::Read,
-            span.clone(),
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::New),
+            Vec::new(),
+            &hashmap_ty,
+            &span,
         );
-        let call = self.make_expr(
-            HirExprKind::Call {
-                target: CallTarget::Runtime(hew_types::runtime_call::RuntimeCallFamily::HashMapNew),
-                callee: Box::new(callee),
-                args: Vec::new(),
-            },
-            hashmap_ty,
-            IntentKind::Read,
-            span,
-        );
-        if !call_type_args.is_empty() {
-            self.call_site_type_args.insert(call.site, call_type_args);
-        }
-        call
+        self.make_expr(kind, hashmap_ty, IntentKind::Read, span)
     }
 
     fn make_hashmap_insert_expr(
@@ -22856,96 +21102,183 @@ impl LowerCtx {
         map_ref: HirExpr,
         key: HirExpr,
         value: HirExpr,
-        key_ty: &ResolvedTy,
-        value_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(map_ref),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::HashMap(hew_types::HashMapMethod::Insert),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "insert".to_string(),
-                target_symbol: "hew_hashmap_insert_layout".to_string(),
-                target_family: hew_types::MethodTargetFamily::HashMap(
-                    hew_types::HashMapMethod::Insert,
-                ),
-                type_args: vec![
-                    Self::resolved_ty_pattern(key_ty),
-                    Self::resolved_ty_pattern(value_ty),
-                ],
-                args: vec![key, value],
-                ret_ty: ResolvedTy::Unit,
-            },
-            ResolvedTy::Unit,
-            IntentKind::Read,
-            span,
-        )
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Map(hew_types::runtime_call::MapValueOp::Insert),
+            vec![map_ref, key, value],
+            &ResolvedTy::Unit,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
     }
 
-    fn make_vec_push_expr(
+    fn make_vec_push_expr(&mut self, vec_ref: HirExpr, elem: HirExpr, span: Span) -> HirExpr {
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Push),
+            vec![vec_ref, elem],
+            &ResolvedTy::Unit,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::Unit, IntentKind::Read, span)
+    }
+
+    /// HIR retains semantic method identity and exact types, never an element ABI.
+    fn collection_call_kind(
         &mut self,
-        vec_ref: HirExpr,
-        elem: HirExpr,
-        elem_ty: &ResolvedTy,
-        span: Span,
-    ) -> Option<HirExpr> {
-        let Some(target_symbol) = self.vec_push_symbol_for_elem(elem_ty) else {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: "array literal".to_string(),
-                    reason: format!("no Vec push runtime symbol for element type `{elem_ty}`"),
-                },
-                span,
-                "array literal desugar reuses Vec.push infrastructure and cannot fabricate an element ABI",
-            ));
-            return None;
-        };
-        Some(self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(vec_ref),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "push".to_string(),
-                target_symbol: target_symbol.to_string(),
-                // Array-literal desugar synthesises a Vec push call site
-                // bypassing the resolver; the family is unambiguously a
-                // Vec push (we just resolved a `hew_vec_push_*` symbol).
-                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Push),
-                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
-                args: vec![elem],
-                ret_ty: ResolvedTy::Unit,
+        family: hew_types::RuntimeCallFamily,
+        args: Vec<HirExpr>,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        let callee = self.make_expr(
+            HirExprKind::BindingRef {
+                name: format!("{family:?}"),
+                resolved: ResolvedRef::Builtin(family),
             },
-            ResolvedTy::Unit,
+            ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                params: args.iter().map(|arg| arg.ty.clone()).collect(),
+                ret: Box::new(result_ty.clone()),
+            },
             IntentKind::Read,
-            span,
-        ))
+            span.clone(),
+        );
+        HirExprKind::Call {
+            target: CallTarget::Runtime(family),
+            callee: Box::new(callee),
+            args,
+        }
+    }
+
+    fn semantic_collection_method(
+        method: hew_types::MethodTargetFamily,
+    ) -> Option<hew_types::RuntimeCallFamily> {
+        use hew_types::runtime_call::{MapValueOp, SetValueOp};
+        use hew_types::{MethodTargetFamily, RuntimeCallFamily};
+        match method {
+            MethodTargetFamily::Vec(method) => {
+                hew_types::VecValueOp::from_method(method).map(RuntimeCallFamily::Vector)
+            }
+            MethodTargetFamily::HashMap(method) => {
+                MapValueOp::from_method(method).map(RuntimeCallFamily::Map)
+            }
+            MethodTargetFamily::HashSet(method) => {
+                SetValueOp::from_method(method).map(RuntimeCallFamily::Set)
+            }
+        }
+    }
+
+    fn normalize_collection_call(
+        &mut self,
+        kind: HirExprKind,
+        ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExprKind {
+        use hew_types::runtime_call::{MapValueOp, SetValueOp};
+        use hew_types::{RuntimeCallFamily as Family, VecValueOp};
+        match kind {
+            HirExprKind::Call {
+                target:
+                    CallTarget::Runtime(
+                        family @ (Family::VecNew | Family::HashMapNew | Family::HashSetNew),
+                    ),
+                args,
+                ..
+            } => {
+                let family = match family {
+                    Family::VecNew => Family::Vector(VecValueOp::New),
+                    Family::HashMapNew => Family::Map(MapValueOp::New),
+                    Family::HashSetNew => Family::Set(SetValueOp::New),
+                    _ => unreachable!("matched a canonical collection constructor"),
+                };
+                self.collection_call_kind(family, args, ty, span)
+            }
+            HirExprKind::ResolvedImplCall {
+                target:
+                    CallTarget::RuntimeCollection(
+                        method @ (hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::IsEmpty)
+                        | hew_types::MethodTargetFamily::HashMap(
+                            hew_types::HashMapMethod::IsEmpty,
+                        )
+                        | hew_types::MethodTargetFamily::HashSet(
+                            hew_types::HashSetMethod::IsEmpty,
+                        )),
+                    ),
+                receiver,
+                args,
+                ..
+            } if args.is_empty() => {
+                let family = match method {
+                    hew_types::MethodTargetFamily::Vec(_) => Family::Vector(VecValueOp::Len),
+                    hew_types::MethodTargetFamily::HashSet(_) => Family::Set(SetValueOp::Len),
+                    hew_types::MethodTargetFamily::HashMap(_) => Family::Map(MapValueOp::Len),
+                };
+                let length =
+                    self.collection_call_kind(family, vec![*receiver], &ResolvedTy::I64, span);
+                let length =
+                    self.make_expr(length, ResolvedTy::I64, IntentKind::Read, span.clone());
+                let zero = self.make_i64_literal(0, span.clone());
+                HirExprKind::Binary {
+                    op: BinaryOp::Equal,
+                    left: Box::new(length),
+                    right: Box::new(zero),
+                }
+            }
+            HirExprKind::ResolvedImplCall {
+                target: CallTarget::RuntimeCollection(method),
+                receiver,
+                args,
+                ..
+            } if Self::semantic_collection_method(method).is_some() => {
+                let mut family = Self::semantic_collection_method(method)
+                    .expect("matched semantic collection method");
+                // The checker admitted this read in borrow mode, so `Some`
+                // carries a loan of the slot the collection still owns.
+                if self
+                    .borrowed_element_option_reads
+                    .contains(&SpanKey::in_module(span, self.current_module_idx))
+                {
+                    if family == Family::Vector(VecValueOp::Get) {
+                        family = Family::Vector(VecValueOp::GetBorrow);
+                    } else if family == Family::Map(MapValueOp::Get) {
+                        family = Family::Map(MapValueOp::GetBorrow);
+                    }
+                }
+                let mut operands = vec![*receiver];
+                operands.extend(args);
+                self.collection_call_kind(family, operands, ty, span)
+            }
+            other => other,
+        }
     }
 
     fn lower_array_literal(
         &mut self,
-        elems: &[Spanned<Expr>],
+        elements: &[ArrayElement],
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((vec_ty, elem_ty)) = self.array_literal_vec_ty(span) else {
+        let Some((vec_ty, elem_ty)) = self.array_literal_ty(span) else {
             return (
                 HirExprKind::Unsupported("array literal missing checker element type".into()),
                 ResolvedTy::Unit,
             );
         };
 
-        let lowered_elems: Vec<HirExpr> = elems
-            .iter()
-            .map(|elem| self.lower_expr(elem, IntentKind::Read))
-            .collect();
+        if matches!(vec_ty, ResolvedTy::Array(_, _)) {
+            // The checker refuses a spread against a fixed-size array type, so
+            // every element here contributes exactly one slot.
+            let elements = elements
+                .iter()
+                .map(|element| self.lower_expr(element.expr(), IntentKind::Read))
+                .collect();
+            return (HirExprKind::ArrayLiteral { elements }, vec_ty);
+        }
+
         let block_scope = self.ids.scope();
         self.push_scope();
         let temp_name = format!("__hew_array_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), vec_ty.clone(), false, span.clone());
+        let temp_binding = self.bind(temp_name.clone(), vec_ty.clone(), true, span.clone());
         let temp_binding_id = temp_binding.id;
         let init_stmt = HirStmt {
             node: self.ids.node(),
@@ -22955,26 +21288,35 @@ impl LowerCtx {
             ),
             span: span.clone(),
         };
-        let mut statements = Vec::with_capacity(lowered_elems.len() + 1);
+        let mut statements = Vec::with_capacity(elements.len() + 1);
         statements.push(init_stmt);
-        let mut push_failed = false;
-        for elem in lowered_elems {
-            let vec_ref = self.make_binding_ref(
-                temp_name.clone(),
-                temp_binding_id,
-                vec_ty.clone(),
-                IntentKind::Read,
-                elem.span.clone(),
-            );
-            if let Some(push_expr) = self.make_vec_push_expr(vec_ref, elem, &elem_ty, span.clone())
-            {
-                statements.push(HirStmt {
-                    node: self.ids.node(),
-                    kind: HirStmtKind::Expr(push_expr),
-                    span: span.clone(),
-                });
-            } else {
-                push_failed = true;
+        for element in elements {
+            match element {
+                ArrayElement::Value(value) => {
+                    let lowered = self.lower_expr(value, IntentKind::Read);
+                    let vec_ref = self.make_binding_ref(
+                        temp_name.clone(),
+                        temp_binding_id,
+                        vec_ty.clone(),
+                        IntentKind::Read,
+                        lowered.span.clone(),
+                    );
+                    let push_expr = self.make_vec_push_expr(vec_ref, lowered, span.clone());
+                    statements.push(HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(push_expr),
+                        span: span.clone(),
+                    });
+                }
+                ArrayElement::Spread(operand) => {
+                    let spread_stmt = self.lower_array_spread(
+                        operand,
+                        (&temp_name, temp_binding_id, &vec_ty),
+                        &elem_ty,
+                        &mut statements,
+                    );
+                    statements.push(spread_stmt);
+                }
             }
         }
         let tail = self.make_binding_ref(
@@ -22985,13 +21327,6 @@ impl LowerCtx {
             span.clone(),
         );
         self.pop_scope();
-
-        if push_failed {
-            return (
-                HirExprKind::Unsupported("array literal element type has no Vec push ABI".into()),
-                ResolvedTy::Unit,
-            );
-        }
 
         (
             HirExprKind::Block(HirBlock {
@@ -23006,6 +21341,155 @@ impl LowerCtx {
         )
     }
 
+    /// `..operand` inside a bracket literal: walk the operand by index and push
+    /// each element onto the literal's vector, in order.
+    ///
+    /// Each `Index` read is the same element read `for x in v` performs, so an
+    /// owned element is copied into the new vector and the operand keeps its
+    /// own. The operand is therefore a retain, not a transfer — the value stays
+    /// usable after the literal, exactly as passing it to a call would leave it.
+    ///
+    /// A place operand is re-read on each iteration rather than bound to a
+    /// temp: a `Read`-load of an owned place would give the temp a second
+    /// owner of the same heap. A value-producing operand keeps an eval-once
+    /// temp so a side-effecting source runs once. The place question is the
+    /// one [`Self::for_in_iterable_is_place`] already answers for the same
+    /// reason on the `for`-in path.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the spread desugar is a single ownership-sensitive expansion; splitting it would obscure the temp binding's lifetime"
+    )]
+    fn lower_array_spread(
+        &mut self,
+        operand: &Spanned<Expr>,
+        target: (&str, BindingId, &ResolvedTy),
+        elem_ty: &ResolvedTy,
+        statements: &mut Vec<HirStmt>,
+    ) -> HirStmt {
+        let (vec_name, vec_id, vec_ty) = target;
+        let operand_span = operand.1.clone();
+        let source_is_place = Self::for_in_iterable_is_place(&operand.0);
+
+        let source_ty = self
+            .expr_types
+            .get(&self.mk_key(&operand_span))
+            .and_then(|ty| ResolvedTy::from_ty(ty).ok())
+            .unwrap_or_else(|| vec_ty.clone());
+
+        let source_ref: Option<(String, BindingId)> = if source_is_place {
+            None
+        } else {
+            let lowered = self.lower_expr(operand, IntentKind::Read);
+            let source_name = format!("__hew_spread_{}", self.ids.binding().0);
+            let source_binding = self.bind(
+                source_name.clone(),
+                source_ty.clone(),
+                false,
+                operand_span.clone(),
+            );
+            let source_id = source_binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(source_binding, Some(lowered)),
+                span: operand_span.clone(),
+            });
+            Some((source_name, source_id))
+        };
+
+        let source_expr = |this: &mut Self| match &source_ref {
+            Some((name, id)) => this.make_binding_ref(
+                name.clone(),
+                *id,
+                source_ty.clone(),
+                IntentKind::Read,
+                operand_span.clone(),
+            ),
+            None => this.lower_expr(operand, IntentKind::Read),
+        };
+
+        let length_receiver = source_expr(self);
+        let length_kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len),
+            vec![length_receiver],
+            &ResolvedTy::I64,
+            &operand_span,
+        );
+        let length = self.make_expr(
+            length_kind,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+
+        let index_name = format!("__hew_spread_i_{}", self.ids.binding().0);
+        let index_binding = self.bind(
+            index_name.clone(),
+            ResolvedTy::I64,
+            false,
+            operand_span.clone(),
+        );
+        let index_id = index_binding.id;
+        let start = self.make_i64_literal(0, operand_span.clone());
+        let step = self.make_i64_literal(1, operand_span.clone());
+
+        let container = source_expr(self);
+        let index = self.make_binding_ref(
+            index_name,
+            index_id,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        let element = self.make_expr(
+            HirExprKind::Index {
+                container: Box::new(container),
+                index: Box::new(index),
+            },
+            elem_ty.clone(),
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        let vec_ref = self.make_binding_ref(
+            vec_name.to_string(),
+            vec_id,
+            vec_ty.clone(),
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        let push_expr = self.make_vec_push_expr(vec_ref, element, operand_span.clone());
+        let push_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(push_expr),
+            span: operand_span.clone(),
+        };
+        let body = self.make_unit_block(
+            vec![push_stmt],
+            None,
+            ResolvedTy::Unit,
+            operand_span.clone(),
+        );
+        let for_expr = self.make_expr(
+            HirExprKind::ForRange {
+                label: None,
+                binding: index_binding,
+                start: Box::new(start),
+                end: Box::new(length),
+                inclusive: false,
+                step: Box::new(step),
+                descending: false,
+                body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            operand_span.clone(),
+        );
+        HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(for_expr),
+            span: operand_span,
+        }
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "array-repeat desugaring is a single ownership-sensitive expansion; splitting would obscure temp binding lifetimes"
@@ -23016,12 +21500,17 @@ impl LowerCtx {
         count: &Spanned<Expr>,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((vec_ty, elem_ty)) = self.array_literal_vec_ty(span) else {
+        let Some((vec_ty, elem_ty)) = self.array_literal_ty(span) else {
             return (
                 HirExprKind::Unsupported("array-repeat missing checker element type".into()),
                 ResolvedTy::Unit,
             );
         };
+
+        if matches!(vec_ty, ResolvedTy::Array(_, _)) {
+            let value = Box::new(self.lower_expr(value, IntentKind::Read));
+            return (HirExprKind::ArrayRepeat { value }, vec_ty);
+        }
 
         // Owned (non-BitCopy) elements are cloned per slot by the runtime push
         // path: push_str / push_bytes creates an independent copy, and push_owned
@@ -23036,7 +21525,7 @@ impl LowerCtx {
         let mut statements = Vec::new();
 
         let vec_name = format!("__hew_repeat_{}", self.ids.binding().0);
-        let vec_binding = self.bind(vec_name.clone(), vec_ty.clone(), false, span.clone());
+        let vec_binding = self.bind(vec_name.clone(), vec_ty.clone(), true, span.clone());
         let vec_id = vec_binding.id;
         statements.push(HirStmt {
             node: self.ids.node(),
@@ -23128,14 +21617,7 @@ impl LowerCtx {
             ),
             None => self.lower_expr(value, IntentKind::Read),
         };
-        let Some(push_expr) = self.make_vec_push_expr(vec_ref, push_elem, &elem_ty, span.clone())
-        else {
-            self.pop_scope();
-            return (
-                HirExprKind::Unsupported("array-repeat element type has no Vec push ABI".into()),
-                ResolvedTy::Unit,
-            );
-        };
+        let push_expr = self.make_vec_push_expr(vec_ref, push_elem, span.clone());
         let push_stmt = HirStmt {
             node: self.ids.node(),
             kind: HirStmtKind::Expr(push_expr),
@@ -23190,7 +21672,7 @@ impl LowerCtx {
         entries: &[(Spanned<Expr>, Spanned<Expr>)],
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {
-        let Some((map_ty, key_ty, value_ty)) = self.map_literal_hashmap_ty(span) else {
+        let Some((map_ty, _, _)) = self.map_literal_hashmap_ty(span) else {
             return (
                 HirExprKind::Unsupported("map literal missing checker HashMap type".into()),
                 ResolvedTy::Unit,
@@ -23209,7 +21691,7 @@ impl LowerCtx {
         let block_scope = self.ids.scope();
         self.push_scope();
         let temp_name = format!("__hew_map_{}", self.ids.binding().0);
-        let temp_binding = self.bind(temp_name.clone(), map_ty.clone(), false, span.clone());
+        let temp_binding = self.bind(temp_name.clone(), map_ty.clone(), true, span.clone());
         let temp_binding_id = temp_binding.id;
         let init_stmt = HirStmt {
             node: self.ids.node(),
@@ -23229,14 +21711,7 @@ impl LowerCtx {
                 IntentKind::Read,
                 key.span.clone(),
             );
-            let insert_expr = self.make_hashmap_insert_expr(
-                map_ref,
-                key,
-                value,
-                &key_ty,
-                &value_ty,
-                span.clone(),
-            );
+            let insert_expr = self.make_hashmap_insert_expr(map_ref, key, value, span.clone());
             statements.push(HirStmt {
                 node: self.ids.node(),
                 kind: HirStmtKind::Expr(insert_expr),
@@ -23356,7 +21831,7 @@ impl LowerCtx {
                 },
                 clone_span,
             );
-            self.lower_synthetic_checker_root(&clone_call, IntentKind::Consume)
+            self.lower_expr(&clone_call, IntentKind::Consume)
         } else {
             self.lower_expr(receiver, IntentKind::Consume)
         };
@@ -23382,21 +21857,16 @@ impl LowerCtx {
             span: span.clone(),
         });
 
-        // The collected vec (map/filter) or the mutable accumulator (reduce).
+        // The collected vec (map/filter) or the folded accumulator (reduce).
+        // Every op mutates this binding in the loop body - map and filter push
+        // into it, reduce reassigns it - so it is declared mutable and the
+        // place root the push resolves is a mutable one.
         let acc_name = format!("__hew_pipe_out_{}", self.ids.binding().0);
-        let (acc_init, acc_mutable) = match op {
-            HofOp::Map | HofOp::Filter => (
-                self.make_vec_new_expr(result_ty.clone(), span.clone()),
-                false,
-            ),
-            HofOp::Reduce => (self.lower_expr(args[1].expr(), IntentKind::Read), true),
+        let acc_init = match op {
+            HofOp::Map | HofOp::Filter => self.make_vec_new_expr(result_ty.clone(), span.clone()),
+            HofOp::Reduce => self.lower_expr(args[1].expr(), IntentKind::Read),
         };
-        let acc_binding = self.bind(
-            acc_name.clone(),
-            result_ty.clone(),
-            acc_mutable,
-            span.clone(),
-        );
+        let acc_binding = self.bind(acc_name.clone(), result_ty.clone(), true, span.clone());
         let acc_id = acc_binding.id;
         statements.push(HirStmt {
             node: self.ids.node(),
@@ -23471,16 +21941,7 @@ impl LowerCtx {
                     IntentKind::Read,
                     span.clone(),
                 );
-                let Some(push) = self.make_vec_push_expr(out_ref, mapped, out_ty, span.clone())
-                else {
-                    self.pop_scope();
-                    return (
-                        HirExprKind::Unsupported(
-                            "Vec.map result element type has no Vec push ABI".into(),
-                        ),
-                        result_ty,
-                    );
-                };
+                let push = self.make_vec_push_expr(out_ref, mapped, span.clone());
                 let push_stmt = HirStmt {
                     node: self.ids.node(),
                     kind: HirStmtKind::Expr(push),
@@ -23515,16 +21976,7 @@ impl LowerCtx {
                     IntentKind::Read,
                     span.clone(),
                 );
-                let Some(push) = self.make_vec_push_expr(out_ref, kept_read, elem_ty, span.clone())
-                else {
-                    self.pop_scope();
-                    return (
-                        HirExprKind::Unsupported(
-                            "Vec.filter element type has no Vec push ABI".into(),
-                        ),
-                        result_ty,
-                    );
-                };
+                let push = self.make_vec_push_expr(out_ref, kept_read, span.clone());
                 let push_stmt = HirStmt {
                     node: self.ids.node(),
                     kind: HirStmtKind::Expr(push),
@@ -23593,6 +22045,7 @@ impl LowerCtx {
                     kind: HirStmtKind::Assign {
                         target: acc_target,
                         value: Box::new(folded),
+                        first_store: false,
                     },
                     span: span.clone(),
                 };
@@ -23643,16 +22096,8 @@ impl LowerCtx {
         )
     }
 
-    /// Expand `receiver.field(args)` — a record field of function type
-    /// called in method position — into a synthetic block:
-    ///
-    /// ```text
-    /// { let __hew_fnfield = <receiver>.<field>; __hew_fnfield(args...) }
-    /// ```
-    ///
-    /// The field read is a BORROW of the closure pair (the record keeps env
-    /// ownership; `classify_closure_pair_rhs` leaves field-access rhs
-    /// unadmitted), so the call neither frees nor retains the environment.
+    /// Preserve the selected record field as the indirect-call callee.
+    /// SIR decides the projection's borrow or consumption from its capabilities.
     fn lower_record_fn_field_call(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -23680,54 +22125,27 @@ impl LowerCtx {
                 );
             }
         };
-        let block_scope = self.ids.scope();
-        self.push_scope();
-        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-        let field_access = self.make_expr(
-            HirExprKind::FieldAccess {
-                object: Box::new(lowered_receiver),
-                field: method.to_string(),
-            },
-            field_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-        let fn_name = format!("__hew_fnfield_{}", self.ids.binding().0);
-        let fn_binding = self.bind(fn_name.clone(), field_ty.clone(), false, span.clone());
-        let fn_id = fn_binding.id;
-        let let_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(fn_binding, Some(field_access)),
-            span: span.clone(),
+        let field_access = if let Some(callee) = self.fork_field_callee(&span) {
+            callee
+        } else {
+            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            self.make_expr(
+                HirExprKind::FieldAccess {
+                    object: Box::new(lowered_receiver),
+                    field: method.to_string(),
+                },
+                field_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            )
         };
-        let fn_ref = self.make_binding_ref(
-            fn_name,
-            fn_id,
-            field_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
         let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-        let call = self.make_expr(
+        (
             HirExprKind::Call {
                 target: CallTarget::IndirectFunctionValue,
-                callee: Box::new(fn_ref),
+                callee: Box::new(field_access),
                 args: lowered_args,
             },
-            ret_ty.clone(),
-            IntentKind::Read,
-            span.clone(),
-        );
-        self.pop_scope();
-        (
-            HirExprKind::Block(HirBlock {
-                node: self.ids.node(),
-                scope: block_scope,
-                statements: vec![let_stmt],
-                tail: Some(Box::new(call)),
-                ty: ret_ty.clone(),
-                span,
-            }),
             ret_ty,
         )
     }
@@ -23741,6 +22159,76 @@ impl LowerCtx {
         }
     }
 
+    fn lower_function_value(
+        &mut self,
+        symbol: &str,
+        span: &std::ops::Range<usize>,
+        site: SiteId,
+    ) -> (HirExprKind, ResolvedTy) {
+        let entry = self.fn_registry[symbol].clone();
+        self.register_free_fn_monomorphisation(symbol, None, span, site);
+        let key = self.mk_key(span);
+        if !entry.type_params.is_empty()
+            && (self.expr_types.contains_key(&key) || self.call_type_args.contains_key(&key))
+            && (!self.call_type_args.contains_key(&key)
+                || self.direct_monomorph_declaration(span).is_none())
+        {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: symbol.to_string(),
+                    reason:
+                        "generic function value requires type arguments and declaration identity"
+                            .to_string(),
+                },
+                span.clone(),
+                "generic function value has incomplete checker instantiation facts",
+            ));
+            return (
+                HirExprKind::Unsupported("incomplete generic function value".to_string()),
+                ResolvedTy::Unit,
+            );
+        }
+        let ty = if self.expr_types.contains_key(&key) || self.call_type_args.contains_key(&key) {
+            let Some(ty) = self.checker_expr_ty(span, "function value") else {
+                return (
+                    HirExprKind::Unsupported("function value has no checked type".to_string()),
+                    ResolvedTy::Unit,
+                );
+            };
+            ty
+        } else {
+            // Direct-call callee references may be synthesised from the
+            // declaration without a separate value expression in the checker.
+            ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                params: entry.param_tys,
+                ret: Box::new(entry.return_ty),
+            }
+        };
+        let emitted = self
+            .call_site_type_args
+            .get(&site)
+            .filter(|args| !args.iter().any(|ty| self.contains_abstract_type_param(ty)))
+            .map_or_else(
+                || {
+                    self.fn_symbol_overrides
+                        .get(&entry.id)
+                        .cloned()
+                        .unwrap_or_else(|| symbol.to_string())
+                },
+                |args| crate::monomorph::function_monomorph_symbol(symbol, args),
+            );
+        (
+            HirExprKind::BindingRef {
+                name: emitted,
+                resolved: entry
+                    .builtin_family
+                    .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin),
+            },
+            ty,
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "multi-branch identifier resolution: context readers, bindings, fn_sigs, \
@@ -23752,6 +22240,7 @@ impl LowerCtx {
         &mut self,
         name: &str,
         span: std::ops::Range<usize>,
+        site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         if let Some(reader) = ExecutionContextReader::from_surface_name(name) {
             let key = self.mk_key(&span);
@@ -23882,20 +22371,9 @@ impl LowerCtx {
                 );
             }
         }
-        if let Some(symbol) = self.imported_rewrite_symbol(name).map(str::to_string) {
-            if let Some(entry) = self.fn_registry.get(&symbol) {
-                let fn_ty = ResolvedTy::Function {
-                    params: entry.param_tys.clone(),
-                    ret: Box::new(entry.return_ty.clone()),
-                };
-                let id = entry.id;
-                return (
-                    HirExprKind::BindingRef {
-                        name: symbol,
-                        resolved: ResolvedRef::Item(id),
-                    },
-                    fn_ty,
-                );
+        if let Some(symbol) = self.imported_rewrite_symbol(name) {
+            if self.fn_registry.contains_key(&symbol) {
+                return self.lower_function_value(&symbol, &span, site);
             }
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -23931,6 +22409,32 @@ impl LowerCtx {
                 ty,
             );
         }
+        // A bare constant an import published into THIS file's scope. The
+        // checker recorded the exact declaring owner per importing file, so a
+        // file the root spliced in resolves its own `import lib.{ LIB_K };`
+        // here and a file that never wrote that import does not see `LIB_K`.
+        if let Some(entry) = self
+            .published_bare_const_owners
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
+            .filter(|owners| owners.len() == 1)
+            .and_then(|owners| owners.iter().next())
+            .and_then(|owner| self.const_registry.get(self.published_const_key(owner)))
+            .cloned()
+        {
+            let ty = entry.ty.clone();
+            let id = entry.id;
+            return (
+                HirExprKind::BindingRef {
+                    name: name.to_string(),
+                    resolved: ResolvedRef::Const(id),
+                },
+                ty,
+            );
+        }
         if let Some(entry) = self.const_registry.get(name) {
             // Module-level `const` reference. Resolves to a `Const` ref carrying
             // the declaration's stable ItemId; MIR/codegen map it back to the
@@ -23947,27 +22451,8 @@ impl LowerCtx {
                 ty,
             );
         }
-        if let Some(entry) = self.fn_registry.get(name) {
-            // Known function item — expose as a function-typed reference so
-            // callers can extract the return type from the call expression.
-            let fn_ty = ResolvedTy::Function {
-                params: entry.param_tys.clone(),
-                ret: Box::new(entry.return_ty.clone()),
-            };
-            // Checker-registered runtime builtins with no AST `fn` item
-            // resolve to the typed family directly; MIR reads
-            // `family.c_symbol()` instead of reverse-mapping the
-            // user-visible name through a string bridge.
-            let resolved = entry
-                .builtin_family
-                .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin);
-            (
-                HirExprKind::BindingRef {
-                    name: name.to_string(),
-                    resolved,
-                },
-                fn_ty,
-            )
+        if self.fn_registry.contains_key(name) {
+            self.lower_function_value(name, &span, site)
         } else {
             if let Some(module) = self.missing_stdlib_module_import(name) {
                 let source_module = module.replace("::", ".");
@@ -24039,6 +22524,29 @@ impl LowerCtx {
         )
     }
 
+    /// Omitted `ActorError` parameters default to `Never`, as they do in the
+    /// checker. Both stages preserve the same concrete envelope identity.
+    fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        let mut resolved = self.resolve_named_type_ref_inner(name, args);
+        if let ResolvedTy::Named {
+            name,
+            args,
+            builtin: None,
+            ..
+        } = &mut resolved
+        {
+            if name == hew_types::actor_delivery::ACTOR_ERROR_TYPE {
+                args.resize_with(args.len().max(2), || {
+                    ResolvedTy::named_user(
+                        hew_types::actor_delivery::NEVER_TYPE.to_string(),
+                        Vec::new(),
+                    )
+                });
+            }
+        }
+        resolved
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "single match over every TypeExpr variant; splitting would scatter the type-lowering authority"
@@ -24048,7 +22556,10 @@ impl LowerCtx {
     /// annotation as written (possibly module-qualified); `args` are the
     /// already-lowered generic arguments. Split out of `lower_type` to keep
     /// that dispatcher under the line budget.
-    fn resolve_named_type_ref(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+    fn resolve_named_type_ref_inner(&self, name: &str, args: Vec<ResolvedTy>) -> ResolvedTy {
+        if let Some(checked) = self.checked_encoding_type(name, &args) {
+            return checked;
+        }
         let type_name = hew_types::short_name(name);
         let current_module_is_file_import = self
             .current_module_name
@@ -24067,6 +22578,9 @@ impl LowerCtx {
         if !name.contains('.') {
             if let Some(module_owner) = self.current_module_name.as_deref() {
                 let qualified = format!("{module_owner}.{name}");
+                if let Some(checked) = self.checked_encoding_type(&qualified, &args) {
+                    return checked;
+                }
                 // Several compiler carriers (notably Stream/Sink and lifecycle
                 // payloads) are non-opaque source declarations. Recover their
                 // builtin identity only while lowering a canonical `std.*`
@@ -24134,6 +22648,9 @@ impl LowerCtx {
         // opaque user identity keeps its full qualified name.
         let canonical = self.canonical_current_module_record_name(name);
         if canonical != name {
+            if let Some(checked) = self.checked_encoding_type(&canonical, &args) {
+                return checked;
+            }
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
                 return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
@@ -24223,7 +22740,19 @@ impl LowerCtx {
         // spellings live in `lookup_builtin_type`; an arbitrary
         // `foo.Receiver` must never inherit the bare `Receiver` registration.
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
-            ResolvedTy::named_builtin(registration.name(), registration.builtin, args)
+            // A builtin classified by its own std declaration only has facts
+            // under its canonical source identity. The prelude publishes the
+            // bare spelling without an import alias, so mint that identity here
+            // rather than handing the catalog's bare presentation name on.
+            let canonical = registration
+                .builtin
+                .classifies_by_declaration()
+                .then(|| hew_types::canonical_source_owned_lifecycle_name(registration.builtin))
+                .flatten();
+            match canonical {
+                Some(canonical) => ResolvedTy::named_builtin(canonical, registration.builtin, args),
+                None => ResolvedTy::named_builtin(registration.name(), registration.builtin, args),
+            }
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
             Self::resolved_source_builtin_ty(name, builtin, args)
         } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
@@ -24345,8 +22874,13 @@ impl LowerCtx {
                     self.qualify_current_module_record_ty(*element),
                 ));
             }
-            ResolvedTy::Function { params, ret } => {
+            ResolvedTy::Function {
+                capabilities,
+                params,
+                ret,
+            } => {
                 return ResolvedTy::Function {
+                    capabilities,
                     params: params
                         .into_iter()
                         .map(|param| self.qualify_current_module_record_ty(param))
@@ -24358,8 +22892,10 @@ impl LowerCtx {
                 params,
                 ret,
                 captures,
+                capabilities,
             } => {
                 return ResolvedTy::Closure {
+                    capabilities,
                     params: params
                         .into_iter()
                         .map(|param| self.qualify_current_module_record_ty(param))
@@ -24423,7 +22959,15 @@ impl LowerCtx {
             .into_iter()
             .map(|arg| self.qualify_current_module_record_ty(arg))
             .collect();
-        if matches!(builtin, Some(BuiltinType::ChildRef | BuiltinType::LocalPid)) {
+        if let Some(expected) = builtin.filter(|kind| kind.is_encoding_value()) {
+            if let Some(checked) = self
+                .checked_encoding_type(&name, &args)
+                .filter(|ty| ty.is_builtin(expected))
+            {
+                return checked;
+            }
+        }
+        if matches!(builtin, Some(BuiltinType::ChildRef)) {
             if let [ResolvedTy::Named {
                 name: actor_name, ..
             }] = args.as_mut_slice()
@@ -24436,6 +22980,32 @@ impl LowerCtx {
                     actor_name.clone_from(qualified);
                 }
             }
+        }
+        // An actor is the type of its handle: the handle's own nominal is the
+        // actor declaration, and the discriminator is that declaration's
+        // representation authority. Qualify the name the way a source record's
+        // is qualified, and keep the handle — the source-declaration rule below
+        // strips an unproven presentation marker, which this is not.
+        if matches!(builtin, Some(BuiltinType::ActorHandle)) {
+            let mut actor_name = name;
+            if let Some(qualified) = self
+                .imported_actor_rewrites
+                .as_ref()
+                .and_then(|rewrites| rewrites.get(&actor_name))
+            {
+                actor_name.clone_from(qualified);
+            } else if !actor_name.contains('.') {
+                let canonical = self.canonical_current_module_record_name(&actor_name);
+                if self.actor_type_names.contains(&canonical) {
+                    actor_name = canonical;
+                }
+            }
+            return ResolvedTy::Named {
+                name: actor_name,
+                args,
+                builtin,
+                is_opaque,
+            };
         }
         let current_module_is_file_import = self
             .current_module_name
@@ -24461,8 +23031,7 @@ impl LowerCtx {
         // owner's complete identity rather than returning a bare leaf, so the
         // same rule also keeps package-local `module.Result` nominally
         // distinct from prelude `Result`.
-        if builtin.is_some()
-            && !name.contains('.')
+        if !name.contains('.')
             && self.current_scope_declares_source_type(&name, current_module_is_file_import)
         {
             let canonical = self.canonical_current_module_record_name(&name);
@@ -24764,82 +23333,6 @@ impl LowerCtx {
             )
     }
 
-    /// Canonicalize a supervisor child's user-spelled actor type to the
-    /// registered actor identity (`qualified_name()`), so the child's MIR
-    /// actor-layout lookup and the child-handle PID agree.
-    ///
-    /// A supervisor child records its actor type as the raw source spelling
-    /// (`child b: bank.Account` stores `bank.Account`), whose prefix is the
-    /// user's import alias. A module actor's identity is `qualified_name()` =
-    /// `{module_full_path}.{name}` (`hew.bank.Account`), which the MIR actor
-    /// layout keys on. Left raw, the alias-prefixed spelling never matches that
-    /// key and MIR rejects the supervisor with an unknown-actor
-    /// `NotYetImplemented`. Resolve the `alias.Type` prefix through
-    /// `module_import_bindings` — the same table the checker's spawn resolution
-    /// uses — so a supervisor-child handle carries the same identity a spawn
-    /// handle does. Bare spellings follow lexical authority: a current-scope
-    /// declaration wins, then the checker's exact named/aliased import binding,
-    /// then a flattened file-import identity. No globally loaded leaf-name
-    /// fallback participates.
-    fn canonical_supervisor_child_ty(&self, raw: &str) -> Option<String> {
-        if let Some((module_binding, member)) = raw.split_once('.') {
-            let owner = self.module_import_bindings.get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                module_binding.to_string(),
-            ))?;
-            let canonical = format!("{owner}.{member}");
-            return self
-                .actor_type_names
-                .contains(&canonical)
-                .then_some(canonical);
-        }
-        // A flattened file import is syntactically present in the root item
-        // stream, so it also appears root-visible. Its explicit source-owner
-        // alias must therefore be checked before the ordinary current-scope
-        // declaration rung.
-        if self.current_module_name.is_none() {
-            if let Some(canonical) = self.file_import_root_type_aliases.get(raw) {
-                return self
-                    .actor_type_names
-                    .contains(canonical)
-                    .then(|| canonical.clone());
-            }
-        }
-        // A supervisor inside an imported module may name an actor declared in
-        // that same file by its local spelling. The checker supplies the exact
-        // set of actor identities, so qualify only an exact owner/name member;
-        // do not infer an owner by scanning globally loaded leaf names.
-        if let Some(module_full_path) = self.current_module_name.as_deref() {
-            let local_actor = format!("{module_full_path}.{raw}");
-            if self.actor_type_names.contains(&local_actor) {
-                return Some(local_actor);
-            }
-        }
-        let current_module_is_file_import = self
-            .current_module_name
-            .as_deref()
-            .is_some_and(|module| self.file_import_module_names.contains(module));
-        if self.current_scope_declares_source_type(raw, current_module_is_file_import) {
-            return Some(self.canonical_current_module_record_name(raw));
-        }
-        if let Some(canonical) = self
-            .import_type_name_aliases
-            .get(&(
-                self.current_module_name.clone(),
-                self.current_module_idx,
-                raw.to_string(),
-            ))
-            .cloned()
-        {
-            return self
-                .actor_type_names
-                .contains(&canonical)
-                .then_some(canonical);
-        }
-        Some(raw.to_string())
-    }
-
     /// Whether bare `name` is authored by the scope currently being lowered.
     ///
     /// Root declarations use the root namespace. Every imported module,
@@ -24860,6 +23353,24 @@ impl LowerCtx {
                 self.source_type_identities
                     .contains(&format!("{module_full_path}.{name}"))
             })
+    }
+
+    /// Read encoding identity and opacity from the checker-owned declaration.
+    /// Neither a catalogue match nor an opaque annotation supplies authority.
+    fn checked_encoding_type(&self, name: &str, args: &[ResolvedTy]) -> Option<ResolvedTy> {
+        let declaration = self.type_declarations.get(name)?;
+        let builtin = declaration
+            .builtin
+            .filter(|kind| kind.is_encoding_value())?;
+        if !args.is_empty() || !declaration.type_params.is_empty() {
+            return None;
+        }
+        Some(ResolvedTy::Named {
+            name: name.to_string(),
+            args: Vec::new(),
+            builtin: Some(builtin),
+            is_opaque: declaration.is_opaque,
+        })
     }
 
     /// Resolve an owner-qualified compiler carrier using source provenance.
@@ -24931,31 +23442,6 @@ impl LowerCtx {
             (name.starts_with("std.failure.") || name.starts_with("std.link_monitor."))
                 .then(|| hew_types::lookup_source_owned_lifecycle_type(name))
                 .flatten()
-                // Some bundled declarations deliberately retain their source
-                // owner in checker/HIR facts while the runtime catalog's canonical
-                // spelling is a leaf. Keep this mapping exact: a generic leaf
-                // retry would let compatibility spellings rewrite a different
-                // source-owned declaration (for example `failure.*`).
-                .or_else(|| {
-                    // One shipped declaration, two canonical spellings: the
-                    // shipped `std/concurrency/lambda_actor.hew` source is
-                    // reachable both as a directory-module peer (a direct
-                    // `hew check` of the file lowers it as `std.concurrency`)
-                    // and as the file module every user import resolves
-                    // (`import std::concurrency::lambda_actor` →
-                    // `std.concurrency.lambda_actor`). Matching only the
-                    // former stamped the builtin discriminator on the direct
-                    // path but not through an import, so the same impl block
-                    // was metadata-only one way and a lowered user impl the
-                    // other — the root-vs-import provenance seam the stdlib
-                    // corpus sweep pins. Both spellings stay gated on the
-                    // canonical-source proof above; a user lookalike module
-                    // acquires neither.
-                    (canonical_std_owner
-                        && (name == "std.concurrency.LambdaActorHandle"
-                            || name == "std.concurrency.lambda_actor.LambdaActorHandle"))
-                        .then_some(BuiltinType::LambdaActorHandle)
-                })
         }) {
             return Some(builtin);
         }
@@ -25281,6 +23767,13 @@ impl LowerCtx {
                         return self_ty;
                     }
                 }
+                // The embedded builtins projection owns this source record
+                // under its qualified module identity. Keep that identity in
+                // the injected constructor's body and signature; callers have
+                // the same checker-proven canonical type.
+                if name == "NodeConfig" && args.is_empty() {
+                    return ResolvedTy::named_user("std.builtins.NodeConfig", vec![]);
+                }
                 match name.as_str() {
                     "i8" => ResolvedTy::I8,
                     "i16" => ResolvedTy::I16,
@@ -25325,7 +23818,14 @@ impl LowerCtx {
                         ));
                         ResolvedTy::Unit
                     }
-                    _ => self.resolve_named_type_ref(name, args),
+                    _ => {
+                        let resolved = self.resolve_named_type_ref(name, args);
+                        // An actor is the type of its handle: a written actor
+                        // name in any position holds the actor, and a bare name
+                        // inside a module names that module's actor.
+                        let owner = self.current_module_name.clone();
+                        self.canonicalize_actor_ref_field_ty(resolved, owner.as_deref())
+                    }
                 }
             }
             TypeExpr::Infer => {
@@ -25335,6 +23835,11 @@ impl LowerCtx {
                     "inferred type reached resolved HIR boundary",
                 ));
                 ResolvedTy::Unit
+            }
+            TypeExpr::Fallible { success, error } => {
+                let success = self.lower_type(success);
+                let error = self.lower_type(error);
+                ResolvedTy::named_builtin("Result", BuiltinType::Result, vec![success, error])
             }
             TypeExpr::Tuple(elems) if elems.is_empty() => ResolvedTy::Unit,
             TypeExpr::Tuple(elems) => {
@@ -25347,12 +23852,31 @@ impl LowerCtx {
                 ResolvedTy::named_builtin("Vec", BuiltinType::Vec, vec![self.lower_type(elem)])
             }
             TypeExpr::Function {
+                capabilities,
                 params,
                 return_type,
             } => ResolvedTy::Function {
+                capabilities: *capabilities,
                 params: params.iter().map(|param| self.lower_type(param)).collect(),
                 ret: Box::new(self.lower_type(return_type)),
             },
+            TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => {
+                let resolved: Vec<ResolvedTy> =
+                    params.iter().map(|param| self.lower_type(param)).collect();
+                let msg = match resolved.len() {
+                    0 => ResolvedTy::Unit,
+                    1 => resolved.into_iter().next().unwrap_or(ResolvedTy::Unit),
+                    _ => ResolvedTy::Tuple(resolved),
+                };
+                ResolvedTy::named_builtin(
+                    BuiltinType::ActorFn.canonical_name(),
+                    BuiltinType::ActorFn,
+                    vec![msg, Box::new(self.lower_type(return_type)).as_ref().clone()],
+                )
+            }
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
@@ -25379,110 +23903,6 @@ impl LowerCtx {
             _ => {
                 self.unsupported(ty.1.clone(), "type-expression", "slice-2");
                 ResolvedTy::Unit
-            }
-        }
-    }
-
-    fn binary_ty(op: BinaryOp, left: &ResolvedTy, right: &ResolvedTy) -> ResolvedTy {
-        // `instant` in any annotation position (let x: instant, fn f(x: instant), etc.)
-        // reaches here as `Named { builtin: Some(BuiltinType::Instant) }` because
-        // `lower_type` (the field-type producer) preserves the named form for field
-        // storage — it has no `instant` arm unlike the expression-level `from_ty`.
-        //
-        // Canonicalise Named{Instant} operands to I64 for classification so the
-        // existing arithmetic arms fire regardless of how the operand binding was
-        // introduced. Preserve the original left-operand type when it is an
-        // instant-result operation (instant + duration, instant - duration) so the
-        // binary result type matches `-> instant` return annotations and the
-        // checker-promotion logic remains consistent.
-        //
-        // Field storage arms (`value_class`, `state_clone`, `primitive_to_llvm`, etc.)
-        // are untouched — this normalisation is local to operand type classification.
-        let left_is_named_instant = matches!(
-            left,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Instant),
-                ..
-            }
-        );
-        let left_canon;
-        let right_canon;
-        let left_eff = if left_is_named_instant {
-            left_canon = ResolvedTy::I64;
-            &left_canon
-        } else {
-            left
-        };
-        let right_eff = if matches!(
-            right,
-            ResolvedTy::Named {
-                builtin: Some(BuiltinType::Instant),
-                ..
-            }
-        ) {
-            right_canon = ResolvedTy::I64;
-            &right_canon
-        } else {
-            right
-        };
-        let result = Self::binary_ty_classified(op, left_eff, right_eff);
-        // When the left operand was Named{Instant} and the result type is the
-        // same as left (i.e. I64 from the wildcard arm — an instant-result op
-        // like `instant + duration` or `instant - duration`), return the
-        // original Named{Instant} so the result type matches annotation and the
-        // MIR can classify it alongside Duration in integer_signedness.
-        if left_is_named_instant && result == ResolvedTy::I64 {
-            left.clone()
-        } else {
-            result
-        }
-    }
-
-    fn binary_ty_classified(op: BinaryOp, left: &ResolvedTy, right: &ResolvedTy) -> ResolvedTy {
-        match op {
-            BinaryOp::Equal
-            | BinaryOp::NotEqual
-            | BinaryOp::Less
-            | BinaryOp::LessEqual
-            | BinaryOp::Greater
-            | BinaryOp::GreaterEqual
-            | BinaryOp::And
-            | BinaryOp::Or => ResolvedTy::Bool,
-            BinaryOp::Add if left == &ResolvedTy::String || right == &ResolvedTy::String => {
-                ResolvedTy::String
-            }
-            // `duration + instant → instant`: the checker admits this as `duration + I64`
-            // at HIR level (since `instant` is erased to `I64`). The result is the
-            // right operand's type (I64, i.e. the instant backing type).
-            BinaryOp::Add if left == &ResolvedTy::Duration && right == &ResolvedTy::I64 => {
-                ResolvedTy::I64
-            }
-            // Wrapping ops (WrappingAdd/WrappingSub/WrappingMul) fall through
-            // to the wildcard: they return the left operand's integer type,
-            // same as any other integer arithmetic op. The type checker has
-            // already enforced integer-only operands.
-            _ => left.clone(),
-        }
-    }
-
-    fn resolve_numeric_method_ty(
-        &mut self,
-        ty: &Ty,
-        span: &Span,
-        label: &str,
-    ) -> Option<ResolvedTy> {
-        match ResolvedTy::from_ty(ty) {
-            Ok(ty) => Some(ty),
-            Err(err) => {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: label.to_string(),
-                        reason: err.to_string(),
-                    },
-                    span.clone(),
-                    "checker-authoritative numeric method lowering type failed boundary conversion",
-                ));
-                None
             }
         }
     }
@@ -25533,10 +23953,6 @@ impl LowerCtx {
                 ),
             ));
         }
-    }
-
-    fn register_numeric_checked_option_layout(&mut self, operand_ty: &ResolvedTy, span: &Span) {
-        self.register_option_layout(operand_ty, span, "checked numeric method");
     }
 
     /// Register a concrete compiler-owned cursor layout from the typed catalog.
@@ -25638,7 +24054,7 @@ impl LowerCtx {
     /// Build a typed integer-literal HIR expression.  Used to synthesise the
     /// default stride `1` for a non-strided `ForRange` so MIR always sees a
     /// concrete step operand at the loop's element width.
-    fn make_int_literal(&mut self, value: i64, ty: ResolvedTy, span: Span) -> HirExpr {
+    fn make_int_literal(&mut self, value: i128, ty: ResolvedTy, span: Span) -> HirExpr {
         self.make_expr(
             HirExprKind::Literal(HirLiteral::Integer(value)),
             ty,
@@ -25677,7 +24093,7 @@ impl LowerCtx {
         )
     }
 
-    fn make_i64_literal(&mut self, value: i64, span: Span) -> HirExpr {
+    fn make_i64_literal(&mut self, value: i128, span: Span) -> HirExpr {
         self.make_expr(
             HirExprKind::Literal(HirLiteral::Integer(value)),
             ResolvedTy::I64,
@@ -25706,70 +24122,16 @@ impl LowerCtx {
     fn make_vec_len_call(
         &mut self,
         vec_expr: HirExpr,
-        elem_ty: &ResolvedTy,
+        _elem_ty: &ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(vec_expr),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Len),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "len".to_string(),
-                target_symbol: "hew_vec_len".to_string(),
-                // Synthesised Vec::len call (HIR-internal helper); the
-                // family is unambiguously a Vec len dispatch.
-                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Len),
-                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
-                args: Vec::new(),
-                ret_ty: ResolvedTy::I64,
-            },
-            ResolvedTy::I64,
-            IntentKind::Read,
-            span,
-        )
-    }
-
-    /// Build the iterator-only owned-output read used by `VecIter::next`.
-    ///
-    /// This deliberately does not use [`HirExprKind::Index`]: ordinary
-    /// `xs[i]` preserves its established element-class semantics, including
-    /// borrowed nested-collection handles. An iterator yield must instead be
-    /// an independent owner because the cursor keeps and later releases its
-    /// snapshot. Cloneable elements use the descriptor clone choke. Drop-only
-    /// trait objects instead move the fat pointer and null its source slot.
-    fn make_vec_iter_get_call(
-        &mut self,
-        vec_expr: HirExpr,
-        index: HirExpr,
-        elem_ty: &ResolvedTy,
-        span: Span,
-    ) -> HirExpr {
-        let option_ty = Self::resolved_option_ty(elem_ty.clone());
-        let target_symbol = if matches!(elem_ty, ResolvedTy::TraitObject { .. }) {
-            "hew_vec_take_owned"
-        } else {
-            "hew_vec_get_clone"
-        };
-        self.make_expr(
-            HirExprKind::ResolvedImplCall {
-                receiver: Box::new(vec_expr),
-                target: hew_types::CallTarget::RuntimeCollection(
-                    hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
-                ),
-                impl_id: ImplId(u32::MAX),
-                method_name: "get".to_string(),
-                target_symbol: target_symbol.to_string(),
-                target_family: hew_types::MethodTargetFamily::Vec(hew_types::VecMethod::Get),
-                type_args: vec![Self::resolved_ty_pattern(elem_ty)],
-                args: vec![index],
-                ret_ty: option_ty.clone(),
-            },
-            option_ty,
-            IntentKind::Read,
-            span,
-        )
+        let kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len),
+            vec![vec_expr],
+            &ResolvedTy::I64,
+            &span,
+        );
+        self.make_expr(kind, ResolvedTy::I64, IntentKind::Read, span)
     }
 
     fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
@@ -25910,6 +24272,7 @@ impl LowerCtx {
                         .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
                 });
         let callee_ty = ResolvedTy::Function {
+            capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: Vec::new(),
             ret: Box::new(ret_ty.clone()),
         };
@@ -25967,19 +24330,6 @@ impl LowerCtx {
         let call = self.make_direct_method_call(callee.clone(), iterable, &ret_ty, span.clone());
         self.record_var_self_direct_monomorphisation(&callee, &receiver_ty, span, call.site);
         Some((call, ret_ty, elem_ty, next_call))
-    }
-
-    fn resolved_ty_pattern(ty: &ResolvedTy) -> TyPattern {
-        match ty {
-            ResolvedTy::Tuple(items) => {
-                TyPattern::Tuple(items.iter().map(Self::resolved_ty_pattern).collect())
-            }
-            ResolvedTy::Named { name, args, .. } if !args.is_empty() => TyPattern::App {
-                ctor: name.clone(),
-                args: args.iter().map(Self::resolved_ty_pattern).collect(),
-            },
-            _ => TyPattern::Primitive(ty.to_string()),
-        }
     }
 
     fn make_option_ctor(
@@ -26056,62 +24406,16 @@ impl LowerCtx {
         self.lower_expr(receiver, intent)
     }
 
-    /// Expand `v.iter()` over a `Vec<T>` into the SAME `VecIter<T>` cursor
-    /// `into_iter` builds, but giving the cursor an INDEPENDENT CLONE of the
-    /// receiver instead of moving it — the by-value-snapshot twin of
-    /// [`Self::lower_builtin_vec_into_iter`]'s Consume.
-    ///
-    /// A `VecIter<T>` is a first-class value with no lifetime: it can coexist
-    /// with the source, be bound to an outer scope, returned, or held across a
-    /// suspension while the source vec's scope exits. Hew's `Vec` is a
-    /// single-owner heap handle with
-    /// no buffer refcount, so the cursor cannot borrow the source's handle —
-    /// sharing it would double-free when source and cursor both drop, or dangle
-    /// if the cursor outlives the source. For a place receiver we therefore
-    /// clone the source into a fresh owned `Vec` (`recv.clone()`, a
-    /// deep/retaining `hew_vec_clone` snapshot spanned at the call's start
-    /// offset to match the checker's `BuiltinVecIter` clone recording). The
-    /// cursor solely owns that clone and frees it exactly once on its own drop;
-    /// the source binding stays a live, independent owner (the clone only reads
-    /// it). This reuses the SAME owned-cursor drop registration `into_iter`
-    /// relies on — see `vec_iter_let_cursor_owns_handle` — so the buffer is
-    /// freed correctly at sync scope-exit, async cancellation, and actor
-    /// shutdown alike. `VecIter::next` clones each element out on read
-    /// (`hew_vec_get_clone`), so every yielded item is an independent owner,
-    /// identical to `into_iter`.
-    ///
-    /// A non-place rvalue receiver (`make_vec().iter()`) has no surviving source
-    /// binding, so it is consumed directly — identical to `into_iter` and
-    /// evaluated exactly once by `lower_expr`. Cloning it would leak the
-    /// original temporary, which nothing else frees.
+    /// Construct an ordinary cursor value. SIR copies a surviving source
+    /// binding into the cursor and transfers a temporary, preserving one
+    /// evaluation and an independent snapshot through the common value rules.
     fn lower_builtin_vec_iter(
         &mut self,
         receiver: &Spanned<Expr>,
         elem_ty: ResolvedTy,
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
-        if Self::for_in_iterable_is_place(&receiver.0) {
-            // Place source: re-read it through `clone()` so the cursor owns an
-            // independent snapshot and the source binding stays a live owner.
-            // The clone is spanned at the call's start offset, matching the
-            // checker's `BuiltinVecIter` clone recording so the span-keyed
-            // resolved-call fact resolves.
-            let clone_span = span.start..span.start;
-            let clone_call = (
-                Expr::MethodCall {
-                    receiver: Box::new((receiver.0.clone(), clone_span.clone())),
-                    method: "clone".to_string(),
-                    args: Vec::new(),
-                },
-                clone_span,
-            );
-            let clone_hir = self.lower_synthetic_checker_root(&clone_call, IntentKind::Consume);
-            let iter_expr = self.make_vec_iter_init(clone_hir, elem_ty, span);
-            return (iter_expr.kind, iter_expr.ty);
-        }
-        // Non-place rvalue: consume the temporary directly (no surviving source
-        // binding to keep alive), exactly as `into_iter` does.
-        let receiver_hir = self.lower_expr(receiver, IntentKind::Consume);
+        let receiver_hir = self.lower_expr(receiver, IntentKind::Read);
         let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
         (iter_expr.kind, iter_expr.ty)
     }
@@ -26212,7 +24516,6 @@ impl LowerCtx {
         iter_ty: ResolvedTy,
         span: &Span,
     ) -> HirExpr {
-        let receiver_is_place = Self::for_in_iterable_is_place(&receiver.0);
         let keys_span = span.start..span.start;
         let values_span = span.end..span.end;
         let keys_call = (
@@ -26231,12 +24534,8 @@ impl LowerCtx {
             },
             values_span,
         );
-        let keys_hir = if receiver_is_place {
-            self.lower_expr(&keys_call, IntentKind::Consume)
-        } else {
-            self.lower_synthetic_checker_root(&keys_call, IntentKind::Consume)
-        };
-        let values_hir = self.lower_synthetic_checker_root(&values_call, IntentKind::Consume);
+        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
+        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, span.clone());
         self.make_expr(
             HirExprKind::StructInit {
@@ -26261,11 +24560,6 @@ impl LowerCtx {
         elem_ty: ResolvedTy,
         span: Span,
     ) -> HirExpr {
-        self.register_synthetic_cursor_layout(
-            BuiltinType::VecIter,
-            std::slice::from_ref(&elem_ty),
-            &span,
-        );
         let idx = self.make_i64_literal(0, span.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
         self.make_expr(
@@ -26407,12 +24701,8 @@ impl LowerCtx {
         );
         // The projections produce fresh owned Vecs; the StructInit consumes
         // them into the cursor.
-        let keys_hir = if Self::for_in_iterable_is_place(&iterable.0) {
-            self.lower_expr(&keys_call, IntentKind::Consume)
-        } else {
-            self.lower_synthetic_checker_root(&keys_call, IntentKind::Consume)
-        };
-        let values_hir = self.lower_synthetic_checker_root(&values_call, IntentKind::Consume);
+        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
+        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
         let idx = self.make_i64_literal(0, iterable_span.clone());
         // Build the `HashMapIter<K, V>` StructInit HIR directly (carrying its
         // `type_args` so MIR mangles the concrete layout), mirroring
@@ -26453,14 +24743,9 @@ impl LowerCtx {
         span: Span,
     ) -> (HirExprKind, ResolvedTy) {
         self.register_option_layout(elem_ty, &span, "VecIter::next");
-        self.register_synthetic_cursor_layout(
-            BuiltinType::VecIter,
-            std::slice::from_ref(elem_ty),
-            &span,
-        );
         let option_ty = Self::resolved_option_ty(elem_ty.clone());
         let iter_ty = Self::resolved_vec_iter_ty(elem_ty.clone());
-        let lowered_receiver = self.lower_synthetic_operand(receiver, IntentKind::Modify);
+        let lowered_receiver = self.lower_expr(receiver, IntentKind::Modify);
         let HirExprKind::BindingRef {
             name: receiver_name,
             resolved: ResolvedRef::Binding(receiver_binding),
@@ -26478,6 +24763,19 @@ impl LowerCtx {
         };
         let receiver_name = receiver_name.clone();
         let receiver_binding = *receiver_binding;
+
+        if self
+            .owning_take_vec_cursors
+            .contains(&SpanKey::in_module(&span, self.current_module_idx))
+        {
+            return self.lower_builtin_vec_iter_take_next(
+                receiver_name,
+                receiver_binding,
+                &iter_ty,
+                elem_ty,
+                span,
+            );
+        }
 
         self.push_scope();
         let iter_obj = self.make_binding_ref(
@@ -26566,8 +24864,18 @@ impl LowerCtx {
             IntentKind::Read,
             span.clone(),
         );
-        let value_expr =
-            self.make_vec_iter_get_call(vec_read_for_get, idx_read_for_get, elem_ty, span.clone());
+        let value_kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Get),
+            vec![vec_read_for_get, idx_read_for_get],
+            &option_ty,
+            &span,
+        );
+        let value_expr = self.make_expr(
+            value_kind,
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
         let value_binding_name = format!("__hew_iter_value_{}", self.ids.binding().0);
         let value_binding = self.bind(
             value_binding_name.clone(),
@@ -26630,6 +24938,7 @@ impl LowerCtx {
             kind: HirStmtKind::Assign {
                 target: idx_assign_target,
                 value: Box::new(idx_plus_one),
+                first_store: false,
             },
             span: span.clone(),
         };
@@ -26637,10 +24946,7 @@ impl LowerCtx {
             value_binding_name,
             value_binding_id,
             option_ty.clone(),
-            // Transfer the freshly materialised Option<T> into the synthetic
-            // `else` result. A Read would leave the intermediate binding live
-            // in MIR's drop ledger after its bits move to the match scrutinee,
-            // releasing the Some payload before the loop body can own it.
+            // The ordinary block-result transfer owns the extracted item.
             IntentKind::Consume,
             span.clone(),
         );
@@ -26650,6 +24956,114 @@ impl LowerCtx {
             option_ty.clone(),
             span.clone(),
         );
+        let else_expr = self.make_expr(
+            HirExprKind::Block(else_block),
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let if_expr = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(then_expr),
+                else_expr: Some(Box::new(else_expr)),
+            },
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let block = self.make_unit_block(Vec::new(), Some(if_expr), option_ty.clone(), span);
+        self.pop_scope();
+        (HirExprKind::Block(block), option_ty)
+    }
+
+    /// `VecIter.next()` for an element with no semantic clone: each step moves
+    /// the first element out of the vector the cursor owns.
+    ///
+    /// There is no index to advance — the removal shifts the tail down, so the
+    /// cursor is empty exactly when the vector is, and a completed drain leaves
+    /// it empty. An early exit drops the cursor, whose `vec` field releases
+    /// whatever the drain did not reach.
+    fn lower_builtin_vec_iter_take_next(
+        &mut self,
+        receiver_name: String,
+        receiver_binding: BindingId,
+        iter_ty: &ResolvedTy,
+        elem_ty: &ResolvedTy,
+        span: Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let option_ty = Self::resolved_option_ty(elem_ty.clone());
+        self.push_scope();
+        let iter_obj = self.make_binding_ref(
+            receiver_name.clone(),
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let vec_read_for_len = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "vec".to_string(),
+            },
+            Self::resolved_vec_ty(elem_ty.clone()),
+            IntentKind::Read,
+            span.clone(),
+        );
+        let len_call = self.make_vec_len_call(vec_read_for_len, elem_ty, span.clone());
+        let zero = self.make_i64_literal(0, span.clone());
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: BinaryOp::LessEqual,
+                left: Box::new(len_call),
+                right: Box::new(zero),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let none_expr = self.make_option_ctor("None", None, elem_ty, span.clone());
+        let then_block =
+            self.make_unit_block(Vec::new(), Some(none_expr), option_ty.clone(), span.clone());
+        let then_expr = self.make_expr(
+            HirExprKind::Block(then_block),
+            option_ty.clone(),
+            IntentKind::Read,
+            span.clone(),
+        );
+
+        let iter_obj = self.make_binding_ref(
+            receiver_name,
+            receiver_binding,
+            iter_ty.clone(),
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let vec_take_target = self.make_expr(
+            HirExprKind::FieldAccess {
+                object: Box::new(iter_obj),
+                field: "vec".to_string(),
+            },
+            Self::resolved_vec_ty(elem_ty.clone()),
+            IntentKind::Modify,
+            span.clone(),
+        );
+        let take_kind = self.collection_call_kind(
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::TakeFirst),
+            vec![vec_take_target],
+            elem_ty,
+            &span,
+        );
+        let take_expr = self.make_expr(
+            take_kind,
+            elem_ty.clone(),
+            IntentKind::Consume,
+            span.clone(),
+        );
+        let some_expr = self.make_option_ctor("Some", Some(take_expr), elem_ty, span.clone());
+        let else_block =
+            self.make_unit_block(Vec::new(), Some(some_expr), option_ty.clone(), span.clone());
         let else_expr = self.make_expr(
             HirExprKind::Block(else_block),
             option_ty.clone(),
@@ -26898,6 +25312,173 @@ impl LowerCtx {
         }
     }
 
+    /// `for c in s` over `string` and `for b in raw` over `bytes`.
+    ///
+    /// Both lower to `for __i in 0..seq.len() { let c = seq[__i]; body }` over
+    /// a single-evaluation binding of the sequence. `string` indexes
+    /// codepoints and `bytes` indexes bytes, matching `s[i]` exactly.
+    #[expect(
+        clippy::too_many_lines,
+        clippy::too_many_arguments,
+        reason = "one linear expansion: source temp, length, counter, element binding and loop"
+    )]
+    fn lower_for_sequence_index_desugar(
+        &mut self,
+        sequence: HirExpr,
+        element: (&str, &Span, &ResolvedTy),
+        body: &Block,
+        label: Option<&String>,
+        span: Span,
+        source: (&Span, Option<&Spanned<Expr>>),
+        borrowed: bool,
+    ) -> HirExprKind {
+        let (var_name, pattern_span, element_ty) = element;
+        let (iterable_span, place_source) = source;
+        let element_ty = element_ty.clone();
+        let sequence_ty = sequence.ty.clone();
+        let length_family = if sequence_ty == ResolvedTy::String {
+            hew_types::RuntimeCallFamily::StringLen
+        } else if sequence_ty == ResolvedTy::Bytes {
+            hew_types::RuntimeCallFamily::BytesLen
+        } else if matches!(sequence_ty, ResolvedTy::Array(_, _)) {
+            hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Len)
+        } else {
+            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::Len)
+        };
+
+        self.push_scope();
+        let block_scope = self.ids.scope();
+
+        let mut statements = Vec::new();
+        let mut sequence_ref: Option<(String, BindingId)> = None;
+        let length_receiver = if let Some(place) = place_source {
+            self.lower_expr(place, IntentKind::Read)
+        } else {
+            let sequence_name = format!("__hew_for_seq_{}", self.ids.binding().0);
+            let sequence_binding = self.bind(
+                sequence_name.clone(),
+                sequence_ty.clone(),
+                false,
+                iterable_span.clone(),
+            );
+            let sequence_id = sequence_binding.id;
+            statements.push(HirStmt {
+                node: self.ids.node(),
+                kind: HirStmtKind::Let(sequence_binding, Some(sequence)),
+                span: iterable_span.clone(),
+            });
+            sequence_ref = Some((sequence_name.clone(), sequence_id));
+            self.make_binding_ref(
+                sequence_name,
+                sequence_id,
+                sequence_ty.clone(),
+                IntentKind::Read,
+                iterable_span.clone(),
+            )
+        };
+        let length_kind = self.collection_call_kind(
+            length_family,
+            vec![length_receiver],
+            &ResolvedTy::I64,
+            iterable_span,
+        );
+        let length = self.make_expr(
+            length_kind,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+
+        let index_name = format!("__hew_for_index_{}", self.ids.binding().0);
+        let index_binding = self.bind(
+            index_name.clone(),
+            ResolvedTy::I64,
+            false,
+            iterable_span.clone(),
+        );
+        let index_id = index_binding.id;
+        let start = self.make_i64_literal(0, iterable_span.clone());
+        let step = self.make_i64_literal(1, iterable_span.clone());
+
+        self.push_scope();
+        let element_binding = self.bind(
+            var_name.to_string(),
+            element_ty.clone(),
+            false,
+            pattern_span.clone(),
+        );
+        let container = match (&sequence_ref, place_source) {
+            (Some((name, id)), _) => self.make_binding_ref(
+                name.clone(),
+                *id,
+                sequence_ty,
+                IntentKind::Read,
+                iterable_span.clone(),
+            ),
+            (None, Some(place)) => self.lower_expr(place, IntentKind::Read),
+            (None, None) => unreachable!("a sequence walk has a temp or a place source"),
+        };
+        let index = self.make_binding_ref(
+            index_name,
+            index_id,
+            ResolvedTy::I64,
+            IntentKind::Read,
+            iterable_span.clone(),
+        );
+        let read = if borrowed {
+            HirExprKind::BorrowedIndex {
+                container: Box::new(container),
+                index: Box::new(index),
+            }
+        } else {
+            HirExprKind::Index {
+                container: Box::new(container),
+                index: Box::new(index),
+            }
+        };
+        let element = self.make_expr(read, element_ty, IntentKind::Read, pattern_span.clone());
+        let element_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(element_binding, Some(element)),
+            span: pattern_span.clone(),
+        };
+        let mut loop_body = self.lower_block(body, &ResolvedTy::Unit);
+        loop_body.statements.insert(0, element_stmt);
+        self.pop_scope();
+
+        let loop_expr = self.make_expr(
+            HirExprKind::ForRange {
+                label: label.cloned(),
+                binding: index_binding,
+                start: Box::new(start),
+                end: Box::new(length),
+                inclusive: false,
+                step: Box::new(step),
+                descending: false,
+                body: loop_body,
+            },
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let loop_stmt = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Expr(loop_expr),
+            span: span.clone(),
+        };
+        self.pop_scope();
+
+        statements.push(loop_stmt);
+        HirExprKind::Block(HirBlock {
+            node: self.ids.node(),
+            scope: block_scope,
+            statements,
+            tail: None,
+            ty: ResolvedTy::Unit,
+            span,
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         clippy::if_not_else,
@@ -26910,7 +25491,6 @@ impl LowerCtx {
         body: &Block,
         label: Option<&String>,
         span: Span,
-        is_await: bool,
     ) -> HirExprKind {
         let (var_name, destructure_pattern) = if let Pattern::Identifier(var_name) = &pattern.0 {
             (var_name.clone(), None)
@@ -26920,60 +25500,76 @@ impl LowerCtx {
                 Some(pattern.clone()),
             )
         };
-        // Lower the iterable with Read intent for inspection; the intent on the
-        // BindingRef is patched per arm below:
-        //
-        //  - Vec (borrow arm): intent → Capture.  Vec is a refcounted heap handle;
-        //    CowShare increments the refcount so the source binding stays Live after
-        //    the loop.  IntentKind::Capture is the "share without consuming" signal:
-        //    MIR recognises Capture+CowValue as a CowShare and does NOT emit
-        //    AggregateAlias for the VecIter struct init, leaving the source Live.
-        //
-        //  - Draining iterables (Generator, Receiver, Stream, VecIter, generic
-        //    IntoIterator/Iterator): intent → Consume.  The source is fully drained
-        //    so the binding must be Consumed.
-        //
-        // The intent field of the BindingRef is what the MIR dataflow checker reads
-        // to decide Consumed vs Live for the source collection binding.
-        let prior_occurrence_sites: HashSet<SiteId> = self
-            .produced_value_source_sites
-            .values()
-            .flatten()
-            .copied()
-            .collect();
+        // Retain the checked iterable and source intent for iterator desugaring.
         let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
-        let place_projection_rewrite = Self::for_in_iterable_is_place(&iterable.0)
-            && matches!(
-                lowered_iterable.ty,
-                ResolvedTy::Named {
-                    builtin: Some(BuiltinType::HashMap | BuiltinType::HashSet),
-                    ..
-                }
+
+        // `for c in s` / `for b in raw` are index walks, not cursors: the
+        // element is a scalar copy, so there is no iterator object to own and
+        // no clone recipe to prove. The sequence is bound once so a
+        // side-effectful source runs once and the length is read once.
+        if matches!(lowered_iterable.ty, ResolvedTy::String | ResolvedTy::Bytes) {
+            let element_ty = if lowered_iterable.ty == ResolvedTy::String {
+                ResolvedTy::Char
+            } else {
+                ResolvedTy::U8
+            };
+            return self.lower_for_sequence_index_desugar(
+                lowered_iterable,
+                (&var_name, &pattern.1, &element_ty),
+                body,
+                label,
+                span,
+                (&iterable.1, None),
+                false,
             );
-        if place_projection_rewrite {
-            // This first lowering exists only to inspect the checker-resolved
-            // collection type; the projection rewrite below performs the real
-            // reads. Remove exactly the newly allocated inspection occurrences,
-            // then retain one authored occurrence under the first projection.
-            let discarded: HashSet<SiteId> = self
-                .produced_value_source_sites
-                .values()
-                .flatten()
-                .copied()
-                .filter(|site| !prior_occurrence_sites.contains(site))
-                .collect();
-            for sites in self.produced_value_source_sites.values_mut() {
-                sites.retain(|site| !discarded.contains(site));
-            }
-            self.produced_value_source_sites
-                .retain(|_, sites| !sites.is_empty());
-            self.produced_value_fact_sites
-                .retain(|site, _| !discarded.contains(site));
-            self.generated_produced_value_facts
-                .retain(|site, _| !discarded.contains(site));
-            self.produced_value_fact_keys
-                .retain(|site, _| !discarded.contains(site));
         }
+
+        if let ResolvedTy::Array(element_ty, _) = lowered_iterable.ty.clone() {
+            let borrowed = self
+                .borrowed_element_for_loops
+                .contains(&SpanKey::in_module(&iterable.1, self.current_module_idx));
+            let source =
+                (borrowed && Self::for_in_iterable_is_place(&iterable.0)).then_some(iterable);
+            return self.lower_for_sequence_index_desugar(
+                lowered_iterable,
+                (&var_name, &pattern.1, &element_ty),
+                body,
+                label,
+                span,
+                (&iterable.1, source),
+                borrowed,
+            );
+        }
+
+        // D432: the checker admitted this loop in borrow mode, so each element
+        // is a loan of the slot the vector still owns rather than a copy.
+        if self
+            .borrowed_element_for_loops
+            .contains(&SpanKey::in_module(&iterable.1, self.current_module_idx))
+        {
+            if let ResolvedTy::Named {
+                args,
+                builtin: Some(BuiltinType::Vec),
+                ..
+            } = lowered_iterable.ty.clone()
+            {
+                let element_ty = args[0].clone();
+                // A place source is re-read per use: binding it to a temp would
+                // TRANSFER the vector (its element has no clone), leaving the
+                // source uninitialized for the rest of the body.
+                let source = Self::for_in_iterable_is_place(&iterable.0).then_some(iterable);
+                return self.lower_for_sequence_index_desugar(
+                    lowered_iterable,
+                    (&var_name, &pattern.1, &element_ty),
+                    body,
+                    label,
+                    span,
+                    (&iterable.1, source),
+                    true,
+                );
+            }
+        }
+
         // Statements that must run before the iterator-cursor `Let` in the
         // for-in's outer block. The HashMap/HashSet arms push a single-eval
         // source temp here so a side-effectful iterable is evaluated once.
@@ -26984,81 +25580,9 @@ impl LowerCtx {
                 builtin: Some(BuiltinType::Vec),
                 ..
             } if args.len() == 1 => {
-                // Vec is a refcounted heap handle: sharing it (CowShare) leaves the
-                // source binding Live, so the collection is usable after the loop.
-                // Use Capture intent to signal "share, not move" to the MIR; the MIR
-                // alias_moved_owned_operand skips AggregateAlias for Capture+CowValue.
-                //
-                // A literal/repeat-desugared source (`for x in [1, 2, 3]`) lowers to
-                // a synthetic `Block` whose tail is a `BindingRef` to a named temp
-                // (`__hew_array_N` / `__hew_repeat_N`) that keeps its OWN scope-exit
-                // drop, exactly like a user `let` binding — but that `BindingRef`
-                // arrives wrapped inside the `Block` and hardcoded to `Read`. MIR's
-                // `vec_iter_let_cursor_owns_handle` only recognises the CowShare
-                // place-source shape when the `vec` field is a BARE `BindingRef`
-                // with `Capture` intent; the `Block` wrapper fails that match, so
-                // the cursor is wrongly treated as the sole owner and its
-                // scope-exit `RecordFieldDrop` double-frees the temp's buffer
-                // alongside the temp's own drop (#2356). Hoist the block's
-                // statements into the prelude and use its tail directly, so a
-                // literal source takes exactly the shape a named binding takes.
-                //
-                // A user-written block wrapped AROUND the literal (`for x in { [1,
-                // 2, 3] }`) nests one more `Block` layer: the outer block's own
-                // tail is the array-literal desugar `Block` above, not yet a bare
-                // `BindingRef`. Peeling only one layer left that inner `Block`
-                // intact as the `VecIter` source, so MIR's place-source match still
-                // failed and the double-free reproduced identically to #2356 for
-                // any block-wrapped literal/repeat source (#2394 follow-up). Peel
-                // every nested `Block` layer — hoisting each one's statements into
-                // the prelude in outer-to-inner (original execution) order — until
-                // the tail is no longer a `Block`, so an arbitrarily block-wrapped
-                // literal source bottoms out at the same bare-`BindingRef` shape a
-                // named binding takes. Keep each consumed Block site as a
-                // transparent `SubsumedValue` wrapper: checker facts and their
-                // nested identity edges remain attached to live HIR expressions,
-                // while MIR evaluates only the surviving tail.
                 let elem_ty = args[0].clone();
-                let mut consumed_blocks = Vec::new();
-                while let HirExprKind::Block(block) = lowered_iterable.kind {
-                    let Some(tail) = block.tail else {
-                        lowered_iterable.kind = HirExprKind::Block(block);
-                        break;
-                    };
-                    source_prelude.extend(block.statements);
-                    consumed_blocks.push((
-                        lowered_iterable.site,
-                        lowered_iterable.span,
-                        lowered_iterable.intent,
-                    ));
-                    lowered_iterable = *tail;
-                }
-                lowered_iterable.intent = IntentKind::Capture;
-                let synthetic_array_tail = matches!(
-                    &lowered_iterable.kind,
-                    HirExprKind::BindingRef { name, .. }
-                        if name.starts_with("__hew_array_") || name.starts_with("__hew_repeat_")
-                ) && !self
-                    .produced_value_fact_sites
-                    .contains_key(&lowered_iterable.site);
-                if synthetic_array_tail {
-                    let (array_site, _, _) = consumed_blocks
-                        .pop()
-                        .expect("array desugar tail must retain its synthetic block site");
-                    lowered_iterable.site = array_site;
-                    if let Some(fact) = self.produced_value_fact_sites.get_mut(&array_site) {
-                        fact.producer = HirProducedValueProducer::BindingRef;
-                    }
-                }
-                for (site, block_span, block_intent) in consumed_blocks.into_iter().rev() {
-                    lowered_iterable = self.subsumed_value(
-                        site,
-                        &block_span,
-                        block_intent,
-                        lowered_iterable,
-                        HirProducedValueProducer::Block,
-                    );
-                }
+                // Keep the iterable's lexical block intact. Its temporary bindings
+                // end before the cursor loop and must not become loop-carried values.
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
                     Self::resolved_vec_iter_ty(elem_ty.clone()),
@@ -27145,11 +25669,7 @@ impl LowerCtx {
                     },
                     to_vec_span,
                 );
-                let vec_hir = if Self::for_in_iterable_is_place(&iterable.0) {
-                    self.lower_expr(&to_vec_call, IntentKind::Consume)
-                } else {
-                    self.lower_synthetic_checker_root(&to_vec_call, IntentKind::Consume)
-                };
+                let vec_hir = self.lower_expr(&to_vec_call, IntentKind::Consume);
                 let iter_init =
                     self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
                 (
@@ -27178,23 +25698,23 @@ impl LowerCtx {
                 args,
                 builtin: Some(BuiltinType::Receiver),
                 ..
-            } if is_await && !args.is_empty() => {
+            } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
                 if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
                     self.unsupported(
                         iterable.1.clone(),
-                        format!("for await over Receiver<{elem_ty}>: {reason}"),
-                        "for-await-receiver-runtime-dispatch",
+                        format!("for over Receiver<{elem_ty}>: {reason}"),
+                        "for-receiver-runtime-dispatch",
                     );
                     self.push_scope();
                     let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
-                        "for await over unsupported Receiver<T> element type".into(),
+                        "for over unsupported Receiver<T> element type".into(),
                     );
                 }
-                // Receiver is an affine resource: `for await rx` drains and
+                // Receiver is an affine resource: `for x in rx` drains and
                 // implicitly closes the channel; the source binding is consumed.
                 lowered_iterable.intent = IntentKind::Consume;
                 let iter_ty = lowered_iterable.ty.clone();
@@ -27209,23 +25729,23 @@ impl LowerCtx {
                 args,
                 builtin: Some(BuiltinType::Stream),
                 ..
-            } if is_await && !args.is_empty() => {
+            } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
                 if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
                     self.unsupported(
                         iterable.1.clone(),
-                        format!("for await over Stream<{elem_ty}>: {reason}"),
-                        "for-await-stream-runtime-dispatch",
+                        format!("for over Stream<{elem_ty}>: {reason}"),
+                        "for-stream-runtime-dispatch",
                     );
                     self.push_scope();
                     let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
                     return HirExprKind::Unsupported(
-                        "for await over unsupported Stream<T> element type".into(),
+                        "for over unsupported Stream<T> element type".into(),
                     );
                 }
-                // Stream is an affine resource: `for await stream` drains it;
+                // Stream is an affine resource: `for x in stream` drains it;
                 // the source binding is consumed.
                 // The layout-witness recv (`hew_stream_next_layout`) carries
                 // every describable element type; MIR's `lower_direct_call`
@@ -27247,7 +25767,7 @@ impl LowerCtx {
             // `.next()` per iteration; the binding's scope-exit drop frees it.
             ResolvedTy::Named {
                 ref args,
-                builtin: Some(BuiltinType::Generator | BuiltinType::AsyncGenerator),
+                builtin: Some(BuiltinType::Generator),
                 ..
             } if !args.is_empty() => {
                 let elem_ty = args[0].clone();
@@ -27366,36 +25886,37 @@ impl LowerCtx {
                     )
                 } else {
                     let next_receiver = (Expr::Identifier(iter_name), iterable.1.clone());
-                    let lowered_receiver =
-                        self.lower_synthetic_operand(&next_receiver, IntentKind::Consume);
-                    if matches!(target, HirVarSelfMethodTarget::Direct) {
-                        self.record_var_self_direct_monomorphisation(
-                            &target_label,
-                            &iter_ty,
-                            &iterable.1,
-                            lowered_receiver.site,
-                        );
-                    }
-                    let builtin_cursor = matches!(
-                        iter_ty,
-                        ResolvedTy::Named {
-                            builtin: Some(BuiltinType::VecIter | BuiltinType::HashMapIter),
-                            ..
-                        }
-                    );
+                    let lowered_receiver = self.lower_expr(&next_receiver, IntentKind::Consume);
+                    let is_direct = matches!(target, HirVarSelfMethodTarget::Direct);
+                    let receiver_ty = iter_ty.clone();
                     let next = self.make_expr(
                         HirExprKind::VarSelfMethodCall {
+                            receiver_update: hew_types::ReceiverUpdate::Replace,
                             receiver: Box::new(lowered_receiver),
                             call_target,
                             target,
                             args: Vec::new(),
                             ret_ty: option_ty.clone(),
-                            receiver_ty: iter_ty,
+                            receiver_ty,
                         },
                         option_ty,
                         IntentKind::Read,
                         iterable.1.clone(),
                     );
+                    if is_direct {
+                        // Key the instantiation on the CALL's site, not the
+                        // receiver's: SIR resolves a var-self direct call from
+                        // the call expression's own site
+                        // (`hew-sir/src/lower_var_self.rs`), so a generic
+                        // iterator's `next` is otherwise reported as missing
+                        // its checker-resolved type arguments.
+                        self.record_var_self_direct_monomorphisation(
+                            &target_label,
+                            &iter_ty,
+                            &iterable.1,
+                            next.site,
+                        );
+                    }
                     // This call root is compiler-generated and therefore has
                     // no authored checker span. Keep its fact in the disjoint
                     // generated-site domain. The closed builtin cursors clone
@@ -27403,16 +25924,7 @@ impl LowerCtx {
                     // Option; user/static iterators remain provisional until
                     // the declaration-keyed verifier resolves their return
                     // summary.
-                    let ownership = if next.value_class == ValueClass::BitCopy {
-                        hew_types::ProducedValueOwnership::NoOwner
-                    } else if builtin_cursor {
-                        hew_types::ProducedValueOwnership::owned(
-                            hew_types::ProducedValueAcquisition::Fresh,
-                        )
-                    } else {
-                        hew_types::ProducedValueOwnership::Unknown
-                    };
-                    self.record_generated_produced_value_fact(&next, ownership);
+
                     next
                 }
             }
@@ -27432,7 +25944,7 @@ impl LowerCtx {
                     iterable.1.clone(),
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for await)");
+                self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for loop)");
                 self.make_direct_method_call(
                     "hew_channel_recv_layout".to_string(),
                     receiver,
@@ -27455,7 +25967,7 @@ impl LowerCtx {
                     iterable.1.clone(),
                 );
                 let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for await)");
+                self.register_option_layout(&elem_ty, &iterable.1, "Stream::recv (for loop)");
                 self.make_direct_method_call(
                     "hew_stream_next_layout".to_string(),
                     stream,
@@ -27590,9 +26102,16 @@ impl LowerCtx {
             ResolvedTy::Unit,
             span.clone(),
         );
+        let condition = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Bool(true)),
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
         let loop_expr = self.make_expr(
-            HirExprKind::Loop {
+            HirExprKind::While {
                 label: label.cloned(),
+                condition: Box::new(condition),
                 body: loop_body,
             },
             ResolvedTy::Unit,
@@ -27626,33 +26145,8 @@ impl LowerCtx {
     ///
     /// Fail-closed per `checker-output-boundary` (LESSONS P0): a missing entry for
     /// this call site's span is a hard diagnostic — HIR never re-infers the runtime
-    /// symbol from the receiver type.  Only `RewriteToFunction` is recognised here;
-    /// other rewrite variants are rejected as unsupported (they targeted the legacy
-    /// codegen pipeline, not the Rust MIR pipeline).
-    /// Replace a presentation-only machine leaf with the checker-proven
-    /// declaration owner carried by `MachineMethodKind`. Machine method
-    /// dispatch is resolved before HIR lowering, so this is not a leaf-name
-    /// lookup: the call-site fact already selected the exact declaration.
-    ///
-    /// This keeps the receiver and generated event companion on the same
-    /// nominal identity that machine-mono and MIR layout classification use.
-    /// In particular, an imported `lifecycle.Lifecycle<i64>` must not leave a
-    /// bare `Lifecycle` / `LifecycleEvent` type on the runtime call boundary.
-    fn canonicalize_machine_runtime_ty(&self, expr: &mut HirExpr, canonical_name: &str) {
-        let ResolvedTy::Named { name, args, .. } = &expr.ty else {
-            return;
-        };
-        if name == canonical_name {
-            return;
-        }
-        let canonical_leaf = hew_types::short_name(canonical_name);
-        if name != canonical_leaf || name.contains('.') {
-            return;
-        }
-        expr.ty = ResolvedTy::named_user(canonical_name.to_string(), args.clone());
-        expr.value_class = ValueClass::of_ty(&expr.ty, &self.type_classes);
-    }
-
+    /// symbol from the receiver type.  Only `RewriteToFunction` is recognised
+    /// here; every other rewrite kind is handled by its own lowering path.
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with three exclusive branches \
@@ -27801,7 +26295,6 @@ impl LowerCtx {
             && !self.resolved_calls.contains_key(&key)
             && !self.method_call_rewrites.contains_key(&key)
             && !self.dyn_trait_method_calls.contains_key(&key)
-            && !self.numeric_method_lowerings.contains_key(&key)
         {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
             let receiver_ty = lowered_receiver.ty.to_string();
@@ -27826,8 +26319,9 @@ impl LowerCtx {
             );
         }
         // Width-conversion methods (.wrapping_as_<W> / .saturating_as_<W>) take
-        // zero arguments (only the receiver).  Checked before `numeric_method_lowerings`
-        // because both families share the `wrapping_`/`saturating_` prefix.
+        // zero arguments (only the receiver).  Checked before
+        // `method_call_rewrites` because both families share the
+        // `wrapping_`/`saturating_` prefix.
         if let Some(lowering) = self.width_cast_lowerings.get(&key).cloned() {
             if !args.is_empty() {
                 self.diagnostics.push(HirDiagnostic::new(
@@ -27939,69 +26433,32 @@ impl LowerCtx {
                 result_ty,
             );
         }
-        if let Some(lowering) = self.numeric_method_lowerings.get(&key).cloned() {
-            if args.len() != 1 {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: format!("numeric method `.{method}`"),
-                        reason: format!(
-                            "checker side-table expected one argument, found {}",
-                            args.len()
-                        ),
-                    },
-                    span.clone(),
-                    "numeric method lowering requires exactly one checked argument",
-                ));
-                return (
-                    HirExprKind::Unsupported(format!(
-                        "numeric method `.{method}` has invalid arity"
-                    )),
-                    ResolvedTy::Unit,
-                );
-            }
-            let Some(result_ty) =
-                self.resolve_numeric_method_ty(&lowering.result_ty, &span, "numeric method result")
-            else {
-                return (
-                    HirExprKind::Unsupported(format!(
-                        "numeric method `.{method}` has poisoned result type"
-                    )),
-                    ResolvedTy::Unit,
-                );
-            };
-            let Some(operand_ty) = self.resolve_numeric_method_ty(
-                &lowering.operand_ty,
-                &span,
-                "numeric method operand",
-            ) else {
-                return (
-                    HirExprKind::Unsupported(format!(
-                        "numeric method `.{method}` has poisoned operand type"
-                    )),
-                    ResolvedTy::Unit,
-                );
-            };
-            if lowering.family == NumericMethodFamily::Checked {
-                self.register_numeric_checked_option_layout(&operand_ty, &span);
-            }
-            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            let lowered_arg = self.lower_expr(args[0].expr(), IntentKind::Read);
-            return (
-                HirExprKind::NumericMethod {
-                    receiver: Box::new(lowered_receiver),
-                    arg: Box::new(lowered_arg),
-                    family: lowering.family,
-                    op: lowering.op,
-                    result_ty: result_ty.clone(),
-                    operand_ty,
-                    signedness: lowering.signedness,
-                    width: lowering.width,
-                },
-                result_ty,
-            );
-        }
         if let Some(dispatch) = self.actor_method_dispatch.get(&key).cloned() {
             let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+            // A lambda dispatch on method-call syntax is a call on a stored
+            // handle: `job.run(3)` addresses the handle in the field, so the
+            // field read is the delivery receiver.
+            let lowered_receiver = if matches!(&dispatch,
+                ActorMethodKind::Ask { method_id, .. } | ActorMethodKind::Message { method_id, .. }
+                    if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID)
+            {
+                match self.method_call_rewrites.get(&key).cloned() {
+                    Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => self.make_expr(
+                        HirExprKind::FieldAccess {
+                            object: Box::new(lowered_receiver),
+                            field: method.to_string(),
+                        },
+                        field_ty,
+                        IntentKind::Read,
+                        span.clone(),
+                    ),
+                    // `handle.send(msg)` addresses the handle itself, so the
+                    // receiver is already the delivery target.
+                    _ => lowered_receiver,
+                }
+            } else {
+                lowered_receiver
+            };
             let lowered_args: Vec<HirExpr> = args
                 .iter()
                 .map(|arg| {
@@ -28026,49 +26483,72 @@ impl LowerCtx {
                 })
                 .collect();
             return match dispatch {
-                ActorMethodKind::Fire(method_id) => {
+                ActorMethodKind::Message {
+                    method_id,
+                    policy,
+                    argument_order,
+                } => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
-                    (
-                        HirExprKind::ActorSend {
+                    let Some(ty) = self.checker_expr_ty_if_present(&span) else {
+                        return (
+                            HirExprKind::Unsupported(
+                                "message submission has no checked type".into(),
+                            ),
+                            ResolvedTy::Unit,
+                        );
+                    };
+                    // The call IS the send: a `receive fn` without a reply
+                    // builds its addressed description and submits it at the
+                    // same site. The description is an internal temporary.
+                    let Some(message_ty) = Self::submitted_message_ty(&ty) else {
+                        return (
+                            HirExprKind::Unsupported(
+                                "message submission has no checked message type".into(),
+                            ),
+                            ResolvedTy::Unit,
+                        );
+                    };
+                    self.try_register_enum_instantiation_ty(&ty, &span);
+                    let message = HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        value_class: ValueClass::of_ty(&message_ty, &self.type_classes),
+                        ty: message_ty,
+                        intent: IntentKind::Consume,
+                        kind: HirExprKind::ActorMessage {
                             receiver: Box::new(lowered_receiver),
                             method_id,
                             args: lowered_args,
-                            checked: false,
-                            blocking: false,
+                            policy,
+                            argument_order,
                         },
-                        ResolvedTy::Unit,
-                    )
-                }
-                ActorMethodKind::BlockingFire(method_id) => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                        span: span.clone(),
+                    };
                     (
-                        HirExprKind::ActorSend {
-                            receiver: Box::new(lowered_receiver),
-                            method_id,
-                            args: lowered_args,
-                            checked: false,
-                            blocking: true,
+                        HirExprKind::ActorDelivery {
+                            receiver: Box::new(message),
+                            args: Vec::new(),
+                            operation: hew_types::actor_delivery::ActorDeliveryCall::Submit {
+                                policy,
+                            },
                         },
-                        ResolvedTy::Unit,
+                        ty,
                     )
                 }
-                ActorMethodKind::CheckedFire(method_id) => {
+                ActorMethodKind::Ask {
+                    method_id,
+                    reply_ty,
+                    policy,
+                    argument_order,
+                } => {
                     let method_id = self.qualify_imported_actor_method_id(method_id);
-                    let result_ty = ResolvedTy::from_ty(&Ty::result(Ty::Unit, Ty::send_error()))
-                        .expect("checked actor send result type is compiler-owned");
-                    (
-                        HirExprKind::ActorSend {
-                            receiver: Box::new(lowered_receiver),
-                            method_id,
-                            args: lowered_args,
-                            checked: true,
-                            blocking: false,
-                        },
-                        result_ty,
-                    )
-                }
-                ActorMethodKind::Ask(method_id, reply_ty) => {
-                    let method_id = self.qualify_imported_actor_method_id(method_id);
+                    let Some(result_ty) = self.checked_actor_ask_result_ty(&span, &method_id)
+                    else {
+                        return (
+                            HirExprKind::Unsupported("actor ask has no checked result".to_string()),
+                            ResolvedTy::Unit,
+                        );
+                    };
                     match ResolvedTy::from_ty(&reply_ty) {
                         Ok(reply_ty) => {
                             // Owner-qualify the ask-reply record identity to the
@@ -28095,11 +26575,12 @@ impl LowerCtx {
                                     receiver: Box::new(lowered_receiver),
                                     method_id,
                                     args: lowered_args,
+                                    argument_order,
                                     reply_ty: reply_ty.clone(),
-                                    source_anchor: None,
+                                    policy,
                                     deadline_ns: None,
                                 },
-                                reply_ty,
+                                result_ty,
                             )
                         }
                         Err(err) => {
@@ -28178,82 +26659,6 @@ impl LowerCtx {
                 )),
                 ResolvedTy::Unit,
             );
-        }
-        // Machine method dispatch: `.step()` / `.state_name()` recorded in the
-        // checker's `machine_method_dispatch` side-table. Checked before
-        // `method_call_rewrites` so these calls produce dedicated HIR nodes
-        // (`MachineStep` / `MachineStateName`) rather than falling through to
-        // `MethodCallNoRewrite`. MIR/codegen consumers wire this in slice 6.
-        if let Some(dispatch) = self.machine_method_dispatch.get(&key).cloned() {
-            let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-            let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
-            return match dispatch {
-                hew_types::MachineMethodKind::Step { machine_name } => {
-                    let mut receiver = lowered_receiver;
-                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
-                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::PersistentShare,
-                        ty: ResolvedTy::Unit,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "machine step: missing event argument".into(),
-                        ),
-                        span: span.clone(),
-                    });
-                    self.canonicalize_machine_runtime_ty(
-                        &mut event,
-                        &format!("{machine_name}Event"),
-                    );
-                    (
-                        HirExprKind::MachineStep {
-                            machine_name,
-                            receiver: Box::new(receiver),
-                            event: Box::new(event),
-                        },
-                        ResolvedTy::Unit,
-                    )
-                }
-                hew_types::MachineMethodKind::StateName { machine_name } => {
-                    let mut receiver = lowered_receiver;
-                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
-                    (
-                        HirExprKind::MachineStateName {
-                            machine_name,
-                            receiver: Box::new(receiver),
-                        },
-                        ResolvedTy::String,
-                    )
-                }
-                hew_types::MachineMethodKind::TakeEmits { machine_name } => {
-                    let mut receiver = lowered_receiver;
-                    self.canonicalize_machine_runtime_ty(&mut receiver, &machine_name);
-                    let mut event = lowered_args.into_iter().next().unwrap_or_else(|| HirExpr {
-                        node: self.ids.node(),
-                        site: self.ids.site(),
-                        value_class: ValueClass::PersistentShare,
-                        ty: ResolvedTy::Unit,
-                        intent: IntentKind::Read,
-                        kind: HirExprKind::Unsupported(
-                            "machine take_emits: missing event argument".into(),
-                        ),
-                        span: span.clone(),
-                    });
-                    self.canonicalize_machine_runtime_ty(
-                        &mut event,
-                        &format!("{machine_name}Event"),
-                    );
-                    (
-                        HirExprKind::MachineTakeEmits {
-                            machine_name,
-                            receiver: Box::new(receiver),
-                            event: Box::new(event),
-                        },
-                        ResolvedTy::I64,
-                    )
-                }
-            };
         }
         // `dyn Trait` receivers take precedence: the checker's
         // `dyn_trait_method_calls` side-table pins the trait/method/slot
@@ -28491,11 +26896,52 @@ impl LowerCtx {
                     result_ty,
                 )
             }
-            Some(MethodCallRewrite::BuiltinVecIntoIter { elem_ty }) => {
-                self.lower_builtin_vec_into_iter(receiver, elem_ty, span)
-            }
-            Some(MethodCallRewrite::BuiltinVecIter { elem_ty }) => {
-                self.lower_builtin_vec_iter(receiver, elem_ty, span)
+            Some(
+                rewrite @ (MethodCallRewrite::BuiltinVecIntoIter
+                | MethodCallRewrite::BuiltinVecIter
+                | MethodCallRewrite::BuiltinVecIterNext),
+            ) => {
+                let expected = if matches!(rewrite, MethodCallRewrite::BuiltinVecIterNext) {
+                    BuiltinType::VecIter
+                } else {
+                    BuiltinType::Vec
+                };
+                let element = match self.checked_ty(&receiver.1) {
+                    Some(ResolvedTy::Named {
+                        builtin: Some(actual),
+                        args,
+                        ..
+                    }) if *actual == expected && args.len() == 1 => args[0].clone(),
+                    _ => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "vector iteration".into(),
+                                reason: "cursor operation lacks its exact checked receiver type"
+                                    .into(),
+                            },
+                            span.clone(),
+                            "vector iteration requires a resolved receiver",
+                        ));
+                        return (
+                            HirExprKind::Unsupported(
+                                "vector iteration receiver is unresolved".into(),
+                            ),
+                            ResolvedTy::Unit,
+                        );
+                    }
+                };
+                match rewrite {
+                    MethodCallRewrite::BuiltinVecIntoIter => {
+                        self.lower_builtin_vec_into_iter(receiver, element, span)
+                    }
+                    MethodCallRewrite::BuiltinVecIter => {
+                        self.lower_builtin_vec_iter(receiver, element, span)
+                    }
+                    MethodCallRewrite::BuiltinVecIterNext => {
+                        self.lower_builtin_vec_iter_next(receiver, &element, span)
+                    }
+                    _ => unreachable!("matched cursor operation"),
+                }
             }
             Some(MethodCallRewrite::BuiltinHashMapIntoIter { key_ty, val_ty }) => {
                 self.lower_builtin_hashmap_into_iter(receiver, &key_ty, &val_ty, span)
@@ -28512,9 +26958,6 @@ impl LowerCtx {
             Some(MethodCallRewrite::RecordFnFieldCall { field_ty }) => {
                 self.lower_record_fn_field_call(receiver, method, args, &field_ty, span)
             }
-            Some(MethodCallRewrite::BuiltinVecIterNext { elem_ty }) => {
-                self.lower_builtin_vec_iter_next(receiver, &elem_ty, span)
-            }
             Some(MethodCallRewrite::WireCodec {
                 direction,
                 value_ty,
@@ -28524,7 +26967,7 @@ impl LowerCtx {
                 value_ty,
             }) => self.lower_generic_wire_codec(args, direction, value_ty, span),
             Some(MethodCallRewrite::BuiltinOptionResult { method }) => {
-                self.lower_builtin_option_result_method(method, receiver, args, span, site)
+                self.lower_builtin_option_result_method(method, receiver, args, span)
             }
             Some(MethodCallRewrite::RemoteActorAsk) => {
                 self.try_register_enum_instantiation(&span);
@@ -28566,7 +27009,7 @@ impl LowerCtx {
                         HirDiagnosticKind::CheckerBoundaryViolation {
                             name: "RemotePid.ask".to_string(),
                             reason: format!(
-                                "expected Result<Reply, AskError>, got {}",
+                                "expected Result<Reply, ActorError>, got {}",
                                 ret_ty.user_facing()
                             ),
                         },
@@ -28596,6 +27039,8 @@ impl LowerCtx {
                 c_symbol,
                 descriptor,
                 consumes_receiver,
+                requires_mutable_receiver,
+                receiver_update,
                 returns_receiver_identity,
                 elem_ty,
                 ..
@@ -28668,7 +27113,7 @@ impl LowerCtx {
                 // W4.047 P1.2: prove the typed handoff agrees at this fail-open
                 // receiver-method-rewrite return site (no behaviour change).
                 self.assert_resolved_ty_totality(&span);
-                if self.signature_requires_mutable_receiver(&c_symbol) {
+                if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
                     self.record_var_self_direct_monomorphisation(
@@ -28680,6 +27125,7 @@ impl LowerCtx {
                     let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::VarSelfMethodCall {
+                            receiver_update,
                             receiver: Box::new(lowered_receiver),
                             call_target: target,
                             target: HirVarSelfMethodTarget::Direct,
@@ -28745,6 +27191,7 @@ impl LowerCtx {
                     lowered_args.push(self.lower_expr(arg.expr(), intent));
                 }
                 let callee_ty = ResolvedTy::Function {
+                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
                 };
@@ -28845,6 +27292,7 @@ impl LowerCtx {
                                 .map_or(ResolvedRef::Item(entry.id), ResolvedRef::Builtin)
                         });
                 let callee_ty = ResolvedTy::Function {
+                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                     params: Vec::new(),
                     ret: Box::new(ret_ty.clone()),
                 };
@@ -28989,6 +27437,37 @@ impl LowerCtx {
                                     ret_ty,
                                 );
                             }
+                            // The identity path locates the declaration; it is
+                            // not the symbol the body was emitted under. An
+                            // impl written through a module binding
+                            // (`impl Tagged for json.Value`) emits under the
+                            // spelling the source wrote, so project the
+                            // emitted symbol from the declaration rather than
+                            // rebuilding it from the identity.
+                            let c_symbol = match &concrete_target {
+                                CallTarget::ImplMethod(declaration) => {
+                                    let Some(symbol) =
+                                        self.registered_impl_method_symbol(declaration)
+                                    else {
+                                        self.diagnostics.push(HirDiagnostic::new(
+                                            HirDiagnosticKind::CallableUnsupportedInMir {
+                                                name: declaration.full_path().to_string(),
+                                            },
+                                            span.clone(),
+                                            "checker selected an implementation declaration whose                                              HIR body was not registered; a trait default body                                              cannot dispatch to it",
+                                        ));
+                                        return (
+                                            HirExprKind::Unsupported(
+                                                "trait default call has no registered HIR body"
+                                                    .to_string(),
+                                            ),
+                                            ret_ty,
+                                        );
+                                    };
+                                    symbol
+                                }
+                                _ => c_symbol,
+                            };
                             self.try_register_enum_instantiation(&span);
                             self.record_var_self_direct_monomorphisation(
                                 &c_symbol,
@@ -29009,6 +27488,7 @@ impl LowerCtx {
                                 lowered_args.push(self.lower_expr(arg.expr(), intent));
                             }
                             let callee_ty = ResolvedTy::Function {
+                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                                 params: Vec::new(),
                                 ret: Box::new(ret_ty.clone()),
                             };
@@ -29042,12 +27522,15 @@ impl LowerCtx {
                     }
                 }
 
+                self.record_static_trait_type_args(&span, site);
+
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
                     let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
                     return (
                         HirExprKind::VarSelfMethodCall {
+                            receiver_update: hew_types::ReceiverUpdate::Replace,
                             receiver: Box::new(lowered_receiver),
                             call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {
@@ -29126,42 +27609,11 @@ impl LowerCtx {
                 (
                     HirExprKind::SubsumedValue {
                         source: Box::new(lowered_receiver),
-                        producer: HirProducedValueProducer::CopyCloneNoop,
                     },
                     ty,
                 )
             }
             None => {
-                // The stdlib impl resolver can consume the dedicated
-                // `BuiltinVecIntoIter` marker while retaining the checker-owned
-                // input/output types. Preserve the builtin expansion when that
-                // happens rather than falling through to a generic no-rewrite
-                // failure for an otherwise admitted `Vec::into_iter()` call.
-                if method == "into_iter"
-                    && args.is_empty()
-                    && matches!(
-                        self.checked_ty(&receiver.1),
-                        Some(ResolvedTy::Named {
-                            builtin: Some(BuiltinType::Vec),
-                            ..
-                        })
-                    )
-                {
-                    if let Some(ResolvedTy::Named {
-                        builtin: Some(BuiltinType::VecIter),
-                        args: result_args,
-                        ..
-                    }) = self.checked_ty(&span)
-                    {
-                        if let Some(elem_ty) = result_args.first() {
-                            return self.lower_builtin_vec_into_iter(
-                                receiver,
-                                elem_ty.clone(),
-                                span,
-                            );
-                        }
-                    }
-                }
                 if let Expr::Identifier(module_name) = &receiver.0 {
                     if let Some(module) = self.missing_stdlib_module_import(module_name) {
                         let name = format!("{module_name}.{method}");
@@ -29368,7 +27820,11 @@ impl LowerCtx {
                 candidates.push(format!("{module}.{name}"));
             }
         }
-        candidates.push(name.to_string());
+        // A checker-proven owner must not be replaced by an unrelated bare
+        // constructor, such as NodeError.Config for a user record Config.
+        if !matches!(owner_ty, Some(ResolvedTy::Named { .. })) {
+            candidates.push(name.to_string());
+        }
 
         for candidate in candidates {
             let Some((type_name, idx)) = self.machine_ctor_registry.get(&candidate) else {
@@ -29383,6 +27839,43 @@ impl LowerCtx {
             return Some((type_name.clone(), *idx, &variant.kind));
         }
         None
+    }
+
+    /// Instantiate the declaration's payload types using the checked enum
+    /// owner. Literal syntax must not supply a replacement type for a generic
+    /// field; the same substitution also owns the enum's concrete layout.
+    fn instantiated_pattern_payload_types(
+        &self,
+        name: &str,
+        owner_ty: &ResolvedTy,
+        arity: usize,
+    ) -> Result<Vec<ResolvedTy>, String> {
+        let (owner, _, kind) = self
+            .lookup_variant_ctor(name, Some(owner_ty))
+            .ok_or_else(|| format!("missing checked variant constructor for {owner_ty:?}"))?;
+        let fields = match kind {
+            HirVariantKind::Tuple(fields) => fields.as_slice(),
+            HirVariantKind::Unit => &[],
+            HirVariantKind::Struct(_) => {
+                return Err("tuple variant pattern has a record declaration".into());
+            }
+        };
+        let ResolvedTy::Named { args, .. } = owner_ty else {
+            return Err("variant pattern has a non-nominal owner".into());
+        };
+        let params = self
+            .enum_type_params
+            .get(&owner)
+            .map_or(&[][..], Vec::as_slice);
+        if params.len() != args.len() || fields.len() != arity {
+            return Err(
+                "variant pattern disagrees with its checked generic or payload arity".into(),
+            );
+        }
+        Ok(fields
+            .iter()
+            .map(|ty| substitute_type_params(ty, params, args))
+            .collect())
     }
 
     fn resolved_option_inner(ty: &ResolvedTy) -> Option<&ResolvedTy> {
@@ -29525,20 +28018,21 @@ impl LowerCtx {
 
     fn option_result_method_arity(method: OptionResultMethod) -> usize {
         match method {
-            OptionResultMethod::OptionUnwrapOr | OptionResultMethod::ResultUnwrapOr => 1,
+            OptionResultMethod::OptionExpect
+            | OptionResultMethod::OptionUnwrapOr
+            | OptionResultMethod::ResultExpect
+            | OptionResultMethod::ResultUnwrapOr => 1,
             OptionResultMethod::OptionIsSome
             | OptionResultMethod::OptionIsNone
-            | OptionResultMethod::OptionUnwrap
             | OptionResultMethod::ResultIsOk
-            | OptionResultMethod::ResultIsErr
-            | OptionResultMethod::ResultUnwrap => 0,
+            | OptionResultMethod::ResultIsErr => 0,
         }
     }
 
     fn is_option_result_marker_method_name(method: &str) -> bool {
         matches!(
             method,
-            "is_some" | "is_none" | "is_ok" | "is_err" | "unwrap" | "unwrap_or"
+            "is_some" | "is_none" | "is_ok" | "is_err" | "expect" | "unwrap_or"
         )
     }
 
@@ -29552,7 +28046,6 @@ impl LowerCtx {
         receiver: &Spanned<Expr>,
         args: &[hew_parser::ast::CallArg],
         span: Span,
-        result_site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         let expected_args = Self::option_result_method_arity(method);
         if args.len() != expected_args {
@@ -29574,27 +28067,22 @@ impl LowerCtx {
             );
         }
 
-        let ret_ty = self
-            .expr_types
-            .get(&self.mk_key(&span))
-            .cloned()
-            .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-            .unwrap_or_else(|| {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "Option/Result builtin method".to_string(),
-                        reason: "missing or poisoned checker result type".to_string(),
-                    },
-                    span.clone(),
-                    "builtin Option/Result method lowering requires the checker result type",
-                ));
-                ResolvedTy::Unit
-            });
+        let ret_ty = self.checker_expr_ty_if_present(&span).unwrap_or_else(|| {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "Option/Result builtin method".to_string(),
+                    reason: "missing or poisoned checker result type".to_string(),
+                },
+                span.clone(),
+                "builtin Option/Result method lowering requires the checker result type",
+            ));
+            ResolvedTy::Unit
+        });
 
         let receiver_intent = match method {
-            OptionResultMethod::OptionUnwrap
+            OptionResultMethod::OptionExpect
             | OptionResultMethod::OptionUnwrapOr
-            | OptionResultMethod::ResultUnwrap
+            | OptionResultMethod::ResultExpect
             | OptionResultMethod::ResultUnwrapOr => IntentKind::Consume,
             OptionResultMethod::OptionIsSome
             | OptionResultMethod::OptionIsNone
@@ -29612,7 +28100,6 @@ impl LowerCtx {
                 .map(|(predicate, _)| predicate)
         };
 
-        let mut identity_source = None;
         let arms = match method {
             OptionResultMethod::OptionIsSome => {
                 let Some(some) = variant(self, BuiltinType::Option, "Some") else {
@@ -29734,22 +28221,14 @@ impl LowerCtx {
                     },
                 ]
             }
-            OptionResultMethod::OptionUnwrap | OptionResultMethod::ResultUnwrap => {
-                let (builtin, variant_name, empty_variant, binding_name, panic_msg) = match method {
-                    OptionResultMethod::OptionUnwrap => (
-                        BuiltinType::Option,
-                        "Some",
-                        "None",
-                        "__option_unwrap_value",
-                        "called 'unwrap()' on a 'None' value",
-                    ),
-                    OptionResultMethod::ResultUnwrap => (
-                        BuiltinType::Result,
-                        "Ok",
-                        "Err",
-                        "__result_unwrap_value",
-                        "called 'unwrap()' on an 'Err' value",
-                    ),
+            OptionResultMethod::OptionExpect | OptionResultMethod::ResultExpect => {
+                let (builtin, variant_name, empty_variant, binding_name) = match method {
+                    OptionResultMethod::OptionExpect => {
+                        (BuiltinType::Option, "Some", "None", "__option_expect_value")
+                    }
+                    OptionResultMethod::ResultExpect => {
+                        (BuiltinType::Result, "Ok", "Err", "__result_expect_value")
+                    }
                     _ => unreachable!("handled by outer match"),
                 };
                 let type_name = builtin.canonical_name();
@@ -29766,15 +28245,16 @@ impl LowerCtx {
                     );
                 };
                 let payload_binding = self.ids.binding();
-                // Build `panic("...")` as the failure-arm body. The call diverges
-                // (return type Never) so the match is type-correct even though the
-                // failure arm never produces a value of `ret_ty`.
+                // Build `panic("expect failed: " + reason)` as the failure-arm
+                // body. The call diverges (return type Never) so the match is
+                // type-correct even though the failure arm never produces a
+                // value of `ret_ty`. The reason is the caller's argument, so it
+                // is lowered here rather than baked into a literal.
+                let prefix =
+                    self.build_string_literal_expr("expect failed: ".to_string(), span.clone());
+                let reason = self.lower_expr(args[0].expr(), IntentKind::Consume);
                 let panic_msg_expr =
-                    self.build_string_literal_expr(panic_msg.to_string(), span.clone());
-                self.record_generated_produced_value_fact(
-                    &panic_msg_expr,
-                    hew_types::ProducedValueOwnership::Borrowed,
-                );
+                    self.build_catalog_call("string_concat", vec![prefix, reason], span.clone());
                 let panic_call =
                     self.build_catalog_call("panic", vec![panic_msg_expr], span.clone());
                 let payload = self.synthetic_binding_ref(
@@ -29783,7 +28263,7 @@ impl LowerCtx {
                     ret_ty.clone(),
                     &span,
                 );
-                identity_source = Some(payload.site);
+
                 vec![
                     HirMatchArm {
                         scope: Some(self.ids.scope()),
@@ -29874,49 +28354,6 @@ impl LowerCtx {
                 ]
             }
         };
-
-        if let Some(source) = identity_source {
-            let key = self.mk_key(&span);
-            if let Some(authority) = self.produced_value_ownership.get(&key).cloned() {
-                if let Some(relation) =
-                    generated_single_source_identity_relation(authority.ownership, &[source])
-                {
-                    let source_previous = self.generated_produced_value_facts.insert(
-                        source,
-                        HirProducedValueFact {
-                            producer: HirProducedValueProducer::BindingRef,
-                            // The generated binding reference is only the
-                            // identity anchor. The enclosing owned Match row
-                            // performs the one physical owner handoff.
-                            ownership: hew_types::ProducedValueOwnership::Borrowed,
-                            relation: HirProducedValueRelation::Leaf,
-                            receiver: None,
-                            receiver_boundary: None,
-                            arguments: Vec::new(),
-                        },
-                    );
-                    assert!(
-                        source_previous.is_none(),
-                        "generated unwrap payload site published twice"
-                    );
-                    let result_previous = self.generated_produced_value_facts.insert(
-                        result_site,
-                        HirProducedValueFact {
-                            producer: HirProducedValueProducer::Match,
-                            ownership: authority.ownership,
-                            relation,
-                            receiver: None,
-                            receiver_boundary: authority.receiver_boundary,
-                            arguments: authority.arguments,
-                        },
-                    );
-                    assert!(
-                        result_previous.is_none(),
-                        "generated unwrap result site published twice"
-                    );
-                }
-            }
-        }
 
         (
             HirExprKind::Match {
@@ -30027,6 +28464,185 @@ impl LowerCtx {
             Some(vec![("0".to_string(), value)]),
             return_ty,
             span,
+        )
+    }
+
+    fn apply_result_return_coercion(&mut self, value: HirExpr, span: &Span) -> HirExpr {
+        if matches!(value.ty, ResolvedTy::Task(_))
+            && self
+                .result_return_coercions
+                .contains_key(&self.mk_key(span))
+        {
+            self.diagnostics.push(HirDiagnostic::new(HirDiagnosticKind::TaskCannotEscape, span.clone(),
+                "a `Task<T>` handle cannot escape inside a Result return; await it inside its scope"));
+        }
+        match self.result_return_coercions.get(&self.mk_key(span)) {
+            Some(hew_types::ResultReturnKind::Success) => self.wrap_tail_ok(value, span),
+            Some(hew_types::ResultReturnKind::Error) => {
+                let Some(return_ty) = self
+                    .current_return_type
+                    .clone()
+                    .filter(|ty| Self::resolved_result_parts(ty).is_some())
+                else {
+                    self.unsupported(
+                        span.clone(),
+                        "error return without an enclosing Result type",
+                        "result-return",
+                    );
+                    return value;
+                };
+                let Some((_, index)) =
+                    self.builtin_variant_predicate(BuiltinType::Result, "Err", span)
+                else {
+                    return value;
+                };
+                self.try_register_enum_instantiation_ty(&return_ty, span);
+                self.synthetic_variant_ctor(
+                    "Result",
+                    index,
+                    Some(vec![("0".to_string(), value)]),
+                    return_ty,
+                    span,
+                )
+            }
+            None => value,
+        }
+    }
+
+    fn lower_scope_recovery(
+        &mut self,
+        operand: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        name: &str,
+        binding_span: &Span,
+        failure_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let scope = self.lower_expr(operand, IntentKind::Read);
+        if !matches!(
+            scope.kind,
+            HirExprKind::Scope { .. } | HirExprKind::ScopeDeadline { .. }
+        ) {
+            return self
+                .unsupported_postfix_try(span, "checked scope recovery lacks a scope operand");
+        }
+        let Some(result_ty) = self.checker_expr_resolved_ty(span, "scope recovery") else {
+            return self.unsupported_postfix_try(span, "missing checked scope recovery result");
+        };
+        self.try_register_enum_instantiation_ty(&failure_ty, binding_span);
+        self.push_scope();
+        let error = self.bind(name.to_string(), failure_ty, false, binding_span.clone());
+        let handler = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+        (
+            HirExprKind::ScopeRecovery {
+                scope: Box::new(scope),
+                error,
+                handler: Box::new(handler),
+            },
+            result_ty,
+        )
+    }
+
+    /// Normalize source-local recovery into the same typed variant branch as
+    /// match. SIR decides payload transfers and cleanup; HIR supplies only
+    /// the resolved types, variant identity, bindings and lexical bodies.
+    fn lower_local_recovery(
+        &mut self,
+        operand: &Spanned<Expr>,
+        body: &Spanned<Expr>,
+        error: Option<&Spanned<String>>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let Some(recovery) = self.recovery_kinds.get(&self.mk_key(span)).cloned() else {
+            return self.unsupported_postfix_try(span, "missing checked recovery semantics");
+        };
+        if let hew_types::check::RecoveryKind::Scope { failure_ty } = recovery {
+            let Some((name, binding_span)) = error else {
+                return self
+                    .unsupported_postfix_try(span, "scope recovery requires an error binder");
+            };
+            return self.lower_scope_recovery(operand, body, name, binding_span, failure_ty, span);
+        }
+        let scrutinee = self.lower_expr(operand, IntentKind::Read);
+        self.try_register_enum_instantiation_ty(&scrutinee.ty, &operand.1);
+        let (builtin, success, failure, payload, error_ty) = if error.is_some() {
+            let Some((ok, err)) = Self::resolved_result_parts(&scrutinee.ty) else {
+                return self.unsupported_postfix_try(span, "handle operand without a Result type");
+            };
+            (
+                BuiltinType::Result,
+                "Ok",
+                "Err",
+                ok.clone(),
+                Some(err.clone()),
+            )
+        } else {
+            let Some(some) = Self::resolved_option_inner(&scrutinee.ty) else {
+                return self
+                    .unsupported_postfix_try(span, "default operand without an Option type");
+            };
+            (BuiltinType::Option, "Some", "None", some.clone(), None)
+        };
+        let Some((success_predicate, _)) = self.builtin_variant_predicate(builtin, success, span)
+        else {
+            return self.unsupported_postfix_try(span, "recovery success variant identity");
+        };
+        let Some((failure_predicate, _)) = self.builtin_variant_predicate(builtin, failure, span)
+        else {
+            return self.unsupported_postfix_try(span, "recovery failure variant identity");
+        };
+        let success_binding = self.ids.binding();
+        let success_body =
+            self.synthetic_binding_ref("__recovery_value", success_binding, payload.clone(), span);
+        self.push_scope();
+        let error_bindings = if let (Some((name, binding_span)), Some(error_ty)) = (error, error_ty)
+        {
+            let binding = self.bind(name.clone(), error_ty.clone(), false, binding_span.clone());
+            vec![HirMatchArmBinding {
+                binding: binding.id,
+                field_idx: 0,
+                name: name.clone(),
+                ty: error_ty,
+            }]
+        } else {
+            Vec::new()
+        };
+        let failure_body = self.lower_expr(body, IntentKind::Read);
+        self.pop_scope();
+        let arms = vec![
+            HirMatchArm {
+                scope: Some(self.ids.scope()),
+                predicate: success_predicate,
+                bindings: vec![HirMatchArmBinding {
+                    binding: success_binding,
+                    field_idx: 0,
+                    name: "__recovery_value".to_string(),
+                    ty: payload.clone(),
+                }],
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: success_body,
+                span: span.clone(),
+            },
+            HirMatchArm {
+                scope: Some(self.ids.scope()),
+                predicate: failure_predicate,
+                bindings: error_bindings,
+                payload_predicates: Vec::new(),
+                payload_variant_predicates: Vec::new(),
+                guard: None,
+                body: failure_body,
+                span: body.1.clone(),
+            },
+        ];
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee),
+                arms,
+            },
+            payload,
         )
     }
 
@@ -30475,246 +29091,6 @@ impl LowerCtx {
         }
     }
 
-    /// Resolve an identifier to a machine state constructor if `name` is a
-    /// declared state of the currently-enclosing machine.
-    ///
-    /// Returns `Some((machine_name, state_idx))` when both conditions hold:
-    /// - `current_machine_name` / `current_machine_states` are set (inside a
-    ///   machine lowering), AND
-    /// - `name` matches one of the state names in declaration order.
-    ///
-    /// Returns `None` otherwise; the caller falls through to `lower_identifier`.
-    fn resolve_machine_state_name(&self, name: &str) -> Option<(String, usize)> {
-        let machine_name = self.current_machine_name.as_ref()?;
-        let states = self.current_machine_states.as_ref()?;
-        let idx = states.iter().position(|(n, _)| n == name)?;
-        Some((machine_name.clone(), idx))
-    }
-
-    /// Attempt to lower a `self.<field>` access inside a machine transition body.
-    ///
-    /// Called when the `Expr::FieldAccess` arm detects `object == Expr::This`.
-    ///
-    /// Returns `Some(HirExpr)` on both the happy path (resolved to
-    /// `HirExprKind::MachineFieldAccess`) and the error paths (diagnostic pushed,
-    /// `HirExprKind::Unsupported` returned wrapped in `Some`). Returns `None` only
-    /// when `self` is outside a machine body entirely, signalling the caller to
-    /// fall through to the generic `Expr::This` handler (which will emit
-    /// `NotYetImplemented`).
-    fn try_lower_machine_self_field_access(
-        &mut self,
-        field: &str,
-        receiver_span: &Span,
-        span: &std::ops::Range<usize>,
-        site: SiteId,
-        intent: IntentKind,
-    ) -> Option<HirExpr> {
-        let machine_name = self.current_machine_name.as_ref()?.clone();
-
-        // We are in a machine body.  Now check whether the source state is known.
-        let Some(src_state_idx) = self.current_machine_source_state else {
-            // Wildcard (`_`) transition body — no concrete source state.
-            // `self.field` access has no unique variant to read from.
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!("`self.{field}` inside a wildcard (`_`) transition body"),
-                    owning_pass: "machine typed self-field access in wildcard transitions"
-                        .to_string(),
-                },
-                span.clone(),
-                "self-field reads inside wildcard transitions have no concrete source \
-                 state; refactor to use a named source state or match on the state first",
-            ));
-            return Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
-                intent,
-                kind: HirExprKind::Unsupported(format!(
-                    "self.{field} in wildcard transition (no source state)"
-                )),
-                span: span.clone(),
-            });
-        };
-
-        // Look up the field by name in the source state's payload.
-        let states = self.current_machine_states.as_ref()?;
-        let state_fields = &states[src_state_idx].1;
-        let state_name = states[src_state_idx].0.clone();
-        if let Some((field_idx, hir_field)) = state_fields
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name == field)
-        {
-            let field_ty = hir_field.ty.clone();
-            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
-            let receiver_ty = self
-                .resolved_expr_types
-                .get(&self.mk_key(receiver_span))
-                .cloned()
-                .unwrap_or(ResolvedTy::Unit);
-            let source_anchor = self
-                .produced_value_ownership
-                .contains_key(&self.mk_key(receiver_span))
-                .then(|| {
-                    self.produced_value_source_anchor(
-                        receiver_span,
-                        receiver_ty,
-                        IntentKind::Read,
-                        HirProducedValueProducer::BindingRef,
-                    )
-                });
-            Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: field_ty,
-                value_class: vc,
-                intent,
-                kind: HirExprKind::MachineFieldAccess {
-                    machine_name,
-                    state_idx: src_state_idx,
-                    field_idx,
-                    field_name: field.to_string(),
-                    source_anchor,
-                },
-                span: span.clone(),
-            })
-        } else {
-            // Field name not declared on this state.
-            let available: Vec<String> = state_fields.iter().map(|f| f.name.clone()).collect();
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::NotYetImplemented {
-                    construct: format!(
-                        "`self.{field}` — field not declared on state `{state_name}` \
-                         of machine `{machine_name}`"
-                    ),
-                    owning_pass: "machine state payload field validation".to_string(),
-                },
-                span.clone(),
-                format!(
-                    "state `{state_name}` has fields: [{}]; `{field}` is not one of them",
-                    available.join(", ")
-                ),
-            ));
-            Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: ResolvedTy::Unit,
-                value_class: ValueClass::BitCopy,
-                intent,
-                kind: HirExprKind::Unsupported(format!(
-                    "self.{field} not found on state {state_name}"
-                )),
-                span: span.clone(),
-            })
-        }
-    }
-
-    fn try_lower_machine_event_field_access(
-        &mut self,
-        field: &str,
-        receiver_span: &Span,
-        span: &std::ops::Range<usize>,
-        site: SiteId,
-        intent: IntentKind,
-    ) -> Option<HirExpr> {
-        let machine_name = self.current_machine_name.as_ref()?.clone();
-        let (event_idx, event_fields) = self.current_machine_transition_event.clone()?;
-        if let Some((field_idx, hir_field)) = event_fields
-            .iter()
-            .enumerate()
-            .find(|(_, f)| f.name == field)
-        {
-            let field_ty = hir_field.ty.clone();
-            let vc = ValueClass::of_ty(&field_ty, &self.type_classes);
-            let receiver_ty = self
-                .resolved_expr_types
-                .get(&self.mk_key(receiver_span))
-                .cloned()
-                .unwrap_or(ResolvedTy::Unit);
-            let source_anchor = self
-                .produced_value_ownership
-                .contains_key(&self.mk_key(receiver_span))
-                .then(|| {
-                    self.produced_value_source_anchor(
-                        receiver_span,
-                        receiver_ty,
-                        IntentKind::Read,
-                        HirProducedValueProducer::BindingRef,
-                    )
-                });
-            return Some(HirExpr {
-                node: self.ids.node(),
-                site,
-                ty: field_ty,
-                value_class: vc,
-                intent,
-                kind: HirExprKind::MachineEventFieldAccess {
-                    machine_name,
-                    event_idx,
-                    field_idx,
-                    field_name: field.to_string(),
-                    source_anchor,
-                },
-                span: span.clone(),
-            });
-        }
-
-        // Derive the event name from the event index into `current_machine_events`.
-        let event_name = self
-            .current_machine_events
-            .as_ref()
-            .and_then(|ev| ev.get(event_idx))
-            .cloned()
-            .unwrap_or_else(|| format!("{machine_name}Event"));
-        let available: Vec<String> = event_fields.iter().map(|f| f.name.clone()).collect();
-        let note = if available.is_empty() {
-            format!("event `{event_name}` has no payload fields; `{field}` does not exist")
-        } else {
-            format!(
-                "event `{event_name}` has fields: [{}]; `{field}` is not one of them",
-                available.join(", ")
-            )
-        };
-        self.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::MachineEventFieldNotFound {
-                machine_name: machine_name.clone(),
-                event_name,
-                field_name: field.to_string(),
-                available_fields: available,
-            },
-            span.clone(),
-            note,
-        ));
-        Some(HirExpr {
-            node: self.ids.node(),
-            site,
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent,
-            kind: HirExprKind::Unsupported(format!("event.{field} not found")),
-            span: span.clone(),
-        })
-    }
-
-    fn bind_machine_transition_implicits(&mut self, span: std::ops::Range<usize>) {
-        let Some(machine_ty) = self.current_machine_self_ty.clone() else {
-            return;
-        };
-        let ResolvedTy::Named {
-            name: machine_name,
-            args,
-            ..
-        } = &machine_ty
-        else {
-            unreachable!("machine context self type must be a named type");
-        };
-        let event_ty = ResolvedTy::named_user(format!("{machine_name}Event"), args.clone());
-        let _state = self.bind("state".to_string(), machine_ty, false, span.clone());
-        let _event = self.bind("event".to_string(), event_ty, false, span);
-    }
-
     fn missing_stdlib_module_import(&self, name: &str) -> Option<&'static str> {
         if self.lookup(name).is_none() && !self.fn_registry.contains_key(name) {
             stdlib_catalog::missing_import_module(name)
@@ -30729,294 +29105,6 @@ impl LowerCtx {
 
     fn pop_scope(&mut self) {
         self.scopes.pop();
-    }
-
-    fn lower_cancellation_clause_block(&mut self, block: &Block) -> HirBlock {
-        let saved_scope_depth = self.scope_depth;
-        self.scope_depth = 0;
-        let lowered = self.lower_block(block, &ResolvedTy::Unit);
-        self.scope_depth = saved_scope_depth;
-        lowered
-    }
-
-    /// Lower the NEW-6b `await <op> | after <duration>` deadline combinator.
-    ///
-    /// Only `await <actor>.<askmethod>(...) | after <DurationLiteral>` is wired:
-    /// it lowers to the same `HirExprKind::ActorAsk` (`Result<R, AskError>`) as a
-    /// plain suspending ask, with `deadline_ns` attached so codegen schedules a
-    /// fail-closed timeout against the suspend's cancel registration (deadline →
-    /// `Err(AskError::Timeout)`). Every other form fails closed at CHECK time with
-    /// a precise, deferred diagnostic — never a runtime `NotYetImplemented`, never
-    /// a hang, never a fabricated value.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "three recognized deadline forms (actor-ask, conn-read, listener-accept) \
-                  each with their own HIR rewrite branch — splitting would scatter the \
-                  fail-closed fallthrough logic that must be co-located with all three guards"
-    )]
-    fn lower_await_deadline(
-        &mut self,
-        inner: &Spanned<Expr>,
-        duration: &Spanned<Expr>,
-        span: &Span,
-        intent: IntentKind,
-    ) -> HirExpr {
-        let Some(deadline_ns) = Self::duration_literal_ns(&duration.0) else {
-            self.unsupported(
-                span.clone(),
-                "`await … | after <duration>` with a non-literal duration (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "non-literal deadline duration");
-        };
-        if deadline_ns <= 0 {
-            self.unsupported(
-                span.clone(),
-                "`await … | after <duration>` with a non-positive duration (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "non-positive deadline duration");
-        }
-        let Expr::Await(await_inner) = &inner.0 else {
-            self.unsupported(
-                span.clone(),
-                "`| after <duration>` on a non-await expression (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "non-await deadline combinator");
-        };
-        // The suspendable awaits whose timeout `Result` is concretely specced are
-        // local actor asks (`Result<R, AskError>`, `AskError::Timeout`), raw
-        // connection reads (`Result<bytes, NetError>`, `NetError::TimedOut`), and
-        // listener accepts (`Result<Connection, NetError>`, `NetError::TimedOut`).
-        let inner_key = self.mk_key(&await_inner.1);
-        let is_local_ask = matches!(
-            self.actor_method_dispatch.get(&inner_key),
-            Some(ActorMethodKind::Ask(_, _))
-        );
-        if is_local_ask {
-            let mut ask_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ActorAsk {
-                deadline_ns: slot, ..
-            } = &mut ask_expr.kind
-            {
-                *slot = Some(deadline_ns);
-                return ask_expr;
-            }
-            // The await lowered to something other than a local `ActorAsk` (e.g. a
-            // remote ask or a blocking-caller path). Out of scope — fail closed.
-            self.unsupported(
-                span.clone(),
-                "`await <…>(...) | after d` is only supported for a local actor ask in a \
-                 suspendable context (deferred to v0.6)",
-                "new6b-deadline-wiring",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported actor-ask deadline form");
-        }
-        if self.conn_await_reads.contains_key(&inner_key) {
-            let mut read_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ConnAwaitRead {
-                deadline_ns: slot,
-                to_string,
-                ..
-            } = &mut read_expr.kind
-            {
-                let is_to_string = *to_string;
-                *slot = Some(deadline_ns);
-                let io_error_ty = ResolvedTy::Named {
-                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                    is_opaque: false,
-                };
-                // `read_string | after d` yields `Result<string, NetError>`;
-                // raw `read | after d` yields `Result<bytes, NetError>`.
-                let ok_ty = if is_to_string {
-                    ResolvedTy::String
-                } else {
-                    ResolvedTy::Bytes
-                };
-                read_expr.ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![ok_ty, io_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                read_expr.value_class = ValueClass::of_ty(&read_expr.ty, &self.type_classes);
-                self.try_register_enum_instantiation(span);
-                return read_expr;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await conn.read() | after d` is only supported for a raw connection read in a \
-                 suspendable context",
-                "new6c-read-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported read deadline form");
-        }
-        if self.listener_await_accepts.contains(&inner_key) {
-            let mut accept_expr = self.lower_expr(inner, intent);
-            if let HirExprKind::ListenerAwaitAccept {
-                deadline_ns: slot, ..
-            } = &mut accept_expr.kind
-            {
-                *slot = Some(deadline_ns);
-                let io_error_ty = ResolvedTy::Named {
-                    name: hew_types::stdlib::STD_NET_ERROR.to_string(),
-                    args: Vec::new(),
-                    builtin: None,
-                    is_opaque: false,
-                };
-                // `await ln.accept() | after d` yields `Result<Connection, NetError>`;
-                // the Ok arm carries the accepted connection type from the plain accept.
-                let ok_ty = accept_expr.ty.clone();
-                accept_expr.ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![ok_ty, io_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                accept_expr.value_class = ValueClass::of_ty(&accept_expr.ty, &self.type_classes);
-                self.try_register_enum_instantiation(span);
-                return accept_expr;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await ln.accept() | after d` is only supported for a listener accept in a \
-                 suspendable context",
-                "new6d-accept-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported accept deadline form");
-        }
-        // NEW-6b: `await rx.recv() | after d` — channel recv with a deadline.
-        if self.is_channel_recv_await(&inner_key) {
-            if let Expr::MethodCall { receiver, .. } = &await_inner.0 {
-                let recv_expr = self.lower_expr(receiver, IntentKind::Read);
-                // The plain `await rx.recv()` type is `Option<T>` — the checker
-                // recorded it for the inner `rx.recv()` call at `await_inner.1`.
-                let option_ty = self
-                    .resolved_expr_types
-                    .get(&inner_key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty =
-                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
-                        .expect("generated builtin enum catalog must contain TimeoutError");
-                let result_ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![option_ty.clone(), timeout_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                // Register `Result<Option<T>, TimeoutError>` and its nested
-                // `Option<T>` instantiation with the enum layout registry so
-                // that MIR/codegen can resolve the tagged-union struct layout.
-                // `try_register_enum_instantiation(span)` looks up the type by
-                // span in the checker's type map, which holds the pre-deadline
-                // plain type — so call _ty directly instead.
-                self.try_register_enum_instantiation_ty(&result_ty, span);
-                let source_anchor = self.produced_value_source_anchor(
-                    &await_inner.1,
-                    option_ty,
-                    intent,
-                    HirProducedValueProducer::ChannelRecvAwait,
-                );
-                let source = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    value_class,
-                    ty: result_ty,
-                    intent,
-                    kind: HirExprKind::ChannelRecvAwait {
-                        receiver: Box::new(recv_expr),
-                        deadline_ns: Some(deadline_ns),
-                        source_anchor,
-                    },
-                    span: inner.1.clone(),
-                };
-                self.record_produced_value_fact(&inner.1, &source);
-                return source;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await rx.recv() | after d` expected a method-call receiver (internal)",
-                "new6b-recv-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported channel recv deadline form");
-        }
-        // NEW-6b: `await stream.recv() | after d` — stream recv with a deadline.
-        if self.is_stream_recv_await(&inner_key) {
-            if let Expr::MethodCall { receiver, .. } = &await_inner.0 {
-                let stream_expr = self.lower_expr(receiver, IntentKind::Read);
-                // The plain `await stream.recv()` type is `Option<T>` — the checker
-                // recorded it for the inner `stream.recv()` call at `await_inner.1`.
-                let option_ty = self
-                    .resolved_expr_types
-                    .get(&inner_key)
-                    .cloned()
-                    .unwrap_or(ResolvedTy::Unit);
-                let timeout_error_ty =
-                    hew_types::builtin_enums::resolved_monomorphic_builtin_enum_ty("TimeoutError")
-                        .expect("generated builtin enum catalog must contain TimeoutError");
-                let result_ty = ResolvedTy::Named {
-                    name: "Result".to_string(),
-                    args: vec![option_ty.clone(), timeout_error_ty],
-                    builtin: Some(BuiltinType::Result),
-                    is_opaque: false,
-                };
-                let value_class = ValueClass::of_ty(&result_ty, &self.type_classes);
-                // Same registration as ChannelRecvAwait above.
-                self.try_register_enum_instantiation_ty(&result_ty, span);
-                let source_anchor = self.produced_value_source_anchor(
-                    &await_inner.1,
-                    option_ty,
-                    intent,
-                    HirProducedValueProducer::StreamRecvAwait,
-                );
-                let source = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    value_class,
-                    ty: result_ty,
-                    intent,
-                    kind: HirExprKind::StreamRecvAwait {
-                        stream: Box::new(stream_expr),
-                        deadline_ns: Some(deadline_ns),
-                        source_anchor,
-                    },
-                    span: inner.1.clone(),
-                };
-                self.record_produced_value_fact(&inner.1, &source);
-                return source;
-            }
-            self.unsupported(
-                span.clone(),
-                "`await stream.recv() | after d` expected a method-call receiver (internal)",
-                "new6b-stream-recv-deadline",
-            );
-            return self.unsupported_expr(span.clone(), "unsupported stream recv deadline form");
-        }
-        // Out-of-scope await sources: task-await, suspending closure.
-        // Channel recv and stream recv are now handled above (NEW-6b).
-        self.unsupported(
-            span.clone(),
-            "`await <…> | after d` deadline is only supported for actor-ask awaits, \
-             connection reads (read/read_string), listener accepts, channel recv, and \
-             stream recv; task-await and suspending-closure deadlines are deferred to v0.6",
-            "new6c-read-deadline",
-        );
-        self.unsupported_expr(span.clone(), "unsupported await-deadline source")
-    }
-
-    /// Extract the nanosecond value of a literal `Duration` deadline. Non-literal
-    /// durations (variables, arithmetic) are not constant-foldable here and fail
-    /// closed at CHECK time (the codegen deadline is carried as a constant).
-    fn duration_literal_ns(expr: &Expr) -> Option<i64> {
-        match expr {
-            Expr::Literal(Literal::Duration(ns)) => Some(*ns),
-            _ => None,
-        }
     }
 
     fn unsupported(
@@ -31094,48 +29182,87 @@ impl LowerCtx {
         // args; `try_register_enum_instantiation` is a no-op for monomorphic enums.
         self.try_register_enum_instantiation(&scrutinee.1);
 
-        // Or-pattern expansion: flatten `A | B | C => body` into three
-        // synthetic arms sharing the same body and guard before the main loop.
-        // The checker's `bind_pattern` already validated the or-pattern; we
-        // just need to enumerate the leaf alternatives.
-        let expanded_arms: Vec<hew_parser::ast::MatchArm> = arms
-            .iter()
-            .flat_map(|arm| {
-                let leaves = flatten_or_pattern(&arm.pattern);
-                if leaves.len() <= 1 {
-                    // Not an or-pattern: pass through unchanged.
-                    vec![arm.clone()]
-                } else {
-                    // Expand: one synthetic arm per leaf, all sharing the same
-                    // body and guard. We clone the body for each alternative
-                    // (HIR lowering of `Expr` is side-effect-free).
-                    leaves
-                        .into_iter()
-                        .map(|leaf| hew_parser::ast::MatchArm {
-                            pattern: leaf,
-                            guard: arm.guard.clone(),
-                            body: arm.body.clone(),
-                        })
-                        .collect()
-                }
-            })
-            .collect();
+        let pattern_arms = pattern_arms_from_match(arms);
+        let Some((hir_arms, result_ty)) =
+            self.lower_pattern_arms(&scrutinee_hir, &pattern_arms, &ResolvedTy::Unit)
+        else {
+            return (
+                HirExprKind::Unsupported(
+                    "match expression contains an unsupported arm shape".into(),
+                ),
+                ResolvedTy::Unit,
+            );
+        };
 
+        // A checker-proven uninhabited match has no successor or result value.
+        // SIR checks exhaustiveness against the exact enum descriptor.
+        if hir_arms.is_empty() {
+            if self.checker_expr_ty(span, "empty match") == Some(ResolvedTy::Never) {
+                return (
+                    HirExprKind::Match {
+                        scrutinee: Box::new(scrutinee_hir),
+                        arms: hir_arms,
+                    },
+                    ResolvedTy::Never,
+                );
+            }
+            self.unsupported(
+                span.clone(),
+                "match expression with no arms",
+                "match-expression-substrate",
+            );
+            return (
+                HirExprKind::Unsupported("match expression with no arms".into()),
+                ResolvedTy::Unit,
+            );
+        }
+
+        let ty = self.callable_join_type(span, result_ty.unwrap_or(ResolvedTy::Unit));
+        (
+            HirExprKind::Match {
+                scrutinee: Box::new(scrutinee_hir),
+                arms: hir_arms,
+            },
+            ty,
+        )
+    }
+
+    /// Lower a list of pattern arms — the single authority for the pattern
+    /// shapes `match`, `if let`, `while let` and `let … else` accept.
+    ///
+    /// Each arm's predicate, bindings and nested payload checks come from the
+    /// checker's `pattern_resolutions` / `pattern_plans` side-tables, keyed by
+    /// the arm's pattern span. `block_result_ty` is the type block-bodied arms
+    /// (`if let` / `while let`) are lowered against; expression bodies ignore it.
+    ///
+    /// Returns `None` when any arm was rejected: the remaining arm bodies are
+    /// still walked so the checker stream stays complete, and the caller fails
+    /// closed rather than emitting a partial `Match`.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one branch per pattern shape; splitting would scatter the \
+                  fail-closed recovery each shape shares"
+    )]
+    fn lower_pattern_arms(
+        &mut self,
+        scrutinee_hir: &HirExpr,
+        arms: &[PatternArm<'_>],
+        block_result_ty: &ResolvedTy,
+    ) -> Option<(Vec<HirMatchArm>, Option<ResolvedTy>)> {
         // Track whether any arm has been rejected; if so we still walk the
-        // arm bodies (for checker-stream coverage) but produce
-        // `HirExprKind::Unsupported` rather than a partial `Match` node.
+        // arm bodies (for checker-stream coverage) but produce no arms at all.
         // A fail-closed shape keeps MIR lowering simple and prevents a
         // half-built Match from reaching codegen.
         let mut rejected = false;
-        let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(expanded_arms.len());
+        let mut hir_arms: Vec<HirMatchArm> = Vec::with_capacity(arms.len());
         let mut result_ty: Option<ResolvedTy> = None;
 
-        for arm in &expanded_arms {
+        for arm in arms {
             let pattern_span = &arm.pattern.1;
             let key = self.mk_key(pattern_span);
 
             let Some(resolution) = self.pattern_resolutions.get(&key).cloned() else {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {
                         name: "match pattern".into(),
@@ -31148,6 +29275,16 @@ impl LowerCtx {
                 continue;
             };
 
+            // Uniform plan authority: a record-shaped pattern (incl. enum
+            // struct-variant `Packet.Data { a, .. }`) with no checker
+            // `PatternPlan` fails closed here rather than lowering off the
+            // AST-derived resolution.
+            if self.record_shape_missing_plan(&arm.pattern) {
+                self.walk_pattern_arm_body(&arm.body);
+                rejected = true;
+                continue;
+            }
+
             let predicate = match resolution.pattern_kind {
                 PatternKind::Wildcard => HirMatchArmPredicate::Wildcard,
                 PatternKind::Binding => {
@@ -31158,7 +29295,7 @@ impl LowerCtx {
                     } else {
                         // Checker contract: Binding resolution must come from
                         // an Identifier pattern.
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "binding resolution without an Identifier pattern — checker \
@@ -31180,7 +29317,7 @@ impl LowerCtx {
                 }
                 PatternKind::VariantCtor => {
                     let Some(mut vm) = resolution.variant_match.clone() else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "variant pattern missing variant-match resolution",
@@ -31197,7 +29334,7 @@ impl LowerCtx {
                     let Some((registered_type, idx_usize, _)) =
                         self.lookup_variant_ctor(&vm.variant_name, Some(&scrutinee_hir.ty))
                     else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "match arm variant not registered in machine/enum ctor registry",
@@ -31216,7 +29353,7 @@ impl LowerCtx {
                 }
                 PatternKind::Literal => {
                     let Pattern::Literal(lit) = &arm.pattern.0 else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "literal arm resolution did not correspond to an AST literal pattern",
@@ -31238,7 +29375,7 @@ impl LowerCtx {
                         (HirLiteral::Float(_), ResolvedTy::F32) => ResolvedTy::F32,
                         (HirLiteral::Float(_), ResolvedTy::F64) => ResolvedTy::F64,
                         (HirLiteral::Duration(_) | HirLiteral::Unit, _) => {
-                            let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                            self.walk_pattern_arm_body(&arm.body);
                             self.unsupported(
                                 pattern_span.clone(),
                                 format!("unsupported literal pattern in match arm ({lit:?})"),
@@ -31248,7 +29385,7 @@ impl LowerCtx {
                             continue;
                         }
                         _ => {
-                            let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                            self.walk_pattern_arm_body(&arm.body);
                             self.unsupported(
                                 pattern_span.clone(),
                                 format!(
@@ -31267,7 +29404,7 @@ impl LowerCtx {
                 }
                 PatternKind::StructPattern => {
                     let ResolvedTy::Named { .. } = &scrutinee_hir.ty else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             format!(
@@ -31285,7 +29422,7 @@ impl LowerCtx {
                 }
                 PatternKind::TuplePattern => {
                     let ResolvedTy::Tuple(items) = &scrutinee_hir.ty else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             format!(
@@ -31298,7 +29435,7 @@ impl LowerCtx {
                         continue;
                     };
                     let Ok(arity) = u32::try_from(items.len()) else {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             "tuple project arity exceeds u32::MAX",
@@ -31368,7 +29505,7 @@ impl LowerCtx {
                 binding_specs.push((field_idx, payload.binding_name.clone(), ty));
             }
             if binding_error {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 rejected = true;
                 continue;
             }
@@ -31377,7 +29514,7 @@ impl LowerCtx {
                 match collect_match_payload_predicates(self, &arm.pattern, &scrutinee_hir.ty) {
                     Ok(predicates) => predicates,
                     Err(reason) => {
-                        let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                        self.walk_pattern_arm_body(&arm.body);
                         self.unsupported(
                             pattern_span.clone(),
                             reason,
@@ -31391,16 +29528,23 @@ impl LowerCtx {
                 constructor_payload_aggregate_subpatterns(&arm.pattern.0)
                     || struct_variant_payload_aggregate_subpatterns(&arm.pattern.0);
 
-            // Nested constructor subpatterns only make sense on an
-            // EnumVariant arm; anything else is a checker contract violation
-            // — fail closed rather than silently dropping the nested checks.
+            // Nested constructor subpatterns occupy a slot of a variant
+            // payload, a record field or a tuple element; any other predicate
+            // has no slot to nest into, so a non-empty vector there is a
+            // checker contract violation — fail closed rather than silently
+            // dropping the nested checks.
             if !resolution.payload_variant_patterns.is_empty()
-                && !matches!(predicate, HirMatchArmPredicate::EnumVariant { .. })
+                && !matches!(
+                    predicate,
+                    HirMatchArmPredicate::EnumVariant { .. }
+                        | HirMatchArmPredicate::RecordProject { .. }
+                        | HirMatchArmPredicate::TupleProject { .. }
+                )
             {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 self.unsupported(
                     pattern_span.clone(),
-                    "nested constructor subpatterns on a non-variant match arm — \
+                    "nested constructor subpatterns on a match arm with no slots — \
                      checker contract violation",
                     "match-expression-substrate",
                 );
@@ -31481,7 +29625,7 @@ impl LowerCtx {
                 binding_error |= had_error;
             }
             if binding_error {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 if let Some(previous) = previous_scope_id {
                     self.current_scope_id = previous;
                 }
@@ -31492,7 +29636,7 @@ impl LowerCtx {
                 continue;
             }
             if !body_prelude.is_empty() && arm.guard.is_some() {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 self.unsupported(
                     pattern_span.clone(),
                     "guarded match arm with nested aggregate payload destructure",
@@ -31523,7 +29667,7 @@ impl LowerCtx {
                 }
             }
             if pvp_error {
-                let _ = self.lower_expr(&arm.body, IntentKind::Read);
+                self.walk_pattern_arm_body(&arm.body);
                 if let Some(previous) = previous_scope_id {
                     self.current_scope_id = previous;
                 }
@@ -31542,10 +29686,16 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let mut body_hir = self.lower_expr(&arm.body, IntentKind::Read);
+            let mut body_hir = self.lower_pattern_arm_body(
+                &arm.body,
+                block_result_ty,
+                &bindings,
+                &payload_variant_predicates,
+                &body_prelude,
+            );
             if !body_prelude.is_empty() {
                 let body_ty = body_hir.ty.clone();
-                let body_span = arm.pattern.1.start..arm.body.1.end;
+                let body_span = arm.pattern.1.start..arm.body_end();
                 body_hir = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -31589,41 +29739,224 @@ impl LowerCtx {
                 payload_variant_predicates,
                 guard: guard_hir,
                 body: body_hir,
-                span: arm.pattern.1.start..arm.body.1.end,
+                span: arm.pattern.1.start..arm.body_end(),
             });
         }
 
         if rejected {
-            return (
-                HirExprKind::Unsupported(
-                    "match expression contains an unsupported arm shape".into(),
-                ),
-                ResolvedTy::Unit,
-            );
+            return None;
         }
+        Some((hir_arms, result_ty))
+    }
 
-        // Empty arms list is rejected by the parser/checker before reaching
-        // here; treat the unexpected case as fail-closed.
-        if hir_arms.is_empty() {
-            self.unsupported(
-                span.clone(),
-                "match expression with no arms",
-                "match-expression-substrate",
-            );
-            return (
-                HirExprKind::Unsupported("match expression with no arms".into()),
-                ResolvedTy::Unit,
-            );
+    /// Lower one pattern arm's body. Expression bodies (`match`) synthesize
+    /// their own type; block bodies (`if let` / `while let`) are lowered
+    /// against the conditional's result type so both branches agree.
+    fn lower_pattern_arm_body(
+        &mut self,
+        body: &PatternArmBody<'_>,
+        block_result_ty: &ResolvedTy,
+        bindings: &[HirMatchArmBinding],
+        nested: &[HirPayloadVariantPredicate],
+        body_prelude: &[HirStmt],
+    ) -> HirExpr {
+        match body {
+            PatternArmBody::Expr(expr) => self.lower_expr(expr, IntentKind::Read),
+            PatternArmBody::Condition {
+                rest,
+                body,
+                body_span,
+                fallthrough,
+            } => self.lower_condition_chain(
+                rest,
+                body,
+                body_span,
+                *fallthrough,
+                block_result_ty,
+                body_span,
+            ),
+            PatternArmBody::Bindings(span) => {
+                self.pack_arm_bindings(bindings, nested, body_prelude, span.clone())
+            }
         }
+    }
 
-        let ty = result_ty.unwrap_or(ResolvedTy::Unit);
-        (
-            HirExprKind::Match {
-                scrutinee: Box::new(scrutinee_hir),
-                arms: hir_arms,
+    /// Pack a let-else success arm's bindings into the value its synthesized
+    /// match arm returns: `Unit` for none, the binding's own value for
+    /// exactly one, a name-ordered tuple for more. Sorting by name (rather
+    /// than declaration order) keeps every or-pattern leaf's tuple shape
+    /// identical even when the leaves' variants declare the shared binder
+    /// names in different field orders. `lower_let_else` destructures the
+    /// packed value back into fresh, escaping bindings after the match.
+    ///
+    /// `bindings` is expanded through `body_prelude` first: a top-level
+    /// payload field that an aggregate subpattern (`Ok((n, s))`) further
+    /// destructures is a synthetic `__payload_*` carrier, not a name the
+    /// source wrote, so its own leaf binders (`n`, `s`) pack in its place.
+    fn pack_arm_bindings(
+        &mut self,
+        bindings: &[HirMatchArmBinding],
+        nested: &[HirPayloadVariantPredicate],
+        body_prelude: &[HirStmt],
+        span: Span,
+    ) -> HirExpr {
+        let mut ordered = expand_arm_bindings(bindings, nested, body_prelude);
+        ordered.sort_by(|a, b| a.0.cmp(&b.0));
+        match ordered.as_slice() {
+            [] => self.make_unit_expr(span),
+            [(name, id, ty)] => self.binding_ref_expr(name.clone(), *id, ty.clone(), span),
+            many => {
+                let elements: Vec<HirExpr> = many
+                    .iter()
+                    .map(|(name, id, ty)| {
+                        self.binding_ref_expr(name.clone(), *id, ty.clone(), span.clone())
+                    })
+                    .collect();
+                let ty = ResolvedTy::Tuple(many.iter().map(|(_, _, ty)| ty.clone()).collect());
+                HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                    ty: ty.clone(),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::TupleLiteral { elements },
+                    span,
+                }
+            }
+        }
+    }
+
+    /// Lower an `if let` / `while let` condition (§12.5) to nested two-arm
+    /// matches and boolean branches.
+    ///
+    /// `if let P = a && b && let Q = c { body } else { alt }` becomes
+    /// `match a { P => if b { match c { Q => body, _ => alt } } else { alt },
+    /// _ => alt }`: each operand binds for the operands to its right, the
+    /// operands run left to right, and the first that fails takes the
+    /// fallthrough. Nothing the condition binds reaches the fallthrough, which
+    /// is what keeps the `else` arm free of the condition's names.
+    ///
+    /// The fallthrough is lowered once per operand. Exactly one copy can run,
+    /// and each needs its own bindings and drop sites, so they cannot be
+    /// shared.
+    fn lower_condition_chain(
+        &mut self,
+        conditions: &[ConditionItem],
+        body: &Block,
+        body_span: &Span,
+        fallthrough: ConditionFallthrough<'_>,
+        result_ty: &ResolvedTy,
+        span: &Span,
+    ) -> HirExpr {
+        let Some((first, rest)) = conditions.split_first() else {
+            let block = self.lower_block(body, result_ty);
+            let ty = block.ty.clone();
+            return HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ty.clone(),
+                value_class: ValueClass::of_ty(&ty, &self.type_classes),
+                intent: IntentKind::Read,
+                kind: HirExprKind::Block(block),
+                span: body_span.clone(),
+            };
+        };
+
+        match first {
+            ConditionItem::Let { pattern, expr } => {
+                let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
+                // Register a generic-enum instantiation so MIR/codegen find the
+                // mangled layout — matches the Match path.
+                self.try_register_enum_instantiation(&expr.1);
+                let arms: Vec<PatternArm<'_>> = flatten_or_pattern(pattern)
+                    .into_iter()
+                    .map(|leaf| PatternArm {
+                        pattern: leaf,
+                        guard: None,
+                        body: PatternArmBody::Condition {
+                            rest,
+                            body,
+                            body_span: body_span.clone(),
+                            fallthrough,
+                        },
+                    })
+                    .collect();
+                let Some((hir_arms, _)) = self.lower_pattern_arms(&scrutinee_hir, &arms, result_ty)
+                else {
+                    let _ = self.lower_condition_fallthrough(fallthrough, span);
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site: self.ids.site(),
+                        ty: ResolvedTy::Unit,
+                        value_class: ValueClass::BitCopy,
+                        intent: IntentKind::Read,
+                        kind: HirExprKind::Unsupported(
+                            "pattern condition with an unsupported pattern shape".into(),
+                        ),
+                        span: span.clone(),
+                    };
+                };
+                let alternative = self.lower_condition_fallthrough(fallthrough, span);
+                self.pattern_conditional_match(
+                    scrutinee_hir,
+                    hir_arms,
+                    alternative,
+                    result_ty,
+                    span,
+                )
+            }
+            ConditionItem::Expr(test) => {
+                let condition = self.lower_expr(test, IntentKind::Read);
+                let then_expr =
+                    self.lower_condition_chain(rest, body, body_span, fallthrough, result_ty, span);
+                let alternative = self.lower_condition_fallthrough(fallthrough, span);
+                HirExpr {
+                    node: self.ids.node(),
+                    site: self.ids.site(),
+                    ty: result_ty.clone(),
+                    value_class: ValueClass::of_ty(result_ty, &self.type_classes),
+                    intent: IntentKind::Read,
+                    kind: HirExprKind::If {
+                        condition: Box::new(condition),
+                        then_expr: Box::new(then_expr),
+                        else_expr: Some(Box::new(alternative)),
+                    },
+                    span: span.clone(),
+                }
+            }
+        }
+    }
+
+    /// Lower one copy of a pattern condition's failure path.
+    fn lower_condition_fallthrough(
+        &mut self,
+        fallthrough: ConditionFallthrough<'_>,
+        span: &Span,
+    ) -> HirExpr {
+        match fallthrough {
+            // The `else` arm is an expression, so `else if` and `else if let`
+            // links lower through the same path as an `else { .. }` block.
+            ConditionFallthrough::Else(Some(arm)) => self.lower_expr(arm, IntentKind::Read),
+            ConditionFallthrough::Else(None) => self.make_unit_expr(span.clone()),
+            ConditionFallthrough::Break => HirExpr {
+                node: self.ids.node(),
+                site: self.ids.site(),
+                ty: ResolvedTy::Unit,
+                value_class: ValueClass::BitCopy,
+                intent: IntentKind::Read,
+                kind: HirExprKind::Break {
+                    label: None,
+                    value: None,
+                },
+                span: span.clone(),
             },
-            ty,
-        )
+        }
+    }
+
+    /// Walk a rejected arm's body so the checker stream stays complete. The
+    /// lowered result is discarded; only the diagnostics it produces matter.
+    fn walk_pattern_arm_body(&mut self, body: &PatternArmBody<'_>) {
+        let _ = self.lower_pattern_arm_body(body, &ResolvedTy::Unit, &[], &[], &[]);
     }
 
     /// Convert one checker-resolved [`hew_types::PayloadVariantPattern`] into
@@ -31635,6 +29968,10 @@ impl LowerCtx {
     /// Must be called inside the arm's scope (`push_scope`) so the inner
     /// bindings resolve in the guard and body. Returns `None` after pushing a
     /// fail-closed diagnostic.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one recursive checker boundary converts binding and literal types with diagnostics"
+    )]
     fn build_payload_variant_predicate(
         &mut self,
         pvp: &hew_types::PayloadVariantPattern,
@@ -31709,6 +30046,34 @@ impl LowerCtx {
                 ty,
             });
         }
+        let mut literals = Vec::with_capacity(pvp.literals.len());
+        for predicate in &pvp.literals {
+            let Ok(field_idx) = u32::try_from(predicate.field_idx) else {
+                self.unsupported(
+                    pattern_span.clone(),
+                    "nested literal field index exceeds u32::MAX",
+                    "match-expression-substrate",
+                );
+                return None;
+            };
+            let ty = match ResolvedTy::from_ty(&predicate.ty) {
+                Ok(ty) => self.qualify_current_module_record_ty(ty),
+                Err(err) => {
+                    self.unsupported(
+                        pattern_span.clone(),
+                        format!("unresolved nested literal type ({err:?})"),
+                        "match-expression-substrate",
+                    );
+                    return None;
+                }
+            };
+            let (literal, _) = literal_to_hir(&predicate.literal);
+            literals.push(HirPayloadPredicate {
+                field_idx,
+                literal,
+                ty,
+            });
+        }
         let mut nested = Vec::with_capacity(pvp.nested.len());
         for child in &pvp.nested {
             nested.push(self.build_payload_variant_predicate(child, pattern_span)?);
@@ -31722,413 +30087,9 @@ impl LowerCtx {
             },
             variant_idx,
             bindings,
+            literals,
             nested,
         })
-    }
-
-    /// Lower the body block of a `scope{}` expression. This is separate from
-    /// `lower_block` because statements inside a scope body follow different
-    /// rules:
-    ///
-    /// - `Stmt::Expression(Expr::Call{..})` → `SpawnedCall` (TI-1)
-    /// - `Stmt::Expression(Expr::ForkChild { binding: Some(name), expr })` →
-    ///   `HirStmtKind::Let` with a `Task<T>` typed binding (TI-2)
-    /// - `Stmt::Expression(Expr::Await(..))` → `AwaitTask` (TI-4)
-    /// - All other statements lower normally, including nested `scope{}` blocks.
-    ///
-    /// The caller is responsible for setting `scope_depth` before calling this
-    /// function and restoring it after.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "single match on scope-body statement variants; splitting would hurt readability"
-    )]
-    fn lower_scope_block(&mut self, block: &Block) -> HirBlock {
-        self.push_scope();
-        let scope = self.ids.scope();
-        let mut statements = Vec::new();
-
-        for (stmt, span) in &block.stmts {
-            let hir_stmt = match stmt {
-                // `fork name = call(...)` and bare `fork = call(...)` inside a
-                // scope body are the only `Stmt::Expression` shapes this
-                // function intercepts. Destructure the `ForkChild` once and
-                // branch on `binding` presence: the bound form (TI-2) builds
-                // a typed `Task<T>` `Let`; the unbound form delegates to the
-                // `lower_spawned_call` helper.
-                Stmt::Expression(expr) => match &expr.0 {
-                    Expr::ForkChild {
-                        binding,
-                        expr: child_expr,
-                    } => {
-                        if !matches!(&child_expr.0, Expr::Call { .. }) {
-                            let message: &str = if binding.is_some() {
-                                "`fork name = expr` requires a call expression as the \
-                                 right-hand side; other expression forms cannot be spawned as tasks"
-                            } else {
-                                "`fork = expr` requires a call expression"
-                            };
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::ForkChildNotACall,
-                                child_expr.1.clone(),
-                                message,
-                            ));
-                            self.unsupported(span.clone(), "fork-child-non-call", "slice-2");
-                            HirStmt {
-                                node: self.ids.node(),
-                                kind: HirStmtKind::Expr(
-                                    self.unsupported_expr(span.clone(), "fork child non-call"),
-                                ),
-                                span: span.clone(),
-                            }
-                        } else if let Some(binding_name) = binding {
-                            // FC-P1-A1 Blocker 1+2: Validate fork child spawn shape before lowering.
-                            // named_form = true: the checker type-checks this call in
-                            // synthesize_concurrency, so arg-bearing calls are permitted.
-                            if let Expr::Call { function, args, .. } = &child_expr.0 {
-                                self.validate_task_spawn_call(function, args, &child_expr.1, true);
-                            }
-
-                            // Lower the call synchronously first to get the return type,
-                            // then wrap in SpawnedCall + Task<T>.
-                            //
-                            // FC-P1-A1 (revision pass 2): Non-unit callee return is
-                            // VALID at spawn time. `fork t = compute() -> i64` binds
-                            // `t: Task<i64>` cleanly here (canonical TI-2 invariant,
-                            // see vertical.rs::task_handle_ti2_*). Awaiting the
-                            // non-unit result is now lowered through the value-task
-                            // await result channel (the resume edge reads the child's
-                            // `T` via `hew_task_get_result`).
-                            let call_hir = self.lower_expr(child_expr, IntentKind::Consume);
-                            let call_site = call_hir.site;
-                            let source_anchor = Self::source_anchor_from_lowered(&call_hir);
-                            let explicit_type_args = match &child_expr.0 {
-                                Expr::Call {
-                                    type_args: Some(type_args),
-                                    ..
-                                } => Some(type_args.clone()),
-                                _ => None,
-                            };
-                            let call_ret_ty = call_hir.ty.clone();
-
-                            let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
-
-                            // A source `Expr::Call` can still lower to an
-                            // unsupported sentinel when its checker target is
-                            // missing or non-executable.  Do not assume the
-                            // surface shape makes executable HIR: retain the
-                            // gate diagnostic and emit an unsupported value
-                            // rather than panicking or synthesising a spawn.
-                            let spawned = match call_hir.kind {
-                                HirExprKind::Call { callee, args, .. } => {
-                                    let spawned_site = self.ids.site();
-                                    let type_args =
-                                        self.call_site_type_args.get(&call_site).cloned().or_else(
-                                            || {
-                                                explicit_type_args.map(|args| {
-                                                    args.iter()
-                                                        .map(|arg| self.lower_type(arg))
-                                                        .collect()
-                                                })
-                                            },
-                                        );
-                                    if let Some(type_args) = type_args {
-                                        self.call_site_type_args.insert(spawned_site, type_args);
-                                    }
-                                    HirExpr {
-                                        node: self.ids.node(),
-                                        site: spawned_site,
-                                        value_class: ValueClass::Linear,
-                                        ty: task_ty.clone(),
-                                        intent: IntentKind::Consume,
-                                        kind: HirExprKind::SpawnedCall {
-                                            callee,
-                                            args,
-                                            task_ty: task_ty.clone(),
-                                            source_anchor,
-                                            bound: true,
-                                        },
-                                        span: child_expr.1.clone(),
-                                    }
-                                }
-                                HirExprKind::Unsupported(reason) => {
-                                    self.diagnostics.push(HirDiagnostic::new(
-                                        HirDiagnosticKind::CheckerBoundaryViolation {
-                                            name: "fork child".to_string(),
-                                            reason: format!(
-                                                "fork child call lowered to unsupported target: {reason}"
-                                            ),
-                                        },
-                                        child_expr.1.clone(),
-                                        "fork child requires an executable checker-approved call target",
-                                    ));
-                                    self.unsupported_expr(
-                                        child_expr.1.clone(),
-                                        "fork child call has unsupported checker target",
-                                    )
-                                }
-                                _ => {
-                                    self.diagnostics.push(HirDiagnostic::new(
-                                        HirDiagnosticKind::CheckerBoundaryViolation {
-                                            name: "fork child".to_string(),
-                                            reason: "fork child call lowered to a non-call HIR shape".to_string(),
-                                        },
-                                        child_expr.1.clone(),
-                                        "fork child requires an executable checker-approved call target",
-                                    ));
-                                    self.unsupported_expr(
-                                        child_expr.1.clone(),
-                                        "fork child call lowered to non-call expression",
-                                    )
-                                }
-                            };
-
-                            // Bind the name with Task<T> type in the current scope.
-                            let binding =
-                                self.bind(binding_name.clone(), task_ty, false, span.clone());
-                            HirStmt {
-                                node: self.ids.node(),
-                                kind: HirStmtKind::Let(binding, Some(spawned)),
-                                span: span.clone(),
-                            }
-                        } else {
-                            // Unbound `fork = call(...)`: lower as a plain SpawnedCall;
-                            // the result is not bound.
-                            let spawned = self.lower_spawned_call(child_expr);
-                            HirStmt {
-                                node: self.ids.node(),
-                                kind: HirStmtKind::Expr(spawned),
-                                span: span.clone(),
-                            }
-                        }
-                    }
-
-                    // Any other expression-as-statement (regular calls, blocks,
-                    // etc.) lowers via the generic statement path.
-                    _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
-                },
-
-                // All other statements lower normally (including let bindings,
-                // nested scope{} blocks, etc.). Inside scope depth, `lower_stmt`
-                // will already handle statement-expression calls as SpawnedCall
-                // nodes via TI-1 (the scope_depth > 0 path in lower_stmt).
-                _ => self.lower_stmt(stmt, span.clone(), ResolvedTy::Unit),
-            };
-            statements.push(hir_stmt);
-        }
-
-        let tail = block
-            .trailing_expr
-            .as_ref()
-            .map(|expr| Box::new(self.lower_expr(expr, IntentKind::Read)));
-        let ty = tail
-            .as_ref()
-            .map_or(ResolvedTy::Unit, |expr| expr.ty.clone());
-        self.pop_scope();
-
-        HirBlock {
-            node: self.ids.node(),
-            scope,
-            statements,
-            tail,
-            ty,
-            span: 0..0,
-        }
-    }
-
-    /// Lower a call expression appearing as a statement inside a `scope{}` body
-    /// as a child-task spawn (TI-1). The resulting `HirExpr` has kind
-    /// `SpawnedCall` and type `Task<call_return_ty>`.
-    ///
-    /// FC-P1-A1 gates (blockers 1, 2, 3): Validates spawned call shape before
-    /// emitting `SpawnedCall`. This is where implicit spawns (`scope { worker(); }`)
-    /// are intercepted since they only appear as `SpawnedCall` after HIR lowering.
-    fn lower_spawned_call(&mut self, expr: &Spanned<Expr>) -> HirExpr {
-        let span = expr.1.clone();
-
-        // FC-P1-A1 Blocker 1: Validate spawned call shape at lowering site
-        // (implicit spawns never reach the AST walker).
-        // named_form = false: the checker does not visit implicit spawn sites,
-        // so args would bypass type-checking — reject them here.
-        if let Expr::Call { function, args, .. } = &expr.0 {
-            self.validate_task_spawn_call(function, args, &span, false);
-        }
-
-        // Lower the call normally to resolve the callee and argument types.
-        //
-        // FC-P1-A1 (revision pass 2): The callee return type is intentionally
-        // NOT gated here. An implicit spawn that produces `Task<T>` for
-        // non-unit T is a valid Hew construct; awaiting the non-unit result is
-        // lowered through the value-task await result channel. Gating at spawn
-        // time would break the TI-1/TI-2/TI-4 canonical invariants.
-        let call_hir = self.lower_expr(expr, IntentKind::Consume);
-        let call_site = call_hir.site;
-        let source_anchor = Self::source_anchor_from_lowered(&call_hir);
-        let explicit_type_args = match &expr.0 {
-            Expr::Call {
-                type_args: Some(type_args),
-                ..
-            } => Some(type_args.clone()),
-            _ => None,
-        };
-        let call_ret_ty = call_hir.ty.clone();
-
-        let task_ty = ResolvedTy::Task(Box::new(call_ret_ty));
-
-        let HirExprKind::Call { callee, args, .. } = call_hir.kind else {
-            // Should not happen: caller verified the expression is a Call.
-            return self.unsupported_expr(span, "lower_spawned_call on non-call");
-        };
-
-        let spawned_site = self.ids.site();
-        let type_args = self
-            .call_site_type_args
-            .get(&call_site)
-            .cloned()
-            .or_else(|| {
-                explicit_type_args.map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
-            });
-        if let Some(type_args) = type_args {
-            self.call_site_type_args.insert(spawned_site, type_args);
-        }
-
-        HirExpr {
-            node: self.ids.node(),
-            site: spawned_site,
-            value_class: ValueClass::Linear, // Task handles are linear (consume-once).
-            ty: task_ty.clone(),
-            intent: IntentKind::Consume,
-            kind: HirExprKind::SpawnedCall {
-                callee,
-                args,
-                task_ty,
-                source_anchor,
-                bound: false,
-            },
-            span,
-        }
-    }
-
-    /// FC-P1-A1 helper: Validate task spawn call shape.
-    ///
-    /// `named_form` is `true` for `fork name = call(args)` (the checker
-    /// type-checks the call, so arguments are allowed). It is `false` for
-    /// implicit scope-statement spawns (`scope { f(args); }`) and any other
-    /// non-named path — the checker does not visit those call sites, so
-    /// argument-bearing calls there bypass type-checking and must be rejected.
-    ///
-    /// Checks: (1) callee is a registered direct fn or valid closure,
-    /// (2) for non-named forms: args list is empty,
-    /// (3) for closures: args/params are empty, return is unit, captures are Send.
-    fn validate_task_spawn_call(
-        &mut self,
-        function: &Spanned<Expr>,
-        args: &[CallArg],
-        span: &Span,
-        named_form: bool,
-    ) {
-        match &function.0 {
-            Expr::Identifier(name) => {
-                // The checker already selected the exact source declaration
-                // for this call. `fn_registry` is a linker-symbol index and
-                // therefore cannot answer whether a lexical `mod::worker`
-                // denotes a direct spawnable function without leaf recovery.
-                if !matches!(self.ordinary_call_target(span), Some(CallTarget::User(_))) {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        format!("spawned callee '{name}' is not a direct module function"),
-                    ));
-                }
-                // For the named form (`fork t = f(args)`), the checker
-                // type-checks the call in synthesize_concurrency; args are
-                // permitted and MIR lowers them through the fork-entry shim.
-                // For non-named forms the checker never visits the call, so
-                // args would bypass type-checking — reject them here.
-                if !named_form && !args.is_empty() {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::TaskSpawnSignatureUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        "spawned call must have zero arguments; use `fork name = f(args)` for argument-bearing spawns".to_string(),
-                    ));
-                }
-                // Note: Return type validation happens in lower_spawned_call after type resolution
-            }
-            Expr::Lambda {
-                params, body: _, ..
-            } => {
-                // Spawned closure literals stay nullary: the arg-bearing lift
-                // covers direct-fn callees only (captures already carry the
-                // closure's environment; call-site args have no slot).
-                if !args.is_empty() {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        "spawned closure call must have zero arguments".to_string(),
-                    ));
-                }
-                // FC-P1-A1 Blocker 3: Validate closure signature
-                // (1) Zero params
-                if !params.is_empty() {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                            site: self.ids.site(),
-                        },
-                        span.clone(),
-                        "spawned closure must have zero parameters".to_string(),
-                    ));
-                }
-
-                // (2) Validate return type is unit
-                // The closure body type will be checked after lowering via checker expr_types
-                // For now, we rely on the inline checks at lowering time
-
-                // (3) Check captures are Send.
-                let closure_span_key = self.mk_key(&function.1);
-                if let Some(captures) = self.closure_capture_facts.get(&closure_span_key) {
-                    for capture in captures {
-                        if !capture.is_send {
-                            self.diagnostics.push(HirDiagnostic::new(
-                                HirDiagnosticKind::SpawnedClosureNonSendCapture {
-                                    site: self.ids.site(),
-                                    capture_name: capture.name.clone(),
-                                },
-                                span.clone(),
-                                format!(
-                                    "spawned closure captures non-Send value '{}'",
-                                    capture.name
-                                ),
-                            ));
-                        }
-                    }
-                } else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "closure literal".to_string(),
-                            reason: "closure_capture_facts has no record for closure literal span"
-                                .to_string(),
-                        },
-                        span.clone(),
-                        "closure literal reached HIR without checker capture metadata",
-                    ));
-                }
-            }
-            _ => {
-                // Indirect call (variable, field access, etc.)
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                        site: self.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned callee must be a direct function or closure literal".to_string(),
-                ));
-            }
-        }
     }
 }
 
@@ -32193,6 +30154,7 @@ fn collect_captures_walk(
             captures.push(HirLambdaCapture {
                 binding: *id,
                 name: name.clone(),
+                ty: expr.ty.clone(),
                 kind,
             });
         }
@@ -32210,8 +30172,6 @@ fn collect_captures_walk(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
         | HirExprKind::Closure { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -32225,28 +30185,25 @@ fn collect_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_captures_walk(conn, param_ids, seen, captures, self_id);
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             collect_captures_walk(child, param_ids, seen, captures, self_id);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             collect_captures_walk(listener, param_ids, seen, captures, self_id);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_captures_walk(value, param_ids, seen, captures, self_id);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_captures_walk(elem, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(arg, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_captures_walk(callee, param_ids, seen, captures, self_id);
             for arg in args {
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
@@ -32257,7 +30214,8 @@ fn collect_captures_walk(
                 collect_captures_walk(arg, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -32281,6 +30239,7 @@ fn collect_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
+        | HirExprKind::Race { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_captures_walk_block(block, param_ids, seen, captures, self_id);
@@ -32291,6 +30250,16 @@ fn collect_captures_walk(
             if let Some(value) = value {
                 collect_captures_walk(value, param_ids, seen, captures, self_id);
             }
+        }
+        HirExprKind::ScopeRecovery {
+            scope,
+            error,
+            handler,
+        } => {
+            collect_captures_walk(scope, param_ids, seen, captures, self_id);
+            let mut handler_locals = param_ids.clone();
+            handler_locals.insert(error.id);
+            collect_captures_walk(handler, &handler_locals, seen, captures, self_id);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_captures_walk(duration, param_ids, seen, captures, self_id);
@@ -32318,37 +30287,14 @@ fn collect_captures_walk(
         HirExprKind::FieldAccess { object, .. } => {
             collect_captures_walk(object, param_ids, seen, captures, self_id);
         }
-        HirExprKind::AwaitTask { binding_id, .. } => {
-            // The awaited task handle is captured from the enclosing
-            // scope unless it is one of the lambda's own params.
-            if param_ids.contains(binding_id) || !seen.insert(*binding_id) {
-                return;
-            }
-            let kind = if Some(*binding_id) == self_id {
-                HirCaptureKind::Weak
-            } else {
-                HirCaptureKind::Strong
-            };
-            captures.push(HirLambdaCapture {
-                binding: *binding_id,
-                // The await arm doesn't carry the binding's surface
-                // name on its own — reach for the binding name via
-                // the binding_name slot.
-                name: String::new(),
-                kind,
-            });
-        }
         HirExprKind::Select(select) => {
             for arm in &select.arms {
                 match &arm.kind {
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_captures_walk(stream, param_ids, seen, captures, self_id);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_captures_walk(actor, param_ids, seen, captures, self_id);
-                        for arg in args {
-                            collect_captures_walk(arg, param_ids, seen, captures, self_id);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        collect_captures_walk(call, param_ids, seen, captures, self_id);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_captures_walk(task, param_ids, seen, captures, self_id);
@@ -32363,18 +30309,11 @@ fn collect_captures_walk(
                 collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::Join(join) => {
-            for branch in &join.branches {
-                collect_captures_walk(&branch.actor, param_ids, seen, captures, self_id);
-                for arg in &branch.args {
-                    collect_captures_walk(arg, param_ids, seen, captures, self_id);
-                }
-            }
-        }
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_captures_walk(tuple, param_ids, seen, captures, self_id);
         }
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             collect_captures_walk(container, param_ids, seen, captures, self_id);
             collect_captures_walk(index, param_ids, seen, captures, self_id);
         }
@@ -32382,7 +30321,6 @@ fn collect_captures_walk(
             container,
             start,
             end,
-            inclusive: _,
         } => {
             collect_captures_walk(container, param_ids, seen, captures, self_id);
             if let Some(s) = start {
@@ -32392,34 +30330,9 @@ fn collect_captures_walk(
                 collect_captures_walk(e, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            // `emit` is only valid inside a machine body, which is never
-            // inside a lambda/closure — so this arm should be unreachable in
-            // practice.  Walk fields defensively to keep the traversal
-            // exhaustive.
-            for (_, field_val) in fields {
-                collect_captures_walk(field_val, param_ids, seen, captures, self_id);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            // Machine method calls are not expected inside lambda/closure
-            // bodies in v0.5. Walk defensively for exhaustiveness.
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(event, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            // Same defensive rationale as `MachineStep` above.
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(event, param_ids, seen, captures, self_id);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -32463,24 +30376,6 @@ fn collect_captures_walk(
                     collect_captures_walk(guard, param_ids, seen, captures, self_id);
                 }
                 collect_captures_walk(&arm.body, param_ids, seen, captures, self_id);
-            }
-        }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
-            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_captures_walk(scrutinee, param_ids, seen, captures, self_id);
-            collect_captures_walk_block(body, param_ids, seen, captures, self_id);
-            if let Some(eb) = else_body {
-                collect_captures_walk_block(eb, param_ids, seen, captures, self_id);
             }
         }
         HirExprKind::Loop { body, .. } => {
@@ -32537,8 +30432,6 @@ fn collect_general_closure_captures_walk(
         | HirExprKind::Literal(_)
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::SpawnLambdaActor { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -32552,7 +30445,7 @@ fn collect_general_closure_captures_walk(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             collect_general_closure_captures_walk(conn, outer_bindings, seen, captures);
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             collect_general_closure_captures_walk(child, outer_bindings, seen, captures);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -32561,22 +30454,19 @@ fn collect_general_closure_captures_walk(
         HirExprKind::StreamRecvAwait { stream, .. } => {
             collect_general_closure_captures_walk(stream, outer_bindings, seen, captures);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. }
         | HirExprKind::CoerceToDynTrait { value, .. } => {
             collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 collect_general_closure_captures_walk(elem, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
-        }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
+        HirExprKind::Call { callee, args, .. } => {
             collect_general_closure_captures_walk(callee, outer_bindings, seen, captures);
             for arg in args {
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
@@ -32587,7 +30477,8 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. }
         | HirExprKind::CallDynMethod { receiver, args, .. }
@@ -32611,6 +30502,7 @@ fn collect_general_closure_captures_walk(
         }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block }
+        | HirExprKind::Race { body: block }
         | HirExprKind::ForkBlock { body: block, .. }
         | HirExprKind::GenBlock { body: block, .. } => {
             collect_general_closure_captures_walk_block(block, outer_bindings, seen, captures);
@@ -32621,6 +30513,10 @@ fn collect_general_closure_captures_walk(
             if let Some(value) = value {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
+        }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            collect_general_closure_captures_walk(scope, outer_bindings, seen, captures);
+            collect_general_closure_captures_walk(handler, outer_bindings, seen, captures);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             collect_general_closure_captures_walk(duration, outer_bindings, seen, captures);
@@ -32648,13 +30544,6 @@ fn collect_general_closure_captures_walk(
         HirExprKind::FieldAccess { object, .. } => {
             collect_general_closure_captures_walk(object, outer_bindings, seen, captures);
         }
-        HirExprKind::AwaitTask { binding_id, .. } => {
-            if let Some((name, _, span)) = outer_bindings.get(binding_id) {
-                if seen.insert(*binding_id) {
-                    captures.push((*binding_id, name.clone(), span.clone()));
-                }
-            }
-        }
         HirExprKind::Select(select) => {
             for arm in &select.arms {
                 match &arm.kind {
@@ -32666,21 +30555,8 @@ fn collect_general_closure_captures_walk(
                             captures,
                         );
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_general_closure_captures_walk(
-                            actor,
-                            outer_bindings,
-                            seen,
-                            captures,
-                        );
-                        for arg in args {
-                            collect_general_closure_captures_walk(
-                                arg,
-                                outer_bindings,
-                                seen,
-                                captures,
-                            );
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        collect_general_closure_captures_walk(call, outer_bindings, seen, captures);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_general_closure_captures_walk(task, outer_bindings, seen, captures);
@@ -32705,23 +30581,11 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::Join(join) => {
-            for branch in &join.branches {
-                collect_general_closure_captures_walk(
-                    &branch.actor,
-                    outer_bindings,
-                    seen,
-                    captures,
-                );
-                for arg in &branch.args {
-                    collect_general_closure_captures_walk(arg, outer_bindings, seen, captures);
-                }
-            }
-        }
         HirExprKind::TupleIndex { tuple, .. } => {
             collect_general_closure_captures_walk(tuple, outer_bindings, seen, captures);
         }
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(index, outer_bindings, seen, captures);
         }
@@ -32729,7 +30593,6 @@ fn collect_general_closure_captures_walk(
             container,
             start,
             end,
-            inclusive: _,
         } => {
             collect_general_closure_captures_walk(container, outer_bindings, seen, captures);
             if let Some(s) = start {
@@ -32739,26 +30602,9 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::MachineEmit { fields, .. } => {
-            // `emit` cannot appear inside a closure body (machine bodies are
-            // not closures); walk fields defensively for exhaustiveness.
-            for (_, field_val) in fields {
-                collect_general_closure_captures_walk(field_val, outer_bindings, seen, captures);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        }
-        | HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(event, outer_bindings, seen, captures);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
@@ -32801,24 +30647,6 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(&arm.body, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
-            if let Some(eb) = else_body {
-                collect_general_closure_captures_walk_block(eb, outer_bindings, seen, captures);
-            }
-        }
         HirExprKind::Loop { body, .. } => {
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
@@ -32833,43 +30661,19 @@ fn collect_general_closure_captures_walk_block(
 ) {
     for stmt in &block.statements {
         match &stmt.kind {
-            HirStmtKind::Let(_, Some(value)) => {
+            HirStmtKind::Let(_, Some(value)) | HirStmtKind::Destructure { value, .. } => {
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_general_closure_captures_walk(expr, outer_bindings, seen, captures);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 collect_general_closure_captures_walk(target, outer_bindings, seen, captures);
                 collect_general_closure_captures_walk(value, outer_bindings, seen, captures);
             }
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 collect_general_closure_captures_walk(body, outer_bindings, seen, captures);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                collect_general_closure_captures_walk(scrutinee, outer_bindings, seen, captures);
-                for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(_, Some(value)) = &prelude_stmt.kind {
-                        collect_general_closure_captures_walk(
-                            value,
-                            outer_bindings,
-                            seen,
-                            captures,
-                        );
-                    }
-                }
-                collect_general_closure_captures_walk_block(
-                    else_body,
-                    outer_bindings,
-                    seen,
-                    captures,
-                );
             }
         }
     }
@@ -32897,34 +30701,28 @@ fn collect_captures_walk_block(
                 collect_captures_walk(value, &locally_bound, seen, captures, self_id);
                 locally_bound.insert(binding.id);
             }
+            HirStmtKind::Destructure { value, fields } => {
+                collect_captures_walk(value, &locally_bound, seen, captures, self_id);
+                locally_bound.extend(
+                    fields
+                        .iter()
+                        .filter_map(|field| field.binding.as_ref())
+                        .map(|binding| binding.id),
+                );
+            }
             HirStmtKind::Let(binding, None) => {
                 locally_bound.insert(binding.id);
             }
             HirStmtKind::Expr(expr) | HirStmtKind::Return(Some(expr)) => {
                 collect_captures_walk(expr, &locally_bound, seen, captures, self_id);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Assign { target, value, .. } => {
                 collect_captures_walk(target, &locally_bound, seen, captures, self_id);
                 collect_captures_walk(value, &locally_bound, seen, captures, self_id);
             }
             HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 collect_captures_walk(body, &locally_bound, seen, captures, self_id);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                collect_captures_walk(scrutinee, &locally_bound, seen, captures, self_id);
-                for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(binding, Some(value)) = &prelude_stmt.kind {
-                        collect_captures_walk(value, &locally_bound, seen, captures, self_id);
-                        locally_bound.insert(binding.id);
-                    }
-                }
-                collect_captures_walk_block(else_body, &locally_bound, seen, captures, self_id);
             }
         }
     }
@@ -32934,258 +30732,6 @@ fn collect_captures_walk_block(
 }
 
 // ── Machine static-check helpers ────────────────────────────────────────────
-
-/// Allowlist of AST spans that mark constructs in a machine transition body
-/// or entry/exit block which the HIR lowerer cannot resolve today but which
-/// are owned by the AST-summary static checks (exhaustiveness, self-
-/// transition rules, effect-parity, emit-cycle). When lowering a machine
-/// body produces a diagnostic whose `(kind, span)` matches one of these
-/// entries exactly, the diagnostic is dropped; every other diagnostic
-/// produced during the same lowering is preserved so unrelated unresolved
-/// symbols and type errors still fail closed.
-///
-/// Note: `Expr::MachineEmit` is no longer in the allowlist because it now
-/// lowers to `HirExprKind::MachineEmit` directly rather than falling through
-/// to `NotYetImplemented`.
-#[derive(Debug, Default)]
-struct MachineBodyAllowlist {
-    /// Spans of `Expr::Identifier(name)` where `name` is a declared state
-    /// name in the current machine — drops the matching `UnresolvedSymbol`.
-    state_name_refs: Vec<(Span, String)>,
-    /// Spans of `Expr::This` — drops the matching `NotYetImplemented`
-    /// raised by the catch-all expression arm.
-    this_spans: Vec<Span>,
-}
-
-impl MachineBodyAllowlist {
-    /// Return `true` iff the diagnostic's `(kind, span)` is one this
-    /// allowlist explicitly accounts for. Anything else flows through.
-    fn permits(&self, diag: &HirDiagnostic) -> bool {
-        match &diag.kind {
-            HirDiagnosticKind::UnresolvedSymbol { name } => self
-                .state_name_refs
-                .iter()
-                .any(|(span, allowed)| spans_equal(span, &diag.span) && allowed == name),
-            HirDiagnosticKind::NotYetImplemented { .. } => self
-                .this_spans
-                .iter()
-                .any(|span| spans_equal(span, &diag.span)),
-            _ => false,
-        }
-    }
-}
-
-fn spans_equal(a: &Span, b: &Span) -> bool {
-    a.start == b.start && a.end == b.end
-}
-
-/// Walk a machine transition body expression to populate
-/// `MachineBodyAllowlist`. Only the specific constructs that the HIR
-/// lowerer is known not to support yet (state-name identifier references,
-/// `this`, and `emit`) are recorded. All other sub-expressions are walked
-/// solely to descend into their children — they themselves are never
-/// allowlisted, so e.g. an unresolved user identifier inside a `Call`
-/// argument still produces a visible diagnostic.
-fn walk_expr_for_machine_allowlist(
-    expr: &Spanned<Expr>,
-    state_names: &HashSet<String>,
-    out: &mut MachineBodyAllowlist,
-) {
-    let (node, span) = expr;
-    match node {
-        Expr::This => out.this_spans.push(span.clone()),
-        Expr::MachineEmit { fields, .. } => {
-            // `emit` now lowers to `HirExprKind::MachineEmit` directly; no
-            // allowlist entry is needed.  Still descend into field values in
-            // case they contain state-name refs or `this` that do need entries.
-            for (_, value) in fields {
-                walk_expr_for_machine_allowlist(value, state_names, out);
-            }
-        }
-        Expr::Identifier(name) if state_names.contains(name) => {
-            out.state_name_refs.push((span.clone(), name.clone()));
-        }
-        Expr::Block(block) => walk_block_for_machine_allowlist(block, state_names, out),
-        Expr::Binary { left, right, .. } => {
-            walk_expr_for_machine_allowlist(left, state_names, out);
-            walk_expr_for_machine_allowlist(right, state_names, out);
-        }
-        Expr::Unary { operand, .. } => {
-            walk_expr_for_machine_allowlist(operand, state_names, out);
-        }
-        Expr::Call { function, args, .. } => {
-            walk_expr_for_machine_allowlist(function, state_names, out);
-            for arg in args {
-                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
-            }
-        }
-        Expr::MethodCall { receiver, args, .. } => {
-            walk_expr_for_machine_allowlist(receiver, state_names, out);
-            for arg in args {
-                walk_expr_for_machine_allowlist(arg.expr(), state_names, out);
-            }
-        }
-        Expr::FieldAccess { object, .. } => {
-            walk_expr_for_machine_allowlist(object, state_names, out);
-        }
-        Expr::Index { object, index } => {
-            walk_expr_for_machine_allowlist(object, state_names, out);
-            walk_expr_for_machine_allowlist(index, state_names, out);
-        }
-        Expr::StructInit { fields, base, .. } => {
-            for (_, value) in fields {
-                walk_expr_for_machine_allowlist(value, state_names, out);
-            }
-            if let Some(base) = base {
-                walk_expr_for_machine_allowlist(base, state_names, out);
-            }
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            walk_expr_for_machine_allowlist(condition, state_names, out);
-            walk_expr_for_machine_allowlist(then_block, state_names, out);
-            if let Some(else_block) = else_block {
-                walk_expr_for_machine_allowlist(else_block, state_names, out);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            walk_expr_for_machine_allowlist(scrutinee, state_names, out);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    walk_expr_for_machine_allowlist(guard, state_names, out);
-                }
-                walk_expr_for_machine_allowlist(&arm.body, state_names, out);
-            }
-        }
-        Expr::Cast { expr, .. } => walk_expr_for_machine_allowlist(expr, state_names, out),
-        Expr::Range { start, end, .. } => {
-            if let Some(start) = start {
-                walk_expr_for_machine_allowlist(start, state_names, out);
-            }
-            if let Some(end) = end {
-                walk_expr_for_machine_allowlist(end, state_names, out);
-            }
-        }
-        Expr::Is { lhs, rhs } => {
-            walk_expr_for_machine_allowlist(lhs, state_names, out);
-            walk_expr_for_machine_allowlist(rhs, state_names, out);
-        }
-        Expr::Tuple(items) | Expr::Array(items) => {
-            for item in items {
-                walk_expr_for_machine_allowlist(item, state_names, out);
-            }
-        }
-        // LEGITIMATE-NOOP: conservative Expr walker — only Expr variants
-        // reachable in machine transition/entry/exit bodies are descended into.
-        // Unknown variants cannot mask unresolved diagnostics; they simply
-        // aren't allowlisted and surface normally. Expr has many variants not
-        // valid here (lambdas, spawn, select, scope, timeout, for-loops, …).
-        _ => {}
-    }
-}
-
-/// Walk a machine entry/exit block to populate `MachineBodyAllowlist`.
-fn walk_block_for_machine_allowlist(
-    block: &Block,
-    state_names: &HashSet<String>,
-    out: &mut MachineBodyAllowlist,
-) {
-    for (stmt, _) in &block.stmts {
-        walk_stmt_for_machine_allowlist(stmt, state_names, out);
-    }
-    if let Some(tail) = &block.trailing_expr {
-        walk_expr_for_machine_allowlist(tail, state_names, out);
-    }
-}
-
-fn walk_stmt_for_machine_allowlist(
-    stmt: &Stmt,
-    state_names: &HashSet<String>,
-    out: &mut MachineBodyAllowlist,
-) {
-    match stmt {
-        Stmt::Expression(e) => walk_expr_for_machine_allowlist(e, state_names, out),
-        Stmt::Assign { target, value, .. } => {
-            walk_expr_for_machine_allowlist(target, state_names, out);
-            walk_expr_for_machine_allowlist(value, state_names, out);
-        }
-        Stmt::Let { value, .. } | Stmt::Var { value, .. } | Stmt::Return(value) => {
-            if let Some(value) = value {
-                walk_expr_for_machine_allowlist(value, state_names, out);
-            }
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            walk_expr_for_machine_allowlist(condition, state_names, out);
-            walk_block_for_machine_allowlist(then_block, state_names, out);
-            if let Some(else_block) = else_block {
-                if let Some(block) = &else_block.block {
-                    walk_block_for_machine_allowlist(block, state_names, out);
-                }
-                if let Some(if_stmt) = &else_block.if_stmt {
-                    walk_stmt_for_machine_allowlist(&if_stmt.0, state_names, out);
-                }
-            }
-        }
-        Stmt::Defer(inner) => walk_expr_for_machine_allowlist(inner, state_names, out),
-        // LEGITIMATE-NOOP: conservative Stmt walker — only statement variants
-        // reachable in machine entry/exit blocks are descended into. See the
-        // walker contract note on `walk_expr_for_machine_allowlist`.
-        _ => {}
-    }
-}
-
-/// Determine whether a self-transition body is "empty" for the `@reenter` rule.
-///
-/// A body is considered empty when:
-/// - It is `Expr::Identifier(target_state)` — the no-body semicolon shorthand
-///   that the parser synthesises for `on E: S -> S;`.
-/// - It is `Expr::Block` with no statements and no trailing expression.
-///
-/// Any other form (statements, expressions) is non-empty and requires `@reenter`.
-fn is_empty_self_body(body: &Expr, target_state: &str) -> bool {
-    match body {
-        Expr::Identifier(name) => name == target_state,
-        Expr::Block(block) => block.stmts.is_empty() && block.trailing_expr.is_none(),
-        _ => false,
-    }
-}
-
-/// Shallow-scan a `Block` for field names appearing as the left-hand side of
-/// an assignment statement (`self.field = ...`). Used for effect-parity checking
-/// in entry blocks — the scan is intentionally shallow (depth = 1) since a
-/// full walk would require type information we don't have in Lane A.
-fn collect_assigned_field_names(block: &Block) -> Vec<(String, Span)> {
-    let mut names = Vec::new();
-    for (stmt, _) in &block.stmts {
-        if let Stmt::Assign { target, .. } = stmt {
-            if let Expr::FieldAccess { object, field } = &target.0 {
-                if matches!(object.0, Expr::This) {
-                    names.push((field.clone(), target.1.clone()));
-                }
-            }
-        }
-    }
-    names
-}
-
-/// Shallow-scan an `Expr` (transition body) for `self.field = ...` assignments.
-fn collect_assigned_field_names_expr(expr: &Expr) -> Vec<String> {
-    if let Expr::Block(block) = expr {
-        collect_assigned_field_names(block)
-            .into_iter()
-            .map(|(name, _)| name)
-            .collect()
-    } else {
-        Vec::new()
-    }
-}
 
 /// Collect event names directly emitted by `emit EventName` expressions within
 /// an expression (transition body). Only direct emits are tracked; deeper nesting
@@ -33221,393 +30767,6 @@ fn collect_emitted_events_inner(expr: &Expr, out: &mut Vec<String>) {
         // descends into `Block` for top-level event counting. Other Expr
         // variants are irrelevant to direct-emit detection.
         _ => {}
-    }
-}
-
-/// Collect event names emitted by `HirExprKind::MachineEmit` nodes within a
-/// lowered HIR expression tree, resolving `event_idx` back to names via
-/// `event_names` (the ordered event list of the enclosing machine declaration,
-/// matching `HirMachineDecl::events` order).
-///
-/// Descends into all sub-expressions including `if`/`else` branches so that a
-/// direct self-emit nested inside a conditional is detected by the emit-cycle
-/// check — unlike the old AST walker which only traversed top-level blocks.
-fn collect_hir_emitted_events(expr: &HirExpr, event_names: &[String]) -> Vec<String> {
-    let mut events = Vec::new();
-    collect_hir_emitted_events_walk(expr, event_names, &mut events);
-    events
-}
-
-/// Walk every statement and the tail of a `HirBlock`, collecting machine-emit
-/// event names. Used by the let-else arm (whose `else_body` is a `HirBlock`,
-/// not an `Expr::Block`) so a self-emit inside a let-else fallback is counted
-/// by the emit-cycle check.
-fn collect_hir_emitted_events_in_block(
-    block: &HirBlock,
-    event_names: &[String],
-    out: &mut Vec<String>,
-) {
-    for stmt in &block.statements {
-        collect_hir_emitted_events_in_stmt(stmt, event_names, out);
-    }
-    if let Some(tail) = &block.tail {
-        collect_hir_emitted_events_walk(tail, event_names, out);
-    }
-}
-
-/// Walk one HIR statement for machine-emit event names. Centralised so every
-/// block-bearing walker (the `_in_block` helper plus the inline `Block` /
-/// `GenBlock` / etc. arms) reaches an identical set of emit-bearing
-/// sub-expressions — including the let-else success prelude.
-fn collect_hir_emitted_events_in_stmt(
-    stmt: &HirStmt,
-    event_names: &[String],
-    out: &mut Vec<String>,
-) {
-    match &stmt.kind {
-        HirStmtKind::Expr(e) | HirStmtKind::Let(_, Some(e)) | HirStmtKind::Return(Some(e)) => {
-            collect_hir_emitted_events_walk(e, event_names, out);
-        }
-        HirStmtKind::Assign { value, .. } => {
-            collect_hir_emitted_events_walk(value, event_names, out);
-        }
-        HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
-        HirStmtKind::Defer { body, .. } => {
-            collect_hir_emitted_events_walk(body, event_names, out);
-        }
-        HirStmtKind::LetElse {
-            scrutinee,
-            success_prelude,
-            else_body,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for prelude_stmt in success_prelude {
-                collect_hir_emitted_events_in_stmt(prelude_stmt, event_names, out);
-            }
-            collect_hir_emitted_events_in_block(else_body, event_names, out);
-        }
-    }
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "single recursive walker spanning all HirExprKind variants"
-)]
-#[allow(
-    clippy::match_same_arms,
-    reason = "block-bearing variants (GenBlock / Scope / ForkBlock / While / \
-              ForRange / WhileLet / Loop) all delegate to \
-              collect_hir_emitted_events_in_block but are kept as distinct arms \
-              so a new variant forces an explicit per-variant decision rather \
-              than silently joining a merged arm"
-)]
-fn collect_hir_emitted_events_walk(expr: &HirExpr, event_names: &[String], out: &mut Vec<String>) {
-    match &expr.kind {
-        HirExprKind::RcIntrinsic {
-            receiver, value, ..
-        } => {
-            for operand in receiver.iter().chain(value.iter()) {
-                collect_hir_emitted_events_walk(operand, event_names, out);
-            }
-        }
-        HirExprKind::MachineEmit { event_idx, fields } => {
-            if let Some(name) = event_names.get(*event_idx) {
-                out.push(name.clone());
-            }
-            // Recurse into field expressions — they may contain nested emits.
-            for (_, e) in fields {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::Block(block) => {
-            collect_hir_emitted_events_in_block(block, event_names, out);
-        }
-        HirExprKind::GenBlock { body, .. } => {
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::Yield {
-            value: Some(value), ..
-        } => collect_hir_emitted_events_walk(value, event_names, out),
-        HirExprKind::If {
-            condition,
-            then_expr,
-            else_expr,
-        } => {
-            collect_hir_emitted_events_walk(condition, event_names, out);
-            collect_hir_emitted_events_walk(then_expr, event_names, out);
-            if let Some(e) = else_expr {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::Binary { left, right, .. } | HirExprKind::IdentityCompare { left, right } => {
-            collect_hir_emitted_events_walk(left, event_names, out);
-            collect_hir_emitted_events_walk(right, event_names, out);
-        }
-        HirExprKind::Unary { operand, .. } | HirExprKind::WireCodec { operand, .. } => {
-            collect_hir_emitted_events_walk(operand, event_names, out);
-        }
-        HirExprKind::ConnAwaitRead { conn, .. } => {
-            collect_hir_emitted_events_walk(conn, event_names, out);
-        }
-        HirExprKind::AwaitRestart { child } => {
-            collect_hir_emitted_events_walk(child, event_names, out);
-        }
-        HirExprKind::ListenerAwaitAccept { listener, .. } => {
-            collect_hir_emitted_events_walk(listener, event_names, out);
-        }
-        HirExprKind::StreamRecvAwait { stream, .. } => {
-            collect_hir_emitted_events_walk(stream, event_names, out);
-        }
-        HirExprKind::NumericCast { value, .. }
-        | HirExprKind::SaturatingWidthCast { value, .. }
-        | HirExprKind::TryWidthCast { value, .. }
-        | HirExprKind::CoerceToDynTrait { value, .. } => {
-            collect_hir_emitted_events_walk(value, event_names, out);
-        }
-        HirExprKind::TupleLiteral { elements } => {
-            for elem in elements {
-                collect_hir_emitted_events_walk(elem, event_names, out);
-            }
-        }
-        HirExprKind::Call { callee, args, .. } | HirExprKind::SpawnedCall { callee, args, .. } => {
-            collect_hir_emitted_events_walk(callee, event_names, out);
-            for a in args {
-                collect_hir_emitted_events_walk(a, event_names, out);
-            }
-        }
-        HirExprKind::Match { scrutinee, arms } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for arm in arms {
-                if let Some(guard) = &arm.guard {
-                    collect_hir_emitted_events_walk(guard, event_names, out);
-                }
-                collect_hir_emitted_events_walk(&arm.body, event_names, out);
-            }
-        }
-        // Additional expression forms whose sub-expressions can contain emits.
-        HirExprKind::ActorSend { receiver, args, .. }
-        | HirExprKind::ActorAsk { receiver, args, .. }
-        | HirExprKind::ActorGenStream { receiver, args, .. }
-        | HirExprKind::CallDynMethod { receiver, args, .. }
-        | HirExprKind::ResolvedImplCall { receiver, args, .. }
-        | HirExprKind::CallTraitMethodStatic { receiver, args, .. }
-        | HirExprKind::VarSelfMethodCall { receiver, args, .. } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            for a in args {
-                collect_hir_emitted_events_walk(a, event_names, out);
-            }
-        }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(msg, event_names, out);
-            collect_hir_emitted_events_walk(timeout_ms, event_names, out);
-        }
-        HirExprKind::Spawn { args, .. } => {
-            for (_, e) in args {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::StructInit { fields, base, .. } => {
-            for (_, e) in fields {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-            if let Some(b) = base {
-                collect_hir_emitted_events_walk(b, event_names, out);
-            }
-        }
-        HirExprKind::FieldAccess { object, .. } => {
-            collect_hir_emitted_events_walk(object, event_names, out);
-        }
-        HirExprKind::Scope { body } | HirExprKind::ForkBlock { body, .. } => {
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::ScopeDeadline { duration, body } => {
-            collect_hir_emitted_events_walk(duration, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::While {
-            condition, body, ..
-        } => {
-            collect_hir_emitted_events_walk(condition, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::ForRange {
-            start,
-            end,
-            step,
-            body,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(start, event_names, out);
-            collect_hir_emitted_events_walk(end, event_names, out);
-            collect_hir_emitted_events_walk(step, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(scrutinee, event_names, out);
-            for block in std::iter::once(body).chain(else_body.as_ref()) {
-                collect_hir_emitted_events_in_block(block, event_names, out);
-            }
-        }
-        HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
-            if let Some(value) = value {
-                collect_hir_emitted_events_walk(value, event_names, out);
-            }
-        }
-        HirExprKind::Loop { body, .. } => {
-            collect_hir_emitted_events_in_block(body, event_names, out);
-        }
-        HirExprKind::TupleIndex { tuple, .. } => {
-            collect_hir_emitted_events_walk(tuple, event_names, out);
-        }
-        HirExprKind::Index { container, index } => {
-            collect_hir_emitted_events_walk(container, event_names, out);
-            collect_hir_emitted_events_walk(index, event_names, out);
-        }
-        HirExprKind::Slice {
-            container,
-            start,
-            end,
-            ..
-        } => {
-            collect_hir_emitted_events_walk(container, event_names, out);
-            if let Some(s) = start {
-                collect_hir_emitted_events_walk(s, event_names, out);
-            }
-            if let Some(e) = end {
-                collect_hir_emitted_events_walk(e, event_names, out);
-            }
-        }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(arg, event_names, out);
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(event, event_names, out);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-            collect_hir_emitted_events_walk(event, event_names, out);
-        }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
-        | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
-        | HirExprKind::RecordCloneCall { src: receiver, .. }
-        | HirExprKind::SubsumedValue {
-            source: receiver, ..
-        } => {
-            collect_hir_emitted_events_walk(receiver, event_names, out);
-        }
-        HirExprKind::MachineVariantCtor { payload, .. } => {
-            if let Some(fields) = payload {
-                for (_, e) in fields {
-                    collect_hir_emitted_events_walk(e, event_names, out);
-                }
-            }
-        }
-        HirExprKind::Select(sel) => {
-            for arm in &sel.arms {
-                match &arm.kind {
-                    HirSelectArmKind::StreamNext { stream } => {
-                        collect_hir_emitted_events_walk(stream, event_names, out);
-                    }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        collect_hir_emitted_events_walk(actor, event_names, out);
-                        for a in args {
-                            collect_hir_emitted_events_walk(a, event_names, out);
-                        }
-                    }
-                    HirSelectArmKind::TaskAwait { task } => {
-                        collect_hir_emitted_events_walk(task, event_names, out);
-                    }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        collect_hir_emitted_events_walk(receiver, event_names, out);
-                    }
-                    HirSelectArmKind::AfterTimer { duration } => {
-                        collect_hir_emitted_events_walk(duration, event_names, out);
-                    }
-                }
-                collect_hir_emitted_events_walk(&arm.body, event_names, out);
-            }
-        }
-        HirExprKind::Join(join) => {
-            for branch in &join.branches {
-                collect_hir_emitted_events_walk(&branch.actor, event_names, out);
-                for a in &branch.args {
-                    collect_hir_emitted_events_walk(a, event_names, out);
-                }
-            }
-        }
-        // A general closure executes inline in the current lowering flow;
-        // emits in its body belong to the enclosing transition.
-        HirExprKind::Closure { body, .. } => {
-            collect_hir_emitted_events_walk(body, event_names, out);
-        }
-        // Lambda-actors run on a separate actor substrate; MIR materialises
-        // only the handle/captures. Emits in their bodies belong to the inner
-        // actor, not the enclosing transition.
-        // Leaf variants also produce no emits.
-        HirExprKind::SpawnLambdaActor { .. }
-        | HirExprKind::Literal(_)
-        | HirExprKind::RegexLiteralRef { .. }
-        | HirExprKind::BindingRef { .. }
-        | HirExprKind::ContextReader { .. }
-        | HirExprKind::AwaitTask { .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
-        | HirExprKind::Yield { value: None, .. }
-        | HirExprKind::Continue { .. }
-        | HirExprKind::ActorSelf
-        | HirExprKind::Unsupported(_) => {}
-    }
-}
-
-/// One-token description of a parser `Expr` shape, used by
-/// `SelectArmNotSealedForm` diagnostic notes. Intentionally coarse — the
-/// goal is to tell the user "you wrote a literal where a sealed form
-/// belongs", not to echo the expression back at them.
-fn describe_select_source_shape(expr: &Expr) -> String {
-    match expr {
-        Expr::Literal(_) => "literal".into(),
-        Expr::Identifier(_) => "identifier".into(),
-        Expr::Binary { .. } => "binary expression".into(),
-        Expr::Block(_) => "block".into(),
-        Expr::If { .. } => "if expression".into(),
-        Expr::Select { .. } => "nested select".into(),
-        Expr::Join(_) => "join expression".into(),
-        Expr::FieldAccess { .. } => "field access".into(),
-        Expr::Index { .. } => "index expression".into(),
-        Expr::Range { .. } => "range expression".into(),
-        Expr::MethodCall { .. } => "non-actor method call".into(),
-        Expr::Cast { .. } => "cast expression".into(),
-        Expr::Timeout { .. } => "timeout expression".into(),
-        Expr::UnsafeBlock(_) => "unsafe block".into(),
-        Expr::Yield(_) => "yield expression".into(),
-        Expr::This => "this".into(),
-        _ => "expression".into(),
     }
 }
 
@@ -33749,31 +30908,10 @@ fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
                 }
             }
-            // A242 invariant: HIR pre-pass walkers that visit user expression
-            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
-            // FOUR Item::Machine positions:
-            //   1. each state's `entry` block
-            //   2. each state's `exit` block
-            //   3. each transition's `guard` expression (if any)
-            //   4. each transition's `body` expression (action)
-            // Partial coverage (e.g. transitions but not states) is a BLOCK in
-            // the independent review.
-            Item::Machine(machine) => {
-                for state in &machine.states {
-                    if let Some(entry) = &state.entry {
-                        scan_block_for_blocking_recv(entry, &mut ctx.diagnostics);
-                    }
-                    if let Some(exit) = &state.exit {
-                        scan_block_for_blocking_recv(exit, &mut ctx.diagnostics);
-                    }
-                }
-                for transition in &machine.transitions {
-                    if let Some(guard) = &transition.guard {
-                        scan_expr_for_blocking_recv(&guard.0, &mut ctx.diagnostics);
-                    }
-                    scan_expr_for_blocking_recv(&transition.body.0, &mut ctx.diagnostics);
-                }
-            }
+            // Machine bodies never reach here: normalization rewrites a
+            // machine into ordinary declarations before checking, and a
+            // machine it refuses fails type check before HIR. The expanded
+            // bodies are walked through `Item::Impl` like any other method.
             // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
             // do not carry user expression bodies that can call `.recv()`.
             _ => {}
@@ -33818,8 +30956,12 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_blocking_recv(&v.0, diagnostics);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            }
             scan_block_for_blocking_recv(body, diagnostics);
         }
         Stmt::If {
@@ -33834,15 +30976,16 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            }
             scan_block_for_blocking_recv(body, diagnostics);
             if let Some(eb) = else_body {
-                scan_block_for_blocking_recv(eb, diagnostics);
+                scan_expr_for_blocking_recv(&eb.0, diagnostics);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -33855,24 +30998,7 @@ fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut V
             }
         }
         Stmt::Loop { body, .. } => scan_block_for_blocking_recv(body, diagnostics),
-        Stmt::For {
-            iterable,
-            body,
-            is_await,
-            ..
-        } => {
-            if *is_await {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm {
-                        construct: "for await".to_string(),
-                    },
-                    iterable.1.clone(),
-                    "Blocking channel receive / stream receive operations via \
-                     `for await` lower to native-only suspending recv substrate \
-                     on wasm32. WASM-TODO(suspending-receive): add the cooperative receive continuation."
-                        .to_string(),
-                ));
-            }
+        Stmt::For { iterable, body, .. } => {
             scan_expr_for_blocking_recv(&iterable.0, diagnostics);
             scan_block_for_blocking_recv(body, diagnostics);
         }
@@ -33943,14 +31069,25 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
                 scan_expr_for_blocking_recv(&arg.expr().0, diagnostics);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_blocking_recv(&left.0, diagnostics);
             scan_expr_for_blocking_recv(&right.0, diagnostics);
         }
         Expr::Unary { operand, .. } => scan_expr_for_blocking_recv(&operand.0, diagnostics),
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_blocking_recv(&e.0, diagnostics);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_blocking_recv(&element.expr().0, diagnostics);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -33976,15 +31113,16 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_blocking_recv(&expr.0, diagnostics);
+            }
             scan_block_for_blocking_recv(body, diagnostics);
             if let Some(b) = else_body {
-                scan_block_for_blocking_recv(b, diagnostics);
+                scan_expr_for_blocking_recv(&b.0, diagnostics);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -34045,10 +31183,6 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
                 scan_expr_for_blocking_recv(&t.body.0, diagnostics);
             }
         }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
-            scan_expr_for_blocking_recv(&duration.0, diagnostics);
-        }
         Expr::UnsafeBlock(b) => scan_block_for_blocking_recv(b, diagnostics),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
             scan_expr_for_blocking_recv(&object.0, diagnostics);
@@ -34078,67 +31212,6 @@ fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>
         // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
         // without sub-expressions: nothing to scan.
         _ => {}
-    }
-}
-
-// ── FC-P1-A1: Task/fork/deadline gates ───────────────────────────────────────
-
-/// FC-P1-A1 HIR pre-pass gate — task/fork/deadline construct validation.
-/// Walks the entire program AST looking for `SpawnedCall`, `ForkChild`, `ForkBlock`,
-/// `ScopeDeadline`, and `AwaitTask` expressions. Emits fail-closed diagnostics for
-/// unsupported shapes before MIR lowering (moving the gates up from the 10 P1
-/// sites at hew-mir/src/lower.rs:7623-7871).
-fn check_task_gates(ctx: &mut LowerCtx, program: &Program) {
-    for (item, _span) in &program.items {
-        match item {
-            Item::Function(fn_decl) => {
-                scan_block_for_task_gates(&fn_decl.body, ctx, program);
-            }
-            Item::Actor(actor_decl) => {
-                if let Some(init) = &actor_decl.init {
-                    scan_block_for_task_gates(&init.body, ctx, program);
-                }
-                for recv_fn in &actor_decl.receive_fns {
-                    scan_block_for_task_gates(&recv_fn.body, ctx, program);
-                }
-                for method in &actor_decl.methods {
-                    scan_block_for_task_gates(&method.body, ctx, program);
-                }
-            }
-            Item::Impl(impl_decl) => {
-                for method in &impl_decl.methods {
-                    scan_block_for_task_gates(&method.body, ctx, program);
-                }
-            }
-            // A242 invariant: HIR pre-pass walkers that visit user expression
-            // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
-            // FOUR Item::Machine positions:
-            //   1. each state's `entry` block
-            //   2. each state's `exit` block
-            //   3. each transition's `guard` expression (if any)
-            //   4. each transition's `body` expression (action)
-            // Partial coverage (e.g. transitions but not states) is a BLOCK in
-            // the independent review.
-            Item::Machine(machine) => {
-                for state in &machine.states {
-                    if let Some(entry) = &state.entry {
-                        scan_block_for_task_gates(entry, ctx, program);
-                    }
-                    if let Some(exit) = &state.exit {
-                        scan_block_for_task_gates(exit, ctx, program);
-                    }
-                }
-                for transition in &machine.transitions {
-                    if let Some(guard) = &transition.guard {
-                        scan_expr_for_task_gates(&guard.0, &guard.1, ctx, program);
-                    }
-                    scan_expr_for_task_gates(&transition.body.0, &transition.body.1, ctx, program);
-                }
-            }
-            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
-            // do not carry user expression bodies with task spawns.
-            _ => {}
-        }
     }
 }
 
@@ -34331,430 +31404,6 @@ fn check_supervisor_spawn_gate(ctx: &mut LowerCtx, program: &Program) {
     }
 }
 
-fn scan_block_for_task_gates(
-    block: &hew_parser::ast::Block,
-    ctx: &mut LowerCtx,
-    program: &Program,
-) {
-    for (stmt, _) in &block.stmts {
-        scan_stmt_for_task_gates(stmt, ctx, program);
-    }
-    if let Some(trailing) = &block.trailing_expr {
-        scan_expr_for_task_gates(&trailing.0, &trailing.1, ctx, program);
-    }
-}
-
-#[allow(
-    clippy::match_same_arms,
-    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
-)]
-fn scan_stmt_for_task_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut LowerCtx, program: &Program) {
-    match stmt {
-        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
-            scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-        }
-        Stmt::Assign { target, value, .. } => {
-            scan_expr_for_task_gates(&target.0, &target.1, ctx, program);
-            scan_expr_for_task_gates(&value.0, &value.1, ctx, program);
-        }
-        Stmt::Expression(e) => {
-            scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-        }
-        Stmt::Return(Some(e)) => {
-            scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-        }
-        Stmt::Defer(e) => {
-            scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-        }
-        Stmt::Break { value: Some(v), .. } => {
-            scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-        }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            scan_expr_for_task_gates(&condition.0, &condition.1, ctx, program);
-            scan_block_for_task_gates(then_block, ctx, program);
-            if let Some(eb) = else_block {
-                scan_else_block_for_task_gates(eb, ctx, program);
-            }
-        }
-        Stmt::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-            if let Some(eb) = else_body {
-                scan_block_for_task_gates(eb, ctx, program);
-            }
-        }
-        Stmt::Match { scrutinee, arms } => {
-            scan_expr_for_task_gates(&scrutinee.0, &scrutinee.1, ctx, program);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_expr_for_task_gates(&g.0, &g.1, ctx, program);
-                }
-                scan_expr_for_task_gates(&arm.body.0, &arm.body.1, ctx, program);
-            }
-        }
-        Stmt::Loop { body, .. } => scan_block_for_task_gates(body, ctx, program),
-        Stmt::For { iterable, body, .. } => {
-            scan_expr_for_task_gates(&iterable.0, &iterable.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            scan_expr_for_task_gates(&condition.0, &condition.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and any other leaf
-        // statements carry no sub-expression to scan.
-        _ => {}
-    }
-}
-
-fn scan_else_block_for_task_gates(
-    eb: &hew_parser::ast::ElseBlock,
-    ctx: &mut LowerCtx,
-    program: &Program,
-) {
-    if let Some(stmt) = &eb.if_stmt {
-        scan_stmt_for_task_gates(&stmt.0, ctx, program);
-    }
-    if let Some(b) = &eb.block {
-        scan_block_for_task_gates(b, ctx, program);
-    }
-}
-
-/// Recursively walk an expression tree looking for task/fork/deadline constructs.
-/// Mirrors the shape of `scan_expr_for_blocking_recv`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_blocking_recv above"
-)]
-fn scan_expr_for_task_gates(expr: &Expr, span: &Span, ctx: &mut LowerCtx, program: &Program) {
-    match expr {
-        // FC-P1-A1 sites: spawn/fork child and fork block
-        Expr::ForkChild { expr: child, .. } => {
-            check_fork_child_shape(child, span, ctx, program);
-            scan_expr_for_task_gates(&child.0, &child.1, ctx, program);
-        }
-        Expr::ForkBlock { body } => {
-            check_fork_block_shape(body, span, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        Expr::ScopeDeadline { duration, body } => {
-            // A NON-EMPTY `after(...)` timeout body is now lowered: an
-            // execution-context caller emits the `SuspendingScopeDeadline` carrier
-            // (the after-body is the timer-fired edge), and a contextless caller
-            // fails closed at MIR (`scope deadline body` NYI). The body-shape gate
-            // that previously rejected non-empty bodies at HIR is therefore
-            // retired; MIR owns the call-conv decision.
-            scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-        }
-        // Recursive scanning for all other expression variants
-        Expr::MethodCall { receiver, args, .. } => {
-            scan_expr_for_task_gates(&receiver.0, &receiver.1, ctx, program);
-            for arg in args {
-                scan_expr_for_task_gates(&arg.expr().0, &arg.expr().1, ctx, program);
-            }
-        }
-        Expr::Call { function, args, .. } => {
-            scan_expr_for_task_gates(&function.0, &function.1, ctx, program);
-            for arg in args {
-                scan_expr_for_task_gates(&arg.expr().0, &arg.expr().1, ctx, program);
-            }
-        }
-        Expr::Binary { left, right, .. } => {
-            scan_expr_for_task_gates(&left.0, &left.1, ctx, program);
-            scan_expr_for_task_gates(&right.0, &right.1, ctx, program);
-        }
-        Expr::Unary { operand, .. } => {
-            scan_expr_for_task_gates(&operand.0, &operand.1, ctx, program);
-        }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
-            for e in es {
-                scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-            }
-        }
-        Expr::ArrayRepeat { value, count } => {
-            scan_expr_for_task_gates(&value.0, &value.1, ctx, program);
-            scan_expr_for_task_gates(&count.0, &count.1, ctx, program);
-        }
-        Expr::Block(b) | Expr::Scope { body: b } | Expr::GenBlock { body: b } => {
-            scan_block_for_task_gates(b, ctx, program);
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-            ..
-        } => {
-            scan_expr_for_task_gates(&condition.0, &condition.1, ctx, program);
-            scan_expr_for_task_gates(&then_block.0, &then_block.1, ctx, program);
-            if let Some(e) = else_block {
-                scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-            }
-        }
-        Expr::IfLet {
-            expr,
-            body,
-            else_body,
-            ..
-        } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_block_for_task_gates(body, ctx, program);
-            if let Some(b) = else_body {
-                scan_block_for_task_gates(b, ctx, program);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            scan_expr_for_task_gates(&scrutinee.0, &scrutinee.1, ctx, program);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_expr_for_task_gates(&g.0, &g.1, ctx, program);
-                }
-                scan_expr_for_task_gates(&arm.body.0, &arm.body.1, ctx, program);
-            }
-        }
-        Expr::Lambda { body, .. } => {
-            // Check if this lambda is being spawned (will be checked at call site)
-            // Recursively scan the body
-            scan_expr_for_task_gates(&body.0, &body.1, ctx, program);
-        }
-        Expr::SpawnLambdaActor { body, .. } => {
-            scan_expr_for_task_gates(&body.0, &body.1, ctx, program);
-        }
-        Expr::Spawn { target, args, .. } => {
-            scan_expr_for_task_gates(&target.0, &target.1, ctx, program);
-            for (_, v) in args {
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-        }
-        Expr::Cast { expr, .. } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-        }
-        Expr::StructInit { fields, base, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-            if let Some(b) = base {
-                scan_expr_for_task_gates(&b.0, &b.1, ctx, program);
-            }
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                scan_expr_for_task_gates(&k.0, &k.1, ctx, program);
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e)
-                | hew_parser::ast::StringPart::StructuralExpr(e) = part
-                {
-                    scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-                }
-            }
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms {
-                scan_expr_for_task_gates(&arm.source.0, &arm.source.1, ctx, program);
-                scan_expr_for_task_gates(&arm.body.0, &arm.body.1, ctx, program);
-            }
-            if let Some(t) = timeout {
-                scan_expr_for_task_gates(&t.duration.0, &t.duration.1, ctx, program);
-                scan_expr_for_task_gates(&t.body.0, &t.body.1, ctx, program);
-            }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_task_gates(&expr.0, &expr.1, ctx, program);
-            scan_expr_for_task_gates(&duration.0, &duration.1, ctx, program);
-        }
-        Expr::UnsafeBlock(b) => scan_block_for_task_gates(b, ctx, program),
-        // `await object`, `object.field`, and `object?` all just recurse into
-        // their single operand — the value-task await gate moved into HIR
-        // lowering, so the await scan no longer carries a dedicated check.
-        Expr::Await(object) | Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) => {
-            scan_expr_for_task_gates(&object.0, &object.1, ctx, program);
-        }
-        Expr::Index { object, index } => {
-            scan_expr_for_task_gates(&object.0, &object.1, ctx, program);
-            scan_expr_for_task_gates(&index.0, &index.1, ctx, program);
-        }
-        Expr::Is { lhs, rhs } => {
-            scan_expr_for_task_gates(&lhs.0, &lhs.1, ctx, program);
-            scan_expr_for_task_gates(&rhs.0, &rhs.1, ctx, program);
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                scan_expr_for_task_gates(&s.0, &s.1, ctx, program);
-            }
-            if let Some(e) = end {
-                scan_expr_for_task_gates(&e.0, &e.1, ctx, program);
-            }
-        }
-        Expr::Yield(Some(e)) => scan_expr_for_task_gates(&e.0, &e.1, ctx, program),
-        Expr::MachineEmit { fields, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_task_gates(&v.0, &v.1, ctx, program);
-            }
-        }
-        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
-        // without sub-expressions: nothing to scan.
-        _ => {}
-    }
-}
-
-/// Check fork child (spawned call / fork child) expression shape.
-/// Sites: hew-mir/src/lower.rs:7623, 7641 (`TaskSpawn` signature/callee)
-/// FC-P1-A1 Blocker 2: Also validates return type is unit.
-fn check_fork_child_shape(
-    child: &Spanned<Expr>,
-    span: &Span,
-    ctx: &mut LowerCtx,
-    _program: &Program,
-) {
-    let Expr::Call { function, args, .. } = &child.0 else {
-        // Fork child must be a call expression
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                site: ctx.ids.site(),
-            },
-            span.clone(),
-            "fork child must be a direct function call".to_string(),
-        ));
-        return;
-    };
-
-    // Check if it's a direct function or a lambda
-    match &function.0 {
-        Expr::Identifier(name) => {
-            // The call's checker-selected target carries the exact owner;
-            // never strip `mod::` to probe a leaf-keyed linker registry.
-            if !matches!(
-                ctx.ordinary_call_target(&child.1),
-                Some(CallTarget::User(_))
-            ) {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    format!("fork child callee '{name}' is not a direct module function"),
-                ));
-                return;
-            }
-            // FC-P1-A1 (revision pass 2, Finding 1): Non-unit return is
-            // VALID at spawn time — see `lower_spawned_call` comment. The
-            // await-site gate (MIR :7871) handles non-unit results.
-            // Args are valid on direct-fn fork children: MIR transfers them
-            // through the fork-entry shim env; the per-arg type restriction
-            // is enforced fail-closed at the MIR spawn site.
-            let _ = args;
-        }
-        Expr::Lambda {
-            params, body: _, ..
-        } => {
-            // FC-P1-A1 Blocker 3: Check call args are empty
-            if !args.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned closure call must have zero arguments".to_string(),
-                ));
-            }
-            // Check lambda has zero params
-            if !params.is_empty() {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::SpawnedClosureSignatureUnsupported {
-                        site: ctx.ids.site(),
-                    },
-                    span.clone(),
-                    "spawned closure must have zero parameters".to_string(),
-                ));
-            }
-            // FC-P1-A1 Blocker 3: Check closure return type is unit
-            // Note: Closure return type validation is deferred to inline lowering checks
-            // since expr_types may not be populated in all contexts (e.g., default TypeCheckOutput).
-            // The validate_task_spawn_call helper and inline lowering gates will catch this.
-
-            // FC-P1-A1 Blocker 3: Check closure captures are Send
-            let span_key = SpanKey::in_module(&function.1, ctx.current_module_idx);
-            if let Some(captures) = ctx.closure_capture_facts.get(&span_key) {
-                for capture in captures {
-                    if !capture.is_send {
-                        ctx.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::SpawnedClosureNonSendCapture {
-                                site: ctx.ids.site(),
-                                capture_name: capture.name.clone(),
-                            },
-                            span.clone(),
-                            format!("spawned closure captures non-Send value '{}'", capture.name),
-                        ));
-                    }
-                }
-            } else {
-                ctx.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "closure literal".to_string(),
-                        reason: "closure_capture_facts has no record for closure literal span"
-                            .to_string(),
-                    },
-                    span.clone(),
-                    "closure literal reached HIR without checker capture metadata",
-                ));
-            }
-        }
-        _ => {
-            ctx.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::TaskSpawnCalleeUnsupported {
-                    site: ctx.ids.site(),
-                },
-                span.clone(),
-                "fork child callee must be a direct function or closure".to_string(),
-            ));
-        }
-    }
-}
-
-/// Reject an empty fork body. Every non-empty unit body is executable through
-/// the synthesized scope-owned task entry path.
-fn check_fork_block_shape(
-    body: &hew_parser::ast::Block,
-    span: &Span,
-    ctx: &mut LowerCtx,
-    _program: &Program,
-) {
-    let stmt_count = body.stmts.len();
-    let has_trailing = body.trailing_expr.is_some();
-
-    if stmt_count == 0 && !has_trailing {
-        ctx.diagnostics.push(HirDiagnostic::new(
-            HirDiagnosticKind::ForkBlockBodyUnsupported {
-                site: ctx.ids.site(),
-                reason: "empty body".to_string(),
-            },
-            span.clone(),
-            "empty `fork { }` spawns nothing; put a function call in the body, \
-             e.g. `fork { work() }`"
-                .to_string(),
-        ));
-    }
-}
-
 // ── FC-P1-D: binary-operator HIR pre-pass gates ──────────────────────────────
 
 /// Context carried by the binary-operator gate walker. Bundles the
@@ -34802,31 +31451,10 @@ fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
                     scan_block_for_binop_gates(&method.body, &mut gate_ctx);
                 }
             }
-            Item::Machine(machine_decl) => {
-                // State entry/exit blocks and transition guards/bodies are
-                // lowered to HIR (see `lower_machine` at lower.rs:4057+ —
-                // `lower_machine_block_filtered` walks entry/exit, and
-                // `lower_machine_expr_filtered` walks the transition body
-                // around lower.rs:4201). A gated binop in any of these
-                // positions would otherwise escape FC-P1-D and surface at
-                // the MIR producer. Reference: hew-parser/src/ast.rs
-                // MachineDecl / MachineState (entry, exit) / MachineTransition
-                // (guard, body).
-                for state in &machine_decl.states {
-                    if let Some(entry) = &state.entry {
-                        scan_block_for_binop_gates(entry, &mut gate_ctx);
-                    }
-                    if let Some(exit) = &state.exit {
-                        scan_block_for_binop_gates(exit, &mut gate_ctx);
-                    }
-                }
-                for tr in &machine_decl.transitions {
-                    if let Some(guard) = &tr.guard {
-                        scan_expr_for_binop_gates(&guard.0, &guard.1, false, &mut gate_ctx);
-                    }
-                    scan_expr_for_binop_gates(&tr.body.0, &tr.body.1, false, &mut gate_ctx);
-                }
-            }
+            // Machine bodies never reach here: normalization rewrites a machine
+            // into ordinary declarations before checking, and a machine it refuses
+            // fails type check before HIR. The expanded bodies are walked through
+            // `Item::Impl` like any other method.
             // Variants below carry no user expression bodies that reach MIR
             // in v0.5; each is explicit (no `_` catch-all) so a future
             // `Item` variant trips compilation and forces an audit instead of
@@ -34853,6 +31481,7 @@ fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program) {
             | Item::ExternBlock(_)
             | Item::Supervisor(_)
             | Item::Record(_)
+            | Item::Machine(_)
             | Item::Import(_) => {}
         }
     }
@@ -34892,8 +31521,12 @@ fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCt
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_binop_gates(&v.0, &v.1, false, ctx);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            }
             scan_block_for_binop_gates(body, ctx);
         }
         Stmt::If {
@@ -34908,15 +31541,16 @@ fn scan_stmt_for_binop_gates(stmt: &hew_parser::ast::Stmt, ctx: &mut BinopGateCt
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            }
             scan_block_for_binop_gates(body, ctx);
             if let Some(eb) = else_body {
-                scan_block_for_binop_gates(eb, ctx);
+                scan_expr_for_binop_gates(&eb.0, &eb.1, false, ctx);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -35019,6 +31653,15 @@ fn scan_expr_for_binop_gates(
 
     match expr {
         Expr::Binary { .. } => unreachable!("handled above"),
+        Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
+            scan_expr_for_binop_gates(&left.0, &left.1, false, ctx);
+            scan_expr_for_binop_gates(&right.0, &right.1, false, ctx);
+        }
         Expr::Unary { operand, .. } => {
             scan_expr_for_binop_gates(&operand.0, &operand.1, false, ctx);
         }
@@ -35036,9 +31679,15 @@ fn scan_expr_for_binop_gates(
                 scan_expr_for_binop_gates(&a.0, &a.1, false, ctx);
             }
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_binop_gates(&e.0, &e.1, false, ctx);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                let operand = element.expr();
+                scan_expr_for_binop_gates(&operand.0, &operand.1, false, ctx);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -35064,15 +31713,16 @@ fn scan_expr_for_binop_gates(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
+            }
             scan_block_for_binop_gates(body, ctx);
             if let Some(b) = else_body {
-                scan_block_for_binop_gates(b, ctx);
+                scan_expr_for_binop_gates(&b.0, &b.1, false, ctx);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -35132,10 +31782,6 @@ fn scan_expr_for_binop_gates(
                 scan_expr_for_binop_gates(&t.duration.0, &t.duration.1, false, ctx);
                 scan_expr_for_binop_gates(&t.body.0, &t.body.1, false, ctx);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_binop_gates(&expr.0, &expr.1, false, ctx);
-            scan_expr_for_binop_gates(&duration.0, &duration.1, false, ctx);
         }
         Expr::UnsafeBlock(b) => scan_block_for_binop_gates(b, ctx),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
@@ -35464,29 +32110,6 @@ fn scan_item_for_call_shape(
                 scan_block_for_call_shape(&hook.body, callable, diagnostics);
             }
         }
-        HirItem::Machine(machine) => {
-            for state in &machine.states {
-                if let Some(entry) = &state.entry {
-                    scan_block_for_call_shape(entry, callable, diagnostics);
-                }
-                if let Some(exit) = &state.exit {
-                    scan_block_for_call_shape(exit, callable, diagnostics);
-                }
-            }
-            for trans in &machine.transitions {
-                // FC-P1-B revision pass 1: walk the guard expression as
-                // well as the body. Prior to lowering `tr.guard` into HIR
-                // (resolved in this same pass), `HirMachineTransition`
-                // carried only `has_guard: bool`, so this walker — and
-                // every other machine-body walker — was a no-op for guard
-                // positions. With `guard: Option<HirExpr>` the gate now
-                // sees call shapes inside `when <expr>` predicates.
-                if let Some(g) = &trans.guard {
-                    scan_expr_for_call_shape(g, callable, diagnostics);
-                }
-                scan_expr_for_call_shape(&trans.body, callable, diagnostics);
-            }
-        }
         // TypeDecl, Record, Supervisor, Impl, ExternFn carry no user
         // expression bodies that contain `HirExprKind::Call` nodes at this
         // stage (impl methods are also re-emitted as `HirItem::Function`
@@ -35510,7 +32133,10 @@ fn scan_block_for_call_shape(
             HirStmtKind::Let(_, Some(init)) => {
                 scan_expr_for_call_shape(init, callable, diagnostics);
             }
-            HirStmtKind::Assign { target, value } => {
+            HirStmtKind::Destructure { value, .. } => {
+                scan_expr_for_call_shape(value, callable, diagnostics);
+            }
+            HirStmtKind::Assign { target, value, .. } => {
                 scan_expr_for_call_shape(target, callable, diagnostics);
                 scan_expr_for_call_shape(value, callable, diagnostics);
             }
@@ -35520,20 +32146,6 @@ fn scan_block_for_call_shape(
             HirStmtKind::Let(_, None) | HirStmtKind::Return(None) => {}
             HirStmtKind::Defer { body, .. } => {
                 scan_expr_for_call_shape(body, callable, diagnostics);
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                success_prelude,
-                else_body,
-                ..
-            } => {
-                scan_expr_for_call_shape(scrutinee, callable, diagnostics);
-                for prelude_stmt in success_prelude {
-                    if let HirStmtKind::Let(_, Some(init)) = &prelude_stmt.kind {
-                        scan_expr_for_call_shape(init, callable, diagnostics);
-                    }
-                }
-                scan_block_for_call_shape(else_body, callable, diagnostics);
             }
         }
     }
@@ -35586,36 +32198,10 @@ fn scan_item_for_supervisor_spawn(
                 );
             }
         }
-        // A242 invariant: HIR pre-pass walkers that visit user expression
-        // bodies in Item::Function/Item::Actor/Item::Impl MUST also visit ALL
-        // FOUR Item::Machine positions:
-        //   1. each state's `entry` block
-        //   2. each state's `exit` block
-        //   3. each transition's `guard` expression (if any)
-        //   4. each transition's `body` expression (action)
-        // Partial coverage (e.g. transitions but not states) is a BLOCK in
-        // the independent review.
-        Item::Machine(machine) => {
-            for state in &machine.states {
-                if let Some(entry) = &state.entry {
-                    scan_block_for_supervisor_spawn(entry, current_module, registry, diagnostics);
-                }
-                if let Some(exit) = &state.exit {
-                    scan_block_for_supervisor_spawn(exit, current_module, registry, diagnostics);
-                }
-            }
-            for transition in &machine.transitions {
-                if let Some(guard) = &transition.guard {
-                    scan_expr_for_supervisor_spawn(&guard.0, current_module, registry, diagnostics);
-                }
-                scan_expr_for_supervisor_spawn(
-                    &transition.body.0,
-                    current_module,
-                    registry,
-                    diagnostics,
-                );
-            }
-        }
+        // Machine bodies never reach here: normalization rewrites a machine
+        // into ordinary declarations before checking, and a machine it refuses
+        // fails type check before HIR. The expanded bodies are walked through
+        // `Item::Impl` like any other method.
         // Const, Trait, Supervisor, Record, TypeDecl, TypeAlias, Wire,
         // Import, ExternBlock: no user expression bodies that can call
         // `spawn`.
@@ -35690,23 +32276,13 @@ fn scan_expr_for_call_shape(
                             _ => callable.names.contains(name),
                         };
                         if !admitted {
-                            let message = if hew_types::has_builtin_associated_item_identity(
-                                name,
-                                BuiltinType::LambdaActorHandle,
-                                "new",
-                            ) {
-                                "`LambdaActorHandle.new` is not a public constructor; use \
-                                 `actor |params| { body }` to create a lambda actor"
-                                    .to_string()
-                            } else {
-                                let source_name = name.replace("::", ".");
-                                format!(
-                                    "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
-                                     only module functions, extern fns, monomorphisation \
-                                     instantiations, and recognised runtime symbols are \
-                                     callable here"
-                                )
-                            };
+                            let source_name = name.replace("::", ".");
+                            let message = format!(
+                                "call to `{source_name}` has no MIR body or runtime-ABI lowering; \
+                                 only module functions, extern fns, monomorphisation \
+                                 instantiations, and recognised runtime symbols are \
+                                 callable here"
+                            );
                             diagnostics.push(HirDiagnostic::new(
                                 HirDiagnosticKind::CallableUnsupportedInMir { name: name.clone() },
                                 callee.span.clone(),
@@ -35768,7 +32344,7 @@ fn scan_expr_for_call_shape(
         HirExprKind::ConnAwaitRead { conn, .. } => {
             scan_expr_for_call_shape(conn, callable, diagnostics);
         }
-        HirExprKind::AwaitRestart { child } => {
+        HirExprKind::AwaitRestart { child } | HirExprKind::AwaitTask { operand: child, .. } => {
             scan_expr_for_call_shape(child, callable, diagnostics);
         }
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
@@ -35777,12 +32353,13 @@ fn scan_expr_for_call_shape(
         HirExprKind::StreamRecvAwait { stream, .. } => {
             scan_expr_for_call_shape(stream, callable, diagnostics);
         }
-        HirExprKind::NumericCast { value, .. }
+        HirExprKind::ArrayRepeat { value }
+        | HirExprKind::NumericCast { value, .. }
         | HirExprKind::SaturatingWidthCast { value, .. }
         | HirExprKind::TryWidthCast { value, .. } => {
             scan_expr_for_call_shape(value, callable, diagnostics);
         }
-        HirExprKind::TupleLiteral { elements } => {
+        HirExprKind::TupleLiteral { elements } | HirExprKind::ArrayLiteral { elements } => {
             for elem in elements {
                 scan_expr_for_call_shape(elem, callable, diagnostics);
             }
@@ -35792,7 +32369,8 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(v, callable, diagnostics);
             }
         }
-        HirExprKind::ActorSend { receiver, args, .. }
+        HirExprKind::ActorMessage { receiver, args, .. }
+        | HirExprKind::ActorDelivery { receiver, args, .. }
         | HirExprKind::ActorAsk { receiver, args, .. }
         | HirExprKind::ActorGenStream { receiver, args, .. } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
@@ -35834,15 +32412,14 @@ fn scan_expr_for_call_shape(
             scan_expr_for_call_shape(object, callable, diagnostics);
         }
         HirExprKind::Scope { body }
+        | HirExprKind::Race { body }
         | HirExprKind::ForkBlock { body, .. }
         | HirExprKind::GenBlock { body, .. } => {
             scan_block_for_call_shape(body, callable, diagnostics);
         }
-        HirExprKind::SpawnedCall { callee, args, .. } => {
-            scan_expr_for_call_shape(callee, callable, diagnostics);
-            for a in args {
-                scan_expr_for_call_shape(a, callable, diagnostics);
-            }
+        HirExprKind::ScopeRecovery { scope, handler, .. } => {
+            scan_expr_for_call_shape(scope, callable, diagnostics);
+            scan_expr_for_call_shape(handler, callable, diagnostics);
         }
         HirExprKind::ScopeDeadline { duration, body } => {
             scan_expr_for_call_shape(duration, callable, diagnostics);
@@ -35854,11 +32431,8 @@ fn scan_expr_for_call_shape(
                     HirSelectArmKind::StreamNext { stream } => {
                         scan_expr_for_call_shape(stream, callable, diagnostics);
                     }
-                    HirSelectArmKind::ActorAsk { actor, args, .. } => {
-                        scan_expr_for_call_shape(actor, callable, diagnostics);
-                        for a in args {
-                            scan_expr_for_call_shape(a, callable, diagnostics);
-                        }
+                    HirSelectArmKind::ActorAsk { call } => {
+                        scan_expr_for_call_shape(call, callable, diagnostics);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         scan_expr_for_call_shape(task, callable, diagnostics);
@@ -35873,14 +32447,6 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
             }
         }
-        HirExprKind::Join(join) => {
-            for branch in &join.branches {
-                scan_expr_for_call_shape(&branch.actor, callable, diagnostics);
-                for a in &branch.args {
-                    scan_expr_for_call_shape(a, callable, diagnostics);
-                }
-            }
-        }
         HirExprKind::SpawnLambdaActor { body, .. } | HirExprKind::Closure { body, .. } => {
             scan_expr_for_call_shape(body, callable, diagnostics);
         }
@@ -35890,7 +32456,8 @@ fn scan_expr_for_call_shape(
         HirExprKind::TupleIndex { tuple, .. } => {
             scan_expr_for_call_shape(tuple, callable, diagnostics);
         }
-        HirExprKind::Index { container, index } => {
+        HirExprKind::Index { container, index }
+        | HirExprKind::BorrowedIndex { container, index } => {
             scan_expr_for_call_shape(container, callable, diagnostics);
             scan_expr_for_call_shape(index, callable, diagnostics);
         }
@@ -35920,36 +32487,14 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(a, callable, diagnostics);
             }
         }
-        HirExprKind::NumericMethod { receiver, arg, .. } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(arg, callable, diagnostics);
-        }
         HirExprKind::ChannelRecvAwait { receiver, .. }
         | HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
-        | HirExprKind::MachineStateName { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
             source: receiver, ..
         } => {
             scan_expr_for_call_shape(receiver, callable, diagnostics);
-        }
-        HirExprKind::MachineEmit { fields, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_call_shape(v, callable, diagnostics);
-            }
-        }
-        HirExprKind::MachineStep {
-            receiver, event, ..
-        } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(event, callable, diagnostics);
-        }
-        HirExprKind::MachineTakeEmits {
-            receiver, event, ..
-        } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(event, callable, diagnostics);
         }
         HirExprKind::MachineVariantCtor {
             payload: Some(fields),
@@ -35986,24 +32531,6 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(&arm.body, callable, diagnostics);
             }
         }
-        HirExprKind::WhileLet {
-            scrutinee, body, ..
-        } => {
-            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
-            scan_block_for_call_shape(body, callable, diagnostics);
-        }
-        HirExprKind::IfLet {
-            scrutinee,
-            body,
-            else_body,
-            ..
-        } => {
-            scan_expr_for_call_shape(scrutinee, callable, diagnostics);
-            scan_block_for_call_shape(body, callable, diagnostics);
-            if let Some(eb) = else_body {
-                scan_block_for_call_shape(eb, callable, diagnostics);
-            }
-        }
         HirExprKind::Break { value, .. } | HirExprKind::Return { value } => {
             if let Some(value) = value {
                 scan_expr_for_call_shape(value, callable, diagnostics);
@@ -36021,11 +32548,8 @@ fn scan_expr_for_call_shape(
         | HirExprKind::RegexLiteralRef { .. }
         | HirExprKind::BindingRef { .. }
         | HirExprKind::ContextReader { .. }
-        | HirExprKind::AwaitTask { .. }
         | HirExprKind::Yield { value: None, .. }
         | HirExprKind::MachineVariantCtor { payload: None, .. }
-        | HirExprKind::MachineFieldAccess { .. }
-        | HirExprKind::MachineEventFieldAccess { .. }
         | HirExprKind::Continue { .. }
         | HirExprKind::ActorSelf
         | HirExprKind::Unsupported(_) => {}
@@ -36062,8 +32586,12 @@ fn scan_stmt_for_supervisor_spawn(
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_supervisor_spawn(&v.0, current_module, registry, diagnostics);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            }
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
         }
         Stmt::If {
@@ -36078,15 +32606,16 @@ fn scan_stmt_for_supervisor_spawn(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            }
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
             if let Some(eb) = else_body {
-                scan_block_for_supervisor_spawn(eb, current_module, registry, diagnostics);
+                scan_expr_for_supervisor_spawn(&eb.0, current_module, registry, diagnostics);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -36264,16 +32793,32 @@ fn scan_expr_for_supervisor_spawn(
                 );
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_supervisor_spawn(&left.0, current_module, registry, diagnostics);
             scan_expr_for_supervisor_spawn(&right.0, current_module, registry, diagnostics);
         }
         Expr::Unary { operand, .. } => {
             scan_expr_for_supervisor_spawn(&operand.0, current_module, registry, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_supervisor_spawn(&e.0, current_module, registry, diagnostics);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_supervisor_spawn(
+                    &element.expr().0,
+                    current_module,
+                    registry,
+                    diagnostics,
+                );
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -36299,15 +32844,16 @@ fn scan_expr_for_supervisor_spawn(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
+            }
             scan_block_for_supervisor_spawn(body, current_module, registry, diagnostics);
             if let Some(b) = else_body {
-                scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
+                scan_expr_for_supervisor_spawn(&b.0, current_module, registry, diagnostics);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -36371,10 +32917,6 @@ fn scan_expr_for_supervisor_spawn(
                 );
                 scan_expr_for_supervisor_spawn(&t.body.0, current_module, registry, diagnostics);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            scan_expr_for_supervisor_spawn(&expr.0, current_module, registry, diagnostics);
-            scan_expr_for_supervisor_spawn(&duration.0, current_module, registry, diagnostics);
         }
         Expr::UnsafeBlock(b) => {
             scan_block_for_supervisor_spawn(b, current_module, registry, diagnostics);
@@ -36466,28 +33008,10 @@ fn scan_item_for_vec_index_gate(
                 scan_block_for_vec_index_gate(&method.body, expr_types, diagnostics);
             }
         }
-        Item::Machine(machine_decl) => {
-            // Machine walkers must cover all four user-expression positions:
-            // state entry, state exit, transition guard, transition body.
-            // Skipping any of state.entry / state.exit lets unsupported
-            // `Vec<T>` index/slice expressions slip past this gate (see
-            // `.tmp/orchestration/dispatch-invariants.md` →
-            // `machine-body-walker-coverage`).
-            for state in &machine_decl.states {
-                if let Some(entry) = &state.entry {
-                    scan_block_for_vec_index_gate(entry, expr_types, diagnostics);
-                }
-                if let Some(exit) = &state.exit {
-                    scan_block_for_vec_index_gate(exit, expr_types, diagnostics);
-                }
-            }
-            for transition in &machine_decl.transitions {
-                if let Some(guard) = &transition.guard {
-                    scan_expr_for_vec_index_gate(guard, expr_types, diagnostics);
-                }
-                scan_expr_for_vec_index_gate(&transition.body, expr_types, diagnostics);
-            }
-        }
+        // Machine bodies never reach here: normalization rewrites a machine
+        // into ordinary declarations before checking, and a machine it refuses
+        // fails type check before HIR. The expanded bodies are walked through
+        // `Item::Impl` like any other method.
         // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc. do not
         // carry user expression bodies that can contain `Expr::Index`.
         _ => {}
@@ -36536,8 +33060,12 @@ fn scan_stmt_for_vec_index_gate(
         Stmt::Break { value: Some(v), .. } => {
             scan_expr_for_vec_index_gate(v, expr_types, diagnostics);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            }
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
         }
         Stmt::If {
@@ -36552,15 +33080,16 @@ fn scan_stmt_for_vec_index_gate(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            }
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
             if let Some(eb) = else_body {
-                scan_block_for_vec_index_gate(eb, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(eb, expr_types, diagnostics);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -36636,16 +33165,27 @@ fn scan_expr_for_vec_index_gate(
                 scan_expr_for_vec_index_gate(arg.expr(), expr_types, diagnostics);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             scan_expr_for_vec_index_gate(left, expr_types, diagnostics);
             scan_expr_for_vec_index_gate(right, expr_types, diagnostics);
         }
         Expr::Unary { operand, .. } => {
             scan_expr_for_vec_index_gate(operand, expr_types, diagnostics);
         }
-        Expr::Tuple(es) | Expr::Array(es) | Expr::Join(es) => {
+        Expr::Tuple(es) | Expr::Race(es) => {
             for e in es {
                 scan_expr_for_vec_index_gate(e, expr_types, diagnostics);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                scan_expr_for_vec_index_gate(element.expr(), expr_types, diagnostics);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -36671,15 +33211,16 @@ fn scan_expr_for_vec_index_gate(
             }
         }
         Expr::IfLet {
-            expr: cond,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            scan_expr_for_vec_index_gate(cond, expr_types, diagnostics);
+            for expr in condition_exprs(conditions) {
+                scan_expr_for_vec_index_gate(expr, expr_types, diagnostics);
+            }
             scan_block_for_vec_index_gate(body, expr_types, diagnostics);
             if let Some(b) = else_body {
-                scan_block_for_vec_index_gate(b, expr_types, diagnostics);
+                scan_expr_for_vec_index_gate(b, expr_types, diagnostics);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -36740,13 +33281,6 @@ fn scan_expr_for_vec_index_gate(
                 scan_expr_for_vec_index_gate(&t.body, expr_types, diagnostics);
             }
         }
-        Expr::Timeout {
-            expr: inner,
-            duration,
-        } => {
-            scan_expr_for_vec_index_gate(inner, expr_types, diagnostics);
-            scan_expr_for_vec_index_gate(duration, expr_types, diagnostics);
-        }
         Expr::UnsafeBlock(b) => scan_block_for_vec_index_gate(b, expr_types, diagnostics),
         Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
             scan_expr_for_vec_index_gate(object, expr_types, diagnostics);
@@ -36780,17 +33314,16 @@ fn scan_expr_for_vec_index_gate(
 /// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
 /// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
 /// non-scalar type is a caller bug (the dispatch match never routes it here).
-fn scalar_display_builtin(ty: &ResolvedTy) -> &'static str {
+fn scalar_display_builtin(ty: &ResolvedTy) -> (&'static str, ResolvedTy) {
     match ty {
-        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => "to_string_i32",
-        ResolvedTy::I64 | ResolvedTy::Isize => "to_string_i64",
-        ResolvedTy::U8 => "to_string_u8",
-        ResolvedTy::U16 => "to_string_u16",
-        ResolvedTy::U32 => "to_string_u32",
-        ResolvedTy::U64 | ResolvedTy::Usize => "to_string_u64",
-        ResolvedTy::F32 | ResolvedTy::F64 => "to_string_f64",
-        ResolvedTy::Bool => "to_string_bool",
-        ResolvedTy::Char => "to_string_char",
+        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => ("to_string_i32", ResolvedTy::I32),
+        ResolvedTy::I64 | ResolvedTy::Isize => ("to_string_i64", ResolvedTy::I64),
+        ResolvedTy::U8 => ("to_string_u8", ResolvedTy::U8),
+        ResolvedTy::U16 | ResolvedTy::U32 => ("to_string_u32", ResolvedTy::U32),
+        ResolvedTy::U64 | ResolvedTy::Usize => ("to_string_u64", ResolvedTy::U64),
+        ResolvedTy::F32 | ResolvedTy::F64 => ("to_string_f64", ResolvedTy::F64),
+        ResolvedTy::Bool => ("to_string_bool", ResolvedTy::Bool),
+        ResolvedTy::Char => ("to_string_char", ResolvedTy::Char),
         _ => unreachable!("scalar_display_builtin called on non-scalar type {ty:?}"),
     }
 }
@@ -36817,7 +33350,7 @@ fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Bytes => "bytes".to_string(),
         ResolvedTy::Duration => "duration".to_string(),
         ResolvedTy::Unit => "()".to_string(),
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             let params = params
                 .iter()
                 .map(render_elem_ty)
@@ -36913,8 +33446,10 @@ fn check_vec_index_element_type(
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
+                | ResolvedTy::Bytes
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
+                | ResolvedTy::Array(_, _)
                 | ResolvedTy::TypeParam { .. }
         )
     } else {
@@ -36938,8 +33473,10 @@ fn check_vec_index_element_type(
                 | ResolvedTy::F32
                 | ResolvedTy::F64
                 | ResolvedTy::String
+                | ResolvedTy::Bytes
                 | ResolvedTy::Named { .. }
                 | ResolvedTy::Tuple(_)
+                | ResolvedTy::Array(_, _)
                 | ResolvedTy::TypeParam { .. }
                 // Closure-pair elements: `xs[i]` loads the pair out of the
                 // slot's heap box (`hew_vec_get_ptr` + codegen unbox). The
@@ -36991,7 +33528,7 @@ fn vec_index_unsupported_note(
             "Vec<{rendered}> range-slice (xs[a..b]) is not yet supported. \
              Supported element types for Vec range-slicing are: \
              bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-             usize, f32, f64, string, tuples, user-defined types, and \
+             usize, f32, f64, string, bytes, tuples, user-defined types, and \
              type-parameter elements."
         ),
         (false, true) => format!(
@@ -37004,7 +33541,7 @@ fn vec_index_unsupported_note(
             "Vec<{rendered}> scalar index (xs[i]) is not yet supported. \
              Supported element types for Vec scalar indexing are: \
              bool, char, i8, u8, i16, u16, i32, u32, i64, u64, isize, \
-             usize, f32, f64, string, tuples, type-parameter elements, \
+             usize, f32, f64, string, bytes, tuples, type-parameter elements, \
              and user-defined types (records, enums, \
              Duplex, etc.)."
         ),
@@ -37019,42 +33556,135 @@ mod tests {
     use hew_types::module_registry::ModuleRegistry;
     use hew_types::Checker;
 
-    #[test]
-    fn generated_owned_single_source_reuses_its_exact_identity() {
-        let source = SiteId(41);
-        assert_eq!(
-            generated_single_source_identity_relation(
-                hew_types::ProducedValueOwnership::owned(
-                    hew_types::ProducedValueAcquisition::MoveOut,
-                ),
-                &[source],
-            ),
-            Some(HirProducedValueRelation::Identity(source))
-        );
+    fn assert_ordered_aggregate_groups(main: &HirFn) {
+        let groups: Vec<_> = main
+            .body
+            .statements
+            .iter()
+            .filter_map(|stmt| match &stmt.kind {
+                HirStmtKind::Destructure { value, fields } => Some((value, fields)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(groups.len(), 4);
+        assert!(matches!(
+            groups[0].1.as_slice(),
+            [
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Tuple(0),
+                    binding: Some(HirBinding { name: label, ty: ResolvedTy::String, .. }),
+                },
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Tuple(1),
+                    binding: Some(HirBinding { name: bytes, ty: ResolvedTy::Bytes, .. }),
+                },
+            ] if label == "label" && bytes == "bytes"
+        ));
+        assert!(matches!(
+            groups[1].1.as_slice(),
+            [
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Record(x),
+                    binding: Some(HirBinding { name: x_binding, ty: ResolvedTy::String, .. }),
+                },
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Record(payload),
+                    binding: Some(HirBinding { name: payload_binding, ty: ResolvedTy::Bytes, .. }),
+                },
+            ] if x == "x" && x_binding == "x" && payload == "payload" && payload_binding == "payload"
+        ));
+        assert!(matches!(
+            groups[2].1.as_slice(),
+            [
+                HirDestructureField {
+                    nested: true,
+                    selector: HirDestructureSelector::Tuple(0),
+                    binding: Some(HirBinding {
+                        ty: ResolvedTy::Tuple(_),
+                        ..
+                    }),
+                },
+                // `_` names nothing, so the field carries no binding.
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Tuple(1),
+                    binding: None,
+                },
+            ]
+        ));
+        assert!(matches!(
+            groups[3].1.as_slice(),
+            [
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Tuple(0),
+                    binding: Some(HirBinding { name: label, ty: ResolvedTy::String, .. }),
+                },
+                HirDestructureField {
+                    nested: false,
+                    selector: HirDestructureSelector::Tuple(1),
+                    binding: Some(HirBinding { name: payload, ty: ResolvedTy::Bytes, .. }),
+                },
+            ] if label == "nested_label" && payload == "nested_payload"
+        ));
+        assert!(groups.iter().all(|(value, _)| matches!(
+            value.kind,
+            HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(_),
+                ..
+            }
+        )));
     }
 
     #[test]
-    fn generated_owned_ambiguous_sources_do_not_choose_an_identity() {
-        assert_eq!(
-            generated_single_source_identity_relation(
-                hew_types::ProducedValueOwnership::owned(
-                    hew_types::ProducedValueAcquisition::MoveOut,
-                ),
-                &[SiteId(41), SiteId(42)],
-            ),
-            None
-        );
-    }
+    fn irrefutable_aggregate_patterns_keep_one_ordered_typed_binding_group() {
+        let parsed = hew_parser::parse(
+            r#"
+type Point { x: string, payload: bytes }
 
-    #[test]
-    fn generated_unknown_source_does_not_fabricate_an_identity() {
-        assert_eq!(
-            generated_single_source_identity_relation(
-                hew_types::ProducedValueOwnership::Unknown,
-                &[SiteId(41)],
-            ),
-            None
+fn main() {
+    let pair = ("left", b"right");
+    let (label, bytes) = pair;
+    let point = Point { x: "x", payload: b"p" };
+    let { x, payload } = point;
+    let nested = (("nested", b"bytes"), 1);
+    let ((nested_label, nested_payload), _) = nested;
+}
+"#,
         );
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:#?}",
+            parsed.errors
+        );
+        let mut type_checker = Checker::new(ModuleRegistry::new(vec![]));
+        let type_output = type_checker.check_program(&parsed.program);
+        assert!(
+            type_output.errors.is_empty(),
+            "type errors: {:#?}",
+            type_output.errors
+        );
+        let lowered = lower_program(
+            &parsed.program,
+            &type_output,
+            &ResolutionCtx,
+            TargetArch::host(),
+        )
+        .into_result()
+        .expect("typed aggregate patterns must lower to HIR");
+        let main = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                HirItem::Function(function) if function.name == "main" => Some(function),
+                _ => None,
+            })
+            .expect("main function");
+        assert_ordered_aggregate_groups(main);
     }
 
     #[test]
@@ -37084,9 +33714,9 @@ impl Sample for Broken {
             reason.contains("returns `bool`") && reason.contains("requires `i64`"),
             "diagnostic must preserve the checker mismatch: {reason}"
         );
-        assert_eq!(
-            diagnostic.note,
-            "compiler-injected receiver impls were not lowered"
+        assert!(
+            diagnostic.note.contains(&reason),
+            "the displayed diagnostic must include its cause"
         );
     }
 
@@ -37799,63 +34429,6 @@ impl Widget {
     }
 
     #[test]
-    fn supervisor_child_identity_uses_exact_import_owner_and_keeps_root_bare() {
-        let mut ctx = LowerCtx::new(
-            &TypeCheckOutput::default(),
-            MONOMORPHISATION_REGISTRY_CAP,
-            TargetArch::host(),
-        );
-        ctx.module_import_bindings.insert(
-            (None, 0, "left_worker".to_string()),
-            "services.left.worker".to_string(),
-        );
-        ctx.module_import_bindings.insert(
-            (None, 0, "right_worker".to_string()),
-            "services.right.worker".to_string(),
-        );
-        ctx.file_import_root_type_aliases.insert(
-            "FlatWorker".to_string(),
-            "support.nested.worker.FlatWorker".to_string(),
-        );
-        ctx.actor_type_names.extend([
-            "services.left.worker.Worker".to_string(),
-            "services.right.worker.Worker".to_string(),
-            "support.nested.worker.FlatWorker".to_string(),
-        ]);
-
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("left_worker.Worker"),
-            Some("services.left.worker.Worker".to_string()),
-            "a qualified module import must retain the complete checker owner"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("right_worker.Worker"),
-            Some("services.right.worker.Worker".to_string()),
-            "same-leaf actors in nested modules must remain distinct"
-        );
-        assert_ne!(
-            ctx.canonical_supervisor_child_ty("left_worker.Worker"),
-            ctx.canonical_supervisor_child_ty("right_worker.Worker"),
-            "canonicalization must never retry a nested actor by leaf name"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("FlatWorker"),
-            Some("support.nested.worker.FlatWorker".to_string()),
-            "a flattened actor's bare surface must project to its declaration owner"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("RootWorker"),
-            Some("RootWorker".to_string()),
-            "a genuine root actor must keep its bare identity"
-        );
-        assert_eq!(
-            ctx.canonical_supervisor_child_ty("services.left.worker.Worker"),
-            None,
-            "a raw canonical path without a lexical module root must fail closed"
-        );
-    }
-
-    #[test]
     fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
@@ -38242,7 +34815,7 @@ impl Widget {
             pub type FileReadStream {}
 
             impl FileReadStream {
-                fn close(consuming self) {
+                fn close(consume self) {
                     unsafe { hew_file_read_stream_close(self) };
                 }
             }
@@ -38314,7 +34887,7 @@ impl Widget {
             type Connection { label: string }
 
             impl Connection {
-                fn close(consuming self) {}
+                fn close(consume self) {}
             }
 
             fn main() {}
@@ -38357,6 +34930,7 @@ impl Widget {
         admit_resource_record_lifecycles(
             &items,
             &hew_types::IdentityView::default(),
+            &HashSet::new(),
             &mut table,
             &mut diagnostics,
         );
@@ -38383,7 +34957,7 @@ impl Widget {
             pub type FileReadStream {}
 
             impl FileReadStream {
-                fn close(consuming self) {
+                fn close(consume self) {
                     unsafe { hew_file_read_stream_close(self) };
                     if true { unsafe { hew_file_read_stream_close(self) }; }
                 }
@@ -38418,7 +34992,13 @@ impl Widget {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
-        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        assert_eq!(output.errors.len(), 1, "{:#?}", output.errors);
+        let error = &output.errors[0];
+        assert_eq!(error.kind, hew_types::error::TypeErrorKind::UseAfterMove);
+        assert_eq!(error.message, "use of moved value `self`");
+        assert_eq!(error.source_module.as_deref(), Some("std.fs"));
+        // The checker now rejects the duplicate release through the branch.
+        // HIR must still refuse lifecycle authority for this malformed body.
         let candidate = output
             .opaque_resource_candidates
             .candidates
@@ -38441,122 +35021,6 @@ impl Widget {
     }
 
     #[test]
-    fn checker_produced_value_facts_project_to_stable_hir_sites() {
-        let (_, checked, lowered) = parse_typecheck_and_lower(
-            r#"
-            fn make() -> string { "owned" }
-            fn main() { let value = make(); }
-            "#,
-        );
-        assert!(
-            lowered.module.produced_value_facts.len() >= checked.produced_value_ownership.len(),
-            "root checker rows plus checker-validated injected builtin rows must survive"
-        );
-        let main = lowered
-            .module
-            .items
-            .iter()
-            .find_map(|item| match item {
-                HirItem::Function(function) if function.name == "main" => Some(function),
-                _ => None,
-            })
-            .expect("main function");
-        let HirStmtKind::Let(_, Some(call)) = &main.body.statements[0].kind else {
-            panic!("expected make() binding, got {:#?}", main.body.statements);
-        };
-        let fact = lowered
-            .module
-            .produced_value_facts
-            .get(&call.site)
-            .expect("direct call must retain its checker result fact");
-        assert_eq!(fact.producer, crate::node::HirProducedValueProducer::Call);
-        assert!(crate::verify_hir(&lowered.module).is_empty());
-
-        let mut stale = lowered.module.clone();
-        stale
-            .produced_value_facts
-            .get_mut(&call.site)
-            .expect("call fact")
-            .producer = crate::node::HirProducedValueProducer::Literal;
-        assert!(
-            crate::verify_hir(&stale).iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                HirDiagnosticKind::CheckerBoundaryViolation { .. }
-            )),
-            "a fact that survives a transform with a stale producer class must fail verification"
-        );
-    }
-
-    #[test]
-    fn missing_checker_relation_row_fails_closed_instead_of_becoming_a_leaf() {
-        let parsed = hew_parser::parse(
-            r#"
-            fn make() -> string { "owned" }
-            fn main() { let value = make(); }
-            "#,
-        );
-        assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let mut output = checker.check_program(&parsed.program);
-        assert!(output.errors.is_empty(), "{:#?}", output.errors);
-        let removed = output
-            .produced_value_dependencies
-            .keys()
-            .next()
-            .cloned()
-            .expect("checker output must contain explicit relation rows");
-        output.produced_value_dependencies.remove(&removed);
-
-        let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
-        assert!(
-            lowered.diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind,
-                HirDiagnosticKind::CheckerBoundaryViolation { name, reason }
-                    if name == "produced value dependency"
-                        && reason.contains("omitted this expression's closed relation row")
-            )),
-            "missing checker dependency row must be a boundary violation: {:#?}",
-            lowered.diagnostics
-        );
-        assert!(
-            lowered
-                .module
-                .produced_value_facts
-                .values()
-                .any(|fact| matches!(fact.ownership, hew_types::ProducedValueOwnership::Unknown)),
-            "the malformed row must be carried as Unknown rather than inferred as a leaf"
-        );
-    }
-
-    #[test]
-    fn duplicated_checker_span_candidates_are_not_last_write_coalesced() {
-        let key = SpanKey {
-            start: 7,
-            end: 11,
-            module_idx: 0,
-        };
-        let carrier = PendingProducedValueCarrier {
-            facts: HashMap::new(),
-            generated_facts: HashMap::new(),
-            fact_keys: HashMap::new(),
-            source_sites: HashMap::from([(key.clone(), vec![SiteId(41), SiteId(42)])]),
-            ownership: HashMap::new(),
-        };
-        let parents = HashMap::from([
-            (SiteId(40), None),
-            (SiteId(41), Some(SiteId(40))),
-            (SiteId(42), Some(SiteId(40))),
-        ]);
-        let error = carrier
-            .source_site(&key, SiteId(40), &parents)
-            .expect_err("one checker span mapped to two occurrence roles must be rejected");
-        assert!(
-            error.contains("ambiguous candidates"),
-            "ambiguity must be reported rather than selecting the last site: {error}"
-        );
-    }
-
-    #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "the test keeps static-discard, static-capture, and dynamic dispatch evidence together"
@@ -38568,25 +35032,25 @@ impl Widget {
             type Builder { value: i64 }
 
             impl Builder {
-                fn close(consuming self) {}
+                fn close(consume self) {}
             }
 
             trait Fluent {
                 #[returns_receiver]
-                fn touch(consuming self) -> Self;
+                fn touch(consume self) -> Self;
             }
 
             impl Fluent for Builder {
                 #[returns_receiver]
-                fn touch(consuming self) -> Builder { self }
+                fn touch(consume self) -> Builder { self }
             }
 
             trait Finish {
-                fn finish(consuming self) -> i64;
+                fn finish(consume self) -> i64;
             }
 
             impl Finish for Builder {
-                fn finish(consuming self) -> i64 { self.value }
+                fn finish(consume self) -> i64 { self.value }
             }
 
             fn touch_twice<T: Fluent>(value: T) {
@@ -38608,6 +35072,7 @@ impl Widget {
                 rewrite,
                 MethodCallRewrite::StaticTraitDispatch {
                     consumes_receiver: true,
+                    requires_mutable_receiver: false,
                     returns_receiver_identity: true,
                     ..
                 }
@@ -38726,7 +35191,7 @@ impl Widget {
             type Handle {}
 
             impl Handle {
-                fn close(handle: Handle) {}
+                fn close(consume self) {}
             }
 
             extern "C" {
@@ -38929,7 +35394,9 @@ impl Widget {
             .unwrap_or_else(|| panic!("expected HIR capture named k: {captures:#?}"));
 
         assert_eq!(hir_capture.binding, k_binding.id);
-        assert_eq!(hir_capture.mode, checker_fact.mode);
+        assert_eq!(hir_capture.acquisition, checker_fact.acquisition);
+        assert_eq!(hir_capture.access, checker_fact.access);
+        assert_eq!(hir_capture.consumption, checker_fact.consumption);
         assert_eq!(hir_capture.is_send, checker_fact.is_send);
     }
 
@@ -38957,10 +35424,15 @@ impl Widget {
             panic!("expected first statement to bind worker");
         };
         assert_eq!(binding.name, "worker");
-        assert_eq!(
-            init.value_class,
-            ValueClass::AffineResource,
-            "LocalPid<Worker> must resolve through the builtin type marker registry"
+        assert!(
+            matches!(
+                &init.ty,
+                ResolvedTy::Named { builtin: Some(BuiltinType::ActorHandle), name, args, .. }
+                    if name == "Worker" && args.is_empty()
+            ),
+            "an actor is the type of its handle: spawn must carry the actor's own \
+             name under the handle discriminator, not a wrapper argument: {:?}",
+            init.ty
         );
     }
 
@@ -39062,10 +35534,10 @@ impl Widget {
 
         #[test]
         fn non_owning_actor_references_are_not_transfers() {
-            // ChildRef, LocalPid, and the raw runtime word free nothing.
+            // ChildRef, the actor handle, and the raw runtime word free nothing.
             for (name, kind) in [
                 ("ChildRef", BuiltinType::ChildRef),
-                ("LocalPid", BuiltinType::LocalPid),
+                ("Worker", BuiltinType::ActorHandle),
             ] {
                 assert!(!transfers(&builtin_handle(name, kind)));
             }
@@ -39085,8 +35557,7 @@ impl Widget {
                 ("Stream", BuiltinType::Stream),
                 ("Sink", BuiltinType::Sink),
                 ("Duplex", BuiltinType::Duplex),
-                ("LambdaPid", BuiltinType::LambdaPid),
-                ("LambdaActorHandle", BuiltinType::LambdaActorHandle),
+                ("ActorFn", BuiltinType::ActorFn),
                 ("BoxedActor", BuiltinType::BoxedActor),
                 ("MonitorRef", BuiltinType::MonitorRef),
             ] {
@@ -39218,18 +35689,16 @@ impl Widget {
             None
         );
 
-        let actor = named("bank.Account", None, Vec::new());
-        let renamed_pid = named(
-            "WorkerHandle",
-            Some(BuiltinType::LocalPid),
-            vec![actor.clone()],
-        );
-        let user_pid = named("LocalPid", None, vec![actor]);
+        // An actor is the type of its handle: the identity is the handle's own
+        // name, and a same-named user nominal without the discriminator is not
+        // an actor handle.
+        let handle = named("bank.Account", Some(BuiltinType::ActorHandle), Vec::new());
+        let user_nominal = named("bank.Account", None, Vec::new());
         assert_eq!(
-            LowerCtx::local_pid_actor_identity(&renamed_pid),
+            LowerCtx::actor_handle_identity(&handle),
             Some("bank.Account")
         );
-        assert_eq!(LowerCtx::local_pid_actor_identity(&user_pid), None);
+        assert_eq!(LowerCtx::actor_handle_identity(&user_nominal), None);
 
         let mut vec_ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
@@ -39245,7 +35714,7 @@ impl Widget {
             },
         );
         assert_eq!(
-            vec_ctx.array_literal_vec_ty(&(0..0)).map(|(_, elem)| elem),
+            vec_ctx.array_literal_ty(&(0..0)).map(|(_, elem)| elem),
             Some(ResolvedTy::I64),
             "a renamed builtin Vec<T> still owns array literal lowering"
         );
@@ -39275,7 +35744,7 @@ impl Widget {
             ),
             "checker/HIR qualification must preserve a user Vec<T>, got {stored_user_vec_ty:?}"
         );
-        let user_vec_literal_ty = user_vec_ctx.array_literal_vec_ty(&(0..0));
+        let user_vec_literal_ty = user_vec_ctx.array_literal_ty(&(0..0));
         assert!(
             user_vec_literal_ty.is_none(),
             "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
@@ -39474,6 +35943,30 @@ impl Widget {
             user_vec_diagnostics.is_empty(),
             "a user Vec<Unit> must not enter the builtin Vec ABI gate"
         );
+    }
+
+    #[test]
+    fn missing_closure_type_or_escape_facts_fail_closed() {
+        for remove_type in [true, false] {
+            let (program, mut tco, _) =
+                parse_typecheck_and_lower("fn main() { let value: i64 = 1; let f = || value; }");
+            if remove_type {
+                tco.expr_types
+                    .retain(|key, _| !tco.closure_capture_facts.contains_key(key));
+            } else {
+                tco.closure_escape_facts.clear();
+            }
+            let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+            assert!(
+                lowered.diagnostics.iter().any(|diagnostic| matches!(
+                    &diagnostic.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                        if name == "closure literal"
+                )),
+                "{:#?}",
+                lowered.diagnostics
+            );
+            assert!(lowered.into_result().is_err());
+        }
     }
 
     #[test]
@@ -39696,25 +36189,26 @@ impl Widget {
 
     // ── Select arm-binding scoping ──────────────────────────────────────────
     //
-    // Source shared by several tests below: two actors both returning `i64`.
-    // Both arm bodies return the bound name so the arm body types agree (the
-    // type checker requires all arm bodies to have the same type).  Distinct
-    // binding names (`reply` vs `verdict`) let us prove each arm has its own
-    // BindingId.
+    // Source shared by several tests below: two asks against the same actor
+    // type. Both arm bodies return the bound name so the arm body types
+    // agree — `ActorError<E, M>` carries the source's actor-handle type
+    // inside `Message<_, ..>`, so arms asking different actor types would produce
+    // distinct arm-body types and fail the select's own arm-unification
+    // check; that is a real type distinction, not a scoping one, so both
+    // arms ask the same actor here to isolate binding scoping from it.
+    // Distinct binding names (`reply` vs `verdict`) let us prove each arm
+    // has its own BindingId.
 
     const SELECT_SCOPE_SOURCE: &str = r"
         actor Pinger {
             receive fn ping() -> i64 { 1 }
         }
-        actor Counter {
-            receive fn count() -> i64 { 2 }
-        }
         fn main() {
             let p = spawn Pinger;
-            let c = spawn Counter;
+            let c = spawn Pinger;
             let result = select {
                 reply from p.ping() => reply,
-                verdict from c.count() => verdict,
+                verdict from c.ping() => verdict,
             };
         }
     ";
@@ -39778,13 +36272,19 @@ impl Widget {
             lowered.diagnostics
         );
 
+        let diagnostics = crate::verify::verify_hir(&lowered.module);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let select_expr = main_select_expr(&lowered);
         let resolved = find_binding_ref_in_arm(select_expr, 0, "reply")
             .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
 
-        assert!(
-            matches!(resolved, ResolvedRef::Binding(_)),
-            "arm 0 body 'reply' must resolve to Binding, got {resolved:?}"
+        let HirExprKind::Select(select) = &select_expr.kind else {
+            panic!("expected select");
+        };
+        assert_eq!(
+            resolved,
+            &ResolvedRef::Binding(select.arms[0].binding_id.expect("reply binding")),
+            "the arm body must reference its own reply binding"
         );
     }
 
@@ -39819,6 +36319,14 @@ impl Widget {
         // Type errors are expected (reply is unresolved in arm 1 context);
         // we proceed to HIR lowering regardless.
         let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "the out-of-scope reply must be rejected by the checker: {:?}",
+            tco.errors
+        );
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
@@ -39856,6 +36364,14 @@ impl Widget {
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let tco = checker.check_program(&parsed.program);
+        assert!(
+            tco.errors.iter().any(|error| {
+                error.kind == hew_types::error::TypeErrorKind::UndefinedVariable
+                    && &source[error.span.clone()] == "reply"
+            }),
+            "the out-of-scope reply must be rejected by the checker: {:?}",
+            tco.errors
+        );
         let lowered = lower_program(&parsed.program, &tco, &ResolutionCtx, TargetArch::host());
 
         assert!(
@@ -39879,6 +36395,8 @@ impl Widget {
             lowered.diagnostics
         );
 
+        let diagnostics = crate::verify::verify_hir(&lowered.module);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
         let select_expr = main_select_expr(&lowered);
         let reply_ref = find_binding_ref_in_arm(select_expr, 0, "reply")
             .unwrap_or_else(|| panic!("expected BindingRef 'reply' in arm 0"));
@@ -39892,10 +36410,44 @@ impl Widget {
             panic!("arm 1 'verdict' must be Binding, got {verdict_ref:?}");
         };
 
+        let HirExprKind::Select(select) = &select_expr.kind else {
+            panic!("expected select");
+        };
+        assert_eq!(Some(*reply_id), select.arms[0].binding_id);
+        assert_eq!(Some(*verdict_id), select.arms[1].binding_id);
         assert_ne!(
             reply_id, verdict_id,
             "distinct arm bindings must have distinct BindingIds"
         );
+    }
+
+    #[test]
+    fn select_sources_missing_or_stale_are_rejected() {
+        let (program, checked, lowered) = parse_typecheck_and_lower(SELECT_SCOPE_SOURCE);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+        for stale in [false, true] {
+            let mut damaged = checked.clone();
+            if stale {
+                // Both entries are valid actor asks, but belong to the other arm.
+                damaged
+                    .select_sources
+                    .values_mut()
+                    .next()
+                    .expect("checked select")
+                    .swap(0, 1);
+            } else {
+                damaged.select_sources.clear();
+            }
+            let output = lower_program(&program, &damaged, &ResolutionCtx, TargetArch::host());
+            assert!(output.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "select source"
+            )), "invalid select source facts must be rejected: {:?}", output.diagnostics);
+            assert!(
+                output.into_result().is_err(),
+                "invalid select source facts must make lowering fatal"
+            );
+        }
     }
 
     fn function_named<'a>(output: &'a LowerOutput, name: &str) -> &'a HirFn {
@@ -40154,6 +36706,251 @@ impl Widget {
         assert_option_try_match(first_let_value(pass));
     }
 
+    fn lower_canonical_encoding_fixture(
+        format: &str,
+        source: &str,
+        module_source: &str,
+    ) -> LowerOutput {
+        use hew_parser::module::{Module, ModuleGraph, ModuleId};
+        let parsed = hew_parser::parse(source);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut program = parsed.program;
+        let Item::Import(import) = &mut program.items[0].0 else {
+            panic!("import fixture")
+        };
+        let imported = hew_parser::parse(module_source);
+        assert!(imported.errors.is_empty(), "{:?}", imported.errors);
+        import.resolved_items = Some(imported.program.items.clone().into());
+        import.resolved_source_paths = vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join(format!("std/encoding/{format}/{format}.hew"))];
+        let module = ModuleId::new(vec!["std".into(), "encoding".into(), format.into()]);
+        let root = ModuleId::root();
+        let mut graph = ModuleGraph::new(root.clone());
+        graph
+            .add_module(Module {
+                id: module.clone(),
+                items: imported.program.items,
+                imports: Vec::new(),
+                source_paths: import.resolved_source_paths.clone(),
+                doc: None,
+            })
+            .unwrap();
+        graph.topo_order = vec![module, root];
+        program.module_graph = Some(graph);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+        let lowered = lower_program(&program, &tco, &ResolutionCtx, TargetArch::host());
+        assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+        lowered
+    }
+
+    #[test]
+    fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() {
+        for (format, builtin) in [
+            ("json", BuiltinType::JsonValue),
+            ("yaml", BuiltinType::YamlValue),
+        ] {
+            let source = format!(
+                r#"
+                import std.encoding.{format}.{{self, Value}};
+                fn required_field(obj: Value, key: string) -> Result<Value, string> {{
+                    match obj.get_field(key) {{
+                        .Ok(.Some(value)) => Ok(value),
+                        .Ok(.None) => Err("missing field"),
+                        .Err(error) => Err(error),
+                    }}
+                }}
+                fn result_probe(obj: Value) -> Result<Value, string> {{
+                    let child = required_field(obj, "field")?;
+                    Ok(child)
+                }}
+                fn option_probe(value: Option<Value>) -> Option<Value> {{
+                    let child = value?;
+                    Some(child)
+                }}
+                fn result_expect_probe(value: Result<Value, string>) -> Value {{
+                    let child = value.expect("the payload decoded");
+                    child
+                }}
+                fn option_expect_probe(value: Option<Value>) -> Value {{
+                    let child = value.expect("the payload is present");
+                    child
+                }}
+                fn result_unwrap_or_probe(value: Result<Value, string>, fallback: Value) -> Value {{
+                    let child = value.unwrap_or(fallback);
+                    child
+                }}
+                fn option_unwrap_or_probe(value: Option<Value>, fallback: Value) -> Value {{
+                    let child = value.unwrap_or(fallback);
+                    child
+                }}
+                fn field_probe(value: Value) -> Value {{
+                    let child = value.get_field("key").expect("a").expect("b");
+                    child
+                }}
+            "#
+            );
+            let lowered = lower_canonical_encoding_fixture(
+                format,
+                &source,
+                r"
+                #[opaque] pub type Value {}
+                impl Value {
+                    pub fn get_field(self, key: string) -> Result<Option<Value>, string> {
+                        Ok(Some(self))
+                    }
+                }
+            ",
+            );
+            let expected = ResolvedTy::Named {
+                name: builtin.canonical_name().to_string(),
+                args: Vec::new(),
+                builtin: Some(builtin),
+                is_opaque: true,
+            };
+            let required = function_named(&lowered, "required_field");
+            assert_eq!(required.params[0].ty, expected);
+            for name in [
+                "result_probe",
+                "option_probe",
+                "result_expect_probe",
+                "option_expect_probe",
+                "result_unwrap_or_probe",
+                "option_unwrap_or_probe",
+                "field_probe",
+            ] {
+                let expression = first_let_value(function_named(&lowered, name));
+                let HirExprKind::Match { scrutinee, arms } = &expression.kind else {
+                    panic!("payload extraction must lower to a match: {expression:#?}")
+                };
+                assert_eq!(expression.ty, expected);
+                assert_eq!(arms[0].bindings[0].ty, expected);
+                assert_eq!(arms[0].body.ty, expected);
+                if name.ends_with("unwrap_or_probe") {
+                    assert_eq!(arms[1].body.ty, expected);
+                }
+                if name == "field_probe" {
+                    let option = ResolvedTy::named_builtin(
+                        "Option",
+                        BuiltinType::Option,
+                        vec![expected.clone()],
+                    );
+                    let HirExprKind::Match { arms, .. } = &scrutinee.kind else {
+                        panic!("expected the nested Result unwrap: {scrutinee:#?}")
+                    };
+                    assert_eq!(scrutinee.ty, option);
+                    assert_eq!(arms[0].bindings[0].ty, option);
+                    assert_eq!(arms[0].body.ty, option);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
+        for (format, builtin) in [
+            ("json", BuiltinType::JsonValue),
+            ("yaml", BuiltinType::YamlValue),
+        ] {
+            let source = format!(
+                r#"
+                import std.encoding.{format}.{{self, Value}};
+                fn push_probe(var value: Value, child: Value) -> Result<(), string> {{ value.push(child) }}
+                fn set_probe(var value: Value, child: Value) -> Result<(), string> {{ value.set("key", child) }}
+                fn read_probe(value: Value) -> i64 {{ value.count() }}
+            "#
+            );
+            let lowered = lower_canonical_encoding_fixture(
+                format,
+                &source,
+                r"
+                #[opaque] pub type Value {}
+                pub trait ValueMethods {
+                    fn push(var self, child: Value) -> Result<(), string>;
+                    fn set(var self, key: string, child: Value) -> Result<(), string>;
+                    fn count(self) -> i64;
+                }
+                impl ValueMethods for Value {
+                    fn push(var self, child: Value) -> Result<(), string> { self = child; Ok(()) }
+                    fn set(var self, key: string, child: Value) -> Result<(), string> { self = child; Ok(()) }
+                    fn count(self) -> i64 { 0 }
+                }
+            ",
+            );
+            let expected = ResolvedTy::Named {
+                name: builtin.canonical_name().to_string(),
+                args: vec![],
+                builtin: Some(builtin),
+                is_opaque: true,
+            };
+            for (name, arity) in [("push_probe", 1), ("set_probe", 2)] {
+                let call = function_named(&lowered, name).body.tail.as_ref().unwrap();
+                let HirExprKind::VarSelfMethodCall {
+                    receiver,
+                    receiver_ty,
+                    call_target: CallTarget::ImplMethod(declaration),
+                    args,
+                    ret_ty,
+                    ..
+                } = &call.kind
+                else {
+                    panic!("{format} {name} must retain receiver writeback: {call:#?}")
+                };
+                assert_eq!(receiver.intent, IntentKind::Consume);
+                assert_eq!(receiver.ty, expected);
+                assert_eq!(*receiver_ty, expected);
+                assert_eq!(args.len(), arity);
+                let callee = lowered
+                    .module
+                    .items
+                    .iter()
+                    .find_map(|item| match item {
+                        HirItem::Function(function) if &function.declaration == declaration => {
+                            Some(function)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                assert_eq!(callee.var_self_receiver, Some(callee.params[0].id));
+                assert_eq!(
+                    callee.return_ty,
+                    ResolvedTy::Tuple(vec![ret_ty.clone(), expected.clone()])
+                );
+            }
+            assert!(matches!(
+                function_named(&lowered, "read_probe")
+                    .body
+                    .tail
+                    .as_ref()
+                    .unwrap()
+                    .kind,
+                HirExprKind::Call { .. }
+            ));
+            assert!(crate::verify_hir(&lowered.module).is_empty());
+        }
+    }
+
+    #[test]
+    fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() {
+        let mut ctx = LowerCtx::new(
+            &TypeCheckOutput::default(),
+            MONOMORPHISATION_REGISTRY_CAP,
+            TargetArch::host(),
+        );
+        for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
+            let name = builtin.canonical_name();
+            ctx.opaque_type_short_names.insert(name.to_string());
+            ctx.canonical_std_source_type_identities
+                .insert(name.to_string());
+            let opaque = ResolvedTy::named_opaque(name, vec![]);
+            assert_eq!(ctx.resolve_named_type_ref(name, vec![]), opaque);
+            assert_eq!(ctx.qualify_current_module_record_ty(opaque.clone()), opaque);
+        }
+    }
+
     #[test]
     fn postfix_try_in_non_result_returning_fn_stays_fail_closed() {
         let source = r"
@@ -40201,7 +36998,7 @@ impl Widget {
     fn generic_enum_option_i64_registered_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Maybe<T> { Some(T); None }
+            enum Maybe<T> { Some(T), None }
             fn main() -> i64 {
                 let x: Maybe<i64> = Maybe.Some(42);
                 match x {
@@ -40360,7 +37157,7 @@ impl Widget {
     fn monomorphic_enum_does_not_appear_in_enum_layouts() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Colour { Red; Green; Blue }
+            enum Colour { Red, Green, Blue }
             fn main() -> i64 {
                 let c: Colour = Colour.Red;
                 match c {
@@ -40390,7 +37187,7 @@ impl Widget {
     fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum Maybe<T> { Some(T); None }
+            enum Maybe<T> { Some(T), None }
             fn main() -> i64 {
                 let inner: Maybe<i64> = Maybe.Some(5);
                 let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
@@ -40438,189 +37235,16 @@ impl Widget {
     // recursion — exhaustivity catches a *missing* arm, but not an arm that
     // exists yet skips sub-expressions.
 
-    /// Build a minimal `HirExpr` wrapping a given `kind`.  All identity fields
-    /// are set to zero/default; they have no effect on the walker functions.
-    fn dummy_expr(kind: HirExprKind) -> HirExpr {
-        use crate::ids::HirNodeId;
-        HirExpr {
-            node: HirNodeId(0),
-            site: SiteId(0),
-            ty: ResolvedTy::Unit,
-            value_class: ValueClass::BitCopy,
-            intent: IntentKind::Read,
-            kind,
-            span: 0..0,
+    /// A lambda actor's `close()` releases the handle and is an ordinary call:
+    /// it needs no `await` in either position (U383).
+    #[test]
+    fn lambda_actor_close_produces_unit_in_value_and_statement_positions() {
+        for operation in ["a.close();", "let value: () = a.close();"] {
+            let source = format!("fn main() {{ let a = actor |x: i64| {{}}; {operation} }}");
+            let (_, checked, lowered) = parse_typecheck_and_lower(&source);
+            assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+            assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
         }
-    }
-
-    /// `collect_call_sites_in_expr` must recurse into the field expressions of
-    /// a `MachineEmit` node.  Without the arm added in the exhaustivity fix, a
-    /// `Call` nested in an emit field was silently ignored, so the call site
-    /// would never surface in the monomorphisation registry.
-    #[test]
-    fn collect_call_sites_in_expr_recurses_through_machine_emit_fields() {
-        let call_expr = dummy_expr(HirExprKind::Call {
-            target: CallTarget::IndirectFunctionValue,
-            callee: Box::new(dummy_expr(HirExprKind::BindingRef {
-                name: "call_some_fn".to_string(),
-                resolved: ResolvedRef::Unresolved,
-            })),
-            args: vec![],
-        });
-        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![("x".to_string(), call_expr)],
-        });
-
-        let mut sites: Vec<(String, SiteId)> = Vec::new();
-        let mut trait_sites: Vec<TraitMethodStaticSite> = Vec::new();
-        collect_call_sites_in_expr(&emit_expr, &mut sites, &mut trait_sites);
-
-        assert!(
-            sites.iter().any(|(name, _)| name == "call_some_fn"),
-            "collect_call_sites_in_expr must recurse into MachineEmit fields; \
-             got sites: {sites:?}"
-        );
-    }
-
-    /// `collect_hir_emitted_events_walk` must recurse into the field
-    /// expressions of a `MachineEmit` node so that a nested emit is reported.
-    /// Before the exhaustivity fix the field loop was absent; `Inner` would be
-    /// silently dropped from `body_emits`.
-    #[test]
-    fn collect_hir_emitted_events_walk_recurses_through_machine_emit_fields() {
-        let inner_emit = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 1,
-            fields: vec![],
-        });
-        let outer_emit = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![("x".to_string(), inner_emit)],
-        });
-        let event_names = vec!["Outer".to_string(), "Inner".to_string()];
-
-        let mut out: Vec<String> = Vec::new();
-        collect_hir_emitted_events_walk(&outer_emit, &event_names, &mut out);
-
-        assert!(
-            out.contains(&"Outer".to_string()),
-            "Outer emit must be reported; got: {out:?}"
-        );
-        assert!(
-            out.contains(&"Inner".to_string()),
-            "Inner emit nested in Outer field must be reported; got: {out:?}"
-        );
-    }
-
-    /// A general `Closure` body executes inline — its emits belong to the
-    /// enclosing transition and must bubble out.  Before revision 1 of the
-    /// exhaustivity fix, `Closure { .. }` was grouped with `SpawnLambdaActor`
-    /// as a scope boundary, so `emit Beep` inside a closure was silently
-    /// dropped from `body_emits`.
-    #[test]
-    fn collect_hir_emitted_events_walk_recurses_into_closure_body() {
-        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![],
-        });
-        let closure_expr = dummy_expr(HirExprKind::Closure {
-            params: vec![],
-            ret_ty: ResolvedTy::Unit,
-            body: Box::new(emit_expr),
-            captures: vec![],
-            escape_kind: ClosureEscapeKind::Local,
-        });
-        let event_names = vec!["Beep".to_string()];
-
-        let mut out: Vec<String> = Vec::new();
-        collect_hir_emitted_events_walk(&closure_expr, &event_names, &mut out);
-
-        assert!(
-            out.contains(&"Beep".to_string()),
-            "emit inside a Closure body must bubble to the enclosing transition; \
-             got: {out:?}"
-        );
-    }
-
-    /// A `SpawnLambdaActor` body runs on a separate actor substrate; its emits
-    /// must NOT bubble out to the parent transition.  This is the inverse of
-    /// the `Closure` test above and guards that the `SpawnLambdaActor` leaf
-    /// boundary is preserved by the revision-1 fix.
-    #[test]
-    fn collect_hir_emitted_events_walk_does_not_recurse_into_spawn_lambda_actor_body() {
-        let emit_expr = dummy_expr(HirExprKind::MachineEmit {
-            event_idx: 0,
-            fields: vec![],
-        });
-        let spawn_expr = dummy_expr(HirExprKind::SpawnLambdaActor {
-            params: vec![],
-            reply_ty: ResolvedTy::Unit,
-            body: Box::new(emit_expr),
-            captures: vec![],
-        });
-        let event_names = vec!["Inner".to_string()];
-
-        let mut out: Vec<String> = Vec::new();
-        collect_hir_emitted_events_walk(&spawn_expr, &event_names, &mut out);
-
-        assert!(
-            out.is_empty(),
-            "emit inside a SpawnLambdaActor body must NOT bubble to the parent \
-             transition; got: {out:?}"
-        );
-    }
-
-    /// Regression test: `await actor.close()` at the top level of a function
-    /// (`scope_depth` == 0) must NOT produce `AwaitOutOfPosition`.
-    ///
-    /// Before the fix, the HIR `Expr::Await` handler required `scope_depth > 0`
-    /// for all `await` expressions except `ActorMethodKind::Ask` dispatches.
-    /// Lambda-actor `close()` goes through `method_call_rewrites` (not
-    /// `actor_method_dispatch`), so it hit the `scope_depth` guard and emitted
-    /// `AwaitOutOfPosition` even when the `await` was a valid statement.
-    #[test]
-    fn await_actor_close_outside_scope_block_is_accepted() {
-        let (_, _, lowered) = parse_typecheck_and_lower(
-            r"
-            fn main() {
-                let a = actor |x: i64| { };
-                await a.close();
-            }
-            ",
-        );
-        let await_out_of_position: Vec<_> = lowered
-            .diagnostics
-            .iter()
-            .filter(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition))
-            .collect();
-        assert!(
-            await_out_of_position.is_empty(),
-            "`await actor.close()` at function level must not produce AwaitOutOfPosition; \
-             got: {await_out_of_position:#?}"
-        );
-    }
-
-    /// `await actor.close()` must still be rejected in non-statement position
-    /// (e.g., as a let-value).
-    #[test]
-    fn await_actor_close_as_let_value_is_rejected() {
-        let (_, _, lowered) = parse_typecheck_and_lower(
-            r"
-            fn main() {
-                let a = actor |x: i64| { };
-                let _result = await a.close();
-            }
-            ",
-        );
-        assert!(
-            lowered
-                .diagnostics
-                .iter()
-                .any(|d| matches!(d.kind, HirDiagnosticKind::AwaitOutOfPosition)),
-            "`await actor.close()` as a let-value must produce AwaitOutOfPosition; \
-             diagnostics: {:#?}",
-            lowered.diagnostics
-        );
     }
 
     // ─── Imported impl-method signature safety (cross-module lowering) ───
@@ -40712,17 +37336,17 @@ impl Widget {
     /// A user record sharing a prelude generic enum's name (`type Result {
     /// handle: i64 }`) must not poison the enum-layout registries or the
     /// handler return-type resolution: the actor ask still registers the
-    /// builtin `Result<Result, AskError>` instantiation and the handler's
+    /// builtin `Result<Result, ActorError>` instantiation and the handler's
     /// return type resolves to the USER record (matching the checker), not
     /// the builtin enum.
     #[test]
     fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
         let (_program, _tco, lowered) = parse_typecheck_and_lower(
             r#"
-            type QueryReply { handle: i64; }
+            type QueryReply { handle: i64, }
 
             actor Db {
-                var n: i64 = 0;
+                var n: i64 = 0,
                 receive fn query(sql: string) -> QueryReply {
                     n = n + 1;
                     QueryReply { handle: n }
@@ -40731,7 +37355,7 @@ impl Widget {
 
             fn main() {
                 let db = spawn Db(n: 0);
-                match await db.query("SELECT 1") {
+                match db.query("SELECT 1") {
                     .Ok(r) => println(f"handle={r.handle}"),
                     .Err(_) => println("ask failed"),
                 }
@@ -40762,7 +37386,7 @@ impl Widget {
             ResolvedTy::named_user("QueryReply".to_string(), vec![]),
             "handler return type must resolve to the user record, not the builtin enum"
         );
-        // The ask site registered the builtin `Result<Result, AskError>`
+        // The ask site registered the builtin `Result<Result, ActorError>`
         // layout — the record name must not have clobbered the prelude's
         // `enum_type_params` entry (which would silently no-op registration).
         assert!(
@@ -40773,7 +37397,7 @@ impl Widget {
                 .any(|layout| layout.key.origin_name == "Result"
                     && layout.key.type_args.first()
                         == Some(&ResolvedTy::named_user("QueryReply".to_string(), vec![]))),
-            "ask-site Result<Result, AskError> layout missing from enum_layouts: {:?}",
+            "ask-site Result<Result, ActorError> layout missing from enum_layouts: {:?}",
             lowered
                 .module
                 .enum_layouts
@@ -40852,11 +37476,11 @@ impl Widget {
     fn same_leaf_user_enums_keep_user_constructor_identity() {
         let (_, _, lowered) = parse_typecheck_and_lower(
             r"
-            enum UserLinkError { UserLink; }
-            enum UserLookupError { UserLookup; }
-            enum UserMonitorError { UserMonitor; }
-            enum UserCrashAction { UserAction; }
-            enum UserCrashKind { UserKind; }
+            enum UserLinkError { UserLink, }
+            enum UserLookupError { UserLookup, }
+            enum UserMonitorError { UserMonitor, }
+            enum UserCrashAction { UserAction, }
+            enum UserCrashKind { UserKind, }
 
             fn user_link() -> UserLinkError { UserLinkError.UserLink }
             fn user_lookup() -> UserLookupError { UserLookupError.UserLookup }
@@ -40944,7 +37568,7 @@ impl Widget {
 
         let source = hew_parser::parse(
             r"
-            pub enum Color { Red; Green; Blue(i64); }
+            pub enum Color { Red, Green, Blue(i64), }
             ",
         );
         assert!(
@@ -40979,7 +37603,7 @@ impl Widget {
         );
         for (item, _) in &mut root.program.items {
             if let Item::Import(import) = item {
-                import.resolved_items = Some(source.program.items.clone());
+                import.resolved_items = Some(source.program.items.clone().into());
             }
         }
 
@@ -41037,7 +37661,6 @@ impl Widget {
             lowered.diagnostics
         );
     }
-
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -41050,22 +37673,12 @@ impl Widget {
         // `Color::Red` registry key would make one import order diagnose the
         // tuple call as a struct ctor and the other mis-tag the struct ctor.
         let alpha_source = r"
-            pub enum Color { AlphaOnly; Red(i64); }
-            pub machine Switch {
-                events { AlphaTick; }
-                state Empty;
-                state Shared;
-                on AlphaTick: _ => _ { state }
-            }
+            pub enum Color { AlphaOnly, Red(i64), }
+            pub enum Switch { Empty, Shared, }
         ";
         let beta_source = r"
-            pub enum Color { Red { value: i64 }; BetaOnly; }
-            pub machine Switch {
-                events { BetaTick; }
-                state Shared;
-                state Full;
-                on BetaTick: _ => _ { state }
-            }
+            pub enum Color { Red { value: i64 }, BetaOnly, }
+            pub enum Switch { Shared, Full, }
         ";
         let root_with_alpha_first = r"
             import hew.alpha.{ Color as Hue, Switch };
@@ -41125,15 +37738,18 @@ impl Widget {
                 let Item::Import(import) = item else {
                     continue;
                 };
-                import.resolved_items = Some(match import.path.as_slice() {
-                    [package, module] if package == "hew" && module == "alpha" => {
-                        alpha.program.items.clone()
+                import.resolved_items = Some(
+                    match import.path.as_slice() {
+                        [package, module] if package == "hew" && module == "alpha" => {
+                            alpha.program.items.clone()
+                        }
+                        [package, module] if package == "hew" && module == "beta" => {
+                            beta.program.items.clone()
+                        }
+                        path => panic!("unexpected import path: {path:?}"),
                     }
-                    [package, module] if package == "hew" && module == "beta" => {
-                        beta.program.items.clone()
-                    }
-                    path => panic!("unexpected import path: {path:?}"),
-                });
+                    .into(),
+                );
             }
 
             let root_id = ModuleId::root();
@@ -41295,7 +37911,7 @@ impl Widget {
 
     /// Builds a tiny module `{mod_name}` declaring `pub actor Conn { receive
     /// fn ping() -> i64 { <ping_result> } }` plus a sibling `pub actor
-    /// {holder_name} { let conn: Conn; ... }` whose state field references
+    /// {holder_name} { let conn: Conn, ... }` whose state field references
     /// `Conn` by bare name — the shape `canonicalize_actor_ref_field_ty`
     /// scopes to the declaring module. The `get` handler deliberately does
     /// NOT `await`/`match` on `conn`: that ask-reply inference path is
@@ -41313,7 +37929,7 @@ impl Widget {
     ) -> hew_parser::module::Module {
         let source = format!(
             "pub actor Conn {{ receive fn ping() -> i64 {{ {ping_result} }} }}\n\
-             pub actor {holder_name} {{ let conn: Conn; receive fn get() -> i64 {{ 0 }} }}\n"
+             pub actor {holder_name} {{ let conn: Conn, receive fn get() -> i64 {{ 0 }} }}\n"
         );
         let parsed = hew_parser::parse(&source);
         assert!(
@@ -41349,18 +37965,10 @@ impl Widget {
             .clone()
     }
 
-    /// The canonical `LocalPid<{qualified_actor_name}>` shape that
-    /// `canonicalize_actor_ref_field_ty` produces for a resolved actor field.
+    /// The canonical actor-handle shape an actor field resolves to: the actor's
+    /// own qualified name carrying the handle discriminator.
     fn localpid_of(qualified_actor_name: &str) -> ResolvedTy {
-        ResolvedTy::Named {
-            name: BuiltinType::LocalPid.canonical_name().to_string(),
-            args: vec![ResolvedTy::named_user(
-                qualified_actor_name.to_string(),
-                Vec::new(),
-            )],
-            builtin: Some(BuiltinType::LocalPid),
-            is_opaque: false,
-        }
+        ResolvedTy::named_builtin(qualified_actor_name, BuiltinType::ActorHandle, Vec::new())
     }
 
     /// Regression for the ambiguous-short-name case: two DIFFERENT modules
@@ -41442,6 +38050,7 @@ impl Widget {
     fn opaque_resource_with_variants_emits_checker_boundary_violation() {
         use crate::HirNodeId;
         let decl = HirTypeDecl {
+            kind: HirTypeDeclKind::Enum,
             id: ItemId(0),
             node: HirNodeId(0),
             declaration: hew_types::DefId::for_test("app.Handle"),
@@ -41491,96 +38100,8 @@ impl Widget {
 }
 
 #[cfg(test)]
-mod caller_visible_param_projection_tests {
-    use super::{lower_program, HirItem, ResolutionCtx, TargetArch};
-    use hew_types::module_registry::ModuleRegistry;
-    use hew_types::Checker;
-
-    #[test]
-    fn checker_parameter_projection_facts_translate_to_stable_item_indices() {
-        let parsed = hew_parser::parse(
-            "fn inspect(data: bytes, text: string, values: Vec<i64>, count: i64) {}\n",
-        );
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let type_output = checker.check_program(&parsed.program);
-        assert!(type_output.errors.is_empty(), "{:?}", type_output.errors);
-
-        let lowered = lower_program(
-            &parsed.program,
-            &type_output,
-            &ResolutionCtx,
-            TargetArch::host(),
-        );
-        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
-        let function = lowered
-            .module
-            .items
-            .iter()
-            .find_map(|item| match item {
-                HirItem::Function(function) if function.name == "inspect" => Some(function),
-                _ => None,
-            })
-            .expect("inspect function");
-
-        assert_eq!(
-            lowered.module.caller_visible_param_projections,
-            [(function.id, 0), (function.id, 1), (function.id, 2)]
-                .into_iter()
-                .collect(),
-            "bytes, string, and Vec facts survive; scalar index 3 must be absent"
-        );
-    }
-}
-
-#[cfg(test)]
-mod builtin_enum_catalog_fingerprint_tests {
+mod builtin_enum_catalog_identity_tests {
     use super::BUILTIN_ENUM_SPECS;
-
-    const TRANSITION_FINGERPRINT: u64 = 0xc1fc_b995_abfb_984c;
-    const SWAPPED_CRASH_ACTION_FINGERPRINT: u64 = 0xe7c1_bed6_d523_d55c;
-
-    fn hash_byte(hash: &mut u64, byte: u8) {
-        *hash ^= u64::from(byte);
-        *hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-
-    fn hash_name(hash: &mut u64, name: &str, separator: u8) {
-        for byte in name.bytes() {
-            hash_byte(hash, byte);
-        }
-        hash_byte(hash, separator);
-    }
-
-    fn derived_monomorphic_specs() -> Vec<(&'static str, Vec<&'static str>)> {
-        BUILTIN_ENUM_SPECS
-            .iter()
-            .filter(|spec| spec.type_params.is_empty())
-            .map(|spec| (spec.canonical_type_name, spec.variant_names().collect()))
-            .collect()
-    }
-
-    fn catalog_fingerprint(specs: &[(&str, Vec<&str>)]) -> u64 {
-        let mut fingerprint = 0xcbf2_9ce4_8422_2325_u64;
-        for (type_name, variant_names) in specs {
-            hash_name(&mut fingerprint, type_name, 0xfe);
-            for variant_name in variant_names {
-                hash_name(&mut fingerprint, variant_name, 0xff);
-            }
-            hash_byte(&mut fingerprint, 0xfd);
-        }
-        fingerprint
-    }
-
-    #[test]
-    fn monomorphic_builtin_enum_catalog_matches_transition_fingerprint() {
-        let fingerprint = catalog_fingerprint(&derived_monomorphic_specs());
-        assert_eq!(
-            fingerprint, TRANSITION_FINGERPRINT,
-            "monomorphic builtin enum names or discriminant order changed; \
-             update this transition fingerprint only with an intentional ABI migration"
-        );
-    }
 
     #[test]
     fn monomorphic_builtin_specs_retain_exact_owner_identity() {
@@ -41602,21 +38123,5 @@ mod builtin_enum_catalog_fingerprint_tests {
             );
         }
         assert!(identities.iter().all(|identity| identity.contains('.')));
-    }
-
-    // Guards HIR derivation-order drift separately from the upstream build-time `.hew` ABI guard.
-    #[test]
-    fn transition_fingerprint_detects_derived_variant_order_drift() {
-        let mut specs = derived_monomorphic_specs();
-        let crash_action_variants = &mut specs
-            .iter_mut()
-            .find(|(type_name, _)| *type_name == "std.failure.CrashAction")
-            .expect("derived catalog must contain CrashAction")
-            .1;
-        crash_action_variants.swap(0, 1);
-
-        let fingerprint = catalog_fingerprint(&specs);
-        assert_eq!(fingerprint, SWAPPED_CRASH_ACTION_FINGERPRINT);
-        assert_ne!(fingerprint, TRANSITION_FINGERPRINT);
     }
 }

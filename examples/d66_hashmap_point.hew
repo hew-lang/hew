@@ -25,8 +25,8 @@
 //   - HashMap<Point, i64>:  new / insert / get / contains_key / remove / len
 //   - HashSet<Point>:       new / insert / contains / remove
 type Point {
-    x: i64;
-    y: i64;
+    x: i64,
+    y: i64,
 }
 
 fn main() {

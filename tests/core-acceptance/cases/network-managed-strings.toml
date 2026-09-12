@@ -1,0 +1,11 @@
+[[case]]
+id = "network-managed-strings"
+intent = "Package and peer imports keep same-name protobuf and WebSocket resources distinct; real local exchanges preserve managed UTF-8 and embedded NUL payloads, returned text survives handle release, invalid addresses retain typed details, and listeners release on return."
+source = "cases/network-managed-strings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "invalid addresses refused\nHTTP managed strings and cleanup\nWebSocket managed strings and cleanup\n"
+stderr = ""
+exit = 0

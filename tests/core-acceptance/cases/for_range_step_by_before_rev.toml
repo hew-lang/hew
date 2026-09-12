@@ -1,0 +1,13 @@
+[[case]]
+id = "for_range_step_by_before_rev"
+intent = "`.step_by(k)` before `.rev()` does not commute with the supported `.rev()`-then-`.step_by(k)` order: a descending strided range must start at the last strided element (8 for `(0..10).step_by(2)`), not the raw high bound."
+source = "../vertical-slice/reject/for_range_step_by_before_rev.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "NotYetImplemented"
+line = 8
+column = 15
+message = "``step_by` before `rev` is unsupported; write `(a..b).rev().step_by(k)`` is not yet supported by the Hew compiler (this is a current Hew limitation, not your code)"

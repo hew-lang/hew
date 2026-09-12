@@ -1,25 +1,12 @@
 //! Text wire-body codec — the CBOR↔JSON/YAML bridge.
 //!
-//! This module is the runtime half of the wire-type TEXT codec
-//! (`to_json`/`from_json`/`to_yaml`/`from_yaml`). It deliberately does NOT carry
-//! a second per-type struct/enum walk: the compiler already emits a binary CBOR
-//! codec walk per `#[wire]` type (`hew-codegen-rs/src/llvm.rs`,
-//! `hew-runtime/src/cbor_serial.rs`). The text codec is that binary codec PLUS a
-//! generic transcode (RATIFIED, Q203):
+//! The native compiler emits one binary encode/decode walk from each exact
+//! checked wire schema. JSON and YAML reuse that CBOR representation through
+//! this shared transcoder; they do not maintain separate native value walkers.
 //!
-//! - **Serialize** (`to_json`/`to_yaml`): the compiler-emitted text thunk drives
-//!   the existing CBOR serialize walk to build the value tree as CBOR bytes, then
-//!   calls [`hew_wire_cbor_to_text`] with a per-type DESCRIPTOR (the tag↔name
-//!   schema). This module parses the CBOR bytes into a `ciborium::Value`, walks it
-//!   guided by the descriptor to map integer field tags → JSON/YAML key names,
-//!   and serializes the resulting `serde_json`/`serde_yaml` value to text.
-//!
-//! - **Deserialize** (`from_json`/`from_yaml`): the text thunk calls
-//!   [`hew_wire_text_to_cbor`], which parses the JSON/YAML text, walks the value
-//!   tree guided by the descriptor to map key names → integer tags (rebuilding the
-//!   exact CBOR shape the binary decode walk expects), serializes that to CBOR
-//!   bytes, and returns them. The thunk then feeds the bytes to the existing CBOR
-//!   deserialize walk to reconstruct a typed value.
+//! Managed-value adapters in `wire_native` pass complete UTF-8 documents to
+//! [`text_to_cbor`] and [`cbor_to_text`]. The legacy C-string entry points use
+//! those same engines while retaining their explicit C-string boundaries.
 //!
 //! ## Untrusted input — FAIL CLOSED (CLAUDE.md §2)
 //! `from_json`/`from_yaml` take arbitrary user text (config files, HTTP bodies).
@@ -378,20 +365,16 @@ impl Desc {
     }
 }
 
-/// Parse a NUL-terminated descriptor string into a `Desc` tree. Returns `None`
-/// on any malformed input (the bridge then fails closed).
+/// Borrow a NUL-terminated UTF-8 descriptor string.
 ///
 /// # Safety
 /// `ptr` must be null or a valid NUL-terminated C string.
-unsafe fn parse_descriptor(ptr: *const c_char) -> Option<Desc> {
+unsafe fn descriptor_text<'a>(ptr: *const c_char) -> Option<&'a str> {
     if ptr.is_null() {
         return None;
     }
     // SAFETY: ptr is a valid NUL-terminated C string per this fn's contract.
-    let cstr = unsafe { core::ffi::CStr::from_ptr(ptr) };
-    let text = cstr.to_str().ok()?;
-    let json: serde_json::Value = serde_json::from_str(text).ok()?;
-    Desc::parse(&json, 0)
+    unsafe { core::ffi::CStr::from_ptr(ptr) }.to_str().ok()
 }
 
 // ── CBOR → text (serialize: to_json / to_yaml) ───────────────────────────────
@@ -828,6 +811,38 @@ fn enum_json_to_cbor(
     }
 }
 
+/// Transcode a complete UTF-8 document using the same schema and duplicate-key
+/// validation as the C boundary. Managed strings use this length-aware entry.
+pub(crate) fn text_to_cbor(text: &str, descriptor: &str, format: c_int) -> Result<Vec<u8>, String> {
+    let json = serde_json::from_str(descriptor)
+        .map_err(|_| "internal: malformed wire descriptor".to_string())?;
+    let desc =
+        Desc::parse(&json, 0).ok_or_else(|| "internal: malformed wire descriptor".to_string())?;
+    let parsed: TextValue = match format {
+        FORMAT_JSON => serde_json::from_str(text).map_err(|e| format!("invalid JSON: {e}"))?,
+        FORMAT_YAML => serde_yaml::from_str(text).map_err(|e| format!("invalid YAML: {e}"))?,
+        _ => return Err("unknown text format".to_string()),
+    };
+    let cbor = text_value_to_cbor(&parsed, &desc, 0)?;
+    let mut encoded = Vec::new();
+    ciborium::ser::into_writer(&cbor, &mut encoded)
+        .map_err(|_| "internal: CBOR re-encode failed".to_string())?;
+    Ok(encoded)
+}
+
+/// Transcode checked CBOR bytes to a complete JSON or YAML document.
+pub(crate) fn cbor_to_text(bytes: &[u8], descriptor: &str, format: c_int) -> Option<String> {
+    let schema = serde_json::from_str(descriptor).ok()?;
+    let desc = Desc::parse(&schema, 0)?;
+    let cbor: CborValue = ciborium::de::from_reader(bytes).ok()?;
+    let json = cbor_to_json(&cbor, &desc, 0).ok()?;
+    match format {
+        FORMAT_JSON => serde_json::to_string(&json).ok(),
+        FORMAT_YAML => serde_yaml::to_string(&json).ok(),
+        _ => None,
+    }
+}
+
 // ── FFI entry points ─────────────────────────────────────────────────────────
 
 /// Serialize a wire value's CBOR encoding to JSON/YAML text.
@@ -856,15 +871,8 @@ pub unsafe extern "C" fn hew_wire_cbor_to_text(
         // SAFETY: cbor_ptr points to cbor_len readable bytes per the contract.
         let bytes = unsafe { core::slice::from_raw_parts(cbor_ptr, cbor_len) };
         // SAFETY: descriptor is null or a valid C string per the contract.
-        let desc = unsafe { parse_descriptor(descriptor) }?;
-        let cbor: CborValue = ciborium::de::from_reader(bytes).ok()?;
-        let json = cbor_to_json(&cbor, &desc, 0).ok()?;
-        let text = match format {
-            FORMAT_JSON => serde_json::to_string(&json).ok()?,
-            FORMAT_YAML => serde_yaml::to_string(&json).ok()?,
-            _ => return None,
-        };
-        Some(text)
+        let descriptor = unsafe { descriptor_text(descriptor) }?;
+        cbor_to_text(bytes, descriptor, format)
     });
     match result {
         Ok(Some(text)) => {
@@ -889,7 +897,7 @@ pub unsafe extern "C" fn hew_wire_cbor_to_text(
 /// Parse JSON/YAML text into the CBOR bytes the binary decode walk expects.
 ///
 /// `text` is the untrusted input; `descriptor` is the type's tag↔name schema;
-/// `format` selects JSON or YAML. On success, returns a `libc::malloc`'d CBOR
+/// `format` selects JSON or YAML. On success, returns a sized-block-allocator CBOR
 /// buffer (freed by the shared `hew_ser_free_bytes`) and writes its length to
 /// `*out_len`. On ANY failure — parse error, shape mismatch, over-nesting,
 /// malformed descriptor — returns null, writes 0 to `*out_len`, and stores a
@@ -924,22 +932,9 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
             .to_str()
             .map_err(|_| "input text is not valid UTF-8".to_string())?;
         // SAFETY: descriptor is null or a valid C string per the contract.
-        let desc = unsafe { parse_descriptor(descriptor) }
+        let descriptor = unsafe { descriptor_text(descriptor) }
             .ok_or_else(|| "internal: malformed wire descriptor".to_string())?;
-        let parsed: TextValue = match format {
-            FORMAT_JSON => {
-                serde_json::from_str(text_str).map_err(|e| format!("invalid JSON: {e}"))?
-            }
-            FORMAT_YAML => {
-                serde_yaml::from_str(text_str).map_err(|e| format!("invalid YAML: {e}"))?
-            }
-            _ => return Err("unknown text format".to_string()),
-        };
-        let cbor = text_value_to_cbor(&parsed, &desc, 0)?;
-        let mut encoded: Vec<u8> = Vec::new();
-        ciborium::ser::into_writer(&cbor, &mut encoded)
-            .map_err(|_| "internal: CBOR re-encode failed".to_string())?;
-        Ok(encoded)
+        text_to_cbor(text_str, descriptor, format)
     });
     let encoded = match outcome {
         Ok(Ok(encoded)) => encoded,
@@ -958,7 +953,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
         return core::ptr::null_mut();
     }
     // SAFETY: malloc returns a valid pointer or null.
-    let dst = unsafe { libc::malloc(encoded.len()) }.cast::<u8>();
+    let dst = crate::mem::buf_try_alloc(encoded.len()).cast::<u8>();
     if dst.is_null() {
         write_err(out_err, "out of memory encoding CBOR");
         return core::ptr::null_mut();
@@ -972,7 +967,7 @@ pub unsafe extern "C" fn hew_wire_text_to_cbor(
     dst
 }
 
-/// Store a malloc'd copy of `msg` into `*out_err` (if non-null) so the caller can
+/// Store a header-aware C-string copy (via `malloc_cstring`) of `msg` into `*out_err` (if non-null) so the caller can
 /// construct `Err(string)`. A NUL in the message is impossible (all messages are
 /// static or formatted from numbers/names) but `malloc_cstring` would truncate
 /// it harmlessly.
@@ -1079,10 +1074,10 @@ mod tests {
             TextToCbor::Err(msg)
         } else {
             assert!(out_err.is_null(), "success path must not set an error");
-            // SAFETY: ptr points to out_len bytes from libc::malloc.
+            // SAFETY: ptr points to out_len bytes from the sized-block allocator.
             let bytes = unsafe { core::slice::from_raw_parts(ptr, out_len) }.to_vec();
-            // SAFETY: ptr is a libc::malloc buffer (the CBOR bytes), freed once.
-            unsafe { libc::free(ptr.cast()) };
+            // SAFETY: ptr is a sized-block buffer (the CBOR bytes), freed once.
+            unsafe { crate::mem::buf_free(ptr.cast()) };
             TextToCbor::Ok(bytes)
         }
     }

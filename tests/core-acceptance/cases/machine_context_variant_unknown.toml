@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_context_variant_unknown"
+intent = "Reject fixture: machine_context_variant_unknown — the negative control for #3149."
+source = "../vertical-slice/reject/machine_context_variant_unknown/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MachineExhaustivenessError"
+line = 3
+column = 59
+message = "transition to `Off` must produce that state on every normal path"

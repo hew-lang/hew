@@ -28,7 +28,7 @@ fn tail_question_typed_as_ok_payload_is_ok_wrapped() {
     // `helper(x)?` is typed `i64` (the `?` already unwrapped the Ok), and the
     // declared return is `Result<i64, E>` → the tail is Ok-wrapped.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn helper(x: i64) -> Result<i64, E> { Ok(x) }
         fn load(x: i64) -> Result<i64, E> { helper(x)? }
     ";
@@ -51,7 +51,7 @@ fn bare_tail_returning_full_result_is_not_double_wrapped() {
     // type. It must be returned directly: no coercion, no double-wrap into
     // `Result<Result<i64, E>, E>`.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn helper(x: i64) -> Result<i64, E> { Ok(x) }
         fn passthrough(x: i64) -> Result<i64, E> { helper(x) }
     ";
@@ -72,7 +72,7 @@ fn explicit_ok_wrap_still_works_without_coercion() {
     // The explicit `Ok(helper(x)?)` form already produces the full Result, so
     // the coercion declines (no double-wrap) and there is no regression.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn helper(x: i64) -> Result<i64, E> { Ok(x) }
         fn explicit(x: i64) -> Result<i64, E> { Ok(helper(x)?) }
     ";
@@ -92,7 +92,7 @@ fn explicit_ok_wrap_still_works_without_coercion() {
 fn if_tail_ok_wraps_both_arms() {
     // Both arms of a tail `if` flow to the function return → both Ok-wrap.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn helper(x: i64) -> Result<i64, E> { Ok(x) }
         fn branchy(x: i64) -> Result<i64, E> {
             if x > 0 { helper(x)? } else { helper(0 - x)? }
@@ -115,7 +115,7 @@ fn if_tail_ok_wraps_both_arms() {
 fn match_tail_ok_wraps_both_arms() {
     // Both arms of a tail `match` flow to the function return → both Ok-wrap.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn helper(x: i64) -> Result<i64, E> { Ok(x) }
         fn matchy(x: i64) -> Result<i64, E> {
             match x {
@@ -141,7 +141,7 @@ fn match_tail_ok_wraps_both_arms() {
 fn plain_value_tail_typed_as_ok_payload_is_ok_wrapped() {
     // A plain-value tail (no `?`) whose type is the Ok payload also coerces.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn make(x: i64) -> Result<i64, E> { x + 1 }
     ";
     let output = typecheck(src);
@@ -159,8 +159,8 @@ fn nested_result_tail_wraps_against_ok_payload_only() {
     // `Result<Result<i64, B>, E>`. It must wrap exactly once to
     // `Ok(Result<i64, B>)`, NOT recurse against the full return.
     let src = r"
-        enum B { Bv; }
-        enum E { Ev; }
+        enum B { Bv, }
+        enum E { Ev, }
         fn g() -> Result<Result<i64, B>, E> { Ok(Ok(1)) }
         fn nested() -> Result<Result<i64, B>, E> { g()? }
     ";
@@ -182,7 +182,7 @@ fn wrong_typed_tail_in_result_fn_still_errors() {
     // A tail whose type unifies with neither the full Result nor the Ok payload
     // must still produce a type-mismatch error — the coercion declines.
     let src = r#"
-        enum E { Bad; }
+        enum E { Bad, }
         fn wrong() -> Result<i64, E> { "not an int" }
     "#;
     let output = typecheck(src);
@@ -222,7 +222,7 @@ fn bare_identifier_tail_typed_as_ok_payload_is_ok_wrapped() {
     // `check_against` (not the default arm), so it exercises the arm-level
     // coercion fix.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn f(x: i64) -> Result<i64, E> { x }
     ";
     let output = typecheck(src);
@@ -244,7 +244,7 @@ fn generic_identifier_tail_is_ok_wrapped() {
     // identifier `x` has type `T`, the Ok payload of the declared return, so it
     // Ok-wraps.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn g<T>(x: T) -> Result<T, E> { x }
     ";
     let output = typecheck(src);
@@ -267,7 +267,7 @@ fn bare_call_tail_typed_as_ok_payload_is_ok_wrapped() {
     // an `Expr::Call`, handled by the call arm of `check_against` (not the
     // default arm), so it exercises the call-arm coercion fix.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn value() -> i64 { 23 }
         fn f() -> Result<i64, E> { value() }
     ";
@@ -289,7 +289,7 @@ fn bare_call_tail_returning_full_result_is_not_double_wrapped() {
     // A bare call already producing the FULL Result must return directly — the
     // call arm's probe takes the no-coercion path, no double-wrap.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn g() -> Result<i64, E> { Ok(5) }
         fn passthrough() -> Result<i64, E> { g() }
     ";
@@ -311,7 +311,7 @@ fn non_tail_call_argument_does_not_coerce() {
     // NON-tail argument position (where a Result is expected) must NOT Ok-wrap —
     // it must still error. The coercion is strictly tail-only.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn value() -> i64 { 23 }
         fn takes_result(r: Result<i64, E>) -> i64 {
             match r { .Ok(v) => v, .Err(_) => 0 }
@@ -337,7 +337,7 @@ fn non_tail_identifier_argument_does_not_coerce() {
     // Ok-payload type in a NON-tail argument position (where a Result is
     // expected) must NOT Ok-wrap — it must still error.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn takes_result(r: Result<i64, E>) -> i64 {
             match r { .Ok(v) => v, .Err(_) => 0 }
         }
@@ -361,7 +361,7 @@ fn non_tail_let_binding_does_not_coerce() {
     // The coercion is tail-ONLY: a `let r: Result<i64, E> = <i64>` binding must
     // NOT auto-wrap — it must still error. This is the over-coercion guard.
     let src = r"
-        enum E { Bad; }
+        enum E { Bad, }
         fn f() -> i64 {
             let r: Result<i64, E> = 42;
             match r { .Ok(v) => v, .Err(_) => 0 }

@@ -1,0 +1,14 @@
+[[case]]
+id = "string_index_oob_actor_isolated"
+intent = "An out-of-bounds `string[i]` read traps inside the actor and the runtime names the failure and the actor it fired in."
+source = "../vertical-slice/accept/string_index_oob_actor_isolated.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in StringIndexCrasher.boom (actor 1): IndexOutOfBounds\n"
+exit = 1

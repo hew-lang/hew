@@ -5,8 +5,8 @@
 // +0.0 and -0.0 as distinct. This differs from the IEEE numeric `==` a bare
 // `f64` expression uses (NaN != NaN, +0.0 == -0.0).
 type Vec2 {
-    x: f64;
-    y: f64;
+    x: f64,
+    y: f64,
 }
 
 fn main() {

@@ -5,47 +5,6 @@
 pub(super) use super::*;
 
 #[test]
-fn closable_consume_authority_matches_exact_impl_trait_identity() {
-    let parsed = hew_parser::parse(
-        r"
-        import std.io.closable;
-        type Probe { value: i64; }
-        impl Closable for Probe {
-            fn close(value: Probe) -> Result<(), closable.CloseError> { Ok(()) }
-        }
-        fn main() { let p = Probe { value: 1 }; let _ = p.close(); }
-        ",
-    );
-    assert!(
-        parsed.errors.is_empty(),
-        "fixture parse: {:?}",
-        parsed.errors
-    );
-    let mut checker = Checker::new(test_registry());
-    let output = checker.check_program(&parsed.program);
-    assert!(
-        output.errors.is_empty(),
-        "fixture typecheck: {:?}",
-        output.errors
-    );
-    assert!(
-        checker
-            .trait_impls_set
-            .contains(&("Probe".to_string(), "std.io.closable.Closable".to_string())),
-        "impl authority must retain exact Closable owner: {:?}",
-        checker.trait_impls_set
-    );
-    assert!(
-        checker
-            .consume_receiver_methods
-            .contains("std.io.closable.Closable::close"),
-        "consume authority must use the same exact owner: {:?}",
-        checker.consume_receiver_methods
-    );
-    assert_eq!(output.method_call_consumes_receiver.len(), 1);
-}
-
-#[test]
 fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
     let output = check_source(
         r"
@@ -53,17 +12,17 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         trait Fluent {
             #[returns_receiver]
-            fn touch(consuming self) -> Self;
+            fn touch(consume self) -> Self;
         }
 
         impl Fluent for Builder {
             #[returns_receiver]
-            fn touch(consuming self) -> Builder {
+            fn touch(consume self) -> Builder {
                 self
             }
         }
@@ -105,15 +64,6 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
         output.method_call_preserves_receiver_identity.len() >= 3,
         "statement-position identity calls must carry an explicit preservation fact"
     );
-    assert!(
-        output.produced_value_ownership.values().any(|fact| {
-            fact.ownership == crate::runtime_call::ProducedValueOwnership::ReceiverIdentity
-                && fact.receiver_span.is_some()
-                && fact.receiver_boundary
-                    == Some(crate::runtime_call::ProducedArgumentBoundary::Transfer)
-        }),
-        "captured receiver-identity calls must publish their exact transferring receiver anchor"
-    );
 }
 
 #[test]
@@ -124,10 +74,10 @@ fn captured_receiver_identity_result_moves_original_binding() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
 
             #[returns_receiver]
-            fn touch(consuming self) -> Builder {
+            fn touch(consume self) -> Builder {
                 self
             }
         }
@@ -162,11 +112,11 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
             fn inspect(self) -> i64 { self.value }
 
             #[returns_receiver]
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
 
         fn main() {
@@ -188,10 +138,10 @@ fn receiver_identity_can_flow_through_a_borrow_but_not_a_terminal_consume() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
 
             #[returns_receiver]
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
 
         fn main() {
@@ -218,7 +168,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         type Builder { value: i64 }
         impl Builder {
             #[returns_receiver]
-            fn bad(consuming self) -> Builder {
+            fn bad(consume self) -> Builder {
                 Builder { value: 2 }
             }
         }
@@ -227,7 +177,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         type Builder { value: i64 }
         impl Builder {
             #[returns_receiver]
-            fn bad(consuming self) -> Builder {
+            fn bad(consume self) -> Builder {
                 if self.value == 0 {
                     return self;
                 }
@@ -240,7 +190,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         impl Builder {
             #[returns_receiver]
             #[returns_receiver]
-            fn bad(consuming self) -> Builder {
+            fn bad(consume self) -> Builder {
                 self
             }
         }
@@ -249,7 +199,7 @@ fn receiver_identity_rejects_fresh_or_alternate_return_bodies() {
         type Builder { value: i64 }
         impl Builder {
             #[returns_receiver]
-            fn bad(consuming self, consume other: Builder) -> Builder {
+            fn bad(consume self, consume other: Builder) -> Builder {
                 other
             }
         }
@@ -275,17 +225,17 @@ fn receiver_identity_allows_nonreceiver_arguments() {
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         trait Fluent {
             #[returns_receiver]
-            fn with(consuming self, value: i64) -> Self;
+            fn with(consume self, value: i64) -> Self;
         }
 
         impl Fluent for Builder {
             #[returns_receiver]
-            fn with(consuming self, value: i64) -> Builder {
+            fn with(consume self, value: i64) -> Builder {
                 self
             }
         }
@@ -323,12 +273,12 @@ fn generic_impl_inference_and_receiver_identity_share_one_signature() {
 
         trait Fluent<T> {
             #[returns_receiver]
-            fn with(consuming self, value: T) -> Self;
+            fn with(consume self, value: T) -> Self;
         }
 
         impl<T> Fluent<T> for Box<T> {
             #[returns_receiver]
-            fn with(consuming self, value: T) -> Box<T> {
+            fn with(consume self, value: T) -> Box<T> {
                 self
             }
         }
@@ -396,7 +346,7 @@ fn generic_receiver_identity_rejects_changed_type_arguments() {
 
         impl<T, U> Pair<T, U> {
             #[returns_receiver]
-            fn swap_identity(consuming self) -> Pair<U, T> {
+            fn swap_identity(consume self) -> Pair<U, T> {
                 Pair { first: self.second, second: self.first }
             }
         }
@@ -425,7 +375,7 @@ fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
         r"
         trait Fluent {
             #[returns_receiver]
-            fn bad(consuming self) -> Self {
+            fn bad(consume self) -> Self {
                 return self;
             }
         }
@@ -469,10 +419,10 @@ fn trait_impl_must_match_receiver_identity_and_consume_axes() {
         type Builder { value: i64 }
         trait Fluent {
             #[returns_receiver]
-            fn touch(consuming self) -> Self;
+            fn touch(consume self) -> Self;
         }
         impl Fluent for Builder {
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
         ",
         r"
@@ -481,7 +431,7 @@ fn trait_impl_must_match_receiver_identity_and_consume_axes() {
             fn inspect(self) -> Self;
         }
         impl Fluent for Builder {
-            fn inspect(consuming self) -> Builder { self }
+            fn inspect(consume self) -> Builder { self }
         }
         ",
     ] {
@@ -503,19 +453,19 @@ fn receiver_identity_trait_method_is_not_dyn_object_safe() {
         r"
         trait Fluent {
             #[returns_receiver]
-            fn touch(consuming self) -> Self;
+            fn touch(consume self) -> Self;
         }
 
         #[resource]
         type Builder { value: i64 }
 
         impl Builder {
-            fn close(consuming self) {}
+            fn close(consume self) {}
         }
 
         impl Fluent for Builder {
             #[returns_receiver]
-            fn touch(consuming self) -> Builder { self }
+            fn touch(consume self) -> Builder { self }
         }
 
         fn use_dyn(value: dyn Fluent) {
@@ -571,7 +521,7 @@ fn module_local_dyn_trait_method_records_vtable_call() {
     );
     let module_items = module.program.items;
     let mut root = hew_parser::parse(
-        "import shapes;\nfn main() -> string { let circle = shapes.make_circle(); shapes.render(circle) }\n",
+        "import shapes;\nfn render_circle() -> string { let circle = shapes.make_circle(); shapes.render(circle) }\n",
     );
     assert!(
         root.errors.is_empty(),
@@ -587,7 +537,7 @@ fn module_local_dyn_trait_method_records_vtable_call() {
             _ => None,
         })
         .expect("root program must contain the shapes import");
-    import.resolved_items = Some(module_items.clone());
+    import.resolved_items = Some(module_items.clone().into());
 
     let root_id = ModuleId::root();
     let shapes_id = ModuleId::new(vec!["shapes".to_string()]);
@@ -641,7 +591,7 @@ fn dyn_trait_return_signature_is_admitted() {
         }
 
         type Person {
-            name: string;
+            name: string,
         }
 
         impl Named for Person {
@@ -668,7 +618,7 @@ fn nested_dyn_trait_return_signature_is_admitted() {
         }
 
         type Person {
-            name: string;
+            name: string,
         }
 
         impl Named for Person {
@@ -1896,7 +1846,7 @@ fn index_trait_user_impl_runs() {
     let output = check_source(
         r"
         type Grid {
-            bias: i32;
+            bias: i32,
         }
 
         impl Index<i32> for Grid {
@@ -2195,7 +2145,7 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
 
 #[test]
 fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
-    let mut checker = make_checker_with_trait("Closable", &["close"], false, false);
+    let mut checker = make_checker_with_trait("Sink", &["close"], false, false);
 
     let mut methods = HashMap::new();
     methods.insert(
@@ -2218,7 +2168,7 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
     );
 
     assert!(
-        checker.type_structurally_satisfies("channel.Sender", "Closable"),
+        checker.type_structurally_satisfies("channel.Sender", "Sink"),
         "structural check should prefer builtin Sender::close over imported stubs"
     );
 }
@@ -2759,11 +2709,10 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     );
 }
 
-// ── Generator/AsyncGenerator formally implement Iterator (#2352) ──────────────
+// ── Generator formally implements Iterator (#2352) ───────────────────────────
 //
-// `Generator<Y, R>` and `AsyncGenerator<Y>` satisfy the `Iterator` trait bound
-// through the real `impl Iterator for Generator<Y, R>` / `impl Iterator for
-// AsyncGenerator<Y>` blocks in `std/builtins.hew`, not a checker-level special
+// `Generator<Y, R>` satisfies the `Iterator` trait bound through the real
+// `impl Iterator for Generator<Y, R>` block in `std/builtins.hew`, not a checker-level special
 // case. These regressions pin both halves of the bug found during grounding:
 // `type_satisfies_trait_bound` must return true for a real reason (an
 // `impl_type_params_map` entry is required for `builtin_generic_type_params`
@@ -2771,7 +2720,7 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
 // receiver's concrete yield type — not the literal impl type-param name ("Y")
 // — which is only true once `builtin_generic_type_params` knows Generator's
 // param names. A function requiring `I: Iterator<Item = i64>` type-checks
-// against a `Generator<i64, ()>` / `AsyncGenerator<i64>` argument only when
+// against a `Generator<i64, ()>` argument only when
 // both halves hold.
 
 #[test]
@@ -2902,9 +2851,9 @@ fn generator_iterator_item_mismatch_is_rejected() {
 }
 
 #[test]
-fn async_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield_type() {
+fn second_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield_type() {
     let source = concat!(
-        "async gen fn counter(n: i64) -> i64 {\n",
+        "gen fn counter(n: i64) -> i64 {\n",
         "    var i: i64 = 0;\n",
         "    while i < n {\n",
         "        yield i;\n",
@@ -2928,7 +2877,7 @@ fn async_generator_satisfies_iterator_bound_with_item_resolved_to_concrete_yield
     let output = checker.check_program(&result.program);
     assert!(
         output.errors.is_empty(),
-        "AsyncGenerator<i64> should satisfy `Iterator<Item = i64>` through the \
+        "Generator<i64, ()> should satisfy `Iterator<Item = i64>` through the \
          real impl with a correctly-substituted associated type; got {:?}",
         output.errors
     );
@@ -3043,3 +2992,224 @@ fn record_field_marker_derivation_expands_top_level_alias() {
 //   - `body_cast_infer_hole_fails_closed`: unresolvable `as _` cast target
 //   - `body_let_annotation_infer_resolves_cleanly`: resolvable `let y: _ = 42`
 //   - `body_lambda_infer_param_hole_fails_closed`: unresolvable lambda `|x: _|`
+
+// ── D429: an impl block naming a trait that does not exist ────────────────────
+
+#[test]
+fn impl_of_undeclared_trait_is_rejected() {
+    let parsed = hew_parser::parse(
+        r"
+        type Point { x: i64, }
+        impl Nonexistent for Point {
+            fn shift(pt: Point) -> i64 { pt.x }
+        }
+        fn main() { let p = Point { x: 1 }; let _ = p.shift(); }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            &error.kind,
+            TypeErrorKind::UnknownTraitInImpl { trait_name, type_name }
+                if trait_name == "Nonexistent" && type_name == "Point"
+        )),
+        "an impl of an undeclared trait must be rejected: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn impl_of_marker_trait_without_declared_methods_is_accepted() {
+    // Negative control for the check above: marker traits (`Eq`, `Hash`, ...)
+    // declare no method set, so their absence from `trait_defs` must not be
+    // read as an undeclared trait.
+    let parsed = hew_parser::parse(
+        r"
+        type Key { id: i64, }
+        impl Eq for Key {
+            fn eq(left: Key, right: Key) -> bool { left.id == right.id }
+        }
+        fn main() {
+            let a = Key { id: 1 };
+            let b = Key { id: 1 };
+            let _ = a.eq(b);
+        }
+        ",
+    );
+    assert!(
+        parsed.errors.is_empty(),
+        "fixture parse: {:?}",
+        parsed.errors
+    );
+    let mut checker = Checker::new(test_registry());
+    let output = checker.check_program(&parsed.program);
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| matches!(&error.kind, TypeErrorKind::UnknownTraitInImpl { .. })),
+        "`impl Eq` must not be reported as an undeclared trait: {:?}",
+        output.errors
+    );
+}
+
+/// Build a two-module graph: `pkg.thing` declares `Thing` and `make`, and the
+/// root implements a LOCAL trait for that imported type through the module
+/// binding (`impl Tagged for thing.Thing`).
+fn foreign_impl_program(root_source: &str) -> TypeCheckOutput {
+    let thing_path: std::path::PathBuf = "pkgs/thing.hew".into();
+    let mut thing = hew_parser::parse(
+        r"
+        pub type Thing { v: i64, }
+        pub fn make() -> Thing { Thing { v: 7 } }
+        ",
+    );
+    let mut root = hew_parser::parse(root_source);
+    for parsed in [&thing, &root] {
+        assert!(
+            parsed.errors.is_empty(),
+            "fixture parse: {:?}",
+            parsed.errors
+        );
+    }
+
+    let thing_item_count = thing.program.items.len();
+    let root_import = root
+        .program
+        .items
+        .iter_mut()
+        .find_map(|(item, _)| match item {
+            Item::Import(import) => Some(import),
+            _ => None,
+        })
+        .expect("root import");
+    root_import.resolved_items = Some(thing.program.items.clone().into());
+    root_import.resolved_item_source_paths =
+        std::iter::repeat_n(thing_path.clone(), thing_item_count).collect();
+    root_import.resolved_source_paths = vec![thing_path.clone()];
+
+    let root_id = ModuleId::root();
+    let thing_id = ModuleId::new(vec!["pkg".to_string(), "thing".to_string()]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    graph
+        .add_module(Module {
+            id: thing_id.clone(),
+            items: std::mem::take(&mut thing.program.items),
+            imports: vec![],
+            source_paths: vec![thing_path.clone()],
+            doc: None,
+        })
+        .expect("thing module");
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec!["main.hew".into()],
+            doc: None,
+        })
+        .expect("root module");
+    graph.item_sources.insert(
+        "pkg.thing".to_string(),
+        std::iter::repeat_n(thing_path, thing_item_count).collect(),
+    );
+    graph.topo_order = vec![thing_id, root_id];
+
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    })
+}
+
+#[test]
+fn local_trait_implemented_for_an_imported_type_dispatches() {
+    let output = foreign_impl_program(
+        r#"
+        import pkg.thing;
+
+        trait Tagged {
+            fn tag(self) -> string;
+        }
+
+        impl Tagged for thing.Thing {
+            fn tag(self) -> string { "thing" }
+        }
+
+        fn main() {
+            let value = thing.make();
+            println(value.tag());
+        }
+        "#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a local trait implemented for an imported type must dispatch: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.fn_sigs.contains_key("pkg.thing.Thing::tag"),
+        "the impl method must register under the target's identity: {:?}",
+        output
+            .fn_sigs
+            .keys()
+            .filter(|key| key.ends_with("::tag"))
+            .collect::<Vec<_>>()
+    );
+    // HIR reconstructs an impl block's emitted symbol from the spelling the
+    // source wrote, so the declaration stays reachable under it as well — one
+    // declaration, not two.
+    let surface = output.impl_method_declaration_ids.get("thing.Thing::tag");
+    assert!(
+        surface.is_some(),
+        "the surface spelling must select a declaration: {:?}",
+        output.impl_method_declaration_ids
+    );
+    assert_eq!(
+        surface,
+        output
+            .impl_method_declaration_ids
+            .get("pkg.thing.Thing::tag"),
+        "surface and identity keys must select one declaration: {:?}",
+        output.impl_method_declaration_ids
+    );
+}
+
+#[test]
+fn imported_type_without_the_implemented_method_still_fails() {
+    let output = foreign_impl_program(
+        r#"
+        import pkg.thing;
+
+        trait Tagged {
+            fn tag(self) -> string;
+        }
+
+        impl Tagged for thing.Thing {
+            fn tag(self) -> string { "thing" }
+        }
+
+        fn main() {
+            let value = thing.make();
+            println(value.missing());
+        }
+        "#,
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.kind == TypeErrorKind::UndefinedMethod)
+        .expect("a method the impl does not provide must still fail");
+    assert!(
+        error.message.contains("missing"),
+        "diagnostic names the missing method: {}",
+        error.message
+    );
+}

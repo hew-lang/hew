@@ -14,7 +14,7 @@ actor Shaper {
 
 fn main() {
     let s = spawn Shaper;
-    for await p in s.points() {
+    for p in s.points() {
         println(f"{p.x},{p.y}");
     }
 }

@@ -1,0 +1,17 @@
+fn identity<T>(value: T) -> T {
+    value
+}
+
+fn generic_free_function() -> i64 {
+    identity::<i64>(42)
+}
+
+fn generic_constructor() -> i64 {
+    let values = Vec::<i64>::new();
+    values.len()
+}
+
+fn generic_method() -> i64 {
+    let values = Vec::new::<i64>();
+    values.len()
+}

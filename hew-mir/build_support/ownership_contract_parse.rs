@@ -25,7 +25,7 @@ struct ContractRow {
     /// balanced retained alias, `"resource-transfer"` for an opaque close
     /// authority, and empty when the question has not been answered.
     /// Empty is the fail-closed default — see the `result-retention` section
-    /// of `scripts/jit-symbol-classification.toml`.
+    /// of `scripts/runtime-export-classification.toml`.
     result_retention: String,
     /// Runtime-body evidence for an opaque `resource-transfer`. Kept in the
     /// source table for auditability; it is validated but need not enter the
@@ -71,7 +71,7 @@ fn quoted_list(body: &str) -> Vec<String> {
 /// validator would reject.
 fn validate_contract_row(symbol: &str, row: &ContractRow) {
     assert!(
-        ["fresh", "retained", "borrowed", "none"].contains(&row.result.as_str()),
+        ["fresh", "retained", "owned", "borrowed", "none"].contains(&row.result.as_str()),
         "unknown ownership result for {symbol}: {}",
         row.result
     );
@@ -128,7 +128,7 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
             "resource result type for {symbol} must be a qualified nominal: {resource_type}"
         );
         assert!(
-            matches!(row.result.as_str(), "fresh" | "retained"),
+            matches!(row.result.as_str(), "fresh" | "retained" | "owned"),
             "resource result type for {symbol} requires an owned result"
         );
     }
@@ -137,7 +137,7 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         "unknown discharge depth for {symbol}: {}",
         row.discharge_depth
     );
-    if matches!(row.result.as_str(), "fresh" | "retained") {
+    if matches!(row.result.as_str(), "fresh" | "retained" | "owned") {
         assert!(
             !row.release_symbol.is_empty() && row.discharge_depth != "none",
             "owned result for {symbol} requires release-symbol and discharge depth"
@@ -148,6 +148,10 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
             "borrowed/none result for {symbol} must carry no release axis"
         );
     }
+    validate_result_retention(symbol, row);
+}
+
+fn validate_result_retention(symbol: &str, row: &ContractRow) {
     // The RETENTION axis. Absence is the fail-closed answer "not established",
     // so only measured positive spellings are allowed, and they are meaningful
     // only about an allocation the caller was actually given.
@@ -158,8 +162,12 @@ fn validate_contract_row(symbol: &str, row: &ContractRow) {
         row.result_retention
     );
     assert!(
-        row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained"),
+        row.result_retention.is_empty() || matches!(row.result.as_str(), "fresh" | "retained" | "owned"),
         "result-retention for {symbol} is meaningless without an owned result"
+    );
+    assert!(
+        row.result != "owned" || !row.result_retention.is_empty(),
+        "owned result for {symbol} requires explicit result-retention"
     );
     assert!(
         row.result_retention != "shared-refcount" || row.result == "retained",

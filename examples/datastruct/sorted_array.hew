@@ -1,5 +1,8 @@
 // Sorted Array - maintains sorted order on insert using binary search
 // All elements in Vec<i64> are kept in ascending order
+//
+// A parameter is the callee's own copy, so insert and remove hand the array
+// back and the caller reassigns; remove also reports whether it found the value.
 fn sa_find_insert_pos(arr: Vec<i64>, val: i64) -> i64 {
     // Binary search for insertion point
     var lo = 0;
@@ -15,7 +18,7 @@ fn sa_find_insert_pos(arr: Vec<i64>, val: i64) -> i64 {
     lo
 }
 
-fn sa_insert(arr: Vec<i64>, val: i64) {
+fn sa_insert(var arr: Vec<i64>, val: i64) -> Vec<i64> {
     let pos = sa_find_insert_pos(arr, val);
     // Append and shift right
     arr.push(0);
@@ -26,6 +29,15 @@ fn sa_insert(arr: Vec<i64>, val: i64) {
         i = i - 1;
     }
     arr.set(pos, val);
+    arr
+}
+
+// Insert every value in order.
+fn sa_insert_all(var arr: Vec<i64>, values: Vec<i64>) -> Vec<i64> {
+    for value in values {
+        arr = sa_insert(arr, value);
+    }
+    arr
 }
 
 fn sa_search(arr: Vec<i64>, val: i64) -> i64 {
@@ -47,10 +59,10 @@ fn sa_search(arr: Vec<i64>, val: i64) -> i64 {
     0 - 1
 }
 
-fn sa_remove(arr: Vec<i64>, val: i64) -> i64 {
+fn sa_remove(var arr: Vec<i64>, val: i64) -> (Vec<i64>, i64) {
     let idx = sa_search(arr, val);
     if idx < 0 {
-        return 0;
+        return (arr, 0);
     }
     // Shift left
     var i = idx;
@@ -60,7 +72,7 @@ fn sa_remove(arr: Vec<i64>, val: i64) -> i64 {
         i = i + 1;
     }
     let _ = arr.pop();
-    1
+    (arr, 1)
 }
 
 fn sa_is_sorted(arr: Vec<i64>) -> i64 {
@@ -87,14 +99,11 @@ fn run_test(name: string, passed: i64) -> i64 {
 fn main() {
     var total = 0;
     var passed = 0;
-    let arr: Vec<i64> = Vec.new();
+    var arr: Vec<i64> = Vec.new();
     // Test 1: insert maintains sorted order
     total = total + 1;
-    sa_insert(arr, 30);
-    sa_insert(arr, 10);
-    sa_insert(arr, 50);
-    sa_insert(arr, 20);
-    sa_insert(arr, 40);
+    let seeds: Vec<i64> = [30, 10, 50, 20, 40];
+    arr = sa_insert_all(arr, seeds);
     let r1 = if sa_is_sorted(arr) == 1 {
         1
     } else {
@@ -140,7 +149,8 @@ fn main() {
 
     // Test 5: remove element
     total = total + 1;
-    let removed = sa_remove(arr, 30);
+    let (after_remove, removed) = sa_remove(arr, 30);
+    arr = after_remove;
     var r5 = 0;
     if removed == 1 {
         if arr.len() == 4 {
@@ -153,7 +163,8 @@ fn main() {
 
     // Test 6: remove missing returns 0
     total = total + 1;
-    let removed2 = sa_remove(arr, 99);
+    let (after_miss, removed2) = sa_remove(arr, 99);
+    arr = after_miss;
     let r6 = if removed2 == 0 {
         1
     } else {
@@ -163,8 +174,8 @@ fn main() {
 
     // Test 7: insert duplicates
     total = total + 1;
-    sa_insert(arr, 20);
-    sa_insert(arr, 20);
+    let dups: Vec<i64> = [20, 20];
+    arr = sa_insert_all(arr, dups);
     var r7 = 0;
     if sa_is_sorted(arr) == 1 {
         if arr.len() == 6 {
@@ -175,12 +186,12 @@ fn main() {
 
     // Test 8: many elements
     total = total + 1;
-    let arr2: Vec<i64> = Vec.new();
+    var arr2: Vec<i64> = Vec.new();
     // Insert in reverse order
     var j = 50;
     while j > 0 {
         j = j - 1;
-        sa_insert(arr2, j);
+        arr2 = sa_insert(arr2, j);
     }
     var r8 = 0;
     if arr2.len() == 50 {

@@ -58,7 +58,7 @@ fn owned_record_filter_collect_source(frames: usize) -> String {
          }}\n\
          \n\
          fn retained_total(frame: i64) -> i64 {{\n\
-         \x20   let claims: Vec<Claim> = Vec.new();\n\
+         \x20   var claims: Vec<Claim> = Vec.new();\n\
          \x20   claims.push(Claim {{ run_id: \"discard\", amount: -1 }});\n\
          \x20   claims.push(Claim {{ run_id: \"keep-a\", amount: 20 }});\n\
          \x20   claims.push(Claim {{ run_id: \"keep-b\", amount: 30 }});\n\

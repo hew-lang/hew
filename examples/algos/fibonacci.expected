@@ -1,0 +1,11 @@
+PASS: fib_recursive(0)=0
+PASS: fib_recursive(1)=1
+PASS: fib_recursive(10)=55
+PASS: fib_recursive(20)=6765
+PASS: fib_iterative(0)=0
+PASS: fib_iterative(1)=1
+PASS: fib_iterative(10)=55
+PASS: fib_iterative(20)=6765
+---
+Passed: 8 / 8
+ALL PASS

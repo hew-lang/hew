@@ -23,8 +23,8 @@ actor Ticker {
     }
 }
 
-fn first(t: LocalPid<Ticker>) -> i64 {
-    for await v in t.stream() {
+fn first(t: Ticker) -> i64 {
+    for v in t.stream() {
         return v;
     }
     0 - 1
@@ -34,7 +34,7 @@ fn main() {
     let t = spawn Ticker;
     let value = first(t);
     println(f"first={value}");
-    match await t.ping() {
+    match t.ping() {
         .Ok(v) => println(f"ping={v}"),
         .Err(_) => println("ping failed"),
     }

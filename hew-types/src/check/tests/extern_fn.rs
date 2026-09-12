@@ -198,7 +198,7 @@ fn duplicate_extern_symbol_accepts_cross_module_alias_qualified_contracts() {
     let Item::Import(import) = &mut net.program.items[0].0 else {
         panic!("expected import");
     };
-    import.resolved_items = Some(stream.program.items.clone());
+    import.resolved_items = Some(stream.program.items.clone().into());
 
     let root_id = ModuleId::root();
     let stream_id = ModuleId::new(vec!["std".to_string(), "stream".to_string()]);
@@ -381,16 +381,14 @@ fn extern_symbol_on_extern_c_fn_populates_fn_sig_spec() {
     );
 }
 
-/// A generic declarative runtime method must retain its concrete, expanded
-/// linker endpoint at the call site.  The ownership graph is keyed by the same
-/// resolved call span, so downstream passes never have to recover either the
-/// endpoint or move-out semantics from the source spelling `pop`.
+/// Canonical vector methods retain their typed identity after generic dispatch.
 #[test]
-fn generic_extern_symbol_call_keeps_exact_endpoint_and_move_out_fact() {
+fn generic_vector_pop_retains_semantic_dispatch_identity() {
     let parsed = hew_parser::parse(
         r"
         fn take_last(values: Vec<string>) -> string {
-            values.pop()
+            var local = values;
+            local.pop()
         }
         ",
     );
@@ -399,35 +397,19 @@ fn generic_extern_symbol_call_keeps_exact_endpoint_and_move_out_fact() {
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
-    let (call_span, call) = output
+    let (_, call) = output
         .resolved_calls
         .iter()
-        .find(|(_, call)| call.method_target.symbol_name == "hew_vec_pop_str")
-        .expect("Vec<string>::pop must preserve its exact expanded extern endpoint");
+        .find(|(_, call)| call.method_name == "pop")
+        .expect("Vec<string>::pop must retain its resolved call");
     assert!(matches!(
         call.method_target.family,
         crate::check::dispatch::MethodTargetFamily::Vec(crate::check::dispatch::VecMethod::Pop)
     ));
-
-    let fact = output
-        .produced_value_ownership
-        .get(call_span)
-        .expect("resolved generic extern call must publish one ownership fact");
-    assert_eq!(
-        fact.ownership,
-        crate::runtime_call::ProducedValueOwnership::owned(
-            crate::runtime_call::ProducedValueAcquisition::MoveOut,
-        )
-    );
-    assert_eq!(
-        fact.receiver_boundary,
-        Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
-    );
-    assert!(fact.arguments.is_empty());
 }
 
 #[test]
-fn open_extern_method_keeps_signature_modes_separate_from_endpoint() {
+fn open_extern_method_keeps_signature_identity_separate_from_endpoint() {
     let output = check_source(
         r#"
         type Router {}
@@ -450,45 +432,23 @@ fn open_extern_method_keeps_signature_modes_separate_from_endpoint() {
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
-    let mut facts: Vec<_> = output
+    let identities: Vec<_> = output
         .method_call_rewrites
-        .iter()
-        .filter_map(|(span, rewrite)| match rewrite {
+        .values()
+        .filter_map(|rewrite| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
                 extern_identity: Some(identity),
                 ..
-            } if c_symbol == "hew_test_router_route" => {
-                assert_eq!(identity.endpoint, "hew_test_router_route");
-                assert_eq!(identity.signature_key, "Router::route");
-                Some(
-                    output
-                        .produced_value_ownership
-                        .get(span)
-                        .expect("open extern call must publish boundary modes"),
-                )
-            }
+            } if c_symbol == "hew_test_router_route" => Some(identity),
             _ => None,
         })
         .collect();
-    facts.sort_by_key(|fact| {
-        fact.arguments[0] == crate::runtime_call::ProducedArgumentBoundary::Borrow
-    });
-    assert_eq!(facts.len(), 2);
-    assert!(facts.iter().any(|fact| {
-        fact.arguments
-            == [
-                crate::runtime_call::ProducedArgumentBoundary::Borrow,
-                crate::runtime_call::ProducedArgumentBoundary::Transfer,
-            ]
-    }));
-    assert!(facts.iter().any(|fact| {
-        fact.arguments
-            == [
-                crate::runtime_call::ProducedArgumentBoundary::Transfer,
-                crate::runtime_call::ProducedArgumentBoundary::Borrow,
-            ]
-    }));
+    assert_eq!(identities.len(), 2);
+    for identity in identities {
+        assert_eq!(identity.endpoint, "hew_test_router_route");
+        assert_eq!(identity.signature_key, "Router::route");
+    }
 }
 
 #[test]
@@ -505,38 +465,52 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
-    let (span, identity) = output
+    let (_, descriptor) = output
         .method_call_rewrites
         .iter()
         .find_map(|(span, rewrite)| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
-                extern_identity: Some(identity),
+                target:
+                    crate::check::CallTarget::Runtime(
+                        crate::runtime_call::RuntimeCallFamily::StringToBytes,
+                    ),
+                descriptor: Some(descriptor),
                 ..
-            } if c_symbol == "hew_string_to_bytes" => Some((span, identity)),
+            } if c_symbol == "hew_string_to_bytes" => Some((span, descriptor)),
             _ => None,
         })
-        .expect("string.to_bytes must carry its exact extern identity");
-    assert_eq!(identity.endpoint, "hew_string_to_bytes");
-    assert_eq!(identity.signature_key, "string::to_bytes");
-    assert_eq!(identity.declaring_module.as_deref(), Some("std.string"));
-    assert!(identity.trusted_compiled_stdlib);
+        .expect("canonical string.to_bytes must carry its typed runtime family");
+    assert_eq!(
+        descriptor.family(),
+        crate::runtime_call::RuntimeCallFamily::StringToBytes
+    );
+}
 
-    let fact = output
-        .produced_value_ownership
-        .get(span)
-        .expect("string.to_bytes must publish a result ownership fact");
-    assert_eq!(
-        fact.ownership,
-        crate::runtime_call::ProducedValueOwnership::owned(
-            crate::runtime_call::ProducedValueAcquisition::Fresh,
-        )
+#[test]
+fn user_extern_with_stdlib_endpoint_is_not_promoted_to_runtime_family() {
+    let output = check_source(
+        r#"
+        type Encoder { value: string }
+
+        impl Encoder {
+            #[extern_symbol(hew_string_to_bytes)]
+            fn encode(self) -> bytes { b"" }
+        }
+
+        fn use_encoder(value: Encoder) -> bytes { value.encode() }
+        "#,
     );
-    assert_eq!(
-        fact.receiver_boundary,
-        Some(crate::runtime_call::ProducedArgumentBoundary::Borrow)
-    );
-    assert!(fact.arguments.is_empty());
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.method_call_rewrites.values().any(|rewrite| matches!(
+        rewrite,
+        MethodCallRewrite::RewriteToFunction {
+            c_symbol,
+            target: crate::check::CallTarget::Extern { .. },
+            descriptor: None,
+            ..
+        } if c_symbol == "hew_string_to_bytes"
+    )));
 }
 
 /// Extern fns without `#[extern_symbol]` carry `None` (regression
@@ -693,11 +667,11 @@ fn empty_extern_symbol_template_is_rejected_with_empty_reason() {
 fn check_peer_assembled_extern(divergent: bool) -> TypeCheckOutput {
     use std::path::PathBuf;
     let pkg_source = if divergent {
-        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
+        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n"
     } else {
         "pub fn unrelated() -> i64 {\n    0\n}\n"
     };
-    let aaa_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let aaa_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let pkg_file = PathBuf::from("/nonexistent/oracle/pkg/pkg.hew");
     let aaa_file = PathBuf::from("/nonexistent/oracle/pkg/aaa.hew");
 
@@ -807,8 +781,8 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
     let primary_source = "pub fn unrelated() -> i64 {\n    0\n}\n";
     let inert_source = "pub fn filler() -> i64 {\n    1\n}\n";
     let two_field_source =
-        "type Tok {\n    a: i64;\n    b: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let three_field_source = "type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64,\n    b: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let three_field_source = "type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/tri/pkg/pkg.hew");
     let inert_file = PathBuf::from("/nonexistent/tri/pkg/a-b.hew");
     let two_field_file = PathBuf::from("/nonexistent/tri/pkg/a+b.hew");
@@ -878,9 +852,9 @@ fn divergent_same_named_peer_nominals_are_refused_as_a_redefinition() {
 fn distinctly_named_peer_declarations_assemble_without_a_redefinition() {
     use std::path::PathBuf;
     let primary_source =
-        "type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+        "type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let peer_source =
-        "type Tag {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
+        "type Tag {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_yy(t: Tag) -> i64;\n}\n";
     let primary_file = PathBuf::from("/nonexistent/distinct/pkg/pkg.hew");
     let peer_file = PathBuf::from("/nonexistent/distinct/pkg/peer.hew");
 
@@ -962,8 +936,8 @@ enum ImportLexicalShape {
 fn check_import_lexical_extern(shape: &ImportLexicalShape) -> TypeCheckOutput {
     use std::path::PathBuf;
     let sm_source =
-        "pub type Tok {\n    a: i64;\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
-    let om_source = "pub type Tok {\n    a: i64;\n    b: i64;\n    c: i64;\n}\n";
+        "pub type Tok {\n    a: i64,\n}\n\nextern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
+    let om_source = "pub type Tok {\n    a: i64,\n    b: i64,\n    c: i64,\n}\n";
     let nt_source = "extern \"C\" {\n    fn hew_zz(t: Tok) -> i64;\n}\n";
     let sm_file = PathBuf::from("/nonexistent/implex/sm.hew");
     let om_file = PathBuf::from("/nonexistent/implex/om.hew");

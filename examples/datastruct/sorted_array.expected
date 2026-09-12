@@ -1,0 +1,10 @@
+PASS: insert maintains sorted
+PASS: correct sorted values
+PASS: search finds 30 at idx 2
+PASS: search missing returns -1
+PASS: remove keeps sorted
+PASS: remove missing returns 0
+PASS: duplicates maintain sorted
+PASS: 50 reverse inserts sorted
+8/8 tests passed
+ALL PASS

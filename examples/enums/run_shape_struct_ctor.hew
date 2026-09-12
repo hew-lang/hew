@@ -1,4 +1,4 @@
-// Exercises monomorphic struct-payload variant construction and match
+// Exercises monomorphic record-payload variant construction and match
 // destructuring end-to-end.
 //
 // This fixture verifies:
@@ -8,8 +8,8 @@
 //      from declaration-order payload slots.
 //   3. The arm body uses both bound payload values in a single expression.
 enum Shape {
-    Box { w: i64, h: i64 };
-    Origin;
+    Box { w: i64, h: i64 },
+    Origin,
 }
 
 fn area(s: Shape) -> i64 {

@@ -1,0 +1,13 @@
+[[case]]
+id = "derived_ord_lowering_limit"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/derived_ord_lowering_limit.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_LIMIT_DERIVED_ORD"
+line = 6
+column = 13
+message = "E_LIMIT_DERIVED_ORD"

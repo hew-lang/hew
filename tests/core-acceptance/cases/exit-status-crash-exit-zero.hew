@@ -1,0 +1,11 @@
+// `exit(0)` cannot report success over a crash no supervisor recovered.
+actor Worker {
+    receive fn boom() { panic("worker failed"); }
+}
+
+fn main() {
+    let w = spawn Worker();
+    let _ = w.boom();
+    println("chose 0");
+    exit(0);
+}

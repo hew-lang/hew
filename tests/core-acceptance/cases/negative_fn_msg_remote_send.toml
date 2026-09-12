@@ -1,0 +1,13 @@
+[[case]]
+id = "negative_fn_msg_remote_send"
+intent = "Reject: fn pointers are Send but not Serializable, so they must not cross a RemotePid<T>::send boundary."
+source = "../vertical-slice/reject/negative_fn_msg_remote_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 17
+column = 14
+message = "remote actor message type `fn[clone](i64) -> i64` must implement Serializable before it can cross a RemotePid boundary; missing required marker trait(s): Encode + Decode"

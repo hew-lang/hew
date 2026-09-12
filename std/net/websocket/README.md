@@ -1,6 +1,6 @@
-# std::net::websocket
+# std.net.websocket
 
-std::net::websocket — WebSocket client
+std.net.websocket — WebSocket client
 
 Part of the [Hew](https://hew.sh) standard library. See the [std overview](../../README.md) for all modules.
 

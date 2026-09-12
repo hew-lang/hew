@@ -1,0 +1,10 @@
+[[case]]
+id = "generic-aggregate-equality"
+intent = "Generic equality compares complete pairs, record wrappers and vectors, including unequal controls."
+source = "cases/generic-aggregate-equality.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "pair=true pair-ne=false record=true record-ne=false bag=true bag-ne=false\n"
+exit = 0

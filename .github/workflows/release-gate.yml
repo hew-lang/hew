@@ -224,7 +224,7 @@ jobs:
         run: |
           make test-compiler-lifecycle
           make test-opaque-resource-lifecycle-matrix-external
-          make test-vertical-slice
+          make core-acceptance
           make test-hew-ratchet
           make test-migrate-corpus
           make test-stdlib-ratchet
@@ -688,7 +688,7 @@ jobs:
             # is actually proven on this platform rather than merely skipped.
             gmake test-cabi
 
-            gmake test-vertical-slice
+            gmake core-acceptance
             gmake test-hew-ratchet
             HEW_FREEBSD_CI
 
@@ -707,7 +707,6 @@ jobs:
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
-
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD aarch64 — release binary build + smoke test only.

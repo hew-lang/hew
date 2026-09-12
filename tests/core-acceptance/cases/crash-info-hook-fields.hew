@@ -1,0 +1,37 @@
+// No `import std.failure`: `CrashInfo` and `CrashAction` reach this program
+// through the prelude alone, which is the spelling most users write first.
+actor Worker {
+    var value: i64,
+
+    receive fn get() -> i64 { value }
+    receive fn boom() { panic("crash hook payload"); }
+
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction {
+        // Both fields of the record the runtime hands the hook: the trap code
+        // and the owned message, cloned from the borrowed C string the runtime
+        // owns. The message names the trap kind that ended the incarnation.
+        println(info.code);
+        println(info.message);
+        CrashAction.Restart
+    }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+
+    child w: Worker(value: 42),
+}
+
+fn main() -> i64 {
+    let sup = spawn App;
+    let w = sup.w;
+    let _ = w.boom();
+    // Only a completed restart resolves this role Live again.
+    let fresh = await_restart sup.w;
+    match fresh.get() {
+        .Ok(n) => n,
+        .Err(_) => 1,
+    }
+}

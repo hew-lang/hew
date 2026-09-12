@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-trait-dispatch"
+intent = "Two implementors erase to one `dyn Named`, cross a parameter and a return, and each dispatch reaches its own body."
+source = "cases/dyn-trait-dispatch.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "person grace\nmachine 7\nperson ada\nmachine 12\n"
+exit = 0

@@ -6,10 +6,10 @@
 // invoking it twice trips the allocator. A clean exit therefore proves the
 // superseded owned payloads are released exactly once.
 actor OwnedCoalescer {
-    var processed: i64 = 0;
-    var latest_len: i64 = -1;
+    var processed: i64 = 0,
+    var latest_len: i64 = -1,
 
-    mailbox 1 overflow coalesce(id) fallback drop_new;
+    mailbox 1 overflow coalesce(id) fallback drop_new,
     receive fn update(id: i64, payload: string, pause: duration) {
         sleep(pause);
         processed = processed + 1;
@@ -32,11 +32,11 @@ fn main() -> i64 {
     let _ = worker.update(9, "three-three-three", 0ns);
     let _ = worker.update(9, "latest-payload", 0ns);
     sleep(350ms);
-    let count = match await worker.count() {
+    let count = match worker.count() {
         .Ok(value) => value,
         .Err(_) => -1,
     };
-    let length = match await worker.length() {
+    let length = match worker.length() {
         .Ok(value) => value,
         .Err(_) => -1,
     };

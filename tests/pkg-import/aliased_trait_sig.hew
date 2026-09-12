@@ -18,7 +18,7 @@
 import hew.closableerr.{Closable as C};
 
 pub type ClosableHandle {
-    id: i64;
+    id: i64,
 }
 
 impl C for ClosableHandle {

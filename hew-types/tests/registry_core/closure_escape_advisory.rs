@@ -1,67 +1,67 @@
-//! Tests for the `ClosureEscapeAdvisory` warning's per-span dedup.
-//!
-//! The escape classifier visits a closure literal more than once (the
-//! let-bound block walk and the anonymous-expression walk, and the
-//! top-level item list plus the module graph both cover the entry module),
-//! so without a seen-span gate the advisory printed twice for the same
-//! literal. One warning per literal; distinct literals warn independently.
+//! Ordinary closure values retain their facts without speculative refactoring advice.
 
-use crate::common;
+use crate::common::typecheck;
+use hew_types::{
+    ClosureCaptureAccess, ClosureCaptureAcquisition, ClosureCaptureConsumption, ClosureEscapeKind,
+    ClosureEscapeRule,
+};
 
-use common::{typecheck, warnings_of_kind};
-use hew_types::error::TypeErrorKind;
-
-fn escape_advisories(output: &hew_types::TypeCheckOutput) -> usize {
-    warnings_of_kind(
-        output,
-        &TypeErrorKind::ClosureEscapeAdvisory {
-            rule: "EscapesViaBlockValue".to_string(),
-        },
-    )
-    .len()
+#[test]
+fn returned_closure_factories_keep_escape_and_capture_facts_without_warnings() {
+    let output = typecheck(include_str!("../fixtures/closure_factories.hew"));
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.warnings.is_empty(), "{:#?}", output.warnings);
+    assert_eq!(output.closure_escape_facts.len(), 4);
+    assert_eq!(output.closure_capture_facts.len(), 4);
+    for (span, escape) in &output.closure_escape_facts {
+        assert_eq!(escape.kind, ClosureEscapeKind::Escapes);
+        assert!(matches!(
+            escape.rule,
+            ClosureEscapeRule::Returned | ClosureEscapeRule::EscapesViaBlockValue
+        ));
+        let captures = &output.closure_capture_facts[span];
+        assert_eq!(captures.len(), 1);
+        assert_eq!(captures[0].name, "captured");
+        assert_eq!(captures[0].acquisition, ClosureCaptureAcquisition::Snapshot);
+        assert_eq!(captures[0].access, ClosureCaptureAccess::Read);
+        assert_eq!(captures[0].consumption, ClosureCaptureConsumption::Retained);
+    }
 }
 
-/// A single escaping closure literal emits exactly one advisory.
 #[test]
-fn single_escaping_closure_warns_once() {
+fn unused_and_immediately_invoked_closures_keep_conservative_facts_without_advice() {
     let output = typecheck(
         r"
-        fn get() -> fn(i64) -> i64 {
-            |x: i64| x + 1
-        }
         fn main() {
-            let f = get();
-            println(f(41));
+            let _unused = || 1;
+            println((|| 7)());
         }
         ",
     );
-    assert_eq!(
-        escape_advisories(&output),
-        1,
-        "expected exactly one ClosureEscapeAdvisory, got: {:#?}",
-        output.warnings
-    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.warnings.is_empty(), "{:#?}", output.warnings);
+    assert_eq!(output.closure_escape_facts.len(), 2);
+    for escape in output.closure_escape_facts.values() {
+        assert_eq!(escape.kind, ClosureEscapeKind::Escapes);
+        assert_eq!(escape.rule, ClosureEscapeRule::NoStaticBinding);
+    }
 }
 
-/// Two distinct escaping literals each emit their own advisory — the
-/// per-span dedup must not collapse distinct spans.
 #[test]
-fn two_distinct_escaping_closures_warn_once_each() {
+fn higher_order_closures_keep_escape_facts_without_advice() {
     let output = typecheck(
         r"
-        fn pick(up: bool) -> fn(i64) -> i64 {
-            if up { |x: i64| x + 1 } else { |x: i64| x - 1 }
-        }
+        fn apply(f: fn(i64) -> i64, value: i64) -> i64 { f(value) }
         fn main() {
-            let f = pick(true);
-            println(f(41));
+            let double = |x: i64| x * 2;
+            println(apply(double, 5));
         }
         ",
     );
-    assert_eq!(
-        escape_advisories(&output),
-        2,
-        "expected one advisory per distinct literal, got: {:#?}",
-        output.warnings
-    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.warnings.is_empty(), "{:#?}", output.warnings);
+    assert_eq!(output.closure_escape_facts.len(), 1);
+    let escape = output.closure_escape_facts.values().next().unwrap();
+    assert_eq!(escape.kind, ClosureEscapeKind::Escapes);
+    assert_eq!(escape.rule, ClosureEscapeRule::PassedToHigherOrder);
 }

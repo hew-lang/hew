@@ -2,8 +2,8 @@
 //!
 //! Two modules each exporting `pub actor Account` must produce DISTINCT
 //! checker identities: `spawn bank.Account()` types to
-//! `LocalPid<hew.bank.Account>`, `spawn store.Account()` to
-//! `LocalPid<hew.store.Account>`, and the two `deposit` signatures are
+//! `hew.bank.Account`, `spawn store.Account()` to
+//! `hew.store.Account`, and the two `deposit` signatures are
 //! independently resolvable in `fn_sigs` under their dotted keys. A bare
 //! reference resolves local-first; a bare name exported by two modules with
 //! no local actor is a typed `AmbiguousActorReference` error naming the
@@ -25,7 +25,7 @@ fn module_import(path: &[&str], source: &str) -> Spanned<Item> {
         selection_trailing_comma: false,
         module_alias: None,
         file_path: None,
-        resolved_items: Some(items),
+        resolved_items: Some(items.into()),
         resolved_item_source_paths: Vec::new(),
         resolved_source_paths: Vec::new(),
     };
@@ -50,7 +50,7 @@ fn typecheck_with_modules(root_source: &str, modules: &[(&[&str], &str)]) -> Typ
 
 const BANK_SRC: &str = "
 pub actor Account {
-    var balance: i64 = 0;
+    var balance: i64 = 0,
     receive fn deposit(n: i64) -> i64 {
         balance = balance + n;
         balance
@@ -60,7 +60,7 @@ pub actor Account {
 
 const STORE_SRC: &str = "
 pub actor Account {
-    var credit: i64 = 0;
+    var credit: i64 = 0,
     receive fn deposit(n: i64) -> bool {
         credit = credit + n;
         true
@@ -68,21 +68,13 @@ pub actor Account {
 }
 ";
 
-/// Collect the inner actor-type names of every `LocalPid<T>` entry in
-/// `expr_types`, sorted and deduplicated.
-fn local_pid_inner_names(output: &TypeCheckOutput) -> Vec<String> {
+/// Collect the actor names of every actor-handle entry in `expr_types`,
+/// sorted and deduplicated.
+fn actor_handle_names(output: &TypeCheckOutput) -> Vec<String> {
     let mut names: Vec<String> = output
         .expr_types
         .values()
-        .filter_map(|t| match t {
-            Ty::Named { name, args, .. } if name == "LocalPid" && args.len() == 1 => {
-                match &args[0] {
-                    Ty::Named { name: inner, .. } => Some(inner.clone()),
-                    _ => None,
-                }
-            }
-            _ => None,
-        })
+        .filter_map(|t| t.actor_handle_identity().map(|(name, _)| name.to_string()))
         .collect();
     names.sort();
     names.dedup();
@@ -107,7 +99,7 @@ fn main() {
         "expected no errors, got: {:#?}",
         output.errors
     );
-    let pids = local_pid_inner_names(&output);
+    let pids = actor_handle_names(&output);
     assert_eq!(
         pids,
         vec![
@@ -161,7 +153,7 @@ fn bare_spawn_resolves_local_actor_over_imported_same_name() {
     let output = typecheck_with_modules(
         "
 actor Account {
-    var local_n: i64 = 0;
+    var local_n: i64 = 0,
     receive fn deposit(n: i64) -> i64 { n }
 }
 
@@ -176,7 +168,7 @@ fn main() {
         "expected no errors, got: {:#?}",
         output.errors
     );
-    let pids = local_pid_inner_names(&output);
+    let pids = actor_handle_names(&output);
     assert_eq!(
         pids,
         vec!["Account".to_string()],
@@ -238,7 +230,7 @@ fn main() {
         "expected no errors, got: {:#?}",
         output.errors
     );
-    let pids = local_pid_inner_names(&output);
+    let pids = actor_handle_names(&output);
     assert_eq!(
         pids,
         vec!["hew.bank.Account".to_string()],

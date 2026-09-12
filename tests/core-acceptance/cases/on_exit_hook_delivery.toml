@@ -1,0 +1,14 @@
+[[case]]
+id = "on_exit_hook_delivery"
+intent = "A linked peer really crashes, so Watcher's #[on(exit)] hook must be invoked through the sys-dispatch ABI."
+source = "../vertical-slice/accept/on_exit_hook_delivery.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "exit-hook-fired\n"
+stderr = "hew: failure: UserPanic (212): fire linked exit hook\nhew: actor crash in Crasher.crash (actor 1): UserPanic\n"
+exit = 1

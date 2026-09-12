@@ -1,14 +1,14 @@
-// ASan fixture gate: `for await` over an actor-state `Stream<T>` field closes
+// ASan fixture gate: `for` over an actor-state `Stream<T>` field closes
 // the stream exactly once (#3218).
 //
 // This fixture is compiled against an ASan/LSan-instrumented libhew.a by
 // `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
 //
-// W7 shape (docs/internal/ir-ladder-worked-examples.md): `for await` over an
+// W7 shape (docs/internal/ir-ladder-worked-examples.md): `for` over an
 // actor-state `Stream` field is a consuming use of an affine runtime-owned
 // place. Under the ladder it lowers to `load.take %input` with the taken bit
 // set, so `hew_drop$State` skips the field at teardown. The legacy lowerer
-// instead mints a second owner for the `for await` desugar's cursor
+// instead mints a second owner for the `for` desugar's cursor
 // (`hew-mir/src/lower/expr.rs`, the synthetic `FOR_ITER_CURSOR_NAME_PREFIX`
 // binding) while leaving the field's own `RuntimeDropDescriptor::StreamClose`
 // drop authority intact. Two owners end up closing the one runtime `Stream`
@@ -23,10 +23,10 @@
 import std.stream;
 
 actor Consumer {
-    var input: Stream<string>;
+    var input: Stream<string>,
 
     receive fn drain() {
-        for await item in input {
+        for item in input {
             let _ = item;
         }
         println("drained");
@@ -39,7 +39,7 @@ fn main() -> i64 {
         .Err(_) => return 1,
     };
     let c = spawn Consumer(input: input);
-    c.drain();
+    let _ = c.drain();
     println("done");
     0
 }

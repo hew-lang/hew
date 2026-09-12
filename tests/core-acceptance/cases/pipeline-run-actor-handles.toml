@@ -1,0 +1,10 @@
+[[case]]
+id = "pipeline-run-actor-handles"
+intent = "A pub function in an imported module returns an actor handle by the actor's own type and spawns the module's own actors behind it: the handle keeps the qualified declaration identity across the import boundary, and an imported actor reaches HIR whether or not its declaration is pub."
+source = "cases/pipeline-run-actor-handles.hew"
+suites = ["acceptance"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "2\n20\nbeta:stage\n"
+exit = 0

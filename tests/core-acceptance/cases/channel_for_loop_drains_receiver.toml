@@ -1,0 +1,13 @@
+[[case]]
+id = "channel_for_loop_drains_receiver"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/channel_for_loop_drains_receiver.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "first\nsecond\ndrained 2\n"
+exit = 0

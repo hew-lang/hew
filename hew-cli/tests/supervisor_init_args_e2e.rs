@@ -45,18 +45,18 @@ fn supervisor_child_init_args_seed_actor_state() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn report() -> i64 { print("worker id="); println(id); 0 }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w1: Worker(id: 7);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w1: Worker(id: 7),
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w1;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -99,22 +99,22 @@ fn supervisor_child_i32_fields_reversed_arg_order() {
     require_codegen();
 
     let source_natural = r#"actor Worker {
-    let a: i32;
-    let b: i32;
+    let a: i32,
+    let b: i32,
     receive fn report() -> i64 {
         print("a="); print(a); print(" b="); println(b);
         if a == 7 && b == 99 { 0 } else { 1 }
     }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(a: 7, b: 99);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(a: 7, b: 99),
 }
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
-    match await w.report() {
+    match w.report() {
         .Ok(status) => status,
         .Err(_) => 2,
     }
@@ -122,22 +122,22 @@ fn main() -> i64 {
 "#;
 
     let source_reversed = r#"actor Worker {
-    let a: i32;
-    let b: i32;
+    let a: i32,
+    let b: i32,
     receive fn report() -> i64 {
         print("a="); print(a); print(" b="); println(b);
         if a == 7 && b == 99 { 0 } else { 1 }
     }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(b: 99, a: 7);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(b: 99, a: 7),
 }
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
-    match await w.report() {
+    match w.report() {
         .Ok(status) => status,
         .Err(_) => 2,
     }
@@ -179,22 +179,22 @@ fn supervisor_child_i32_ask_reply_oracle_discriminates_wrong_values() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i32;
-    let b: i32;
+    let a: i32,
+    let b: i32,
     receive fn report() -> i64 {
         print("a="); print(a); print(" b="); println(b);
         if a == 7 && b == 99 { 0 } else { 1 }
     }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(b: 98, a: 7);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(b: 98, a: 7),
 }
 fn main() -> i64 {
     let sup = spawn Pool;
     let w = sup.w;
-    match await w.report() {
+    match w.report() {
         .Ok(status) => status,
         .Err(_) => 2,
     }
@@ -235,9 +235,9 @@ fn supervisor_child_mixed_width_fields_reversed_arg_order() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let x: i32;
-    let y: i64;
-    let z: bool;
+    let x: i32,
+    let y: i64,
+    let z: bool,
     receive fn report() -> i64 {
         print("x="); print(x);
         print(" y="); print(y);
@@ -246,14 +246,14 @@ fn supervisor_child_mixed_width_fields_reversed_arg_order() {
     }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(z: true, x: 42, y: 1234567890123);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(z: true, x: 42, y: 1234567890123),
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -296,12 +296,12 @@ fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i8;
-    let b: i16;
-    let c: u8;
-    let d: u16;
-    let e: u32;
-    let f: u64;
+    let a: i8,
+    let b: i16,
+    let c: u8,
+    let d: u16,
+    let e: u32,
+    let f: u64,
     receive fn report() -> i64 {
         var ok: i64 = 0;
         if a == 120 { ok = ok + 1; }
@@ -315,14 +315,14 @@ fn supervisor_child_narrow_and_unsigned_widths_reversed_arg_order() {
     }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(f: 18000000000, e: 4000000000, d: 60000, c: 200, b: 30000, a: 120),
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -352,13 +352,13 @@ fn supervisor_child_narrow_width_overflow_is_compile_error() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: u8;
+    let a: u8,
     receive fn report() { print("a="); println(a); }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(a: 300);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(a: 300),
 }
 fn main() {
     let sup = spawn Pool;
@@ -397,19 +397,19 @@ fn supervisor_stateful_child_without_init_args_fails_at_compile_time() {
     // Worker has a state field `id: i64` but the child declaration provides
     // no init args. This must fail at compile time, not reach the runtime.
     let source = r#"actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn report() { print("worker id="); println(id); }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w1: Worker;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w1: Worker,
 }
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     let w = sup.w1;
-    w.report();
+    let _ = w.report();
     sleep(50ms);
 }
 "#;
@@ -430,12 +430,12 @@ fn main() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     // The fail-closed diagnostic should appear somewhere in stderr.
-    // We check for the actor name and the failure marker — exact message
-    // wording is not load-bearing for this test.
+    // We check for the missing field's name and the failure marker — exact
+    // message wording is not load-bearing for this test.
     assert!(
-        stderr.contains("Worker") || stderr.contains("missing field"),
-        "compile error for missing init args should mention the actor type or \
-         missing field; stderr: {stderr}"
+        stderr.contains("`id`") || stderr.contains("requires an initialized spawn value"),
+        "compile error for missing init args should mention the missing field \
+         or the uninitialized-state cause; stderr: {stderr}"
     );
 }
 
@@ -453,19 +453,19 @@ fn supervisor_child_declared_default_fills_omitted_field() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i64;
-    let b: i64 = 100;
+    let a: i64,
+    let b: i64 = 100,
     receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(a: 7);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(a: 7),
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -495,19 +495,19 @@ fn supervisor_child_all_declared_defaults_no_explicit_args() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let x: i64 = 5;
-    let y: i64 = 9;
+    let x: i64 = 5,
+    let y: i64 = 9,
     receive fn report() -> i64 { print("x="); print(x); print(" y="); println(y); 0 }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker,
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -538,19 +538,19 @@ fn supervisor_child_explicit_arg_overrides_declared_default() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i64 = 1;
-    let b: i64 = 100;
+    let a: i64 = 1,
+    let b: i64 = 100,
     receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(b: 50);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(b: 50),
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -585,20 +585,20 @@ fn supervisor_child_required_field_omitted_is_compile_error() {
 
     // `a` has no default and is not supplied — must be a compile error.
     let source = r#"actor Worker {
-    let a: i64;
-    let b: i64 = 100;
+    let a: i64,
+    let b: i64 = 100,
     receive fn report() { print("a="); print(a); print(" b="); println(b); }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker,
 }
 fn main() {
     let sup = spawn Pool;
     sleep(30ms);
     let w = sup.w;
-    w.report();
+    let _ = w.report();
     sleep(50ms);
 }
 "#;
@@ -614,9 +614,12 @@ fn main() {
 
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
-        stderr.contains("Worker") || stderr.contains("missing") || stderr.contains("required"),
-        "compile error for missing required field should mention actor, 'missing', or \
-         'required'; stderr: {stderr}"
+        stderr.contains("`a`")
+            || stderr.contains("missing")
+            || stderr.contains("required")
+            || stderr.contains("requires an initialized spawn value"),
+        "compile error for missing required field should mention the field, \
+         'missing', 'required', or the uninitialized-state cause; stderr: {stderr}"
     );
 }
 
@@ -630,19 +633,19 @@ fn supervisor_child_i32_field_with_declared_default() {
     require_codegen();
 
     let source = r#"actor Worker {
-    let a: i32 = 42;
-    let b: i32;
+    let a: i32 = 42,
+    let b: i32,
     receive fn report() -> i64 { print("a="); print(a); print(" b="); println(b); 0 }
 }
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w: Worker(b: 99);
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w: Worker(b: 99),
 }
 fn main() {
     let sup = spawn Pool;
     let w = sup.w;
-    let _ = await w.report();
+    let _ = w.report();
 }
 "#;
 
@@ -679,7 +682,7 @@ fn supervisor_stop_with_stateful_child_exits_cleanly() {
     require_codegen();
 
     let source = r#"actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn increment() -> i64 {
         count = count + 1;
         println(f"Count: {count}");
@@ -687,15 +690,15 @@ fn supervisor_stop_with_stateful_child_exits_cleanly() {
     }
 }
 supervisor CounterGroup {
-    strategy: one_for_one;
-    intensity: 5 within 60s;
-    child c1: Counter(count: 0) restart: permanent;
-    child c2: Counter(count: 0) restart: permanent;
+    strategy: one_for_one,
+    intensity: 5 within 60s,
+    child c1: Counter(count: 0) restart: permanent,
+    child c2: Counter(count: 0) restart: permanent,
 }
 fn main() {
     let sup = spawn CounterGroup;
-    let _ = await sup.c1.increment();
-    let _ = await sup.c2.increment();
+    let _ = sup.c1.increment();
+    let _ = sup.c2.increment();
     supervisor_stop(sup);
     println("Stopped");
 }
@@ -744,14 +747,14 @@ fn supervisor_missing_field_diagnostic_points_at_child_declaration() {
     require_codegen();
 
     let source = r"actor Worker {
-    let id: i64;
+    let id: i64,
     receive fn work(x: i64) -> i64 { x }
 }
 
 supervisor Pool {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
-    child w1: Worker;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w1: Worker,
 }
 ";
 

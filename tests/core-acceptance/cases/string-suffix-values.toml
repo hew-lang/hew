@@ -1,0 +1,11 @@
+[[case]]
+id = "string-suffix-values"
+intent = "Managed string predicates keep suffix comparisons length-aware across matching, non-matching and empty suffixes."
+source = "cases/string-suffix-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\ntrue\ntrue\ntrue\n"
+stderr = ""
+exit = 0

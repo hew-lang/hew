@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-lines-chunks-take"
+intent = "The lazy stream adaptors consume their source, chain, and close the whole chain when the consumer stops early."
+source = "cases/stream-lines-chunks-take.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "stream adaptors\n"
+exit = 0

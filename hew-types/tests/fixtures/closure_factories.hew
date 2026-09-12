@@ -1,0 +1,34 @@
+fn named_tail() -> fn[clone]() -> string {
+    let captured = "named tail".to_upper();
+    let f = || captured;
+    f
+}
+
+fn anonymous_tail() -> fn[clone]() -> string {
+    let captured = "anonymous tail".to_upper();
+    { || captured }
+}
+
+fn named_return() -> fn[clone]() -> string {
+    let captured = "named return".to_upper();
+    let f = || captured;
+    return f;
+}
+
+fn anonymous_return() -> fn[clone]() -> string {
+    let captured = "anonymous return".to_upper();
+    return || captured;
+}
+
+fn main() -> i64 {
+    let named = named_tail();
+    let anonymous = anonymous_tail();
+    let explicit_named = named_return();
+    let explicit_anonymous = anonymous_return();
+    if named() != "NAMED TAIL" { return 1; }
+    if anonymous() != "ANONYMOUS TAIL" { return 2; }
+    if explicit_named() != "NAMED RETURN" { return 3; }
+    if explicit_anonymous() != "ANONYMOUS RETURN" { return 4; }
+    if named() != "NAMED TAIL" || anonymous() != "ANONYMOUS TAIL" { return 5; }
+    0
+}

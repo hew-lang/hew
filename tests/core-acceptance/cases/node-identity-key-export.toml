@@ -1,0 +1,10 @@
+[[case]]
+id = "node-identity-key-export"
+intent = "Node.identity_key lowers through the ownership-SIR contract and the physical runtime ABI, returning an owned managed string: empty before a start, the node's hex credential after one, and a fresh copy on every call."
+source = "cases/node-identity-key-export.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

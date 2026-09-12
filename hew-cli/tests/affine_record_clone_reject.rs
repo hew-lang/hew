@@ -27,7 +27,7 @@ fn affine_record_clone_stops_before_native_mir_and_release() {
 #[resource]
 type ResourceToken { id: i64 }
 impl ResourceToken {
-    fn close(self) {
+    fn close(consume self) {
         print(self.id);
         println("");
     }
@@ -36,7 +36,7 @@ impl ResourceToken {
 #[linear]
 type LinearTicket { id: i64 }
 impl LinearTicket {
-    fn redeem(consuming self) -> i64 { self.id }
+    fn redeem(consume self) -> i64 { self.id }
 }
 
 fn main() -> i64 {

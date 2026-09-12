@@ -18,7 +18,7 @@
 //                     each and both must be released
 //   record_frames   - a heap-owning record payload released through the
 //                     carrier's in-place thunk
-import std.channel.channel;
+import std.channel;
 
 type Frame {
     name: string,
@@ -46,7 +46,7 @@ fn keep(v: string) -> string {
 fn drain(count: i64) -> i64 {
     let m = spawn Maker;
     var total = 0;
-    for await v in m.items(count) {
+    for v in m.items(count) {
         total = total + v.len();
     }
     total
@@ -55,7 +55,7 @@ fn drain(count: i64) -> i64 {
 fn early_exit(count: i64, stop: i64) -> i64 {
     let m = spawn Maker;
     var total = 0;
-    for await v in m.items(count) {
+    for v in m.items(count) {
         total = total + v.len();
         if total > stop {
             return total;
@@ -68,7 +68,7 @@ fn forward(count: i64) -> i64 {
     let m = spawn Maker;
     var carry = "init";
     var total = 0;
-    for await v in m.items(count) {
+    for v in m.items(count) {
         carry = keep(v);
         total = total + carry.len();
     }
@@ -78,7 +78,7 @@ fn forward(count: i64) -> i64 {
 fn record_frames(count: i64) -> i64 {
     let m = spawn Maker;
     var total = 0;
-    for await f in m.frames(count) {
+    for f in m.frames(count) {
         total = total + f.name.len() + f.body.len();
     }
     total

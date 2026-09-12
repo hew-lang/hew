@@ -1,0 +1,13 @@
+[[case]]
+id = "match_usize_literal_nonexhaustive"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/match_usize_literal_nonexhaustive.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "NonExhaustiveMatch"
+line = 3
+column = 5
+message = "non-exhaustive match: missing _"

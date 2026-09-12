@@ -99,8 +99,6 @@ impl<'src> Parser<'src> {
             depth: Rc::new(Cell::new(0)),
             angle_mutations: Vec::new(),
             allow_implicit_self_params: false,
-            scope_expr_depth: 0,
-            fork_block_depth: 0,
             no_struct_literal: Rc::new(Cell::new(false)),
             block_arm_body: Rc::new(Cell::new(false)),
             last_token_end: offset,
@@ -166,6 +164,32 @@ impl<'src> Parser<'src> {
         false
     }
 
+    /// Data members require commas, with an optional trailing comma before `}`.
+    /// Recover at a wrong delimiter without admitting a second source dialect.
+    pub(crate) fn expect_structural_separator(&mut self) {
+        if self.eat(&Token::Comma) || self.peek() == Some(&Token::RightBrace) {
+            return;
+        }
+        let mut span = self.peek_span();
+        let semicolon = self.peek() == Some(&Token::Semicolon);
+        if !semicolon {
+            let end = self.tokens[self.pos.saturating_sub(1)].1.end;
+            span = end..end;
+        }
+        self.error_at_with_hint(
+            "expected `,` between structural members".to_string(),
+            span,
+            if semicolon {
+                "replace `;` with `,`"
+            } else {
+                "insert `,` after the member"
+            },
+        );
+        if semicolon {
+            self.advance();
+        }
+    }
+
     /// Returns true if the current token could start a new statement.
     pub(crate) fn peek_starts_stmt(&self) -> bool {
         matches!(
@@ -199,19 +223,47 @@ impl<'src> Parser<'src> {
 
     /// Whether the current position is a contextual `clone <operand>` prefix.
     ///
-    /// True only when the current token is the identifier `clone` AND the next
-    /// token begins an operand (`token_begins_clone_operand`). When `clone` is
-    /// followed by a continuation token (`.`, `(`, `[`, `?`, an infix operator,
-    /// or a terminator) it stays an ordinary identifier — so `x.clone()`,
-    /// `fn clone(...)`, and `clone(args)` are unaffected. The adjacency check
-    /// is precedence-free: `clone x` was always a parse error before (two
-    /// adjacent primaries), so repurposing it cannot change the meaning of any
-    /// previously valid program.
-    pub(crate) fn peek_is_clone_prefix(&self) -> bool {
-        matches!(self.peek(), Some(Token::Identifier(name)) if *name == "clone")
+    /// Recognize a contextual value prefix followed by an operand. Method and
+    /// function uses keep their ordinary spelling: `x.clone()` and `clone(x)`
+    /// remain calls, while `clone x.field` duplicates the postfix chain.
+    pub(crate) fn peek_is_value_prefix(&self, prefix: &str) -> bool {
+        matches!(self.peek(), Some(Token::Identifier(name)) if *name == prefix)
             && self
                 .peek_at(self.pos + 1)
                 .is_some_and(token_begins_clone_operand)
+    }
+
+    /// Ordinary expressions rooted at a binding named `error` take priority
+    /// over the contextual failure-return marker, in either return position.
+    pub(crate) fn eat_error_return_marker(&mut self) -> bool {
+        if !matches!(self.peek(), Some(Token::Identifier("error"))) {
+            return false;
+        }
+        let Some(next) = self.peek_at(self.pos + 1) else {
+            return false;
+        };
+        if infix_bp(next).is_some()
+            || matches!(
+                next,
+                Token::Semicolon
+                    | Token::RightBrace
+                    | Token::RightParen
+                    | Token::RightBracket
+                    | Token::Comma
+                    | Token::Else
+                    | Token::Dot
+                    | Token::LeftParen
+                    | Token::LeftBracket
+                    | Token::Question
+                    | Token::QuestionQuestion
+                    | Token::As
+                    | Token::Identifier("handle")
+            )
+        {
+            return false;
+        }
+        self.advance();
+        true
     }
 
     /// Whether the current position begins a `consume <param>` modifier inside a
@@ -331,6 +383,22 @@ impl<'src> Parser<'src> {
             hint: Some(hint.into()),
             severity: Severity::Error,
             kind: ParseDiagnosticKind::Other,
+        });
+    }
+
+    pub(crate) fn error_at_with_kind_and_hint(
+        &mut self,
+        message: String,
+        span: Span,
+        hint: impl Into<String>,
+        kind: ParseDiagnosticKind,
+    ) {
+        self.errors.push(ParseError {
+            message,
+            span,
+            hint: Some(hint.into()),
+            severity: Severity::Error,
+            kind,
         });
     }
 
@@ -585,11 +653,9 @@ impl<'src> Parser<'src> {
     pub(crate) fn contextual_keyword_name(tok: &Token<'_>) -> Option<&'static str> {
         match tok {
             Token::After => Some("after"),
-            Token::From => Some("from"),
             Token::Init => Some("init"),
             Token::Child => Some("child"),
             Token::Restart => Some("restart"),
-            Token::Budget => Some("budget"),
             Token::Strategy => Some("strategy"),
             Token::Permanent => Some("permanent"),
             Token::Transient => Some("transient"),
@@ -604,12 +670,10 @@ impl<'src> Parser<'src> {
             Token::Event => Some("event"),
             Token::On => Some("on"),
             Token::When => Some("when"),
-            Token::Join => Some("join"),
             // Machine-block keywords that can also appear as external function names
             // or identifiers in other positions.
             Token::Entry => Some("entry"),
             Token::Exit => Some("exit"),
-            Token::Emit => Some("emit"),
             _ => None,
         }
     }
@@ -864,7 +928,6 @@ impl<'src> Parser<'src> {
                 | Token::Supervisor
                 | Token::Const
                 | Token::Indirect
-                | Token::Async
                 | Token::Gen
                 | Token::Extern
                 | Token::HashBracket

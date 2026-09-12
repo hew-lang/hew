@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-alias-record-payload"
+intent = "An enum overwrite preserves the record payload bound by the match."
+source = "cases/enum-alias-record-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "record\n"
+exit = 0

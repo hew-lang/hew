@@ -1,0 +1,10 @@
+Test 1 - find middle: PASS
+Test 2 - find first: PASS
+Test 3 - find last: PASS
+Test 4 - not found: PASS
+Test 5 - empty array: PASS
+Test 6 - single found: PASS
+Test 7 - single not found: PASS
+
+7 passed, 0 failed
+ALL PASS

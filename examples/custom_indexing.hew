@@ -7,8 +7,8 @@
 //! Requires: Index trait stdlib + checker desugar.
 
 type Grid {
-    data: Vec<i32>;
-    width: i32;
+    data: Vec<i32>,
+    width: i32,
 }
 
 impl Index<i64> for Grid {

@@ -1,0 +1,118 @@
+enum Carrier {
+    Text(string),
+    Sequence(Vec<Carrier>),
+    Fields(Vec<Entry>),
+}
+
+type Entry {
+    key: string,
+    value: Carrier,
+}
+
+type Retained {
+    original: Carrier,
+    unchanged_copy: Carrier,
+    replacement: Carrier,
+    child: Carrier,
+    key: string,
+}
+
+fn make_tree() -> Carrier {
+    let leaf = Carrier.Text("déjà\0vu");
+    var children: Vec<Carrier> = Vec.new();
+    children.push(leaf);
+    children.push(Carrier.Text("tail"));
+    var entries: Vec<Entry> = Vec.new();
+    entries.push(Entry { key: "branch", value: Carrier.Sequence(children) });
+    Carrier.Fields(entries)
+}
+
+fn first(value: Carrier) -> Carrier {
+    match value {
+        Carrier.Text(text) => Carrier.Text(text),
+        Carrier.Sequence(children) => children[0],
+        Carrier.Fields(entries) => entries[0].value,
+    }
+}
+
+fn text(value: Carrier) -> string {
+    match value {
+        Carrier.Text(content) => content,
+        _ => "wrong variant",
+    }
+}
+
+fn length(value: Carrier) -> i64 {
+    match value {
+        Carrier.Sequence(children) => children.len(),
+        _ => -1,
+    }
+}
+
+fn key(value: Carrier) -> string {
+    match value {
+        Carrier.Fields(entries) => entries[0].key,
+        _ => "wrong variant",
+    }
+}
+
+fn replace_first(value: Carrier) -> Carrier {
+    match value {
+        Carrier.Fields(entries) => {
+            var replacement_entries = entries;
+            let entry = replacement_entries[0];
+            let replacement = match entry.value {
+                Carrier.Sequence(children) => {
+                    var replacement_children = children;
+                    replacement_children.set(0, Carrier.Text("replacement"));
+                    replacement_children.push(Carrier.Text("extra"));
+                    Carrier.Sequence(replacement_children)
+                },
+                _ => Carrier.Text("wrong variant"),
+            };
+            replacement_entries.set(0, Entry { key: entry.key, value: replacement });
+            Carrier.Fields(replacement_entries)
+        },
+        _ => Carrier.Text("wrong variant"),
+    }
+}
+
+fn escape_parents() -> Retained {
+    let original = make_tree();
+    let copied = original;
+    let child = first(first(copied));
+    let replacement = replace_first(copied);
+    Retained { original: original, unchanged_copy: copied, replacement: replacement, child: child, key: key(original) }
+}
+
+fn main() -> i64 {
+    let survivors = {
+        let parents = escape_parents();
+        let original_branch = first(parents.original);
+        let replacement_branch = first(parents.replacement);
+        (text(first(original_branch)), text(first(first(parents.unchanged_copy))), text(first(replacement_branch)), text(parents.child), parents.key, length(original_branch), length(replacement_branch))
+    };
+    if survivors.0 != "déjà\0vu" {
+        return 1;
+    }
+    if survivors.1 != "déjà\0vu" {
+        return 2;
+    }
+    if survivors.2 != "replacement" {
+        return 3;
+    }
+    if survivors.3 != "déjà\0vu" {
+        return 4;
+    }
+    if survivors.4 != "branch" {
+        return 5;
+    }
+    if survivors.5 != 2 || survivors.6 != 3 {
+        return 6;
+    }
+    println(f"original:{survivors.5}:{survivors.0.len()}");
+    println(f"replacement:{survivors.6}");
+    println(f"retained:{survivors.3.len()}");
+    println(f"key:{survivors.4}");
+    0
+}

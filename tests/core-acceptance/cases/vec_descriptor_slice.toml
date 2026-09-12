@@ -1,0 +1,11 @@
+[[case]]
+id = "vec_descriptor_slice"
+intent = "Vectors of descriptor-shaped elements — an enum tag and a record — slice and index through the same accessors as scalar elements."
+source = "cases/vec_descriptor_slice.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "2\n40\n"
+exit = 0

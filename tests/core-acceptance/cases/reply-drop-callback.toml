@@ -1,0 +1,10 @@
+[[case]]
+id = "reply-drop-callback"
+intent = "An owning ask reply is destroyed exactly once whether the caller takes it or gives up first: the consumed leg frees the heap node through the caller, and a reply deposited after its deadline has passed is freed by the destructor the caller registered when it built the operation."
+source = "cases/reply-drop-callback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "sum=57\ntimed-out\ntimed-out\ntimed-out\ntimed-out\ndone\n"
+exit = 0

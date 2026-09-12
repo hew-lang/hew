@@ -17,14 +17,14 @@
 import std.testing;
 
 actor Worker {
-    var ticks: i64 = 0;
+    var ticks: i64 = 0,
 
     // A unit child task: the scope joins it; awaiting it suspends until it is
     // done. The handler increments after the await resumes.
     receive fn run() -> i64 {
         var out: i64 = 0;
         scope {
-            fork t = nap_unit();
+            let t = fork nap_unit();
             await t;
             out = 1;
         };
@@ -43,7 +43,7 @@ fn unit_task_await_resumes_after_child_done() {
     // The child naps 15ms; `await t` suspends until it is Done, then the body
     // sets out = 1 and increments ticks. Exact value 1 proves the await resumed
     // exactly once after the child completed.
-    match await w.run() {
+    match w.run() {
         .Ok(n) => testing.assert_eq(n, 1),
         .Err(_) => testing.assert_true(false),
     }
@@ -55,8 +55,8 @@ fn repeated_unit_task_await_each_resumes() {
     // Two sequential handler calls, each spawning + awaiting a unit child. The
     // accumulated exact value (2) proves both awaits resumed and neither lost
     // its frame nor double-resumed.
-    let _ = await w.run();
-    match await w.run() {
+    let _ = w.run();
+    match w.run() {
         .Ok(n) => testing.assert_eq(n, 2),
         .Err(_) => testing.assert_true(false),
     }

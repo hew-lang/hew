@@ -4,7 +4,7 @@
 //
 // Adder.add accumulates n into count; main calls add(10) + add(32) = 42 → 42.
 actor Adder {
-    var count: i64;
+    var count: i64,
     receive fn add(n: i64) {
         count = count + n;
     }
@@ -15,9 +15,9 @@ actor Adder {
 
 fn main() -> i64 {
     let a = spawn Adder(count: 0);
-    a.add(10);
-    a.add(32);
-    match await a.get() {
+    let _ = a.add(10);
+    let _ = a.add(32);
+    match a.get() {
         .Ok(v) => v,
         .Err(_e) => 0,
     }

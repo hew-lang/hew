@@ -1,0 +1,9 @@
+//! A HIR refusal on a file-imported declaration names the file that declared
+//! it. The spans are `token.hew`'s byte offsets, so an untagged diagnostic
+//! renders against this file at whatever text shares the offset.
+
+import "token.hew";
+
+fn main() -> i64 {
+    0
+}

@@ -24,10 +24,9 @@
 //! source no temp at all: each loop iteration pushes a fresh `Read`-load of the
 //! source place, which the sound per-slot clone deep-copies into an independent
 //! owner; the source place drops exactly once at its own scope. `[Bag; N]` was
-//! additionally fail-closed by the checker gate (`array_repeat_owned_element_
-//! clonable`); the fix collapses that gate onto `vec_owned_element_admissible`,
-//! so a `Vec`-field record is admitted (`RcFree`) while an `Rc`-field record stays
-//! rejected.
+//! additionally fail-closed by a checker gate of its own; array repeat now asks
+//! the element's value class for a copy path, so a `Vec`-field record is
+//! admitted (`RcFree`) while a record with no copy operation stays rejected.
 //!
 //! ## Teeth
 //!

@@ -1,11 +1,11 @@
 type ArrayHeapMoveCarrier { items: Vec<string>, sibling: string }
 
 fn project(i: i64) -> string {
-    let values: Vec<string> = Vec.new();
-    values.push(string_concat("array-", "payload"));
+    var values: Vec<string> = Vec.new();
+    values.push(("array-" + "payload"));
     let r = ArrayHeapMoveCarrier {
         items: values,
-        sibling: string_concat("sibling-", "payload"),
+        sibling: ("sibling-" + "payload"),
     };
     let moved = r.items[0];
     let _ = i;

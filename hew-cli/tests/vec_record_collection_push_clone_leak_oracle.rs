@@ -46,7 +46,7 @@ use support::{describe_output, require_codegen};
 /// exposes it.
 const PUSH_CLONE_RECORD_SOURCE: &str = "\
 type Boxed {\n\
-\x20   payload: [i64];\n\
+\x20   payload: [i64],\n\
 }\n\
 \n\
 fn main() {\n\
@@ -73,9 +73,9 @@ const PUSH_CLONE_RECORD_EXPECTED: &str = "10|20|10|20|10|20OK";
 /// output.
 const PUSH_RECURSIVE_ENUM_SOURCE: &str = "\
 enum Reply {\n\
-\x20   Nil;\n\
-\x20   Num(i64);\n\
-\x20   Arr([Reply]);\n\
+\x20   Nil,\n\
+\x20   Num(i64),\n\
+\x20   Arr([Reply]),\n\
 }\n\
 \n\
 fn main() {\n\
@@ -98,7 +98,7 @@ const PUSH_RECURSIVE_ENUM_EXPECTED: &str = "2OK";
 fn push_clone_record_drop_loop_source(frames: usize) -> String {
     format!(
         "type Boxed {{\n\
-         \x20   payload: [i64];\n\
+         \x20   payload: [i64],\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -122,9 +122,9 @@ fn push_clone_record_drop_loop_source(frames: usize) -> String {
 fn push_recursive_enum_drop_loop_source(frames: usize) -> String {
     format!(
         "enum Reply {{\n\
-         \x20   Nil;\n\
-         \x20   Num(i64);\n\
-         \x20   Arr([Reply]);\n\
+         \x20   Nil,\n\
+         \x20   Num(i64),\n\
+         \x20   Arr([Reply]),\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\

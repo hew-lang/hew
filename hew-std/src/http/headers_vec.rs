@@ -1,36 +1,28 @@
-//! Shared `HewVecElemLayout` descriptor for `Vec<(string, string)>` HTTP header pairs.
+//! Shared `HewValueLayout` descriptor for `Vec<(string, string)>` HTTP header pairs.
 //!
 //! `hew_http_response_headers` and `hew_http_request_headers` both return a
 //! `Vec<(string, string)>` backed by this descriptor.  The Hew drop spine calls
 //! `hew_vec_free_owned` on the binding when it goes out of scope, which walks
 //! the buffer and calls `string_pair_drop_thunk` on each element — freeing both
-//! C strings via `free_cstring`.
+//! managed strings via `string_release`.
 //!
-//! # Allocator contract (LESSONS `allocator-pairing` P0)
-//!
-//! Every string stored in the vec is allocated with `str_to_malloc` (the
-//! header-aware path: `malloc_cstring`).  `free_cstring` is the matching
-//! release, as called by the drop thunk below.  The clone thunk bumps each
-//! string's refcount via `cstring_retain`, so a deep-clone of the vec (e.g.
-//! from `hew_vec_clone_owned`) gives each copy independent ownership.
-
-use std::ffi::{c_char, c_void};
+use std::ffi::c_void;
 
 use hew_cabi::{
-    cabi::{cstring_retain, free_cstring},
-    vec::{HewTypeOwnershipKind, HewVecElemCloneThunk, HewVecElemDropThunk, HewVecElemLayout},
+    string::{string_release, string_retain, HewString},
+    value::{HewTypeOwnershipKind, HewValueCloneThunk, HewValueDropThunk, HewValueLayout},
 };
 
-/// In-memory layout of one `(string, string)` element: two adjacent `*mut c_char`
-/// pointers, each pointing at a header-aware heap string.
+/// In-memory layout of one `(string, string)` element: two adjacent `*mut HewString`
+/// pointers, each pointing at a managed string.
 ///
 /// `#[repr(C)]` pins the field order so the size/align match what
 /// `string_pair_elem_layout` reports and what the Hew compiler emits for
 /// `(string, string)` tuples (two pointer-width fields).
 #[repr(C)]
 pub(crate) struct HewStringPair {
-    pub name: *mut c_char,
-    pub value: *mut c_char,
+    pub name: *mut HewString,
+    pub value: *mut HewString,
 }
 
 /// Clone thunk for `(string, string)` elements.
@@ -43,8 +35,7 @@ pub(crate) struct HewStringPair {
 /// # Safety
 ///
 /// `src` and `dst` must each point to a valid `HewStringPair`-sized blob
-/// with non-null, live, header-aware string pointers produced by `str_to_malloc`
-/// / `malloc_cstring`.
+/// with managed string handles, including canonical empty values.
 pub(crate) unsafe extern "C" fn string_pair_clone_thunk(
     _src: *const c_void,
     dst: *mut c_void,
@@ -54,8 +45,8 @@ pub(crate) unsafe extern "C" fn string_pair_clone_thunk(
         let pair = &mut *dst.cast::<HewStringPair>();
         // Retain both string fields: bump refcount so src and dst own
         // independent references to the same heap buffers.
-        cstring_retain(pair.name); // CSTRING-RETAIN: str-open (http header name — clone_thunk retain)
-        cstring_retain(pair.value); // CSTRING-RETAIN: str-open (http header value — clone_thunk retain)
+        let _ = string_retain(pair.name);
+        let _ = string_retain(pair.value);
     }
     0
 }
@@ -64,44 +55,42 @@ pub(crate) unsafe extern "C" fn string_pair_clone_thunk(
 ///
 /// Called by `hew_vec_free_owned` on each live element, and by
 /// `hew_vec_set_owned` on the overwritten element.  Releases both strings via
-/// `free_cstring` (the header-aware release path that decrements the refcount
-/// and frees at zero).  Does NOT free the slot bytes — the vec owns the buffer.
+/// `string_release`. The vector owns the slot storage.
 ///
 /// # Safety
 ///
 /// `slot` must point to a live `HewStringPair`-sized blob whose string
-/// pointers were allocated with `str_to_malloc` / `malloc_cstring`.
+/// pointers were allocated with `string_from_str`.
 pub(crate) unsafe extern "C" fn string_pair_drop_thunk(slot: *mut c_void) {
-    // SAFETY: slot is a live pair element; both pointers are header-aware heap
-    // strings produced by str_to_malloc (via raw_http_str_to_malloc /
-    // str_to_malloc).
+    // SAFETY: slot is a live pair element owning both managed string fields.
     unsafe {
         let pair = &mut *slot.cast::<HewStringPair>();
         if !pair.name.is_null() {
-            free_cstring(pair.name); // CSTRING-FREE: str-open (http header name — drop_thunk release)
+            string_release(pair.name);
             pair.name = std::ptr::null_mut();
         }
         if !pair.value.is_null() {
-            free_cstring(pair.value); // CSTRING-FREE: str-open (http header value — drop_thunk release)
+            string_release(pair.value);
             pair.value = std::ptr::null_mut();
         }
     }
 }
 
-/// Build the `HewVecElemLayout` descriptor for `Vec<(string, string)>` header pairs.
+/// Build the `HewValueLayout` descriptor for `Vec<(string, string)>` header pairs.
 ///
 /// Inlined at each call site so it lives on the caller's stack and is passed by
 /// pointer to `hew_vec_new_with_elem_layout`, which copies it into the vec's
 /// inline storage.  The resulting `HewVec` uses `hew_vec_push_owned` for push
 /// and `hew_vec_free_owned` for free/drop.
 #[inline]
-pub(crate) fn string_pair_elem_layout() -> HewVecElemLayout {
-    HewVecElemLayout {
+pub(crate) fn string_pair_elem_layout() -> HewValueLayout {
+    HewValueLayout {
+        visit_close: None,
         size: std::mem::size_of::<HewStringPair>(),
         align: std::mem::align_of::<HewStringPair>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        clone_fn: Some(string_pair_clone_thunk as HewVecElemCloneThunk),
-        drop_fn: Some(string_pair_drop_thunk as HewVecElemDropThunk),
+        clone_fn: Some(string_pair_clone_thunk as HewValueCloneThunk),
+        drop_fn: Some(string_pair_drop_thunk as HewValueDropThunk),
     }
 }
 
@@ -113,7 +102,7 @@ pub(crate) fn string_pair_elem_layout() -> HewVecElemLayout {
 mod tests {
     use super::*;
     use hew_cabi::{
-        cabi::str_to_malloc,
+        string::string_from_str,
         vec::{hew_vec_free_owned, hew_vec_len, hew_vec_new_with_elem_layout, hew_vec_push_owned},
     };
 
@@ -130,9 +119,9 @@ mod tests {
         let vec = unsafe { hew_vec_new_with_elem_layout(&raw const layout) };
         assert!(!vec.is_null(), "allocation must succeed");
 
-        // Allocate two header-aware strings.
-        let name_ptr = str_to_malloc("content-type");
-        let value_ptr = str_to_malloc("application/json");
+        // Allocate two managed strings.
+        let name_ptr = string_from_str("content-type");
+        let value_ptr = string_from_str("application/json");
         assert!(!name_ptr.is_null() && !value_ptr.is_null());
 
         let pair = HewStringPair {
@@ -145,10 +134,10 @@ mod tests {
             hew_vec_push_owned(vec, (&raw const pair).cast::<c_void>());
         }
         // Release the source copy (rc 2→1); the vec slot holds the sole owner.
-        // SAFETY: name_ptr / value_ptr are header-aware strings.
+        // SAFETY: name_ptr / value_ptr are managed strings.
         unsafe {
-            free_cstring(pair.name); // CSTRING-FREE: str-open (test — release source after push_owned)
-            free_cstring(pair.value); // CSTRING-FREE: str-open (test — release source after push_owned)
+            string_release(pair.name);
+            string_release(pair.value);
         }
 
         // SAFETY: vec is a valid HewVec; hew_vec_len is safe to call on any non-null vec.
@@ -181,18 +170,18 @@ mod tests {
         // SAFETY: layout is valid.
         let vec = unsafe { hew_vec_new_with_elem_layout(&raw const layout) };
 
-        let name_ptr = str_to_malloc("x-request-id");
-        let value_ptr = str_to_malloc("abc-123");
+        let name_ptr = string_from_str("x-request-id");
+        let value_ptr = string_from_str("abc-123");
         let pair = HewStringPair {
             name: name_ptr,
             value: value_ptr,
         };
         // SAFETY: vec is a valid owned-layout HewVec; pair is a valid HewStringPair.
-        // free_cstring releases the source copy after push_owned retained it.
+        // string_release releases the source copy after push_owned retained it.
         unsafe {
             hew_vec_push_owned(vec, (&raw const pair).cast::<c_void>());
-            free_cstring(pair.name); // CSTRING-FREE: str-open (test — release source after push_owned)
-            free_cstring(pair.value); // CSTRING-FREE: str-open (test — release source after push_owned)
+            string_release(pair.name);
+            string_release(pair.value);
         }
 
         // Deep-clone: each string's refcount goes to 2.

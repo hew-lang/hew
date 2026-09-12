@@ -10,22 +10,20 @@ fn worker(x: i64) {}
 
 machine M {
     events {
-        Tick;
+        Tick,
     }
 
     state Idle {
         entry {
             scope {
-                fork child = worker(42);
+                let child = fork worker(42);
                 await child;
             }
         }
-    }
-    state Done;
+    },
+    state Done,
 
-    on Tick: Idle => Done {
-        .Done
-    }
+    on Tick: Idle => Done,
 
     default { state }
 }

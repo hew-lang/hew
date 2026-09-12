@@ -7,7 +7,7 @@
 // Three increment messages are sent to a Counter actor.
 // Expected output: 42
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn increment(n: i64) {
         count = count + n;
     }
@@ -18,10 +18,10 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.increment(10);
-    c.increment(20);
-    c.increment(12);
-    let result = await c.total();
+    let _ = c.increment(10);
+    let _ = c.increment(20);
+    let _ = c.increment(12);
+    let result = c.total();
     match result {
         .Ok(total) => println(total),
         .Err(_) => println("ask failed"),

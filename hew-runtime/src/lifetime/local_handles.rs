@@ -22,7 +22,7 @@ use std::time::{Duration, Instant};
 use crate::lifetime::PoisonSafe;
 use crate::runtime_id::RuntimeId;
 
-/// One-word semantic identity carried by an in-language `LocalPid<T>`.
+/// One-word semantic identity carried by an in-language actor handle.
 ///
 /// Zero is reserved as the invalid/`None` niche. Production identities are
 /// allocated from one process-global counter and are never reset or reused.
@@ -31,7 +31,7 @@ use crate::runtime_id::RuntimeId;
 pub struct HewLocalPidId(usize);
 
 impl HewLocalPidId {
-    /// Invalid handle value and the scalar niche used by `Option<LocalPid<T>>`.
+    /// Invalid handle value and the scalar niche used by an `Option`-wrapped actor handle.
     pub const INVALID: Self = Self(0);
 
     /// Return the target-word representation used by the runtime ABI.
@@ -109,10 +109,26 @@ pub(crate) enum RetireActorResult {
 struct LocalHandleState {
     routes: HashMap<HewLocalPidId, Route>,
     actor_tokens: HashMap<u64, HewLocalPidId>,
+    // A retired identity has no allocation ownership but still names the
+    // terminal incarnation for immediate DOWN delivery.
+    retired_actors: HashMap<HewLocalPidId, (RuntimeId, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
     #[cfg(not(target_arch = "wasm32"))]
     supervisor_tokens: HashMap<usize, HewLocalPidId>,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
+    #[cfg(not(target_arch = "wasm32"))]
+    supervisor_role_tokens: HashMap<(HewLocalPidId, u32), HewLocalPidId>,
+}
+
+/// An internal owner path used by `ChildRef`, never an incarnation `LocalPid`.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy)]
+struct SupervisorRole {
+    root: HewLocalPidId,
+    owner: HewLocalPidId,
+    slot: u32,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -132,6 +148,8 @@ pub(crate) struct SupervisorControl {
     runtime_id: RuntimeId,
     access_state: AtomicUsize,
     teardown_claimed: AtomicBool,
+    completion: Arc<crate::actor_native::NativeActorCompletion>,
+    parent_stop_notification: Mutex<Option<(HewLocalPidId, u32)>>,
     drain_mutex: Mutex<()>,
     drained: Condvar,
 }
@@ -149,9 +167,30 @@ impl SupervisorControl {
             runtime_id,
             access_state: AtomicUsize::new(0),
             teardown_claimed: AtomicBool::new(false),
+            completion: Arc::default(),
+            parent_stop_notification: Mutex::new(None),
             drain_mutex: Mutex::new(()),
             drained: Condvar::new(),
         }
+    }
+
+    pub(crate) fn finish_terminal(&self) {
+        let parent = self
+            .parent_stop_notification
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some((parent, slot)) = parent {
+            crate::supervisor::notify_child_supervisor_stopped(parent, slot, self.direct_id);
+        }
+        self.completion.finish(0);
+    }
+
+    pub(crate) fn notify_parent_on_stop(&self, parent: HewLocalPidId, slot: u32) {
+        *self
+            .parent_stop_notification
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some((parent, slot));
     }
 
     pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {
@@ -683,6 +722,25 @@ impl LocalHandles {
         })
     }
 
+    /// Resolve a live or retired incarnation without acquiring allocation ownership.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn observation_actor(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> Option<u64> {
+        self.state.access(|state| match state.routes.get(&token) {
+            Some(Route::Actor {
+                runtime_id: owner,
+                actor_id,
+            }) if *owner == runtime_id => Some(*actor_id),
+            _ => state
+                .retired_actors
+                .get(&token)
+                .and_then(|(owner, id)| (*owner == runtime_id).then_some(*id)),
+        })
+    }
+
     /// Return the registered direct token for an `ActorId` in this runtime.
     #[cfg_attr(
         not(test),
@@ -726,7 +784,13 @@ impl LocalHandles {
             {
                 return RetireActorResult::Mismatch;
             }
-            state.routes.remove(&token);
+            if let Some(Route::Actor {
+                runtime_id,
+                actor_id,
+            }) = state.routes.remove(&token)
+            {
+                state.retired_actors.insert(token, (runtime_id, actor_id));
+            }
             state.actor_tokens.remove(&actor_id);
             RetireActorResult::Retired
         })
@@ -748,6 +812,30 @@ impl LocalHandles {
         runtime_id: RuntimeId,
         token: HewLocalPidId,
     ) -> Option<SupervisorPin> {
+        let (root, path) = self.state.access(|state| {
+            let mut current = token;
+            let mut path = Vec::new();
+            while let Some(role) = state.supervisor_roles.get(&current) {
+                path.push(role.slot);
+                current = role.owner;
+            }
+            (current, path)
+        });
+        let mut pin = self.pin_direct_supervisor(runtime_id, root)?;
+        for slot in path.into_iter().rev() {
+            let child = crate::supervisor::nested_child_token(pin.supervisor(), slot)?;
+            let child_pin = self.pin_direct_supervisor(runtime_id, child)?;
+            pin = child_pin;
+        }
+        Some(pin)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn pin_direct_supervisor(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> Option<SupervisorPin> {
         let control = self.state.access(|state| match state.routes.get(&token) {
             Some(Route::Supervisor {
                 runtime_id: owner,
@@ -758,6 +846,34 @@ impl LocalHandles {
             _ => None,
         })?;
         control.try_pin()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn supervisor_role_owner(
+        &self,
+        runtime_id: RuntimeId,
+        owner: HewLocalPidId,
+        slot: u32,
+    ) -> Option<HewLocalPidId> {
+        self.state.access(|state| {
+            let root = state
+                .supervisor_roles
+                .get(&owner)
+                .map_or(owner, |role| role.root);
+            let control = state.controls.get(&root)?;
+            if control.runtime_id() != runtime_id || !state.routes.contains_key(&root) {
+                return None;
+            }
+            if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot)) {
+                return Some(*token);
+            }
+            let token = allocate()?;
+            state
+                .supervisor_roles
+                .insert(token, SupervisorRole { root, owner, slot });
+            state.supervisor_role_tokens.insert((owner, slot), token);
+            Some(token)
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -798,6 +914,12 @@ impl LocalHandles {
                 .is_some_and(|stored| std::ptr::eq(stored.as_ref(), control));
             if matches {
                 state.controls.remove(&control.direct_id());
+                state
+                    .supervisor_roles
+                    .retain(|_, role| role.root != control.direct_id());
+                state
+                    .supervisor_role_tokens
+                    .retain(|_, token| state.supervisor_roles.contains_key(token));
             }
         });
     }
@@ -823,7 +945,8 @@ impl LocalHandles {
                 .routes
                 .values()
                 .filter(|route| matches!(route, Route::Supervisor { .. }))
-                .count();
+                .count()
+                + state.supervisor_roles.len();
             (routes, state.controls.len())
         })
     }
@@ -1002,6 +1125,29 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_role_owner(owner: HewLocalPidId, slot: u32) -> HewLocalPidId {
+    let Some(runtime) = crate::runtime::rt_current_opt() else {
+        return HewLocalPidId::INVALID;
+    };
+    runtime
+        .local_handles
+        .supervisor_role_owner(runtime.runtime_id(), owner, slot)
+        .unwrap_or(HewLocalPidId::INVALID)
+}
+
+/// Observe the stable control even after close has retired the direct route.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_supervisor_completion(
+    token: HewLocalPidId,
+) -> Option<Arc<crate::actor_native::NativeActorCompletion>> {
+    let runtime = crate::runtime::rt_current_opt()?;
+    runtime.local_handles.state.access(|state| {
+        let control = state.controls.get(&token)?;
+        (control.runtime_id() == runtime.runtime_id()).then(|| Arc::clone(&control.completion))
+    })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_control_for_raw(
     token: HewLocalPidId,
     supervisor: *mut crate::supervisor::HewSupervisor,
@@ -1035,6 +1181,16 @@ pub(crate) fn resolve_current_actor(token: HewLocalPidId) -> Option<u64> {
     #[cfg(target_arch = "wasm32")]
     let runtime_id = RuntimeId::DEFAULT;
     current_handles()?.resolve_actor(runtime_id, token)
+}
+
+/// Resolve an observation target even after its allocation has been reclaimed.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<u64> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
+    #[cfg(target_arch = "wasm32")]
+    let runtime_id = RuntimeId::DEFAULT;
+    current_handles()?.observation_actor(runtime_id, token)
 }
 
 /// Return the direct token registered for an `ActorId` in the current runtime.
@@ -1090,6 +1246,7 @@ mod tests {
             RetireActorResult::AlreadyRetired
         );
         assert_eq!(handles.resolve_actor(runtime_id, old), None);
+        assert_eq!(handles.observation_actor(runtime_id, old), Some(41));
 
         // A replacement allocation may reuse the same storage address, but the
         // route contains semantic ActorId only. Its new token cannot revive the

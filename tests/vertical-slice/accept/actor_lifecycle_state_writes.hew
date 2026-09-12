@@ -5,23 +5,23 @@
 // final teardown must release the last generation exactly once.
 
 actor LifecycleWriter {
-    var values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new(),
 
     init() {
-        let next: Vec<i64> = Vec.new();
+        var next: Vec<i64> = Vec.new();
         next.push(1);
         values = next;
     }
 
     #[on(start)]
     fn start() {
-        let next: Vec<i64> = Vec.new();
+        var next: Vec<i64> = Vec.new();
         next.push(2);
         values = next;
     }
 
     receive fn replace() {
-        let next: Vec<i64> = Vec.new();
+        var next: Vec<i64> = Vec.new();
         next.push(3);
         values = next;
     }
@@ -32,7 +32,7 @@ actor LifecycleWriter {
 
     #[on(stop)]
     fn stop() {
-        let next: Vec<i64> = Vec.new();
+        var next: Vec<i64> = Vec.new();
         next.push(4);
         values = next;
     }
@@ -40,8 +40,8 @@ actor LifecycleWriter {
 
 fn main() -> i64 {
     let writer = spawn LifecycleWriter;
-    writer.replace();
-    match await writer.current() {
+    let _ = writer.replace();
+    match writer.current() {
         .Ok(value) => value,
         .Err(_) => 0,
     }

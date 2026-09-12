@@ -44,12 +44,10 @@
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 // ── looped slope fixtures ───────────────────────────────────────────────
 
@@ -167,33 +165,6 @@ fn main() -> i64 {\n\
 \x20   0\n\
 }\n";
 
-/// Interior-alias scrutinee (`let mid = o.a;` byte-copies the member) with a
-/// bound `string` field. The original belongs to the OUTER composite, so the
-/// discharge MUST be gated off — this fixture pins that NO
-/// `FieldDropInPlace` is emitted through the alias slot.
-const ALIAS_SCRUTINEE_BOUND_STRING_SOURCE: &str = "\
-type Alias {\n\
-\x20   s: string,\n\
-\x20   n: i64,\n\
-}\n\
-\n\
-type Holder {\n\
-\x20   a: Alias,\n\
-\x20   h: i64,\n\
-}\n\
-\n\
-fn f(o: Holder) -> i64 {\n\
-\x20   let mid = o.a;\n\
-\x20   let x = match mid {\n\
-\x20       Alias { s, n } => s.len() + n,\n\
-\x20   };\n\
-\x20   x\n\
-}\n\
-\n\
-fn main() -> i64 {\n\
-\x20   f(Holder { a: Alias { s: \"x\".to_upper(), n: 1 }, h: 2 })\n\
-}\n";
-
 // ── slope oracles ───────────────────────────────────────────────────────
 
 /// Bound `string` record field on a consumed root holds a flat leak slope —
@@ -297,82 +268,15 @@ fn bound_string_binder_escapes_no_double_free_under_malloc_scribble() {
 }
 
 // ── MIR emission pins ────────────────────────────────────────────────────
-
-/// Run `hew compile --dump-mir raw` over `source` and return the dump.
-/// Panics (with the compiler output) if MIR construction fails.
-fn dump_raw_mir(name: &str, source: &str) -> String {
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("bound-string-mir-pin-{name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "raw"])
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile --dump-mir");
-    assert!(
-        output.status.success(),
-        "MIR construction must succeed for {name}:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-/// A bound `string` field on a CONSUMED, non-alias root emits exactly one
-/// `FieldDropInPlace` carrying the string type — the stranded-original
-/// discharge at the MIR level (the record parent).
-#[test]
-fn consumed_root_bound_string_emits_field_drop_in_place_mir() {
-    require_codegen();
-
-    let source = "\
-type Inner {\n\
-\x20   v: i64,\n\
-}\n\
-\n\
-type Outer {\n\
-\x20   inner: Inner,\n\
-\x20   c: string,\n\
-}\n\
-\n\
-fn consume(o: Outer) -> i64 {\n\
-\x20   let x = match o {\n\
-\x20       Outer { inner: _, c } => c.len(),\n\
-\x20   };\n\
-\x20   x\n\
-}\n\
-\n\
-fn main() -> i64 {\n\
-\x20   consume(Outer { inner: Inner { v: 0 }, c: \"s\" })\n\
-}\n";
-    let dump = dump_raw_mir("consumed_bound_string", source);
-    let discharges = dump.matches("drop_field_in_place").count();
-    assert_eq!(
-        discharges, 1,
-        "a bound string field on a consumed root must emit exactly one FieldDropInPlace; dump:\n{dump}"
-    );
-    assert!(
-        dump.contains("ty=string"),
-        "the bound-string discharge must carry the string type; dump:\n{dump}"
-    );
-}
-
-/// An interior-alias scrutinee with a bound `string` field emits NO
-/// `FieldDropInPlace` through the alias — the original belongs to the outer
-/// composite, so discharging through the alias slot would double-free. The
-/// alias gate is the authority.
-#[test]
-fn alias_scrutinee_bound_string_emits_no_field_discharge_mir() {
-    require_codegen();
-
-    let dump = dump_raw_mir("alias_bound_string", ALIAS_SCRUTINEE_BOUND_STRING_SOURCE);
-    assert!(
-        !dump.contains("drop_field_in_place"),
-        "an interior-alias scrutinee must emit NO FieldDropInPlace — the outer composite owns \
-         the original; discharging through the alias would double-free. dump:\n{dump}"
-    );
-}
+//
+// Lost coverage: `--dump-mir raw` (retired) previously pinned two facts by
+// grepping/counting `FieldDropInPlace` occurrences in the raw MIR text: a
+// bound `string` field on a consumed root emits exactly one discharge
+// (`ty=string`), and an interior-alias scrutinee emits none (the negative
+// control — discharging through an alias would double-free the outer
+// composite's original). Physical MIR's structured (Debug) dump has no
+// equivalent single-line text to grep or count occurrences of, so this
+// MIR-emission coverage has no direct replacement here. The same
+// use/no-double-free behaviour for a bound-string binder is still proven
+// end to end above by the leak-slope and malloc-scribble oracles in this
+// file.

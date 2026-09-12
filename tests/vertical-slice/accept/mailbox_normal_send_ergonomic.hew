@@ -1,5 +1,5 @@
 actor ReliableWorker {
-    var seen: i64 = 0;
+    var seen: i64 = 0,
 
     receive fn work(value: i64) {
         seen = value;
@@ -12,8 +12,8 @@ actor ReliableWorker {
 
 fn main() -> i64 {
     let worker = spawn ReliableWorker(seen: 0);
-    worker.work(42);
-    match await worker.value() {
+    let _ = worker.work(42);
+    match worker.value() {
         .Ok(value) => if value == 42 {
             println("NORMAL_SEND_DELIVERED");
             42

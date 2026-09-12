@@ -1,0 +1,11 @@
+[[case]]
+id = "pattern_enum_payload_match"
+intent = "Enum record-variant match with one bound owned field and one wildcarded owned sibling."
+source = "cases/pattern_enum_payload_match.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = ""
+exit = 0

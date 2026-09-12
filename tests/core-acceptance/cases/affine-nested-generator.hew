@@ -1,0 +1,36 @@
+enum Choice { Values(Generator<string, ()>, i64), Empty }
+
+gen fn words(label: string) -> string {
+    defer println(label + " cleaned");
+    yield label;
+    yield "later";
+}
+
+fn started(label: string) -> Generator<string, ()> {
+    let values = words(label);
+    match values.next() { .Some(value) => println(value), .None => panic("empty"), }
+    values
+}
+
+fn drive(consume choice: Option<Choice>) -> string {
+    match choice {
+        .Some(.Values(_, 0)) => "zero",
+        .Some(.Values(values, weight)) if weight > 10 => "heavy",
+        .Some(.Values(values, weight)) => {
+            var out = "";
+            for value in values { out = out + value + ","; }
+            f"{out}{weight}"
+        }
+        .Some(.Empty) => "empty",
+        .None => "none",
+    }
+}
+
+fn main() {
+    println(drive(Some(Choice.Values(started("first"), 7))));
+    println(drive(Some(Choice.Values(started("zero"), 0))));
+    println(drive(Some(Choice.Values(started("heavy"), 11))));
+    println(drive(Some(Choice.Empty)));
+    println(drive(None));
+    println("done");
+}

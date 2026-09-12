@@ -5,7 +5,7 @@
 //! name matching, error display, and `bind` edge cases.
 
 use hew_types::ty::{Substitution, TraitObjectBound, Ty, TypeVar};
-use hew_types::unify::{bind, unify, UnifyError};
+use hew_types::unify::{bind, coerce, unify, UnifyError};
 
 // ---------------------------------------------------------------------------
 // Helper: fresh substitution
@@ -418,10 +418,12 @@ fn unify_named_type_arity_mismatch() {
 fn unify_functions_arity_mismatch() {
     let mut subst = fresh_subst();
     let a = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::Bool],
         ret: Box::new(Ty::Unit),
     };
     let b = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Unit),
     };
@@ -435,10 +437,12 @@ fn unify_functions_arity_mismatch() {
 fn unify_functions_return_type_mismatch() {
     let mut subst = fresh_subst();
     let a = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };
     let b = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::String),
     };
@@ -449,21 +453,31 @@ fn unify_functions_return_type_mismatch() {
 }
 
 #[test]
-fn unify_function_with_closure_resolves_var() {
-    // Function on the left, Closure on the right.
+fn closure_erasure_coercion_resolves_signature_variable() {
+    // Erasure resolves signature variables without equating environment types.
     let mut subst = fresh_subst();
     let v = TypeVar::fresh();
     let func = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v)],
         ret: Box::new(Ty::Bool),
     };
     let closure = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::F32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
     };
-    assert!(unify(&mut subst, &func, &closure).is_ok());
+    assert!(unify(&mut subst, &func, &closure).is_err());
+    assert_eq!(subst.resolve(&Ty::Var(v)), Ty::Var(v));
+    assert!(coerce(&mut subst, &func, &closure).is_ok());
     assert_eq!(subst.resolve(&Ty::Var(v)), Ty::F32);
+    assert!(coerce(&mut subst, &closure, &func).is_err());
 }
 
 // ===========================================================================
@@ -582,6 +596,7 @@ fn unify_option_with_type_var_inner() {
 fn unify_function_with_tuple_fails() {
     let mut subst = fresh_subst();
     let func = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };
@@ -642,10 +657,12 @@ fn multiple_vars_resolved_by_successive_unifications() {
 
     // Unify a function with vars in params and return type.
     let a = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::Var(v1), Ty::Var(v2)],
         ret: Box::new(Ty::Var(v3)),
     };
     let b = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::String],
         ret: Box::new(Ty::Bool),
     };

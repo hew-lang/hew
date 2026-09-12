@@ -3,15 +3,12 @@
 // is the existing check-time reject, not a new diagnostic: no recv surface
 // can currently type a `Vec<indirect-enum>` element, so the recv-`Some`
 // binding seam is unreachable for this element class. The guard exists so a
-// future weakening of the witness cannot silently open the recv path into
-// the Vec-element release seam — if the witness ever admits this shape, the
-// recv binding must instead fail closed at the release-verdict consultation
-// (the same refusal `gen_yield_vec_indirect_enum.hew` pins for the
-// generator leg).
-import std.channel.channel;
+// future weakening of the witness cannot silently open the recv path
+// without a release seam behind it.
+import std.channel;
 
 indirect enum Wrapped {
-    Val(i64);
+    Val(i64),
 }
 
 fn main() {

@@ -1,0 +1,14 @@
+[[case]]
+id = "wire_cbor_enum_arity_mismatch_traps"
+intent = "The guard traps: the fixture reports WireDecodeFailed and exits 1 under the one exit rule."
+source = "../vertical-slice/accept/wire_cbor_enum_arity_mismatch_traps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: WireDecodeFailed (210)\n"
+exit = 1

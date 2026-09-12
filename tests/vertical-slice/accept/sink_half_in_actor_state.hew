@@ -4,7 +4,7 @@
 import std.stream;
 
 actor Writer {
-    let sink: stream.Sink<string>;
+    let sink: stream.Sink<string>,
     receive fn put(item: string) {
         sink.send(item);
     }
@@ -16,7 +16,7 @@ fn main() {
         .Err(_) => panic("stream pipe failed"),
     };
     let w = spawn Writer(sink: sink);
-    w.put("hello");
+    let _ = w.put("hello");
     match input.recv() {
         .Some(s) => println(s),
         .None => println("eof"),

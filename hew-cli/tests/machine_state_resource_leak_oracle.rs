@@ -27,10 +27,10 @@ const REENTER_CARRY_SOURCE: &str = r#"
 type Dq {}
 
 #[resource]
-type Handle { raw: Dq; }
+type Handle { raw: Dq, }
 
 impl Handle {
-    fn close(self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
+    fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
 }
 
 extern "C" {
@@ -39,12 +39,12 @@ extern "C" {
 }
 
 machine Session {
-    events { Open; UseIt; }
-    state Idle;
-    state Active { h: Handle; }
+    events { Open, UseIt, }
+    state Idle,
+    state Active { h: Handle, },
 
-    on Open: Idle => Active { Active { h: Handle { raw: unsafe { hew_deque_new() } } } }
-    on UseIt: Active => Active reenter { Active { h: self.h } }
+    on Open: Idle => Active { h: Handle { raw: unsafe { hew_deque_new() } } }
+    on UseIt: Active => Active reenter { h: state.h }
 
     default { state }
 }
@@ -64,10 +64,10 @@ const RELEASE_PATH_SOURCE: &str = r#"
 type Dq {}
 
 #[resource]
-type Handle { raw: Dq; }
+type Handle { raw: Dq, }
 
 impl Handle {
-    fn close(self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
+    fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
 }
 
 extern "C" {
@@ -76,25 +76,23 @@ extern "C" {
 }
 
 machine Mixed {
-    events { Open; Touch; }
-    state Idle;
-    state Active { h: Handle; label: string; }
+    events { Open, Touch, }
+    state Idle,
+    state Active { h: Handle, label: string, },
 
-    on Open: Idle => Active {
-        Active { h: Handle { raw: unsafe { hew_deque_new() } }, label: "live".to_upper() }
-    }
-    on Touch: Active => Active reenter { Active { h: self.h, label: self.label } }
+    on Open: Idle => Active { h: Handle { raw: unsafe { hew_deque_new() } }, label: "live".to_upper() }
+    on Touch: Active => Active reenter { h: state.h, label: state.label }
 
     default { state }
 }
 
 machine Plain {
-    events { Open; Shut; }
-    state Idle;
-    state Live { h: Handle; }
+    events { Open, Shut, }
+    state Idle,
+    state Live { h: Handle, },
 
-    on Open: Idle => Live { Live { h: Handle { raw: unsafe { hew_deque_new() } } } }
-    on Shut: Live => Idle { Idle }
+    on Open: Idle => Live { h: Handle { raw: unsafe { hew_deque_new() } } }
+    on Shut: Live => Idle,
 
     default { state }
 }

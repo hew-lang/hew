@@ -1,0 +1,11 @@
+[[case]]
+id = "regex-literal-value"
+intent = "A regex literal in value position owns a clone of the module's compiled pattern slot, matches and refuses correctly, and frees its handle at every scope exit."
+source = "cases/regex-literal-value.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nfalse\ntrue\ntrue\nfalse\nloop matches: 3\ntrue\nclosed matches: 3\n"
+stderr = ""
+exit = 0

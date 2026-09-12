@@ -1,0 +1,21 @@
+fn make(success: bool) -> Result<string, string> {
+    if success { return Ok("accepted".to_upper()); }
+    Err("rejected".to_upper())
+}
+
+fn extract(value: Result<string, string>) -> string {
+    match value {
+        .Ok(text) => text,
+        .Err(reason) => reason,
+    }
+}
+
+fn main() -> i64 {
+    let accepted = make(true);
+    let rejected = make(false);
+    let first = extract(accepted);
+    let second = extract(accepted);
+    let error = extract(rejected);
+    println(f"{first}:{second}:{error}");
+    0
+}

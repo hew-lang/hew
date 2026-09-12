@@ -1,0 +1,13 @@
+[[case]]
+id = "opaque_handle_user_shadow"
+intent = "A root actor is allowed to share the short spelling of the imported `net.Listener` opaque handle."
+source = "../vertical-slice/accept/opaque_handle_user_shadow.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "opaque-listener-ok\n"
+exit = 0

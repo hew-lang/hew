@@ -1,0 +1,18 @@
+fn main() -> i64 {
+    let text = "unexpected callback invocation".to_upper();
+    let callback: fn[clone](i64) -> i64 = move |value: i64| -> i64 {
+        println(text);
+        value
+    };
+    let caller = "caller owner".to_upper();
+    let outer: fn[clone](i64) -> i64 = move |divisor: i64| -> i64 {
+        let local = "argument owner".to_upper();
+        let bytes = local.to_bytes();
+        let result = callback(bytes.len() / divisor);
+        println(local);
+        result
+    };
+    let result = outer(0);
+    println(caller);
+    result
+}

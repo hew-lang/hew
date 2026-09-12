@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-step-values"
+intent = "Machine steps select guarded fallbacks, retain independent machine copies and return typed owning outputs that outlive the machine scope."
+source = "cases/machine-step-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "Established\nFailed\nexchange:41:HELLO\naccepted:HELLO\nunexpected acknowledgement\nTIMEOUT\n0\nignored\n"
+exit = 0

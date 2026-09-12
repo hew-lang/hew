@@ -1,0 +1,14 @@
+PASS: empty stack
+PASS: push first element
+PASS: push second element
+PASS: old version v1 intact
+PASS: old version v2 intact
+PASS: pop from v3
+PASS: v3 unchanged after pop
+PASS: branching history
+PASS: collect v3
+PASS: collect v4 (branch)
+---
+Passed: 10
+Failed: 0
+ALL PASS

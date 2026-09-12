@@ -1,0 +1,11 @@
+[[case]]
+id = "exit-status-user-code"
+intent = "A non-zero `exit(code)` after an unsupervised actor crash keeps the code the program chose."
+source = "cases/exit-status-user-code.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "chose 7\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
+exit = 7

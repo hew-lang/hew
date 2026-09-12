@@ -174,9 +174,9 @@ fn string_is_not_frozen() {
 }
 
 #[test]
-fn local_pid_is_frozen() {
+fn actor_handle_is_frozen() {
     let reg = TraitRegistry::new();
-    let pid = Ty::local_pid(named("MyActor"));
+    let pid = Ty::actor_handle("MyActor", vec![]);
     assert!(reg.is_frozen(&pid));
 }
 
@@ -387,13 +387,14 @@ fn mutable_pointer_is_copy_not_send() {
 fn function_type_traits() {
     let reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32, Ty::String],
         ret: Box::new(Ty::Bool),
     };
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Send));
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Sync));
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Clone));
-    assert!(reg.implements_marker(&fn_ty, MarkerTrait::Copy));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Send));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Sync));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Clone));
+    assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Copy));
     // Functions shouldn't have Eq, Hash, etc.
     assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Eq));
     assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Debug));
@@ -407,6 +408,12 @@ fn function_type_traits() {
 fn closure_is_clone_but_not_copy() {
     let reg = TraitRegistry::new();
     let closure = Ty::Closure {
+        identity: hew_types::ty::EffectBody::Closure(hew_types::check::SpanKey {
+            start: 0,
+            end: 0,
+            module_idx: 0,
+        }),
+        capabilities: hew_parser::ast::CallableCapabilities::FUNCTION_ITEM,
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::I32],
@@ -711,6 +718,7 @@ fn vec_of_non_eq_is_not_eq() {
     // `normalize_named` tags the builtin so the collection element-derivation
     // arm runs (a `builtin: None` "Vec" would be an unknown user type).
     let fn_ty = Ty::Function {
+        capabilities: hew_parser::ast::CallableCapabilities::default(),
         params: vec![Ty::I32],
         ret: Box::new(Ty::Bool),
     };
@@ -752,9 +760,9 @@ fn method_sig_mutable_self() {
 // ===========================================================================
 
 #[test]
-fn local_pid_is_copy_clone_debug() {
+fn actor_handle_is_copy_clone_debug() {
     let reg = TraitRegistry::new();
-    let pid = Ty::local_pid(named("Logger"));
+    let pid = Ty::actor_handle("Logger", vec![]);
     assert!(reg.implements_marker(&pid, MarkerTrait::Copy));
     assert!(reg.implements_marker(&pid, MarkerTrait::Clone));
     assert!(reg.implements_marker(&pid, MarkerTrait::Debug));

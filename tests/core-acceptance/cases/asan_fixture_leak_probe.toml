@@ -1,0 +1,13 @@
+[[case]]
+id = "asan_fixture_leak_probe"
+intent = "ASan fixture gate: deliberately-leaky Hew probe."
+source = "../vertical-slice/accept/asan_fixture_leak_probe.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

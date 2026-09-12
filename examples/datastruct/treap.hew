@@ -1,6 +1,10 @@
 // Treap: BST by key, heap by priority
 // Each node: [key, priority, left, right] = 4 slots
 // NIL = -1 means no child
+//
+// A parameter is the callee's own copy, so every helper that writes the node
+// pool returns it and the caller reassigns. Helpers that also report a node
+// index return a tuple.
 fn node_key(nodes: Vec<i64>, i: i64) -> i64 {
     nodes[i * 4]
 }
@@ -17,51 +21,51 @@ fn node_right(nodes: Vec<i64>, i: i64) -> i64 {
     nodes[i * 4 + 3]
 }
 
-fn set_left(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_left(var nodes: Vec<i64>, i: i64, v: i64) -> Vec<i64> {
     nodes.set(i * 4 + 2, v);
-    0
+    nodes
 }
 
-fn set_right(nodes: Vec<i64>, i: i64, v: i64) -> i64 {
+fn set_right(var nodes: Vec<i64>, i: i64, v: i64) -> Vec<i64> {
     nodes.set(i * 4 + 3, v);
-    0
+    nodes
 }
 
-fn add_node(nodes: Vec<i64>, key: i64, pri: i64, NIL: i64) -> i64 {
+fn add_node(var nodes: Vec<i64>, key: i64, pri: i64, NIL: i64) -> (Vec<i64>, i64) {
     let idx = nodes.len() / 4;
     nodes.push(key);
     nodes.push(pri);
     nodes.push(NIL);
     nodes.push(NIL);
-    idx
+    (nodes, idx)
 }
 
-// Right rotate: y is root, x = y.left
-fn right_rotate(nodes: Vec<i64>, y: i64) -> i64 {
+// Right rotate: y is root, x = y.left. Returns the pool and the new subtree root.
+fn right_rotate(var nodes: Vec<i64>, y: i64) -> (Vec<i64>, i64) {
     let x = node_left(nodes, y);
     let t2 = node_right(nodes, x);
-    let _ = set_right(nodes, x, y);
-    let _ = set_left(nodes, y, t2);
-    x
+    nodes = set_right(nodes, x, y);
+    nodes = set_left(nodes, y, t2);
+    (nodes, x)
 }
 
-// Left rotate: x is root, y = x.right
-fn left_rotate(nodes: Vec<i64>, x: i64) -> i64 {
+// Left rotate: x is root, y = x.right. Returns the pool and the new subtree root.
+fn left_rotate(var nodes: Vec<i64>, x: i64) -> (Vec<i64>, i64) {
     let y = node_right(nodes, x);
     let t2 = node_left(nodes, y);
-    let _ = set_left(nodes, y, x);
-    let _ = set_right(nodes, x, t2);
-    y
+    nodes = set_left(nodes, y, x);
+    nodes = set_right(nodes, x, t2);
+    (nodes, y)
 }
 
-// Insert into treap, returns new root
-fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64 {
+// Insert into treap; returns the pool and the new root
+fn treap_insert(var nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> (Vec<i64>, i64) {
     if root == NIL {
         return add_node(nodes, key, pri, NIL);
     }
     // Track path from root to insertion point
-    let path: Vec<i64> = Vec.new();
-    let dirs: Vec<i64> = Vec.new();
+    var path: Vec<i64> = Vec.new();
+    var dirs: Vec<i64> = Vec.new();
     var cur = root;
     var placed = false;
     while !placed {
@@ -69,8 +73,8 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
         if key < cur_key {
             let left = node_left(nodes, cur);
             if left == NIL {
-                let new_idx = add_node(nodes, key, pri, NIL);
-                let _ = set_left(nodes, cur, new_idx);
+                let (grown, new_idx) = add_node(nodes, key, pri, NIL);
+                nodes = set_left(grown, cur, new_idx);
                 path.push(cur);
                 dirs.push(0);
                 placed = true;
@@ -82,8 +86,8 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
         } else {
             let right = node_right(nodes, cur);
             if right == NIL {
-                let new_idx = add_node(nodes, key, pri, NIL);
-                let _ = set_right(nodes, cur, new_idx);
+                let (grown, new_idx) = add_node(nodes, key, pri, NIL);
+                nodes = set_right(grown, cur, new_idx);
                 path.push(cur);
                 dirs.push(1);
                 placed = true;
@@ -96,7 +100,7 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
     }
     // Fix heap property by rotating up from bottom
     var new_root = root;
-    while path.len() > 0 {
+    while !path.is_empty() {
         let parent = path.pop();
         let dir = dirs.pop();
         var child = NIL;
@@ -110,18 +114,22 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
             if node_pri(nodes, child) > node_pri(nodes, parent) {
                 var new_subtree = NIL;
                 if dir == 0 {
-                    new_subtree = right_rotate(nodes, parent);
+                    let (rotated, sub) = right_rotate(nodes, parent);
+                    nodes = rotated;
+                    new_subtree = sub;
                 } else {
-                    new_subtree = left_rotate(nodes, parent);
+                    let (rotated, sub) = left_rotate(nodes, parent);
+                    nodes = rotated;
+                    new_subtree = sub;
                 }
                 // Update grandparent
-                if path.len() > 0 {
+                if !path.is_empty() {
                     let gp = path[path.len() - 1];
                     let gp_dir = dirs[dirs.len() - 1];
                     if gp_dir == 0 {
-                        let _ = set_left(nodes, gp, new_subtree);
+                        nodes = set_left(nodes, gp, new_subtree);
                     } else {
-                        let _ = set_right(nodes, gp, new_subtree);
+                        nodes = set_right(nodes, gp, new_subtree);
                     }
                 } else {
                     new_root = new_subtree;
@@ -129,15 +137,28 @@ fn treap_insert(nodes: Vec<i64>, root: i64, key: i64, pri: i64, NIL: i64) -> i64
             }
         }
     }
-    new_root
+    (nodes, new_root)
+}
+
+// Insert every (key, priority) pair; pairs holds key, pri at i*2, i*2+1.
+fn treap_insert_all(var nodes: Vec<i64>, root: i64, pairs: Vec<i64>, NIL: i64) -> (Vec<i64>, i64) {
+    var curr_root = root;
+    let count = pairs.len() / 2;
+    for i in 0 .. count {
+        let (grown, new_root) = treap_insert(nodes, curr_root, pairs[i * 2], pairs[i * 2 + 1], NIL);
+        nodes = grown;
+        curr_root = new_root;
+    }
+    (nodes, curr_root)
 }
 
 // Inorder traversal
-fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
+fn inorder(nodes: Vec<i64>, root: i64, NIL: i64) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     if root == NIL {
-        return 0;
+        return result;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     var cur = root;
     var running = true;
     while running {
@@ -145,7 +166,7 @@ fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
             stack.push(cur);
             cur = node_left(nodes, cur);
         }
-        if stack.len() == 0 {
+        if stack.is_empty() {
             running = false;
         } else {
             cur = stack.pop();
@@ -153,13 +174,12 @@ fn inorder(nodes: Vec<i64>, root: i64, result: Vec<i64>, NIL: i64) -> i64 {
             cur = node_right(nodes, cur);
         }
     }
-    0
+    result
 }
 
 // Verify BST property
 fn check_bst(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
-    let result: Vec<i64> = Vec.new();
-    let _ = inorder(nodes, root, result, NIL);
+    let result = inorder(nodes, root, NIL);
     if result.len() <= 1 {
         return true;
     }
@@ -178,10 +198,10 @@ fn check_heap(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
     if root == NIL {
         return true;
     }
-    let stack: Vec<i64> = Vec.new();
+    var stack: Vec<i64> = Vec.new();
     stack.push(root);
     var ok = true;
-    while stack.len() > 0 {
+    while !stack.is_empty() {
         let cur = stack.pop();
         let l = node_left(nodes, cur);
         let r = node_right(nodes, cur);
@@ -203,14 +223,10 @@ fn check_heap(nodes: Vec<i64>, root: i64, NIL: i64) -> bool {
 
 fn test_basic_treap() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    var root = NIL;
+    let pool: Vec<i64> = Vec.new();
     // key, priority pairs
-    root = treap_insert(nodes, root, 5, 10, NIL);
-    root = treap_insert(nodes, root, 3, 20, NIL);
-    root = treap_insert(nodes, root, 7, 5, NIL);
-    root = treap_insert(nodes, root, 1, 15, NIL);
-    root = treap_insert(nodes, root, 4, 8, NIL);
+    let pairs: Vec<i64> = [5, 10, 3, 20, 7, 5, 1, 15, 4, 8];
+    let (nodes, root) = treap_insert_all(pool, NIL, pairs, NIL);
     let bst_ok = check_bst(nodes, root, NIL);
     let heap_ok = check_heap(nodes, root, NIL);
     if bst_ok {
@@ -228,17 +244,10 @@ fn test_basic_treap() -> i64 {
 
 fn test_inorder_sorted() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    var root = NIL;
-    root = treap_insert(nodes, root, 10, 50, NIL);
-    root = treap_insert(nodes, root, 5, 30, NIL);
-    root = treap_insert(nodes, root, 15, 40, NIL);
-    root = treap_insert(nodes, root, 3, 25, NIL);
-    root = treap_insert(nodes, root, 7, 35, NIL);
-    root = treap_insert(nodes, root, 12, 20, NIL);
-    root = treap_insert(nodes, root, 20, 45, NIL);
-    let result: Vec<i64> = Vec.new();
-    let _ = inorder(nodes, root, result, NIL);
+    let pool: Vec<i64> = Vec.new();
+    let pairs: Vec<i64> = [10, 50, 5, 30, 15, 40, 3, 25, 7, 35, 12, 20, 20, 45];
+    let (nodes, root) = treap_insert_all(pool, NIL, pairs, NIL);
+    let result = inorder(nodes, root, NIL);
     var ok = true;
     if result.len() != 7 {
         ok = false;
@@ -277,11 +286,10 @@ fn test_inorder_sorted() -> i64 {
 
 fn test_high_priority_at_root() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    var root = NIL;
-    root = treap_insert(nodes, root, 5, 10, NIL);
-    root = treap_insert(nodes, root, 3, 100, NIL); // highest priority
-    root = treap_insert(nodes, root, 7, 20, NIL);
+    let pool: Vec<i64> = Vec.new();
+    // The middle pair carries the highest priority
+    let pairs: Vec<i64> = [5, 10, 3, 100, 7, 20];
+    let (nodes, root) = treap_insert_all(pool, NIL, pairs, NIL);
     // Node with priority 100 (key=3) should be at root
     let root_pri = node_pri(nodes, root);
     if root_pri == 100 {
@@ -296,20 +304,21 @@ fn test_high_priority_at_root() -> i64 {
 
 fn test_sequential_inserts() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
+    var nodes: Vec<i64> = Vec.new();
     var root = NIL;
     // Use simple pseudo-random priorities
     var pri = 17;
     var i = 1;
     while i <= 15 {
         pri = pri * 31 + 7 - (pri * 31 + 7) / 100 * 100;
-        root = treap_insert(nodes, root, i, pri, NIL);
+        let (grown, new_root) = treap_insert(nodes, root, i, pri, NIL);
+        nodes = grown;
+        root = new_root;
         i = i + 1;
     }
     let bst_ok = check_bst(nodes, root, NIL);
     let heap_ok = check_heap(nodes, root, NIL);
-    let result: Vec<i64> = Vec.new();
-    let _ = inorder(nodes, root, result, NIL);
+    let result = inorder(nodes, root, NIL);
     if bst_ok {
         if heap_ok {
             if result.len() == 15 {
@@ -324,9 +333,8 @@ fn test_sequential_inserts() -> i64 {
 
 fn test_single_node() -> i64 {
     let NIL = 0 - 1;
-    let nodes: Vec<i64> = Vec.new();
-    var root = NIL;
-    root = treap_insert(nodes, root, 42, 99, NIL);
+    let pool: Vec<i64> = Vec.new();
+    let (nodes, root) = treap_insert(pool, NIL, 42, 99, NIL);
     let bst_ok = check_bst(nodes, root, NIL);
     let heap_ok = check_heap(nodes, root, NIL);
     if bst_ok {

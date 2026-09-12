@@ -1,0 +1,6 @@
+import "helper.hew";
+
+pub fn right_total() -> i64 {
+    let p = Point { x: 10, y: 20 };
+    return helper_sum(p) + ORIGIN_X;
+}

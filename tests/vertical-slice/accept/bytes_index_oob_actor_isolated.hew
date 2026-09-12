@@ -1,7 +1,7 @@
 // EXIT: 1
 actor BytesIndexCrasher {
     receive fn boom() {
-        let b: bytes = bytes.new();
+        var b: bytes = bytes.new();
         b.push(1);
         let _x: u8 = b[99];
     }
@@ -16,9 +16,9 @@ actor BytesIndexProbe {
 fn main() -> i64 {
     let crasher = spawn BytesIndexCrasher;
     let probe = spawn BytesIndexProbe;
-    crasher.boom();
+    let _ = crasher.boom();
     sleep(300ms);
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(v) => v,
         .Err(_) => 1,
     }

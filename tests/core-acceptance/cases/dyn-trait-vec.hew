@@ -1,0 +1,43 @@
+trait Named {
+    fn name(val: Self) -> string;
+}
+
+type Person {
+    label: string,
+}
+
+impl Named for Person {
+    fn name(val: Person) -> string {
+        f"person {val.label}"
+    }
+}
+
+type Machine {
+    id: i64,
+}
+
+impl Named for Machine {
+    fn name(val: Machine) -> string {
+        f"machine {val.id}"
+    }
+}
+
+fn main() {
+    var crowd: Vec<dyn Named> = Vec.new();
+    crowd.push(Person { label: "ada" });
+    crowd.push(Machine { id: 7 });
+    crowd.push(Person { label: "lin" });
+    println(f"count={crowd.len()}");
+    var seen = 0;
+    // A trait object has no semantic clone, so the consuming iterator moves
+    // each one out of the vector it owns.
+    for member in crowd.into_iter() {
+        seen = seen + 1;
+        println(member.name());
+        if seen == 2 {
+            // The untaken trait object is released with the cursor's vector.
+            break
+        }
+    }
+    println(f"seen={seen}");
+}

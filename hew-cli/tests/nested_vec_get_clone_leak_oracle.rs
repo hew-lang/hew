@@ -31,7 +31,7 @@ use support::leak_slope::assert_frame_slope_below_tolerance;
 fn get_clone_for_in_loop_source(frames: usize) -> String {
     format!(
         "fn frame() -> i64 {{\n\
-         \x20   let vv: [[i64]] = [];\n\
+         \x20   var vv: [[i64]] = [];\n\
          \x20   vv.push([1, 2, 3]);\n\
          \x20   vv.push([4, 5, 6]);\n\
          \x20   let inner = vv[0];\n\
@@ -57,7 +57,7 @@ fn get_clone_for_in_loop_source(frames: usize) -> String {
 fn get_clone_bind_len_loop_source(frames: usize) -> String {
     format!(
         "fn frame() -> i64 {{\n\
-         \x20   let vv: [[i64]] = [];\n\
+         \x20   var vv: [[i64]] = [];\n\
          \x20   vv.push([1, 2, 3]);\n\
          \x20   vv.push([4, 5, 6]);\n\
          \x20   let inner = vv[1];\n\

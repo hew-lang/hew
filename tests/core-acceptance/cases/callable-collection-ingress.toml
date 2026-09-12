@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-collection-ingress"
+intent = "Collection ingress weakens callable capabilities on an independent owner; named and inline owned captures survive the defining scope, owning removal, and remaining element use."
+source = "cases/callable-collection-ingress.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "PREFIX retained\nPREFIX first\nPREFIX second\nPREFIX removed\nPREFIX retained\n"
+stderr = ""
+exit = 0

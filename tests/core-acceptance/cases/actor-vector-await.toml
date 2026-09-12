@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-vector-await"
+intent = "`await` over a `Vec<Task<T>>` joins every forked actor call, consumes each handle, and yields the results in the vector's own order rather than completion order."
+source = "cases/actor-vector-await.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "36\n25\n16\n9\n4\n1\n6\n"
+stderr = ""
+exit = 0

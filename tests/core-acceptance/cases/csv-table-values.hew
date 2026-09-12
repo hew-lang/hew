@@ -1,0 +1,19 @@
+import std.encoding.csv;
+
+fn main() {
+    match csv.parse("name,note\nZoë,\"a,b\"\n雪,ready") {
+        .Ok(table) => {
+            assert(table.rows() == 2);
+            assert(table.cols() == 2);
+            println(table.hdrs[0]);
+            println(table.get_by_name(0, "name"));
+            println(table.data[0][1]);
+            println(table.get(1, 0));
+        },
+        .Err(error) => panic(error),
+    }
+    match csv.parse("name\n\"unterminated") {
+        .Ok(_) => panic("malformed CSV accepted"),
+        .Err(_) => println("malformed CSV rejected"),
+    }
+}

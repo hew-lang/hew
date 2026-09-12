@@ -44,6 +44,22 @@ extern "C" {
     fn hew_dist_setup_race_kind() -> i64;
 }
 
+// The granular Node.set_transport / Node.load_keys / Node.allow_peer /
+// Node.start(addr: string) calls were folded into one atomic
+// Node.start(NodeConfig { ... }), which consumes transport, key and peers
+// together in a single transaction. This fixture's mutual credential
+// exchange is two-phase (mint/load this node's own identity, publish it,
+// wait for the peer's published credential, THEN pin it) — the peer's
+// credential is not known until after this node's identity is already
+// minted, so it cannot be expressed as one atomic NodeConfig. Drop to the
+// same low-level runtime entry points NodeConfig itself calls internally.
+extern "C" {
+    fn hew_node_api_set_transport(name: string) -> i32;
+    fn hew_node_api_load_keys(path: string) -> i32;
+    fn hew_node_api_allow_peer(route_slot: u16, credential_hex: string) -> i32;
+    fn hew_node_api_start(addr: string) -> i32;
+}
+
 // `record` is Serializable — required for RemotePid messaging across the wire.
 type KvPut {
     key: string,
@@ -51,22 +67,22 @@ type KvPut {
 }
 
 enum KvReq {
-    Put(KvPut);
-    GetKey(string);
+    Put(KvPut),
+    GetKey(string),
     // Cross-node monitor scenarios: fire-and-forget commands that drive the
     // remote actor to a terminal state so a monitoring client observes the
     // cross-node DOWN with the right reason.
-    StopSelf;
-    CrashSelf;
+    StopSelf,
+    CrashSelf,
     // scenario_partition_ask phase A: hold the reply past the client's ask
     // deadline so the pending ask is deterministically resolvable ONLY by the
     // armed partition probe (no reply, no socket drop — the route stays live).
-    Stall;
+    Stall,
 }
 
 enum KvResp {
-    Ack;
-    Value(string);
+    Ack,
+    Value(string),
 }
 
 // ── #[wire] cross-process body types ─────────────────────────────────────────
@@ -89,8 +105,8 @@ type WirePoint {
 // carry EXPLICIT @N tags — that is the explicit-tag body this scenario proves.
 #[wire]
 enum WireCmd {
-    Ping;
-    Move(WirePoint);
+    Ping,
+    Move(WirePoint),
 }
 
 // WireResult is the #[wire] struct reply: `tag` is which variant the server saw
@@ -102,7 +118,7 @@ type WireResult {
 }
 
 actor KeyValue {
-    let store: HashMap<string, string>;
+    var store: HashMap<string, string>,
     receive fn handle(req: KvReq) -> KvResp {
         match req {
             KvReq.Put(kv) => {
@@ -154,7 +170,7 @@ impl ActorMsg for KeyValue {
 // replies with a #[wire] struct, so the explicit-@N tagged body is exercised on
 // both the request and the reply leg of a remote ask.
 actor WireProbe {
-    let calls: i64;
+    let calls: i64,
     receive fn handle(cmd: WireCmd) -> WireResult {
         match cmd {
             WireCmd.Ping => WireResult { tag: 0, sum: 0 },
@@ -175,18 +191,18 @@ type DistIdentity {
 }
 
 enum IdentityReq {
-    Inspect;
+    Inspect,
 }
 
 enum IdentityResp {
-    Value(DistIdentity);
+    Value(DistIdentity),
 }
 
 actor IdentityProbe {
     receive fn handle(_req: IdentityReq) -> IdentityResp {
         let self_pid: Result<RemotePid<IdentityProbe>, LookupError> = Node.lookup("identity");
         let identity = match self_pid {
-            Result.Ok(pid) => DistIdentity { node_id: to_string(pid.node_id()), slot: pid.slot(), incarnation: pid.incarnation() },
+            Result.Ok(pid) => DistIdentity { node_id: pid.node_id().display(), slot: pid.slot(), incarnation: pid.incarnation() },
             Result.Err(_) => DistIdentity { node_id: "", slot: 0, incarnation: 0 },
         };
         IdentityResp.Value(identity)
@@ -300,7 +316,7 @@ actor PartitionInjector {
 
 actor Linker {
     // 0 = CrashLinked (the linked actor crashes); 1 = MonitorLost (non-fatal).
-    let policy_sel: i64;
+    let policy_sel: i64,
 
     // Establish the cross-node link from inside this actor's own handler so the
     // implicit `self` subject of `link_remote` is THIS actor. The remote peer is
@@ -337,10 +353,10 @@ actor Linker {
 }
 
 actor MonitorProbe {
-    var active_monitor: Result<MonitorRef, MonitorError>;
-    var expected_monitor_id: u64 = 0;
-    var down_count: i64 = 0;
-    var down_reason: i64 = 100;
+    var active_monitor: Result<MonitorRef, MonitorError>,
+    var expected_monitor_id: u64 = 0,
+    var down_count: i64 = 0,
+    var down_reason: i64 = 100,
 
     // drive: 0 = clean stop, 1 = crash, 2 = leave target alive.
     receive fn arm(peer: RemotePid<KeyValue>, drive: i64) -> i64 {
@@ -711,8 +727,8 @@ actor MonitorProbe {
 }
 
 actor SetupRaceStopper {
-    let monitor_target: LocalPid<KeyValue>;
-    let link_target: LocalPid<KeyValue>;
+    let monitor_target: KeyValue,
+    let link_target: KeyValue,
     receive fn run() {
         var monitor_stopped = false;
         var link_stopped = false;
@@ -721,11 +737,11 @@ actor SetupRaceStopper {
                 hew_dist_setup_race_kind()
             };
             if kind == 1 && !monitor_stopped {
-                let _ = await monitor_target.handle(KvReq.StopSelf);
+                let _ = monitor_target.handle(KvReq.StopSelf);
                 monitor_stopped = true;
             }
             if kind == 2 && !link_stopped {
-                let _ = await link_target.handle(KvReq.StopSelf);
+                let _ = link_target.handle(KvReq.StopSelf);
                 link_stopped = true;
             }
             if monitor_stopped && link_stopped {
@@ -737,10 +753,13 @@ actor SetupRaceStopper {
 }
 
 actor LinkSetupRaceProbe {
-    var active_monitor: Result<MonitorRef, MonitorError>;
-    var expected_monitor_id: u64 = 0;
-    var down_count: i64 = 0;
-    var down_reason: i64 = 100;
+    // `monitor()` on a LOCAL pid (the linker below is `spawn`ed, not remote)
+    // returns Result<MonitorRef, LinkError>, not the remote-delivery
+    // MonitorError vocabulary MonitorProbe uses for its RemotePid target.
+    var active_monitor: Result<MonitorRef, LinkError>,
+    var expected_monitor_id: u64 = 0,
+    var down_count: i64 = 0,
+    var down_reason: i64 = 100,
     receive fn arm(peer: RemotePid<KeyValue>) -> i64 {
         let linker = spawn Linker(policy_sel: 0);
         active_monitor = monitor(linker);
@@ -751,7 +770,7 @@ actor LinkSetupRaceProbe {
         if expected_monitor_id == 0 {
             return 0;
         }
-        match await linker.link_go(peer) {
+        match linker.link_go(peer) {
             Result.Ok(linker_id) => linker_id,
             Result.Err(_) => 0,
         }
@@ -828,7 +847,7 @@ actor MonitorCloseProbe {
 }
 
 actor MonitorLeakProbe {
-    var down_count: i64 = 0;
+    var down_count: i64 = 0,
     receive fn run(peer: RemotePid<KeyValue>, iterations: i64) -> i64 {
         var completed: i64 = 0;
         var previous_id: u64 = 0;
@@ -875,9 +894,13 @@ fn wait_for_file(path: string) -> string {
     var attempts: i64 = 0;
     loop {
         if fs.exists(path) {
-            let contents = fs.read(path);
-            if !contents.is_empty() {
-                return contents;
+            match fs.read(path) {
+                .Ok(contents) => {
+                    if !contents.is_empty() {
+                        return contents;
+                    }
+                },
+                .Err(_) => {},
             }
         }
         attempts = attempts + 1;
@@ -889,7 +912,7 @@ fn wait_for_file(path: string) -> string {
 }
 
 fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_route_slot: u16) {
-    Node.load_keys(f"{kx}/{my_role}.key");
+    unsafe { hew_node_api_load_keys(f"{kx}/{my_role}.key") };
     let me = Node.identity_key();
     publish_atomic(kx, f"{my_role}.pub", me);
     let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
@@ -898,7 +921,7 @@ fn stage_peer_credentials(kx: string, my_role: string, peer_role: string, peer_r
     } else {
         peer_key
     };
-    Node.allow_peer(peer_route_slot, configured_peer_key);
+    unsafe { hew_node_api_allow_peer(peer_route_slot, configured_peer_key) };
 }
 
 fn signal_server_listening(kx: string) {
@@ -975,9 +998,9 @@ fn lookup_identity_with_retry(name: string) -> Result<RemotePid<IdentityProbe>, 
 fn run_server(port: string, scenario: string) {
     let addr = f"127.0.0.1:{port}";
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
-    Node.set_transport("tcp");
+    unsafe { hew_node_api_set_transport("tcp") };
     stage_peer_credentials(kx, "server", "client", 2);
-    Node.start(addr);
+    unsafe { hew_node_api_start(addr) };
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue(store: s);
     Node.register("kv", kv);
@@ -993,7 +1016,7 @@ fn run_server(port: string, scenario: string) {
         let link_target = spawn KeyValue(store: link_store);
         Node.register("link-race", link_target);
         let stopper = spawn SetupRaceStopper(monitor_target: monitor_target, link_target: link_target);
-        stopper.run();
+        let _ = fork stopper.run();
     }
     signal_server_listening(kx);
     if os.env("HEW_DIST_RESTARTED").unwrap_or("") == "1" {
@@ -1152,7 +1175,11 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
     let remote_node = identity.node_id();
     let remote_slot = identity.slot();
     let remote_incarnation = identity.incarnation();
-    if local_node == remote_node {
+    // Compare via .display(): Node.id()'s NodeId and RemotePid<T>.node_id()'s
+    // NodeId are independently resolved type identities that both implement
+    // Display but do not unify for `==` (a real, distinct compiler defect —
+    // see the lane return for this fixture's migration).
+    if local_node.display() == remote_node.display() {
         println("FAIL identity_location node-ids-not-distinct");
         return 3;
     }
@@ -1169,7 +1196,7 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
         Result.Ok(resp) => {
             match resp {
                 IdentityResp.Value(actual) => {
-                    if actual.node_id != to_string(remote_node) {
+                    if actual.node_id != remote_node.display() {
                         println("FAIL identity_location node-mismatch");
                         return 8;
                     }
@@ -1185,7 +1212,7 @@ fn scenario_identity_location(identity: RemotePid<IdentityProbe>) -> i64 {
             }
         },
     }
-    println(f"PASS identity_location local={local_node} remote={remote_node} slot={remote_slot} incarnation={remote_incarnation}");
+    println(f"PASS identity_location local={local_node.display()} remote={remote_node.display()} slot={remote_slot} incarnation={remote_incarnation}");
     0
 }
 
@@ -1225,7 +1252,7 @@ fn scenario_identity_display(identity: RemotePid<IdentityProbe>, scenario: strin
 
 fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, expected: i64, ready_drop: bool) -> i64 {
     let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
-    let armed = await probe.arm(kv, drive);
+    let armed = probe.arm(kv, drive);
     let arm_status = match armed {
         Result.Ok(status) => status,
         Result.Err(_) => {
@@ -1237,7 +1264,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
         println(f"FAIL {scenario} arm-status={arm_status}");
         return 3;
     }
-    let id_result = await probe.monitor_id();
+    let id_result = probe.monitor_id();
     let monitor_id = match id_result {
         Result.Ok(value) => value,
         Result.Err(_) => {
@@ -1254,7 +1281,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
     }
     var attempts: i64 = 0;
     loop {
-        let status = await probe.status();
+        let status = probe.status();
         let observed = match status {
             Result.Ok(value) => value,
             Result.Err(_) => {
@@ -1278,7 +1305,7 @@ fn monitor_hook_scenario(kv: RemotePid<KeyValue>, scenario: string, drive: i64, 
     }
     println(f"PASS {scenario} reason={expected}");
     sleep(1200ms);
-    let duplicate_check = await probe.status();
+    let duplicate_check = probe.status();
     match duplicate_check {
         Result.Ok(value) => {
             if value != expected {
@@ -1311,7 +1338,7 @@ fn scenario_remote_monitor_conn_drop(kv: RemotePid<KeyValue>) -> i64 {
 fn scenario_remote_monitor_setup_after_drop(kv: RemotePid<KeyValue>) -> i64 {
     let probe = spawn MonitorSetupProbe;
     println("READY_DROP remote_monitor_setup_after_drop");
-    match await probe.wait_for_partition(kv) {
+    match probe.wait_for_partition(kv) {
         Result.Ok(status) => {
             if status == 0 {
                 println("PASS remote_monitor_setup_after_drop error=Partition");
@@ -1338,8 +1365,8 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
     if monitor_status != 0 {
         return monitor_status;
     }
-    let probe = spawn LinkSetupRaceProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
-    let armed = await probe.arm(link_target);
+    let probe = spawn LinkSetupRaceProbe(active_monitor: Err(LinkError.NoContext), expected_monitor_id: 0, down_count: 0, down_reason: 100);
+    let armed = probe.arm(link_target);
     let linker_id = match armed {
         Result.Ok(value) => value,
         Result.Err(_) => {
@@ -1353,7 +1380,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
     }
     var attempts: i64 = 0;
     loop {
-        let status = await probe.status();
+        let status = probe.status();
         let observed = match status {
             Result.Ok(value) => value,
             Result.Err(_) => {
@@ -1377,7 +1404,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
     }
     println("PASS remote_setup_exit_race link-down=5");
     sleep(1200ms);
-    match await probe.status() {
+    match probe.status() {
         Result.Ok(value) => {
             if value != 5 {
                 println(f"FAIL remote_setup_exit_race link-duplicate={value}");
@@ -1395,7 +1422,7 @@ fn scenario_remote_setup_exit_race(monitor_target: RemotePid<KeyValue>, link_tar
 
 fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     let injector = spawn PartitionInjector;
-    injector.arm();
+    let _ = fork injector.arm();
     let fast_fail_ceiling_ms: i64 = 900;
     // Phase A — the armed probe must PROVE it fired. The route is still live
     // (READY_DROP has not been printed, so the harness has not killed the
@@ -1415,7 +1442,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
         },
         Result.Err(e) => {
             match e {
-                AskError.Partition => {
+                ActorError.Partition => {
                     if probe_elapsed >= fast_fail_ceiling_ms {
                         println(f"FAIL partition_ask probe-slow ms={probe_elapsed}");
                         return 5;
@@ -1433,7 +1460,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
     // must fail closed with ANY typed cause without hanging. Re-arm the
     // injector (phase A consumed its first arm) so the typed verdict again
     // does not race the socket-teardown / SWIM detector latency.
-    injector.arm();
+    let _ = fork injector.arm();
     println("READY_DROP partition_ask");
     let ask_timeout_ms: u64 = 1000;
     var attempts: i64 = 0;
@@ -1452,7 +1479,7 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
             },
             Result.Err(e) => {
                 let timed_out = match e {
-                    AskError.Timeout => true,
+                    ActorError.Timeout => true,
                     _ => elapsed_ms >= fast_fail_ceiling_ms,
                 };
                 if timed_out {
@@ -1464,12 +1491,19 @@ fn scenario_partition_ask(kv: RemotePid<KeyValue>) -> i64 {
                     sleep(200ms);
                 } else {
                     match e {
-                        AskError.Partition => println(f"PASS partition_ask reason=partition ms={elapsed_ms}"),
-                        AskError.ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
-                        AskError.RoutingFailed => println(f"PASS partition_ask reason=routing-failed ms={elapsed_ms}"),
-                        AskError.NodeNotRunning => println(f"PASS partition_ask reason=node-not-running ms={elapsed_ms}"),
-                        AskError.SendFailed => println(f"PASS partition_ask reason=send-failed ms={elapsed_ms}"),
-                        AskError.StaleRef => println(f"PASS partition_ask reason=stale-ref ms={elapsed_ms}"),
+                        ActorError.Partition => println(f"PASS partition_ask reason=partition ms={elapsed_ms}"),
+                        ActorError.ConnectionDropped => println(f"PASS partition_ask reason=conn-dropped ms={elapsed_ms}"),
+                        ActorError.RoutingFailed => println(f"PASS partition_ask reason=routing-failed ms={elapsed_ms}"),
+                        ActorError.NodeNotRunning => println(f"PASS partition_ask reason=node-not-running ms={elapsed_ms}"),
+                        // AskError (retired) had no send-admission variant equivalent for
+                        // "SendFailed" beyond Rejected(SendFailure<Req>) — nothing was
+                        // accepted for delivery. ActorError names that case Rejected.
+                        ActorError.Rejected(_) => println(f"PASS partition_ask reason=rejected ms={elapsed_ms}"),
+                        // AskError.StaleRef (retired) had no direct ActorError equivalent;
+                        // a stale incarnation now surfaces as Dead (the destination is
+                        // gone and will not come back), per
+                        // tests/hew/distributed_error_taxonomy_test.hew.
+                        ActorError.Dead => println(f"PASS partition_ask reason=dead ms={elapsed_ms}"),
                         _ => println(f"PASS partition_ask reason=fail-closed ms={elapsed_ms}"),
                     }
                     return 0;
@@ -1601,7 +1635,7 @@ fn scenario_server_watcher_node_death(_kv_serial: i64) {
 
 fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
     let probe = spawn MonitorProbe(active_monitor: Err(MonitorError.InvalidTarget), expected_monitor_id: 0, down_count: 0, down_reason: 100);
-    match await probe.arm(kv, 2) {
+    match probe.arm(kv, 2) {
         Result.Err(_) => {
             println("FAIL monitor_watcher_node_death arm-ask-error");
             2
@@ -1620,7 +1654,7 @@ fn scenario_client_watcher_node_death(kv: RemotePid<KeyValue>) -> i64 {
 
 fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string) -> i64 {
     let linker = spawn Linker(policy_sel: 0);
-    let linker_id = await linker.link_go(kv);
+    let linker_id = linker.link_go(kv);
     let lid = match linker_id {
         Result.Ok(id) => id,
         Result.Err(_) => {
@@ -1632,7 +1666,7 @@ fn link_cascade_common(kv: RemotePid<KeyValue>, scenario: string, drive: string)
         println(f"FAIL {scenario} link-register-failed");
         return 3;
     }
-    let live = await linker.ping();
+    let live = linker.ping();
     match live {
         Result.Ok(value) => {
             if value != 7 {
@@ -1705,7 +1739,7 @@ fn scenario_link_remote_partition(kv: RemotePid<KeyValue>) -> i64 {
 
 fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
     let linker = spawn Linker(policy_sel: 1);
-    let linker_id = await linker.link_go(kv);
+    let linker_id = linker.link_go(kv);
     let lid = match linker_id {
         Result.Ok(id) => id,
         Result.Err(_) => {
@@ -1733,7 +1767,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
         println(f"FAIL link_remote_non_crashlinked linker-crashed reason={st}");
         return 5;
     }
-    let ping = await linker.ping();
+    let ping = linker.ping();
     match ping {
         Result.Ok(_) => {
             println("PASS link_remote_non_crashlinked linker-survived");
@@ -1748,7 +1782,7 @@ fn scenario_link_remote_non_crashlinked(kv: RemotePid<KeyValue>) -> i64 {
 
 fn scenario_linker_local_crash() -> i64 {
     let linker = spawn Linker(policy_sel: 0);
-    match await linker.crash_local() {
+    match linker.crash_local() {
         Result.Ok(_) => {
             println("FAIL linker_local_crash linker-survived");
             1
@@ -1813,7 +1847,7 @@ fn scenario_server_monitor_close_reclaim() {
 
 fn scenario_client_monitor_close_reclaim(kv: RemotePid<KeyValue>) -> i64 {
     let probe = spawn MonitorCloseProbe;
-    match await probe.register_and_close(kv) {
+    match probe.register_and_close(kv) {
         Result.Err(_) => {
             println("FAIL cross_node_monitor_close_reclaim probe-error");
             2
@@ -1888,7 +1922,7 @@ fn scenario_server_monitor_leak(kx: string, scenario: string, expected: i64) {
 
 fn scenario_client_monitor_leak(kv: RemotePid<KeyValue>, kx: string, scenario: string, iterations: i64) -> i64 {
     let probe = spawn MonitorLeakProbe(down_count: 0);
-    match await probe.run(kv, iterations) {
+    match probe.run(kv, iterations) {
         Result.Err(_) => {
             println(f"FAIL {scenario} probe-ask-error");
             2
@@ -1992,7 +2026,7 @@ fn scenario_handshake_reject() -> i64 {
 fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port: string) -> i64 {
     let old_node = old.node_id();
     let old_incarnation = old.incarnation();
-    println(f"READY_STALE_CAPTURED node={old_node} incarnation={old_incarnation}");
+    println(f"READY_STALE_CAPTURED node={old_node.display()} incarnation={old_incarnation}");
     let _ = wait_for_file(f"{kx}/server.restarted");
     Node.connect(f"1@127.0.0.1:{port}");
     var attempts: i64 = 0;
@@ -2014,8 +2048,12 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
                         Result.Ok(KvResp.Value(_)) => {},
                     }
                     match old.ask(KvReq.GetKey("restart-proof"), 5000) {
-                        Result.Err(AskError.StaleRef) => {
-                            println(f"PASS stale_incarnation_restart old={old_incarnation} new={fresh_incarnation} error=StaleRef");
+                        // AskError.StaleRef (retired) has no direct ActorError equivalent;
+                        // a stale incarnation now surfaces as Dead (the destination is
+                        // gone and will not come back), per
+                        // tests/hew/distributed_error_taxonomy_test.hew.
+                        Result.Err(ActorError.Dead) => {
+                            println(f"PASS stale_incarnation_restart old={old_incarnation} new={fresh_incarnation} error=Dead");
                             return 0;
                         },
                         Result.Err(_) => {
@@ -2042,9 +2080,9 @@ fn scenario_stale_incarnation_restart(old: RemotePid<KeyValue>, kx: string, port
 
 fn run_client(port: string, scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR").unwrap_or("");
-    Node.set_transport("tcp");
+    unsafe { hew_node_api_set_transport("tcp") };
     stage_peer_credentials(kx, "client", "server", 1);
-    Node.start("127.0.0.1:0");
+    unsafe { hew_node_api_start("127.0.0.1:0") };
     wait_for_server_listening(kx);
     let remote_addr = f"1@127.0.0.1:{port}";
     Node.connect(remote_addr);

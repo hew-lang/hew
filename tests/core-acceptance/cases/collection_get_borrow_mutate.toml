@@ -1,0 +1,13 @@
+[[case]]
+id = "collection_get_borrow_mutate"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/collection_get_borrow_mutate.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 17
+column = 11
+message = "E_ELEMENT_NO_COPY: `Vec<Tok>` cannot be read with `get`"

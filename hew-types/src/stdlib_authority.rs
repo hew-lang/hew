@@ -178,6 +178,26 @@ pub enum Intrinsic {
     MathMax,
     MathMin,
     MathRound,
+    MathTan,
+    MathAsin,
+    MathAcos,
+    MathAtan,
+    MathAtan2,
+    MathSinh,
+    MathCosh,
+    MathTanh,
+    MathExp2,
+    MathLog2,
+    MathLog10,
+    MathLog1p,
+    MathExpm1,
+    MathCbrt,
+    MathHypot,
+    MathFma,
+    MathTrunc,
+    MathCopysign,
+    MathPowi,
+    MathFromBits,
     MemAlloc,
     MemRealloc,
     MemDealloc,
@@ -201,6 +221,26 @@ impl Intrinsic {
             Self::MathMax => "math.max",
             Self::MathMin => "math.min",
             Self::MathRound => "math.round",
+            Self::MathTan => "math.tan",
+            Self::MathAsin => "math.asin",
+            Self::MathAcos => "math.acos",
+            Self::MathAtan => "math.atan",
+            Self::MathAtan2 => "math.atan2",
+            Self::MathSinh => "math.sinh",
+            Self::MathCosh => "math.cosh",
+            Self::MathTanh => "math.tanh",
+            Self::MathExp2 => "math.exp2",
+            Self::MathLog2 => "math.log2",
+            Self::MathLog10 => "math.log10",
+            Self::MathLog1p => "math.log1p",
+            Self::MathExpm1 => "math.expm1",
+            Self::MathCbrt => "math.cbrt",
+            Self::MathHypot => "math.hypot",
+            Self::MathFma => "math.fma",
+            Self::MathTrunc => "math.trunc",
+            Self::MathCopysign => "math.copysign",
+            Self::MathPowi => "math.powi",
+            Self::MathFromBits => "math.from_bits",
             Self::MemAlloc => "mem.alloc",
             Self::MemRealloc => "mem.realloc",
             Self::MemDealloc => "mem.dealloc",
@@ -327,18 +367,11 @@ pub struct EnumVariantOrder {
     pub variants: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PreludeExportKind {
-    Module,
-    Item,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreludeExport {
     pub module: String,
-    pub name: Option<String>,
+    pub name: String,
     pub alias: Option<String>,
-    pub kind: PreludeExportKind,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -422,6 +455,7 @@ pub enum AuthorityErrorKind {
     UnknownOverloadGroup { key: String },
     UnknownDiagnosticItem { key: String },
     DuplicateBinding { family: String, key: String },
+    PreludeModuleImport { module: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -472,6 +506,12 @@ impl fmt::Display for AuthorityError {
             }
             AuthorityErrorKind::UnknownDiagnosticItem { key } => {
                 write!(f, "unknown `#[diagnostic_item]` key `{key}`")
+            }
+            AuthorityErrorKind::PreludeModuleImport { module } => {
+                write!(
+                    f,
+                    "prelude manifest may not import a whole module: `{module}`"
+                )
             }
             AuthorityErrorKind::DuplicateBinding { family, key } => {
                 write!(f, "duplicate {family} binding for key `{key}`")
@@ -707,7 +747,8 @@ fn load_source(
                 }
             }
             Item::Import(import) if source.root == Some(StdlibRoot::Prelude) => {
-                collect_prelude_export(&mut authority.prelude_exports, import);
+                collect_prelude_export(&mut authority.prelude_exports, import)
+                    .map_err(|kind| error(source, None, kind))?;
             }
             Item::Import(_)
             | Item::Const(_)
@@ -1012,24 +1053,28 @@ fn type_name(ty: &TypeExpr) -> String {
     }
 }
 
-fn collect_prelude_export(exports: &mut Vec<PreludeExport>, import: hew_parser::ast::ImportDecl) {
+/// Collect the named prelude imports of the manifest.
+///
+/// A whole-module prelude import would put a module binding in every file
+/// without an import, which A409 retires: `std.math` and `std.random` are
+/// reached through `import std.math`. The form is rejected rather than
+/// silently ignored.
+fn collect_prelude_export(
+    exports: &mut Vec<PreludeExport>,
+    import: hew_parser::ast::ImportDecl,
+) -> Result<(), AuthorityErrorKind> {
     let module = import.path.join(".");
     match import.spec {
-        None => exports.push(PreludeExport {
-            module,
-            name: None,
-            alias: import.module_alias,
-            kind: PreludeExportKind::Module,
-        }),
+        None => Err(AuthorityErrorKind::PreludeModuleImport { module }),
         Some(ImportSpec::Names(names)) => {
             for name in names {
                 exports.push(PreludeExport {
                     module: module.clone(),
-                    name: Some(name.name),
+                    name: name.name,
                     alias: name.alias,
-                    kind: PreludeExportKind::Item,
                 });
             }
+            Ok(())
         }
     }
 }
@@ -1117,7 +1162,7 @@ mod tests {
                 "std/builtins.hew",
                 r#"
 #[lang_item("option")]
-pub enum Maybe<T> { Some(T); None; }
+pub enum Maybe<T> { Some(T), None, }
 
 #[intrinsic("math.sqrt")]
 pub fn sqrt(x: f64) -> f64;
@@ -1182,9 +1227,8 @@ extern "C" {
             authority.prelude_exports(),
             &[PreludeExport {
                 module: "std.builtins".to_string(),
-                name: Some("Maybe".to_string()),
+                name: "Maybe".to_string(),
                 alias: Some("Option".to_string()),
-                kind: PreludeExportKind::Item,
             }]
         );
     }
@@ -1209,30 +1253,39 @@ extern "C" {
     }
 
     #[test]
-    fn shipped_prelude_manifest_covers_implicit_modules_and_named_surfaces() {
+    fn shipped_prelude_manifest_covers_its_named_surfaces() {
         let exports = authority().prelude_exports();
-        for module in ["std.math", "std.random"] {
-            assert!(exports.iter().any(|export| {
-                export.kind == PreludeExportKind::Module && export.module == module
-            }));
-        }
         for (module, name) in [
             ("std.failure", "CrashInfo"),
             ("std.failure", "CrashAction"),
             ("std.failure", "CrashNotification"),
             ("std.failure", "CrashKind"),
-            ("std.io.closable", "Closable"),
-            ("std.io.closable", "CloseError"),
             ("std.link_monitor", "MonitorRef"),
             ("std.link_monitor", "MonitorError"),
             ("std.link_monitor", "set_partition_policy"),
         ] {
-            assert!(exports.iter().any(|export| {
-                export.kind == PreludeExportKind::Item
-                    && export.module == module
-                    && export.name.as_deref() == Some(name)
-            }));
+            assert!(exports
+                .iter()
+                .any(|export| { export.module == module && export.name == name }));
         }
+    }
+
+    #[test]
+    fn prelude_module_import_is_a_pointed_build_error() {
+        let source = AuthoritySource::embedded(
+            StdlibRoot::Prelude,
+            "std/prelude.hew",
+            "import std.math as math;\n",
+        );
+        let error = load_stdlib_authority(&[source])
+            .expect_err("a whole-module prelude import must fail closed");
+
+        assert_eq!(
+            error.kind,
+            AuthorityErrorKind::PreludeModuleImport {
+                module: "std.math".to_string(),
+            }
+        );
     }
 
     #[test]

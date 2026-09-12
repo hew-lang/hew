@@ -1,0 +1,11 @@
+[[case]]
+id = "bytes-optional-access"
+intent = "Optional byte access distinguishes zero and 255 from absence, checks negative and upper bounds, honours slice offsets, and preserves retained slices when their source is cleared."
+source = "cases/bytes-optional-access.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "optional bytes passed\n"
+stderr = ""
+exit = 0

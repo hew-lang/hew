@@ -3,12 +3,12 @@
 // the payload still in place, and the parameter's terminal drop releases
 // every payload the arms did not move out — exactly once per call.
 type Bag {
-    items: Vec<string>;
+    items: Vec<string>,
 }
 
 enum Source {
-    Named(string);
-    Packed(Bag);
+    Named(string),
+    Packed(Bag),
 }
 
 fn count(b: Bag) -> i64 {
@@ -29,7 +29,7 @@ fn describe(s: Source) -> string {
 }
 
 fn main() {
-    let items: Vec<string> = Vec.new();
+    var items: Vec<string> = Vec.new();
     items.push("a" + "x");
     items.push("b");
     let empty: Vec<string> = Vec.new();

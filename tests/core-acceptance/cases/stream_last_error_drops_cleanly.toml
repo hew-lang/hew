@@ -1,0 +1,13 @@
+[[case]]
+id = "stream_last_error_drops_cleanly"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/stream_last_error_drops_cleanly.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "error surfaced and dropped cleanly\n"
+exit = 0

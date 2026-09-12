@@ -53,13 +53,13 @@ fn duplex_send_tell_shaped_resolves() {
     );
 }
 
-/// `d.send(42)` on ask-shaped `Duplex<i64, bool>` returns `Result<bool, AskError>`.
+/// `d.send(42)` on ask-shaped `Duplex<i64, bool>` returns `Result<bool, ActorError<Never>>`.
 #[test]
 fn duplex_send_ask_shaped_resolves() {
     let source = r"
         fn main() {
             let (d, _) = duplex_pair<i64, bool>(16);
-            let _: Result<bool, AskError> = d.send(42);
+            let _: Result<bool, ActorError<Never>> = d.send(42);
         }
     ";
     let output = typecheck(source);
@@ -82,7 +82,7 @@ fn duplex_send_int_resolves() {
     let source = r"
         fn main() {
             let (d, _) = duplex_pair<i64, i64>(16);
-            let _: Result<i64, AskError> = d.send(42);
+            let _: Result<i64, ActorError<Never>> = d.send(42);
         }
     ";
     let output = typecheck(source);
@@ -590,9 +590,9 @@ fn duplex_recv_half_twice_fires_use_after_move() {
 // ---------------------------------------------------------------------------
 
 /// Call-syntax `worker(msg)` and method-syntax `worker.send(msg)` both typecheck
-/// on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`). Both enter the
-/// `hew_duplex_send` rewrite path; MIR re-routes to `hew_lambda_actor_send` via
-/// the `Place::LambdaActorHandle` discriminator.
+/// on a lambda-actor handle (typed `actor(Msg) -> Reply`). Both enter the
+/// `hew_duplex_send` rewrite path; MIR selects the real delivery from the
+/// handle's `ActorFn` builtin discriminator.
 ///
 /// Call-syntax remains canonical; `.send()` is an allowed-secondary surface.
 #[test]
@@ -602,7 +602,7 @@ fn lambda_actor_call_syntax_typechecks() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker(42);
+            _ = worker(42);
         }
     ";
     let output = typecheck(source);
@@ -613,30 +613,38 @@ fn lambda_actor_call_syntax_typechecks() {
     );
 }
 
-/// `.send()` on a lambda-actor handle (typed `LambdaPid<Msg, Reply>`) typechecks
-/// and records `hew_duplex_send` in the rewrite table — the shared send-entry hint
-/// that MIR re-routes to `hew_lambda_actor_send` via the `Place::LambdaActorHandle`
-/// discriminator (the two-level checker-type vs MIR-discriminator design).
+/// `.send()` on a lambda-actor handle (typed `actor(Msg) -> Reply`) typechecks
+/// and records `hew_duplex_send` in the rewrite table — the shared send-entry
+/// hint MIR resolves from the handle's `ActorFn` builtin discriminator.
 #[test]
-fn lambda_actor_dot_send_records_send_entry_rewrite() {
+fn lambda_actor_dot_send_dispatches_as_an_actor_call() {
     let source = r"
         fn main() {
             let worker = actor |msg: i64| {
                 println(msg);
             };
-            worker.send(42);
+            _ = worker.send(42);
         }
     ";
     let output = typecheck(source);
     assert!(
         output.errors.is_empty(),
-        "`.send()` on lambda-actor handle should typecheck via LambdaPid::send; got: {:#?}",
+        "`.send()` on lambda-actor handle should typecheck via the actor-fn handle's send; got: {:#?}",
         output.errors
     );
     assert!(
-        has_rewrite(&output, "hew_duplex_send"),
-        "`.send()` on lambda-actor handle must record the hew_duplex_send entry hint \
-         (MIR re-routes to hew_lambda_actor_send by Place); got: {:#?}",
+        output.actor_method_dispatch.values().any(|kind| matches!(
+            kind,
+            hew_types::ActorMethodKind::Ask { method_id, .. }
+                if method_id == hew_types::actor_protocol::LAMBDA_ACTOR_METHOD_ID
+        )),
+        "`.send()` on a lambda-actor handle must publish the same lambda dispatch \
+         `handle(msg)` does; got: {:#?}",
+        output.actor_method_dispatch
+    );
+    assert!(
+        !has_rewrite(&output, "hew_duplex_send"),
+        "the retired duplex entry must not be named; got: {:#?}",
         output.method_call_rewrites
     );
 }
@@ -644,7 +652,7 @@ fn lambda_actor_dot_send_records_send_entry_rewrite() {
 /// `.close()` on a lambda-actor handle typechecks (the actor surface includes
 /// `close`) and consumes the handle.
 #[test]
-fn lambda_actor_dot_close_typechecks_and_consumes() {
+fn lambda_actor_dot_close_releases_through_the_actor_path() {
     let source = r"
         fn main() {
             let worker = actor |msg: i64| {
@@ -660,8 +668,17 @@ fn lambda_actor_dot_close_typechecks_and_consumes() {
         output.errors
     );
     assert!(
-        has_rewrite(&output, "hew_duplex_close"),
-        "`.close()` on lambda-actor handle must record the close entry hint; got: {:#?}",
+        output
+            .actor_delivery_calls
+            .values()
+            .any(|call| matches!(call, hew_types::actor_delivery::ActorDeliveryCall::Close)),
+        "`.close()` on a lambda-actor handle must publish the same terminal release \
+         `close(handle)` does; got: {:#?}",
+        output.actor_delivery_calls
+    );
+    assert!(
+        !has_rewrite(&output, "hew_duplex_close"),
+        "the retired duplex entry must not be named; got: {:#?}",
         output.method_call_rewrites
     );
 }

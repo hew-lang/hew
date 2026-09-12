@@ -356,12 +356,12 @@ fn actor_ask_reply_roundtrip() {
     let reply = actor.ask(1, &mut val);
 
     assert!(!reply.is_null(), "ask should receive a non-null reply");
-    // SAFETY: hew_actor_ask returns libc::malloc'd i32 payload from echo_double_dispatch.
+    // SAFETY: hew_actor_ask returns a runtime-allocated i32 payload from echo_double_dispatch.
     let result: i32 = unsafe { *(reply.cast::<i32>()) };
     assert_eq!(result, 42, "echo_double should return 21 * 2 = 42");
 
-    // SAFETY: reply was malloc'd by the runtime; libc::free is the documented destructor.
-    unsafe { libc::free(reply) };
+    // SAFETY: reply was allocated by the runtime's sized-block allocator.
+    unsafe { hew_runtime::mem::buf_free(reply) };
 }
 
 /// Ask with a timeout — the echo actor should reply well within the limit.
@@ -383,8 +383,8 @@ fn actor_ask_with_timeout_succeeds() {
     let result: i32 = unsafe { *(reply.cast::<i32>()) };
     assert_eq!(result, 10, "echo_double should return 5 * 2 = 10");
 
-    // SAFETY: reply was malloc'd by the runtime.
-    unsafe { libc::free(reply) };
+    // SAFETY: reply was allocated by the runtime.
+    unsafe { hew_runtime::mem::buf_free(reply) };
 }
 
 /// Ask on a closed actor should return null (send failure).
@@ -475,8 +475,8 @@ fn ask_freed_queued_messages_unblock_caller() {
             elapsed.as_millis()
         );
         if !reply.is_null() {
-            // SAFETY: reply was malloc'd by hew_reply.
-            unsafe { libc::free(reply) };
+            // SAFETY: reply was allocated by hew_reply.
+            unsafe { hew_runtime::mem::buf_free(reply) };
         }
     }
     // else: send failed — hew_actor_ask_with_channel retained then

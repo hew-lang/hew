@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_prefix_clone_rejected"
+intent = "Prefix clone follows the same non-cloneable authority as `.clone()`."
+source = "../vertical-slice/reject/arena_prefix_clone_rejected.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 6
+column = 17
+message = "type `std.arena.Arena<string>` contains `#[resource]` value `std.arena.ArenaCloneGuard` and cannot be cloned: member `clone_guard` contains `std.arena.ArenaCloneGuard`, which has an affine close contract and no semantic clone"

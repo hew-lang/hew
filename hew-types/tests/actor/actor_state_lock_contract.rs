@@ -8,7 +8,7 @@ fn receive_handler_emits_guard_fact() {
     let (program, output) = parse_and_typecheck_isolated(
         r"
         actor Counter {
-            var count: i32;
+            var count: i32,
             receive fn inc(n: i32) {
                 count = count + n;
             }
@@ -41,7 +41,7 @@ fn actor_without_receive_has_no_guard_facts() {
     let output = typecheck_isolated(
         r"
         actor Empty {
-            let count: i32;
+            let count: i32,
         }
         fn main() {}
         ",

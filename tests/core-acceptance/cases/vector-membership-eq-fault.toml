@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-membership-eq-fault"
+intent = "A selected Eq fault propagates from membership while releasing callback locals, the borrowed needle, vector and its containing record's siblings."
+source = "cases/vector-membership-eq-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

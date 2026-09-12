@@ -1,0 +1,45 @@
+// Popping an actor's `bytes` state shrinks the state field, hands the byte to
+// the caller and leaves the buffer the actor was seeded from untouched.
+actor Buffer {
+    var data: bytes,
+
+    receive fn fill() {
+        data.push(10);
+        data.push(20);
+    }
+    receive fn drain() -> i64 {
+        match data.pop() {
+            .Some(byte) => byte as i64,
+            .None => -1,
+        }
+    }
+    receive fn scalars(text: string) -> i64 { text.chars().len() }
+    receive fn size() -> i64 { data.len() }
+}
+
+fn main() {
+    var seed: bytes = bytes.new();
+    seed.push(99);
+    let buffer = spawn Buffer(data: seed);
+
+    buffer.fill().expect("fill");
+    assert(buffer.size().expect("size") == 3);
+    assert(buffer.drain().expect("drain 20") == 20);
+    assert(buffer.drain().expect("drain 10") == 10);
+    assert(buffer.drain().expect("drain 99") == 99);
+    // An emptied state field answers absence, not a fabricated byte.
+    assert(buffer.drain().expect("drain empty") == -1);
+    assert(buffer.size().expect("empty size") == 0);
+
+    // The state field is usable again after the drain.
+    buffer.fill().expect("refill");
+    assert(buffer.drain().expect("refilled") == 20);
+
+    // Scalars of a borrowed string, computed inside the actor's heap.
+    assert(buffer.scalars("Aé中🙂").expect("scalars") == 4);
+
+    // The buffer the actor was seeded from kept its own byte.
+    assert(seed.len() == 1);
+    close(buffer);
+    println("actor bytes pop passed");
+}

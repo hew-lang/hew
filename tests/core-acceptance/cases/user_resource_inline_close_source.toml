@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_inline_close_source"
+intent = "W3.030 V11 — `#[resource]` whose `close` body is declared inline via `TypeBodyItem::Method` (rather than in a sibling inherent-impl block) is rejected at HIR with `ResourceCloseSourceUnsupported`."
+source = "../vertical-slice/reject/user_resource_inline_close_source.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ResourceCloseSourceUnsupported"
+line = 6
+column = 1
+message = "E_HIR: `#[resource]` types must declare `close` in a sibling inherent-impl block (`impl T { fn close(consume self) { ... } }`); the inline `type T { fn close(consume self) ... }` surface is not lowered in v0.5 and would silently fail link-time drop dispatch"

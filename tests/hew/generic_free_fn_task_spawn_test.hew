@@ -31,7 +31,7 @@ fn compute_val<T>() -> i64 {
 fn side_work<T>(a: i64, b: i64) {}
 
 actor TaskRunner {
-    var total: i64 = 0;
+    var total: i64 = 0,
 
     // ----------------------------------------------------------------
     // Spawn + await a no-arg value-returning generic fn at two types.
@@ -40,8 +40,8 @@ actor TaskRunner {
     // ----------------------------------------------------------------
     receive fn run_value_tasks() -> i64 {
         scope {
-            fork t1 = compute_val<i64>();
-            fork t2 = compute_val<string>();
+            let t1 = fork compute_val<i64>();
+            let t2 = fork compute_val<string>();
             let v1 = await t1;
             let v2 = await t2;
             total = v1 + v2;
@@ -87,7 +87,7 @@ actor TaskRunner {
 #[test]
 fn test_generic_free_fn_task_spawn_value() {
     let r = spawn TaskRunner(total: 0);
-    match await r.run_value_tasks() {
+    match r.run_value_tasks() {
         .Ok(n) => testing.assert_eq(n, 84),
         .Err(_) => testing.assert_true(false),
     }
@@ -96,7 +96,7 @@ fn test_generic_free_fn_task_spawn_value() {
 #[test]
 fn test_generic_free_fn_task_spawn_unit_fork_block() {
     let r = spawn TaskRunner(total: 0);
-    match await r.run_unit_fork_block() {
+    match r.run_unit_fork_block() {
         .Ok(n) => testing.assert_eq(n, 7),
         .Err(_) => testing.assert_true(false),
     }
@@ -105,7 +105,7 @@ fn test_generic_free_fn_task_spawn_unit_fork_block() {
 #[test]
 fn test_generic_free_fn_task_spawn_arg_fork_block() {
     let r = spawn TaskRunner(total: 0);
-    match await r.run_arg_fork_block() {
+    match r.run_arg_fork_block() {
         .Ok(n) => testing.assert_eq(n, 55),
         .Err(_) => testing.assert_true(false),
     }

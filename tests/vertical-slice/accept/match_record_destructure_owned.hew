@@ -19,7 +19,7 @@ type Wrapper {
 }
 
 fn make_wrapper(n: i64) -> Wrapper {
-    Wrapper { value: string_concat("item-", "-tail") }
+    Wrapper { value: ("item-" + "-tail") }
 }
 
 fn main() -> i64 {

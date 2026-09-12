@@ -1,0 +1,13 @@
+[[case]]
+id = "explicit_int_widening_cast"
+intent = "ACCEPT: explicit `as` cast for integer widening is required and works correctly."
+source = "../vertical-slice/accept/explicit_int_widening_cast.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 5

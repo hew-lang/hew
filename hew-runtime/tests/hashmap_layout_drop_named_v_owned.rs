@@ -19,11 +19,14 @@
     reason = "test harness conventions; see hashmap_layout_drop_overwrite.rs"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::{c_char, c_void, CString};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -61,31 +64,61 @@ extern "C" fn named_v_drop(blob: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    let v = unsafe { *key.cast::<i64>() };
-    (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        let v = unsafe { *key.cast::<i64>() };
+        (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<i64>() };
-    let r = unsafe { *rhs.cast::<i64>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        let l = unsafe { *lhs.cast::<i64>() };
+        let r = unsafe { *rhs.cast::<i64>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-fn make_descriptors() -> (HewMapKeyLayout, HewMapValueLayout) {
+fn make_descriptors() -> (HewMapKeyLayout, HewValueLayout) {
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
-    let vl = HewMapValueLayout {
+    let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<NamedV>(),
         align: align_of::<NamedV>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(named_v_drop as HewMapValueDropThunk),
+        drop_fn: Some(named_v_drop as HewValueDropThunk),
         clone_fn: None,
     };
     (kl, vl)
@@ -108,21 +141,29 @@ fn named_v_overwrite_remove_free_drops_each_owned_field_exactly_once() {
         // Insert (vacant) K=1 with V having owned string "alpha".
         let k1: i64 = 1;
         let v1 = make_value("alpha", 100);
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const k1).cast::<c_void>(),
-            (&raw const v1).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const k1).cast::<c_void>(),
+                (&raw const v1).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert_eq!(V_FIELD_DROP_COUNT.load(Ordering::SeqCst), 0);
 
         // Overwrite K=1 with V having owned string "beta". OLD V "alpha"
         // is dropped exactly once at insert-overwrite (plan §4 invariant 5).
         let v1_new = make_value("beta", 101);
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const k1).cast::<c_void>(),
-            (&raw const v1_new).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const k1).cast::<c_void>(),
+                (&raw const v1_new).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert_eq!(
             V_FIELD_DROP_COUNT.load(Ordering::SeqCst),
             1,
@@ -132,16 +173,22 @@ fn named_v_overwrite_remove_free_drops_each_owned_field_exactly_once() {
         // Insert second key K=2 with owned "gamma".
         let k2: i64 = 2;
         let v2 = make_value("gamma", 200);
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const k2).cast::<c_void>(),
-            (&raw const v2).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const k2).cast::<c_void>(),
+                (&raw const v2).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert_eq!(V_FIELD_DROP_COUNT.load(Ordering::SeqCst), 1);
 
         // Remove K=2 → "gamma" dropped exactly once at remove (plan §4
         // invariant 3).
-        let removed = hew_hashmap_remove_layout(m, (&raw const k2).cast::<c_void>());
+        let removed = map_status::success(|result_out, fault_out| {
+            hew_hashmap_remove_layout(m, (&raw const k2).cast::<c_void>(), result_out, fault_out)
+        });
         assert!(removed);
         assert_eq!(
             V_FIELD_DROP_COUNT.load(Ordering::SeqCst),

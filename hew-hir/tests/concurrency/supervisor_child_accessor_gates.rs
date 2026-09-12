@@ -38,7 +38,7 @@ fn static_child_access_compiles_cleanly() {
             child worker: Worker
         }
 
-        fn get_worker(app: LocalPid<App>) -> ChildRef<Worker> {
+        fn get_worker(app: App) -> ChildRef<Worker> {
             app.worker
         }
         ",
@@ -60,7 +60,7 @@ fn pool_field_access_lowers_as_first_class_view() {
             pool workers: Worker count: 2
         }
 
-        fn inspect(sup: LocalPid<Pool>) -> i64 {
+        fn inspect(sup: Pool) -> i64 {
             let workers = sup.workers;
             let first = workers[0];
             let maybe = workers.get(1);
@@ -92,7 +92,7 @@ fn nested_supervisor_chained_accessor_lowers_cleanly() {
             child sub: SubSupervisor
         }
 
-        fn get_nested_worker(root: LocalPid<RootSupervisor>) -> ChildRef<Worker> {
+        fn get_nested_worker(root: RootSupervisor) -> ChildRef<Worker> {
             root.sub.worker
         }
         ",

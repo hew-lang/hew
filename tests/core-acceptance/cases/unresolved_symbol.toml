@@ -1,0 +1,13 @@
+[[case]]
+id = "unresolved_symbol"
+intent = "The fixture is refused, and the refusal names UndefinedVariable."
+source = "../vertical-slice/reject/unresolved_symbol.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedVariable"
+line = 2
+column = 10
+message = "undefined variable `missing`"

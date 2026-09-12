@@ -1,0 +1,37 @@
+type Label { text: string }
+
+type Row {
+    state: string,
+    inner: Label,
+}
+
+fn rows() -> Vec<Row> {
+    var rows: Vec<Row> = Vec.new();
+    rows.push(Row { state: "open".to_upper(), inner: Label { text: "first".to_upper() } });
+    rows.push(Row { state: "open".to_upper(), inner: Label { text: "second".to_upper() } });
+    rows
+}
+
+actor Ledger {
+    var rows: Vec<Row>,
+
+    receive fn close(at: i64, state: string) -> string {
+        rows[at].state = state;
+        rows[at].inner.text = f"{rows[at].state}/{rows[at].inner.text}";
+        rows[at].inner.text.clone()
+    }
+}
+
+fn local_rows() -> string {
+    var rows = rows();
+    rows[0].state = "closed".to_upper();
+    rows[1].inner.text = rows[0].state.clone();
+    // The control: the untouched fields keep their own values.
+    f"{rows[0].state}:{rows[0].inner.text}:{rows[1].state}:{rows[1].inner.text}"
+}
+
+fn main() {
+    println(local_rows());
+    let ledger = spawn Ledger(rows: rows());
+    println(ledger.close(1, "shut".to_upper()).expect("close"));
+}

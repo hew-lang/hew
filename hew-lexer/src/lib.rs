@@ -200,8 +200,6 @@ pub enum Token<'src> {
     Pub,
     #[token("package")]
     Package,
-    #[token("super")]
-    Super,
     #[token("indirect")]
     Indirect,
     #[token("enum")]
@@ -218,8 +216,6 @@ pub enum Token<'src> {
     Child,
     #[token("restart")]
     Restart,
-    #[token("budget")]
-    Budget,
     #[token("strategy")]
     Strategy,
     #[token("permanent")]
@@ -236,8 +232,6 @@ pub enum Token<'src> {
     RestForOne,
     #[token("simple_one_for_one")]
     SimpleOneForOne,
-    #[token("pool")]
-    Pool,
     /// `brutal_kill` shutdown directive on a supervisor child: skip the
     /// graceful-stop deadline and terminate the child immediately.
     #[token("brutal_kill")]
@@ -248,8 +242,6 @@ pub enum Token<'src> {
     Fork,
     #[token("spawn")]
     Spawn,
-    #[token("async")]
-    Async,
     #[token("await")]
     Await,
     #[token("await_restart")]
@@ -260,14 +252,10 @@ pub enum Token<'src> {
     Init,
     #[token("type")]
     Type,
-    #[token("this")]
-    This,
     #[token("dyn")]
     Dyn,
     #[token("move")]
     Move,
-    #[token("try")]
-    Try,
     #[token("true")]
     True,
     #[token("false")]
@@ -278,24 +266,16 @@ pub enum Token<'src> {
     Optional,
     #[token("deprecated")]
     Deprecated,
-    #[token("default")]
-    Default,
     #[token("unsafe")]
     Unsafe,
     #[token("extern")]
     Extern,
-    #[token("foreign")]
-    Foreign,
     #[token("in")]
     In,
     #[token("select")]
     Select,
     #[token("race")]
     Race,
-    #[token("join")]
-    Join,
-    #[token("from")]
-    From,
     #[token("after")]
     After,
     #[token("gen")]
@@ -304,10 +284,6 @@ pub enum Token<'src> {
     Yield,
     #[token("where")]
     Where,
-    #[token("cooperate")]
-    Cooperate,
-    #[token("catch")]
-    Catch,
     #[token("defer")]
     Defer,
     #[token("as")]
@@ -326,8 +302,6 @@ pub enum Token<'src> {
     Entry,
     #[token("exit")]
     Exit,
-    #[token("emit")]
-    Emit,
     #[token("is")]
     Is,
 
@@ -417,6 +391,8 @@ pub enum Token<'src> {
     Greater,
     #[token("?")]
     Question,
+    #[token("??")]
+    QuestionQuestion,
     #[token("|")]
     Pipe,
     #[token("&")]
@@ -566,6 +542,7 @@ impl std::fmt::Display for Token<'_> {
             Token::Caret => f.write_str("`^`"),
             Token::Tilde => f.write_str("`~`"),
             Token::Question => f.write_str("`?`"),
+            Token::QuestionQuestion => f.write_str("`??`"),
             Token::FatArrow => f.write_str("`=>`"),
             Token::Arrow => f.write_str("`->`"),
 
@@ -661,7 +638,6 @@ define_keywords! {
     Import     => "import",
     Pub        => "pub",
     Package    => "package",
-    Super      => "super",
     Indirect   => "indirect",
     Enum       => "enum",
     Trait      => "trait",
@@ -670,7 +646,6 @@ define_keywords! {
     Supervisor => "supervisor",
     Child      => "child",
     Restart    => "restart",
-    Budget     => "budget",
     Strategy   => "strategy",
     Permanent  => "permanent",
     Transient  => "transient",
@@ -679,41 +654,31 @@ define_keywords! {
     OneForAll        => "one_for_all",
     RestForOne       => "rest_for_one",
     SimpleOneForOne  => "simple_one_for_one",
-    Pool             => "pool",
     BrutalKill       => "brutal_kill",
     Scope      => "scope",
     Fork       => "fork",
     Spawn      => "spawn",
-    Async      => "async",
     Await      => "await",
     AwaitRestart => "await_restart",
     Receive    => "receive",
     Init       => "init",
     Type       => "type",
-    This       => "this",
     Dyn        => "dyn",
     Move       => "move",
-    Try        => "try",
     True       => "true",
     False      => "false",
     Reserved   => "reserved",
     Optional   => "optional",
     Deprecated => "deprecated",
-    Default    => "default",
     Unsafe     => "unsafe",
     Extern     => "extern",
-    Foreign    => "foreign",
     In         => "in",
     Select     => "select",
     Race       => "race",
-    Join       => "join",
-    From       => "from",
     After      => "after",
     Gen        => "gen",
     Yield      => "yield",
     Where      => "where",
-    Cooperate  => "cooperate",
-    Catch      => "catch",
     Defer      => "defer",
     As         => "as",
     Machine    => "machine",
@@ -723,7 +688,6 @@ define_keywords! {
     When       => "when",
     Entry      => "entry",
     Exit       => "exit",
-    Emit       => "emit",
     Is         => "is",
 }
 
@@ -773,6 +737,7 @@ impl Token<'_> {
                 | Token::Caret
                 | Token::Tilde
                 | Token::Question
+                | Token::QuestionQuestion
         )
     }
 
@@ -839,21 +804,27 @@ mod tests {
     }
 
     #[test]
-    fn all_keywords() {
-        let src = "let var const mut fn if else match loop for while break continue return \
-                   import pub package super struct enum trait impl actor \
-                   supervisor child restart budget strategy permanent transient temporary \
-                   one_for_one one_for_all rest_for_one simple_one_for_one pool \
-                   scope fork spawn async await receive \
-                   init type this dyn move try true false reserved optional deprecated \
-                   default unsafe extern foreign in select race join from after gen yield \
-                   where cooperate catch defer is";
-        let toks = tokens(src);
-        assert_eq!(toks.len(), 70);
-        // Spot-check first and last
-        assert_eq!(toks[0], Token::Let);
-        assert_eq!(toks[3], Token::Mut);
-        assert_eq!(toks[69], Token::Is);
+    fn keyword_diet_words_are_identifiers() {
+        assert_eq!(
+            tokens("async try catch cooperate foreign super budget default emit pool"),
+            vec![
+                Token::Identifier("async"),
+                Token::Identifier("try"),
+                Token::Identifier("catch"),
+                Token::Identifier("cooperate"),
+                Token::Identifier("foreign"),
+                Token::Identifier("super"),
+                Token::Identifier("budget"),
+                Token::Identifier("default"),
+                Token::Identifier("emit"),
+                Token::Identifier("pool"),
+            ]
+        );
+    }
+
+    #[test]
+    fn race_stays_reserved() {
+        assert_eq!(tokens("race"), vec![Token::Race]);
     }
 
     #[test]

@@ -1,113 +1,88 @@
 //! Hew runtime: `uuid_gen` module.
 //!
-//! Provides UUID v4 and v7 generation, validation, and memory management for
-//! compiled Hew programs. All returned strings are allocated with `libc::malloc`
-//! so callers can free them with [`hew_uuid_free`].
-use std::ffi::c_char;
-
-use hew_cabi::cabi::{cstr_to_str, str_to_malloc};
+//! Provides UUID v4 and v7 generation and validation for compiled Hew
+//! programs. Generated identifiers are managed strings: the caller receives one
+//! owner and releases it with `hew_string_drop`.
+use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use uuid::Uuid;
 
 /// Generate a UUID v4 (random) string.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// hyphenated UUID (36 chars + NUL). The caller must free it with
-/// [`hew_uuid_free`]. Returns null on allocation failure.
+/// Returns one owned managed string holding the hyphenated UUID (36 bytes).
+/// Release it with `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_uuid_v4() -> *mut c_char {
-    str_to_malloc(&Uuid::new_v4().to_string())
+pub extern "C" fn hew_uuid_v4() -> *mut HewString {
+    string_from_str(&Uuid::new_v4().to_string())
 }
 
 /// Generate a UUID v7 (time-ordered, random) string.
 ///
-/// Returns a `malloc`-allocated, NUL-terminated C string containing the
-/// hyphenated UUID (36 chars + NUL). The caller must free it with
-/// [`hew_uuid_free`]. Returns null on allocation failure.
+/// Returns one owned managed string holding the hyphenated UUID (36 bytes).
+/// Release it with `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_uuid_v7() -> *mut c_char {
-    str_to_malloc(&Uuid::now_v7().to_string())
+pub extern "C" fn hew_uuid_v7() -> *mut HewString {
+    string_from_str(&Uuid::now_v7().to_string())
 }
 
 /// Validate a UUID string.
 ///
-/// Returns `1` if the string is a valid UUID, `0` otherwise (including if the
-/// pointer is null or contains invalid UTF-8).
+/// Returns `1` if the text is a valid UUID, `0` otherwise.
 ///
 /// # Safety
 ///
-/// `s` must be a valid NUL-terminated C string, or null.
+/// `s` must be null (canonical empty) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_uuid_parse(s: *const c_char) -> i32 {
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string (or null).
-    let Some(rust_str) = (unsafe { cstr_to_str(s) }) else {
-        return 0;
-    };
-    i32::from(Uuid::parse_str(rust_str).is_ok())
-}
-
-/// Free a UUID string previously returned by [`hew_uuid_v4`] or [`hew_uuid_v7`].
-///
-/// # Safety
-///
-/// `s` must be a pointer previously returned by `hew_uuid_v4` or `hew_uuid_v7`,
-/// and must not have been freed already. Null is accepted (no-op).
-#[no_mangle]
-pub unsafe extern "C" fn hew_uuid_free(s: *mut c_char) {
-    if s.is_null() {
-        return;
-    }
-    // SAFETY: s was allocated with libc::malloc in malloc_cstring.
-    unsafe { hew_cabi::cabi::free_cstring(s) }; // CSTRING-FREE: str-open (frees str_to_malloc uuid)
+pub unsafe extern "C" fn hew_uuid_parse(s: *const HewString) -> i32 {
+    // SAFETY: the caller keeps the managed owner alive for this borrow.
+    let text = unsafe { string_as_str(s) };
+    i32::from(Uuid::parse_str(text).is_ok())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{CStr, CString};
+    use crate::test_string::ManagedString;
+    use hew_cabi::string::string_release;
+
+    fn read_and_release(value: *mut HewString) -> String {
+        assert!(
+            !value.is_null(),
+            "a generated UUID is never the empty string"
+        );
+        // SAFETY: `value` is the live owner returned by the producer.
+        let text = unsafe { string_as_str(value) }.to_string();
+        // SAFETY: this test holds the only owner of `value`.
+        unsafe { string_release(value) };
+        text
+    }
 
     #[test]
     fn test_uuid_v4_format() {
-        let ptr = hew_uuid_v4();
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated string from hew_uuid_v4.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
-        assert_eq!(s.len(), 36);
-        assert!(Uuid::parse_str(s).is_ok());
-        // SAFETY: ptr was allocated by hew_uuid_v4.
-        unsafe { hew_uuid_free(ptr) };
+        let text = read_and_release(hew_uuid_v4());
+        assert_eq!(text.len(), 36);
+        assert!(Uuid::parse_str(&text).is_ok());
     }
 
     #[test]
     fn test_uuid_v7_format() {
-        let ptr = hew_uuid_v7();
-        assert!(!ptr.is_null());
-        // SAFETY: ptr is a valid NUL-terminated string from hew_uuid_v7.
-        let s = unsafe { CStr::from_ptr(ptr) }.to_str().unwrap();
-        assert_eq!(s.len(), 36);
-        let parsed = Uuid::parse_str(s).unwrap();
+        let text = read_and_release(hew_uuid_v7());
+        assert_eq!(text.len(), 36);
+        let parsed = Uuid::parse_str(&text).unwrap();
         assert_eq!(parsed.get_version(), Some(uuid::Version::SortRand));
-        // SAFETY: ptr was allocated by hew_uuid_v7.
-        unsafe { hew_uuid_free(ptr) };
     }
 
     #[test]
     fn test_uuid_parse_valid_and_invalid() {
-        let valid = CString::new("550e8400-e29b-41d4-a716-446655440000").unwrap();
-        // SAFETY: valid.as_ptr() is a NUL-terminated C string.
+        let valid = ManagedString::new("550e8400-e29b-41d4-a716-446655440000");
+        // SAFETY: `valid` owns a live managed string for this call.
         assert_eq!(unsafe { hew_uuid_parse(valid.as_ptr()) }, 1);
 
-        let invalid = CString::new("not-a-uuid").unwrap();
-        // SAFETY: invalid.as_ptr() is a NUL-terminated C string.
+        let invalid = ManagedString::new("not-a-uuid");
+        // SAFETY: `invalid` owns a live managed string for this call.
         assert_eq!(unsafe { hew_uuid_parse(invalid.as_ptr()) }, 0);
 
-        // SAFETY: null pointer is explicitly handled by hew_uuid_parse.
+        // SAFETY: null is the canonical empty string and parses as invalid.
         assert_eq!(unsafe { hew_uuid_parse(std::ptr::null()) }, 0);
-    }
-
-    #[test]
-    fn test_uuid_free_null() {
-        // SAFETY: null is explicitly accepted as a no-op.
-        unsafe { hew_uuid_free(std::ptr::null_mut()) };
     }
 
     /// FFI signature-parity guard (finding FFI-1).

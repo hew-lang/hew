@@ -1,0 +1,27 @@
+fn main() -> i64 {
+    var source = ["first", "second"];
+    var cursor = source.iter();
+    source.clear();
+    var copy = cursor;
+    match cursor.next() {
+        .Some(value) => println(value),
+        .None => println("missing"),
+    }
+    match copy.next() {
+        .Some(value) => println(value),
+        .None => println("missing"),
+    }
+    match cursor.next() {
+        .Some(value) => println(value),
+        .None => println("missing"),
+    }
+    match cursor.next() {
+        .Some(value) => println(value),
+        .None => println("empty"),
+    }
+    match cursor.next() {
+        .Some(value) => println(value),
+        .None => println("empty"),
+    }
+    0
+}

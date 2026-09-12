@@ -15,7 +15,7 @@
 //! function_scope_drop` unit test (hew-mir/tests/elaborate.rs).
 
 fn make_label(n: i64) -> i64 {
-    let _label = string_concat("item-", "-tail");
+    let _label = ("item-" + "-tail");
     n
 }
 

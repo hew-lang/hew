@@ -13,10 +13,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use support::{hew_binary, repo_root, require_codegen, strip_ansi};
-
-const CLOSURE_SUSPENSION_EXPECTED_FAILURE: &str =
-    "E_NOT_YET_IMPLEMENTED: MIR lowering for suspension inside a closure is not implemented yet";
+use support::{hew_binary, repo_root, require_codegen};
 
 /// Compile one example to a native binary. The caller retains the tempdir for
 /// as long as it needs to launch the artifact.
@@ -61,78 +58,6 @@ fn build_example(category: &str, name: &str) -> (tempfile::TempDir, PathBuf) {
         binary.display()
     );
     (dir, binary)
-}
-
-fn assert_closure_suspension_rejected(category: &str, name: &str) {
-    require_codegen();
-
-    let expected_manifest_entry =
-        format!("examples/{category}/{name}.hew # {CLOSURE_SUSPENSION_EXPECTED_FAILURE}");
-    let manifest = std::fs::read_to_string(
-        repo_root()
-            .join("scripts")
-            .join("hew-corpus-expected-failures.txt"),
-    )
-    .expect("read corpus expected-failures manifest");
-    assert_eq!(
-        manifest
-            .lines()
-            .filter(|line| line == &expected_manifest_entry)
-            .count(),
-        1,
-        "the closure suspension probe must have one exact corpus expected-failure entry: \
-         {expected_manifest_entry}"
-    );
-
-    let source = repo_root()
-        .join("examples")
-        .join(category)
-        .join(format!("{name}.hew"));
-    assert!(
-        source.is_file(),
-        "example fixture missing: {}",
-        source.display()
-    );
-
-    let dir = support::tempdir();
-    let binary = hew_testutil::compiled_binary_path(dir.path(), name);
-    let mut command = Command::new(hew_binary());
-    command
-        .arg("build")
-        .arg(&source)
-        .arg("-o")
-        .arg(&binary)
-        .current_dir(repo_root());
-    let output = support::try_run_bounded_command(
-        command,
-        format!("hew build {}", source.display()),
-        Duration::from_mins(2),
-    )
-    .unwrap_or_else(|error| panic!("invoke hew build {}: {error}", source.display()));
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(
-        !output.status.success(),
-        "hew build {} must reject closure suspension; stdout:\n{}\nstderr:\n{}",
-        source.display(),
-        String::from_utf8_lossy(&output.stdout),
-        stderr,
-    );
-    assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("suspension inside a closure")
-            && stderr.contains(
-                "function types do not yet carry the suspension metadata needed for every direct, \
-                 nested, and higher-order invocation to select the matching driver"
-            ),
-        "hew build {} must report the precise closure suspension diagnostic:\n{}",
-        source.display(),
-        stderr,
-    );
-    assert!(
-        !binary.exists(),
-        "closure suspension rejection must not emit {}",
-        binary.display()
-    );
 }
 
 /// Launch a pre-built fixture under one worker-pool configuration.
@@ -340,10 +265,16 @@ fn run_net_example_both_pools(name: &str, expected_stdout: &str) {
 }
 
 #[test]
-fn closure_captured_await_is_rejected_until_closures_have_suspension_frames() {
-    // Retain the captured-Connection semantic fixture while rc2 fails closed:
-    // its declared string result must never receive the coroutine ramp address.
-    assert_closure_suspension_rejected("net", "probe_b2_closure_capture_await");
+fn closure_captured_suspend_resumes_with_the_captured_connection_under_both_pools() {
+    // A closure body that reads a captured `Connection` suspends its handler and
+    // resumes on the same captured handle: the decoded reply, not the coroutine
+    // ramp address, reaches the closure's declared `string` result. Under
+    // HEW_WORKERS=1 the lone worker must serve `main`'s peer AND run the reader,
+    // which only happens if the closure's read actually parks the handler.
+    run_net_example_both_pools(
+        "probe_b2_closure_capture_await",
+        "reader-received: hello-from-server\nserver-done\n",
+    );
 }
 
 #[test]
@@ -360,24 +291,40 @@ fn closure_no_await_stays_on_the_direct_call_path_under_both_pools() {
 }
 
 #[test]
-fn closure_captured_multi_await_is_rejected_until_closures_have_suspension_frames() {
-    // Retain the two-suspension semantic fixture so a future frame model must
-    // still account for every re-park; rc2 rejects it before codegen.
-    assert_closure_suspension_rejected("net", "probe_b2_closure_multi_await");
+fn closure_captured_multi_suspend_keeps_the_capture_across_every_repark_under_both_pools() {
+    // Two reads in one closure body: the captured connection must survive each
+    // re-park, not just the first. The peer writes `payload` and then closes, so
+    // the second read returns the empty string - `payload|` proves both reads ran
+    // in order against the same captured handle.
+    run_net_example_both_pools(
+        "probe_b2_closure_multi_await",
+        "reader-received: payload|\nserver-done\n",
+    );
 }
 
 #[test]
-fn unit_returning_closure_await_is_rejected_until_closures_have_suspension_frames() {
-    // Unit results are not exempt from the missing closure frame model. Retain
-    // the semantic fixture and reject it before its coroutine ramp can run.
-    assert_closure_suspension_rejected("net", "probe_b2_closure_unit_await");
+fn unit_returning_closure_suspend_completes_under_both_pools() {
+    // A unit-returning closure has no result slot to carry a resumed value, so
+    // its suspension is only observable as the handler running to completion
+    // after the park. The line after the closure call is that observation.
+    run_net_example_both_pools(
+        "probe_b2_closure_unit_await",
+        "reader-unit-done\nserver-done\n",
+    );
 }
 
 #[test]
-fn closure_await_with_outer_crash_path_is_rejected_before_codegen() {
-    // Keep the crash-routing semantic fixture for the eventual closure frame
-    // model, but do not enter its unsupported suspension driver in rc2.
-    assert_closure_suspension_rejected("net", "probe_b2_closure_await_outer_crash");
+fn closure_suspend_with_outer_crash_routes_the_fault_to_the_caller_under_both_pools() {
+    // The crash-routing edge: the handler panics inside the suspendable closure,
+    // before its captured connection is read. The waiting caller must observe an
+    // `.Err` rather than a resumed value, so `main` takes the fallback arm and
+    // still reaches its last line; the process exits 1 under the one-exit rule.
+    run_crashing_example_both_pools(
+        "net",
+        "probe_b2_closure_await_outer_crash",
+        "reader-crash-fallback\nmain-done\n",
+        "reader crashed mid suspending-closure await",
+    );
 }
 
 #[test]

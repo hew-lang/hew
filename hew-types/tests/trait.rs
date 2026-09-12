@@ -13,10 +13,10 @@ mod common;
 mod associated_types;
 #[path = "trait/builtin_trait_method_projection.rs"]
 mod builtin_trait_method_projection;
-#[path = "trait/closable_trait.rs"]
-mod closable_trait;
 #[path = "trait/dyn_trait_coercion.rs"]
 mod dyn_trait_coercion;
+#[path = "trait/error_trait.rs"]
+mod error_trait;
 #[path = "trait/iterator_trait_surface.rs"]
 mod iterator_trait_surface;
 #[path = "trait/trait_bounds.rs"]

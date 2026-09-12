@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-push-transfer-deep"
+intent = "Wrapping and pushing 30000 levels completes and tears down under the default and sanitizer stacks: the loop is linear once the push adopts its operand instead of cloning at every level, and the release walks the structure instead of recursing per level."
+source = "cases/vec-push-transfer-deep.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "depth=30000 root=1\n"
+exit = 0

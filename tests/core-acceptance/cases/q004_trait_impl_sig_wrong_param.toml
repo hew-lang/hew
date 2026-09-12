@@ -1,0 +1,13 @@
+[[case]]
+id = "q004_trait_impl_sig_wrong_param"
+intent = "Reject fixture: q004_trait_impl_sig_wrong_param."
+source = "../vertical-slice/reject/q004_trait_impl_sig_wrong_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "TraitImplSignatureMismatch"
+line = 23
+column = 8
+message = "impl method `Bag.at` parameter `key` has type `string` but trait `Indexer` requires `i32`"

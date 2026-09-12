@@ -5,9 +5,9 @@
 // path. The `pick` helper isolates the match site inside a function so
 // the value-producing path is observable through the return convention.
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 fn pick(c: Colour) -> i64 {

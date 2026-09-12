@@ -1,6 +1,6 @@
 // Peer file: Num. Byte-for-byte parallel to cnt.hew. Scalar (BitCopy) leaf,
 // so the collision is covered for a second value class, not only for string.
-pub type Num { v: i64; }
+pub type Num { v: i64, }
 
 pub fn make_num(v: i64) -> Num {
     Num { v: v }

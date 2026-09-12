@@ -24,11 +24,11 @@
 
 #[resource]
 type R {
-    id: i64;
+    id: i64,
 }
 
 impl R {
-    fn close(self) {
+    fn close(consume self) {
         println(self.id);
     }
 

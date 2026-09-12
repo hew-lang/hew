@@ -1,0 +1,11 @@
+[[case]]
+id = "wire-map-callback-fault"
+intent = "Wire decoding preserves a selected key callback fault and releases partial collection values."
+source = "../vertical-slice/accept/wire_map_callback_fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

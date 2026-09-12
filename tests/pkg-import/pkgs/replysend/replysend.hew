@@ -7,11 +7,11 @@
 
 /// Send reply: a single `i64` field crosses the actor boundary freely.
 type Reply {
-    handle: i64;
+    handle: i64,
 }
 
 pub actor Producer {
-    let seed: i64;
+    let seed: i64,
 
     // The body does not construct `Reply` with a struct literal: in-source
     // construction of a same-bare-name type when two such packages are imported

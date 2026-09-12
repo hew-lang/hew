@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-two-hop"
+intent = "A file import that itself file-imports another file resolves: the middle file calls the name it imported, and the root calls the middle file's."
+source = "fixtures/file-import-two-hop/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "b/c\n"
+exit = 0

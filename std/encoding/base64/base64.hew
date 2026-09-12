@@ -9,7 +9,7 @@
 //! import std.encoding.base64;
 //!
 //! fn main() {
-//!     let data: bytes = bytes.new();
+//!     var data: bytes = bytes.new();
 //!     data.push(72);   // H
 //!     data.push(105);  // i
 //!     let s = base64.encode(data);
@@ -18,6 +18,8 @@
 //!     println(back.len());  // 2
 //! }
 //! ```
+
+import std.encoding.utf8;
 
 /// Encode binary data to a standard Base64 string.
 pub fn encode(data: bytes) -> string {
@@ -34,7 +36,7 @@ pub fn encode_url(data: bytes) -> string {
 /// Returns an empty `bytes` buffer if the input is not valid Base64.
 pub fn decode(s: string) -> bytes {
     let slen = s.len();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     if slen == 0 {
         return out;
     }
@@ -51,7 +53,7 @@ pub fn decode(s: string) -> bytes {
         data_len = data_len - 1;
     }
     // Collect 6-bit values
-    let vals: bytes = bytes.new();
+    var vals: bytes = bytes.new();
     for i in 0 .. data_len {
         let ch = s.slice(i, i + 1);
         let v = decode_char(ch);
@@ -122,7 +124,7 @@ fn b64_char(idx: i32, url_safe: bool) -> i32 { // INTERNAL-ABI: byte-level 6-bit
 /// Encode binary data to a Base64 string using the standard or URL-safe alphabet.
 fn encode_impl(data: bytes, url_safe: bool) -> string {
     let dlen = data.len();
-    let out: bytes = bytes.new();
+    var out: bytes = bytes.new();
     var i = 0;
     // Process complete 3-byte groups
     while i + 3 <= dlen {
@@ -151,7 +153,9 @@ fn encode_impl(data: bytes, url_safe: bool) -> string {
         out.push(b64_char((b as i32 & 15) << 2, url_safe) as u8);
         out.push(61); // '='
     }
-    out.to_string()
+    utf8.decode(out) handle error {
+        panic("Base64 encoder produces ASCII");
+    }
 }
 
 /// Map a single-character string to its 6-bit Base64 value.

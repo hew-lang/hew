@@ -1,10 +1,10 @@
-//! `select { pat from rx.recv() }` — a channel-receive arm in select (NEW-4).
+//! `select { pat = rx.recv() }` — a channel-receive arm in select (NEW-4).
 //!
 //! Two channels race plus an `after` safety net; the ready channel's arm wins,
 //! the loser arm's poll is cancelled at the dispatch site, and the after-timer
 //! never fires. A correct run prints the winning channel's value.
 
-import std.channel.channel;
+import std.channel;
 
 actor Worker {
     receive fn run() {
@@ -41,6 +41,6 @@ actor Worker {
 
 fn main() {
     let w = spawn Worker;
-    w.run();
+    let _ = w.run();
     sleep(100ms);
 }

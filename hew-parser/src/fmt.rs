@@ -7,9 +7,9 @@ use finl_unicode::categories::CharacterCategories;
 
 use crate::ast::{
     ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec,
-    CompoundAssignOp, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
-    ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal, MachineDecl,
-    MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
+    CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
+    FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item, LambdaParam, Literal,
+    MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm, NamingCase,
     NominalPatternPayload, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
     ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, ShutdownDirective, Spanned,
     Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
@@ -217,6 +217,30 @@ impl<'a> Formatter<'a> {
             }
             fmt_item(self, item);
         }
+    }
+
+    /// `{ ..base, name: value, ... }` — the one record-literal body spelling.
+    /// The base comes first: it supplies every field the literal does not name,
+    /// so reading it first reads the value in the order it is built.
+    fn format_record_literal_body(
+        &mut self,
+        fields: &[(String, Spanned<Expr>)],
+        base: Option<&Spanned<Expr>>,
+    ) {
+        self.write(" { ");
+        if let Some(base) = base {
+            self.write("..");
+            self.format_expr(&base.0);
+            if !fields.is_empty() {
+                self.write(", ");
+            }
+        }
+        self.comma_sep(fields, |f, (name, value)| {
+            f.write(name);
+            f.write(": ");
+            f.format_expr(&value.0);
+        });
+        self.write(" }");
     }
 
     fn format_path(&mut self, path: &Path) {
@@ -591,7 +615,7 @@ impl<'a> Formatter<'a> {
                     self.write(name);
                     self.write(": ");
                     self.format_type_expr(&ty.0);
-                    self.write(";");
+                    self.write(",");
                     self.newline();
                     // flush any trailing comment on this line; span.end is the
                     // first token of the next item (or closing brace), so any
@@ -639,9 +663,6 @@ impl<'a> Formatter<'a> {
         self.write_outer_doc(decl.doc_comment.as_ref());
         self.format_attributes(&decl.attributes);
         self.write_indent();
-        if decl.is_async {
-            self.write("async ");
-        }
         if decl.is_generator {
             self.write("gen ");
         }
@@ -650,7 +671,7 @@ impl<'a> Formatter<'a> {
         self.format_opt_type_params(decl.type_params.as_ref());
         self.write("(");
         if has_consuming_self {
-            self.write("consuming self");
+            self.write("consume self");
             if !decl.params.is_empty() {
                 self.write(", ");
             }
@@ -811,7 +832,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    fn format_variant(&mut self, v: &VariantDecl, trailing_semicolon: bool) {
+    fn format_variant(&mut self, v: &VariantDecl, trailing_comma: bool) {
         self.write_outer_doc(v.doc_comment.as_ref());
         self.write_indent();
         self.write(&v.name);
@@ -834,8 +855,8 @@ impl<'a> Formatter<'a> {
                 self.write(" }");
             }
         }
-        if trailing_semicolon {
-            self.write(";");
+        if trailing_comma {
+            self.write(",");
         }
         self.newline();
     }
@@ -914,7 +935,7 @@ impl<'a> Formatter<'a> {
         self.write(&m.name);
         if m.consumes_self {
             self.format_opt_type_params(m.type_params.as_ref());
-            self.write("(consuming self");
+            self.write("(consume self");
             let rest = m.params.get(1..).unwrap_or(&[]);
             if !rest.is_empty() {
                 self.write(", ");
@@ -1121,7 +1142,7 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
-            self.write(";\n");
+            self.write(",\n");
             has_body_item = true;
         }
 
@@ -1237,10 +1258,11 @@ impl<'a> Formatter<'a> {
             self.write_indent();
             self.write("emits {\n");
             self.indent += 1;
-            for name in &decl.emits {
+            for output in &decl.emits {
                 self.write_indent();
-                self.write(name);
-                self.write(";\n");
+                self.write(&output.name);
+                self.format_machine_field_list(&output.fields);
+                self.write("\n");
             }
             self.indent -= 1;
             self.write_indent();
@@ -1327,10 +1349,10 @@ impl<'a> Formatter<'a> {
         self.writeln("}");
     }
 
-    /// Emit `{ name: Type; … }` after an event/state name, or `;` when empty.
+    /// Emit `{ name: Type, … }` after an event/state name, or `,` when empty.
     fn format_machine_field_list(&mut self, fields: &[(String, Spanned<TypeExpr>)]) {
         if fields.is_empty() {
-            self.write(";");
+            self.write(",");
         } else {
             self.write(" { ");
             for (i, (name, ty)) in fields.iter().enumerate() {
@@ -1340,9 +1362,9 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";");
+                self.write(",");
             }
-            self.write(" }");
+            self.write(" },");
         }
     }
 
@@ -1360,7 +1382,7 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";\n");
+                self.write(",\n");
             }
             if let Some(entry) = &state.entry {
                 self.write_indent();
@@ -1376,7 +1398,7 @@ impl<'a> Formatter<'a> {
             }
             self.indent -= 1;
             self.write_indent();
-            self.write("}\n");
+            self.write("},\n");
         } else if !state.fields.is_empty() {
             self.write(" {");
             for (name, ty) in &state.fields {
@@ -1384,11 +1406,11 @@ impl<'a> Formatter<'a> {
                 self.write(name);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";");
+                self.write(",");
             }
-            self.write(" }\n");
+            self.write(" },\n");
         } else {
-            self.write(";\n");
+            self.write(",\n");
         }
     }
 
@@ -1421,7 +1443,12 @@ impl<'a> Formatter<'a> {
         if transition.target_is_contextual {
             self.write(".");
         }
-        self.write(&transition.target_state);
+        self.write(
+            transition
+                .target_composite
+                .as_deref()
+                .unwrap_or(&transition.target_state),
+        );
         if transition.reenter {
             self.write(" reenter");
         }
@@ -1453,23 +1480,35 @@ impl<'a> Formatter<'a> {
             &stripped_body
         };
         match transition.body_form {
-            MachineTransitionBodyForm::Implicit => self.write(";"),
+            MachineTransitionBodyForm::Implicit => self.write(","),
             MachineTransitionBodyForm::PayloadShorthand => {
                 // The head already wrote the target name (with its authored
                 // dot); the shorthand re-emits only the payload field list.
                 // Bare targets carry a `StructInit`, contextual ones a
                 // `ContextVariant` record — both name the target state.
                 let payload = match body_expr {
-                    Expr::StructInit { name, fields, .. } if name == &transition.target_state => {
-                        Some(fields)
-                    }
+                    Expr::StructInit {
+                        name, fields, base, ..
+                    } if name == &transition.target_state => Some((fields, base.as_deref())),
                     Expr::ContextVariant(context) if context.name == transition.target_state => {
-                        context.record.as_ref().map(|record| &record.fields)
+                        context
+                            .record
+                            .as_ref()
+                            .map(|record| (&record.fields, record.base.as_deref()))
                     }
                     _ => None,
                 };
-                if let Some(fields) = payload {
+                if let Some((fields, base)) = payload {
                     self.write(" { ");
+                    // The base comes first, so the fields that override it read
+                    // after the value they override (D488).
+                    if let Some(base) = base {
+                        self.write("..");
+                        self.format_expr(&base.0);
+                        if !fields.is_empty() {
+                            self.write(", ");
+                        }
+                    }
                     for (i, (fname, fval)) in fields.iter().enumerate() {
                         if i > 0 {
                             self.write(", ");
@@ -1587,7 +1626,7 @@ impl<'a> Formatter<'a> {
             self.write(name);
             self.write(": ");
             self.format_type_expr(&ty.0);
-            self.write(";\n");
+            self.write(",\n");
         }
         if let Some(entry) = &group.entry {
             self.write_indent();
@@ -1628,7 +1667,7 @@ impl<'a> Formatter<'a> {
 
         self.indent -= 1;
         self.write_indent();
-        self.write("}\n");
+        self.write("},\n");
     }
 
     /// Emit a substate declaration inside a composite block. The `initial`
@@ -1651,7 +1690,7 @@ impl<'a> Formatter<'a> {
                 self.write(fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";\n");
+                self.write(",\n");
             }
             if let Some(entry) = &state.entry {
                 self.write_indent();
@@ -1667,7 +1706,7 @@ impl<'a> Formatter<'a> {
             }
             self.indent -= 1;
             self.write_indent();
-            self.write("}\n");
+            self.write("},\n");
         } else if !own_fields.is_empty() {
             self.write(" {");
             for (fname, ty) in own_fields {
@@ -1675,11 +1714,11 @@ impl<'a> Formatter<'a> {
                 self.write(fname);
                 self.write(": ");
                 self.format_type_expr(&ty.0);
-                self.write(";");
+                self.write(",");
             }
-            self.write(" }\n");
+            self.write(" },\n");
         } else {
-            self.write(";\n");
+            self.write(",\n");
         }
     }
 
@@ -1694,7 +1733,7 @@ impl<'a> Formatter<'a> {
             self.write(" = ");
             self.format_expr(&default.0);
         }
-        self.write(";\n");
+        self.write(",\n");
     }
 
     fn format_actor_init(&mut self, init: &ActorInit, scope_end: usize) {
@@ -1771,6 +1810,9 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write("supervisor ");
         self.write(&decl.name);
+        if !decl.type_params.is_empty() {
+            self.format_opt_type_params(Some(&decl.type_params));
+        }
         // Emit the config-param clause when present: `supervisor App(config: T)`.
         // Without this, `hew fmt` silently drops the param and breaks all
         // config.field references in the body — a fail-open on the dev-tool surface.
@@ -1782,25 +1824,28 @@ impl<'a> Formatter<'a> {
         self.write(" {\n");
         self.indent += 1;
 
-        // Always write `strategy:` explicitly. When the declaration omitted it,
-        // the formatter materializes the default (`one_for_one`) so the restart
-        // contract is never silently defaulted at the surface.
-        self.write_indent();
-        self.write("strategy: ");
-        match decl.strategy.unwrap_or(SupervisorStrategy::OneForOne) {
-            SupervisorStrategy::OneForOne => self.write("one_for_one"),
-            SupervisorStrategy::OneForAll => self.write("one_for_all"),
-            SupervisorStrategy::RestForOne => self.write("rest_for_one"),
-            SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
+        // Write `strategy:` only when the declaration carries one. Materializing
+        // the default here rewrote the program instead of formatting it: the
+        // reformatted source reparsed with `Some(OneForOne)` where the author
+        // wrote nothing, so the output was not the same AST.
+        if let Some(strategy) = decl.strategy {
+            self.write_indent();
+            self.write("strategy: ");
+            match strategy {
+                SupervisorStrategy::OneForOne => self.write("one_for_one"),
+                SupervisorStrategy::OneForAll => self.write("one_for_all"),
+                SupervisorStrategy::RestForOne => self.write("rest_for_one"),
+                SupervisorStrategy::SimpleOneForOne => self.write("simple_one_for_one"),
+            }
+            self.write(",\n");
         }
-        self.write(";\n");
         if let Some(intensity) = &decl.intensity {
             self.write_indent();
             self.write("intensity: ");
             self.write(&intensity.restarts.to_string());
             self.write(" within ");
             self.write(&intensity.window);
-            self.write(";\n");
+            self.write(",\n");
         }
 
         if !decl.children.is_empty() {
@@ -1823,6 +1868,13 @@ impl<'a> Formatter<'a> {
         self.write(&spec.name);
         self.write(": ");
         self.write(&spec.actor_type);
+        if !spec.type_args.is_empty() {
+            self.write("<");
+            self.comma_sep(&spec.type_args, |formatter, ty| {
+                formatter.format_type_expr(&ty.0);
+            });
+            self.write(">");
+        }
         if !spec.args.is_empty() {
             self.write("(");
             self.comma_sep(&spec.args, |f, (field_name, arg)| {
@@ -1871,7 +1923,7 @@ impl<'a> Formatter<'a> {
                 self.write(" }");
             }
         }
-        self.write(";\n");
+        self.write(",\n");
     }
 
     fn format_fn(&mut self, decl: &FnDecl, span_end: usize) {
@@ -1880,20 +1932,17 @@ impl<'a> Formatter<'a> {
         self.write_indent();
         self.write_visibility(decl.visibility);
 
-        if decl.is_async {
-            self.write("async ");
-        }
         if decl.is_generator {
             self.write("gen ");
         }
         self.write("fn ");
         self.write(&decl.name);
-        // An inherent-impl `consuming self` receiver is materialised as the
-        // leading `self: Self` parameter; emit the `consuming self` spelling and
+        // An inherent-impl `consume self` receiver is materialised as the
+        // leading `self: Self` parameter; emit the `consume self` spelling and
         // skip that synthetic first parameter, mirroring the type-body formatter.
         if decl.consumes_self {
             self.format_opt_type_params(decl.type_params.as_ref());
-            self.write("(consuming self");
+            self.write("(consume self");
             let rest = decl.params.get(1..).unwrap_or(&[]);
             if !rest.is_empty() {
                 self.write(", ");
@@ -1921,6 +1970,23 @@ impl<'a> Formatter<'a> {
     // ------------------------------------------------------------------
     // Types
     // ------------------------------------------------------------------
+
+    /// One parameter list and optional reply, shared by `fn` and `actor` types.
+    fn format_callable_type(
+        &mut self,
+        head: &str,
+        params: &[Spanned<TypeExpr>],
+        return_type: &Spanned<TypeExpr>,
+    ) {
+        self.write(head);
+        self.write("(");
+        self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
+        self.write(")");
+        if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
+            self.write(" -> ");
+            self.format_type_expr(&return_type.0);
+        }
+    }
 
     fn format_type_expr(&mut self, ty: &TypeExpr) {
         match ty {
@@ -1950,6 +2016,11 @@ impl<'a> Formatter<'a> {
                 self.format_type_expr(&err.0);
                 self.write(">");
             }
+            TypeExpr::Fallible { success, error } => {
+                self.format_type_expr(&success.0);
+                self.write(" fails ");
+                self.format_type_expr(&error.0);
+            }
             TypeExpr::Option(inner) => {
                 self.write("Option<");
                 self.format_type_expr(&inner.0);
@@ -1973,17 +2044,14 @@ impl<'a> Formatter<'a> {
                 self.write("]");
             }
             TypeExpr::Function {
+                capabilities,
                 params,
                 return_type,
-            } => {
-                self.write("fn(");
-                self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
-                self.write(")");
-                if !matches!(return_type.0, TypeExpr::Tuple(ref elems) if elems.is_empty()) {
-                    self.write(" -> ");
-                    self.format_type_expr(&return_type.0);
-                }
-            }
+            } => self.format_callable_type(&format!("fn{capabilities}"), params, return_type),
+            TypeExpr::ActorFn {
+                params,
+                return_type,
+            } => self.format_callable_type("actor", params, return_type),
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
@@ -2291,7 +2359,6 @@ impl<'a> Formatter<'a> {
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_)
-            | Expr::This
             | Expr::Yield(None)
             | Expr::Return(None) => true,
             Expr::ContextVariant(context) => context.record.as_ref().is_none_or(|record| {
@@ -2304,9 +2371,12 @@ impl<'a> Formatter<'a> {
                         .as_ref()
                         .is_none_or(|expr| Self::can_format_expr_inline(&expr.0))
             }),
-            Expr::Tuple(exprs) | Expr::Array(exprs) => exprs
+            Expr::Tuple(exprs) => exprs
                 .iter()
                 .all(|(expr, _)| Self::can_format_expr_inline(expr)),
+            Expr::Array(elements) => elements
+                .iter()
+                .all(|element| Self::can_format_expr_inline(&element.expr().0)),
             Expr::MapLiteral { entries } => entries.iter().all(|(key, value)| {
                 Self::can_format_expr_inline(&key.0) && Self::can_format_expr_inline(&value.0)
             }),
@@ -2314,6 +2384,7 @@ impl<'a> Formatter<'a> {
                 Self::can_format_expr_inline(&value.0) && Self::can_format_expr_inline(&count.0)
             }
             Expr::Unary { operand, .. }
+            | Expr::ReturnError(operand)
             | Expr::Clone(operand)
             | Expr::PostfixTry(operand)
             | Expr::Await(operand)
@@ -2321,6 +2392,12 @@ impl<'a> Formatter<'a> {
             | Expr::Yield(Some(operand))
             | Expr::Return(Some(operand)) => Self::can_format_expr_inline(&operand.0),
             Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            }
             | Expr::Is {
                 lhs: left,
                 rhs: right,
@@ -2391,8 +2468,7 @@ impl<'a> Formatter<'a> {
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
-            | Expr::Timeout { .. }
+            | Expr::Race(_)
             | Expr::UnsafeBlock(_)
             | Expr::MachineEmit { .. }
             | Expr::GenBlock { .. } => false,
@@ -2582,21 +2658,18 @@ impl<'a> Formatter<'a> {
                 self.newline();
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
                 self.write_indent();
-                self.write("if let ");
-                self.format_pattern(&pattern.0);
-                self.write(" = ");
-                self.format_expr(&expr.0);
+                self.write("if ");
+                self.format_condition(conditions);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
                     self.write(" else ");
-                    self.format_block(else_block, self.source.len());
+                    self.format_expr(&else_block.0);
                 }
                 self.newline();
             }
@@ -2648,7 +2721,6 @@ impl<'a> Formatter<'a> {
             }
             Stmt::For {
                 label,
-                is_await,
                 pattern,
                 iterable,
                 body,
@@ -2660,9 +2732,6 @@ impl<'a> Formatter<'a> {
                     self.write(": ");
                 }
                 self.write("for ");
-                if *is_await {
-                    self.write("await ");
-                }
                 self.format_pattern(&pattern.0);
                 self.write(" in ");
                 self.format_expr(&iterable.0);
@@ -2689,8 +2758,7 @@ impl<'a> Formatter<'a> {
             }
             Stmt::WhileLet {
                 label,
-                pattern,
-                expr,
+                conditions,
                 body,
             } => {
                 self.write_indent();
@@ -2699,10 +2767,8 @@ impl<'a> Formatter<'a> {
                     self.write(label);
                     self.write(": ");
                 }
-                self.write("while let ");
-                self.format_pattern(&pattern.0);
-                self.write(" = ");
-                self.format_expr(&expr.0);
+                self.write("while ");
+                self.format_condition(conditions);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 self.newline();
@@ -2782,20 +2848,17 @@ impl<'a> Formatter<'a> {
                         }
                     }
                     Stmt::IfLet {
-                        pattern,
-                        expr,
+                        conditions,
                         body,
                         else_body,
                     } => {
-                        self.write("if let ");
-                        self.format_pattern(&pattern.0);
-                        self.write(" = ");
-                        self.format_expr(&expr.0);
+                        self.write("if ");
+                        self.format_condition(conditions);
                         self.write(" ");
                         self.format_block(body, self.source.len());
                         if let Some(else_block) = else_body {
                             self.write(" else ");
-                            self.format_block(else_block, self.source.len());
+                            self.format_expr(&else_block.0);
                         }
                     }
                     Stmt::Let { .. }
@@ -2866,6 +2929,9 @@ impl<'a> Formatter<'a> {
         matches!(
             expr,
             Expr::Binary { .. }
+                | Expr::Coalesce { .. }
+                | Expr::Handle { .. }
+                | Expr::ReturnError(_)
                 | Expr::Unary { .. }
                 | Expr::Clone(_)
                 | Expr::Range { .. }
@@ -2900,6 +2966,25 @@ impl<'a> Formatter<'a> {
     /// the struct body swallowing the block. Only a direct `StructInit` needs
     /// this — every other condition form (binary ops, calls, blocks, nested
     /// `if`/`match`) re-parses unchanged.
+    /// Print an `if` / `while` condition (§12.5) as written: `&&`-joined
+    /// operands, each either `let PATTERN = expr` or a boolean expression.
+    fn format_condition(&mut self, conditions: &[ConditionItem]) {
+        for (index, item) in conditions.iter().enumerate() {
+            if index > 0 {
+                self.write(" && ");
+            }
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    self.write("let ");
+                    self.format_pattern(&pattern.0);
+                    self.write(" = ");
+                    self.format_expr(&expr.0);
+                }
+                ConditionItem::Expr(expr) => self.format_cond_expr(&expr.0),
+            }
+        }
+    }
+
     fn format_cond_expr(&mut self, expr: &Expr) {
         if matches!(expr, Expr::StructInit { .. }) {
             self.write("(");
@@ -2933,7 +3018,17 @@ impl<'a> Formatter<'a> {
                 self.write(")");
             }
         } else {
+            let needs_parens = matches!(
+                expr,
+                Expr::Coalesce { .. } | Expr::Handle { .. } | Expr::ReturnError(_)
+            ) && parent_prec > 0;
+            if needs_parens {
+                self.write("(");
+            }
             self.format_expr(expr);
+            if needs_parens {
+                self.write(")");
+            }
         }
     }
 
@@ -2955,7 +3050,13 @@ impl<'a> Formatter<'a> {
                     UnaryOp::BitNot => self.write("~"),
                     UnaryOp::RawDeref => self.write("*"),
                 }
-                let needs_parens = matches!(operand.0, Expr::Binary { .. });
+                let needs_parens = matches!(
+                    operand.0,
+                    Expr::Binary { .. }
+                        | Expr::Coalesce { .. }
+                        | Expr::Handle { .. }
+                        | Expr::ReturnError(_)
+                );
                 if needs_parens {
                     self.write("(");
                 }
@@ -2970,20 +3071,7 @@ impl<'a> Formatter<'a> {
                 self.write(".");
                 self.write(&context.name);
                 if let Some(record) = &context.record {
-                    self.write(" { ");
-                    self.comma_sep(&record.fields, |f, (name, value)| {
-                        f.write(name);
-                        f.write(": ");
-                        f.format_expr(&value.0);
-                    });
-                    if let Some(base) = &record.base {
-                        if !record.fields.is_empty() {
-                            self.write(", ");
-                        }
-                        self.write("..");
-                        self.format_expr(&base.0);
-                    }
-                    self.write(" }");
+                    self.format_record_literal_body(&record.fields, record.base.as_deref());
                 }
             }
             Expr::GenericApplySuffix { target, type_args } => {
@@ -3008,20 +3096,7 @@ impl<'a> Formatter<'a> {
                 base,
             } => {
                 self.format_receiver(&target.0);
-                self.write(" { ");
-                self.comma_sep(fields, |f, (name, value)| {
-                    f.write(name);
-                    f.write(": ");
-                    f.format_expr(&value.0);
-                });
-                if let Some(base) = base {
-                    if !fields.is_empty() {
-                        self.write(", ");
-                    }
-                    self.write("..");
-                    self.format_expr(&base.0);
-                }
-                self.write(" }");
+                self.format_record_literal_body(fields, base.as_deref());
             }
             Expr::QualifiedAssoc(assoc) => {
                 self.write("<");
@@ -3043,9 +3118,14 @@ impl<'a> Formatter<'a> {
                 self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
                 self.write(")");
             }
-            Expr::Array(elems) => {
+            Expr::Array(elements) => {
                 self.write("[");
-                self.comma_sep(elems, |f, elem| f.format_expr(&elem.0));
+                self.comma_sep(elements, |f, element| {
+                    if element.is_spread() {
+                        f.write("..");
+                    }
+                    f.format_expr(&element.expr().0);
+                });
                 self.write("]");
             }
             Expr::ArrayRepeat { value, count } => {
@@ -3073,20 +3153,17 @@ impl<'a> Formatter<'a> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.write("if let ");
-                self.format_pattern(&pattern.0);
-                self.write(" = ");
-                self.format_expr(&expr.0);
+                self.write("if ");
+                self.format_condition(conditions);
                 self.write(" ");
                 self.format_block(body, self.source.len());
                 if let Some(else_block) = else_body {
                     self.write(" else ");
-                    self.format_block(else_block, self.source.len());
+                    self.format_expr(&else_block.0);
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -3125,6 +3202,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Lambda {
                 is_move,
+                private_captures,
                 type_params,
                 params,
                 return_type,
@@ -3132,6 +3210,14 @@ impl<'a> Formatter<'a> {
             } => {
                 if *is_move {
                     self.write("move ");
+                }
+                if !private_captures.is_empty() {
+                    self.write("capture(");
+                    self.comma_sep(private_captures, |f, (name, _)| {
+                        f.write("var ");
+                        f.write(name);
+                    });
+                    self.write(") ");
                 }
                 if type_params.is_some() {
                     self.format_opt_type_params(type_params.as_ref());
@@ -3213,12 +3299,8 @@ impl<'a> Formatter<'a> {
                 self.write("scope ");
                 self.format_block(body, self.source.len());
             }
-            Expr::ForkChild { binding, expr } => {
+            Expr::ForkChild { expr } => {
                 self.write("fork ");
-                if let Some(name) = binding {
-                    self.write(name);
-                    self.write(" = ");
-                }
                 self.format_expr(&expr.0);
             }
             Expr::ForkBlock { body } => {
@@ -3226,9 +3308,9 @@ impl<'a> Formatter<'a> {
                 self.format_block(body, self.source.len());
             }
             Expr::ScopeDeadline { duration, body } => {
-                self.write("after(");
+                self.write("scope within ");
                 self.format_expr(&duration.0);
-                self.write(") ");
+                self.write(" ");
                 self.format_block(body, self.source.len());
             }
             Expr::InterpolatedString(parts) => {
@@ -3305,20 +3387,7 @@ impl<'a> Formatter<'a> {
                     self.comma_sep(type_args, |f, ta| f.format_type_expr(&ta.0));
                     self.write(">");
                 }
-                self.write(" { ");
-                self.comma_sep(fields, |f, (fname, fval)| {
-                    f.write(fname);
-                    f.write(": ");
-                    f.format_expr(&fval.0);
-                });
-                if let Some(base_expr) = base {
-                    if !fields.is_empty() {
-                        self.write(", ");
-                    }
-                    self.write("..");
-                    self.format_expr(&base_expr.0);
-                }
-                self.write(" }");
+                self.format_record_literal_body(fields, base.as_deref());
             }
             Expr::Select { arms, timeout } => {
                 self.write("select {\n");
@@ -3333,8 +3402,8 @@ impl<'a> Formatter<'a> {
                 self.write_indent();
                 self.write("}");
             }
-            Expr::Join(exprs) => {
-                self.write("join {\n");
+            Expr::Race(exprs) => {
+                self.write("race {\n");
                 self.indent += 1;
                 for e in exprs {
                     self.write_indent();
@@ -3344,11 +3413,6 @@ impl<'a> Formatter<'a> {
                 self.indent -= 1;
                 self.write_indent();
                 self.write("}");
-            }
-            Expr::Timeout { expr, duration } => {
-                self.format_expr(&expr.0);
-                self.write(" | after ");
-                self.format_expr(&duration.0);
             }
             Expr::UnsafeBlock(block) => {
                 self.write("unsafe ");
@@ -3368,9 +3432,27 @@ impl<'a> Formatter<'a> {
                     self.format_expr(&val.0);
                 }
             }
-            Expr::This => self.write("this"),
+            Expr::ReturnError(value) => {
+                self.write("return error ");
+                self.format_expr(&value.0);
+            }
             Expr::FieldAccess { object, field } => {
-                self.format_receiver(&object.0);
+                // Consecutive numeric fields otherwise merge into a float
+                // token: `(outer.0).1` must not become `outer.0.1`.
+                let numeric_receiver = match &object.0 {
+                    Expr::FieldAccess { field, .. } => {
+                        field.starts_with(|c: char| c.is_ascii_digit())
+                    }
+                    Expr::Literal(Literal::Integer { .. }) => true,
+                    _ => false,
+                };
+                if numeric_receiver && field.starts_with(|c: char| c.is_ascii_digit()) {
+                    self.write("(");
+                    self.format_expr(&object.0);
+                    self.write(")");
+                } else {
+                    self.format_receiver(&object.0);
+                }
                 self.write(".");
                 self.write(field);
             }
@@ -3388,6 +3470,28 @@ impl<'a> Formatter<'a> {
             Expr::PostfixTry(expr) => {
                 self.format_receiver(&expr.0);
                 self.write("?");
+            }
+            Expr::Coalesce { left, right } => {
+                self.format_expr_prec(&left.0, 1, false);
+                self.write(" ?? ");
+                if matches!(right.0, Expr::Handle { .. }) {
+                    self.write("(");
+                    self.format_expr(&right.0);
+                    self.write(")");
+                } else {
+                    self.format_expr(&right.0);
+                }
+            }
+            Expr::Handle {
+                operand,
+                error,
+                body,
+            } => {
+                self.format_expr_prec(&operand.0, 1, false);
+                self.write(" handle ");
+                self.write(&error.0);
+                self.write(" ");
+                self.format_expr(&body.0);
             }
             Expr::Range {
                 start,
@@ -3408,7 +3512,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Await(inner) => {
                 self.write("await ");
-                self.format_expr(&inner.0);
+                self.format_expr_prec(&inner.0, 25, false);
             }
             Expr::AwaitRestart(inner) => {
                 self.write("await_restart ");
@@ -3519,20 +3623,27 @@ impl<'a> Formatter<'a> {
     fn format_literal(&mut self, lit: &Literal) {
         use std::fmt::Write;
         match lit {
-            Literal::Integer { value, radix } => match radix {
-                IntRadix::Hex => {
-                    let _ = write!(self.output, "0x{value:X}");
+            Literal::Integer { value, radix } => {
+                // Radix forms print the magnitude with an explicit sign: the
+                // `i128` carrier's two's-complement rendering ("{:X}" of -1) is
+                // 32 hex digits and would not round trip through the parser.
+                let sign = if *value < 0 { "-" } else { "" };
+                let magnitude = value.unsigned_abs();
+                match radix {
+                    IntRadix::Hex => {
+                        let _ = write!(self.output, "{sign}0x{magnitude:X}");
+                    }
+                    IntRadix::Octal => {
+                        let _ = write!(self.output, "{sign}0o{magnitude:o}");
+                    }
+                    IntRadix::Binary => {
+                        let _ = write!(self.output, "{sign}0b{magnitude:b}");
+                    }
+                    IntRadix::Decimal => {
+                        let _ = write!(self.output, "{value}");
+                    }
                 }
-                IntRadix::Octal => {
-                    let _ = write!(self.output, "0o{value:o}");
-                }
-                IntRadix::Binary => {
-                    let _ = write!(self.output, "0b{value:b}");
-                }
-                IntRadix::Decimal => {
-                    let _ = write!(self.output, "{value}");
-                }
-            },
+            }
             Literal::Float(f) => {
                 let s = f.to_string();
                 self.write(&s);
@@ -4256,7 +4367,7 @@ mod tests {
         // block was collected by the parser and then dropped on the floor.
         let src = "\
 enum Foo {
-    A;
+    A,
 }
 
 /// Doc comment for Foo Display.
@@ -4297,7 +4408,7 @@ fn main() -> i32 {
     fn actor_declaration() {
         let src = "\
 actor Counter {
-    let count: i32;
+    let count: i32,
 
     receive fn increment() {
         self.count = self.count + 1;
@@ -4316,9 +4427,9 @@ actor Counter {
     fn enum_declaration() {
         let src = "\
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 ";
         let formatted = roundtrip(src);
@@ -4415,7 +4526,7 @@ fn drain(consume var c: Conn) -> i32 {
         let src = "\
 trait Fluent {
     #[returns_receiver]
-    fn with(consuming self, consume child: Child) -> Self;
+    fn with(consume self, consume child: Child) -> Self;
 }
 ";
         let formatted = roundtrip(src);
@@ -4430,6 +4541,29 @@ trait Fluent {
             result.errors
         );
         format_source(src, &result.program)
+    }
+
+    #[test]
+    fn full_range_and_negative_literals_round_trip_in_every_radix() {
+        // The `i128` carrier renders negatives as their two's-complement form
+        // under `{:X}`, so radix output prints an explicit sign and magnitude.
+        // Each spelling must survive format-and-reparse unchanged.
+        for source in [
+            "fn main() {\n    let a: u64 = 18446744073709551615;\n}\n",
+            "fn main() {\n    let a: u64 = 0xFFFFFFFFFFFFFFFF;\n}\n",
+            "fn main() {\n    let a: u64 = 0o1777777777777777777777;\n}\n",
+            "fn main() {\n    let a: u8 = 0b11111111;\n}\n",
+            "fn main() {\n    let a: i64 = -9223372036854775808;\n}\n",
+            "fn main() {\n    match x {\n        -0x10 => 0,\n        _ => 1,\n    }\n}\n",
+        ] {
+            let once = roundtrip_source(source);
+            assert_eq!(once, source, "first format changed the source");
+            assert_eq!(
+                roundtrip_source(&once),
+                once,
+                "format is not idempotent for {source:?}"
+            );
+        }
     }
 
     #[test]
@@ -4509,8 +4643,7 @@ fn main() -> i32 {
 
     #[test]
     fn async_gen_fn_roundtrip() {
-        // `async gen fn` is the only accepted async modifier; it round-trips cleanly.
-        let src = "async gen fn stream() -> i32 {\n    yield 1;\n}\n";
+        let src = "gen fn stream() -> i32 {\n    yield 1;\n}\n";
         assert_eq!(roundtrip(src), src);
     }
 
@@ -4538,6 +4671,18 @@ fn main() {
     }
 
     #[test]
+    fn optional_recovery_preserves_grouping_under_unary_and_binary_operators() {
+        for source in [
+            "fn main() {\n    let value = (a ?? b) ?? c;\n}\n",
+            "fn main() {\n    let value = a ?? b ?? c;\n}\n",
+            "fn main() {\n    let value = -(a ?? b);\n}\n",
+            "fn main() {\n    let value = (a ?? b) + c;\n}\n",
+        ] {
+            assert_eq!(roundtrip(source), source);
+        }
+    }
+
+    #[test]
     fn operator_same_precedence_right_assoc() {
         // a - (b - c) must keep parens (same precedence, right operand)
         let src = "fn main() {\n    let x = a - (b - c);\n}\n";
@@ -4545,12 +4690,12 @@ fn main() {
     }
 
     #[test]
-    fn enum_all_variants_semicolon() {
+    fn enum_all_variants_comma() {
         let src = "\
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -4561,9 +4706,9 @@ enum Colour {
         let src = "\
 #[wire]
 enum Status {
-    Pending;
-    Active;
-    Completed;
+    Pending,
+    Active,
+    Completed,
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -4575,9 +4720,9 @@ enum Status {
 #[json(camelCase)]
 #[wire]
 enum Status {
-    PendingReview;
-    ActiveNow;
-    Completed;
+    PendingReview,
+    ActiveNow,
+    Completed,
 }
 ";
         assert_eq!(roundtrip(src), src);
@@ -4619,10 +4764,10 @@ type Msg {
         let src = "\
 pub enum IoError {
     // The target path does not exist.
-    NotFound(int);
+    NotFound(int),
     // The process lacks permission for the operation.
-    PermissionDenied(int);
-    Other(int); // catch-all
+    PermissionDenied(int),
+    Other(int), // catch-all
 }
 ";
         assert_eq!(roundtrip_source(src), src);
@@ -4633,8 +4778,8 @@ pub enum IoError {
         let src = "\
 type Config {
     // The server port to bind on.
-    port: int;
-    host: string; // hostname or IP
+    port: int,
+    host: string, // hostname or IP
 }
 ";
         assert_eq!(roundtrip_source(src), src);
@@ -4723,15 +4868,15 @@ fn empty_fn() {}
 // module-level comment
 enum Status {
     // ok variant
-    Ok;
+    Ok,
     // error variant
-    Err(int); // with payload
+    Err(int), // with payload
 }
 
 type Cfg {
     // host to connect to
-    host: string;
-    port: int; // default 8080
+    host: string,
+    port: int, // default 8080
 }
 
 fn handle(s: Status) -> int {
@@ -4896,8 +5041,6 @@ extern \"C\" {
 
     #[test]
     fn scope_block_roundtrips() {
-        // `scope { .. }` is a statement, so the formatted form is a
-        // statement-expression, not a `let` initialiser (HEW-SPEC-2026 §4.2).
         let src = "\
 fn main() {
     scope {
@@ -4912,7 +5055,7 @@ fn main() {
     fn fork_child_forms_roundtrip() {
         let src = "\
 fn main() {
-    fork child = run();
+    let child = fork run();
     fork run_other();
 }
 ";
@@ -4924,7 +5067,7 @@ fn main() {
         let src = "\
 fn main() {
     scope {
-        fork worker = run();
+        let worker = fork run();
         fork audit();
         worker
     };
@@ -4940,7 +5083,7 @@ fn main() {
         // The formatter must emit `Name<T> { ... }` when type_args is Some.
         let src = "\
 type Wrapper<T> {
-    value: T;
+    value: T,
 }
 
 fn main() {
@@ -4955,7 +5098,7 @@ fn main() {
         // The formatter must emit `Name { ... }` (no `<>`) when type_args is None.
         let src = "\
 type Wrapper<T> {
-    value: T;
+    value: T,
 }
 
 fn main() {
@@ -5463,6 +5606,24 @@ impl<T> Vec<T> {
         assert_eq!(roundtrip(src), src);
     }
 
+    #[test]
+    fn generic_supervisor_and_child_arguments_roundtrip() {
+        let source = "supervisor Group<T: Send>(seed: Vec<T>) { child worker: module.Worker<Vec<T>>(value: seed), }";
+        let formatted = roundtrip(source);
+        let parsed = parse(&formatted);
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let Item::Supervisor(supervisor) = &parsed.program.items[0].0 else {
+            panic!("supervisor lost by formatting")
+        };
+        assert_eq!(supervisor.type_params[0].name, "T");
+        assert_eq!(supervisor.type_params[0].bounds[0].name, "Send");
+        assert_eq!(supervisor.children[0].actor_type, "module.Worker");
+        assert!(
+            matches!(&supervisor.children[0].type_args[0].0, TypeExpr::Named { name, type_args: Some(args) } if name == "Vec" && args.len() == 1)
+        );
+        assert_eq!(roundtrip(&formatted), formatted);
+    }
+
     // ── supervisor config-param round-trip ───────────────────────────────────
 
     /// A supervisor with a config param must preserve the param and all
@@ -5474,8 +5635,8 @@ impl<T> Vec<T> {
 type AppConfig { size: i64, label: string }
 
 actor Cache {
-    var capacity: i64;
-    var name: string;
+    var capacity: i64,
+    var name: string,
     receive fn get_cap(_n: i64) -> i64 {
         capacity;
         name.len()
@@ -5483,10 +5644,10 @@ actor Cache {
 }
 
 supervisor App(config: AppConfig) {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child cache: Cache(capacity: config.size, name: config.label);
+    child cache: Cache(capacity: config.size, name: config.label),
 }
 
 fn main() -> i64 {
@@ -5524,7 +5685,7 @@ fn main() -> i64 {
     fn supervisor_without_config_param_no_parens() {
         let src = "\
 supervisor Simple {
-    strategy: one_for_one;
+    strategy: one_for_one,
 }
 ";
         let formatted = roundtrip(src);
@@ -5539,29 +5700,36 @@ supervisor Simple {
         let src = "\
 machine Socket {
     events {
-        Connect { fd: i64; }
+        Connect { fd: i64, }
     }
 
-    state Idle;
-    state Active { h: Handle; }
+    state Idle,
+    state Active { h: Handle, },
 
-    on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }
+    on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }
     on Connect(fd): Active => Active { h: Handle { fd: fd } }
-    on Connect(fd): Active => Idle;
+    on Connect(fd): Active => Active reenter { h: Handle { fd: fd }, ..state }
+    on Connect(fd): Active => Idle,
 }
 ";
         let formatted = roundtrip(src);
         assert!(
             formatted
-                .contains("on Connect(fd): Idle => Active { Active { h: Handle { fd: fd } } }"),
-            "explicit transition block must retain its outer braces; got:\n{formatted}"
+                .contains("on Connect(fd): Idle => _ { Socket.Active { h: Handle { fd: fd } } }"),
+            "computed-target block must retain its outer braces; got:\n{formatted}"
         );
         assert!(
             formatted.contains("on Connect(fd): Active => Active { h: Handle { fd: fd } }"),
             "payload shorthand must remain shorthand; got:\n{formatted}"
         );
         assert!(
-            formatted.contains("on Connect(fd): Active => Idle;"),
+            formatted.contains(
+                "on Connect(fd): Active => Active reenter { ..state, h: Handle { fd: fd } }"
+            ),
+            "a transition field list writes its spread base first; got:\n{formatted}"
+        );
+        assert!(
+            formatted.contains("on Connect(fd): Active => Idle,"),
             "implicit transition must remain implicit; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);
@@ -5571,7 +5739,7 @@ machine Socket {
     fn impl_block_doc_comment_is_preserved() {
         let src = "\
 enum Foo {
-    A;
+    A,
 }
 
 /// Doc comment for Foo Display.

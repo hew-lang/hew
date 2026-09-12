@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_iter_map_fold"
+intent = "The fixture runs to completion and exits 12."
+source = "../vertical-slice/accept/vec_iter_map_fold.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 12

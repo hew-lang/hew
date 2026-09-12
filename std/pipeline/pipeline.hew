@@ -6,23 +6,23 @@
 
 /// Owning payload carried across the source, stage, and sink mailboxes.
 pub type PipelineItemI64 {
-    value: i64;
-    label: string;
-    crash_stage: bool;
+    value: i64,
+    label: string,
+    crash_stage: bool,
 }
 
 /// Concrete S1 builder. The permit count controls sink processing so callers
 /// can deterministically prove capacity-one admission.
 pub type PipelineI64TwoStage {
-    sink_permits: i64;
+    sink_permits: i64,
 }
 
 pub actor AdmissionControlI64 {
-    var permits: i64;
-    var stage_attempts: i64;
-    var stage_post_sends: i64;
+    var permits: i64,
+    var stage_attempts: i64,
+    var stage_post_sends: i64,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn take_permit() -> bool {
         if permits > 0 {
@@ -57,21 +57,21 @@ pub actor AdmissionControlI64 {
 }
 
 pub actor SinkI64 {
-    var count: i64;
-    var sum: i64;
-    var first: i64;
-    var second: i64;
-    var third: i64;
-    var last_value: i64;
-    var last_label: string;
-    let control: LocalPid<AdmissionControlI64>;
+    var count: i64,
+    var sum: i64,
+    var first: i64,
+    var second: i64,
+    var third: i64,
+    var last_value: i64,
+    var last_label: string,
+    let control: AdmissionControlI64,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn push(item: PipelineItemI64) {
         var admitted = false;
         while !admitted {
-            match await control.take_permit() {
+            match control.take_permit() {
                 .Ok(open) => {
                     admitted = open;
                 },
@@ -124,13 +124,13 @@ pub actor SinkI64 {
 }
 
 pub actor StageI64 {
-    let next: LocalPid<SinkI64>;
-    let control: LocalPid<AdmissionControlI64>;
+    let next: SinkI64,
+    let control: AdmissionControlI64,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn push(item: PipelineItemI64) -> bool {
-        match await control.mark_stage_attempt() {
+        match control.mark_stage_attempt() {
             .Ok(_) => {},
             .Err(_) => {
                 return false;
@@ -140,8 +140,8 @@ pub actor StageI64 {
             panic("pipeline S1 stage crash");
         }
         let transformed = PipelineItemI64 { value: item.value * 2, label: item.label + ":stage", crash_stage: false };
-        next.push(transformed);
-        match await control.mark_stage_post_send() {
+        let _ = next.push(transformed);
+        match control.mark_stage_post_send() {
             .Ok(_) => true,
             .Err(_) => false,
         }
@@ -149,78 +149,78 @@ pub actor StageI64 {
 }
 
 pub actor SourceI64 {
-    let next: LocalPid<StageI64>;
-    let sink: LocalPid<SinkI64>;
-    let control: LocalPid<AdmissionControlI64>;
+    let next: StageI64,
+    let sink: SinkI64,
+    let control: AdmissionControlI64,
 
-    mailbox 1;
+    mailbox 1,
 
     receive fn push(item: PipelineItemI64) -> bool {
-        match await next.push(item) {
+        match next.push(item) {
             .Ok(accepted) => accepted,
             .Err(_) => false,
         }
     }
 
     receive fn count() -> i64 {
-        match await sink.count() {
+        match sink.count() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn sum() -> i64 {
-        match await sink.sum() {
+        match sink.sum() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn last_value() -> i64 {
-        match await sink.last_value() {
+        match sink.last_value() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn item(index: i64) -> i64 {
-        match await sink.item(index) {
+        match sink.item(index) {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn last_label() -> string {
-        match await sink.last_label() {
+        match sink.last_label() {
             .Ok(value) => value,
             .Err(_) => "",
         }
     }
 
     receive fn release_sink() {
-        control.release();
+        let _ = control.release();
     }
 
-    receive fn control_handle() -> LocalPid<AdmissionControlI64> {
+    receive fn control_handle() -> AdmissionControlI64 {
         control
     }
 
     receive fn stage_attempts() -> i64 {
-        match await control.attempts() {
+        match control.attempts() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn stage_post_sends() -> i64 {
-        match await control.post_sends() {
+        match control.post_sends() {
             .Ok(value) => value,
             .Err(_) => -1,
         }
     }
 
     receive fn shutdown(expected_count: i64) -> bool {
-        match await sink.count() {
+        match sink.count() {
             .Ok(value) => value == expected_count,
             .Err(_) => false,
         }
@@ -233,7 +233,7 @@ pub fn from(sink_permits: i64) -> PipelineI64TwoStage {
 }
 
 /// Spawn and wire the source, fixed transform stage, sink, and control actor.
-pub fn run(pipeline: PipelineI64TwoStage) -> LocalPid<SourceI64> {
+pub fn run(pipeline: PipelineI64TwoStage) -> SourceI64 {
     let control = spawn AdmissionControlI64(permits: pipeline.sink_permits, stage_attempts: 0, stage_post_sends: 0);
     let sink = spawn SinkI64(count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control);
     let stage = spawn StageI64(next: sink, control: control);

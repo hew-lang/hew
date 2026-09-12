@@ -1,0 +1,45 @@
+actor Source {
+    var base: i64 = 10,
+    var label: string = "item",
+    receive gen fn items(count: i64) -> string {
+        for index in 0..count {
+            base = base + 1;
+            yield label + ":" + label;
+        }
+    }
+    receive fn base() -> i64 { base }
+}
+
+actor Consumer {
+    var drained: i64 = 0,
+    receive fn drain(source: Source, count: i64, limit: i64) -> i64 {
+        var seen = 0;
+        for item in source.items(count) {
+            println(item);
+            seen = seen + 1;
+            if seen >= limit { break; }
+        }
+        drained = drained + seen;
+        drained
+    }
+}
+
+fn main() {
+    let source = spawn Source();
+    let consumer = spawn Consumer();
+    match consumer.drain(source, 3, 100) {
+        .Ok(drained) => println(drained),
+        .Err(_) => panic("drain failed"),
+    }
+    match consumer.drain(source, 100, 2) {
+        .Ok(drained) => println(drained),
+        .Err(_) => panic("drain failed"),
+    }
+    match source.base() {
+        .Ok(base) => println(base),
+        .Err(_) => panic("base failed"),
+    }
+    close(source);
+    close(consumer);
+    println("closed");
+}

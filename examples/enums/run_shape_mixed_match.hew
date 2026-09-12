@@ -1,5 +1,5 @@
 // Exercises a single match expression dispatching over a mixed-shape enum
-// with unit, tuple-payload, and struct-payload variants in a single
+// with unit, tuple-payload, and record-payload variants in a single
 // declaration.
 //
 // This fixture verifies:
@@ -8,9 +8,9 @@
 //   2. A single `match` arm-chain dispatches correctly to each shape,
 //      destructures payload as needed, and yields distinct values.
 enum Shape {
-    Point;
-    Line(i64);
-    Box { w: i64, h: i64 };
+    Point,
+    Line(i64),
+    Box { w: i64, h: i64 },
 }
 
 fn measure(s: Shape) -> i64 {

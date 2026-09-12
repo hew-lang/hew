@@ -22,9 +22,9 @@ use support::{describe_output, require_codegen};
 
 fn ignored_string_source(frames: usize) -> String {
     format!(
-        "actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
-         \x20   receive fn take(label: string) {{ seen = seen + 1; }}\n\
+        "actor ProbeSink {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   receive fn take(label: string) {{ seen = seen + 1 }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -41,11 +41,11 @@ fn ignored_string_source(frames: usize) -> String {
 
 fn ignored_recursive_record_source(frames: usize) -> String {
     format!(
-        "type Inner {{ label: string; values: Vec<i64> }}\n\
+        "type Inner {{ label: string, values: Vec<i64> }}\n\
          type Envelope {{ payload: Inner }}\n\
-         actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
-         \x20   receive fn take(message: Envelope) {{ seen = seen + 1; }}\n\
+         actor ProbeSink {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   receive fn take(message: Envelope) {{ seen = seen + 1 }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -63,9 +63,9 @@ fn ignored_recursive_record_source(frames: usize) -> String {
 
 fn ignored_container_source(frames: usize) -> String {
     format!(
-        "actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
-         \x20   receive fn take(values: Vec<string>) {{ seen = seen + 1; }}\n\
+        "actor ProbeSink {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   receive fn take(values: Vec<string>) {{ seen = seen + 1 }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -83,10 +83,10 @@ fn ignored_container_source(frames: usize) -> String {
 
 fn branch_and_early_exit_source(frames: usize) -> String {
     format!(
-        "actor ProbeSink {{\n\
-         \x20   var seen: i64;\n\
+        "actor ProbeSink {{ \n\
+         \x20   var seen: i64,\n\
          \x20   receive fn take(label: string, early: bool) {{\n\
-         \x20       if early {{ seen = seen + 1; return; }}\n\
+         \x20       if early {{ seen = seen + 1, return }}\n\
          \x20       seen = seen + 1;\n\
          \x20   }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
@@ -105,11 +105,11 @@ fn branch_and_early_exit_source(frames: usize) -> String {
 
 fn state_or_drop_source(frames: usize) -> String {
     format!(
-        "actor Keeper {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var last: string;\n\
+        "actor Keeper {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var last: string,\n\
          \x20   receive fn take(label: string, keep: bool) {{\n\
-         \x20       if keep {{ last = label; }} else {{ seen = seen + label.len(); }}\n\
+         \x20       if keep {{ last = label }} else {{ seen = seen + label.len(); }}\n\
          \x20   }}\n\
          \x20   receive fn total() -> i64 {{ seen + last.len() }}\n\
          }}\n\
@@ -130,8 +130,8 @@ fn conditional_local_record_handoff_source(frames: usize) -> String {
     format!(
         "type Wrap {{ name: string }}\n\
          actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Wrap;\n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Wrap,\n\
          \x20   receive fn route(label: string, store: bool) {{\n\
          \x20       let next = Wrap {{ name: label }};\n\
          \x20       if store {{ held = next; }}\n\
@@ -154,11 +154,11 @@ fn conditional_local_record_handoff_source(frames: usize) -> String {
 fn loop_carried_record_ingress_source(frames: usize) -> String {
     format!(
         "type Wrap {{ name: string }}\n\
-         actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Wrap;\n\
+         actor Fan {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Wrap,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0;\n\
+         \x20       var j: i64 = 0, \n\
          \x20       while j < count {{\n\
          \x20           let next = Wrap {{ name: label }};\n\
          \x20           if j > 0 {{ seen = seen + 1; }}\n\
@@ -185,11 +185,11 @@ fn nested_loop_carried_record_ingress_source(frames: usize) -> String {
     format!(
         "type Inner {{ name: string }}\n\
          type Outer {{ inner: Inner }}\n\
-         actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Outer;\n\
+         actor Fan {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Outer,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0;\n\
+         \x20       var j: i64 = 0, \n\
          \x20       while j < count {{\n\
          \x20           held = Outer {{ inner: Inner {{ name: label }} }};\n\
          \x20           j = j + 1;\n\
@@ -213,11 +213,11 @@ fn nested_loop_carried_record_ingress_source(frames: usize) -> String {
 fn branch_selected_record_ingress_source(frames: usize) -> String {
     format!(
         "type Wrap {{ name: string }}\n\
-         actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Wrap;\n\
+         actor Fan {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Wrap,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0;\n\
+         \x20       var j: i64 = 0, \n\
          \x20       while j < count {{\n\
          \x20           let next = if j > 0 {{\n\
          \x20               Wrap {{ name: label }}\n\
@@ -247,11 +247,11 @@ fn branch_selected_nested_record_ingress_source(frames: usize) -> String {
     format!(
         "type Inner {{ name: string }}\n\
          type Outer {{ inner: Inner }}\n\
-         actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Outer;\n\
+         actor Fan {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Outer,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0;\n\
+         \x20       var j: i64 = 0, \n\
          \x20       while j < count {{\n\
          \x20           let inner = if j > 0 {{\n\
          \x20               Inner {{ name: label }}\n\
@@ -281,12 +281,12 @@ fn branch_selected_nested_record_ingress_source(frames: usize) -> String {
 fn cross_field_swapped_record_ingress_source(frames: usize) -> String {
     format!(
         "type Inner {{ name: string }}\n\
-         type Pair {{ left: Inner; right: Inner }}\n\
-         actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Pair;\n\
+         type Pair {{ left: Inner, right: Inner }}\n\
+         actor Fan {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Pair,\n\
          \x20   receive fn route(label: string, other: string, count: i64) {{\n\
-         \x20       var j: i64 = 0;\n\
+         \x20       var j: i64 = 0, \n\
          \x20       while j < count {{\n\
          \x20           let named = Inner {{ name: label }};\n\
          \x20           let alternate = Inner {{ name: other }};\n\
@@ -322,12 +322,12 @@ fn cross_field_swapped_record_ingress_source(frames: usize) -> String {
 fn shifted_repeated_record_ingress_source(frames: usize) -> String {
     format!(
         "type Inner {{ name: string }}\n\
-         type Triple {{ a: Inner; b: Inner; c: Inner }}\n\
-         actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var held: Triple;\n\
+         type Triple {{ a: Inner, b: Inner, c: Inner }}\n\
+         actor Fan {{ \n\
+         \x20   var seen: i64,\n\
+         \x20   var held: Triple,\n\
          \x20   receive fn route(label: string, other: string, count: i64) {{\n\
-         \x20       var j: i64 = 0;\n\
+         \x20       var j: i64 = 0, \n\
          \x20       while j < count {{\n\
          \x20           let next = if j % 2 == 0 {{\n\
          \x20               Triple {{\n\
@@ -374,9 +374,9 @@ fn branch_to_two_state_fields_source(frames: usize) -> String {
     format!(
         "type Wrap {{ name: string }}\n\
          actor Fan {{\n\
-         \x20   var seen: i64;\n\
-         \x20   var one: Wrap;\n\
-         \x20   var two: Wrap;\n\
+         \x20   var seen: i64,\n\
+         \x20   var one: Wrap,\n\
+         \x20   var two: Wrap,\n\
          \x20   receive fn route(label: string, choose_one: bool) {{\n\
          \x20       let next = Wrap {{ name: label }};\n\
          \x20       if choose_one {{ one = next; }} else {{ two = next; }}\n\
@@ -402,14 +402,14 @@ fn branch_to_two_state_fields_source(frames: usize) -> String {
 
 const FORWARDED_POISON_SOURCE: &str = "\
 actor Consumer {\n\
-\x20   var seen: i64;\n\
-\x20   var last: string;\n\
+\x20   var seen: i64,\n\
+\x20   var last: string,\n\
 \x20   receive fn take(value: string) -> i64 { last = value; seen = seen + 1; seen }\n\
 \x20   receive fn total() -> i64 { if last.contains(\"FORWARD\") { seen } else { -1 } }\n\
 }\n\
 actor Relay {\n\
-\x20   let consumer: LocalPid<Consumer>;\n\
-\x20   var seen: i64;\n\
+\x20   let consumer: Consumer,\n\
+\x20   var seen: i64,\n\
 \x20   receive fn forward(value: string) -> i64 {\n\
 \x20       let delivered = match await consumer.take(value) { .Ok(n) => n, Err(_) => -1 };\n\
 \x20       seen = seen + 1;\n\
@@ -434,9 +434,9 @@ fn main() -> i64 {\n\
 const CONDITIONAL_RECORD_INGRESS_POISON_SOURCE: &str = "\
 type Wrap { name: string }\n\
 actor Fan {\n\
-\x20   var seen: i64;\n\
-\x20   var held: Wrap;\n\
-\x20   var last: string;\n\
+\x20   var seen: i64,\n\
+\x20   var held: Wrap,\n\
+\x20   var last: string,\n\
 \x20   receive fn route(label: string, mode: i64) {\n\
 \x20       if mode == 0 { held = Wrap { name: label }; }\n\
 \x20       else { last = label; }\n\
@@ -458,8 +458,8 @@ const BRANCH_LOCAL_FRESH_NESTED_POISON_SOURCE: &str = "\
 type Inner { name: string }\n\
 type Outer { inner: Inner }\n\
 actor Fan {\n\
-\x20   var seen: i64;\n\
-\x20   var held: Outer;\n\
+\x20   var seen: i64,\n\
+\x20   var held: Outer,\n\
 \x20   receive fn route(flag: bool, other: bool) {\n\
 \x20       let selected = if flag {\n\
 \x20           let fresh = \"hot\".to_upper();\n\
@@ -486,8 +486,8 @@ fn main() -> i64 {\n\
 const CONDITIONAL_LOCAL_RECORD_HANDOFF_POISON_SOURCE: &str = "\
 type Wrap { name: string }\n\
 actor Fan {\n\
-\x20   var seen: i64;\n\
-\x20   var held: Wrap;\n\
+\x20   var seen: i64,\n\
+\x20   var held: Wrap,\n\
 \x20   receive fn route(label: string, store: bool) {\n\
 \x20       let next = Wrap { name: label };\n\
 \x20       if store { held = next; }\n\
@@ -514,7 +514,7 @@ const DIRECT_STRING_RESOURCE_TRANSFER_POISON_SOURCE: &str = "\
 #[resource]\n\
 type Token { text: string }\n\
 impl Token {\n\
-\x20   fn close(self) {\n\
+\x20   fn close(consume self) {\n\
 \x20       let _ = self.text.len();\n\
 \x20   }\n\
 }\n\

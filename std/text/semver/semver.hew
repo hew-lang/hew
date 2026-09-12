@@ -9,7 +9,10 @@
 //! import std.text.semver;
 //!
 //! fn main() {
-//!     let v = semver.parse("1.2.3-beta.1");
+//!     let v = match semver.parse("1.2.3-beta.1") {
+//!         .Ok(version) => version,
+//!         .Err(reason) => panic(reason),
+//!     };
 //!     println(v.major());
 //!     if v.matches(">=1.0.0") {
 //!         println("compatible");
@@ -21,11 +24,11 @@ import std.string;
 
 /// A parsed semantic version.
 type Version {
-    pre_release: string;
-    build_meta: string;
-    maj: string;
-    min: string;
-    pat: string;
+    pre_release: string,
+    build_meta: string,
+    maj: string,
+    min: string,
+    pat: string,
 }
 
 /// Methods available on a parsed `Version`.
@@ -51,7 +54,7 @@ trait VersionMethods {
     /// Return the version as a string.
     fn to_string(self) -> string;
 
-    /// No-op for compatibility (struct versions don't need manual freeing).
+    /// No-op for compatibility (record versions don't need manual freeing).
     fn free(self);
 }
 
@@ -89,9 +92,9 @@ impl VersionMethods for Version {
         let result = version_to_string(ver);
         result
     }
-    /// No-op for compatibility (struct versions don't need manual freeing).
+    /// No-op for compatibility (record versions don't need manual freeing).
     fn free(ver: Version) {
-        // No-op: struct versions are value types, no manual freeing needed.
+        // No-op: record versions are value types, no manual freeing needed.
     }
 }
 
@@ -101,8 +104,8 @@ impl VersionMethods for Version {
 // sentinel. `to_string`, `compare`, and `matches` never narrow.
 fn component_as_i64(name: string, digits: string) -> i64 {
     match string.to_int(digits) {
-        .Some(value) => value,
-        .None => {
+        .Ok(value) => value,
+        .Err(_) => {
             panic(f"semver.Version.{name}: component does not fit in i64");
             0
         },
@@ -484,7 +487,10 @@ fn matches_single(v: Version, constraint: string) -> bool {
         op = "=";
         ver_str = c.slice(1, clen).trim();
     }
-    let req_ver = parse(ver_str);
+    let req_ver = match parse(ver_str) {
+        .Ok(version) => version,
+        .Err(_) => return false,
+    };
     let cmp = compare_versions(v, req_ver);
     var matches = cmp == 0;
     if op == ">=" {

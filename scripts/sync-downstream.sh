@@ -13,11 +13,8 @@
 # Environment variables (override sibling repo locations):
 #   HEW_SYNC_PARENT       Parent dir of sibling repos (default: parent of REPO_ROOT)
 #   HEW_SYNC_VSCODE_HEW   Path to vscode-hew repo
-#   HEW_SYNC_HEW_SH       Path to hew.sh repo
-#   HEW_SYNC_HEW_RUN      Path to hew.run repo
 #   HEW_SYNC_TREE_SITTER   Path to tree-sitter-hew repo
 #   HEW_SYNC_VIM_HEW      Path to vim-hew repo
-#   HEW_SYNC_HEW_STUDIO   Path to hew-studio repo
 
 set -euo pipefail
 
@@ -30,11 +27,8 @@ DIST_DIR="$REPO_ROOT/dist"
 # Downstream repos (sibling directories by convention, overridable)
 DOWNSTREAM_PARENT="${HEW_SYNC_PARENT:-$(dirname "$REPO_ROOT")}"
 VSCODE_HEW="${HEW_SYNC_VSCODE_HEW:-$DOWNSTREAM_PARENT/vscode-hew}"
-HEW_SH="${HEW_SYNC_HEW_SH:-$DOWNSTREAM_PARENT/hew.sh}"
-HEW_RUN="${HEW_SYNC_HEW_RUN:-$DOWNSTREAM_PARENT/hew.run}"
 TREE_SITTER="${HEW_SYNC_TREE_SITTER:-$DOWNSTREAM_PARENT/tree-sitter-hew}"
 VIM_HEW="${HEW_SYNC_VIM_HEW:-$DOWNSTREAM_PARENT/vim-hew}"
-HEW_STUDIO="${HEW_SYNC_HEW_STUDIO:-$DOWNSTREAM_PARENT/hew-studio}"
 
 # Parse flags
 COMMIT=false
@@ -58,11 +52,8 @@ for arg in "$@"; do
         echo "Environment variables:"
         echo "  HEW_SYNC_PARENT       Parent dir of sibling repos"
         echo "  HEW_SYNC_VSCODE_HEW   Path to vscode-hew repo"
-        echo "  HEW_SYNC_HEW_SH       Path to hew.sh repo"
-        echo "  HEW_SYNC_HEW_RUN      Path to hew.run repo"
         echo "  HEW_SYNC_TREE_SITTER   Path to tree-sitter-hew repo"
         echo "  HEW_SYNC_VIM_HEW      Path to vim-hew repo"
-        echo "  HEW_SYNC_HEW_STUDIO   Path to hew-studio repo"
         exit 0
         ;;
     esac
@@ -110,6 +101,14 @@ copy_repo_snapshot() {
     else
         tar -C "$src" --exclude=.git -cf - . | tar -C "$dest" -xf -
     fi
+}
+
+# True when a path has no pending changes in the current repo (cwd) and no
+# untracked file sits there either — `git diff --quiet <path>` alone reports
+# "no diff" for an untracked path too, which would read a freshly copied
+# artefact as already up to date instead of a change needing a commit.
+file_unchanged() {
+    [ -z "$(git status --porcelain -- "$1" 2>/dev/null)" ]
 }
 
 # Commit helper — commits staged files in the given repo directory
@@ -243,7 +242,7 @@ if [ -d "$VSCODE_HEW" ]; then
         else
             cp "$DIST_DIR/hew.tmLanguage.json" "$VSCODE_HEW/syntaxes/hew.tmLanguage.json"
             cd "$VSCODE_HEW"
-            if git diff --quiet syntaxes/hew.tmLanguage.json 2>/dev/null; then
+            if file_unchanged syntaxes/hew.tmLanguage.json; then
                 ok "Already up to date"
             else
                 ok "Updated syntaxes/hew.tmLanguage.json"
@@ -263,77 +262,12 @@ else
     SKIPPED=$((SKIPPED + 1))
 fi
 
-# 3b. hew.run / hew.sh / hew-studio — sync hew-wasm/pkg artefacts.
-#
-# These web playgrounds drive syntax highlighting from the compiler frontend's
-# semantic tokens (hew-wasm `semantic_tokens`), so they no longer consume the
-# TextMate grammar — only vscode-hew (3a above) still uses dist/hew.tmLanguage.json.
-WASM_PKG="$REPO_ROOT/hew-wasm/pkg"
+# hew.run and hew.sh depend on the published @hew-lang/wasm npm package
+# now (see their package.json); hew-studio has no hew-wasm dependency at
+# all. None of the three take a local hew-wasm/pkg copy, so only
+# vscode-hew (3a above) still consumes dist/hew.tmLanguage.json.
 
-# sync_wasm_repo <repo_dir> <label> <bin_dir>
-# Copies hew_wasm_bg.wasm → <bin_dir>/ and hew_wasm.js/.d.ts → src/lib/wasm/.
-sync_wasm_repo() {
-    local repo_dir="$1" label="$2" bin_dir="$3"
-    next_step "$label (wasm artefacts)..."
-    if [ ! -d "$repo_dir" ]; then
-        warn "Not found at $repo_dir (skipped)"
-        SKIPPED=$((SKIPPED + 1))
-        return
-    fi
-    if [ ! -f "$WASM_PKG/hew_wasm_bg.wasm" ]; then
-        warn "hew-wasm/pkg/hew_wasm_bg.wasm not found — run: make wasm"
-        SKIPPED=$((SKIPPED + 1))
-        return
-    fi
-    local dest_bin="$bin_dir/hew_wasm_bg.wasm"
-    local dest_js="src/lib/wasm/hew_wasm.js"
-    local dest_dts="src/lib/wasm/hew_wasm.d.ts"
-    mkdir -p "$repo_dir/$bin_dir" "$repo_dir/src/lib/wasm"
-
-    if $CHECK_ONLY; then
-        local wasm_drifts=0
-        for pair in "$WASM_PKG/hew_wasm_bg.wasm:$dest_bin" \
-            "$WASM_PKG/hew_wasm.js:$dest_js" \
-            "$WASM_PKG/hew_wasm.d.ts:$dest_dts"; do
-            if ! cmp -s "${pair%%:*}" "$repo_dir/${pair##*:}" 2>/dev/null; then
-                fail "Drift detected in ${pair##*:}"
-                wasm_drifts=$((wasm_drifts + 1))
-                DRIFTS=$((DRIFTS + 1))
-            fi
-        done
-        if [ $wasm_drifts -eq 0 ]; then
-            ok "Already in sync"
-        fi
-    else
-        cp "$WASM_PKG/hew_wasm_bg.wasm" "$repo_dir/$dest_bin"
-        cp "$WASM_PKG/hew_wasm.js" "$repo_dir/$dest_js"
-        cp "$WASM_PKG/hew_wasm.d.ts" "$repo_dir/$dest_dts"
-        cd "$repo_dir"
-        local wasm_updated=0
-        for rel in "$dest_bin" "$dest_js" "$dest_dts"; do
-            if ! git diff --quiet "$rel" 2>/dev/null; then
-                ok "Updated $rel"
-                wasm_updated=$((wasm_updated + 1))
-            fi
-        done
-        if [ $wasm_updated -gt 0 ]; then
-            UPDATED=$((UPDATED + 1))
-            if $COMMIT; then
-                try_commit "$repo_dir" "Bundle hew wasm artefacts" \
-                    "$dest_bin" "$dest_js" "$dest_dts"
-            fi
-        else
-            ok "Already up to date"
-        fi
-        cd "$REPO_ROOT"
-    fi
-}
-
-sync_wasm_repo "$HEW_RUN" "hew.run" "static/wasm"
-sync_wasm_repo "$HEW_SH" "hew.sh" "public/wasm"
-sync_wasm_repo "$HEW_STUDIO" "hew-studio" "public/wasm"
-
-# 3e. tree-sitter-hew — patch grammar.js keyword blocks
+# 3b. tree-sitter-hew — patch grammar.js keyword blocks
 next_step "tree-sitter-hew (grammar.js keyword sync)..."
 if [ -d "$TREE_SITTER" ] && [ -f "$TREE_SITTER/grammar.js" ]; then
     if $CHECK_ONLY; then
@@ -357,7 +291,7 @@ if [ -d "$TREE_SITTER" ] && [ -f "$TREE_SITTER/grammar.js" ]; then
         info "Patching grammar.js..."
         if HEW_TREE_SITTER="$TREE_SITTER" node "$TOOLS_DIR/patch-tree-sitter-keywords.mjs" 2>&1 | tail -3; then
             cd "$TREE_SITTER"
-            if git diff --quiet grammar.js 2>/dev/null; then
+            if file_unchanged grammar.js; then
                 ok "Already up to date"
             else
                 ok "Patched grammar.js"
@@ -386,7 +320,7 @@ else
     SKIPPED=$((SKIPPED + 1))
 fi
 
-# 3f. vim-hew — patch syntax/hew.vim keyword blocks
+# 3c. vim-hew — patch syntax/hew.vim keyword blocks
 next_step "vim-hew (hew.vim keyword sync)..."
 if [ -d "$VIM_HEW" ] && [ -f "$VIM_HEW/syntax/hew.vim" ]; then
     if $CHECK_ONLY; then
@@ -409,7 +343,7 @@ if [ -d "$VIM_HEW" ] && [ -f "$VIM_HEW/syntax/hew.vim" ]; then
         info "Patching syntax/hew.vim..."
         if HEW_VIM_HEW="$VIM_HEW" node "$TOOLS_DIR/patch-vim-syntax.mjs" 2>&1 | tail -3; then
             cd "$VIM_HEW"
-            if git diff --quiet syntax/hew.vim 2>/dev/null; then
+            if file_unchanged syntax/hew.vim; then
                 ok "Already up to date"
             else
                 ok "Patched syntax/hew.vim"
@@ -429,7 +363,7 @@ else
     SKIPPED=$((SKIPPED + 1))
 fi
 
-# 3g. editors/ — copy dist/hew.nanorc → editors/nano/hew.nanorc
+# 3d. editors/ — copy dist/hew.nanorc → editors/nano/hew.nanorc
 next_step "editors/nano (nanorc)..."
 if [ -f "$DIST_DIR/hew.nanorc" ]; then
     if $CHECK_ONLY; then
@@ -443,7 +377,7 @@ if [ -f "$DIST_DIR/hew.nanorc" ]; then
     else
         cp "$DIST_DIR/hew.nanorc" "$REPO_ROOT/editors/nano/hew.nanorc"
         cd "$REPO_ROOT"
-        if git diff --quiet editors/nano/hew.nanorc 2>/dev/null; then
+        if file_unchanged editors/nano/hew.nanorc; then
             ok "Already up to date"
         else
             ok "Updated editors/nano/hew.nanorc"

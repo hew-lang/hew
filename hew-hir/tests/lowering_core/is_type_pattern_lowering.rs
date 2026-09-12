@@ -6,11 +6,12 @@
 //! and would emit `HirExprKind::Literal(HirLiteral::Bool(true))` instead of
 //! the runtime `HirExprKind::IdentityCompare` form used by value-pattern
 //! `is`. D340 narrows the `is` admission set to actor handles only
-//! (`is_identity_capable`, HEW-SPEC-2026 §3.4.3's pid handle row), and a
+//! (`is_identity_capable`, HEW-SPEC-2026 §3.4.3's actor-handle row), and a
 //! `resolve_is_type_pattern` RHS is always the bare `TypeDef` name with no
-//! generic arguments, while every admitted actor value is a `LocalPid<T>`
-//! handle — so the LHS and the RHS pattern can never structurally match
-//! (`LocalPid<Worker>` vs. `Worker`) and the tautology branch has no
+//! generic arguments, while every admitted actor value is an actor
+//! handle — so the LHS handle and the bare RHS pattern can never
+//! structurally match (the `Worker` handle vs. bare `Worker`) and the
+//! tautology branch has no
 //! reachable caller in current Hew source (#3134). The lowering code stays
 //! for when handle-category admission broadens (HEW-SPEC-2026 §3.4.3's
 //! counted/opaque/resource rows); there is no positive-control program left
@@ -74,7 +75,7 @@ fn is_value_pattern_lowers_to_identity_compare() {
     let output = lower(
         r"
         actor Worker {
-            let _id: i64;
+            let _id: i64,
             receive fn ping() {}
         }
 

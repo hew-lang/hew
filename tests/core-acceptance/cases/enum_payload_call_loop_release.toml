@@ -1,0 +1,13 @@
+[[case]]
+id = "enum_payload_call_loop_release"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/enum_payload_call_loop_release.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "bytes=35\nmixed=36033\ncomposite=6\nbreakcont=4\n"
+exit = 0

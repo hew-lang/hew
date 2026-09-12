@@ -23,10 +23,10 @@ actor Ticker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 3 within 60s;
+    strategy: one_for_one,
+    intensity: 3 within 60s,
 
-    child ticker: Ticker;
+    child ticker: Ticker,
 }
 
 fn main() {
@@ -34,7 +34,7 @@ fn main() {
     let t = sup.ticker;
     let s = t.stream();
 
-    let first = await s.recv();
+    let first = s.recv();
     match first {
         .Some(v) => println(f"{v}"),
         .None => println("unexpected-close"),
@@ -44,14 +44,14 @@ fn main() {
 
     var i = 0;
     while i < 8 {
-        match await s.recv() {
+        match s.recv() {
             .Some(v) => println(f"{v}"),
             .None => println("unexpected-eof"),
         }
         i = i + 1;
     }
 
-    let overflow = await s.recv();
+    let overflow = s.recv();
     match overflow {
         .Some(v) => println(f"overflow={v}"),
         .None => println("unexpected-eof-after-fault"),

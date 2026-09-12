@@ -1,0 +1,44 @@
+// The same adapter chains over `VecIter`: a `for` drives an adapter directly,
+// early exit releases the cursor and its source vector, and the terminals
+// agree with the generator spelling.
+import std.iter;
+
+fn nums() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    for i in 1..6 {
+        v.push(i);
+    }
+    v
+}
+
+fn labels() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("bolt");
+    v.push("nut");
+    v.push("washer");
+    v
+}
+
+fn main() {
+    for x in iter.map(nums().into_iter(), |v: i64| v * 2) {
+        println(x);
+    }
+
+    for x in iter.filter(nums().into_iter(), |v: i64| v > 3) {
+        println(x);
+        break;
+    }
+
+    println(iter.sum(iter.take(nums().into_iter(), 3)));
+    println(iter.fold(nums().into_iter(), 0, |acc: i64, x: i64| acc + x));
+    println(iter.count(iter.filter(nums().into_iter(), |v: i64| v % 2 == 1)));
+
+    // Owned string elements through a map: each projection owns its value and
+    // the collected vector is released once.
+    let shouted = iter.collect(iter.map(labels().into_iter(), |s: string| s.to_upper()));
+    println(shouted.len());
+    println(shouted[0]);
+    for s in iter.take(labels().into_iter(), 2) {
+        println(s);
+    }
+}

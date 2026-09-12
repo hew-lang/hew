@@ -21,14 +21,14 @@ fn id(x: string) -> string {
 }
 
 fn build() -> string {
-    let s = string_concat("moved-", "out");
+    let s = ("moved-" + "out");
     return s;
 }
 
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 10000 {
-        let s = string_concat("alias-", "me");
+        let s = ("alias-" + "me");
         let _t = id(s);
         let _r = build();
         i = i + 1;

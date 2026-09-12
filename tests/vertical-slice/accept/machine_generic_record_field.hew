@@ -13,10 +13,10 @@
 // load-bearing assertion)
 
 machine Lifecycle<T> {
-    events { ev; }
-    state Start;
-    state Mid;
-    on ev: Start => Mid { .Mid }
+    events { ev, }
+    state Start,
+    state Mid,
+    on ev: Start => Mid,
     on ev: _ => _ { state }
 }
 

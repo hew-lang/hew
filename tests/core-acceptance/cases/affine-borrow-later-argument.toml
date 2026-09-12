@@ -1,0 +1,11 @@
+[[case]]
+id = "affine-borrow-later-argument"
+intent = "Borrowing a resource before evaluating a later call preserves the resource and its nested fields for subsequent reads and exactly-once release."
+source = "cases/affine-borrow-later-argument.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "read FRESH 5\nclose FRESH\nlater ROOT\nread ROOT 4\nlater ROOT\nread ROOT 4\nforward ROOT\nafter ROOT\nlater FIELD\nread FIELD 5\nafter FIELD\nclose FIELD\nclose ROOT\n"
+stderr = ""
+exit = 0

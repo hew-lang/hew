@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_capture_lambda_handle"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/closure_capture_lambda_handle.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ClosureCapturesDuplexHandle"
+line = 14
+column = 9
+message = "E_CLOSURE_CAPTURES_LAMBDA_HANDLE"

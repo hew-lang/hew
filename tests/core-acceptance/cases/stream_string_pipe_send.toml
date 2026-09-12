@@ -1,0 +1,14 @@
+[[case]]
+id = "stream_string_pipe_send"
+intent = "Send a string through a pipe from an actor handler. The plain send call can suspend while the pipe is full."
+source = "cases/stream_string_pipe_send.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+# The retired checked-mir harness ran every fixture with the actor-box
+# balance check armed; keep it here so a leaked actor lands as exit 93.
+env = { HEW_ACTOR_LEAK_CHECK = "1" }
+
+[case.expected]
+stdout = ""
+exit = 0

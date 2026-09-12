@@ -4,7 +4,7 @@
 //! invariant 5: "Overwrite never drops K, always drops old V."
 //!
 //! This test installs a `HewMapKeyLayout` with a counter-incrementing
-//! `drop_fn` for K and a `HewMapValueLayout` with a counter-incrementing
+//! `drop_fn` for K and a `HewValueLayout` with a counter-incrementing
 //! `drop_fn` for V, then performs an insert + overwrite and asserts:
 //!
 //! - The OLD V's drop_fn was invoked exactly once (the overwrite-time drop).
@@ -29,12 +29,15 @@
               closure form is clearer at the call site than the method-path form"
 )]
 
+#[path = "common/map_status.rs"]
+mod map_status;
+
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use hew_cabi::map::{
-    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewMapValueDropThunk, HewMapValueLayout,
+    HewMapKeyEqThunk, HewMapKeyHashThunk, HewMapKeyLayout, HewValueDropThunk, HewValueLayout,
 };
 use hew_cabi::vec::HewTypeOwnershipKind;
 use hew_runtime::hashmap::{
@@ -59,15 +62,40 @@ extern "C" fn v_drop_count(_blob: *mut c_void) {
     V_DROP_COUNT.fetch_add(1, Ordering::SeqCst);
 }
 
-unsafe extern "C" fn hash_i64(key: *const c_void) -> u64 {
-    let v = unsafe { *key.cast::<i64>() };
-    (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+unsafe extern "C" fn hash_i64(
+    key: *const c_void,
+    out: *mut u64,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: u64 = {
+        let v = unsafe { *key.cast::<i64>() };
+        (v as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
-unsafe extern "C" fn eq_i64(lhs: *const c_void, rhs: *const c_void) -> i32 {
-    let l = unsafe { *lhs.cast::<i64>() };
-    let r = unsafe { *rhs.cast::<i64>() };
-    i32::from(l == r)
+unsafe extern "C" fn eq_i64(
+    lhs: *const c_void,
+    rhs: *const c_void,
+    out: *mut bool,
+    fault_out: *mut *mut c_void,
+) -> i32 {
+    let value: i32 = {
+        let l = unsafe { *lhs.cast::<i64>() };
+        let r = unsafe { *rhs.cast::<i64>() };
+        i32::from(l == r)
+    };
+    // SAFETY: the callback receives writable scalar and fault outputs.
+    unsafe {
+        out.write(value != 0);
+        fault_out.write(core::ptr::null_mut());
+    }
+    0
 }
 
 #[test]
@@ -81,18 +109,23 @@ fn overwrite_drops_old_v_once_and_never_drops_stored_k() {
     // thunks only bump counters, which is the harmless-direction Plain
     // wouldn't even invoke.
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(k_drop_count as HewValueDropThunk),
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: Some(k_drop_count as HewMapValueDropThunk),
     };
-    let vl = HewMapValueLayout {
+    let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::LayoutManaged,
-        drop_fn: Some(v_drop_count as HewMapValueDropThunk),
+        drop_fn: Some(v_drop_count as HewValueDropThunk),
         clone_fn: None,
     };
 
@@ -104,21 +137,29 @@ fn overwrite_drops_old_v_once_and_never_drops_stored_k() {
         let v2: i64 = 200;
 
         // Insert (vacant): no drops at all.
-        let was_new = hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const v1).cast::<c_void>(),
-        );
+        let was_new = map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const v1).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(was_new, "first insert reports vacant slot");
         assert_eq!(K_DROP_COUNT.load(Ordering::SeqCst), 0);
         assert_eq!(V_DROP_COUNT.load(Ordering::SeqCst), 0);
 
         // Insert (overwrite): old V dropped exactly once; stored K never dropped.
-        let was_new = hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const v2).cast::<c_void>(),
-        );
+        let was_new = map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const v2).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         assert!(!was_new, "overwrite reports occupied slot");
         assert_eq!(
             K_DROP_COUNT.load(Ordering::SeqCst),
@@ -147,14 +188,19 @@ fn plain_v_overwrite_does_not_invoke_drop() {
     // Baseline: Plain ownership with drop_fn=None ⇒ no per-slot drop calls.
     V_DROP_COUNT.store(0, Ordering::SeqCst);
     let kl = HewMapKeyLayout {
-        size: size_of::<i64>(),
-        align: align_of::<i64>(),
-        ownership_kind: HewTypeOwnershipKind::Plain,
+        value: HewValueLayout {
+            visit_close: None,
+            size: size_of::<i64>(),
+            align: align_of::<i64>(),
+            ownership_kind: HewTypeOwnershipKind::Plain,
+            clone_fn: None,
+            drop_fn: None,
+        },
         hash_fn: Some(hash_i64 as HewMapKeyHashThunk),
         eq_fn: Some(eq_i64 as HewMapKeyEqThunk),
-        drop_fn: None,
     };
-    let vl = HewMapValueLayout {
+    let vl = HewValueLayout {
+        visit_close: None,
         size: size_of::<i64>(),
         align: align_of::<i64>(),
         ownership_kind: HewTypeOwnershipKind::Plain,
@@ -167,16 +213,24 @@ fn plain_v_overwrite_does_not_invoke_drop() {
         let key: i64 = 7;
         let v1: i64 = 1;
         let v2: i64 = 2;
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const v1).cast::<c_void>(),
-        );
-        hew_hashmap_insert_layout(
-            m,
-            (&raw const key).cast::<c_void>(),
-            (&raw const v2).cast::<c_void>(),
-        );
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const v1).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
+        map_status::success(|result_out, fault_out| {
+            hew_hashmap_insert_layout(
+                m,
+                (&raw const key).cast::<c_void>(),
+                (&raw const v2).cast::<c_void>(),
+                result_out,
+                fault_out,
+            )
+        });
         hew_hashmap_free_layout(m);
     }
     assert_eq!(

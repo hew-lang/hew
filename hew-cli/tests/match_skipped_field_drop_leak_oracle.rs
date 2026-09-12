@@ -1,6 +1,6 @@
 //! Skipped-field drop oracle for partial match destructures — the
 //! empirical (compiled-binary) half of the exact-drop-op matrix whose MIR
-//! side lives in `examples/v05/checked-mir/match_skip_*.hew`.
+//! side lives in `tests/core-acceptance/cases/match_skip_*.hew`.
 //!
 //! ## What the safety-drop loop emits per skipped shape
 //!
@@ -46,12 +46,10 @@
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 // ── looped slope fixtures ───────────────────────────────────────────────
 
@@ -347,99 +345,14 @@ fn skipped_field_join_paths_no_double_free_under_malloc_scribble() {
 
 // ── MIR emission pins for shapes refused downstream of MIR ─────────────
 //
-// A record carrying an indirect-enum field or a fixed-array field does
-// not compile to native today: the record layout fill embeds shapes the
-// init path refuses fail-closed (`E_CODEGEN_FRONT_*`), UPSTREAM of any
-// drop. The skipped-field admission and emission contract still holds at
-// the MIR level — these pins dump `--dump-mir raw` and assert the exact
-// op, so the day the layout seam learns these shapes the drop path is
-// already correct (and codegen's field-addressed lowering is pinned at
-// the IR level in `hew-codegen-rs`'s `field_drop_in_place_*` tests).
-
-/// Run `hew compile --dump-mir raw` over `source` and return the dump.
-/// Panics (with the compiler output) if MIR construction fails.
-fn dump_raw_mir(name: &str, source: &str) -> String {
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("skip-mir-pin-{name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args(["compile", "--dump-mir", "raw"])
-        .arg(&hew_src)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile --dump-mir");
-    assert!(
-        output.status.success(),
-        "MIR construction must succeed for {name}:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-/// A skipped indirect-enum field emits `FieldDropInPlace` carrying the
-/// enum type (codegen dispatches `is_indirect_enum` FIRST — the recursive
-/// node free, never the inline enum helper).
-#[test]
-fn skipped_indirect_enum_field_emits_field_drop_in_place_mir() {
-    require_codegen();
-
-    let source = "\
-indirect enum Chain {\n\
-\x20   End;\n\
-\x20   Link(string, Chain);\n\
-}\n\
-\n\
-type Holder {\n\
-\x20   n: i64,\n\
-\x20   chain: Chain,\n\
-}\n\
-\n\
-fn consume(h: Holder) -> i64 {\n\
-\x20   let x = match h {\n\
-\x20       Holder { n: x, chain: _ } => x,\n\
-\x20   };\n\
-\x20   x\n\
-}\n\
-\n\
-fn main() -> i64 {\n\
-\x20   consume(Holder { n: 0, chain: Chain.End })\n\
-}\n";
-    let dump = dump_raw_mir("skip_indirect", source);
-    assert!(
-        dump.contains("drop_field_in_place") && dump.contains("ty=Chain"),
-        "skipped indirect-enum field must emit FieldDropInPlace with the enum ty; dump:\n{dump}"
-    );
-}
-
-/// A skipped fixed-array-of-owned field emits `FieldDropInPlace` carrying
-/// the array type (per-element walk at codegen).
-#[test]
-fn skipped_array_field_emits_field_drop_in_place_mir() {
-    require_codegen();
-
-    let source = "\
-type Holder {\n\
-\x20   n: i64,\n\
-\x20   slots: [string; 3],\n\
-}\n\
-\n\
-fn consume(h: Holder) -> i64 {\n\
-\x20   let x = match h {\n\
-\x20       Holder { n: x, slots: _ } => x,\n\
-\x20   };\n\
-\x20   x\n\
-}\n\
-\n\
-fn main() -> i64 {\n\
-\x20   consume(Holder { n: 0, slots: [\"s\"; 3] })\n\
-}\n";
-    let dump = dump_raw_mir("skip_array", source);
-    assert!(
-        dump.contains("drop_field_in_place") && dump.contains("ty=[string; 3]"),
-        "skipped fixed-array field must emit FieldDropInPlace with the array ty; dump:\n{dump}"
-    );
-}
+// A record carrying an indirect-enum field or a fixed-array field does not
+// compile to native today: the record layout fill embeds shapes the init
+// path refuses fail-closed (`E_CODEGEN_FRONT_*`), UPSTREAM of any drop.
+// Lost coverage: `--dump-mir raw` (retired) previously pinned that the
+// skipped-field admission still emitted `drop_field_in_place` with the
+// exact indirect-enum/fixed-array `ty=` text for these two never-executed
+// shapes. Physical MIR's structured (Debug) dump has no equivalent
+// single-line text to grep, and the shapes cannot compile to native to be
+// pinned by observed execution instead, so this MIR-emission coverage has
+// no replacement: codegen's field-addressed lowering remains pinned at the
+// IR level in `hew-codegen-rs`'s `field_drop_in_place_*` tests.

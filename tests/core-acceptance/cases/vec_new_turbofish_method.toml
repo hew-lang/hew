@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_new_turbofish_method"
+intent = "The fixture runs to completion and exits 7."
+source = "../vertical-slice/accept/vec_new_turbofish_method.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 7

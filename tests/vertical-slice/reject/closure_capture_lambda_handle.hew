@@ -1,4 +1,4 @@
-// Reject pin: a fn-closure capturing a LAMBDA-ACTOR handle (a `LambdaPid`,
+// Reject pin: a fn-closure capturing an ANONYMOUS-ACTOR handle (an `actor(M) -> R`,
 // not a no-drop pid) and calling it must refuse, not silently
 // misroute. The send symbol routes by Place variant; an env-loaded
 // lambda handle has no materialization protocol through a closure env yet,

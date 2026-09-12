@@ -1,6 +1,10 @@
 // LRU Cache using doubly-linked list + linear scan for key lookup
 // Node layout: [key, value, prev, next] = 4 slots per node
 // Most recently used at front (head), least recently used at back (tail)
+//
+// A parameter is the callee's own copy, so every helper that writes the node
+// pool or the metadata returns both in parameter order, followed by any value
+// it reports, and the caller reassigns each one.
 fn node_key(n: Vec<i64>, i: i64) -> i64 {
     n[i * 4]
 }
@@ -17,25 +21,28 @@ fn node_next(n: Vec<i64>, i: i64) -> i64 {
     n[i * 4 + 3]
 }
 
-fn set_val(n: Vec<i64>, i: i64, v: i64) {
+fn set_val(var n: Vec<i64>, i: i64, v: i64) -> Vec<i64> {
     n.set(i * 4 + 1, v);
+    n
 }
 
-fn set_prev(n: Vec<i64>, i: i64, p: i64) {
+fn set_prev(var n: Vec<i64>, i: i64, p: i64) -> Vec<i64> {
     n.set(i * 4 + 2, p);
+    n
 }
 
-fn set_next(n: Vec<i64>, i: i64, nx: i64) {
+fn set_next(var n: Vec<i64>, i: i64, nx: i64) -> Vec<i64> {
     n.set(i * 4 + 3, nx);
+    n
 }
 
-fn alloc_node(n: Vec<i64>, key: i64, val: i64) -> i64 {
+fn alloc_node(var n: Vec<i64>, key: i64, val: i64) -> (Vec<i64>, i64) {
     let idx = n.len() / 4;
     n.push(key);
     n.push(val);
     n.push(-1);
     n.push(-1);
-    idx
+    (n, idx)
 }
 
 // meta[0] = head, meta[1] = tail, meta[2] = size, meta[3] = capacity
@@ -55,20 +62,23 @@ fn cache_cap(m: Vec<i64>) -> i64 {
     m[3]
 }
 
-fn set_head(m: Vec<i64>, h: i64) {
+fn set_head(var m: Vec<i64>, h: i64) -> Vec<i64> {
     m.set(0, h);
+    m
 }
 
-fn set_tail(m: Vec<i64>, t: i64) {
+fn set_tail(var m: Vec<i64>, t: i64) -> Vec<i64> {
     m.set(1, t);
+    m
 }
 
-fn set_size(m: Vec<i64>, s: i64) {
+fn set_size(var m: Vec<i64>, s: i64) -> Vec<i64> {
     m.set(2, s);
+    m
 }
 
 fn new_cache(capacity: i64) -> Vec<i64> {
-    let m: Vec<i64> = Vec.new();
+    var m: Vec<i64> = Vec.new();
     m.push(-1);
     m.push(-1);
     m.push(0);
@@ -77,34 +87,36 @@ fn new_cache(capacity: i64) -> Vec<i64> {
 }
 
 // Remove node from its current position in the list
-fn detach(n: Vec<i64>, m: Vec<i64>, idx: i64) {
+fn detach(var n: Vec<i64>, var m: Vec<i64>, idx: i64) -> (Vec<i64>, Vec<i64>) {
     let p = node_prev(n, idx);
     let nx = node_next(n, idx);
     if p != -1 {
-        set_next(n, p, nx);
+        n = set_next(n, p, nx);
     } else {
-        set_head(m, nx);
+        m = set_head(m, nx);
     }
     if nx != -1 {
-        set_prev(n, nx, p);
+        n = set_prev(n, nx, p);
     } else {
-        set_tail(m, p);
+        m = set_tail(m, p);
     }
-    set_prev(n, idx, -1);
-    set_next(n, idx, -1);
+    n = set_prev(n, idx, -1);
+    n = set_next(n, idx, -1);
+    (n, m)
 }
 
 // Push node to front (most recently used)
-fn push_front(n: Vec<i64>, m: Vec<i64>, idx: i64) {
+fn push_front(var n: Vec<i64>, var m: Vec<i64>, idx: i64) -> (Vec<i64>, Vec<i64>) {
     let h = cache_head(m);
-    set_next(n, idx, h);
-    set_prev(n, idx, -1);
+    n = set_next(n, idx, h);
+    n = set_prev(n, idx, -1);
     if h != -1 {
-        set_prev(n, h, idx);
+        n = set_prev(n, h, idx);
     } else {
-        set_tail(m, idx);
+        m = set_tail(m, idx);
     }
-    set_head(m, idx);
+    m = set_head(m, idx);
+    (n, m)
 }
 
 // Find node by key (linear scan), returns node index or -1
@@ -119,44 +131,59 @@ fn find_key(n: Vec<i64>, m: Vec<i64>, key: i64) -> i64 {
     -1
 }
 
-// Get value for key, moves to front. Returns -1 if not found.
-fn cache_get(n: Vec<i64>, m: Vec<i64>, key: i64) -> i64 {
+// Get value for key, moves to front. Reports -1 if not found.
+fn cache_get(n: Vec<i64>, m: Vec<i64>, key: i64) -> (Vec<i64>, Vec<i64>, i64) {
     let idx = find_key(n, m, key);
     if idx == -1 {
-        return -1;
+        return (n, m, -1);
     }
-    detach(n, m, idx);
-    push_front(n, m, idx);
-    node_val(n, idx)
+    let (detached_n, detached_m) = detach(n, m, idx);
+    let (moved_n, moved_m) = push_front(detached_n, detached_m, idx);
+    (moved_n, moved_m, node_val(moved_n, idx))
 }
 
 // Put key-value pair. Evicts LRU if at capacity.
-fn cache_put(n: Vec<i64>, m: Vec<i64>, key: i64, val: i64) {
+fn cache_put(var n: Vec<i64>, var m: Vec<i64>, key: i64, val: i64) -> (Vec<i64>, Vec<i64>) {
     let idx = find_key(n, m, key);
     if idx != -1 {
-        set_val(n, idx, val);
-        detach(n, m, idx);
-        push_front(n, m, idx);
-    } else {
-        if cache_size(m) >= cache_cap(m) {
-            // Evict tail (LRU)
-            let t = cache_tail(m);
-            detach(n, m, t);
-            set_size(m, cache_size(m) - 1);
-        }
-        let nd = alloc_node(n, key, val);
-        push_front(n, m, nd);
-        set_size(m, cache_size(m) + 1);
+        let (detached_n, detached_m) = detach(set_val(n, idx, val), m, idx);
+        return push_front(detached_n, detached_m, idx);
     }
+    if cache_size(m) >= cache_cap(m) {
+        // Evict tail (LRU)
+        let (evicted_n, evicted_m) = detach(n, m, cache_tail(m));
+        n = evicted_n;
+        m = set_size(evicted_m, cache_size(evicted_m) - 1);
+    }
+    let (grown, nd) = alloc_node(n, key, val);
+    let (fronted_n, fronted_m) = push_front(grown, m, nd);
+    (fronted_n, set_size(fronted_m, cache_size(fronted_m) + 1))
+}
+
+// Build a cache of the given capacity from puts laid out as
+// [key, value, key, value, ...]; returns the node pool and the metadata.
+fn build_cache(capacity: i64, pairs: Vec<i64>) -> (Vec<i64>, Vec<i64>) {
+    var n: Vec<i64> = Vec.new();
+    var m = new_cache(capacity);
+    var i = 0;
+    while i < pairs.len() {
+        let (next_n, next_m) = cache_put(n, m, pairs[i], pairs[i + 1]);
+        n = next_n;
+        m = next_m;
+        i = i + 2;
+    }
+    (n, m)
 }
 
 // Collect keys in order from head to tail
-fn collect_keys(n: Vec<i64>, m: Vec<i64>, result: Vec<i64>) {
+fn collect_keys(n: Vec<i64>, m: Vec<i64>) -> Vec<i64> {
+    var result: Vec<i64> = Vec.new();
     var curr = cache_head(m);
     while curr != -1 {
         result.push(node_key(n, curr));
         curr = node_next(n, curr);
     }
+    result
 }
 
 fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -173,14 +200,10 @@ fn vecs_equal(a: Vec<i64>, b: Vec<i64>) -> i64 {
 
 // --- Tests ---
 fn test_put_and_get() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    let m = new_cache(3);
-    cache_put(n, m, 1, 100);
-    cache_put(n, m, 2, 200);
-    cache_put(n, m, 3, 300);
-    let v1 = cache_get(n, m, 1);
-    let v2 = cache_get(n, m, 2);
-    let v3 = cache_get(n, m, 3);
+    let (n, m) = build_cache(3, [1, 100, 2, 200, 3, 300]);
+    let (n1, m1, v1) = cache_get(n, m, 1);
+    let (n2, m2, v2) = cache_get(n1, m1, 2);
+    let (_n3, _m3, v3) = cache_get(n2, m2, 3);
     if v1 == 100 {
         if v2 == 200 {
             if v3 == 300 {
@@ -194,15 +217,11 @@ fn test_put_and_get() -> i64 {
 }
 
 fn test_eviction() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    let m = new_cache(2);
-    cache_put(n, m, 1, 100);
-    cache_put(n, m, 2, 200);
-    cache_put(n, m, 3, 300);
+    let (n, m) = build_cache(2, [1, 100, 2, 200, 3, 300]);
     // Key 1 should be evicted (LRU)
-    let v1 = cache_get(n, m, 1);
-    let v2 = cache_get(n, m, 2);
-    let v3 = cache_get(n, m, 3);
+    let (n1, m1, v1) = cache_get(n, m, 1);
+    let (n2, m2, v2) = cache_get(n1, m1, 2);
+    let (_n3, _m3, v3) = cache_get(n2, m2, 3);
     if v1 == -1 {
         if v2 == 200 {
             if v3 == 300 {
@@ -216,17 +235,13 @@ fn test_eviction() -> i64 {
 }
 
 fn test_access_updates_order() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    let m = new_cache(3);
-    cache_put(n, m, 1, 100);
-    cache_put(n, m, 2, 200);
-    cache_put(n, m, 3, 300);
+    let (n, m) = build_cache(3, [1, 100, 2, 200, 3, 300]);
     // Access key 1, making it most recent
-    let _v = cache_get(n, m, 1);
+    let (touched_n, touched_m, _v) = cache_get(n, m, 1);
     // Now add key 4, should evict key 2 (now LRU)
-    cache_put(n, m, 4, 400);
-    let v2 = cache_get(n, m, 2);
-    let v1 = cache_get(n, m, 1);
+    let (n1, m1) = cache_put(touched_n, touched_m, 4, 400);
+    let (n2, m2, v2) = cache_get(n1, m1, 2);
+    let (_n3, _m3, v1) = cache_get(n2, m2, 1);
     if v2 == -1 {
         if v1 == 100 {
             println("PASS: access updates order");
@@ -238,13 +253,10 @@ fn test_access_updates_order() -> i64 {
 }
 
 fn test_update_value() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    let m = new_cache(3);
-    cache_put(n, m, 1, 100);
-    cache_put(n, m, 1, 999);
-    let v = cache_get(n, m, 1);
+    let (n, m) = build_cache(3, [1, 100, 1, 999]);
+    let (_n1, m1, v) = cache_get(n, m, 1);
     if v == 999 {
-        if cache_size(m) == 1 {
+        if cache_size(m1) == 1 {
             println("PASS: update value");
             return 1;
         }
@@ -254,20 +266,12 @@ fn test_update_value() -> i64 {
 }
 
 fn test_order_after_operations() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    let m = new_cache(3);
-    cache_put(n, m, 1, 10);
-    cache_put(n, m, 2, 20);
-    cache_put(n, m, 3, 30);
+    let (n, m) = build_cache(3, [1, 10, 2, 20, 3, 30]);
     // Order: 3(front) -> 2 -> 1(back)
-    let _v = cache_get(n, m, 1);
+    let (touched_n, touched_m, _v) = cache_get(n, m, 1);
     // Order: 1(front) -> 3 -> 2(back)
-    let r: Vec<i64> = Vec.new();
-    collect_keys(n, m, r);
-    let e: Vec<i64> = Vec.new();
-    e.push(1);
-    e.push(3);
-    e.push(2);
+    let r = collect_keys(touched_n, touched_m);
+    let e: Vec<i64> = [1, 3, 2];
     if vecs_equal(r, e) == 1 {
         println("PASS: order after operations");
         return 1;
@@ -277,10 +281,8 @@ fn test_order_after_operations() -> i64 {
 }
 
 fn test_miss() -> i64 {
-    let n: Vec<i64> = Vec.new();
-    let m = new_cache(2);
-    cache_put(n, m, 1, 100);
-    let v = cache_get(n, m, 99);
+    let (n, m) = build_cache(2, [1, 100]);
+    let (_n1, _m1, v) = cache_get(n, m, 99);
     if v == -1 {
         println("PASS: cache miss");
         return 1;

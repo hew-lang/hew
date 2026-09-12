@@ -1,0 +1,14 @@
+import std.encoding.utf8;
+
+fn describe(data: bytes) -> string {
+    utf8.decode(data) handle error { return error.fmt(); }
+}
+
+fn main() {
+    let malformed = b"A\xffB";
+    println(describe(malformed));
+    println(describe(malformed));
+    println(describe(b"A\xe2\x82"));
+    println(describe(b"\xc0\xaf"));
+    println(describe(b"\xed\xa0\x80"));
+}

@@ -1,0 +1,10 @@
+[[case]]
+id = "select-first-completion"
+intent = "A selection over a slow forked task and a ready channel receive takes the channel arm, the losing task is joined by its scope rather than cancelled or consumed, and the receiver stays usable afterwards."
+source = "cases/select-first-completion.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "channel payload-with-owned-heap\nslow finished\nscope joined\nafter second\n"
+exit = 0

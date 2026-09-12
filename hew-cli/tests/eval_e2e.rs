@@ -158,57 +158,6 @@ fn run_for_await_surface_fixture(name: &str) {
     );
 }
 
-fn for_await_mir_checked_dump(name: &str) -> String {
-    require_codegen();
-
-    let source = surface_fixture(&format!("{name}.hew"));
-    let mut command = Command::new(hew_binary());
-    command
-        .args(["compile", "--dump-mir", "checked"])
-        .arg(&source)
-        .current_dir(repo_root())
-        .env("HEW_WORKERS", "1");
-    let output = support::run_bounded_command(
-        command,
-        format!("hew compile --dump-mir checked {}", source.display()),
-    );
-    assert!(
-        output.status.success(),
-        "MIR dump for {name} should succeed; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-/// Raw-stage MIR dump for a fixture under `tests/surface-fixtures/`.
-///
-/// Used where the kind detail (e.g. `elem_ty=bytes`) is needed: the Raw dump
-/// annotates `Terminator::Suspend` with its `SuspendKind` tag from the
-/// side-table, while the Checked dump only shows the bare `suspend is_final=…`.
-fn for_await_mir_raw_dump(name: &str) -> String {
-    require_codegen();
-
-    let source = surface_fixture(&format!("{name}.hew"));
-    let mut command = Command::new(hew_binary());
-    command
-        .args(["compile", "--dump-mir", "raw"])
-        .arg(&source)
-        .current_dir(repo_root())
-        .env("HEW_WORKERS", "1");
-    let output = support::run_bounded_command(
-        command,
-        format!("hew compile --dump-mir raw {}", source.display()),
-    );
-    assert!(
-        output.status.success(),
-        "MIR raw dump for {name} should succeed; stdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
 #[test]
 fn for_await_receiver_string_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_recv_string");
@@ -249,68 +198,13 @@ fn channel_record_elements_roundtrip_and_early_exit_under_single_worker() {
     run_for_await_surface_fixture("channel_record_elements");
 }
 
-#[test]
-fn for_await_mir_dump_contains_suspending_recv_terminators() {
-    // The carrier shape has evolved across renderer generations:
-    //   - derived-Debug: `SuspendingChannelRecv`
-    //   - structured renderer: `suspend.channel_recv`
-    //   - post–side-table collapse: `suspend is_final=` (kind lives in side-table,
-    //     visible in the Raw dump as `suspend [channel_recv] elem_ty=…`)
-    // The flip PRESENCE is the load-bearing signal; use the Checked dump for the
-    // presence check (it shows the bare `suspend is_final=` form) and the Raw dump
-    // for the element-type witness checks.
-    for name in ["for_await_recv_string", "for_await_recv_int"] {
-        let dump = for_await_mir_checked_dump(name);
-        assert!(
-            dump.contains("SuspendingChannelRecv")
-                || dump.contains("suspend.channel_recv")
-                || dump.contains("suspend is_final="),
-            "{name} must lower to a channel-recv suspend terminator:\n{dump}",
-        );
-    }
-
-    // Bytes element: use the Raw dump so the SuspendKind side-table tag
-    // (`[stream_next] elem_ty=bytes`) is visible.
-    let bytes_dump = for_await_mir_raw_dump("for_await_stream_bytes");
-    assert!(
-        bytes_dump.contains("SuspendingStreamNext")
-            || bytes_dump.contains("suspend.stream_next")
-            || bytes_dump.contains("[stream_next]"),
-        "for_await_stream_bytes must lower to a stream-next suspend terminator:\n{bytes_dump}",
-    );
-    assert!(
-        bytes_dump.contains("elem_ty: Bytes") || bytes_dump.contains("elem_ty=bytes"),
-        "for_await_stream_bytes's stream-next suspend must carry \
-         elem_ty=bytes (the Bytes element witness):\n{bytes_dump}",
-    );
-    assert!(
-        !bytes_dump.contains("elem_ty: String") && !bytes_dump.contains("elem_ty=string"),
-        "for_await_stream_bytes must NOT carry elem_ty: String \
-         (string element type leaking into the bytes path):\n{bytes_dump}",
-    );
-
-    // String element: the String element witness keeps the header-aware
-    // cstring decode and binds `Option<string>`.
-    for name in ["for_await_stream_string", "typed_streams_string"] {
-        let dump = for_await_mir_raw_dump(name);
-        assert!(
-            dump.contains("SuspendingStreamNext")
-                || dump.contains("suspend.stream_next")
-                || dump.contains("[stream_next]"),
-            "{name} must lower to a stream-next suspend terminator:\n{dump}",
-        );
-        assert!(
-            dump.contains("elem_ty: String") || dump.contains("elem_ty=string"),
-            "{name}'s stream-next suspend must carry elem_ty=string \
-             (the String element witness):\n{dump}",
-        );
-        assert!(
-            !dump.contains("elem_ty: Bytes") && !dump.contains("elem_ty=bytes"),
-            "{name} must NOT carry elem_ty: Bytes \
-             (bytes element type leaking into the string path):\n{dump}",
-        );
-    }
-}
+// A `for_await_mir_dump_contains_suspending_recv_terminators` MIR-dump oracle
+// used to live here (`--dump-mir checked`/`raw`, both retired). Physical MIR
+// has no channel-recv/stream-next terminator variant to look for yet, and
+// `await`ing a channel recv fails closed on this branch (see
+// `channel_recv_e2e.rs`'s file doc comment), so it was deleted with no
+// migration target. The suspend positive it duplicated is covered by the
+// `for_await_*_drains_to_completion_under_single_worker` tests above.
 
 enum WaitOutcome {
     Found,
@@ -362,42 +256,6 @@ fn eval_inline_expression_succeeds() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "3\n");
 }
 
-/// Strict SIR mode must reach the strict lowering boundary for eval fragments
-/// rather than silently compiling the established HIR→MIR body. The generated
-/// auto-print call is deliberately outside the first direct-call SIR slice, so
-/// the command must fail before codegen with that exact no-fallback policy.
-#[test]
-fn eval_sir_lower_rejects_an_unadmitted_fragment_without_legacy_fallback() {
-    let output = Command::new(hew_binary())
-        .args(["eval", "--sir-lower", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .expect("run hew eval --sir-lower");
-
-    assert!(
-        !output.status.success(),
-        "strict SIR eval should reject its unsupported generated print call"
-    );
-    assert!(
-        output.stdout.is_empty(),
-        "strict SIR eval must not fall back and print the legacy result: {}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("SIR strict lowering failed"),
-        "stderr should identify strict SIR lowering: {stderr}"
-    );
-    assert!(
-        stderr.contains("only ordinary user/impl direct calls"),
-        "stderr should surface the HIR→SIR rejection reason: {stderr}"
-    );
-    assert!(
-        stderr.contains("no legacy MIR fallback was used"),
-        "stderr should make the no-fallback policy explicit: {stderr}"
-    );
-}
-
 #[test]
 fn eval_std_observe_reads_runtime_metric() {
     require_codegen();
@@ -406,7 +264,7 @@ fn eval_std_observe_reads_runtime_metric() {
     let path = dir.path().join("observe_eval.hew");
     std::fs::write(
         &path,
-        "import std.observe;\n\nobserve.read(\"heap.live_bytes\") >= 0\n",
+        "import std.observe;\n\nobserve.read(\"heap.live_bytes\").unwrap_or(0) >= 0\n",
     )
     .unwrap();
 
@@ -434,10 +292,10 @@ fn eval_std_observe_scrape_and_series_include_actor_attribution() {
     let path = dir.path().join("observe_attribution_eval.hew");
     std::fs::write(
         &path,
-        r"import std.observe;
+        r#"import std.observe;
 
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     receive fn increment(n: i64) {
         count = count + n;
@@ -450,15 +308,15 @@ actor Counter {
 
 fn run_counter() {
     let counter = spawn Counter(count: 0);
-    counter.increment(1);
-    counter.increment(2);
-    let _total = await counter.total();
-    let _barrier = observe.barrier();
+    let _ = counter.increment(1);
+    let _ = counter.increment(2);
+    let _total = counter.total();
+    let _barrier = observe.barrier().expect("observe barrier must flush");
     println(observe.series());
     println(observe.scrape());
 }
 run_counter();
-",
+"#,
     )
     .unwrap();
 
@@ -528,7 +386,7 @@ fn eval_unsupervised_actor_crash_reports_dotted_handler_label() {
 
 fn crash_boom() {
     let b = spawn Boom;
-    let _ = await b.detonate();
+    let _ = b.detonate();
 }
 crash_boom();
 "#,
@@ -1669,7 +1527,7 @@ fn eval_wasm_hashmap_string_i64_values_are_correct() {
         "wasm_hashmap_string_i64",
         r#"
 {
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("alpha", 17);
     m.insert("beta", 25);
 
@@ -1716,7 +1574,7 @@ type Point {
 }
 
 {
-    let m: HashMap<Point, i64> = HashMap.new();
+    var m: HashMap<Point, i64> = HashMap.new();
     m.insert(Point { x: 3, y: 4 }, 88);
     m.insert(Point { x: 5, y: 6 }, 99);
 
@@ -1754,7 +1612,7 @@ fn eval_wasm_hashset_string_values_are_correct() {
         "wasm_hashset_string",
         r#"
 {
-    let s: HashSet<string> = HashSet.new();
+    var s: HashSet<string> = HashSet.new();
     let inserted_alpha = s.insert("alpha");
     let inserted_beta = s.insert("beta");
     let duplicate_alpha = s.insert("alpha");
@@ -1904,8 +1762,8 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
     );
 }
 
-/// A wasm32 compile must reject `for await item in rx` over a channel receiver
-/// before link/runtime discovery. The `for await` HIR desugar now reaches the
+/// A wasm32 compile must reject `for item in rx` over a channel receiver
+/// before link/runtime discovery. The `for` HIR desugar now reaches the
 /// suspending recv carrier on native targets, so this pins the wasm fail-closed
 /// gate directly against the compile path rather than relying on REPL chunking.
 #[test]
@@ -1915,12 +1773,12 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
     std::fs::write(
         &path,
         concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn main() {\n",
-            "    let (tx, rx) = channel.new(1);\n",
+            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
             "    tx.send(\"hello\");\n",
             "    tx.close();\n",
-            "    for await item in rx {\n",
+            "    for item in rx {\n",
             "        println(item);\n",
             "    }\n",
             "}\n",
@@ -1937,7 +1795,7 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
 
     assert!(
         !output.status.success(),
-        "expected failure for `for await` over Receiver<T> on WASM target"
+        "expected failure for `for` over Receiver<T> on WASM target"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1953,16 +1811,16 @@ fn compile_wasm_rejects_for_await_receiver_before_link() {
 //   1. Print any stdout the program produced before failure to its own stdout.
 //   2. Exit with the child's exact exit code (not always 1).
 //
-// `panic()` is the Hew builtin that exits non-zero; it uses exit code 101
-// (Rust's panic convention), which is distinct from the CLI's own error exit
-// code (1) and therefore makes propagation detectable.
+// `panic()` is the Hew builtin that exits non-zero; every native path exits 1,
+// so these tests pin the child's own status rather than a status the CLI could
+// only have invented.
 
 #[test]
 fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     require_codegen();
 
-    // `panic` exits the child with code 101.  Without the fix `hew eval`
-    // would always return 1 regardless of the child's code.
+    // `panic` exits the child with code 1.  Without the fix `hew eval`
+    // would report its own status regardless of the child's code.
     let output = Command::new(hew_binary())
         .args(["eval", r#"panic("deliberate failure")"#])
         .current_dir(repo_root())
@@ -1972,8 +1830,8 @@ fn eval_inline_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic), got {:?}",
         output.status.code()
     );
 }
@@ -2004,8 +1862,8 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
     let dir = support::tempdir();
     let path = dir.path().join("failing_eval.hew");
     // A single expression that unconditionally panics.  `panic` exits with
-    // code 101 (Hew's convention), which is distinct from the CLI's own
-    // error exit code (1) and makes propagation detectable.
+    // code 1, and the CLI must propagate the child's status rather than
+    // substitute one of its own.
     std::fs::write(&path, "panic(\"deliberate failure\")\n").unwrap();
 
     let output = Command::new(hew_binary())
@@ -2019,8 +1877,8 @@ fn eval_file_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic), got {:?}",
         output.status.code()
     );
 }
@@ -2083,8 +1941,8 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic via WASM), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic via WASM), got {:?}",
         output.status.code()
     );
 }
@@ -2136,8 +1994,8 @@ fn eval_wasm_file_runtime_failure_exits_with_child_exit_code() {
     assert!(!output.status.success());
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101 (Hew panic via WASM), got {:?}",
+        Some(1),
+        "expected child exit code 1 (Hew panic via WASM), got {:?}",
         output.status.code()
     );
 }
@@ -2252,8 +2110,8 @@ fn eval_json_runtime_failure() {
 
     assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
     assert_eq!(
-        v["exit_code"], 101,
-        "expected child exit code 101 (Hew panic): {v}"
+        v["exit_code"], 1,
+        "expected child exit code 1 (Hew panic): {v}"
     );
     assert!(
         v["stderr"].as_str().unwrap_or("").contains("deliberate"),
@@ -2561,7 +2419,7 @@ fn eval_json_file_ok() {
 //
 // File shape that actually exercises the prepend path:
 //   chunk 1 (bare expression): print("prior-chunk\n")   ← emits stdout, succeeds
-//   chunk 2 (bare expression): panic("boom")            ← fails, exit 101
+//   chunk 2 (bare expression): panic("boom")            ← fails, exit 1
 //
 // Chunk 1 runs in its own compiled binary and writes to stdout.  That output
 // is captured into `collected`.  When chunk 2's binary panics, the fix prepends
@@ -2577,7 +2435,7 @@ fn eval_json_file_ok() {
 
 /// Write a two-chunk .hew file:
 ///   chunk 1 — bare `print("prior-chunk\n")` (complete expression, emits stdout)
-///   chunk 2 — bare `panic("boom")`           (complete expression, exits 101)
+///   chunk 2 — bare `panic("boom")`           (complete expression, exits 1)
 ///
 /// The blank line between them ensures the chunk-splitter in
 /// `eval_source_file_cli` finishes chunk 1 before starting chunk 2.
@@ -2629,8 +2487,8 @@ fn eval_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
     );
     assert_eq!(
         output.status.code(),
-        Some(101),
-        "expected child exit code 101{ctx}"
+        Some(1),
+        "expected child exit code 1{ctx}"
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -2668,10 +2526,7 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
         v["status"], "runtime_failure",
         "unexpected status: {v}{ctx}"
     );
-    assert_eq!(
-        v["exit_code"], 101,
-        "expected child exit code 101: {v}{ctx}"
-    );
+    assert_eq!(v["exit_code"], 1, "expected child exit code 1: {v}{ctx}");
     let captured = v["stdout"].as_str().unwrap_or("");
     assert!(
         captured.contains("prior-chunk"),
@@ -2861,32 +2716,6 @@ fn eval_repl_never_prints_cumulative_failure_counter() {
     assert!(
         !stderr.contains("previous session ended"),
         "the removed cumulative failure counter must not resurface: {stderr}"
-    );
-}
-
-/// Clap-level smoke test: `--jit=worker` is a recognised flag and the
-/// REPL exits successfully when it is supplied.
-///
-/// NOTE: This test does NOT verify that the flag is wired through to
-/// `ReplSession::set_jit_mode` — both the pre-fix and post-fix code paths
-/// exit 0 for this input.  The wiring invariant is covered by the unit test
-/// `eval::repl::tests::set_jit_mode_stores_mode_on_session` in `repl.rs`.
-///
-/// `--jit=worker` (AOT+spawn) is used here rather than `--jit=inprocess` or
-/// `--jit=auto` because both of those route to `run_inprocess_jit`, which
-/// SIGSEGVs on Linux (#1523).  `--jit=worker` exercises the same clap
-/// flag-routing path without triggering the in-process JIT crash.
-#[test]
-fn eval_repl_jit_worker_flag_accepted_by_clap() {
-    require_codegen();
-
-    let output = run_eval_with_stdin(&["eval", "--jit=worker"], "1 + 1\n:quit\n");
-
-    assert!(
-        output.status.success(),
-        "hew eval --jit=worker exited non-zero\nstdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
     );
 }
 
@@ -3095,12 +2924,12 @@ fn trait_bound_probe1_bounded_machine_runs() {
         &hew_src,
         "machine Tagger<T: Display> {\n\
          \x20   events {\n\
-         \x20       Tag { value: T; }\n\
+         \x20       Tag { value: T, }\n\
          \x20   }\n\
-         \x20   state Empty;\n\
-         \x20   state Tagged { value: T; }\n\
-         \x20   on Tag: Empty => Tagged { Tagged { value: event.value } }\n\
-         \x20   on Tag: Tagged => Tagged reenter { Tagged { value: event.value } }\n\
+         \x20   state Empty,\n\
+         \x20   state Tagged { value: T, }\n\
+         \x20   ,on Tag: Empty => Tagged { value: event.value }\n\
+         \x20   on Tag: Tagged => Tagged reenter { value: event.value }\n\
          }\n\
          fn main() {\n\
          \x20   var t: Tagger<i64> = .Empty;\n\
@@ -3147,15 +2976,15 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
         &hew_src,
         "machine Pair<A: Display, B: Display> {\n\
          \x20   events {\n\
-         \x20       Load { first: A; second: B; }\n\
-         \x20       Clear;\n\
+         \x20       Load { first: A, second: B, }\n\
+         \x20       ,Clear,\n\
          \x20   }\n\
-         \x20   state Empty;\n\
-         \x20   state Full { first: A; second: B; }\n\
-         \x20   on Load: Empty => Full { Full { first: event.first, second: event.second } }\n\
-         \x20   on Load: Full => Full reenter { Full { first: event.first, second: event.second } }\n\
-         \x20   on Clear: Empty => Empty reenter { Pair.Empty }\n\
-         \x20   on Clear: Full => Empty { Pair.Empty }\n\
+         \x20   state Empty,\n\
+         \x20   state Full { first: A, second: B, }\n\
+         \x20   ,on Load: Empty => Full { first: event.first, second: event.second }\n\
+         \x20   on Load: Full => Full reenter { first: event.first, second: event.second }\n\
+         \x20   on Clear: Empty => Empty reenter,\n\
+         \x20   on Clear: Full => Empty,\n\
          }\n\
          fn main() {\n\
          \x20   var p: Pair<i64, i64> = .Empty;\n\
@@ -3207,7 +3036,7 @@ fn trait_bound_probe3_where_clause_impl_dispatch_runs() {
     let hew_src = dir.path().join("pair_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Pair<T> { left: T; right: T; }\n\
+        "pub type Pair<T> { left: T, right: T, }\n\
          impl<T> Iterator for Pair<T> where T: Display {\n\
          \x20   type Item = T;\n\
          \x20   fn next(var p: Pair<T>) -> Option<T> {\n\
@@ -3262,7 +3091,7 @@ fn var_self_concrete_receiver_trait_dispatch_option_abi_and_writeback() {
     let hew_src = dir.path().join("counter_iter.hew");
     std::fs::write(
         &hew_src,
-        "pub type Counter<T> { current: T; step: T; }\n\
+        "pub type Counter<T> { current: T, step: T, }\n\
          impl<T> Iterator for Counter<T> where T: Display {\n\
          \x20   type Item = T;\n\
          \x20   fn next(var c: Counter<T>) -> Option<T> {\n\
@@ -3345,7 +3174,7 @@ fn w4_047_actor_ask_reply_concrete_type_totality() {
          fn main() -> i64 {\n\
          \x20   let w = spawn Doubler;\n\
          \x20   let r = select {\n\
-         \x20       reply from w.twice(21) => reply,\n\
+         \x20       reply from w.twice(21) => reply.expect(\"ask reply\"),\n\
          \x20       after 1000ms => 0,\n\
          \x20   };\n\
          \x20   r\n\
@@ -3371,7 +3200,7 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
         "trait Valued {\n\
          \x20   fn value(val: Self) -> i64;\n\
          }\n\
-         type Token { id: i64; }\n\
+         type Token { id: i64, }\n\
          impl Valued for Token {\n\
          \x20   fn value(t: Token) -> i64 { t.id }\n\
          }\n\
@@ -3397,7 +3226,7 @@ fn w4_047_static_trait_dispatch_concrete_return_totality() {
 // `hew eval` reliability fixes, verified end-to-end:
 //   * whole-program completeness lints stay silent for REPL fragments
 //   * runtime failures surface a cause in both raw and `--json` output
-//   * `--jit auto` falls back to AOT; `--jit inprocess` fails closed
+//   * Removed execution-mode flags are rejected by the CLI
 // ---------------------------------------------------------------------------
 
 fn assert_repl_emits_line(output: &Output, expected: &str) {
@@ -3567,92 +3396,130 @@ fn repl_no_side_effect_duplication() {
 #[test]
 fn eval_divide_by_zero_surfaces_cause() {
     require_codegen();
-    // Was exit 1 with empty stderr; now the terminating signal is named.
+    // Checked language faults report their cause and exit code directly.
     let output = Command::new(hew_binary())
         .args(["eval", "1 / 0"])
         .current_dir(repo_root())
         .output()
         .unwrap();
+    assert_eq!(output.status.code(), Some(1));
     assert!(
-        !output.status.success(),
-        "divide-by-zero must exit non-zero; stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+        output.stdout.is_empty(),
+        "division must produce no program output"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.trim().is_empty(), "stderr must not be empty");
     assert!(
-        stderr.contains("runtime error")
-            && (stderr.contains("divide-by-zero")
-                || stderr.contains("arithmetic")
-                || stderr.contains("signal")),
-        "stderr must name the arithmetic/divide-by-zero/signal cause; stderr:\n{stderr}"
+        stderr.contains("DivideByZero (202)"),
+        "stderr must name the checked failure and its code: {stderr}"
     );
 }
 
 #[test]
 fn eval_divide_by_zero_json_surfaces_cause() {
     require_codegen();
-    // `--json` must report a runtime_failure with a non-empty stderr AND
-    // diagnostics, even though the child produced no stderr of its own.
+    // The child supplies the checked-fault message. JSON preserves it as
+    // runtime stderr without synthesizing a compiler diagnostic.
     let output = Command::new(hew_binary())
         .args(["eval", "--json", "1 / 0"])
         .current_dir(repo_root())
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stderr.is_empty(),
+        "JSON runtime stderr must stay inside the result: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let v: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
     assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
-    assert!(
-        !v["stderr"].as_str().unwrap_or("").is_empty(),
-        "JSON stderr must be non-empty: {v}"
+    assert_eq!(v["exit_code"], 1, "checked child exit code missing: {v}");
+    assert_eq!(
+        v["stdout"], "",
+        "division must produce no program output: {v}"
     );
     assert!(
-        !v["diagnostics"].as_str().unwrap_or("").is_empty(),
-        "JSON diagnostics must be non-empty for an empty-stderr runtime failure: {v}"
+        v["stderr"]
+            .as_str()
+            .expect("JSON stderr must be a string")
+            .contains("DivideByZero (202)"),
+        "JSON stderr must name the checked failure and its code: {v}"
+    );
+    assert_eq!(
+        v["diagnostics"], "",
+        "the child's checked-fault message needs no compiler diagnostic: {v}"
     );
 }
 
 #[test]
-fn eval_jit_auto_falls_back_to_aot() {
-    require_codegen();
-    // `--jit auto` chooses the best available backend (today AOT) and runs.
-    let output = Command::new(hew_binary())
-        .args(["eval", "--jit", "auto", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "--jit auto should fall back to AOT and exit 0; stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(stdout.trim(), "3", "stdout: {stdout}");
+fn eval_rejects_removed_jit_flag() {
+    for args in [
+        vec!["eval", "--jit=worker"],
+        vec!["eval", "--jit", "auto", "1 + 2"],
+        vec!["eval", "--jit=inprocess", "--json", "1 + 2"],
+        vec!["eval", "--target", "wasm32-wasi", "--jit=auto", "1 + 2"],
+    ] {
+        let output = Command::new(hew_binary())
+            .args(&args)
+            .current_dir(repo_root())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "args: {args:?}");
+        assert!(output.stdout.is_empty(), "args: {args:?}");
+        let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        assert!(
+            stderr.contains("unexpected argument '--jit"),
+            "expected an unknown-option diagnostic for {args:?}: {stderr}"
+        );
+    }
 }
 
 #[test]
-fn eval_jit_inprocess_fails_closed() {
+fn eval_repl_recovers_after_worker_trap_and_type_error() {
     require_codegen();
-    // `--jit inprocess` is intentionally fail-closed (#1227/#1235).
-    let output = Command::new(hew_binary())
-        .args(["eval", "--jit", "inprocess", "1 + 2"])
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-    assert!(
-        !output.status.success(),
-        "--jit inprocess must fail closed; stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+    let output = run_eval_with_stdin(
+        &["eval", "--quiet"],
+        "1 / 0\nlet bad: i64 = \"oops\";\n6 * 7\n:quit\n",
     );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "REPL did not recover: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+    assert!(
+        stderr.contains("DivideByZero"),
+        "worker trap missing: {stderr}"
     );
     assert!(
-        combined.contains("unavailable") && combined.contains("#1227"),
-        "fail-closed message should cite the unimplemented JIT bridge; output:\n{combined}"
+        stderr.contains("type mismatch: expected `i64`, found `string`"),
+        "type error missing: {stderr}"
+    );
+}
+
+#[test]
+fn eval_aot_timeout_stops_worker_and_allows_next_submission() {
+    require_codegen();
+    // The worker deadline starts after spawn, excluding compilation but
+    // including the child's remaining startup. On macOS even `6 * 7` exceeded
+    // 100 ms; the one-second control timed out the loop and then returned 42.
+    // Test termination and recovery with that demonstrated startup allowance.
+    let mut command = Command::new(hew_binary());
+    command
+        .args(["eval", "--quiet", "--timeout", "1s"])
+        .current_dir(repo_root());
+    // A trillion iterations keeps the worker busy beyond its deadline. The
+    // outer runner bounds the test if the worker deadline stops being enforced.
+    let output = support::run_bounded_command_with_stdin(
+        command,
+        "eval worker timeout and recovery",
+        b"for i in 0..1000000000000 { }\n6 * 7\n:quit\n",
+    );
+    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "REPL did not recover: {stderr}");
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");
+    assert_eq!(
+        stderr.trim(),
+        "error: evaluation timed out after 1s",
+        "expected exactly one worker timeout and no error from the next submission"
     );
 }

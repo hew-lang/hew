@@ -1,0 +1,6 @@
+fn main() {
+    var entries: Vec<string> = Vec.new();
+    entries.push("retained".to_upper());
+    let removed = entries.remove(-1);
+    println(removed);
+}

@@ -1,0 +1,51 @@
+// D490: `get` copies the element out and leaves the vector's own in place,
+// so a concrete element with no copy operation refuses there exactly as it
+// refuses at `v[i]` and at a range slice. The owning drain is how the
+// element leaves the vector.
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+
+    fn show(self) {
+        println(f"show {self.label}{self.id}");
+    }
+}
+
+type Meta {
+    token: Token,
+    tag: string,
+}
+
+type Crate {
+    meta: Meta,
+    name: string,
+}
+
+fn main() -> i64 {
+    var crates: Vec<Crate> = Vec.new();
+    crates.push(Crate {
+        meta: Meta { token: Token { label: "t", id: 1 }, tag: "first" },
+        name: "one",
+    });
+    crates.push(Crate {
+        meta: Meta { token: Token { label: "t", id: 2 }, tag: "second" },
+        name: "two",
+    });
+
+    let _first = crates.get(0);
+    let _second = crates.get(1);
+    println(f"len={crates.len()}");
+
+    for item in crates.into_iter() {
+        item.meta.token.close();
+    }
+    println("drained");
+    0
+}

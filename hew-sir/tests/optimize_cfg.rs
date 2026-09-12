@@ -2,12 +2,12 @@ use hew_hir::ItemId;
 use hew_sir::{
     canonicalize_module_constant_cfg, verify_function_in_module, verify_module, BlockArg, BlockId,
     BoundaryDecision, BoundaryOperand, CallableId, CallableInstance, CfgCanonicalizationReport,
-    CfgDiscardSafetyReason, Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance,
-    SemAbiParam, SemBlock, SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule,
-    SemOp, SemOpKind, SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind,
-    SirOptimizationError, ValueDef, ValueId,
+    Edge, FunctionSourceOrigin, OpId, Operand, OwnKind, Provenance, SemAbiParam, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemModule, SemOp, SemOpKind,
+    SemParamPassing, SemSignature, SemTerminator, SirDiagnosticKind, SirOptimizationError,
+    ValueDef, ValueId,
 };
-use hew_types::{DefId, ResolvedTy};
+use hew_types::{DefId, ResolvedTy, TypeFactContext, TypeFactService};
 use std::collections::BTreeMap;
 
 fn read(value: u32) -> Operand {
@@ -57,13 +57,40 @@ fn callable_for(function: &SemFunction) -> SemCallable {
 }
 
 fn module(function: SemFunction) -> SemModule {
+    let mut fact_service = TypeFactService::new(TypeFactContext::default(), BTreeMap::new());
+    for ty in function
+        .params
+        .iter()
+        .map(|value| &value.ty)
+        .chain(std::iter::once(&function.return_ty))
+        .chain(function.blocks.iter().flat_map(|block| {
+            block.args.iter().map(|value| &value.ty).chain(
+                block
+                    .ops
+                    .iter()
+                    .flat_map(|op| op.results.iter().map(|value| &value.ty)),
+            )
+        }))
+    {
+        let _ = fact_service.require(ty);
+    }
     SemModule {
+        regex_patterns: Vec::new(),
+        actors: Vec::new(),
+        supervisors: Vec::new(),
+        resources: BTreeMap::new(),
+        closures: Vec::new(),
+        vtables: Vec::new(),
+        value_capabilities: BTreeMap::new(),
         callables: vec![callable_for(&function)],
         generic_templates: Vec::new(),
         root_unit_callables: Vec::new(),
+        entry_exit_plan: None,
         entry_callable: None,
         functions: vec![function],
-        type_facts: BTreeMap::new(),
+        aggregate_shapes: Vec::new(),
+        variant_shapes: Vec::new(),
+        type_facts: fact_service.into_rows(),
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),
     }
@@ -154,7 +181,7 @@ fn false_same_target_diamond() -> SemFunction {
                 ops: vec![SemOp {
                     id: OpId(1),
                     results: vec![value(3, ResolvedTy::I64)],
-                    kind: SemOpKind::ConstI64(99),
+                    kind: SemOpKind::ConstInteger(99),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -255,7 +282,7 @@ fn compaction_preserves_every_surviving_non_block_identity_and_fact() {
 }
 
 #[test]
-fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() {
+fn discard_safety_preserves_a_trapping_arm_that_structural_verification_accepts() {
     let mut function = function(
         "discarded_trap",
         Vec::new(),
@@ -291,31 +318,10 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
             SemBlock {
                 id: BlockId(2),
                 args: Vec::new(),
-                ops: vec![
-                    SemOp {
-                        id: OpId(1),
-                        results: vec![value(1, ResolvedTy::I64)],
-                        kind: SemOpKind::ConstI64(1),
-                        provenance: Provenance::Synthesized,
-                    },
-                    SemOp {
-                        id: OpId(2),
-                        results: vec![value(2, ResolvedTy::I64)],
-                        kind: SemOpKind::ConstI64(0),
-                        provenance: Provenance::Synthesized,
-                    },
-                    SemOp {
-                        id: OpId(3),
-                        results: vec![value(3, ResolvedTy::I64)],
-                        kind: SemOpKind::Binary {
-                            op: hew_parser::ast::BinaryOp::Divide,
-                            lhs: read(1),
-                            rhs: read(2),
-                        },
-                        provenance: Provenance::Synthesized,
-                    },
-                ],
-                terminator: SemTerminator::Return { value: None },
+                ops: Vec::new(),
+                terminator: SemTerminator::Trap {
+                    kind: hew_sir::TrapKind::DivideByZero,
+                },
             },
         ],
     );
@@ -323,7 +329,7 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
     assert!(verify_function_in_module(&module(function.clone()), &function).is_empty());
 
     // This is the counterfactual: the ordinary post-fold verifier alone sees
-    // valid SSA even though compaction would erase a MayTrap region.
+    // valid SSA even though compaction would erase a trapping terminator.
     let mut structurally_valid_but_unsafe = function.clone();
     structurally_valid_but_unsafe.blocks[0].terminator = SemTerminator::Goto(Edge {
         target: BlockId(1),
@@ -335,18 +341,10 @@ fn discard_safety_rejects_a_trapping_arm_that_structural_verification_accepts() 
     )
     .is_empty());
 
-    let error = canonicalize(&mut function).expect_err("discarding a MayTrap arm must fail closed");
-    assert!(matches!(
-        error,
-        SirOptimizationError::InvalidOutput(diagnostics)
-            if diagnostics.iter().any(|diagnostic| matches!(
-                &diagnostic.kind,
-                SirDiagnosticKind::UnsafeCfgDiscard {
-                    block: BlockId(2),
-                    reason: CfgDiscardSafetyReason::MayTrap { op: OpId(3) },
-                }
-            ))
-    ));
+    let report = canonicalize(&mut function)
+        .expect("an unsafe optional fold must retain the original valid CFG");
+    assert_eq!(report.folded_branches, 0);
+    assert!(report.removed_blocks.is_empty());
     assert_eq!(function, before);
 }
 
@@ -694,7 +692,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                 ops: vec![SemOp {
                     id: OpId(0),
                     results: vec![value(1, ResolvedTy::I64)],
-                    kind: SemOpKind::ConstI64(1),
+                    kind: SemOpKind::ConstInteger(1),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -707,7 +705,7 @@ fn dynamic_branch_is_a_byte_for_byte_noop() {
                 ops: vec![SemOp {
                     id: OpId(1),
                     results: vec![value(2, ResolvedTy::I64)],
-                    kind: SemOpKind::ConstI64(2),
+                    kind: SemOpKind::ConstInteger(2),
                     provenance: Provenance::Synthesized,
                 }],
                 terminator: SemTerminator::Return {
@@ -886,11 +884,21 @@ fn module_canonicalization_rejects_an_invalid_body_atomically() {
     invalid.callable = CallableId(1);
 
     let mut module = SemModule {
+        regex_patterns: Vec::new(),
+        actors: Vec::new(),
+        supervisors: Vec::new(),
+        resources: BTreeMap::new(),
+        closures: Vec::new(),
+        vtables: Vec::new(),
+        value_capabilities: BTreeMap::new(),
         callables: vec![callable_for(&valid), callable_for(&invalid)],
         generic_templates: Vec::new(),
         root_unit_callables: Vec::new(),
+        entry_exit_plan: None,
         entry_callable: None,
         functions: vec![valid, invalid],
+        aggregate_shapes: Vec::new(),
+        variant_shapes: Vec::new(),
         type_facts: BTreeMap::new(),
         string_literals: BTreeMap::new(),
         bytes_literals: BTreeMap::new(),

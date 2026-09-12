@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-mailbox-view"
+intent = "A `mailbox(target, on_full: .Wait)` view submits without waiting for the handler and parks the producer on a full bounded mailbox, so a thousand items are all accepted and processed."
+source = "cases/actor-mailbox-view.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "submitted\n1000\nclosed\n"
+exit = 0

@@ -23,7 +23,7 @@ use hew_runtime::actor::hew_actor_send;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::internal::types::HewCrashActionAbi;
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_set_restart_notify, hew_supervisor_wait_restart,
+    hew_supervisor_add_child_spec, hew_supervisor_set_restart_notify, test_wait_for_restart,
     HewChildSpec,
 };
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
@@ -197,7 +197,7 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
         crash_child(child);
 
         // Wait for the restart cycle to complete.
-        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5000);
+        let count = test_wait_for_restart(sup.as_ptr(), 1, 5000);
         assert!(count >= 1, "expected at least 1 restart cycle, got {count}");
 
         // Handler fired exactly once during this single restart cycle.
@@ -305,7 +305,7 @@ fn null_on_crash_handler_is_skipped_cleanly() {
         let child = wait_for_child(sup.as_ptr(), 0, 2000);
         crash_child(child);
 
-        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 5000);
+        let count = test_wait_for_restart(sup.as_ptr(), 1, 5000);
         assert!(count >= 1, "expected at least 1 restart cycle, got {count}");
 
         assert_eq!(
@@ -392,8 +392,8 @@ fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
         crash_child(child);
 
         // The handler fires; then the Kill return short-circuits the restart.
-        // No restart cycle should occur — wait_restart times out at 0.
-        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 1500);
+        // No restart cycle should occur — test_wait_for_restart times out at 0.
+        let count = test_wait_for_restart(sup.as_ptr(), 1, 1500);
         assert_eq!(
             count, 0,
             "Kill return must suppress the restart cycle (got {count})"
@@ -495,7 +495,7 @@ fn on_crash_escalate_on_root_supervisor_does_not_abort() {
 
         // The handler fires; Escalate (like Kill) short-circuits the
         // restart path entirely — no restart cycle should occur.
-        let count = hew_supervisor_wait_restart(sup.as_ptr(), 1, 1500);
+        let count = test_wait_for_restart(sup.as_ptr(), 1, 1500);
         assert_eq!(
             count, 0,
             "Escalate return must suppress the restart cycle (got {count})"

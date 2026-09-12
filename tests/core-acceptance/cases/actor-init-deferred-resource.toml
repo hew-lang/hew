@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-init-deferred-resource"
+intent = "A deferred field can own a real file resource opened in init; the actor's ordinary close releases it."
+source = "cases/actor-init-deferred-resource.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RESOURCE-READ.BIN\nreleased\n"
+exit = 0

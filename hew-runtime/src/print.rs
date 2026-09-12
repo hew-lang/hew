@@ -2,13 +2,14 @@
 //!
 //! Compiled Hew programs call a generic C ABI print entrypoint with a type tag
 //! plus payload bits. The runtime dispatches to the correct `libc::printf`
-//! format while preserving Hew's `print`/`println` behavior.
+//! format while preserving Hew's `print`/`println` behaviour.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use std::os::raw::c_char;
+use hew_cabi::string::{string_as_bytes, HewString};
+use std::io::Write;
 
 /// Flush the C stdio `stdout` stream.
 ///
@@ -132,22 +133,18 @@ unsafe fn print_str(bits: u64, newline: bool) {
     let Ok(ptr_bits) = usize::try_from(bits) else {
         std::process::abort();
     };
-    let s = ptr_bits as *const c_char;
-    if s.is_null() {
-        if newline {
-            // SAFETY: Format string is a valid NUL-terminated C literal.
-            unsafe { libc::printf(c"\n".as_ptr()) };
-            flush_stdout();
-        }
-        return;
-    }
-
-    let fmt = if newline { c"%s\n" } else { c"%s" };
-    // SAFETY: Caller guarantees s is a valid NUL-terminated C string.
-    unsafe { libc::printf(fmt.as_ptr(), s) };
+    let value = ptr_bits as *const HewString;
+    // SAFETY: the compiler supplies a live managed string handle; null is empty.
+    let bytes = unsafe { string_as_bytes(value) };
+    // Preserve call order when scalar prints use C stdio and strings use exact
+    // length-bounded Rust writes.
+    flush_stdout();
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(bytes);
     if newline {
-        flush_stdout();
+        let _ = stdout.write_all(b"\n");
     }
+    let _ = stdout.flush();
 }
 
 unsafe fn print_u8(x: u8, newline: bool) {
@@ -219,22 +216,22 @@ pub unsafe extern "C" fn hew_print_value(kind: u8, bits: u64, newline: bool) {
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_println_int(value: i64) {
-    // SAFETY: value is a plain i64 payload.
-    unsafe { print_i64(value, true) };
+    // SAFETY: the tag matches the preserved i64 payload bits.
+    unsafe { hew_print_value(PrintKind::I64 as u8, value.cast_unsigned(), true) };
 }
 
 /// Print a string with a trailing newline.
 ///
 /// # Safety
 ///
-/// `value` must be null or point to a valid NUL-terminated C string.
+/// `value` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_println_str(value: *const c_char) {
+pub unsafe extern "C" fn hew_println_str(value: *const HewString) {
     let Ok(bits) = u64::try_from(value as usize) else {
         std::process::abort();
     };
-    // SAFETY: caller upholds the C string contract for non-null pointers.
-    unsafe { print_str(bits, true) };
+    // SAFETY: caller upholds the managed string contract for non-null pointers.
+    unsafe { hew_print_value(PrintKind::Str as u8, bits, true) };
 }
 
 /// Print a boolean with a trailing newline.
@@ -244,8 +241,8 @@ pub unsafe extern "C" fn hew_println_str(value: *const c_char) {
 /// Called from compiled Hew programs via C ABI. Non-zero is true.
 #[no_mangle]
 pub unsafe extern "C" fn hew_println_bool(value: u8) {
-    // SAFETY: value is decoded to a Rust bool before printing.
-    unsafe { print_bool(value != 0, true) };
+    // SAFETY: the bool tag interprets a nonzero payload as true.
+    unsafe { hew_print_value(PrintKind::Bool as u8, u64::from(value), true) };
 }
 
 /// Print an f64 with a trailing newline.
@@ -255,8 +252,8 @@ pub unsafe extern "C" fn hew_println_bool(value: u8) {
 /// Called from compiled Hew programs via C ABI. No preconditions.
 #[no_mangle]
 pub unsafe extern "C" fn hew_println_f64(value: f64) {
-    // SAFETY: value is a plain f64 payload.
-    unsafe { print_f64(value, true) };
+    // SAFETY: the tag matches the preserved f64 payload bits.
+    unsafe { hew_print_value(PrintKind::F64 as u8, value.to_bits(), true) };
 }
 
 #[cfg(test)]

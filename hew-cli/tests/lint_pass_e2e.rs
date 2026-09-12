@@ -294,13 +294,13 @@ fn len_zero_comparison_inline_directive_suppresses() {
 // ── receive-handler lint: sleep_loop_blocks_mailbox ───────────────────
 
 const SLEEP_LOOP_BLOCKS_MAILBOX: &str = "actor Worker {\n\
-     var running: bool = true;\n\
+     var running: bool = true,\n\
      receive fn run() { while running { sleep(10ms); } }\n\
      receive fn stop() { running = false; }\n\
      }\n";
 
 const SLEEP_LOOP_BLOCKS_MAILBOX_SUPPRESSED: &str = "actor Worker {\n\
-     var running: bool = true;\n\
+     var running: bool = true,\n\
      receive fn run() {\n\
      // hew:allow(sleep_loop_blocks_mailbox)\n\
      while running { sleep(10ms); }\n\
@@ -357,22 +357,22 @@ fn sleep_loop_blocks_mailbox_inline_directive_suppresses() {
 // ── receive-handler lint: actor_handle_builtin_shadow ─────────────────
 
 const ACTOR_HANDLE_BUILTIN_SHADOW: &str = "actor Counter {\n\
-     var count: i64;\n\
+     var count: i64,\n\
      receive fn send(n: i64) { count = count + n; }\n\
      }\n\
      fn main() {\n\
      let counter = spawn Counter(count: 0);\n\
-     counter.send(1);\n\
+     let _ = counter.send(1);\n\
      }\n";
 
 const ACTOR_HANDLE_BUILTIN_SHADOW_SUPPRESSED: &str = "actor Counter {\n\
-     var count: i64;\n\
+     var count: i64,\n\
      // hew:allow(actor_handle_builtin_shadow)\n\
      receive fn send(n: i64) { count = count + n; }\n\
      }\n\
      fn main() {\n\
      let counter = spawn Counter(count: 0);\n\
-     counter.send(1);\n\
+     let _ = counter.send(1);\n\
      }\n";
 
 const ACTOR_HANDLE_BUILTIN_SHADOW_MESSAGE: &str =
@@ -562,240 +562,6 @@ fn comment_invisible_warns_by_default_and_deny_promotes() {
     );
 }
 
-// ── MIR-stage lint: dead_store ───────────────────────────────────────
-//
-// `dead_store` is the first lint that rides the MIR liveness pass rather than
-// the HIR checker sweep, so it exercises the separate CLI surfacing seam
-// (`render_pipeline_mir_lints`). It must honour the exact same registry
-// controls — default warning, `-A/-W/-D`, and `// hew:allow(...)` — as every
-// checker-stage lint above.
-
-/// `x` is assigned `5`, then unconditionally overwritten by `6` before the
-/// first value is ever read: the `var x = 5` store is dead.
-const DEAD_STORE: &str = "fn f() -> i64 {\n\
-     var x = 5;\n\
-     x = 6;\n\
-     x\n\
-     }\n\
-     fn main() {\n\
-     let _ = f();\n\
-     }\n";
-
-/// The same program with an in-source allow directive on the line above the
-/// dead store.
-const DEAD_STORE_SUPPRESSED: &str = "fn f() -> i64 {\n\
-     // hew:allow(dead_store)\n\
-     var x = 5;\n\
-     x = 6;\n\
-     x\n\
-     }\n\
-     fn main() {\n\
-     let _ = f();\n\
-     }\n";
-
-/// A textbook `for i in 0..n` accumulator loop: `i` and `total` are both read
-/// normally, so the precision guards must keep `dead_store` silent. This is the
-/// regression that proves the loop-counter / accumulator machinery does not
-/// misfire.
-const FOR_RANGE_CLEAN: &str = "fn sum(n: i64) -> i64 {\n\
-     var total = 0;\n\
-     for i in 0..n {\n\
-     total = total + i;\n\
-     }\n\
-     total\n\
-     }\n\
-     fn main() {\n\
-     let _ = sum(5);\n\
-     }\n";
-
-const DEAD_STORE_MESSAGE: &str = "is never read before it is overwritten";
-
-/// A float accumulator incremented every iteration and never read afterwards —
-/// the canonical `clean_counter` case. Float arithmetic has no overflow trap, so
-/// deleting `c` is provably semantics-preserving.
-const CLEAN_COUNTER: &str = "fn main() {\n\
-     var c = 0.0;\n\
-     for i in 0..10 {\n\
-     c = c + 1.0;\n\
-     }\n\
-     }\n";
-
-/// The same shape with an *integer* counter. Hew's checked `+` traps on
-/// overflow, so this must never fire.
-const CLEAN_COUNTER_INT: &str = "fn main() {\n\
-     var c = 0;\n\
-     for i in 0..10 {\n\
-     c = c + 1;\n\
-     }\n\
-     }\n";
-
-const CLEAN_COUNTER_MESSAGE: &str = "the counting is dead work";
-
-/// The same shape as `DEAD_STORE`, but the discarded local is `_`-prefixed:
-/// the documented "intentionally unused" idiom. A dead store into an
-/// underscore binding must stay silent — the user already declared the value
-/// disposable — even when `dead_store` is escalated to `-D`.
-const DEAD_STORE_UNDERSCORE: &str = "fn f() -> i64 {\n\
-     var _x = 5;\n\
-     _x = 6;\n\
-     _x\n\
-     }\n\
-     fn main() {\n\
-     let _ = f();\n\
-     }\n";
-
-#[test]
-fn dead_store_warns_by_default() {
-    let output = run_check(DEAD_STORE, &[]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "a dead_store warning must not fail the build:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("warning:") && stderr.contains(DEAD_STORE_MESSAGE),
-        "expected the dead_store warning to render by default:\n{stderr}"
-    );
-}
-
-#[test]
-fn dead_store_deny_promotes_to_error() {
-    let output = run_check(DEAD_STORE, &["-D", "dead_store"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        !output.status.success(),
-        "-D dead_store must fail the build:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("error:") && stderr.contains(DEAD_STORE_MESSAGE),
-        "-D must render the dead_store lint as an error:\n{stderr}"
-    );
-}
-
-#[test]
-fn dead_store_allow_suppresses() {
-    let output = run_check(DEAD_STORE, &["--allow", "dead_store"]);
-    let stderr = stderr_of(&output);
-    assert!(output.status.success(), "check should pass:\n{stderr}");
-    assert!(
-        !stderr.contains(DEAD_STORE_MESSAGE),
-        "--allow dead_store must suppress the lint:\n{stderr}"
-    );
-}
-
-#[test]
-fn dead_store_inline_directive_suppresses() {
-    let output = run_check(DEAD_STORE_SUPPRESSED, &[]);
-    let stderr = stderr_of(&output);
-    assert!(output.status.success(), "check should pass:\n{stderr}");
-    assert!(
-        !stderr.contains(DEAD_STORE_MESSAGE),
-        "an in-source `// hew:allow(dead_store)` directive must suppress the MIR lint:\n{stderr}"
-    );
-}
-
-#[test]
-fn dead_store_inline_directive_overrides_deny() {
-    // The in-source allow wins even over `-D`: parity with the checker lints.
-    let output = run_check(DEAD_STORE_SUPPRESSED, &["-D", "dead_store"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "an in-source allow must override -D for a MIR lint:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains(DEAD_STORE_MESSAGE),
-        "the suppressed MIR lint must not surface under -D:\n{stderr}"
-    );
-}
-
-#[test]
-fn for_range_loop_does_not_trip_dead_store() {
-    // The canonical precision guard: a normal counting loop with a read counter
-    // and a read accumulator must produce no dead_store finding, even under -D.
-    let output = run_check(FOR_RANGE_CLEAN, &["-D", "dead_store"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "`for i in 0..n` with used variables must not trip dead_store:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains(DEAD_STORE_MESSAGE),
-        "dead_store must not misfire on a normal counting loop:\n{stderr}"
-    );
-}
-
-#[test]
-fn underscore_local_does_not_trip_dead_store() {
-    // `let _r = t.consume();` keeps the side-effecting call but throws the
-    // result away on purpose. The `_` prefix is the documented discard idiom,
-    // so a dead store into it must stay silent even under -D — nagging the user
-    // to prefix what is already prefixed would be a false positive.
-    let output = run_check(DEAD_STORE_UNDERSCORE, &["-D", "dead_store"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "a dead store into an `_`-prefixed local must not fail the build:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains(DEAD_STORE_MESSAGE),
-        "dead_store must not fire on an underscore-prefixed binding:\n{stderr}"
-    );
-}
-
-#[test]
-fn clean_counter_is_registered_and_fires_on_unused_float_accumulator() {
-    // `clean_counter` is now registered and emitting (issue #2178). Under `-D`
-    // it must fail the build and name the counter. This replaces the earlier
-    // `clean_counter_is_unregistered_and_fails_closed` test, which pinned the
-    // pre-implementation state where selecting the lint was an unknown-lint
-    // error.
-    let output = run_check(CLEAN_COUNTER, &["-D", "clean_counter"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        !output.status.success(),
-        "-D clean_counter must fail the build on a dead accumulator:\n{stderr}"
-    );
-    assert!(
-        stderr.contains(CLEAN_COUNTER_MESSAGE) && stderr.contains("`c`"),
-        "expected a clean_counter diagnostic naming `c`:\n{stderr}"
-    );
-}
-
-#[test]
-fn clean_counter_is_suppressible_by_allow() {
-    // Registration must make `-A` real, not a no-op: the same program that
-    // fails under `-D` must be silent under `-A`.
-    let output = run_check(CLEAN_COUNTER, &["-A", "clean_counter"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "-A clean_counter must silence the lint:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains(CLEAN_COUNTER_MESSAGE),
-        "clean_counter must emit nothing under -A:\n{stderr}"
-    );
-}
-
-#[test]
-fn clean_counter_does_not_fire_on_integer_counter_under_deny() {
-    // THE soundness guard, end to end. Hew's integer `+` lowers to a checked
-    // add whose overflow flag branches to an `IntegerOverflow` trap, so the
-    // counter's value decides whether the program traps: removing it is
-    // semantics-changing. Even under `-D` the lint must stay silent.
-    let output = run_check(CLEAN_COUNTER_INT, &["-D", "clean_counter"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "an integer counter can trap on overflow — clean_counter must not fire:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains(CLEAN_COUNTER_MESSAGE),
-        "clean_counter must stay silent on checked integer arithmetic:\n{stderr}"
-    );
-}
-
 // ── checker-stage lint: must_use ─────────────────────────────────────
 
 /// A program that triggers `must_use`: `c.write(...)` returns
@@ -875,56 +641,61 @@ fn must_use_inline_directive_suppresses() {
     );
 }
 
-// ── checker-stage lint: must_use on a discarded `await actor.msg()` ───
+// ── checker-stage lint: must_use on a discarded `actor.msg()` result ───
 
-/// A program whose only diagnostic is `must_use`: `await d.process(5)` is
-/// discarded in statement position, dropping the `Result<i64, AskError>` it
-/// returns — a silently lost timeout / full-mailbox / stopped-actor signal.
+/// A program whose only diagnostic is `E_SEND_RESULT_DROPPED`: `d.process(5)`
+/// is discarded in statement position, dropping the `Result<i64, ActorError>`
+/// the completion call returns — a silently lost timeout / full-mailbox /
+/// stopped-actor signal. This is a compile error, not a lint.
 const ASK_MUST_USE_DISCARD: &str = "actor Doubler {\n\
      receive fn process(n: i64) -> i64 { n * 2 }\n\
      }\n\
      fn main() {\n\
      let d = spawn Doubler;\n\
-     await d.process(5);\n\
+     d.process(5);\n\
      }\n";
 
-/// The same program, but the ask result is explicitly discarded with `let _`,
-/// which the lint treats as a deliberate drop (silent).
+/// The same program, but the call result is explicitly discarded with `let _`,
+/// the deliberate drop the fix-it names (silent).
 const ASK_MUST_USE_HANDLED: &str = "actor Doubler {\n\
      receive fn process(n: i64) -> i64 { n * 2 }\n\
      }\n\
      fn main() {\n\
      let d = spawn Doubler;\n\
-     let _ = await d.process(5);\n\
+     let _ = d.process(5);\n\
      }\n";
 
-const ASK_MUST_USE_MESSAGE: &str = "an ignored ask error fails open";
+const ASK_MUST_USE_MESSAGE: &str = "E_SEND_RESULT_DROPPED";
 
 #[test]
-fn must_use_await_ask_warning_renders_by_default() {
+fn discarded_call_result_is_refused_by_default() {
     let output = run_check(ASK_MUST_USE_DISCARD, &[]);
     let stderr = stderr_of(&output);
     assert!(
-        output.status.success(),
-        "a must_use warning must not fail the build:\n{stderr}"
+        !output.status.success(),
+        "a dropped delivery outcome must fail the build:\n{stderr}"
     );
     assert!(
-        stderr.contains("warning:") && stderr.contains(ASK_MUST_USE_MESSAGE),
-        "expected the discarded-await must_use warning to render:\n{stderr}"
+        stderr.contains("error:") && stderr.contains(ASK_MUST_USE_MESSAGE),
+        "expected the discarded-result refusal to render:\n{stderr}"
     );
     assert!(
-        stderr.contains("AskError"),
-        "the warning should name the AskError type:\n{stderr}"
+        stderr.contains("ActorError"),
+        "the error should name the ActorError type:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("let _ = <expr>;"),
+        "the error should carry the explicit-discard fix-it:\n{stderr}"
     );
 }
 
 #[test]
-fn must_use_await_ask_handled_is_silent() {
+fn must_use_call_result_handled_is_silent() {
     let output = run_check(ASK_MUST_USE_HANDLED, &[]);
     let stderr = stderr_of(&output);
     assert!(output.status.success(), "check should pass:\n{stderr}");
     assert!(
         !stderr.contains(ASK_MUST_USE_MESSAGE),
-        "`let _ = await …` must not warn:\n{stderr}"
+        "`let _ = …` must be accepted:\n{stderr}"
     );
 }

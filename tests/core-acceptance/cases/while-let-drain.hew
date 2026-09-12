@@ -1,0 +1,27 @@
+//! `while let` drains an `Option`-returning helper. Each iteration
+//! re-evaluates the scrutinee, runs its own deferred cleanup, and the loop
+//! ends through both an explicit `break` and the fallthrough arm.
+
+fn next(remaining: i64) -> Option<string> {
+    if remaining > 0 { .Some(("item-" + "x")) } else { .None }
+}
+
+fn main() -> i64 {
+    var remaining = 3;
+    while let .Some(item) = next(remaining) {
+        defer { println("released"); }
+        println(item);
+        remaining = remaining - 1;
+    }
+    println("drained");
+
+    var guard = 5;
+    while let .Some(item) = next(guard) {
+        defer { println("released"); }
+        println(item);
+        if guard == 4 { break; }
+        guard = guard - 1;
+    }
+    println("stopped");
+    0
+}

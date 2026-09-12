@@ -143,7 +143,15 @@ pub(crate) fn load_module_checked(
         });
     }
 
-    let module_short = module_short_name(module_path);
+    // Extracted signatures qualify a module-local nominal with the module's
+    // short owner, and the registry later projects that spelling onto the
+    // module's canonical owner. Both spellings must come from the same
+    // authority: a directory-module peer (`std.net.http.http_async_server`)
+    // is owned by its package (`std.net.http`), so it extracts as `http.T`,
+    // not `http_async_server.T`, or the projection has nothing to join.
+    let module_short = crate::module_registry::canonical_stdlib_module_for_source(&hew_path)
+        .and_then(|owner| owner.rsplit('.').next().map(str::to_string))
+        .unwrap_or_else(|| module_short_name(module_path));
     let mut info = extract_module_info(&result.program, &module_short);
     info.source_path = Some(hew_path);
     info.source_items = result.program.items;
@@ -158,7 +166,7 @@ pub(crate) fn load_module_checked(
 ///
 /// For ecosystem modules (e.g. `ecosystem::db::postgres`), the root is
 /// `ecosystem/` instead of `std/`.
-fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::path::PathBuf> {
+pub(crate) fn resolve_hew_path(module_path: &str, root: &Path) -> Option<std::path::PathBuf> {
     let segments: Vec<&str> = module_path.split("::").collect();
     if segments.is_empty() {
         return None;
@@ -414,36 +422,6 @@ fn collect_wrapper_resource_fields(
         .collect()
 }
 
-/// Return the first `(wrapper_qualified, handle_qualified)` pair where a fielded
-/// `#[resource]` handle-wrapper type shares its SHORT name with a fieldless
-/// `#[opaque]` handle type, or `None` if the two sets are short-name-disjoint.
-///
-/// This is the fail-closed guard behind `Checker::receiver_is_opaque_handle`,
-/// which decides whether a handle-method call is rewritten to a direct extern
-/// (receiver passed as the handle pointer) or dispatched through its impl body.
-/// That predicate qualifies a bare receiver name against `handle_types` by SHORT
-/// name (`qualify_handle_type`), so a wrapper whose short name collided with a
-/// fieldless handle in another loaded module would be silently re-admitted to the
-/// by-value rewrite — passing the whole `%Wrapper` struct to a pointer-typed
-/// extern. The invariant holds across the current stdlib (wrappers and handles
-/// have disjoint short names, e.g. `Pattern` vs `PatternHandle`); the registry
-/// checks it at load time so a future collision fails closed instead of
-/// miscompiling.
-pub(crate) fn resource_wrapper_shadowing_handle<'a>(
-    handle_types: &'a HashSet<String>,
-    resource_wrapper_types: &'a HashSet<String>,
-) -> Option<(&'a str, &'a str)> {
-    let handle_by_short: HashMap<&str, &str> = handle_types
-        .iter()
-        .map(|h| (crate::short_name(h), h.as_str()))
-        .collect();
-    resource_wrapper_types.iter().find_map(|w| {
-        handle_by_short
-            .get(crate::short_name(w))
-            .map(|h| (w.as_str(), *h))
-    })
-}
-
 /// Resolve an `impl` block's target type to its fully-qualified name,
 /// prefixing the module short name when the target is unqualified.
 fn qualified_impl_type_name(impl_decl: &ImplDecl, module_short: &str) -> Option<String> {
@@ -571,15 +549,22 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
             .as_deref()
             .is_some_and(|args| args.iter().any(|arg| type_expr_contains_borrow(&arg.0))),
         TypeExpr::QualifiedAssocPath(path) => type_expr_contains_borrow(&path.base.0),
-        TypeExpr::Result { ok, err } => {
-            type_expr_contains_borrow(&ok.0) || type_expr_contains_borrow(&err.0)
-        }
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => type_expr_contains_borrow(&ok.0) || type_expr_contains_borrow(&err.0),
         TypeExpr::Option(inner) | TypeExpr::Slice(inner) => type_expr_contains_borrow(&inner.0),
         TypeExpr::Tuple(elements) => elements
             .iter()
             .any(|element| type_expr_contains_borrow(&element.0)),
         TypeExpr::Array { element, .. } => type_expr_contains_borrow(&element.0),
         TypeExpr::Function {
+            params,
+            return_type,
+            ..
+        }
+        | TypeExpr::ActorFn {
             params,
             return_type,
         } => {
@@ -828,7 +813,11 @@ fn type_expr_to_ty_with_params_and_context(
             type_params,
             context,
         )),
-        TypeExpr::Result { ok, err } => Ty::result(
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => Ty::result(
             type_expr_to_ty_with_params_and_context(&ok.0, module_short, type_params, context),
             type_expr_to_ty_with_params_and_context(&err.0, module_short, type_params, context),
         ),
@@ -860,10 +849,37 @@ fn type_expr_to_ty_with_params_and_context(
             )],
         ),
         TypeExpr::Infer => Ty::Error,
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let resolved: Vec<Ty> = params
+                .iter()
+                .map(|(te, _)| {
+                    type_expr_to_ty_with_params_and_context(te, module_short, type_params, context)
+                })
+                .collect();
+            let msg = match resolved.len() {
+                0 => Ty::Unit,
+                1 => resolved.into_iter().next().unwrap_or(Ty::Error),
+                _ => Ty::Tuple(resolved),
+            };
+            Ty::actor_fn(
+                msg,
+                type_expr_to_ty_with_params_and_context(
+                    &return_type.0,
+                    module_short,
+                    type_params,
+                    context,
+                ),
+            )
+        }
         TypeExpr::Function {
+            capabilities,
             params,
             return_type,
         } => Ty::Function {
+            capabilities: *capabilities,
             params: params
                 .iter()
                 .map(|(te, _)| {
@@ -954,10 +970,10 @@ fn call_target_from_expr(expr: &Expr) -> Option<(String, usize)> {
                 // like `port as i32`. The cast form preserves arity and the
                 // argument's identity; it is used at the stdlib `int` → C-ABI
                 // narrowing seam (INTERNAL-ABI). A compound body such as
-                // `hew_bytes_to_string(hew_tcp_read(conn))` must NOT be
+                // `encode(hew_tcp_read(conn))` must NOT be
                 // registered as a single-step C pass-through, because the
                 // enricher would then rewrite `conn.read_string()` to
-                // `hew_bytes_to_string(conn)` — dropping the inner call and
+                // `encode(conn)` — dropping the inner call and
                 // passing an i32 fd where bytes are expected.
                 let all_direct = args.iter().all(|arg| is_pass_through_arg(&arg.expr().0));
                 if all_direct {
@@ -1339,7 +1355,12 @@ fn extract_handle_methods(
                 c_symbol,
                 params,
                 return_type,
-                dispatch_through_impl: dispatch_through_impl || inherent_resource_close,
+                // Resource methods keep their authored conversions and
+                // suspension boundaries; the extern inside the body has the
+                // exact runtime ABI signature.
+                dispatch_through_impl: dispatch_through_impl
+                    || inherent_resource_close
+                    || resource_type_names.contains(&type_name),
             });
         }
     }
@@ -1406,6 +1427,37 @@ mod tests {
     }
 
     #[test]
+    fn directory_peer_extracts_under_the_package_owner() {
+        // A peer of a directory module is owned by the package, so its
+        // extracted signatures must qualify a module-local nominal with the
+        // PACKAGE's short owner. The registry projects that spelling onto the
+        // package's canonical owner; a peer that extracted under its own file
+        // name would leave the projection nothing to join and the declaration
+        // would carry two identities.
+        let root = test_root();
+        let peer = load_module("std::net::http::http_async_server", &root)
+            .expect("http_async_server loads");
+        let parse_request = peer
+            .wrapper_fns
+            .iter()
+            .find(|wrapper| wrapper.name == "parse_request")
+            .expect("parse_request is a public wrapper");
+        assert_eq!(
+            parse_request.return_type,
+            Ty::named("http.AsyncRequest", vec![]),
+        );
+
+        // Negative control: a module that owns itself keeps its own short
+        // owner, so the projection is not simply dropping the leaf segment.
+        let flat = load_module("std::encoding::json", &root).expect("json loads");
+        assert!(
+            flat.handle_types.iter().any(|name| name == "json.Value"),
+            "a self-owned module keeps its own short owner: {:?}",
+            flat.handle_types,
+        );
+    }
+
+    #[test]
     fn load_json_module() {
         let info = load_module("std::encoding::json", &test_root());
         assert!(info.is_some(), "should load json module");
@@ -1423,16 +1475,16 @@ mod tests {
             "json module should declare json.Value handle type"
         );
         assert!(
-            info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value is a `#[resource]` handle and must be a drop type"
+            !info.drop_types.contains(&"json.Value".to_string()),
+            "json.Value uses managed value cleanup without resource registration"
         );
         assert_eq!(
             info.drop_funcs
                 .iter()
                 .find(|(ty, _)| ty == "json.Value")
                 .map(|(_, drop_fn)| drop_fn.as_str()),
-            Some("hew_json_free"),
-            "json.Value.close must register its sole raw disposer"
+            None,
+            "json.Value must not register a resource close disposer"
         );
 
         // Should have clean name mapping for "parse"
@@ -1509,31 +1561,56 @@ mod tests {
     }
 
     #[test]
-    fn load_http_module_registers_handle_methods_through_abi_width_casts() {
-        // `impl RequestMethods for Request` validates the status before forwarding
-        // it through an i32 ABI cast. The loader must retain the imported method
-        // signatures, but the guard means each call must dispatch through the
-        // real impl body rather than bypassing validation with a direct extern
-        // rewrite.
-        let info =
-            load_module("std::net::http", &test_root()).expect("should load std::net::http module");
+    fn imported_http_response_methods_preserve_result_signatures() {
+        let parsed = parse(
+            r#"
+            import std.net;
+            import std.net.http;
+            fn reply(req: http.Request) {
+                let _: Result<(), net.NetError> = req.respond(200, "text/plain", "hello");
+                let _: Result<(), net.NetError> = req.respond_text(200, "hello");
+                let _: Result<(), net.NetError> = req.respond_json(200, "{}");
+                let _: Result<Sink<string>, net.NetError> = req.respond_stream(200, "text/plain");
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![
+            test_root(),
+        ]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+    }
 
-        for method in ["respond", "respond_text", "respond_json", "respond_stream"] {
-            let handle_method = info
-                .handle_methods
-                .iter()
-                .find(|m| m.type_name == "http.Request" && m.method_name == method);
-            assert!(
-                handle_method.is_some(),
-                "http.Request.{method} should retain its imported method signature \
-                 after adding a status-validation guard"
-            );
-            assert!(
-                handle_method.is_some_and(|m| m.dispatch_through_impl),
-                "http.Request.{method} must dispatch through its impl body so its \
-                 status-validation guard cannot be bypassed"
-            );
-        }
+    #[test]
+    fn imported_network_text_reads_preserve_validation_errors() {
+        let parsed = parse(
+            r"
+            import std.net;
+            import std.net.quic;
+            import std.encoding.utf8;
+            fn tcp(conn: net.Connection) {
+                let _: Result<string, utf8.Utf8Error> = conn.read_string();
+                let _: Result<string, net.ReadStringError> = conn.try_read_string();
+            }
+            fn quic_read(stream: quic.QUICStream) {
+                let _: Result<string, utf8.Utf8Error> = stream.recv_string();
+                let _: Result<string, utf8.Utf8Error> = quic.stream_recv_string(stream);
+            }
+            fn describe(error: net.ReadStringError) -> string {
+                match error {
+                    .Network(reason) => to_string(reason),
+                    .InvalidUtf8(reason) => to_string(reason),
+                }
+            }
+        ",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![
+            test_root(),
+        ]))
+        .check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 
     #[test]
@@ -1554,12 +1631,11 @@ mod tests {
 
         let rewrites_read_string = info.handle_methods.iter().any(|m| {
             m.type_name == "net.Connection"
-                && m.method_name == "read_string"
-                && m.c_symbol == "hew_bytes_to_string"
+                && matches!(m.method_name.as_str(), "read_string" | "try_read_string")
         });
         assert!(
             !rewrites_read_string,
-            "net.Connection.read_string should remain a Hew wrapper, not alias hew_bytes_to_string"
+            "net.Connection text reads must retain their source-level validation and error handling"
         );
 
         let rewrites_write_string = info.handle_methods.iter().any(|m| {
@@ -1590,17 +1666,10 @@ mod tests {
         assert!(info.is_some(), "should load process module");
         let info = info.unwrap();
 
-        for name in ["try_run", "run", "try_run_argv", "run_argv", "start"] {
+        for name in ["run", "run_argv", "run_args", "start", "start_argv"] {
             assert!(
                 info.wrapper_fns.iter().any(|f| f.name == name),
                 "process module should expose `{name}`"
-            );
-        }
-
-        for name in ["try_run_args", "run_args"] {
-            assert!(
-                info.wrapper_fns.iter().any(|f| f.name == name),
-                "process module should retain legacy `{name}` wrapper for compatibility"
             );
         }
         assert!(
@@ -1827,38 +1896,6 @@ mod tests {
     }
 
     #[test]
-    fn channel_signatures_use_canonical_builtin_names() {
-        let info = load_module("std::channel", &test_root()).unwrap();
-
-        let clone_sig = info
-            .functions
-            .iter()
-            .find(|f| f.name == "hew_channel_sender_clone")
-            .expect("channel module should expose sender clone");
-        assert_eq!(
-            clone_sig.params,
-            vec![Ty::normalize_named("Sender".to_string(), vec![])]
-        );
-        assert_eq!(
-            clone_sig.return_type,
-            Ty::normalize_named("Sender".to_string(), vec![])
-        );
-
-        let new_sig = info
-            .wrapper_fns
-            .iter()
-            .find(|f| f.name == "new")
-            .expect("channel module should expose new()");
-        assert_eq!(
-            new_sig.return_type,
-            Ty::Tuple(vec![
-                Ty::normalize_named("Sender".to_string(), vec![]),
-                Ty::normalize_named("Receiver".to_string(), vec![]),
-            ])
-        );
-    }
-
-    #[test]
     fn wrapper_fns_extracted() {
         let info = load_module("std::misc::log", &test_root()).unwrap();
 
@@ -1907,9 +1944,14 @@ mod tests {
         let info = load_module("std::net::http", &test_root()).unwrap();
 
         let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
-        assert!(
-            request_drop.is_none(),
-            "http.Request.close forwards through its handle field, so no direct drop func is registered, got: {:?}",
+        assert_eq!(
+            request_drop,
+            Some(&(
+                "http.Request".to_string(),
+                "hew_http_request_free".to_string()
+            )),
+            "http.Request.close consumes the handle itself, so it registers a \
+             direct drop func: {:?}",
             info.drop_funcs
         );
 
@@ -1922,25 +1964,6 @@ mod tests {
             )),
             "http.Server should register its exact raw disposer: {:?}",
             info.drop_funcs
-        );
-    }
-
-    #[test]
-    fn json_module_resource_registers_close_disposer() {
-        let info = load_module("std::encoding::json", &test_root()).unwrap();
-
-        assert!(
-            info.drop_types.contains(&"json.Value".to_string()),
-            "json.Value should be a drop type, got: {:?}",
-            info.drop_types
-        );
-        assert_eq!(
-            info.drop_funcs
-                .iter()
-                .find(|(ty, _)| ty == "json.Value")
-                .map(|(_, drop_fn)| drop_fn.as_str()),
-            Some("hew_json_free"),
-            "json.Value should register its direct close disposer"
         );
     }
 
@@ -2108,37 +2131,13 @@ mod tests {
     }
 
     #[test]
-    fn resource_wrapper_shadowing_handle_flags_short_name_collision() {
-        // Distinct short names (the real stdlib shape: `Pattern` vs
-        // `PatternHandle`) must NOT be reported as a collision.
-        let handles: HashSet<String> = ["a.Widget".to_string(), "regex.PatternHandle".to_string()]
-            .into_iter()
-            .collect();
-        let disjoint: HashSet<String> = ["regex.Pattern".to_string()].into_iter().collect();
-        assert_eq!(
-            resource_wrapper_shadowing_handle(&handles, &disjoint),
-            None,
-            "disjoint short names must not trip the guard"
-        );
-
-        // A wrapper whose SHORT name matches a fieldless handle in another module
-        // must be reported (the collision that would re-admit it to the rewrite).
-        let colliding: HashSet<String> = ["c.Widget".to_string()].into_iter().collect();
-        assert_eq!(
-            resource_wrapper_shadowing_handle(&handles, &colliding),
-            Some(("c.Widget", "a.Widget")),
-            "a wrapper sharing a handle's short name must be flagged fail-closed"
-        );
-    }
-
-    #[test]
     fn wrapper_forward_rejects_non_receiver_field_access() {
         // `bad` forwards `other.handle` — a declared field, but on a *different*
         // binding than the receiver. Only a genuine `self.<field>` forward may
         // register; `good` (forwarding the receiver's own field) is the control.
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap) -> i64 { unsafe { c_use(w.handle) } }\n\
              \x20   fn bad(w: Wrap, other: Wrap) -> i64 { unsafe { c_use(other.handle) } }\n\
@@ -2174,7 +2173,7 @@ mod tests {
              #[opaque]\n\
              type RequestHandle {}\n\
              #[resource]\n\
-             pub type Request { handle: RequestHandle; }\n\
+             pub type Request { handle: RequestHandle, }\n\
              impl Server {\n\
              \x20   fn accept(server: Server) -> Request {\n\
              \x20       unsafe { Request { handle: c_accept(server) } }\n\
@@ -2205,8 +2204,8 @@ mod tests {
         // `good` (constructing `Wrap`) is the control.
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
-             pub type Other { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
+             pub type Other { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap) -> Wrap { unsafe { Wrap { handle: c_clone(w.handle) } } }\n\
              \x20   fn bad(w: Wrap) -> Other { unsafe { Other { handle: c_clone(w.handle) } } }\n\
@@ -2241,7 +2240,7 @@ mod tests {
         // control.
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap) -> i64 { unsafe { c_use(w.handle) } }\n\
              \x20   fn bad(w: Wrap) -> i64 { helper(w.handle) }\n\
@@ -2274,7 +2273,7 @@ mod tests {
     fn guarded_wrapper_forward_requires_single_early_return_guard() {
         let result = parse(
             "#[resource]\n\
-             pub type Wrap { handle: i64; }\n\
+             pub type Wrap { handle: i64, }\n\
              impl Wrap {\n\
              \x20   fn good(w: Wrap, status: i64) -> i64 {\n\
              \x20       if status < 0 { return -1; }\n\

@@ -1,0 +1,11 @@
+[[case]]
+id = "affine-destructure-fault"
+intent = "Failure after a pattern field transfer releases the retained resource and heap-owning sibling without releasing the transferred field again."
+source = "cases/affine-destructure-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close TAKEN\nSIBLING\nclose RETAINED\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

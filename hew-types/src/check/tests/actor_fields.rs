@@ -11,13 +11,13 @@ fn non_send_actor_state_points_to_the_owning_actor_pattern() {
     let output = check_source(
         r"
 actor Holder {
-    let value: Rc<i64>;
+    let value: Rc<i64>,
     receive fn count() -> i64 { value.strong_count() }
 }
 
 fn main() {
     let holder = spawn Holder(value: Rc.new(1));
-    let _ = await holder.count();
+    let _ = holder.count();
 }
 ",
     );
@@ -34,13 +34,13 @@ fn sendable_actor_state_has_no_owning_actor_help() {
     let output = check_source(
         r"
 actor Holder {
-    let value: i64;
+    let value: i64,
     receive fn get() -> i64 { value }
 }
 
 fn main() {
     let holder = spawn Holder(value: 1);
-    let _ = await holder.get();
+    let _ = holder.get();
 }
 ",
     );
@@ -76,7 +76,7 @@ fn let_field_assignment_in_receive_fn_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn bump() {
         count = count + 1;
     }
@@ -114,7 +114,7 @@ fn bare_field_assignment_in_receive_fn_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    count: i64;
+    count: i64,
     receive fn bump() {
         count = count + 1;
     }
@@ -134,7 +134,7 @@ fn compound_assignment_to_let_field_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn bump() {
         count += 1;
     }
@@ -154,7 +154,7 @@ fn let_field_assignment_in_actor_method_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn poke() {
         bump();
     }
@@ -172,7 +172,7 @@ actor Counter {
     );
 }
 
-// ── LocalPid<T> dispatch rejects plain (non-receive) actor methods ─────────
+// ── actor-handle dispatch rejects plain (non-receive) actor methods ───────
 //
 // `pid.method(...)` may only reach a `receive fn` handler — MIR's actor
 // handler layout is built from `receive_fns` only, so a plain `fn` has no
@@ -184,7 +184,7 @@ fn pid_call_to_plain_actor_method_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     fn bump() { n = n + 1; }
     receive fn get() -> i64 { n }
 }
@@ -225,7 +225,7 @@ fn pid_call_to_plain_send_method_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    var n: i64 = 0;
+    var n: i64 = 0,
     fn send() { n = n + 1; }
 }
 fn main() {
@@ -242,7 +242,7 @@ fn main() {
     assert_eq!(
         undefined_method.len(),
         1,
-        "a plain `fn send` must not satisfy LocalPid's own `send`; got: {:#?}",
+        "a plain `fn send` must not satisfy the actor handle's own `send`; got: {:#?}",
         output.errors
     );
     let msg = &undefined_method[0].message;
@@ -260,7 +260,7 @@ fn main() {
 fn pid_call_to_receive_fn_still_dispatches() {
     let output = check_source(
         "actor Doubler { receive fn process(n: i64) -> i64 { n * 2 } }\n\
-         fn main() { let d = spawn Doubler; await d.process(5); }",
+         fn main() { let d = spawn Doubler; _ = d.process(5); }",
     );
     assert!(
         output.errors.is_empty(),
@@ -272,16 +272,16 @@ fn pid_call_to_receive_fn_still_dispatches() {
 #[test]
 fn plain_method_self_call_from_receive_fn_does_not_gain_undefined_method() {
     // Bare-name self-dispatch (`bump()` with no receiver) never reaches the
-    // `LocalPid<T>` match arm — it resolves through call-expression lookup
+    // actor-handle match arm — it resolves through call-expression lookup
     // (`hew-types/src/check/calls.rs`), a distinct path, which since #3285
     // resolves it to the enclosing actor's own method. This test pins the
     // regression boundary for the pid-dispatch guard: the guard in the
-    // `LocalPid<T>` arm must not additionally fire `UndefinedMethod` on a
+    // actor-handle arm must not additionally fire `UndefinedMethod` on a
     // fixture it was never meant to see.
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn poke() {
         bump();
     }
@@ -296,7 +296,7 @@ actor Counter {
             .errors
             .iter()
             .any(|e| matches!(e.kind, TypeErrorKind::UndefinedMethod)),
-        "bare self-dispatch never reaches the LocalPid<T> arm, so the new \
+        "bare self-dispatch never reaches the actor-handle arm, so the new \
          pid-dispatch guard must not fire UndefinedMethod here; got: {:#?}",
         output.errors
     );
@@ -313,7 +313,7 @@ fn bare_call_to_sibling_actor_method_resolves() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
     receive fn bump() { count = helper(); }
 }
@@ -335,7 +335,7 @@ fn bare_call_to_actor_method_prefers_a_free_function_of_the_same_name() {
         r#"
 fn helper() -> string { "free" }
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
     receive fn bump() { let picked: string = helper(); println(picked); }
 }
@@ -353,11 +353,11 @@ fn bare_call_to_another_actors_method_is_undefined() {
     let output = check_source(
         r"
 actor Other {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
 }
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() { count = helper(); }
 }
 ",
@@ -377,7 +377,7 @@ fn qualified_actor_method_call_from_main_is_refused_on_the_user_channel() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
     receive fn bump() { count = helper(); }
 }
@@ -411,11 +411,11 @@ fn qualified_actor_method_call_from_a_different_actor_is_refused() {
     let output = check_source(
         r"
 actor Other {
-    var count: i64 = 0;
+    var count: i64 = 0,
     fn helper() -> i64 { count + 1 }
 }
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     receive fn bump() { count = Other.helper(); }
 }
 ",
@@ -438,7 +438,7 @@ fn bare_call_to_a_lifecycle_hook_stays_undefined() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64 = 0;
+    var count: i64 = 0,
     #[on(start)]
     fn started() { count = 1; }
     receive fn bump() { started(); }
@@ -460,7 +460,7 @@ fn let_field_assignment_in_on_stop_hook_is_rejected() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn poke() {}
     #[on(stop)]
     fn drain() {
@@ -482,7 +482,7 @@ fn let_field_assignment_in_init_is_accepted() {
     let output = check_source(
         r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     init(initial: i64) {
         count = initial;
     }
@@ -504,7 +504,7 @@ fn var_field_assignment_in_receive_fn_is_accepted() {
     let output = check_source(
         r"
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn bump() {
         count = count + 1;
     }
@@ -523,8 +523,8 @@ fn let_field_read_in_receive_fn_is_accepted() {
     let output = check_source(
         r"
 actor Counter {
-    let step: i64;
-    var count: i64;
+    let step: i64,
+    var count: i64,
     receive fn bump() {
         count = count + step;
     }
@@ -545,32 +545,20 @@ actor Counter {
 //
 // Validation behaviours for the periodic-handler attribute: interval floor,
 // handler shape (params / return / generator), attribute arity, and the
-// supervisor-child rejection (periodic timers are armed by spawn-site
-// codegen, which the supervisor child-spec spawn path never reaches).
+// acceptance of periodic handlers on supervisor children.
 mod every_attribute {
     use super::*;
 
     fn invalid_op_contains(output: &TypeCheckOutput, fragment: &str) -> bool {
         output.errors.iter().any(|e| {
-            // Most `#[every]` diagnostics use the generic `InvalidOperation`
-            // kind; the two supervisor-periodic-child cases now carry the
-            // distinct `SupervisorError { PeriodicChild }` kind (#2377). Accept
-            // either so this fragment helper keeps checking the diagnostic body
-            // regardless of which of the two related kinds emitted it.
-            matches!(
-                e.kind,
-                TypeErrorKind::InvalidOperation
-                    | TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::PeriodicChild,
-                    }
-            ) && e.message.contains(fragment)
+            matches!(e.kind, TypeErrorKind::InvalidOperation) && e.message.contains(fragment)
         })
     }
 
     #[test]
     fn valid_millisecond_interval_accepted() {
         let output = check_source(
-            "actor Ticker { var count: i64 = 0; #[every(50ms)] receive fn tick() { count += 1; } } fn main() {}",
+            "actor Ticker { var count: i64 = 0, #[every(50ms)] receive fn tick() { count += 1; } } fn main() {}",
         );
         assert!(
             output.errors.is_empty(),
@@ -659,7 +647,7 @@ mod every_attribute {
     }
 
     #[test]
-    fn supervisor_child_with_periodic_handler_rejected() {
+    fn supervisor_child_with_periodic_handler_accepted() {
         let output = check_source(
             r"
             actor Heartbeat {
@@ -668,37 +656,15 @@ mod every_attribute {
             }
 
             supervisor App {
-                child hb: Heartbeat;
+                child hb: Heartbeat,
             }
 
             fn main() {}
             ",
         );
         assert!(
-            invalid_op_contains(&output, "E_SUPERVISOR_PERIODIC_CHILD"),
-            "supervisor child spawns never reach spawn-site timer arming; got: {:#?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn supervisor_child_without_periodic_handler_accepted() {
-        let output = check_source(
-            r"
-            actor Worker {
-                receive fn work() {}
-            }
-
-            supervisor App {
-                child w: Worker;
-            }
-
-            fn main() {}
-            ",
-        );
-        assert!(
-            !invalid_op_contains(&output, "E_SUPERVISOR_PERIODIC_CHILD"),
-            "the accept twin: a message-driven child must not trip the periodic check; got: {:#?}",
+            output.errors.is_empty(),
+            "supervisor children use the ordinary actor timer contract; got: {:#?}",
             output.errors
         );
     }
@@ -764,7 +730,7 @@ mod every_attribute {
         // `let Point { x, y } = p;` — irrefutable product type in let position.
         // Must emit zero checker errors; binders x and y must resolve.
         let output = check_source(
-            "type Point { x: i64; y: i64; }
+            "type Point { x: i64, y: i64, }
              fn main() -> i64 { let p = Point { x: 1, y: 2 }; let Point { x, y } = p; x + y }",
         );
         assert!(
@@ -902,7 +868,7 @@ mod every_attribute {
         // pattern resolution must be recorded so HIR lowering does not cascade
         // into "pattern has no resolution" / verifier leakage.
         let output = check_source(
-            "enum E { A; B(i64); }
+            "enum E { A, B(i64), }
              fn make_e(g: bool) -> E { if g { E.A } else { E.B(3) } }
              fn f(g: bool) -> Result<i64, string> { let E.A = make_e(g) else { return Err(\"x\") }; Ok(1) }",
         );
@@ -1069,7 +1035,7 @@ mod every_attribute {
         // `let { x, y } = p` — shorthand with no type name must bind both
         // fields with zero checker errors.
         let output = check_source(
-            "type Point { x: i64; y: i64; }
+            "type Point { x: i64, y: i64, }
              fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, y } = p; x + y }",
         );
         assert!(
@@ -1084,7 +1050,7 @@ mod every_attribute {
         // `let { x, z } = p` where `z` does not exist on `Point` must emit
         // exactly one UndefinedField error (not cascade into UnresolvedSymbol).
         let output = check_source(
-            "type Point { x: i64; y: i64; }
+            "type Point { x: i64, y: i64, }
              fn main() -> i64 { let p = Point { x: 1, y: 2 }; let { x, z } = p; x }",
         );
         let undef_field: Vec<_> = output
@@ -1179,7 +1145,7 @@ mod every_attribute {
                 _ => None,
             })
             .expect("root should have an import");
-        import_decl.resolved_items = Some(handles_src.program.items.clone());
+        import_decl.resolved_items = Some(handles_src.program.items.clone().into());
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&root.program);
@@ -1235,7 +1201,7 @@ mod every_attribute {
                 _ => None,
             })
             .expect("root should have an import");
-        import_decl.resolved_items = Some(handles_src.program.items.clone());
+        import_decl.resolved_items = Some(handles_src.program.items.clone().into());
 
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&root.program);
@@ -1273,7 +1239,7 @@ mod every_attribute {
         // A plain struct (not `#[opaque]`) must still construct without error.
         let output = check_source(
             r"
-            type Point { x: i64; y: i64; }
+            type Point { x: i64, y: i64, }
 
             fn main() -> i64 {
                 let p = Point { x: 1, y: 2 };
@@ -1657,9 +1623,9 @@ mod reserved_names {
         let output = check_source(
             r#"
             enum AppError {
-                NotFound(string);
-                Timeout;
-                Forbidden;
+                NotFound(string),
+                Timeout,
+                Forbidden,
             }
 
             fn get_error() -> AppError {
@@ -1689,8 +1655,8 @@ mod reserved_names {
         let output = check_source(
             r"
             enum Status {
-                Timeout;
-                Ready;
+                Timeout,
+                Ready,
             }
 
             fn check_timeout(s: Status) -> bool {
@@ -1756,8 +1722,8 @@ mod reserved_names {
         // to whichever won the slot — no type error.
         let output = check_source(
             r"
-            enum A { Conflict; }
-            enum B { Conflict; }
+            enum A { Conflict, }
+            enum B { Conflict, }
 
             fn main() {
                 let _x = Conflict;
@@ -1786,8 +1752,8 @@ mod reserved_names {
         let output = check_source_allowing_prelude_redeclaration(
             r#"
             enum Task {
-                Pending;
-                Done;
+                Pending,
+                Done,
             }
 
             fn describe(t: Task) -> string {
@@ -1834,4 +1800,438 @@ mod reserved_names {
             output.errors
         );
     }
+}
+
+// ── Deferred init fields (D447) ──────────────────────────────────────────
+//
+// A field without a default that `init` assigns is init's to initialize: it
+// is uninitialized on entry, must be stored on every path before init
+// finishes, may be read only after its store, and a spawn cannot name it.
+
+fn deferred_field_errors(output: &TypeCheckOutput, code: &str) -> Vec<String> {
+    output
+        .errors
+        .iter()
+        .filter(|e| e.message.starts_with(code))
+        .map(|e| e.message.clone())
+        .collect()
+}
+
+#[test]
+fn deferred_field_initialized_in_every_arm_is_accepted() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    let count: i64,
+    init(name: string, fast: bool) {
+        count = 1;
+        if fast { label = name; } else { label = name.to_upper(); }
+        label = label + "!";
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready", fast: true);
+    let _ = worker.label();
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "unconditional initialization must be accepted: {:#?}",
+        output.errors
+    );
+    assert_eq!(
+        output.actor_deferred_field_decls.len(),
+        2,
+        "both assigned fields are deferred to init"
+    );
+    assert_eq!(
+        output.actor_init_first_stores.len(),
+        3,
+        "count once and label in each arm; the trailing assignment replaces a value"
+    );
+}
+
+#[test]
+fn deferred_field_read_before_its_store_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string) {
+        let seen = label;
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors.iter().any(|e| e.contains("`label` is read before")),
+        "read before the first store must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_missing_on_one_arm_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string, fast: bool) {
+        if fast { label = name; }
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready", fast: true);
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_CONDITIONAL_INIT");
+    assert!(
+        errors.iter().any(|e| e.contains("`label`")),
+        "a one-armed initialization must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_left_uninitialized_at_return_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    var count: i64,
+    init(name: string) {
+        count = 1;
+        if name == "" { return; }
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("can return without initializing state field `label`")),
+        "an early return must initialize every deferred field: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_initialized_inside_a_loop_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(names: Vec<string>) {
+        for name in names { label = name; }
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(names: ["a"]);
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_CONDITIONAL_INIT");
+    assert!(
+        errors.iter().any(|e| e.contains("`label`")),
+        "a loop-body initialization must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn spawn_naming_a_deferred_field_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string) {
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(label: "ready", name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_DEFERRED");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("`label` of actor `Worker` is initialized by `init`")),
+        "a spawn cannot supply a field init initializes: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn defaulted_or_parameter_shadowed_fields_are_not_deferred() {
+    // A field with a default is never deferred to init, regardless of what
+    // init assigns or names its parameters.
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string = "start",
+    init(suffix: string) {
+        label = label + suffix;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(suffix: "!");
+    let _ = worker.label();
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a defaulted field is replaced by init, no diagnostic expected: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.actor_deferred_field_decls.is_empty(),
+        "a defaulted field is never deferred to init"
+    );
+
+    // D458: an init parameter sharing a field's name is refused outright,
+    // not treated as the field's initializer (D447's retired carve-out).
+    let shadowed = check_source(
+        r"
+actor Bag {
+    var count: i64,
+    init(count: i64) {
+        count = count;
+    }
+    receive fn get() -> i64 { count }
+}
+
+fn main() {
+    let bag = spawn Bag(count: 1);
+    let _ = bag.get();
+}
+",
+    );
+    assert!(
+        shadowed
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message
+                    .contains("variable `count` shadows a binding in an outer scope")),
+        "an init parameter named like a field must be refused: {:#?}",
+        shadowed.errors
+    );
+
+    // Positive control: a differently named parameter is not a shadow and
+    // is accepted plainly.
+    let accepted = check_source(
+        r"
+actor Bag {
+    var count: i64,
+    init(initial: i64) {
+        count = initial;
+    }
+    receive fn get() -> i64 { count }
+}
+
+fn main() {
+    let bag = spawn Bag(initial: 1);
+    let _ = bag.get();
+}
+",
+    );
+    assert!(
+        accepted.errors.is_empty(),
+        "a differently named init parameter is not a shadow: {:#?}",
+        accepted.errors
+    );
+}
+
+#[test]
+fn spawn_plus_init_parameter_of_the_same_name_is_refused() {
+    // D458: a spawn-supplied field plus an init parameter of the same name
+    // used to feed both from one label (D447); now the parameter's name
+    // collides with the field the moment `init` declares it, and the
+    // actor is refused rather than accepted with the ambiguous binding.
+    let output = check_source(
+        r"
+actor Bag {
+    var items: i64,
+    init(items: i64) {
+        items = items;
+    }
+    receive fn get() -> i64 { items }
+}
+
+fn main() {
+    let bag = spawn Bag(items: 3);
+    let _ = bag.get();
+}
+",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| e.kind == TypeErrorKind::Shadowing
+                && e.message
+                    .contains("variable `items` shadows a binding in an outer scope")),
+        "an init parameter named like a spawn-supplied field must be refused: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_method_call_before_its_store_is_rejected() {
+    // A plain actor method reads the whole state, so calling one while a
+    // deferred field still awaits its store would observe an empty seat.
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    fn describe() -> string { label }
+    init(name: string) {
+        let seen = describe();
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("`describe`") && e.contains("`label`")),
+        "a method call before the first store must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_self_read_before_its_store_is_rejected() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    init(name: string) {
+        let seen = self.label;
+        label = name;
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    let errors = deferred_field_errors(&output, "E_ACTOR_FIELD_UNINITIALIZED");
+    assert!(
+        errors.iter().any(|e| e.contains("`label` is read before")),
+        "a `self.` read before the first store must be rejected: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn deferred_field_method_call_after_every_store_is_accepted() {
+    let output = check_source(
+        r#"
+actor Worker {
+    var label: string,
+    let count: i64,
+    fn describe() -> string { if count > 0 { label } else { "" } }
+    init(name: string) {
+        label = name;
+        count = 1;
+        println(describe());
+    }
+    receive fn label() -> string { label }
+}
+
+fn main() {
+    let worker = spawn Worker(name: "ready");
+    let _ = worker.label();
+}
+"#,
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a method call after every deferred store must be accepted: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn an_unshadowed_immutable_field_write_keeps_the_field_diagnostic() {
+    // With no parameter in the way, a write to an immutable field outside
+    // `init` still reports the field and still suggests `var`. (An init
+    // parameter sharing the field's name is refused outright under D458 —
+    // see `defaulted_or_parameter_shadowed_fields_are_not_deferred` — so it
+    // no longer reaches an assignment-target diagnostic at all.)
+    let output = check_source(
+        r"
+actor Bag {
+    let items: i64 = 0,
+    receive fn bump() {
+        items = 1;
+    }
+}
+
+fn main() {
+    let bag = spawn Bag;
+    let _ = bag.bump();
+}
+",
+    );
+    let error = output
+        .errors
+        .iter()
+        .find(|error| {
+            error
+                .message
+                .contains("cannot assign to immutable field `items` outside `init`")
+        })
+        .unwrap_or_else(|| panic!("expected the field diagnostic; got: {:#?}", output.errors));
+    assert!(
+        error.suggestions.iter().any(|s| s.contains("var")),
+        "the unshadowed case still asks for `var`; got: {error:#?}"
+    );
 }

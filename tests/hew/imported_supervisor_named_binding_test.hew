@@ -8,27 +8,27 @@ import tests.hew.imported_supervisor_named_binding_support.worker.{Worker as Ren
 import std.testing;
 
 supervisor DirectPool {
-    strategy: one_for_one;
+    strategy: one_for_one,
 
-    child worker: Worker(id: 31) restart: temporary;
+    child worker: Worker(id: 31) restart: temporary,
 }
 
 supervisor AliasedPool {
-    strategy: one_for_one;
+    strategy: one_for_one,
 
-    child worker: Renamed(id: 47) restart: temporary;
+    child worker: Renamed(id: 47) restart: temporary,
 }
 
 #[test]
 fn named_and_aliased_actors_run_as_supervised_children() {
     let direct = spawn DirectPool;
-    match await direct.worker.identify() {
+    match direct.worker.identify() {
         .Ok(id) => testing.assert_eq(id, 31),
         .Err(_) => testing.assert_true(false),
     }
     supervisor_stop(direct);
     let aliased = spawn AliasedPool;
-    match await aliased.worker.identify() {
+    match aliased.worker.identify() {
         .Ok(id) => testing.assert_eq(id, 47),
         .Err(_) => testing.assert_true(false),
     }

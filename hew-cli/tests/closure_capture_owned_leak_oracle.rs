@@ -48,20 +48,18 @@
 //!
 //! ## Skip behaviour
 //!
-//! `leaks(1)` is Darwin's allocator inspector; on non-macOS hosts the slope
-//! probes log `skip:` and return. The `MallocScribble` no-double-free pins run
-//! on any unix host.
+//! `leaks(1)` is Darwin's allocator inspector and `MallocScribble` is Darwin
+//! libmalloc's poisoned allocator; on non-macOS hosts both families record a
+//! SKIP rather than a silent pass.
 
 #![cfg(unix)]
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, run_under_malloc_scribble,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 // -- fixtures ----------------------------------------------------------------
 
@@ -137,10 +135,10 @@ fn captures_record_loop_source(frames: usize) -> String {
     let expected_total = frames * 2 + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   counts: Vec<i64>;\n\
+         \x20   counts: Vec<i64>,\n\
          }}\n\
          fn make_holder(n: i64) -> fn() -> i64 {{\n\
-         \x20   let counts: Vec<i64> = Vec.new();\n\
+         \x20   var counts: Vec<i64> = Vec.new();\n\
          \x20   counts.push(10);\n\
          \x20   counts.push(20);\n\
          \x20   let h = Holder {{ counts: counts }};\n\
@@ -170,8 +168,8 @@ fn captures_enum_loop_source(frames: usize) -> String {
     let expected_total = frames + frames * frames.saturating_sub(1) / 2;
     format!(
         "enum Tag {{\n\
-         \x20   Named(string);\n\
-         \x20   Anon;\n\
+         \x20   Named(string),\n\
+         \x20   Anon,\n\
          }}\n\
          fn make_tagger(n: i64) -> fn() -> i64 {{\n\
          \x20   let t = Tag.Named(\"row-payload-seed\".to_upper());\n\
@@ -202,8 +200,8 @@ fn stack_env_record_field_loop_source(frames: usize) -> String {
     let expected_total = frames * (left_len + right_len) + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   left: string;\n\
-         \x20   right: string;\n\
+         \x20   left: string,\n\
+         \x20   right: string,\n\
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
@@ -230,8 +228,8 @@ fn parameter_record_one_field_loop_source(frames: usize) -> String {
     let expected_total = frames * left_len + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   left: string;\n\
-         \x20   right: string;\n\
+         \x20   left: string,\n\
+         \x20   right: string,\n\
          }}\n\
          fn make_reader(h: Holder, n: i64) -> fn() -> i64 {{\n\
          \x20   || h.left.len() + n\n\
@@ -262,8 +260,8 @@ fn parameter_record_both_fields_loop_source(frames: usize) -> String {
     let expected_total = frames * (left_len + right_len) + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Holder {{\n\
-         \x20   left: string;\n\
-         \x20   right: string;\n\
+         \x20   left: string,\n\
+         \x20   right: string,\n\
          }}\n\
          fn make_reader(h: Holder, n: i64) -> fn() -> i64 {{\n\
          \x20   || h.left.len() + h.right.len() + n\n\
@@ -415,8 +413,8 @@ fn borrow_capture_record_read_after_loop_source(frames: usize) -> String {
     let expected_total = frames * (1 + item_len) + frames * frames.saturating_sub(1) / 2;
     format!(
         "type Claim {{\n\
-         \x20   item: string;\n\
-         \x20   run_id: string;\n\
+         \x20   item: string,\n\
+         \x20   run_id: string,\n\
          }}\n\
          fn make_probe(n: i64) -> fn() -> i64 {{\n\
          \x20   let claim = Claim {{ item: \"row-item\".to_upper(), run_id: \"row-run\".to_upper() }};\n\
@@ -463,15 +461,15 @@ fn borrow_capture_record_iter_any_loop_source(frames: usize) -> String {
     format!(
         "import std.iter;\n\
          pub type Claim {{\n\
-         \x20   item: string;\n\
-         \x20   run_id: string;\n\
+         \x20   item: string,\n\
+         \x20   run_id: string,\n\
          }}\n\
          fn probe() -> i64 {{\n\
          \x20   let claim = Claim {{ item: \"row-item\".to_upper(), run_id: \"row-run\".to_upper() }};\n\
-         \x20   let runs = Vec.new();\n\
+         \x20   var runs = Vec.new();\n\
          \x20   runs.push(\"ROW-RUN\");\n\
          \x20   let hit = iter.any(runs.into_iter(), |terminal: string| terminal == claim.run_id);\n\
-         \x20   let out = Vec.new();\n\
+         \x20   var out = Vec.new();\n\
          \x20   out.push(claim.item);\n\
          \x20   var score: i64 = 0;\n\
          \x20   if hit {{ score = score + 1; }}\n\
@@ -494,8 +492,8 @@ fn borrow_capture_record_iter_any_loop_source(frames: usize) -> String {
 
 fn shared_source_two_closures_source() -> String {
     "type PairFns {\n\
-     \x20   a: fn() -> i64;\n\
-     \x20   b: fn() -> i64;\n\
+     \x20   a: fn() -> i64,\n\
+     \x20   b: fn() -> i64,\n\
      }\n\
      fn make_pair(n: i64) -> PairFns {\n\
      \x20   let label: string = \"row-payload-seed\".to_upper();\n\
@@ -505,15 +503,16 @@ fn shared_source_two_closures_source() -> String {
      }\n\
      fn main() -> i64 {\n\
      \x20   let p = make_pair(1);\n\
-     \x20   p.a() + p.b()\n\
+     \x20   if p.a() + p.b() != 34 { return 91; }\n\
+     \x20   0\n\
      }\n"
     .to_string()
 }
 
 fn shared_source_closure_plus_original_store_source() -> String {
     "type ClosureAndLabel {\n\
-     \x20   f: fn() -> i64;\n\
-     \x20   label: string;\n\
+     \x20   f: fn() -> i64,\n\
+     \x20   label: string,\n\
      }\n\
      fn make_pair(n: i64) -> ClosureAndLabel {\n\
      \x20   let label: string = \"row-payload-seed\".to_upper();\n\
@@ -522,7 +521,8 @@ fn shared_source_closure_plus_original_store_source() -> String {
      }\n\
      fn main() -> i64 {\n\
      \x20   let p = make_pair(1);\n\
-     \x20   p.f() + p.label.len()\n\
+     \x20   if p.f() + p.label.len() != 33 { return 91; }\n\
+     \x20   0\n\
      }\n"
     .to_string()
 }
@@ -549,54 +549,6 @@ fn assert_no_double_free(shape_name: &str, source: &str) {
          a crash indicates a double-free between the source binding and an env share, while a \
          non-zero exit is a scribbled-read miscompute or the fixture's own total check;\n{}",
         describe_output(&output)
-    );
-}
-
-fn assert_compile_fails_after_retained_capture(
-    shape_name: &str,
-    source: &str,
-    expected_record_binding: &str,
-) {
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("closure-capture-fail-closed-{shape_name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join(format!("{shape_name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.path().to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("hew src utf-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew compile");
-
-    assert!(
-        !output.status.success(),
-        "{shape_name}: expected fail-closed compile rejection, but compile succeeded:\n{}",
-        describe_output(&output)
-    );
-    let combined = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let expected = format!("binding `{expected_record_binding}` is used after it was consumed");
-    assert!(
-        combined.contains(&expected),
-        "{shape_name}: compile failed before reaching the intended record-store seam; expected \
-         `{expected}`:\n{combined}"
-    );
-    assert!(
-        !combined.contains("binding `label` is used after it was consumed"),
-        "{shape_name}: the read-only capture still consumed `label`, so this is the pre-fix \
-         capture failure rather than the intended record-store rejection:\n{combined}"
     );
 }
 
@@ -898,32 +850,37 @@ fn borrow_capture_record_iter_any_freed_exactly_once_under_malloc_scribble() {
     );
 }
 
-// -- remaining fail-closed seams ---------------------------------------------
+// -- shared-capture correctness pins ----------------------------------------
 
-/// The `label` sharing between two escaping closures is now legal (each env
-/// takes a retained share), but storing a CAPTURING closure pair into a record
-/// field still fails closed — `UseAfterConsume` fires on `a`/`b` at the
-/// `RecordInit` (the closure-pair-into-record transfer has no ownership
-/// protocol yet). Requiring that record-store diagnostic while rejecting an
-/// earlier `label` diagnostic distinguishes this from the pre-fix failure.
+/// Two escaping closures capturing the same `label`, both stored into one
+/// record. Each env takes its own retained share and the record store carries
+/// the pair without a second free of `label`, so the shape runs clean under the
+/// poisoned allocator: a crash here is the double-free the retained share
+/// exists to prevent.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
-fn shared_source_two_escaping_closures_fail_closed() {
-    assert_compile_fails_after_retained_capture(
+fn shared_source_two_escaping_closures_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
         "shared_source_two_closures",
         &shared_source_two_closures_source(),
-        "a",
     );
 }
 
-/// Same seam as above: the capture itself (closure + original both live) is now
-/// a legal retained share, but the record store of the capturing closure pair
-/// `f` still fails closed at the `RecordInit`. The pin also rejects the pre-fix
-/// `label`-consume diagnostic, so an early capture failure cannot satisfy it.
+/// The same seam with the ORIGINAL binding also stored: the closure env and the
+/// record's own `label` field are two owners of one string, each released
+/// exactly once. The fixture reads `p.label` after calling `p.f()`, so an
+/// over-eager drop of either share is a scribbled read, not a silent pass.
+#[cfg_attr(
+    not(target_os = "macos"),
+    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
+)]
 #[test]
-fn shared_source_closure_plus_original_store_fail_closed() {
-    assert_compile_fails_after_retained_capture(
+fn shared_source_closure_plus_original_store_freed_exactly_once_under_malloc_scribble() {
+    assert_no_double_free(
         "shared_source_original_store",
         &shared_source_closure_plus_original_store_source(),
-        "f",
     );
 }

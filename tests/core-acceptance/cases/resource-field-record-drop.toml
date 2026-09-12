@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-field-record-drop"
+intent = "A record owning a `#[resource]` field runs the field's consuming `close` exactly once on every exit path: sync scope exit, a forked task's completion, and actor shutdown."
+source = "cases/resource-field-record-drop.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "held 1 scope\nclosed 1\nworked task\nclosed 2\nkept actor\ndone\nclosed 3\n"
+exit = 0

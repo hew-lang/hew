@@ -1,0 +1,11 @@
+[[case]]
+id = "doc-stdlib"
+intent = "Every doc-comment fence in the standard library type-checks, so std's own documentation compiles."
+source = "../../std"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "doc"
+
+[case.fences]
+prefix = "std"
+style = "std"

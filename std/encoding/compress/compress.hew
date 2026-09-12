@@ -1,7 +1,8 @@
 //! Compression and decompression (gzip, deflate, zlib).
 //!
 //! Compress and decompress binary data using gzip, raw deflate, or
-//! zlib formats. Compression helpers take and return `bytes` values.
+//! zlib formats. Compression helpers take `bytes` and return
+//! `Result<bytes, string>` so codec failures can be handled explicitly.
 //! Decompression callers must pass an explicit `max_output_len` to fail
 //! closed on oversized payloads; a conservative starting point is
 //! `64 * 1024 * 1024`.
@@ -12,29 +13,34 @@
 //! import std.encoding.compress;
 //!
 //! fn main() {
-//!     let data: bytes = bytes.new();
+//!     var data: bytes = bytes.new();
 //!     data.push(72);
 //!     data.push(101);
 //!     data.push(108);
 //!     data.push(108);
 //!     data.push(111);
-//!     let compressed = compress.gzip_compress(data);
-//!     let decompressed = compress.gzip_decompress(compressed, 64 * 1024 * 1024);
+//!     let compressed = compress.gzip_compress(data) handle error {
+//!         println(f"operation failed: {error}");
+//!         return;
+//!     };
+//!     let decompressed = compress.gzip_decompress(compressed, 64 * 1024 * 1024) handle error {
+//!         println(f"operation failed: {error}");
+//!         return;
+//!     };
 //!     println(decompressed.len());  // 5
 //! }
 //! ```
 
 /// Gzip-compress `data` without panicking.
 ///
-/// A failed codec call and a codec call that legitimately produced no bytes
-/// both yield an empty buffer, so the codec's own reason decides which one
-/// happened.
+/// Returns `Err(reason)` on codec failure and `Ok(data)` on success.
+/// Empty output alone does not indicate failure.
 pub fn gzip_compress(data: bytes) -> Result<bytes, string> {
     let out = unsafe {
         hew_gzip_compress_hew(data)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -49,7 +55,7 @@ pub fn gzip_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         hew_gzip_decompress_hew(data, max_output_len)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -64,7 +70,7 @@ pub fn deflate_compress(data: bytes) -> Result<bytes, string> {
         hew_deflate_compress_hew(data)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -79,7 +85,7 @@ pub fn deflate_decompress(data: bytes, max_output_len: i64) -> Result<bytes, str
         hew_deflate_decompress_hew(data, max_output_len)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -94,7 +100,7 @@ pub fn zlib_compress(data: bytes) -> Result<bytes, string> {
         hew_zlib_compress_hew(data)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -109,7 +115,7 @@ pub fn zlib_decompress(data: bytes, max_output_len: i64) -> Result<bytes, string
         hew_zlib_decompress_hew(data, max_output_len)
     };
     let reason = unsafe {
-        hew_compress_last_error()
+        hew_compress_last_error_hew()
     };
     if reason.len() > 0 {
         Err(reason)
@@ -126,5 +132,5 @@ extern "C" {
     fn hew_deflate_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
     fn hew_zlib_compress_hew(data: bytes) -> bytes;
     fn hew_zlib_decompress_hew(data: bytes, max_output_len: i64) -> bytes;
-    fn hew_compress_last_error() -> string;
+    fn hew_compress_last_error_hew() -> string;
 }

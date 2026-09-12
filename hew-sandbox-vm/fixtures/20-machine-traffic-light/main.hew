@@ -1,24 +1,18 @@
 machine TrafficLight {
-    state Red;
-    state Green;
-    state Yellow;
+    events { Tick }
 
-    event Tick;
+    state Red,
+    state Green,
+    state Yellow,
 
-    on Tick: Red -> Green {
-        Green
-    }
-    on Tick: Green -> Yellow {
-        Yellow
-    }
-    on Tick: Yellow -> Red {
-        Red
-    }
+    on Tick: Red => Green,
+    on Tick: Green => Yellow,
+    on Tick: Yellow => Red,
 }
 
 fn main() {
-    var light = Red;
+    var light: TrafficLight = .Red;
     println(light.state_name());
-    light.step(Tick);
+    let _ = light.step(.Tick);
     println(light.state_name());
 }

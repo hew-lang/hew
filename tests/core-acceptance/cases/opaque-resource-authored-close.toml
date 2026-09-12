@@ -1,0 +1,10 @@
+[[case]]
+id = "opaque-resource-authored-close"
+intent = "An authored `#[resource] #[opaque]` handle publishes a release contract and runs its own `close` exactly once on scope exit, on an early return, and on an error return."
+source = "cases/opaque-resource-authored-close.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "scope\nclosed\nearly\nclosed\nclosed\nerror negative\nclosed\nok 3\n"
+exit = 0

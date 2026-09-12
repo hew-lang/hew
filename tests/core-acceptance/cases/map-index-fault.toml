@@ -1,0 +1,11 @@
+[[case]]
+id = "map-index-fault"
+intent = "Missing-key indexing cleans nested map payloads and surrounding owners through the common indexing fault edge."
+source = "cases/map-index-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

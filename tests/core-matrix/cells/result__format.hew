@@ -1,4 +1,0 @@
-fn main() {
-    let x: Result<i64, string> = Result.Ok(6);
-    println(f"v={x}");
-}

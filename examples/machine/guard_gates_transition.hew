@@ -4,7 +4,7 @@
 // previously never read `transition.guard` — the event-tag comparison alone
 // decided the arm, so the FIRST same-cell transition in source order fired
 // unconditionally regardless of its guard. Two guarded `(Closed, Try)`
-// transitions race here — `self.code == 42` and `self.code != 42` — starting
+// transitions race here — `state.code == 42` and `state.code != 42` — starting
 // from `Closed { code: 1 }`. The `== 42` guard is false, so the CORRECT arm
 // is the `!= 42` one, a self-transition that stays `Closed`.
 //
@@ -15,21 +15,17 @@
 // Gate: stdout must match `guard_gates_transition.expected` exactly.
 machine Latch {
     events {
-        Try;
+        Try,
     }
 
-    state Closed { code: i64; }
-    state Open;
+    state Closed { code: i64, },
+    state Open,
 
-    on Try: Closed => Open when self.code == 42 {
-        Latch.Open
-    }
-    on Try: Closed => Closed reenter when self.code != 42 {
-        Closed { code: self.code }
-    }
-    on Try: Open => Open reenter {
-        Latch.Open
-    }
+    on Try: Closed => Open when state.code == 42,
+    on Try: Closed => Closed reenter when state.code != 42 { code: state.code }
+    on Try: Open => Open reenter,
+
+    default { state }
 }
 
 fn main() {

@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-typed-notifications"
+intent = "Actor-returned monitor owners survive a peer crash and normal shutdown; typed EXIT/DOWN hooks preserve monitor identity, local target identity and distinct terminal reasons."
+source = "cases/actor-typed-notifications.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "typed EXIT and DOWN retain actor and monitor identities\n"
+stderr = "hew: failure: UserPanic (212): linked target\nhew: actor crash in Target.fail (actor 1): UserPanic\n"
+exit = 1

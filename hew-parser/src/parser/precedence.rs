@@ -41,6 +41,11 @@ pub(crate) fn infix_bp(op: &Token) -> Option<(u8, u8)> {
     }
 }
 
+/// Minimum binding power for one operand of an `if` / `while` pattern
+/// condition (§12.5). Above `&&`'s left power (7) and `||`'s (5), so an
+/// operand stops at either joiner and `parse_condition` owns the chain.
+pub(crate) const CONDITION_OPERAND_BP: u8 = 8;
+
 pub(crate) fn prefix_bp(op: &Token) -> Option<u8> {
     match op {
         // `*expr` is a raw-pointer dereference.  v0.5 parses it only so

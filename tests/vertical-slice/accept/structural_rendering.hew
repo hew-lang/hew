@@ -33,10 +33,10 @@ fn main() {
     let none: Option<i64> = None;
     let ok: Result<i64, string> = Ok(4);
     let err: Result<i64, string> = Err("bad");
-    let values: Vec<i64> = Vec.new();
+    var values: Vec<i64> = Vec.new();
     values.push(5);
     values.push(6);
-    let map: HashMap<string, i64> = HashMap.new();
+    var map: HashMap<string, i64> = HashMap.new();
     map.insert("answer", 42);
     let named: NamedMap = HashMap.new();
     let nested = Nested {

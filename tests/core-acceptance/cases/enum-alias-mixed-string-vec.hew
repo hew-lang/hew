@@ -1,0 +1,17 @@
+enum Mixed {
+    Full(string, Vec<i64>),
+    Empty,
+}
+
+fn main() {
+    let values: Vec<i64> = [13, 29];
+    var opt = Mixed.Full(f"mixed", values);
+    match opt {
+        .Full(s, xs) => {
+            opt = Mixed.Empty;
+            println(s);
+            println(xs[1]);
+        },
+        .Empty => {},
+    }
+}

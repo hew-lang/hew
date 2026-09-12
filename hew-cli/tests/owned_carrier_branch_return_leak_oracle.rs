@@ -25,8 +25,8 @@ fn branch_return_source(frames: usize) -> String {
     format!(
         r#"
 enum Slot {{
-    Filled(i64);
-    Empty;
+    Filled(i64),
+    Empty,
 }}
 
 fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {{

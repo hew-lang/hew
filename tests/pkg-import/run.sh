@@ -94,13 +94,9 @@ fixtures=(
     # only imported-origin + generic-mono hits the qualified key. Output "7"
     # proves the mono instance classified BitCopy and the field read lowered.
     imported_generic_valueclass
-    # The TWO-module shape of the same question (#2653): `hew::keyleft` and
-    # `hew::keyright` each declare a generic value record named `Key<T>` with a
-    # DIFFERENT payload (`i64` vs `string`), both instantiated at `i32`. Layout
-    # identity is declaration identity, so each gets its own module-qualified
-    # layout and codegen symbol and each field read returns its own module's
-    # payload. The symbol-level block below pins both qualified symbols and the
-    # absence of a shared bare `Key$$i32`.
+    # Same-named imported generic records retain distinct i64/string layouts.
+    # Execution checks each payload; the mixed-owner rejection below checks
+    # that the two declarations also remain distinct source types.
     two_module_same_generic_valueclass_accept
     # A module-PRIVATE generic record (`Slot<T>`) used only as the element of a
     # pub `Store<T>`'s `Vec<Slot<T>>`, monomorphised across the module boundary to
@@ -271,54 +267,20 @@ fixtures=(
     # owner-qualified identity and ACCEPTs — exercising BOTH method-set membership
     # and per-method signature comparison against the collision-free owner key.
     aliased_multimethod_trait_collision_accept
-    # An `impl Sub for W` (where `trait Sub: Super`) provides a SUPER-trait method
-    # (`base`) inline alongside the sub-trait's own method. The impl-site method-set
-    # check must fold the whole super-trait chain into the KNOWN set, so the inline
-    # super-method is not flagged as extraneous. ACCEPT + run e2e.
+    # A local `trait Sub: Super` whose obligation `W` discharges with its own
+    # `impl Super for W`, alongside `impl Sub for W`. Both methods must dispatch
+    # through the sub-trait's call, so a method-set check that scoped the known set
+    # to the sub-trait alone, or lost the super edge, shows up here. ACCEPT + e2e.
     subtrait_inline_supermethod_accept
-    # IMPORTED supertrait, inline supermethod. An importer brings ONLY `Sub` into
-    # scope (`trait Sub: Base` in `hew::supertraits`) and provides the inherited
-    # `base` inline. The supertrait edge is OWNER-QUALIFIED (`supertraits.Base`), so
-    # `base`'s methods are folded into the known set through `Base`'s owner — not
-    # the importer namespace, where `Base` is absent — and the inline `base`'s
-    # signature is checked against `supertraits.Base` (`-> i64`). ACCEPT + run e2e
-    # so the inherited `base` and the sub's own `tag` both dispatch. (Guards the
-    # over-strict "declares method(s) not on the trait: base" rejection of an
-    # import-only sub whose super edge resolved in the wrong namespace.)
+    # Explicit imported supertrait impls retain source identities across direct,
+    # deep-chain, diamond, alias and re-export paths. Each fixture executes all
+    # relevant methods; the diamond supplies its common Base exactly once.
     imported_subtrait_inline_supermethod_accept
-    # IMPORTED multi-level chain (`Deep: Mid`, `Mid: Base`). An import-only `Deep`
-    # provides every inherited method inline; each owner-qualified super edge
-    # resolves the method set + signatures two levels up. ACCEPT + run e2e.
     imported_deep_chain_inline_supermethods_accept
-    # IMPORTED diamond (`Diamond: Left + Right`, both `Left`/`Right: Base`). An
-    # import-only `Diamond` provides the doubly-inherited `base` ONCE plus both
-    # branch methods and the apex; the owner-qualified super walk dedups the two
-    # branch paths so the single inline `base` is KNOWN. ACCEPT + run e2e.
     imported_diamond_inline_supermethods_accept
-    # ALIASED imported sub-trait (`Sub as S`) provides the inherited `base` inline.
-    # The alias resolves to its SOURCE identity (`supertraits.Sub`), whose
-    # owner-qualified super edge anchors `base` at `supertraits.Base`; the inline
-    # `base`'s signature is checked through the alias. ACCEPT + run e2e.
     aliased_subtrait_inline_supermethod_accept
-    # RE-EXPORTED supertrait, inline supermethod. The importer brings ONLY `Sub`
-    # into scope from `hew::reexsub`, where `trait Sub: Base` and `Base` is itself
-    # re-imported by `reexsub` from `hew::reexbase`. The super edge must follow the
-    # re-export chain to `reexbase.Base` (reached through `reexsub`'s own import) —
-    # there is no `reexsub.Base` def, so a `{declaring}.Base`-only check misses and
-    # the bare fallback would bind the final importer's namespace. The inline
-    # `base`'s methods are folded into the known set through `reexbase.Base`'s owner
-    # and its signature is checked against `reexbase.Base` (`-> i64`). ACCEPT + e2e.
     reexport_super_inline_supermethod_accept
-    # ALIASED re-exported supertrait: `SubA` from `hew::reexsubalias`, where
-    # `SubA: B` and `B` is `reexbase.Base` re-imported under an alias. The super
-    # edge `B` follows the module's ALIASED import binding to `reexbase.Base`, never
-    # a reconstructed `reexsubalias.B`. ACCEPT + run e2e.
     reexport_aliased_super_inline_supermethod_accept
-    # TWO-HOP re-export chain: `Top` from `hew::reexchaina` (`Top: Mid`, `Mid: Base`,
-    # both re-exported). The importer provides `base`/`mid`/`top` inline; each super
-    # edge follows its declaring module's import binding to the original owner across
-    # two re-export hops, so the whole transitive method set is KNOWN and each inline
-    # method's signature is checked against its origin. ACCEPT + run e2e.
     reexport_chain_inline_supermethods_accept
     # REDECLARED supertrait satisfied by a SEPARATE impl (the stdlib
     # `ValueMethods: CanonicalValueMethods` shape). `trait Redecl: Base` REDECLARES
@@ -1061,45 +1023,9 @@ if ! grep -q 'affineclone.ResourceToken.*#\[resource\]' <<<"${qualified_affine_c
 fi
 echo "PASS ${qualified_affine_clone_reject}"
 
-# Symbol-level oracle for the two-module same-name generic layout (#2653). The
-# `fixtures` loop above already proves `two_module_same_generic_valueclass_accept`
-# runs and prints each module's own payload; this block proves the runtime
-# answer comes from two SEPARATE layouts rather than one shared symbol that
-# happens to read compatibly. Each declaration must carry its owner module into
-# the mangled layout key, so the emitted IR names `hew$keyleft$Key$$i32` and
-# `hew$keyright$Key$$i32` and never the bare `Key$$i32` a name-keyed mangle
-# would produce.
-two_module_generic_accept="two_module_same_generic_valueclass_accept"
-two_module_generic_ir_dir="${ROOT}/.tmp/pkg-import-two-module-generic"
-rm -rf "${two_module_generic_ir_dir}"
-mkdir -p "${two_module_generic_ir_dir}"
-if ! "${HEW}" build --pkg-path "${PKGS}" --emit-llvm \
-    -o "${two_module_generic_ir_dir}/${two_module_generic_accept}" \
-    "${DIR}/${two_module_generic_accept}.hew" >/dev/null 2>&1; then
-    echo "FAIL ${two_module_generic_accept}: --emit-llvm build failed" >&2
-    rm -rf "${two_module_generic_ir_dir}"
-    exit 1
-fi
-two_module_generic_ir="${two_module_generic_ir_dir}/${two_module_generic_accept}.ll"
-for owner in keyleft keyright; do
-    if ! grep -Fq "hew\$${owner}\$Key\$\$i32" "${two_module_generic_ir}"; then
-        echo "FAIL ${two_module_generic_accept}: emitted IR lost the module-qualified layout symbol for hew::${owner}" >&2
-        rm -rf "${two_module_generic_ir_dir}"
-        exit 1
-    fi
-done
-if grep -Eq "(^|[^\$a-zA-Z0-9_])Key\\\$\\\$i32" "${two_module_generic_ir}"; then
-    echo "FAIL ${two_module_generic_accept}: emitted IR carries an unqualified Key\$\$i32 layout symbol — the two declarations collapsed onto one identity" >&2
-    rm -rf "${two_module_generic_ir_dir}"
-    exit 1
-fi
-rm -rf "${two_module_generic_ir_dir}"
-echo "PASS ${two_module_generic_accept} (qualified layout symbols)"
-
-# Negative control for the same identity: the two `Key<T>` declarations stay
-# DISTINCT types, so assigning one module's constructor result to the other
-# module's annotation is a type error. Without this, "both symbols present"
-# could coexist with the checker silently conflating the two nominals.
+# The executable two-module fixture checks distinct layouts and values. This
+# negative control also requires distinct source types: a keyright constructor
+# cannot satisfy a keyleft annotation, regardless of LLVM symbol spelling.
 two_module_generic_mix="${ROOT}/.tmp/pkg-import-two-module-generic-mix.hew"
 cat >"${two_module_generic_mix}" <<'MIXEOF'
 import hew.keyleft;

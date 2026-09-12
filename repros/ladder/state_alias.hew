@@ -1,8 +1,8 @@
 actor Example {
-    var data: Vec<i64> = Vec.new();
+    var data: Vec<i64> = Vec.new(),
     receive fn demo() {
-        let ref1 = data;
-        let ref2 = data;
+        var ref1 = data;
+        var ref2 = data;
         ref1.push(1);
         ref2.push(2);
         println(data.len());
@@ -12,5 +12,5 @@ actor Example {
 }
 fn main() {
     let e = spawn Example();
-    e.demo();
+    let _ = e.demo();
 }

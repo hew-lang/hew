@@ -1,20 +1,11 @@
 //! Ownership oracle for `Rc` members under structural clone.
 //!
-//! Two halves, and both must hold:
-//!
-//! 1. An `Rc` sitting in a VALUE aggregate (tuple element, `Option`/`Result`
-//!    payload, record field) is refused at check time. Aggregate ingress of an
-//!    `Rc` emits no retain, while both the source binder and the aggregate's
-//!    composite drop release the handle, so the inverse drop plan over-releases
-//!    and the program aborts with `Rc double-free`. Until the ingress retain
-//!    exists, the checker fails closed — and it must do so before any native
-//!    artifact is written.
-//! 2. The shape that IS admitted — a heap container holding `Rc` elements,
-//!    which clones through the owned-element thunk — does not over-release in
-//!    either drop order: it runs to completion, and a double-free aborts the
-//!    process, so a clean exit is itself the over-release oracle. The
-//!    under-release (leak) half of that same shape is a measured, tracked
-//!    defect shared with `origin/main`; see the ignored pins at the bottom.
+//! An `Rc` is an ordinary owned member: a heap container holding `Rc` elements
+//! and a value aggregate holding one (tuple element, `Option` payload, record
+//! field) both retain on ingress and release with their owner. Releasing a
+//! shared handle once too often trips the runtime's `Rc double-free` guard and
+//! kills the process, so a clean exit is the over-release oracle; the
+//! `leaks(1)` measurements below are the under-release half.
 
 #![cfg(unix)]
 
@@ -24,7 +15,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use support::leak_slope::{measure_leaks_exact, require_leaks_tool};
-use support::{describe_output, hew_binary, repo_root, require_codegen, strip_ansi};
+use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 const ITERATIONS: usize = 48;
 
@@ -33,10 +24,10 @@ const ITERATIONS: usize = 48;
 fn vec_of_rc_source(body: &str) -> String {
     format!(
         "\
-type Node {{ value: i64; }}
+type Node {{ value: i64, }}
 
 fn make(seed: i64) -> Vec<Rc<Node>> {{
-    let holders: Vec<Rc<Node>> = Vec.new();
+    var holders: Vec<Rc<Node>> = Vec.new();
     holders.push(Rc.new(Node {{ value: seed }}));
 {body}
 }}
@@ -149,28 +140,9 @@ fn vec_of_rc_dropping_clone_before_returned_original_does_not_over_release() {
 }
 
 /// The under-release half of the same shape.
-///
-/// TRACKED DEFECT, measured not assumed: on this branch AND on `origin/main`
-/// this program reports `144 leaks for 10752 total leaked bytes` over its 48
-/// iterations, while the identical program without the `clone` reports
-/// `0 leaks for 0 total leaked bytes`. It is the mirror of the value-aggregate
-/// over-release these tests otherwise pin: `Rc` has no aggregate-ingress retain
-/// derivation, so its clone/drop accounting is wrong in BOTH directions
-/// depending on which side of the ingress the extra owner lands on.
-///
-/// WHY ignored rather than asserted at the observed count: pinning 144 would
-/// ratchet the defect into the suite. The exact-zero assertion is the target,
-/// and it flips green the moment `Rc`/`Weak` gain the ingress retain that
-/// `StringRetain` already has — at which point these two tests lose the
-/// `#[ignore]` and the checker's value-aggregate refusal is deleted with them.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)`; absence must be a counted skip"
-)]
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "tracked: `Rc` has no aggregate-ingress retain, so `clone Vec<Rc<T>>` \
-              under-releases (144 leaks / 10752 bytes here and on origin/main)"
 )]
 #[test]
 fn vec_of_rc_dropping_original_before_returned_clone_leaks_nothing() {
@@ -188,11 +160,6 @@ fn vec_of_rc_dropping_original_before_returned_clone_leaks_nothing() {
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)`; absence must be a counted skip"
 )]
-#[cfg_attr(
-    target_os = "macos",
-    ignore = "tracked: `Rc` has no aggregate-ingress retain, so `clone Vec<Rc<T>>` \
-              under-releases (144 leaks / 10752 bytes here and on origin/main)"
-)]
 #[test]
 fn vec_of_rc_dropping_clone_before_returned_original_leaks_nothing() {
     let (_dir, binary) = assert_vec_of_rc_drop_order_does_not_over_release(
@@ -208,7 +175,7 @@ fn vec_of_rc_dropping_clone_before_returned_original_leaks_nothing() {
 }
 
 const TUPLE_RC_MEMBER: &str = r#"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -219,7 +186,7 @@ fn main() -> i64 {
 "#;
 
 const OPTION_RC_PAYLOAD: &str = r"
-type Node { value: i64; }
+type Node { value: i64, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -230,8 +197,8 @@ fn main() -> i64 {
 ";
 
 const RECORD_RC_FIELD: &str = r#"
-type Node { value: i64; }
-type Holder { r: Rc<Node>; tag: string; }
+type Node { value: i64, }
+type Holder { r: Rc<Node>, tag: string, }
 
 fn main() -> i64 {
     let shared: Rc<Node> = Rc.new(Node { value: 7 });
@@ -241,51 +208,39 @@ fn main() -> i64 {
 }
 "#;
 
-fn assert_value_aggregate_rc_member_is_refused(name: &str, source: &str, member: &str) {
+/// A value aggregate holding an `Rc` clones and releases in balance: the
+/// ingress retain gives the aggregate its own strong reference, and the
+/// composite drop gives it back. A double-free aborts, so exit 0 is the proof.
+fn assert_value_aggregate_rc_member_balances(name: &str, source: &str) {
+    require_codegen();
     let dir = tempfile::Builder::new()
-        .prefix(&format!("rc-member-refusal-{name}-"))
+        .prefix(&format!("rc-member-balance-{name}-"))
         .tempdir()
         .expect("tempdir");
-    let hew_src = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&hew_src, source).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.path().to_str().expect("emit-dir utf-8"),
-            hew_src.to_str().expect("Hew source utf-8"),
-        ])
+    let binary = compile_to_native(source, dir.path(), name);
+    let run = Command::new(&binary)
         .current_dir(repo_root())
         .output()
-        .expect("invoke hew compile");
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
+        .expect("invoke compiled Rc-member program");
     assert!(
-        !output.status.success(),
-        "{name}: an `Rc` in a value aggregate has no balanced clone/drop plan and must be \
-         refused:\n{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!("member `{member}` of type `Rc<Node>`"))
-            && stderr.contains("no aggregate-ingress retain"),
-        "{name}: the refusal must name the offending member and the mechanism:\n{stderr}"
-    );
-    assert!(
-        !dir.path().join(name).exists(),
-        "{name}: refusal must happen before a native artifact is emitted"
+        run.status.success(),
+        "{name}: cloning a value aggregate holding an `Rc` must not over-release it \
+         (an `Rc double-free` aborts the process):\n{}",
+        describe_output(&run)
     );
 }
 
 #[test]
-fn tuple_with_rc_member_clone_is_refused_before_codegen() {
-    assert_value_aggregate_rc_member_is_refused("tuple_rc", TUPLE_RC_MEMBER, "0");
+fn tuple_with_rc_member_clone_balances() {
+    assert_value_aggregate_rc_member_balances("tuple_rc", TUPLE_RC_MEMBER);
 }
 
 #[test]
-fn option_with_rc_payload_clone_is_refused_before_codegen() {
-    assert_value_aggregate_rc_member_is_refused("option_rc", OPTION_RC_PAYLOAD, "Some");
+fn option_with_rc_payload_clone_balances() {
+    assert_value_aggregate_rc_member_balances("option_rc", OPTION_RC_PAYLOAD);
 }
 
 #[test]
-fn record_with_rc_field_clone_is_refused_before_codegen() {
-    assert_value_aggregate_rc_member_is_refused("record_rc", RECORD_RC_FIELD, "r");
+fn record_with_rc_field_clone_balances() {
+    assert_value_aggregate_rc_member_balances("record_rc", RECORD_RC_FIELD);
 }

@@ -11,7 +11,7 @@
 //!   hew machine list <file.hew>                         List all machines with states/events
 
 use hew_compile::FrontendOptions;
-use hew_hir::{lower_program, HirItem, HirMachineDecl, ResolutionCtx};
+use hew_hir::{lower_program, ResolutionCtx};
 use hew_parser::ast::{Item, MachineDecl};
 
 use crate::args::{MachineDiagramArgs, MachineFormat};
@@ -64,17 +64,10 @@ fn parse_machines(path: &str, source: &str) -> Vec<MachineDecl> {
         .collect()
 }
 
-/// Run the checker and HIR lowering + static checks on the file.  Returns the
-/// checked HIR machines the program contains, or exits the process on failure.
-///
-/// HIR lowering resolves every declaration through the checker's identity
-/// table, so the file goes through the same import-resolving frontend as
-/// `hew check`; a default `TypeCheckOutput` would fail closed on every item.
-/// The checked module is the one authority for which machines a program has:
-/// it carries the machines the file declares (`defining_module` is `None`)
-/// beside the machines it imports, so a file whose only machine arrives
-/// through an import still has one to render.
-fn check_and_lower(path: &str) -> Vec<HirMachineDecl> {
+/// Validate through the ordinary frontend, then render authored declarations.
+/// Machine syntax is presentation data; executable HIR contains ordinary enums
+/// and methods after normalization.
+fn check_and_lower(path: &str) -> Vec<MachineDecl> {
     let state = match hew_compile::run_file_frontend_to_typecheck(path, &FrontendOptions::default())
     {
         Ok(state) => state,
@@ -104,106 +97,47 @@ fn check_and_lower(path: &str) -> Vec<HirMachineDecl> {
         std::process::exit(1);
     }
 
-    lowered
-        .module
-        .items
-        .into_iter()
-        .filter_map(|item| match item {
-            HirItem::Machine(m) => Some(m),
-            _ => None,
-        })
-        .collect()
-}
-
-enum MachineCheckResult {
-    Checked(Vec<HirMachineDecl>),
-    AstFallback,
-}
-
-/// One machine to render: its checked HIR declaration paired with the
-/// presentation facts HIR does not carry.
-struct MachineView<'a> {
-    hir: &'a HirMachineDecl,
-    /// Composite grouping of this machine's states, from the AST of the file
-    /// under inspection.
-    groups: &'a [hew_parser::ast::CompositeGroup],
-    /// The machine's `emits { … }` manifest, from the same AST.
-    emits: &'a [String],
-}
-
-/// Pair every checked machine with the AST facts HIR is flat about.
-///
-/// The join is by name within the root namespace, which the checker keeps
-/// unique: an AST machine is by construction declared by the file under
-/// inspection, so it can only describe a HIR machine whose `defining_module`
-/// is `None`.
-///
-/// WHY this shortcut: composite grouping and the `emits` manifest live only on
-/// `MachineDecl`, so a machine that arrives through an import renders with
-/// neither. No importable machine that ships declares either
-/// (`std/machines/toggle.hew`, `std/concurrency/lifecycle.hew`), so no diagram
-/// loses a fact today.
-/// WHEN obsolete: when the machine desugar (#3073) lands and HIR carries
-/// grouping and the emits manifest on the declaration.
-/// WHAT the real fix is: put both on `HirMachineDecl` beside `states` and
-/// `transitions` and delete this join, so every machine renders from the one
-/// authority regardless of which module declared it.
-fn machine_views<'a>(
-    hir_machines: &'a [HirMachineDecl],
-    ast_machines: &'a [MachineDecl],
-) -> Vec<MachineView<'a>> {
-    hir_machines
-        .iter()
-        .map(|hir| {
-            let ast = if hir.defining_module.is_none() {
-                ast_machines
-                    .iter()
-                    .find(|candidate| candidate.name == hir.name)
+    let mut machines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    if let Some(graph) = &state.program.module_graph {
+        for id in &graph.topo_order {
+            let Some(module) = graph.modules.get(id) else {
+                continue;
+            };
+            for (ordinal, (item, span)) in module.items.iter().enumerate() {
+                let Item::Machine(machine) = item else {
+                    continue;
+                };
+                if *id != graph.root && !machine.visibility.is_pub() {
+                    continue;
+                }
+                let source = graph
+                    .item_source(id, ordinal)
+                    .or_else(|| module.source_paths.first());
+                if seen.insert((source.cloned(), span.clone())) {
+                    machines.push(machine.clone());
+                }
+            }
+        }
+    } else {
+        machines.extend(state.program.items.iter().filter_map(|(item, _)| {
+            if let Item::Machine(machine) = item {
+                Some(machine.clone())
             } else {
                 None
-            };
-            MachineView {
-                hir,
-                groups: ast.map_or(&[][..], |m| m.composite_groups.as_slice()),
-                emits: ast.map_or(&[][..], |m| m.emits.as_slice()),
             }
-        })
-        .collect()
+        }));
+    }
+    machines
 }
 
-fn check_machines_or_ast_fallback(
-    path: &str,
-    ast_machines: &[MachineDecl],
-    supports_no_check: bool,
-) -> MachineCheckResult {
-    if ast_machines.iter().any(|m| !m.type_params.is_empty()) {
-        let suppression_hint = if supports_no_check {
-            " — use --no-check to suppress"
-        } else {
-            ""
-        };
-        eprintln!("{path}: warning: generic machine(s) skipping HIR checks{suppression_hint}");
-        return MachineCheckResult::AstFallback;
-    }
-
-    let hir_machines = check_and_lower(path);
-    if hir_machines.is_empty() {
-        eprintln!("No machines found in {path}");
-        std::process::exit(1);
-    }
-
-    MachineCheckResult::Checked(hir_machines)
-}
-
-/// Print one `machine Name { … }` entry.  Both the checked and the
-/// AST-fallback paths render through here so the two agree line for line.
 fn print_list_entry(
     name: &str,
     states: &[(&str, Vec<&str>)],
     events: &[(&str, Vec<&str>)],
     transitions: usize,
     has_default: bool,
-    emits: &[String],
+    emits: &[hew_parser::ast::MachineEvent],
 ) {
     println!("machine {name} {{");
     println!("  States:");
@@ -228,90 +162,58 @@ fn print_list_entry(
     }
     // fix 3: Emits section in cmd_list.
     if !emits.is_empty() {
-        println!("  Emits: {}", emits.join(", "));
+        println!(
+            "  Emits: {}",
+            emits
+                .iter()
+                .map(|output| output.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     println!("}}");
     println!();
 }
 
 fn cmd_list(path: &str) {
-    let source = read_source(path);
-    let ast_machines = parse_machines(path, &source);
-
-    match check_machines_or_ast_fallback(path, &ast_machines, false) {
-        MachineCheckResult::Checked(hir_machines) => {
-            for view in machine_views(&hir_machines, &ast_machines) {
-                let states: Vec<(&str, Vec<&str>)> = view
-                    .hir
-                    .states
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.name.as_str(),
-                            s.fields.iter().map(|f| f.name.as_str()).collect(),
-                        )
-                    })
-                    .collect();
-                let events: Vec<(&str, Vec<&str>)> = view
-                    .hir
-                    .events
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.name.as_str(),
-                            e.fields.iter().map(|f| f.name.as_str()).collect(),
-                        )
-                    })
-                    .collect();
-                print_list_entry(
-                    &view.hir.name,
-                    &states,
-                    &events,
-                    view.hir.transitions.len(),
-                    view.hir.has_default,
-                    view.emits,
-                );
-            }
-        }
-        // Generic machines skip HIR lowering, so the AST is all there is.
-        MachineCheckResult::AstFallback => {
-            for md in &ast_machines {
-                let states: Vec<(&str, Vec<&str>)> = md
-                    .states
-                    .iter()
-                    .map(|s| {
-                        (
-                            s.name.as_str(),
-                            s.fields.iter().map(|(name, _)| name.as_str()).collect(),
-                        )
-                    })
-                    .collect();
-                let events: Vec<(&str, Vec<&str>)> = md
-                    .events
-                    .iter()
-                    .map(|e| {
-                        (
-                            e.name.as_str(),
-                            e.fields.iter().map(|(name, _)| name.as_str()).collect(),
-                        )
-                    })
-                    .collect();
-                print_list_entry(
-                    &md.name,
-                    &states,
-                    &events,
-                    md.transitions.len(),
-                    md.has_default,
-                    &md.emits,
-                );
-            }
-        }
+    let machines = check_and_lower(path);
+    if machines.is_empty() {
+        eprintln!("No machines found in {path}");
+        std::process::exit(1);
+    }
+    for machine in &machines {
+        let states = machine
+            .states
+            .iter()
+            .map(|state| {
+                (
+                    state.name.as_str(),
+                    state.fields.iter().map(|(name, _)| name.as_str()).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let events = machine
+            .events
+            .iter()
+            .map(|event| {
+                (
+                    event.name.as_str(),
+                    event.fields.iter().map(|(name, _)| name.as_str()).collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        print_list_entry(
+            &machine.name,
+            &states,
+            &events,
+            machine.transitions.len(),
+            machine.has_default,
+            &machine.emits,
+        );
     }
 }
 
 fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
-    let source = read_source(path);
-
     // Determine output format. `--dot` is a shorthand for `--format graphviz`.
     let format = if args.dot {
         MachineFormat::Graphviz
@@ -319,47 +221,12 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
         args.format.clone().unwrap_or(MachineFormat::Mermaid)
     };
 
-    let ast_machines = parse_machines(path, &source);
+    let ast_machines = if args.check {
+        check_and_lower(path)
+    } else {
+        parse_machines(path, &read_source(path))
+    };
 
-    if args.check {
-        match check_machines_or_ast_fallback(path, &ast_machines, true) {
-            MachineCheckResult::AstFallback => {
-                // Fall through to AST rendering below.
-            }
-            MachineCheckResult::Checked(hir_machines) => {
-                let views = machine_views(&hir_machines, &ast_machines);
-
-                // Filter by --machine if specified.
-                let filtered: Vec<&MachineView<'_>> = if let Some(name) = &args.machine_name {
-                    let matched: Vec<_> =
-                        views.iter().filter(|view| &view.hir.name == name).collect();
-                    if matched.is_empty() {
-                        eprintln!("No machine named `{name}` found in {path}");
-                        std::process::exit(1);
-                    }
-                    matched
-                } else {
-                    views.iter().collect()
-                };
-
-                for view in filtered {
-                    match format {
-                        MachineFormat::Mermaid => {
-                            print_mermaid_hir(view.hir, view.groups, view.emits);
-                        }
-                        MachineFormat::Graphviz | MachineFormat::Dot => {
-                            print_dot_hir(view.hir, view.groups, view.emits);
-                        }
-                        MachineFormat::Json => print_json_hir(view.hir, view.groups, view.emits),
-                    }
-                }
-                return;
-            }
-        }
-    }
-
-    // AST-only rendering path (--no-check, or generic machines falling through
-    // from the check path above).
     if ast_machines.is_empty() {
         eprintln!("No machines found in {path}");
         std::process::exit(1);
@@ -385,108 +252,6 @@ fn cmd_diagram(path: &str, args: &MachineDiagramArgs) {
     }
 }
 
-// ── HIR-backed renderers (used when --check is active) ──────────────────────
-
-fn print_mermaid_hir(
-    machine: &HirMachineDecl,
-    groups: &[hew_parser::ast::CompositeGroup],
-    emits: &[String],
-) {
-    print_mermaid_title(&machine.name, &machine.type_params);
-    println!("stateDiagram-v2");
-
-    if let Some(first) = machine.states.first() {
-        println!("    [*] --> {}", first.name);
-    }
-
-    // fix 1: has_default — a note tells readers this is a stay-on-unhandled machine,
-    // distinguishing it from a trapping machine where unhandled events are errors.
-    if machine.has_default {
-        println!("    note right of [*]");
-        println!("        unhandled events stay in current state");
-        println!("    end note");
-    }
-
-    // Emit composite nesting first: a `state Composite { … }` block groups its
-    // members with the initial-substate marker. Members rendered inside a block
-    // are still valid transition endpoints below. The grouping comes from the
-    // AST side-table threaded in by `cmd_diagram` (HIR is flat).
-    let composite_members: std::collections::HashSet<&str> = groups
-        .iter()
-        .flat_map(|g| g.members.iter().map(String::as_str))
-        .collect();
-    for group in groups {
-        println!("    state {} {{", group.name);
-        println!("        [*] --> {}", group.initial);
-        for member in &group.members {
-            println!("        {member}");
-        }
-        println!("    }}");
-    }
-
-    for tr in &machine.transitions {
-        if tr.source_state == "_" {
-            for state in &machine.states {
-                let target = if tr.target_state == "_" {
-                    &state.name
-                } else {
-                    &tr.target_state
-                };
-                let has_explicit = machine
-                    .transitions
-                    .iter()
-                    .any(|t| t.source_state == state.name && t.event_name == tr.event_name);
-                if !has_explicit && target != &state.name {
-                    println!("    {} --> {} : {}", state.name, target, tr.event_name);
-                }
-            }
-        } else {
-            let target = if tr.target_state == "_" {
-                &tr.source_state
-            } else {
-                &tr.target_state
-            };
-            // fix 2: reenter — suffix [reenter] on self-transition edge labels so
-            // readers can distinguish a no-op self-loop from one that re-runs
-            // the entry/exit lifecycle blocks.
-            let mut label = if tr.guard.is_some() {
-                format!("{} [guard]", tr.event_name)
-            } else {
-                tr.event_name.clone()
-            };
-            if tr.reenter {
-                label.push_str(" [reenter]");
-            }
-            println!("    {} --> {} : {}", tr.source_state, target, label);
-        }
-    }
-
-    // State annotations: entry/exit notes and field names. Members rendered
-    // inside a composite block still take their annotations at the top level.
-    let _ = &composite_members;
-    for state in &machine.states {
-        let mut notes: Vec<String> = state.fields.iter().map(|f| f.name.clone()).collect();
-        if state.has_entry {
-            notes.push("entry".into());
-        }
-        if state.has_exit {
-            notes.push("exit".into());
-        }
-        if !notes.is_empty() {
-            println!("    {} : {}", state.name, notes.join(", "));
-        }
-    }
-
-    // fix 3: emits manifest — note in the diagram when declared.
-    if !emits.is_empty() {
-        println!("    note left of [*]");
-        println!("        Emits: {}", emits.join(", "));
-        println!("    end note");
-    }
-
-    println!();
-}
-
 fn print_mermaid_title(name: &str, type_params: &[String]) {
     // Mermaid YAML frontmatter title carries the generic-params signature
     // when present (e.g. `Lifecycle<T>`). Omitted entirely for monomorphic
@@ -500,267 +265,6 @@ fn print_mermaid_title(name: &str, type_params: &[String]) {
     println!("title: {}<{}>", name, type_params.join(", "));
     println!("---");
 }
-
-fn print_dot_hir(
-    machine: &HirMachineDecl,
-    groups: &[hew_parser::ast::CompositeGroup],
-    emits: &[String],
-) {
-    println!("digraph {} {{", machine.name);
-    println!("    rankdir=LR;");
-    println!("    node [shape=circle];");
-
-    // fix 1: has_default — graph label signals stay-on-unhandled semantics.
-    if machine.has_default {
-        println!(
-            "    label=\"{}\\n(unhandled events stay in current state)\";",
-            machine.name
-        );
-        println!("    labelloc=t;");
-    }
-
-    // fix 3: emits manifest — tooltip attribute when declared.
-    if !emits.is_empty() {
-        println!("    tooltip=\"Emits: {}\";", emits.join(", "));
-    }
-
-    if let Some(first) = machine.states.first() {
-        println!("    __start [shape=point, width=0.2];");
-        println!("    __start -> {};", first.name);
-    }
-
-    // Composite members render inside a `subgraph cluster_<Composite>` box.
-    let member_to_group: std::collections::HashMap<&str, &str> = groups
-        .iter()
-        .flat_map(|g| g.members.iter().map(move |m| (m.as_str(), g.name.as_str())))
-        .collect();
-
-    let node_decl = |state: &hew_hir::HirMachineState| -> String {
-        let mut annotations: Vec<String> = state.fields.iter().map(|f| f.name.clone()).collect();
-        if state.has_entry {
-            annotations.push("entry".into());
-        }
-        if state.has_exit {
-            annotations.push("exit".into());
-        }
-        if annotations.is_empty() {
-            format!("{} [label=\"{}\"];", state.name, state.name)
-        } else {
-            format!(
-                "{} [label=\"{}\\n({})\", shape=Mrecord];",
-                state.name,
-                state.name,
-                annotations.join(", ")
-            )
-        }
-    };
-
-    // Emit clustered composite members first.
-    for group in groups {
-        println!("    subgraph cluster_{} {{", group.name);
-        println!("        label=\"{}\";", group.name);
-        for member in &group.members {
-            if let Some(state) = machine.states.iter().find(|s| &s.name == member) {
-                println!("        {}", node_decl(state));
-            }
-        }
-        println!("    }}");
-    }
-
-    // Emit the remaining (non-member) states at the top level.
-    for state in &machine.states {
-        if member_to_group.contains_key(state.name.as_str()) {
-            continue;
-        }
-        println!("    {}", node_decl(state));
-    }
-
-    for tr in &machine.transitions {
-        if tr.source_state == "_" {
-            for state in &machine.states {
-                let target = if tr.target_state == "_" {
-                    &state.name
-                } else {
-                    &tr.target_state
-                };
-                let has_explicit = machine
-                    .transitions
-                    .iter()
-                    .any(|t| t.source_state == state.name && t.event_name == tr.event_name);
-                if !has_explicit && target != &state.name {
-                    println!(
-                        "    {} -> {} [label=\"{}\"];",
-                        state.name, target, tr.event_name
-                    );
-                }
-            }
-        } else {
-            let target = if tr.target_state == "_" {
-                &tr.source_state
-            } else {
-                &tr.target_state
-            };
-            // fix 2: reenter — suffix [reenter] on self-transition edge labels.
-            let mut label = if tr.guard.is_some() {
-                format!("{} [guard]", tr.event_name)
-            } else {
-                tr.event_name.clone()
-            };
-            if tr.reenter {
-                label.push_str(" [reenter]");
-            }
-            println!(
-                "    {} -> {} [label=\"{}\"];",
-                tr.source_state, target, label
-            );
-        }
-    }
-
-    println!("}}");
-    println!();
-}
-
-#[allow(
-    clippy::too_many_lines,
-    reason = "sequential field emission; splitting would obscure the schema layout"
-)]
-fn print_json_hir(
-    machine: &HirMachineDecl,
-    groups: &[hew_parser::ast::CompositeGroup],
-    emits: &[String],
-) {
-    // Stable JSON schema for tooling. Field order is deterministic.
-    print!("{{");
-    print!("\"name\":{:?}", machine.name);
-    // fix 1: hasDefault — trapping vs stay-on-unhandled machines are distinguishable.
-    print!(",\"hasDefault\":{}", machine.has_default);
-    // fix 3: emits manifest at the machine level (from the AST side-table).
-    print!(",\"emits\":[");
-    for (i, e) in emits.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!("{e:?}");
-    }
-    print!("]");
-    // fix 5: typeParams in JSON schema.
-    print!(",\"typeParams\":[");
-    for (i, p) in machine.type_params.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!("{p:?}");
-    }
-    print!("]");
-    print!(",\"states\":[");
-    for (i, state) in machine.states.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!(
-            "{{\"name\":{:?},\"hasEntry\":{},\"hasExit\":{}}}",
-            state.name, state.has_entry, state.has_exit
-        );
-    }
-    print!("],\"events\":[");
-    for (i, event) in machine.events.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        // fix 5: event payload field names in JSON.
-        print!("{{\"name\":{:?},\"fields\":[", event.name);
-        for (j, field) in event.fields.iter().enumerate() {
-            if j > 0 {
-                print!(",");
-            }
-            print!("{:?}", field.name);
-        }
-        print!("]}}");
-    }
-    // fix 5: wildcard expansion in JSON — apply the same expansion + vacuous-self-loop
-    // suppression used by the diagram renderers instead of dumping raw `"_"` rows.
-    print!("],\"transitions\":[");
-    let mut first_tr = true;
-    for tr in &machine.transitions {
-        if tr.source_state == "_" {
-            for state in &machine.states {
-                let concrete_target = if tr.target_state == "_" {
-                    state.name.as_str()
-                } else {
-                    tr.target_state.as_str()
-                };
-                let has_explicit = machine
-                    .transitions
-                    .iter()
-                    .any(|t| t.source_state == state.name && t.event_name == tr.event_name);
-                // Suppress wildcard-derived vacuous self-loops (same rule as renderers).
-                if !has_explicit && concrete_target != state.name.as_str() {
-                    if !first_tr {
-                        print!(",");
-                    }
-                    first_tr = false;
-                    print!(
-                        "{{\"event\":{:?},\"from\":{:?},\"to\":{:?},\
-                         \"selfTransition\":false,\"reenter\":false,\"bodyEmits\":[",
-                        tr.event_name, state.name, concrete_target,
-                    );
-                    for (k, e) in tr.body_emits.iter().enumerate() {
-                        if k > 0 {
-                            print!(",");
-                        }
-                        print!("{e:?}");
-                    }
-                    print!("]}}");
-                }
-            }
-        } else {
-            if !first_tr {
-                print!(",");
-            }
-            first_tr = false;
-            let concrete_target = if tr.target_state == "_" {
-                tr.source_state.as_str()
-            } else {
-                tr.target_state.as_str()
-            };
-            // fix 2: reenter field in JSON transition objects.
-            print!(
-                "{{\"event\":{:?},\"from\":{:?},\"to\":{:?},\
-                 \"selfTransition\":{},\"reenter\":{},\"bodyEmits\":[",
-                tr.event_name, tr.source_state, concrete_target, tr.is_self_transition, tr.reenter,
-            );
-            for (k, e) in tr.body_emits.iter().enumerate() {
-                if k > 0 {
-                    print!(",");
-                }
-                print!("{e:?}");
-            }
-            print!("]}}");
-        }
-    }
-    // Composite grouping (from the AST side-table; HIR is flat). Omitted as an
-    // empty array for flat machines so the schema stays additive.
-    print!("],\"composites\":[");
-    for (i, group) in groups.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!(
-            "{{\"name\":{:?},\"initial\":{:?},\"members\":[",
-            group.name, group.initial
-        );
-        for (j, member) in group.members.iter().enumerate() {
-            if j > 0 {
-                print!(",");
-            }
-            print!("{member:?}");
-        }
-        print!("]}}");
-    }
-    println!("]}}");
-}
-
-// ── AST-backed renderers (used with --no-check) ──────────────────────────────
 
 fn print_mermaid(md: &MachineDecl) {
     let type_param_names: Vec<String> = md.type_params.iter().map(|p| p.name.clone()).collect();
@@ -778,39 +282,9 @@ fn print_mermaid(md: &MachineDecl) {
         println!("    end note");
     }
 
-    for trans in &md.transitions {
-        if trans.source_state == "_" {
-            for state in &md.states {
-                let target = if trans.target_state == "_" {
-                    &state.name
-                } else {
-                    &trans.target_state
-                };
-                let has_explicit = md
-                    .transitions
-                    .iter()
-                    .any(|t| t.source_state == state.name && t.event_name == trans.event_name);
-                if !has_explicit && target != &state.name {
-                    println!("    {} --> {} : {}", state.name, target, trans.event_name);
-                }
-            }
-        } else {
-            let target = if trans.target_state == "_" {
-                &trans.source_state
-            } else {
-                &trans.target_state
-            };
-            // fix 2: reenter — suffix [reenter] on self-transition edge labels.
-            let mut label = if trans.guard.is_some() {
-                format!("{} [guard]", trans.event_name)
-            } else {
-                trans.event_name.clone()
-            };
-            if trans.reenter {
-                label.push_str(" [reenter]");
-            }
-            println!("    {} --> {} : {}", trans.source_state, target, label);
-        }
+    for (source, rule) in visible_rules(md) {
+        let label = rule_label(rule);
+        println!("    {} --> {} : {}", source, rule.target_state, label);
     }
 
     for state in &md.states {
@@ -830,7 +304,14 @@ fn print_mermaid(md: &MachineDecl) {
     // fix 3: emits manifest note when declared.
     if !md.emits.is_empty() {
         println!("    note left of [*]");
-        println!("        Emits: {}", md.emits.join(", "));
+        println!(
+            "        Emits: {}",
+            md.emits
+                .iter()
+                .map(|output| output.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
         println!("    end note");
     }
 
@@ -853,7 +334,14 @@ fn print_dot(md: &MachineDecl) {
 
     // fix 3: emits manifest as a graph tooltip attribute.
     if !md.emits.is_empty() {
-        println!("    tooltip=\"Emits: {}\";", md.emits.join(", "));
+        println!(
+            "    tooltip=\"Emits: {}\";",
+            md.emits
+                .iter()
+                .map(|output| output.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
 
     if let Some(first) = md.states.first() {
@@ -882,147 +370,74 @@ fn print_dot(md: &MachineDecl) {
         }
     }
 
-    for trans in &md.transitions {
-        if trans.source_state == "_" {
-            for state in &md.states {
-                let target = if trans.target_state == "_" {
-                    &state.name
-                } else {
-                    &trans.target_state
-                };
-                let has_explicit = md
-                    .transitions
-                    .iter()
-                    .any(|t| t.source_state == state.name && t.event_name == trans.event_name);
-                if !has_explicit && target != &state.name {
-                    println!(
-                        "    {} -> {} [label=\"{}\"];",
-                        state.name, target, trans.event_name
-                    );
-                }
-            }
-        } else {
-            let target = if trans.target_state == "_" {
-                &trans.source_state
-            } else {
-                &trans.target_state
-            };
-            // fix 2: reenter — suffix [reenter] on self-transition edge labels.
-            let mut label = if trans.guard.is_some() {
-                format!("{} [guard]", trans.event_name)
-            } else {
-                trans.event_name.clone()
-            };
-            if trans.reenter {
-                label.push_str(" [reenter]");
-            }
-            println!(
-                "    {} -> {} [label=\"{}\"];",
-                trans.source_state, target, label
-            );
-        }
+    for (source, rule) in visible_rules(md) {
+        let label = rule_label(rule);
+        println!(
+            "    {} -> {} [label=\"{}\"];",
+            source, rule.target_state, label
+        );
     }
 
     println!("}}");
     println!();
 }
 
-fn print_json_ast(md: &MachineDecl) {
-    print!("{{");
-    print!("\"name\":{:?}", md.name);
-    // fix 1: hasDefault.
-    print!(",\"hasDefault\":{}", md.has_default);
-    // fix 3: emits manifest.
-    print!(",\"emits\":[");
-    for (i, e) in md.emits.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!("{e:?}");
-    }
-    print!("]");
-    // fix 5: typeParams in schema.
-    print!(",\"typeParams\":[");
-    for (i, p) in md.type_params.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!("{:?}", p.name);
-    }
-    print!("]");
-    print!(",\"states\":[");
-    for (i, state) in md.states.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        print!(
-            "{{\"name\":{:?},\"hasEntry\":{},\"hasExit\":{}}}",
-            state.name,
-            state.entry.is_some(),
-            state.exit.is_some()
-        );
-    }
-    print!("],\"events\":[");
-    for (i, event) in md.events.iter().enumerate() {
-        if i > 0 {
-            print!(",");
-        }
-        // fix 5: event payload field names.
-        print!("{{\"name\":{:?},\"fields\":[", event.name);
-        for (j, (fname, _)) in event.fields.iter().enumerate() {
-            if j > 0 {
-                print!(",");
-            }
-            print!("{fname:?}");
-        }
-        print!("]}}");
-    }
-    // fix 5: wildcard expansion in AST JSON — same logic as diagram renderers.
-    print!("],\"transitions\":[");
-    let mut first_tr = true;
-    for tr in &md.transitions {
-        if tr.source_state == "_" {
-            for state in &md.states {
-                let concrete_target = if tr.target_state == "_" {
-                    state.name.as_str()
-                } else {
-                    tr.target_state.as_str()
-                };
-                let has_explicit = md
-                    .transitions
-                    .iter()
-                    .any(|t| t.source_state == state.name && t.event_name == tr.event_name);
-                // Suppress wildcard-derived vacuous self-loops.
-                if !has_explicit && concrete_target != state.name.as_str() {
-                    if !first_tr {
-                        print!(",");
-                    }
-                    first_tr = false;
-                    print!(
-                        "{{\"event\":{:?},\"from\":{:?},\"to\":{:?},\
-                         \"selfTransition\":false,\"reenter\":false}}",
-                        tr.event_name, state.name, concrete_target,
-                    );
+fn visible_rules(machine: &MachineDecl) -> Vec<(&str, &hew_parser::ast::MachineTransition)> {
+    let mut rules = Vec::new();
+    for rule in &machine.transitions {
+        if rule.source_state == "_" {
+            for state in &machine.states {
+                let covered = machine.transitions.iter().any(|specific| {
+                    specific.source_state == state.name
+                        && specific.event_name == rule.event_name
+                        && specific.guard.is_none()
+                });
+                if !covered {
+                    rules.push((state.name.as_str(), rule));
                 }
             }
         } else {
-            if !first_tr {
-                print!(",");
-            }
-            first_tr = false;
-            let concrete_target = if tr.target_state == "_" {
-                tr.source_state.as_str()
-            } else {
-                tr.target_state.as_str()
-            };
-            let is_self = tr.source_state == concrete_target;
-            // fix 2: reenter field in JSON transition objects.
-            print!(
-                "{{\"event\":{:?},\"from\":{:?},\"to\":{:?},\
-                 \"selfTransition\":{},\"reenter\":{}}}",
-                tr.event_name, tr.source_state, concrete_target, is_self, tr.reenter
-            );
+            rules.push((rule.source_state.as_str(), rule));
         }
     }
-    println!("]}}");
+    rules
+}
+
+fn rule_label(rule: &hew_parser::ast::MachineTransition) -> String {
+    let mut label = rule.event_name.clone();
+    if rule.guard.is_some() {
+        label.push_str(" [guard]");
+    }
+    if rule.target_state == "_" {
+        label.push_str(" [external]");
+    } else if rule.reenter {
+        label.push_str(" [reenter]");
+    }
+    label
+}
+
+fn print_json_ast(machine: &MachineDecl) {
+    let fields = |fields: &[(String, hew_parser::ast::Spanned<hew_parser::ast::TypeExpr>)]| {
+        fields
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect::<Vec<_>>()
+    };
+    let value = serde_json::json!({
+        "name": machine.name,
+        "hasDefault": machine.has_default,
+        "emits": machine.emits.iter().map(|output| &output.name).collect::<Vec<_>>(),
+        "outputs": machine.emits.iter().map(|output| serde_json::json!({"name": output.name, "fields": fields(&output.fields)})).collect::<Vec<_>>(),
+        "typeParams": machine.type_params.iter().map(|param| &param.name).collect::<Vec<_>>(),
+        "states": machine.states.iter().map(|state| serde_json::json!({"name": state.name, "fields": fields(&state.fields), "hasEntry": state.entry.is_some(), "hasExit": state.exit.is_some()})).collect::<Vec<_>>(),
+        "events": machine.events.iter().map(|event| serde_json::json!({"name": event.name, "fields": fields(&event.fields)})).collect::<Vec<_>>(),
+        "transitions": visible_rules(machine).into_iter().map(|(source, rule)| serde_json::json!({
+            "event": rule.event_name, "from": source, "to": rule.target_state,
+            "selfTransition": source == rule.target_state,
+            "guarded": rule.guard.is_some(), "reenter": rule.reenter,
+            "external": rule.reenter || rule.target_state != source,
+        })).collect::<Vec<_>>(),
+        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name, "initial": group.initial, "members": group.members})).collect::<Vec<_>>(),
+    });
+    println!("{value}");
 }

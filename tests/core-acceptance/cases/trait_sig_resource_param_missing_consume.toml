@@ -1,0 +1,13 @@
+[[case]]
+id = "trait_sig_resource_param_missing_consume"
+intent = "Reject fixture: trait_sig_resource_param_missing_consume — a `#[resource]` handle passed by value as a NON-RECEIVER argument of a bodyless trait method signature must be declared `consume`."
+source = "../vertical-slice/reject/trait_sig_resource_param_missing_consume.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ResourceBoundaryParamMustConsume"
+line = 38
+column = 5
+message = "E_HIR: `Handle` is a `#[resource]`/`#[linear]` handle passed by value to trait method signature `put`, whose body is not visible at the call site, so its borrow-vs-consume disposition cannot be inferred; annotate `consume item: Handle` to pin the by-move ownership transfer (the callee / foreign ABI owns and drops it), or pass an owned handle/id by value instead of the resource itself"

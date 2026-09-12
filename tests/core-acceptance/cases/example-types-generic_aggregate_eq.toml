@@ -1,0 +1,13 @@
+[[case]]
+id = "example-types-generic_aggregate_eq"
+intent = "The published example compiles, runs and prints exactly what it advertises."
+source = "../../examples/playground/types/generic_aggregate_eq.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "pair=true pair-ne=false slot=true slot-ne=false bag=true bag-ne=false\n"
+exit = 0

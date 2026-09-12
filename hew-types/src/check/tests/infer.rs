@@ -15,8 +15,8 @@ mod non_root_module_inference_scope {
         return_ty: Option<TypeExpr>,
     ) -> Module {
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: fn_name.to_string(),
@@ -156,8 +156,8 @@ mod non_root_module_inference_scope {
 
         // Root module also has a function with `_` param — should also error.
         let root_fn = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "root_fn".to_string(),
@@ -212,8 +212,8 @@ mod non_root_module_inference_scope {
 
         let make_infer_fn = |name: &str, span_start: usize| -> Spanned<Item> {
             let fd = FnDecl {
+                origin: hew_parser::ast::DeclarationOrigin::Authored,
                 attributes: vec![],
-                is_async: false,
                 is_generator: false,
                 visibility: Visibility::Private,
                 name: name.to_string(),
@@ -292,8 +292,8 @@ mod non_root_module_inference_scope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "foo".to_string(),
@@ -371,8 +371,8 @@ mod non_root_module_inference_scope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "bar".to_string(),
@@ -630,6 +630,7 @@ mod non_root_module_inference_scope {
             lang_item: None,
         };
         let greeter = TypeDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             visibility: Visibility::Private,
             kind: TypeDeclKind::Struct,
             name: "Greeter".to_string(),
@@ -688,7 +689,7 @@ mod non_root_module_inference_scope {
     fn trait_default_method_with_concrete_receiver_keeps_implicit_impl_arity() {
         let source = r"
             type Greeter {
-                id: i64;
+                id: i64,
             }
 
             trait Answerer {
@@ -778,7 +779,7 @@ mod non_root_module_inference_scope {
     #[test]
     fn bare_channel_handle_signature_stays_valid() {
         let source = concat!(
-            "import std.channel.channel;\n",
+            "import std.channel;\n",
             "fn close_sender(tx: channel.Sender) {\n",
             "    tx.close();\n",
             "}\n",
@@ -819,6 +820,7 @@ mod non_root_module_inference_scope {
 
         // |x: _| x  — lambda with infer-typed parameter, no call site to resolve it
         let lambda_expr = Expr::Lambda {
+            private_captures: Vec::new(),
             is_move: false,
             type_params: None,
             params: vec![LambdaParam {
@@ -836,8 +838,8 @@ mod non_root_module_inference_scope {
             else_block: None,
         };
         let fn_decl = FnDecl {
+            origin: hew_parser::ast::DeclarationOrigin::Authored,
             attributes: vec![],
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name: "foo".to_string(),

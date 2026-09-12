@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-handle-in-fields-and-collections"
+intent = "An actor handle is an ordinary value of the actor's own type: it lives in a record field, a `Vec` element and a `HashMap` value, travels into a function by that type and comes back out of one."
+source = "cases/actor-handle-in-fields-and-collections.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "alpha 6\n8\n70\n30\n"
+exit = 0

@@ -1,0 +1,11 @@
+[[case]]
+id = "partial-captured-job-later-fault"
+intent = "A fault after consuming a captured job callback and reading its remaining fields unwinds the partially consumed local root, its environment and heap-owning caller locals exactly once."
+source = "cases/partial-captured-job-later-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "RUN:FAULT:FAULT:QUEUED:5\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

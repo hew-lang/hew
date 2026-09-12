@@ -1,0 +1,9 @@
+=== Fenwick Tree ===
+PASS: basic prefix sum
+PASS: range queries
+PASS: point update
+PASS: brute force verification
+PASS: single element
+
+5/5 tests passed
+PASS

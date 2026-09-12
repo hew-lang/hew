@@ -1,0 +1,18 @@
+type Key { label: string, divisor: i64 }
+type Holder { values: Vec<Key>, sibling: Vec<string> }
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        let local = other.label.to_upper();
+        let bytes = local.to_bytes();
+        bytes.len() / self.divisor == 1
+    }
+}
+fn main() -> i64 {
+    let holder = Holder {
+        values: [Key { label: "left".to_upper(), divisor: 0 }],
+        sibling: ["sibling".to_upper()],
+    };
+    let right = [Key { label: "right".to_upper(), divisor: 1 }];
+    println(holder.values == right);
+    0
+}

@@ -86,19 +86,19 @@ If the diff is empty the output matches exactly. A non-empty diff means the prog
 
 The learning paths here are mostly language-focused. When you want shipped library APIs, use [`../std/README.md`](../std/README.md) as the canonical index, then use this map to jump to the right modules quickly:
 
-| After this part of `examples/` | Start with these modules | Why |
-| --- | --- | --- |
-| `ux/` and `progressive/` | `std.string`, `std.fmt`, `std.vec`, `std.option`, `std.result`, `std.math` | Next stop after the core syntax, collections, and expression lessons |
-| Root-level utilities such as `file_reader`, `cli_argparse`, `hew_grep`, and `regex_demo` | `std.io`, `std.fs`, `std.path`, `std.os`, `std.string`, `std.text.regex` | CLI I/O, files, paths, env access, and text scanning |
-| Root-level networking examples such as `http_server`, `static_server`, `curl_client`, `http_json_demo`, and `chat_*` | `std.net`, `std.net.http`, `std.net.mime`, `std.net.url`, `std.encoding.json` | TCP, HTTP, content types, URLs, and JSON client payloads |
-| `smtp_client.hew` (requires a real SMTP server; see file header) | `std.net.smtp` | Connecting via STARTTLS or implicit TLS, sending plain-text and HTML email |
-| Root-level async/concurrency examples such as `async_demo` and `scope_*` | `std.stream`, `std.channel.channel`, `std.semaphore` | Stream pipelines, MPSC channels, and coordination primitives |
-| `benchmark_demo.hew` and `benchmarks/` | `std.bench`, `std.net.http` | Benchmark harness plus the HTTP surfaces used in the server comparison |
+| After this part of `examples/`                                                                                       | Start with these modules                                                      | Why                                                                        |
+| -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `ux/` and `progressive/`                                                                                             | `std.string`, `std.fmt`, `std.vec`, `std.option`, `std.result`, `std.math`    | Next stop after the core syntax, collections, and expression lessons       |
+| Root-level utilities such as `file_reader`, `cli_argparse`, `hew_grep`, and `regex_demo`                             | `std.io`, `std.fs`, `std.path`, `std.os`, `std.string`, `std.text.regex`      | CLI I/O, files, paths, env access, and text scanning                       |
+| Root-level networking examples such as `http_server`, `static_server`, `curl_client`, `http_json_demo`, and `chat_*` | `std.net`, `std.net.http`, `std.net.mime`, `std.net.url`, `std.encoding.json` | TCP, HTTP, content types, URLs, and JSON client payloads                   |
+| `smtp_client.hew` (requires a real SMTP server; see file header)                                                     | `std.net.smtp`                                                                | Connecting via STARTTLS or implicit TLS, sending plain-text and HTML email |
+| Root-level async/concurrency examples such as `async_demo` and `scope_*`                                             | `std.stream`, `std.channel`, `std.semaphore`                                  | Stream pipelines, MPSC channels, and coordination primitives               |
+| `benchmark_demo.hew` and `benchmarks/`                                                                               | `std.bench`, `std.net.http`                                                   | Benchmark harness plus the HTTP surfaces used in the server comparison     |
 
 ### Topic Collections
 
-- **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing
-- **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities
+- **algos/** -- One-file algorithm examples covering search, sorting, graph traversal, dynamic programming, and string processing. Each is self-checking, ships a paired `.expected`, and is gated by `make test-surface-examples`
+- **datastruct/** -- One-file data-structure examples covering trees, heaps, maps, caches, graphs, and related utilities. Each is self-checking, ships a paired `.expected`, and is gated by `make test-surface-examples`
 - **playground/** -- Grouped by topic; [`manifest.json`](playground/manifest.json) is the curated source of truth for the downstream browser playground catalog. After editing files under `playground/`, refresh it with `make baselines` (or `python3 scripts/gen-playground-manifest.py` for that artefact alone), use `make playground-manifest-check` for the cheap freshness check, use `make playground-check` for the repo-local browser/tooling preflight that validates the curated entries through `hew-wasm`'s analysis-only `analyze()` surface before building `hew-wasm`, and use `make playground-wasi-check` in codegen-capable environments for the real `hew run --target wasm32-wasi` proof path:
   - `basics/` -- Hello world, fibonacci, higher-order functions, string interpolation
   - `concurrency/` -- Actor pipelines, async/await, counters, supervisors
@@ -107,19 +107,19 @@ The learning paths here are mostly language-focused. When you want shipped libra
   Each manifest entry includes a `capabilities` block that records
   `browser: "analysis-only"` (invariant — `hew-wasm` is Tier 1 analysis-only)
   and `wasi: "runnable"|"unsupported"` (whether the snippet runs correctly under
-  `hew build --target=wasm32-wasi`).  The authoritative per-feature table is in
+  `hew build --target=wasm32-wasi`). The authoritative per-feature table is in
   [`docs/wasm-capability-matrix.md`](../docs/wasm-capability-matrix.md#playground-capability-contract).
 
 ### v0.5 Surfaces
 
-- **v05/surfaces/** -- One-file idiomatic demos for the landed v0.5 surfaces. Every source must ship a paired `.expected` and is gated by `make test-surface-examples`; missing or orphan expectations, nonzero exits, timeouts, and combined-output drift after CRLF and terminal-newline normalization all fail the closed-corpus runner:
-  - [`typed_streams.hew`](v05/surfaces/typed_streams.hew) -- suspending typed streams (`await sink.send(x)` / `await stream.recv()`)
+- **v05/surfaces/** -- Examples retained from v0.5, with current call syntax where migrated. Historical directory and file names are not language spellings or evidence of current acceptance. Every source must ship a paired `.expected` and is gated by `make test-surface-examples`; missing or orphan expectations, nonzero exits, timeouts, and combined-output drift after CRLF and terminal-newline normalization all fail the closed-corpus runner:
+  - [`typed_streams.hew`](v05/surfaces/typed_streams.hew) -- suspending typed streams (`sink.send(x)` / `stream.recv()`)
   - [`regex_captures.hew`](v05/surfaces/regex_captures.hew) -- regex capture groups (`capture` / `capture_named` / `find_all` / `find_all_submatch`)
   - [`template_render.hew`](v05/surfaces/template_render.hew) -- Go-style text templates (`parse` + `render_try`)
   - [`unicode_runes.hew`](v05/surfaces/unicode_runes.hew) -- unicode rune helpers + classification predicates
   - [`scanner_tokens.hew`](v05/surfaces/scanner_tokens.hew) -- line and word tokenisation through the value-state `std.io.scanner` API. It is admitted to `make test-surface-examples` with an exact five-line normalized-output expectation and no diagnostic allowances, so output, diagnostics, status, and timeout drift all fail the gate.
 - Networking surfaces live under **net/**:
-  - [`http_await_service.hew`](net/http_await_service.hew) -- async HTTP/1.1 client + server over `await` (two routes). Loopback-only (`127.0.0.1`), so it is offline and deterministic — it **is** wired into the `make test-surface-examples` gate alongside the pure surface demos, with a paired `.expected`.
+  - [`http_await_service.hew`](net/http_await_service.hew) -- HTTP/1.1 client + server with suspending calls (two routes). Uses loopback (`127.0.0.1`) and has a paired `.expected`. The server's accept loop runs as a `fork`ed task so the client below it can dial concurrently.
   - [`tls_client.hew`](net/tls_client.hew) -- TLS client free-function surface (`tls.connect`/`write`/`read`/`close`); type-checks + runs, encrypted round-trip gated on a known v0.5 data-plane ABI fix. **Excluded from `make test-surface-examples`** on purpose: it dials a real public host (`example.com:443`), a genuine outbound network dependency that cannot run offline, and it deliberately fails closed on the data-plane gap. It ships a paired `.expected` for local diffing only.
 
 ### Cross-Language Comparisons

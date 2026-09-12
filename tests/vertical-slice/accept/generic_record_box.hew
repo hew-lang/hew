@@ -5,7 +5,7 @@
 // module-qualified `generic_record_box.Box$$string`). A key divergence would
 // fail closed (W3.029) at the importing site even though the layout exists.
 pub type Box<T> {
-    value: T;
+    value: T,
 }
 
 pub fn boxed(s: string) -> Box<string> {

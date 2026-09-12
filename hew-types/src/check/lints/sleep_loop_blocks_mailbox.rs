@@ -18,8 +18,8 @@
 
 use hew_parser::{
     ast::{
-        Block, CallArg, ElseBlock, Expr, Literal, MatchArm, SelectArm, Span, Stmt, StringPart,
-        UnaryOp,
+        condition_exprs, Block, CallArg, ElseBlock, Expr, Literal, MatchArm, SelectArm, Span, Stmt,
+        StringPart, UnaryOp,
     },
     loop_body_has_break,
 };
@@ -81,8 +81,12 @@ fn find_in_stmt(
             find_in_expr(ctx, levels, &iterable.0, out);
             find_in_block(ctx, levels, body, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
         }
         Stmt::If {
@@ -97,15 +101,16 @@ fn find_in_stmt(
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(else_body) = else_body {
-                find_in_block(ctx, levels, else_body, out);
+                find_in_expr(ctx, levels, &else_body.0, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -182,15 +187,16 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            find_in_expr(ctx, levels, &expr.0, out);
+            for expr in condition_exprs(conditions) {
+                find_in_expr(ctx, levels, &expr.0, out);
+            }
             find_in_block(ctx, levels, body, out);
             if let Some(else_body) = else_body {
-                find_in_block(ctx, levels, else_body, out);
+                find_in_expr(ctx, levels, &else_body.0, out);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -208,10 +214,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         Expr::ScopeDeadline { duration, body } => {
             find_in_expr(ctx, levels, &duration.0, out);
             find_in_block(ctx, levels, body, out);
-        }
-        Expr::Timeout { expr, duration } => {
-            find_in_expr(ctx, levels, &expr.0, out);
-            find_in_expr(ctx, levels, &duration.0, out);
         }
         Expr::Call { function, args, .. } => {
             find_in_expr(ctx, levels, &function.0, out);
@@ -276,9 +278,14 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 }
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             for item in items {
                 find_in_expr(ctx, levels, &item.0, out);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                find_in_expr(ctx, levels, &element.expr().0, out);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -291,11 +298,18 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
                 find_in_expr(ctx, levels, &value.0, out);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             find_in_expr(ctx, levels, &left.0, out);
             find_in_expr(ctx, levels, &right.0, out);
         }
         Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -338,7 +352,6 @@ fn find_in_expr(ctx: &LintCtx, levels: &LintLevels, expr: &Expr, out: &mut Vec<T
         | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}
@@ -365,6 +378,8 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         } => match &operand.0 {
             Expr::Identifier(name) => Some(Candidate::Guard(name.clone())),
             Expr::Binary { .. }
+            | Expr::Coalesce { .. }
+            | Expr::Handle { .. }
             | Expr::ContextVariant(_)
             | Expr::GenericApplySuffix { .. }
             | Expr::RecordInitSuffix { .. }
@@ -392,12 +407,11 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::MethodCall { .. }
             | Expr::StructInit { .. }
             | Expr::Select { .. }
-            | Expr::Join(_)
-            | Expr::Timeout { .. }
+            | Expr::Race(_)
             | Expr::UnsafeBlock(_)
             | Expr::Yield(_)
             | Expr::Return(_)
-            | Expr::This
+            | Expr::ReturnError(_)
             | Expr::FieldAccess { .. }
             | Expr::Index { .. }
             | Expr::Cast { .. }
@@ -413,6 +427,8 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
             | Expr::GenBlock { .. } => None,
         },
         Expr::Binary { .. }
+        | Expr::Coalesce { .. }
+        | Expr::Handle { .. }
         | Expr::ContextVariant(_)
         | Expr::GenericApplySuffix { .. }
         | Expr::RecordInitSuffix { .. }
@@ -440,12 +456,11 @@ fn candidate_from_condition(condition: &Expr) -> Option<Candidate> {
         | Expr::MethodCall { .. }
         | Expr::StructInit { .. }
         | Expr::Select { .. }
-        | Expr::Join(_)
-        | Expr::Timeout { .. }
+        | Expr::Race(_)
         | Expr::UnsafeBlock(_)
         | Expr::Yield(_)
         | Expr::Return(_)
-        | Expr::This
+        | Expr::ReturnError(_)
         | Expr::FieldAccess { .. }
         | Expr::Index { .. }
         | Expr::Cast { .. }
@@ -522,14 +537,15 @@ fn bounded_stmt_has_sleep(stmt: &Stmt) -> bool {
                 || else_block.as_ref().is_some_and(bounded_else_has_sleep)
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            bounded_expr_has_sleep(&expr.0)
+            condition_exprs(conditions).any(|expr| bounded_expr_has_sleep(&expr.0))
                 || bounded_contains_sleep(body)
-                || else_body.as_ref().is_some_and(bounded_contains_sleep)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_body| bounded_expr_has_sleep(&else_body.0))
         }
         Stmt::Match { scrutinee, arms } => {
             bounded_expr_has_sleep(&scrutinee.0) || arms.iter().any(bounded_arm_has_sleep)
@@ -592,7 +608,6 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         | Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,
@@ -636,14 +651,15 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                     .is_some_and(|else_block| bounded_expr_has_sleep(&else_block.0))
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            bounded_expr_has_sleep(&expr.0)
+            condition_exprs(conditions).any(|expr| bounded_expr_has_sleep(&expr.0))
                 || bounded_contains_sleep(body)
-                || else_body.as_ref().is_some_and(bounded_contains_sleep)
+                || else_body
+                    .as_ref()
+                    .is_some_and(|else_body| bounded_expr_has_sleep(&else_body.0))
         }
         Expr::Match { scrutinee, arms } => {
             bounded_expr_has_sleep(&scrutinee.0) || arms.iter().any(bounded_arm_has_sleep)
@@ -656,9 +672,6 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
         }
         Expr::ScopeDeadline { duration, body } => {
             bounded_expr_has_sleep(&duration.0) || bounded_contains_sleep(body)
-        }
-        Expr::Timeout { expr, duration } => {
-            bounded_expr_has_sleep(&expr.0) || bounded_expr_has_sleep(&duration.0)
         }
         Expr::MethodCall { receiver, args, .. } => {
             bounded_expr_has_sleep(&receiver.0) || bounded_call_args_have_sleep(args)
@@ -684,19 +697,27 @@ fn bounded_expr_has_sleep(expr: &Expr) -> bool {
                 bounded_expr_has_sleep(&expr.0)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+        Expr::Tuple(items) | Expr::Race(items) => {
             items.iter().any(|item| bounded_expr_has_sleep(&item.0))
         }
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| bounded_expr_has_sleep(&element.expr().0)),
         Expr::ArrayRepeat { value, count } => {
             bounded_expr_has_sleep(&value.0) || bounded_expr_has_sleep(&count.0)
         }
         Expr::MapLiteral { entries } => entries
             .iter()
             .any(|(key, value)| bounded_expr_has_sleep(&key.0) || bounded_expr_has_sleep(&value.0)),
-        Expr::Binary { left, right, .. } => {
-            bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => bounded_expr_has_sleep(&left.0) || bounded_expr_has_sleep(&right.0),
         Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -759,8 +780,11 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
         Stmt::While {
             condition, body, ..
         } => expr_assigns_identifier(&condition.0, name) || assigns_identifier(body, name),
-        Stmt::WhileLet { expr, body, .. } => {
-            expr_assigns_identifier(&expr.0, name) || assigns_identifier(body, name)
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            condition_exprs(conditions).any(|expr| expr_assigns_identifier(&expr.0, name))
+                || assigns_identifier(body, name)
         }
         Stmt::If {
             condition,
@@ -774,16 +798,15 @@ fn stmt_assigns_identifier(stmt: &Stmt, name: &str) -> bool {
                     .is_some_and(|else_block| else_assigns_identifier(else_block, name))
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_assigns_identifier(&expr.0, name)
+            condition_exprs(conditions).any(|expr| expr_assigns_identifier(&expr.0, name))
                 || assigns_identifier(body, name)
                 || else_body
                     .as_ref()
-                    .is_some_and(|else_body| assigns_identifier(else_body, name))
+                    .is_some_and(|else_body| expr_assigns_identifier(&else_body.0, name))
         }
         Stmt::Match { scrutinee, arms } => {
             expr_assigns_identifier(&scrutinee.0, name)
@@ -854,16 +877,15 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                     .is_some_and(|else_block| expr_assigns_identifier(&else_block.0, name))
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            expr_assigns_identifier(&expr.0, name)
+            condition_exprs(conditions).any(|expr| expr_assigns_identifier(&expr.0, name))
                 || assigns_identifier(body, name)
                 || else_body
                     .as_ref()
-                    .is_some_and(|else_body| assigns_identifier(else_body, name))
+                    .is_some_and(|else_body| expr_assigns_identifier(&else_body.0, name))
         }
         Expr::Match { scrutinee, arms } => {
             expr_assigns_identifier(&scrutinee.0, name)
@@ -880,9 +902,6 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         }
         Expr::ScopeDeadline { duration, body } => {
             expr_assigns_identifier(&duration.0, name) || assigns_identifier(body, name)
-        }
-        Expr::Timeout { expr, duration } => {
-            expr_assigns_identifier(&expr.0, name) || expr_assigns_identifier(&duration.0, name)
         }
         Expr::Call { function, args, .. } => {
             expr_assigns_identifier(&function.0, name) || call_args_assign_identifier(args, name)
@@ -937,19 +956,27 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
                 expr_assigns_identifier(&expr.0, name)
             }
         }),
-        Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => items
+        Expr::Tuple(items) | Expr::Race(items) => items
             .iter()
             .any(|item| expr_assigns_identifier(&item.0, name)),
+        Expr::Array(elements) => elements
+            .iter()
+            .any(|element| expr_assigns_identifier(&element.expr().0, name)),
         Expr::ArrayRepeat { value, count } => {
             expr_assigns_identifier(&value.0, name) || expr_assigns_identifier(&count.0, name)
         }
         Expr::MapLiteral { entries } => entries.iter().any(|(key, value)| {
             expr_assigns_identifier(&key.0, name) || expr_assigns_identifier(&value.0, name)
         }),
-        Expr::Binary { left, right, .. } => {
-            expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name)
-        }
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => expr_assigns_identifier(&left.0, name) || expr_assigns_identifier(&right.0, name),
         Expr::Unary { operand, .. }
+        | Expr::ReturnError(operand)
         | Expr::Clone(operand)
         | Expr::Await(operand)
         | Expr::AwaitRestart(operand)
@@ -981,7 +1008,6 @@ fn expr_assigns_identifier(expr: &Expr, name: &str) -> bool {
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => false,

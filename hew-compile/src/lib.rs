@@ -7,6 +7,8 @@ use std::sync::Arc;
 use hew_parser::ast::{ImportDecl, Item, Program, Spanned};
 use serde::{de::DeserializeOwned, Deserialize};
 
+mod host;
+
 #[derive(Debug, Clone, Default)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -55,6 +57,91 @@ pub struct FrontendOptions {
     /// [`hew_types::Checker::set_lint_levels`] before `check_program`. Defaults
     /// to every lint's built-in level ([`hew_types::LintLevels::from_defaults`]).
     pub lint_levels: hew_types::LintLevels,
+    /// Exact root declaration selected as the process entry. File test
+    /// discovery records this occurrence before checker identities exist.
+    pub entry_selection: Option<hew_types::DeclarationOccurrence>,
+    /// The sole deterministic production peer for a selected `_test.hew`
+    /// root. Arbitrary sibling discovery is intentionally not supported.
+    pub companion: Option<PathBuf>,
+    /// Open editor buffers that override on-disk content for this run.
+    ///
+    /// Every source read the frontend performs consults this set first, so an
+    /// unsaved buffer checks against its saved siblings. Empty for the CLI.
+    pub documents: DocumentSet,
+}
+
+/// Source text that overrides the filesystem for one frontend run.
+///
+/// The LSP, the browser analysis surface and the REPL all check buffers that
+/// either have no file behind them or differ from the file on disk. They hand
+/// the driver this set instead of running a frontend of their own.
+#[derive(Debug, Clone, Default)]
+pub struct DocumentSet {
+    sources: BTreeMap<PathBuf, String>,
+}
+
+impl DocumentSet {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `source` as the current content of `path`.
+    ///
+    /// The canonical spelling is recorded alongside the given one because the
+    /// import resolver canonicalizes every candidate before loading it.
+    pub fn insert(&mut self, path: impl Into<PathBuf>, source: impl Into<String>) {
+        let path = path.into();
+        let source = source.into();
+        if let Ok(canonical) = path.canonicalize() {
+            if canonical != path {
+                self.sources.insert(canonical, source.clone());
+            }
+        }
+        self.sources.insert(path, source);
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty()
+    }
+
+    fn contains(&self, path: &Path) -> bool {
+        self.get(path).is_some()
+    }
+
+    fn get(&self, path: &Path) -> Option<&str> {
+        if let Some(source) = self.sources.get(path) {
+            return Some(source);
+        }
+        let canonical = path.canonicalize().ok()?;
+        self.sources.get(&canonical).map(String::as_str)
+    }
+}
+
+/// The overlay used when a caller supplies no [`FrontendOptions`].
+static EMPTY_DOCUMENTS: DocumentSet = DocumentSet {
+    sources: BTreeMap::new(),
+};
+
+/// The canonical path of an import candidate, or `None` when nothing supplies
+/// it. An open buffer stands in for a file the filesystem does not have, so an
+/// editor can check a document set that is not on disk.
+fn resolve_candidate(documents: &DocumentSet, candidate: &Path) -> Option<PathBuf> {
+    match candidate.canonicalize() {
+        Ok(canonical) => Some(canonical),
+        Err(_) => documents
+            .contains(candidate)
+            .then(|| candidate.to_path_buf()),
+    }
+}
+
+/// Read a source file, preferring an open buffer over the file on disk.
+fn read_source(documents: &DocumentSet, path: &Path) -> std::io::Result<String> {
+    match documents.get(path) {
+        Some(source) => Ok(source.to_string()),
+        None => std::fs::read_to_string(path),
+    }
 }
 
 /// Target facts that must stay coupled while a source is lowered.
@@ -106,8 +193,8 @@ pub struct DiagnosticPolicy {
     pub lint_levels: hew_types::LintLevels,
 }
 
-/// The sole authority for HIR verification, MIR lowering, and backend-front
-/// checks. Every host enters through this type with its target facts explicit.
+/// The shared semantic compilation boundary. Every host enters through this
+/// type with its target facts and resolved compilation roots explicit.
 #[derive(Debug, Clone)]
 pub struct Session {
     pub target: SessionTarget,
@@ -136,66 +223,420 @@ impl Session {
         )
     }
 
-    /// Lower already verified HIR through the complete build check set.
+    /// Lower a checked source program through the shared semantic boundary.
     ///
-    /// The MIR lowering below runs unconditionally for every host: it is the
-    /// one pipeline every `Session` produces, which is what keeps wasm and
-    /// native lint output identical. The native LLVM backend-front check
-    /// (`check_pipeline`) layers on top of that when the `codegen` feature is
-    /// compiled in; hosts that build without it (hew-wasm) still get the
-    /// exact same pipeline, just without a codegen verdict they never read.
-    #[must_use]
+    /// # Errors
+    ///
+    /// Returns HIR lowering or semantic verification diagnostics.
+    pub fn lower_program(
+        &self,
+        program: &hew_parser::ast::Program,
+        tco: &hew_types::TypeCheckOutput,
+    ) -> Result<SessionOutput, SessionError> {
+        let program = tco
+            .normalized_machines
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
+        let lowered =
+            hew_hir::lower_program(program, tco, &hew_hir::ResolutionCtx, self.target.hir_arch);
+        if !lowered.diagnostics.is_empty() {
+            return Err(SessionError::Hir(lowered.diagnostics));
+        }
+        let roots = Self::source_roots(program, tco)?;
+        self.lower_hir_module(&lowered.module, tco, &roots)
+    }
+
+    /// Select concrete declarations exported by this checked source module.
+    ///
+    /// Root-source `pub` and `package` monomorphic functions require bodies.
+    /// Imported declarations are not roots. Generic exports are templates:
+    /// concrete caller demand supplies their specializations. These roots do
+    /// not establish a public C calling convention or a stable embedding ABI.
+    /// The checker-selected process entry is added by semantic lowering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a selected declaration lacks checker identity.
+    pub fn source_roots(
+        program: &hew_parser::ast::Program,
+        tco: &hew_types::TypeCheckOutput,
+    ) -> Result<Vec<hew_types::DefId>, SessionError> {
+        // File imports are appended for body lowering after checking. Their
+        // public declarations remain imports, with their own source identities,
+        // rather than becoming authored root exports through flattening.
+        let root_items = program
+            .module_graph
+            .as_ref()
+            .and_then(|graph| graph.modules.get(&graph.root))
+            .map_or(program.items.as_slice(), |root| root.items.as_slice());
+        root_items
+            .iter()
+            .enumerate()
+            .filter_map(|(ordinal, (item, span))| {
+                let hew_parser::ast::Item::Function(function) = item else {
+                    return None;
+                };
+                if !function.visibility.is_pub()
+                    || function
+                        .type_params
+                        .as_ref()
+                        .is_some_and(|params| !params.is_empty())
+                {
+                    return None;
+                }
+                let occurrence = hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    tco.identity.root_module(),
+                    span,
+                    ordinal,
+                    hew_types::DeclarationKind::Function,
+                    0,
+                );
+                Some(
+                    tco.identity
+                        .declaration(occurrence)
+                        .cloned()
+                        .ok_or_else(|| SessionError::Unsupported {
+                            callable: None,
+                            message: format!(
+                                "exported source declaration at {span:?} has no checked identity"
+                            ),
+                        }),
+                )
+            })
+            .collect()
+    }
+
+    /// Verify and canonicalize ownership semantics shared by every host.
+    /// `roots` are resolved concrete declarations, in addition to the selected
+    /// process entry. Source consumers use [`Self::source_roots`] to preserve
+    /// the same export policy as [`Self::lower_program`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the first failing semantic boundary with its diagnostics.
     pub fn lower_hir_module(
         &self,
         module: &hew_hir::HirModule,
         tco: &hew_types::TypeCheckOutput,
-    ) -> SessionOutput {
-        let mut pipeline = hew_mir::lower_hir_module_with_facts(module, self.target.pointer_width);
-        pipeline.attach_lowering_facts(tco);
-        #[cfg(feature = "codegen")]
-        let codegen_error = self.check_pipeline(&pipeline);
-        SessionOutput {
-            pipeline,
-            #[cfg(feature = "codegen")]
-            codegen_error,
+        roots: &[hew_types::DefId],
+    ) -> Result<SessionOutput, SessionError> {
+        let diagnostics = hew_hir::verify_hir(module);
+        if !diagnostics.is_empty() {
+            return Err(SessionError::Hir(diagnostics));
         }
+        let mut sir = hew_sir::lower_module_with_roots(module, tco, roots).map_err(|errors| {
+            SessionError::Unsupported {
+                callable: None,
+                message: errors
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            }
+        })?;
+        let diagnostics = hew_sir::verify_module(&sir.module);
+        if !diagnostics.is_empty() {
+            return Err(SessionError::Semantic(diagnostics));
+        }
+        require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
+        let body_index = sir.module.function_index();
+        let mut compiled_roots = roots
+            .iter()
+            .map(|declaration| {
+                let callable = sir
+                    .module
+                    .callable_for_declaration(declaration)
+                    .ok_or_else(|| SessionError::Unsupported {
+                        callable: None,
+                        message: format!(
+                            "selected declaration {declaration:?} has no semantic callable"
+                        ),
+                    })?
+                    .id;
+                require_semantic_body(&sir.module, &body_index, callable)?;
+                Ok(callable)
+            })
+            .collect::<Result<Vec<_>, SessionError>>()?;
+        if let Some(entry) = sir.module.entry_callable {
+            compiled_roots.push(entry);
+        }
+        compiled_roots.sort_unstable();
+        compiled_roots.dedup();
+        let sir_error = |error| match error {
+            hew_sir::SirOptimizationError::InvalidInput(diagnostics)
+            | hew_sir::SirOptimizationError::InvalidOutput(diagnostics) => {
+                SessionError::Semantic(diagnostics)
+            }
+        };
+        hew_sir::canonicalize_module_constant_cfg(&mut sir.module).map_err(sir_error)?;
+        hew_sir::transfer_module_dead_local_reads(&mut sir.module).map_err(sir_error)?;
+        Ok(SessionOutput {
+            sir,
+            compiled_roots,
+        })
+    }
+}
+
+/// Verified semantic compilation result, independent of the execution host.
+#[derive(Debug)]
+pub struct SessionOutput {
+    sir: hew_sir::LoweredModule,
+    compiled_roots: Vec<hew_sir::CallableId>,
+}
+
+impl SessionOutput {
+    /// Resolved entry and export roots whose complete call closures were lowered.
+    #[must_use]
+    pub fn compiled_roots(&self) -> &[hew_sir::CallableId] {
+        &self.compiled_roots
     }
 
-    /// Lower the strict SIR lane through this same session authority.
+    /// Inspect the verified semantic result without invalidating it.
+    #[must_use]
+    pub fn semantics(&self) -> &hew_sir::LoweredModule {
+        &self.sir
+    }
+
+    /// Consume the session result and relinquish its verification guarantee.
+    #[must_use]
+    pub fn into_semantics(self) -> hew_sir::LoweredModule {
+        self.sir
+    }
+
+    /// Realize verified semantics using the backend's measured target layouts.
     ///
     /// # Errors
     ///
-    /// Returns [`hew_mir::SirMirLoweringError`] when the entry point's
-    /// component cannot be closed over the SIR module (for example a
-    /// missing callable body).
-    pub fn lower_sir_module(
+    /// Returns a physical lowering or verification diagnostic.
+    pub fn lower_physical(
         &self,
-        module: &hew_sir::SemModule,
-    ) -> Result<hew_mir::SirMirComponent, hew_mir::SirMirLoweringError> {
-        hew_mir::lower_entry_component(module)
+        target: hew_mir::PhysicalTarget,
+    ) -> Result<hew_mir::VerifiedPhysicalModule, hew_mir::PhysicalError> {
+        hew_mir::lower_physical_module(&self.sir.module, target)
     }
+}
 
-    #[cfg(feature = "codegen")]
-    #[must_use]
-    pub fn check_pipeline(
-        &self,
-        pipeline: &hew_mir::IrPipeline,
-    ) -> Option<hew_codegen_rs::CodegenError> {
-        match self.target.codegen_triple.as_deref() {
-            Some(triple) => {
-                hew_codegen_rs::validate_codegen_front_for_triple(pipeline, triple).err()
+/// Diagnostics from the shared semantic compilation boundary.
+#[derive(Debug)]
+pub enum SessionError {
+    Hir(Vec<hew_hir::HirDiagnostic>),
+    Semantic(Vec<hew_sir::SirDiagnostic>),
+    Unsupported {
+        callable: Option<hew_sir::CallableId>,
+        message: String,
+    },
+}
+
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hir(diagnostics) => write!(formatter, "HIR verification failed: {diagnostics:?}"),
+            Self::Semantic(diagnostics) => {
+                write!(formatter, "SIR verification failed: {diagnostics:?}")
             }
-            None => hew_codegen_rs::validate_codegen_front(pipeline).err(),
+            Self::Unsupported { message, .. } => formatter.write_str(message),
         }
     }
 }
 
-/// Checked MIR and the backend-front result produced by [`Session`].
-#[derive(Debug)]
-pub struct SessionOutput {
-    pub pipeline: hew_mir::IrPipeline,
-    #[cfg(feature = "codegen")]
-    pub codegen_error: Option<hew_codegen_rs::CodegenError>,
+impl std::error::Error for SessionError {}
+
+/// Headers without bodies are valid SIR, but a selected executable must close
+/// every demanded body. Join by resolved identity, never by emitted names.
+fn require_complete_semantics(
+    sir: &hew_sir::LoweredModule,
+    entry_required: bool,
+) -> Result<(), SessionError> {
+    if entry_required && sir.module.entry_callable.is_none() {
+        return Err(SessionError::Unsupported {
+            callable: None,
+            message: "the selected process entry has no semantic callable".to_string(),
+        });
+    }
+    for (callable, status) in &sir.callable_statuses {
+        if let hew_sir::SirLoweringStatus::Unsupported { reason } = status {
+            let name = sir
+                .module
+                .callable(*callable)
+                .map_or("<unknown>", |item| item.symbol.as_str());
+            return Err(SessionError::Unsupported {
+                callable: Some(*callable),
+                message: format!("semantic lowering of `{name}` is not implemented: {reason}"),
+            });
+        }
+    }
+    let body_index = sir.module.function_index();
+    for plan in sir.module.value_capabilities.values() {
+        if let Some(callable) = plan.callable {
+            require_semantic_body(&sir.module, &body_index, callable)?;
+        }
+    }
+    if let Some(entry) = sir.module.entry_callable {
+        require_semantic_body(&sir.module, &body_index, entry)?;
+    }
+    for function in &sir.module.functions {
+        for block in &function.blocks {
+            if let hew_sir::SemTerminator::Call { callee, .. } = &block.terminator {
+                require_semantic_body(&sir.module, &body_index, *callee)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn require_semantic_body(
+    module: &hew_sir::SemModule,
+    body_index: &hew_sir::SemFunctionIndex<'_>,
+    callable: hew_sir::CallableId,
+) -> Result<(), SessionError> {
+    if body_index.function(callable).is_none() {
+        let name = module
+            .callable(callable)
+            .map_or("<unknown>", |item| item.symbol.as_str());
+        return Err(SessionError::Unsupported {
+            callable: Some(callable),
+            message: format!("required semantic callable `{name}` has no body"),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod session_completion_tests {
+    use super::*;
+
+    fn complete_module() -> hew_sir::LoweredModule {
+        let program = parse_source(
+            "fn leaf() -> i64 { 7 } fn unused() -> i64 { 9 } fn main() -> i64 { leaf() }",
+            "completion.hew",
+        )
+        .unwrap();
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]));
+        let tco = checker.check_program(&program);
+        assert!(tco.errors.is_empty(), "{:?}", tco.errors);
+        Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&program, &tco)
+            .unwrap()
+            .into_semantics()
+    }
+
+    /// `unused` is declared and never called. Demand reaches neither its
+    /// header nor its body, and that absence is not an incomplete lowering:
+    /// the gate asks for the entry, the callees the bodies name and the
+    /// selected capability plans, not for every declaration in the source.
+    #[test]
+    fn a_declaration_the_entry_never_reaches_does_not_make_a_module_incomplete() {
+        let sir = complete_module();
+        assert!(
+            sir.module
+                .callables
+                .iter()
+                .all(|callable| !callable.symbol.contains("unused")),
+            "an uncalled declaration must not be admitted a callable: {:?}",
+            sir.module.callables
+        );
+        require_complete_semantics(&sir, true).unwrap();
+    }
+
+    #[test]
+    fn selected_entry_must_have_a_callable_and_body() {
+        let mut sir = complete_module();
+        let entry = sir.module.entry_callable.unwrap();
+        sir.module
+            .functions
+            .retain(|function| function.callable != entry);
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == entry
+        ));
+        sir.module.entry_callable = None;
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: None, .. })
+        ));
+    }
+
+    #[test]
+    fn demanded_callee_must_have_a_body() {
+        let mut sir = complete_module();
+        let callee = sir
+            .module
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .find_map(|block| match block.terminator {
+                hew_sir::SemTerminator::Call { callee, .. } => Some(callee),
+                _ => None,
+            })
+            .expect("the source contains a direct call");
+        sir.module
+            .functions
+            .retain(|function| function.callable != callee);
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: Some(id), .. }) if id == callee
+        ));
+    }
+
+    #[test]
+    fn lowering_refusal_cannot_be_hidden_by_a_verified_body() {
+        let mut sir = complete_module();
+        let entry = sir.module.entry_callable.unwrap();
+        let (_, status) = sir
+            .callable_statuses
+            .iter_mut()
+            .find(|(callable, _)| *callable == entry)
+            .unwrap();
+        *status = hew_sir::SirLoweringStatus::Unsupported {
+            reason: "deliberate incomplete lowering".to_string(),
+        };
+        assert!(matches!(
+            require_complete_semantics(&sir, true),
+            Err(SessionError::Unsupported { callable: Some(id), message })
+                if id == entry && message.contains("deliberate incomplete lowering")
+        ));
+    }
+
+    #[test]
+    fn source_exports_select_only_concrete_root_declarations() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("library.hew"),
+            "pub fn imported() -> i64 { 99 }",
+        )
+        .unwrap();
+        let source = dir.path().join("exports.hew");
+        std::fs::write(&source,
+            "import library; pub fn answer() -> i64 { helper() } package fn neighbour() -> i64 { 8 } fn helper() -> i64 { 42 } pub fn generic<T>(value: T) -> T { value }").unwrap();
+        let state =
+            run_file_frontend_to_typecheck(source.to_str().unwrap(), &FrontendOptions::default())
+                .unwrap();
+        let tco = state.typecheck_result.tco.as_ref().unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .unwrap();
+        let module = &output.semantics().module;
+        assert!(module.entry_callable.is_none());
+        assert_eq!(output.compiled_roots().len(), 2);
+        // `SemFunction::name` carries the emitted symbol (`__hew_fn_answer`);
+        // the declaration is the source-name authority, and selection is about
+        // which declarations compile.
+        let mut bodies = module
+            .callables
+            .iter()
+            .filter(|callable| callable.source_origin == hew_sir::FunctionSourceOrigin::RootUnit)
+            .map(|callable| callable.declaration.full_path())
+            .collect::<Vec<_>>();
+        bodies.sort_unstable();
+        assert_eq!(
+            bodies,
+            ["exports.answer", "exports.helper", "exports.neighbour"]
+        );
+        for root in output.compiled_roots() {
+            assert!(module.function_index().function(*root).is_some());
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -221,6 +662,25 @@ pub struct FrontendMessageDiagnostic {
     pub message: String,
     pub span: Option<Range<usize>>,
     pub source: Option<Arc<str>>,
+    /// Secondary locations, each with its own file and span — an import
+    /// cycle's remaining edges, one per module on the path. Empty for every
+    /// other message-only site.
+    pub notes: Vec<FrontendMessageNote>,
+    /// `= help:` lines rendered after the primary location and its notes.
+    pub help: Vec<String>,
+}
+
+/// One secondary location on a [`FrontendMessageDiagnostic`] that points into
+/// a *different* file than the primary span — the shape `hew-cli`'s
+/// diagnostic renderer already expects for a primary/note split, but that
+/// [`FrontendMessageDiagnostic`] had no way to carry until the import-cycle
+/// diagnostic needed one note per remaining cycle edge.
+#[derive(Debug, Clone)]
+pub struct FrontendMessageNote {
+    pub message: String,
+    pub span: Range<usize>,
+    pub source: Arc<str>,
+    pub filename: String,
 }
 
 #[derive(Debug, Clone)]
@@ -244,6 +704,8 @@ impl FrontendDiagnostic {
                 message: message.into(),
                 span: None,
                 source: None,
+                notes: Vec::new(),
+                help: Vec::new(),
             }),
         }
     }
@@ -258,6 +720,8 @@ impl FrontendDiagnostic {
                 message: message.into(),
                 span: None,
                 source: None,
+                notes: Vec::new(),
+                help: Vec::new(),
             }),
         }
     }
@@ -285,6 +749,36 @@ impl FrontendDiagnostic {
                 message: message.into(),
                 span: Some(span),
                 source: Some(Arc::from(source)),
+                notes: Vec::new(),
+                help: Vec::new(),
+            }),
+        }
+    }
+
+    /// [`Self::coded_message_at`], with secondary same-diagnostic locations
+    /// (each carrying its own file) and trailing `= help:` lines. Used only by
+    /// the import-cycle diagnostic, whose remaining edges each live in a
+    /// different module's source file.
+    fn coded_message_with_notes(
+        code: &str,
+        message: impl Into<String>,
+        span: Range<usize>,
+        source: &str,
+        filename: &str,
+        notes: Vec<FrontendMessageNote>,
+        help: Vec<String>,
+    ) -> Self {
+        Self {
+            source: None,
+            filename: Some(filename.to_string()),
+            note_sources: Vec::new(),
+            kind: FrontendDiagnosticKind::Message(FrontendMessageDiagnostic {
+                code: code.to_string(),
+                message: message.into(),
+                span: Some(span),
+                source: Some(Arc::from(source)),
+                notes,
+                help,
             }),
         }
     }
@@ -381,6 +875,26 @@ impl FrontendFailure {
             )],
         )
     }
+
+    /// [`Self::coded_message_at`], with secondary cross-file locations and
+    /// help lines. See [`FrontendDiagnostic::coded_message_with_notes`].
+    fn coded_message_with_notes(
+        code: &str,
+        message: impl Into<String>,
+        span: Range<usize>,
+        source: &str,
+        filename: &str,
+        notes: Vec<FrontendMessageNote>,
+        help: Vec<String>,
+    ) -> Self {
+        let message = message.into();
+        Self::new(
+            message.clone(),
+            vec![FrontendDiagnostic::coded_message_with_notes(
+                code, message, span, source, filename, notes, help,
+            )],
+        )
+    }
 }
 
 impl fmt::Display for FrontendFailure {
@@ -399,7 +913,9 @@ fn is_warning_diagnostic(d: &FrontendDiagnostic) -> bool {
     }
 }
 
-fn paths_name_same_file(left: &Path, right: &Path) -> bool {
+/// Compare source paths across canonical and editor-provided spellings.
+#[must_use]
+pub fn paths_name_same_file(left: &Path, right: &Path) -> bool {
     left == right
         || match (std::fs::canonicalize(left), std::fs::canonicalize(right)) {
             (Ok(left), Ok(right)) => left == right,
@@ -487,7 +1003,7 @@ pub struct CheckOutput {
 
 #[derive(Clone, Debug)]
 pub struct ResolvedImport {
-    items: Vec<Spanned<Item>>,
+    items: std::sync::Arc<Vec<Spanned<Item>>>,
     item_source_paths: Vec<PathBuf>,
     source_paths: Vec<PathBuf>,
 }
@@ -502,6 +1018,8 @@ pub struct ImportResolutionContext<'a> {
     pub package_name: Option<&'a str>,
     pub project_dir: &'a Path,
     pub module_search_paths: Option<&'a [PathBuf]>,
+    /// Open buffers that override on-disk content while resolving imports.
+    pub documents: &'a DocumentSet,
 }
 
 #[derive(Debug)]
@@ -674,19 +1192,26 @@ fn collect_module_names_at(dir: &Path, segments: &mut Vec<String>, out: &mut Vec
 fn load_project_context(
     input: &str,
     options: Option<&FrontendOptions>,
+    source_override: Option<&str>,
 ) -> Result<ProjectContext, FrontendFailure> {
     // A directory is a package root, not a source file. The CLI resolves
     // package forms through the manifest before calling in here; anything else
     // reaching this point gets a real diagnostic rather than the raw
     // `Is a directory` OS error a bare read would surface.
-    if Path::new(input).is_dir() {
-        return Err(FrontendFailure::message_only(format!(
-            "Error: {input} is a directory, not a .hew source file\n  \
-             hint: a package directory is built with `hew build {input}`"
-        )));
-    }
-    let source = std::fs::read_to_string(input)
-        .map_err(|e| FrontendFailure::message_only(format!("Error: cannot read {input}: {e}")))?;
+    let documents = options.map_or(&EMPTY_DOCUMENTS, |options| &options.documents);
+    let source = if let Some(source) = source_override {
+        source.to_string()
+    } else {
+        if Path::new(input).is_dir() {
+            return Err(FrontendFailure::message_only(format!(
+                "Error: {input} is a directory, not a .hew source file\n  \
+                 hint: a package directory is built with `hew build {input}`"
+            )));
+        }
+        read_source(documents, Path::new(input)).map_err(|e| {
+            FrontendFailure::message_only(format!("Error: cannot read {input}: {e}"))
+        })?
+    };
     let input_dir = Path::new(input).parent().unwrap_or(Path::new("."));
     let project_dir = options
         .and_then(|options| options.project_dir.clone())
@@ -714,6 +1239,7 @@ fn load_project_context(
 fn directory_module_entry_for_peer(
     program: &Program,
     input: &Path,
+    documents: &DocumentSet,
     mode: FrontendParseMode,
 ) -> Option<String> {
     let input_name = input.file_name()?.to_str()?;
@@ -732,7 +1258,7 @@ fn directory_module_entry_for_peer(
             _ => None,
         })
         .collect::<HashSet<_>>();
-    let entry_source = std::fs::read_to_string(entry_path).ok()?;
+    let entry_source = read_source(documents, &entry_path).ok()?;
     let entry_parse = parse_for_frontend(&entry_source, mode);
     if entry_parse
         .errors
@@ -768,27 +1294,29 @@ fn directory_module_entry_for_peer(
 fn import_directory_module_entry_for_peer(
     program: &mut Program,
     input: &Path,
+    documents: &DocumentSet,
     mode: FrontendParseMode,
 ) {
-    let Some(entry_name) = directory_module_entry_for_peer(program, input, mode) else {
+    let Some(entry_name) = directory_module_entry_for_peer(program, input, documents, mode) else {
         return;
     };
-    program.items.insert(
-        0,
-        (
-            Item::Import(ImportDecl {
-                path: Vec::new(),
-                spec: None,
-                selection_trailing_comma: false,
-                module_alias: None,
-                file_path: Some(entry_name),
-                resolved_items: None,
-                resolved_item_source_paths: Vec::new(),
-                resolved_source_paths: Vec::new(),
-            }),
-            0..0,
-        ),
-    );
+    program.items.insert(0, file_import(entry_name));
+}
+
+fn file_import(file_path: String) -> Spanned<Item> {
+    (
+        Item::Import(ImportDecl {
+            path: Vec::new(),
+            spec: None,
+            selection_trailing_comma: false,
+            module_alias: None,
+            file_path: Some(file_path),
+            resolved_items: None,
+            resolved_item_source_paths: Vec::new(),
+            resolved_source_paths: Vec::new(),
+        }),
+        0..0,
+    )
 }
 
 fn project_context_for_program(
@@ -906,6 +1434,7 @@ fn resolve_imports_internal(
         package_name: project.package_name.as_deref(),
         project_dir: &project.project_dir,
         module_search_paths: options.module_search_paths.as_deref(),
+        documents: &options.documents,
     };
     let module_graph = build_module_graph_with_diagnostics(
         input_path,
@@ -919,7 +1448,7 @@ fn resolve_imports_internal(
     Ok(())
 }
 
-fn build_module_source_map(program: &Program) -> ModuleSourceMap {
+fn build_module_source_map(program: &Program, documents: &DocumentSet) -> ModuleSourceMap {
     let Some(ref module_graph) = program.module_graph else {
         return ModuleSourceMap::new();
     };
@@ -935,7 +1464,7 @@ fn build_module_source_map(program: &Program) -> ModuleSourceMap {
         let Some(path) = module.source_paths.first() else {
             continue;
         };
-        if let Ok(text) = std::fs::read_to_string(path) {
+        if let Ok(text) = read_source(documents, path) {
             map.insert(mod_id.path.join("."), (text, path.display().to_string()));
         }
         // Per-file routing entries (rc1-F1 stage C): a directory module's
@@ -947,7 +1476,7 @@ fn build_module_source_map(program: &Program) -> ModuleSourceMap {
             if map.contains_key(&key) {
                 continue;
             }
-            if let Ok(text) = std::fs::read_to_string(path) {
+            if let Ok(text) = read_source(documents, path) {
                 map.insert(key.clone(), (text, key));
             }
         }
@@ -999,8 +1528,9 @@ pub fn hir_diagnostics_to_frontend(
     root_source: &str,
     root_filename: &str,
     diagnostics: Vec<hew_hir::HirDiagnostic>,
+    documents: &DocumentSet,
 ) -> Vec<FrontendDiagnostic> {
-    let module_source_map = build_module_source_map(program);
+    let module_source_map = build_module_source_map(program, documents);
     diagnostics
         .into_iter()
         .map(|diagnostic| {
@@ -1029,18 +1559,19 @@ fn typecheck_program_with_diagnostics(
     input: &str,
     options: &FrontendOptions,
     mode: FrontendParseMode,
-) -> Result<(TypeCheckResult, Vec<FrontendDiagnostic>), FrontendFailure> {
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+) -> (TypeCheckResult, Vec<FrontendDiagnostic>) {
     let search_paths = checker_search_paths(options, input);
     let module_registry = hew_types::module_registry::ModuleRegistry::new(search_paths);
 
     if options.no_typecheck {
-        return Ok((
+        return (
             TypeCheckResult {
                 tco: None,
                 module_registry,
             },
             Vec::new(),
-        ));
+        );
     }
 
     let mut checker = hew_types::Checker::new(module_registry);
@@ -1053,12 +1584,15 @@ fn typecheck_program_with_diagnostics(
     if mode == FrontendParseMode::Migration {
         checker.set_migration_mode();
     }
+    if let Some(entry_selection) = entry_selection {
+        checker.set_entry_selection(entry_selection);
+    }
     checker.set_lint_levels(options.lint_levels.clone());
     // Install source text so the lint sweep can resolve in-source
     // `// hew:allow(...)` directives. The root source owns the entry file's
     // spans; each non-root module owns its own (built from the same source map
     // the diagnostic renderer uses below).
-    let module_source_map = build_module_source_map(program);
+    let module_source_map = build_module_source_map(program, &options.documents);
     let mut lint_sources = hew_types::LintSources::new();
     lint_sources.set_root(source.to_string());
     for (module, (module_source, _filename)) in &module_source_map {
@@ -1078,18 +1612,14 @@ fn typecheck_program_with_diagnostics(
         type_diagnostic_to_frontend(source, input, diagnostic, &module_source_map)
     }));
 
-    if !tco.errors.is_empty() {
-        return Err(FrontendFailure::new("type errors found", diagnostics));
-    }
-
     let module_registry = checker.into_module_registry();
-    Ok((
+    (
         TypeCheckResult {
             tco: Some(tco),
             module_registry,
         },
         diagnostics,
-    ))
+    )
 }
 
 /// Type-check a parsed program after import resolution.
@@ -1108,8 +1638,26 @@ pub fn typecheck_program(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<TypeCheckResult, FrontendFailure> {
-    typecheck_program_with_diagnostics(program, source, input, options, FrontendParseMode::Strict)
-        .map(|(result, _)| result)
+    let (result, diagnostics) = typecheck_program_with_diagnostics(
+        program,
+        source,
+        input,
+        options,
+        FrontendParseMode::Strict,
+        None,
+    );
+    if type_check_failed(&result) {
+        return Err(FrontendFailure::new("type errors found", diagnostics));
+    }
+    Ok(result)
+}
+
+/// Whether the checker reported hard errors for this run.
+fn type_check_failed(result: &TypeCheckResult) -> bool {
+    result
+        .tco
+        .as_ref()
+        .is_some_and(|tco| !tco.errors.is_empty())
 }
 
 /// Resolve imports and type-check an already-parsed in-memory program.
@@ -1147,29 +1695,29 @@ pub fn check_program(
         return Err(merge_prior_diagnostics(diagnostics, failure));
     }
 
-    match typecheck_program_with_diagnostics(
+    let (tcr, type_diagnostics) = typecheck_program_with_diagnostics(
         &program,
         source,
         source_label,
         options,
         FrontendParseMode::Strict,
-    ) {
-        Ok((tcr, type_diagnostics)) => {
-            diagnostics.extend(type_diagnostics);
-            let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
-            let stack_hints = tcr
-                .tco
-                .as_ref()
-                .map(|tco| tco.stack_hints.clone())
-                .unwrap_or_default();
-            Ok(CheckOutput {
-                diagnostics,
-                stack_hints,
-                source: source.to_string(),
-            })
-        }
-        Err(failure) => Err(merge_prior_diagnostics(diagnostics, failure)),
+        None,
+    );
+    diagnostics.extend(type_diagnostics);
+    if type_check_failed(&tcr) {
+        return Err(FrontendFailure::new("type errors found", diagnostics));
     }
+    let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
+    let stack_hints = tcr
+        .tco
+        .as_ref()
+        .map(|tco| tco.stack_hints.clone())
+        .unwrap_or_default();
+    Ok(CheckOutput {
+        diagnostics,
+        stack_hints,
+        source: source.to_string(),
+    })
 }
 
 pub fn inject_implicit_imports(items: &mut Vec<Spanned<Item>>, source: &str) {
@@ -1242,6 +1790,62 @@ fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::
     hew_parser::module::ModuleId::new(segments)
 }
 
+/// Resolve a module import of a directory peer through that directory's
+/// canonical entry file before parsing its source set. A peer such as
+/// `http_client.hew` is still a valid import spelling, but loading it as an
+/// independent source would omit the entry module and make the result depend
+/// on import order once both spellings canonicalise to one graph owner.
+fn canonical_directory_module_entry_source(source: &Path) -> PathBuf {
+    let Some(parent) = source.parent() else {
+        return source.to_path_buf();
+    };
+    let Some(directory_name) = parent.file_name().and_then(|name| name.to_str()) else {
+        return source.to_path_buf();
+    };
+    let Some(file_stem) = source.file_stem().and_then(|name| name.to_str()) else {
+        return source.to_path_buf();
+    };
+    if directory_name == file_stem {
+        return source.to_path_buf();
+    }
+
+    let entry = parent.join(format!("{directory_name}.hew"));
+    if entry.is_file() {
+        entry.canonicalize().unwrap_or(entry)
+    } else {
+        source.to_path_buf()
+    }
+}
+
+/// The shape a dotted import path was turned into a candidate file with: the
+/// directory form `a/b/b.hew` or the flat form `a/b.hew`. Which one a module
+/// resolved through is the only thing that separates the entry-file spelling of
+/// a directory module from a nested module that repeats its own name, so the
+/// resolver carries the form rather than reading it back off the path.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CandidateForm {
+    Directory,
+    Flat,
+}
+
+/// Whether a module import named a directory module through its entry file
+/// rather than through the directory itself.
+///
+/// `pkg.dir.dir` matches the FLAT candidate `…/dir/dir.hew`, which is also the
+/// directory candidate of `pkg.dir` — one source under two spellings. Paths
+/// that repeat their last segment and still name a module of their own match a
+/// DIRECTORY candidate instead: `std.crypto.crypto` is
+/// `std/crypto/crypto/crypto.hew`, and a module named after its own package
+/// (`probe.probe` at `probe/src/probe/probe.hew`) resolves the same way.
+fn is_directory_module_entry_alias(path: &[String], canonical: &Path, form: CandidateForm) -> bool {
+    let Some((last, rest)) = path.split_last() else {
+        return false;
+    };
+    form == CandidateForm::Flat
+        && rest.last() == Some(last)
+        && canonical.file_stem() == canonical.parent().and_then(Path::file_name)
+}
+
 fn canonical_direct_stdlib_module_for_source(
     source_file: &Path,
 ) -> Option<hew_parser::module::ModuleId> {
@@ -1251,10 +1855,126 @@ fn canonical_direct_stdlib_module_for_source(
     ))
 }
 
+/// Render a module-graph [`CycleError`](hew_parser::module::CycleError) into a
+/// positioned diagnostic: the first edge on the cycle path becomes the
+/// diagnostic's primary location, every remaining edge becomes a note in path
+/// order (each pointing into the module that declares that import), and a
+/// help line steers the fix.
+///
+/// A cycle where every module's entry file lives in the same directory is the
+/// directory-module shape described in spec 3.5.1 — the fix is to promote
+/// that directory to a directory module rather than importing between its
+/// files. Otherwise the fix is a shared module both sides import.
+///
+/// `manifest_project_dir` (a discovered `hew.toml` package root — `None` for
+/// a manifest-less standalone compile) and its `src` are excluded from that
+/// "shared directory" check even when every module happens to sit there:
+/// both are flat buckets the dotted-path resolver searches for otherwise-
+/// unrelated top-level modules (see the `candidates.push(ctx.project_dir...)`
+/// sites in `resolve_file_imports_internal`), not a private submodule
+/// directory a program ever imports as one unit — "make `src/src.hew` the
+/// entry" is not a real fix. A manifest-less compile has no such bucket: its
+/// `project_dir` fallback is just the entry file's own directory, which is a
+/// perfectly good directory-module candidate.
+///
+/// Falls back to the bare chain message (former behaviour) if a cycle member
+/// is missing from `graph` or its source file cannot be re-read; both should
+/// be unreachable since every cycle member was inserted into `graph` before
+/// `compute_topo_order` ran and its source was just parsed.
+fn cycle_error_to_frontend_failure(
+    graph: &hew_parser::module::ModuleGraph,
+    cycle_err: &hew_parser::module::CycleError,
+    manifest_project_dir: Option<&Path>,
+    documents: &DocumentSet,
+) -> FrontendFailure {
+    let chain = cycle_err.to_string();
+    let edge_count = cycle_err.import_spans.len();
+
+    let mut locations: Vec<(PathBuf, String, Range<usize>, String)> =
+        Vec::with_capacity(edge_count);
+    for i in 0..edge_count {
+        let from_module = &cycle_err.cycle[i];
+        let to_module = &cycle_err.cycle[i + 1];
+        let Some(source_path) = graph
+            .modules
+            .get(from_module)
+            .and_then(|module| module.source_paths.first())
+        else {
+            return FrontendFailure::message_only(chain);
+        };
+        let Ok(source) = read_source(documents, source_path) else {
+            return FrontendFailure::message_only(chain);
+        };
+        let label = match (i == 0, i + 1 == edge_count) {
+            (true, true) => format!(
+                "import cycle: `{from_module}` imports `{to_module}`, closing the cycle on itself"
+            ),
+            (true, false) => format!("import cycle: `{from_module}` imports `{to_module}` here"),
+            (false, true) => {
+                format!("`{from_module}` imports `{to_module}` here, closing the cycle")
+            }
+            (false, false) => format!("`{from_module}` imports `{to_module}` here"),
+        };
+        locations.push((
+            source_path.clone(),
+            source,
+            cycle_err.import_spans[i].clone(),
+            label,
+        ));
+    }
+
+    let shared_dir = locations[0].0.parent();
+    let same_directory = shared_dir.is_some()
+        && locations
+            .windows(2)
+            .all(|pair| pair[0].0.parent() == pair[1].0.parent());
+    let shared_dir_is_a_flat_root = manifest_project_dir.is_some_and(|project_dir| {
+        let project_src_dir = project_dir.join("src");
+        shared_dir == Some(project_dir) || shared_dir == Some(project_src_dir.as_path())
+    });
+    let help = if same_directory && !shared_dir_is_a_flat_root {
+        let dir_name = locations[0]
+            .0
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or("<dir>");
+        format!(
+            "these modules share one directory; make `{dir_name}/{dir_name}.hew` the entry and \
+             let the others be peers (spec 3.5.1), then drop the imports between them"
+        )
+    } else {
+        "move the shared declarations into a module both sides import".to_string()
+    };
+
+    let (first_path, first_source, first_span, first_label) = locations[0].clone();
+    let notes = locations[1..]
+        .iter()
+        .map(|(path, source, span, label)| FrontendMessageNote {
+            message: label.clone(),
+            span: span.clone(),
+            source: Arc::from(source.as_str()),
+            filename: path.display().to_string(),
+        })
+        .collect();
+
+    FrontendFailure::coded_message_with_notes(
+        "E_IMPORT_CYCLE",
+        first_label,
+        first_span,
+        &first_source,
+        &first_path.display().to_string(),
+        notes,
+        vec![help],
+    )
+}
+
 fn rewrite_direct_stdlib_module_root(
     module_graph: &mut hew_parser::module::ModuleGraph,
     items: &mut Vec<Spanned<Item>>,
     source_file: &Path,
+    manifest_project_dir: Option<&Path>,
+    documents: &DocumentSet,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::{Module, ModuleId};
 
@@ -1279,9 +1999,9 @@ fn rewrite_direct_stdlib_module_root(
             doc: None,
         })
         .expect("synthetic floor-check root is unique");
-    module_graph
-        .compute_topo_order()
-        .map_err(|cycle_err| FrontendFailure::message_only(cycle_err.to_string()))?;
+    module_graph.compute_topo_order().map_err(|cycle_err| {
+        cycle_error_to_frontend_failure(module_graph, &cycle_err, manifest_project_dir, documents)
+    })?;
     items.clear();
 
     Ok(())
@@ -1317,6 +2037,7 @@ fn build_module_graph_with_diagnostics(
         source_dir,
         &input_canonical,
         &root_id,
+        ctx.documents,
         &mut graph,
         &mut seen_ids,
     );
@@ -1333,7 +2054,13 @@ fn build_module_graph_with_diagnostics(
         .expect("root module id is unique");
 
     if let Err(cycle_err) = graph.compute_topo_order() {
-        return Err(FrontendFailure::message_only(cycle_err.to_string()));
+        let manifest_project_dir = ctx.package_name.is_some().then_some(ctx.project_dir);
+        return Err(cycle_error_to_frontend_failure(
+            &graph,
+            &cycle_err,
+            manifest_project_dir,
+            ctx.documents,
+        ));
     }
 
     // The prelude is loaded out of band, so expose only its Display impls to
@@ -1371,7 +2098,13 @@ fn build_module_graph_with_diagnostics(
         graph.topo_order.push(builtins_id);
     }
 
-    rewrite_direct_stdlib_module_root(&mut graph, items, &input_canonical)?;
+    rewrite_direct_stdlib_module_root(
+        &mut graph,
+        items,
+        &input_canonical,
+        ctx.package_name.is_some().then_some(ctx.project_dir),
+        ctx.documents,
+    )?;
 
     // Canonical module IDs may share a final component. Reject only when two
     // whole-module imports in the SAME source scope publish the same surface
@@ -1383,7 +2116,8 @@ fn build_module_graph_with_diagnostics(
 
     // Reject a single module declaring two actors with one name.  Cross-module
     // duplicates are LEGAL: actor identity is the qualified (defining-module,
-    // name) pair end-to-end — the checker emits `LocalPid<bank.Account>`, MIR
+    // name) pair end-to-end — the checker emits `bank.Account`'s own
+    // actor-handle type, MIR
     // layouts key on the dotted name, and native symbols mangle through
     // `bank$Account` — so `spawn bank.Account(...)` and `spawn
     // store.Account(...)` bind their own handlers/state/drop glue.  Within one
@@ -1502,31 +2236,46 @@ pub fn build_module_graph(
 }
 
 fn flatten_file_import_items(program: &mut Program) {
-    let mut extra = Vec::new();
-    for (item, _) in &program.items {
-        let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved_items) = &decl.resolved_items else {
-            continue;
-        };
-        extra.extend(
-            resolved_items
-                .iter()
-                .filter(|(resolved_item, _)| !matches!(resolved_item, Item::Import(_)))
-                .cloned(),
-        );
-    }
+    let extra: Vec<Spanned<Item>> = hew_parser::module::file_import_spliced_items(&program.items)
+        .into_iter()
+        .map(|(item, _)| item.clone())
+        .collect();
     program.items.extend(extra);
 }
 
+/// The graph node already assembled from `source`, if the walk reached that
+/// file under an earlier spelling. Paths are compared canonically because the
+/// two spellings arrive through different candidate roots.
+fn graph_module_for_source(
+    graph: &hew_parser::module::ModuleGraph,
+    source: &Path,
+) -> Option<hew_parser::module::ModuleId> {
+    let key = std::fs::canonicalize(source).unwrap_or_else(|_| source.to_path_buf());
+    graph
+        .modules
+        .iter()
+        .find(|(_, module)| {
+            module.source_paths.first().is_some_and(|existing| {
+                std::fs::canonicalize(existing).unwrap_or_else(|_| existing.clone()) == key
+            })
+        })
+        .map(|(module_id, _)| module_id.clone())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one module-graph frame: the source being walked, its directory, \
+              the root it belongs to, the open documents, and the graph and \
+              seen-id state the walk threads; grouping them would hide which \
+              of the three paths each argument comes from"
+)]
 fn extract_module_info(
     items: &[Spanned<Item>],
     current_source: &Path,
     source_dir: &Path,
     root_source: &Path,
     root_id: &hew_parser::module::ModuleId,
+    documents: &DocumentSet,
     graph: &mut hew_parser::module::ModuleGraph,
     seen_ids: &mut HashSet<hew_parser::module::ModuleId>,
 ) -> Vec<hew_parser::module::ModuleImport> {
@@ -1538,21 +2287,29 @@ fn extract_module_info(
         let Item::Import(decl) = item else { continue };
 
         let (module_id, first_source_path) = if !decl.path.is_empty() {
-            let requested = decl.path.join(".");
-            let canonical = hew_types::module_registry::canonical_source_module_identity(
-                &requested,
-                &decl.resolved_source_paths,
-            );
-            (
-                ModuleId::new(canonical.split('.').map(String::from).collect()),
-                None,
-            )
+            // One source is one module, however the import spelled it: a
+            // package-qualified `probe.lib` and a directory-relative `lib`
+            // reach the same file, and a second graph node would have the
+            // checker register those declarations twice under two owners.
+            let existing = decl
+                .resolved_source_paths
+                .first()
+                .and_then(|source| graph_module_for_source(graph, source));
+            let module_id = existing.unwrap_or_else(|| {
+                let requested = decl.path.join(".");
+                let canonical = hew_types::module_registry::canonical_source_module_identity(
+                    &requested,
+                    &decl.resolved_source_paths,
+                );
+                ModuleId::new(canonical.split('.').map(String::from).collect())
+            });
+            (module_id, None)
         } else if let Some(file_path) = &decl.file_path {
             let resolved = current_source
                 .parent()
                 .unwrap_or(source_dir)
                 .join(file_path);
-            let canonical = resolved.canonicalize().unwrap_or(resolved);
+            let canonical = resolve_candidate(documents, &resolved).unwrap_or(resolved);
             let module_id = if canonical == root_source {
                 root_id.clone()
             } else {
@@ -1578,6 +2335,7 @@ fn extract_module_info(
                     source_dir,
                     root_source,
                     root_id,
+                    documents,
                     graph,
                     seen_ids,
                 );
@@ -1598,7 +2356,7 @@ fn extract_module_info(
                 }
                 let module = Module {
                     id: module_id,
-                    items: resolved.clone(),
+                    items: resolved.as_ref().clone(),
                     imports: child_imports,
                     source_paths,
                     doc: None,
@@ -1665,11 +2423,15 @@ fn resolve_file_imports_internal(
     let cwd_crosses_root = source_hew_root.is_some() && cwd_hew_root != source_hew_root;
 
     for idx in &import_indices {
+        let is_module_import = matches!(
+            &items[*idx].0,
+            Item::Import(decl) if !decl.path.is_empty()
+        );
         let canonical = match &items[*idx].0 {
             Item::Import(decl) if decl.file_path.is_some() => {
                 let file_path = decl.file_path.as_ref().expect("checked above");
                 let resolved = source_dir.join(file_path);
-                if let Ok(canonical) = resolved.canonicalize() {
+                if let Some(canonical) = resolve_candidate(ctx.documents, &resolved) {
                     canonical
                 } else {
                     return Err(FrontendFailure::message_only(format!(
@@ -1701,7 +2463,7 @@ fn resolve_file_imports_internal(
                     .iter()
                     .collect::<PathBuf>()
                     .join(format!("{last}.hew"));
-                let mut candidates = Vec::new();
+                let mut candidates: Vec<(PathBuf, CandidateForm)> = Vec::new();
                 let mut locked_project_candidates = Vec::new();
                 let mut installed_package_dir = None;
                 let locked_version = ctx
@@ -1718,17 +2480,23 @@ fn resolve_file_imports_internal(
                     let local_rel = rest_path.iter().collect::<PathBuf>();
                     let local_dir = local_rel.join(format!("{local_last}.hew"));
                     let local_flat = local_rel.with_extension("hew");
-                    candidates.push(ctx.project_dir.join("src").join(&local_dir));
-                    candidates.push(ctx.project_dir.join("src").join(&local_flat));
-                    candidates.push(ctx.project_dir.join(&local_dir));
-                    candidates.push(ctx.project_dir.join(&local_flat));
+                    candidates.push((
+                        ctx.project_dir.join("src").join(&local_dir),
+                        CandidateForm::Directory,
+                    ));
+                    candidates.push((
+                        ctx.project_dir.join("src").join(&local_flat),
+                        CandidateForm::Flat,
+                    ));
+                    candidates.push((ctx.project_dir.join(&local_dir), CandidateForm::Directory));
+                    candidates.push((ctx.project_dir.join(&local_flat), CandidateForm::Flat));
                 }
 
-                candidates.push(source_dir.join(&dir_path));
-                candidates.push(source_dir.join(&rel_path));
+                candidates.push((source_dir.join(&dir_path), CandidateForm::Directory));
+                candidates.push((source_dir.join(&rel_path), CandidateForm::Flat));
                 if !cwd_crosses_root {
-                    candidates.push(cwd.join(&dir_path));
-                    candidates.push(cwd.join(&rel_path));
+                    candidates.push((cwd.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((cwd.join(&rel_path), CandidateForm::Flat));
                 }
 
                 let module_dir = decl.path.iter().collect::<PathBuf>();
@@ -1737,14 +2505,22 @@ fn resolve_file_imports_internal(
                     let entry_file =
                         format!("{}.hew", decl.path.last().expect("path is non-empty"));
                     let versioned_rel = module_dir.join(version).join(entry_file);
-                    candidates.push(ctx.project_dir.join(".hew/packages").join(&versioned_rel));
+                    // The version directory sits between the module and its
+                    // entry file, so this is a package root, never a flat file.
+                    candidates.push((
+                        ctx.project_dir.join(".hew/packages").join(&versioned_rel),
+                        CandidateForm::Directory,
+                    ));
                     if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push(pkg.join(&versioned_rel));
+                        candidates.push((pkg.join(&versioned_rel), CandidateForm::Directory));
                     }
                 }
 
                 if !is_std_import {
-                    candidates.push(ctx.project_dir.join(".hew/packages").join(&rel_path));
+                    candidates.push((
+                        ctx.project_dir.join(".hew/packages").join(&rel_path),
+                        CandidateForm::Flat,
+                    ));
                     let project_package_dir =
                         ctx.project_dir.join(".hew/packages").join(&module_dir);
                     if is_declared_dependency {
@@ -1762,12 +2538,12 @@ fn resolve_file_imports_internal(
                             },
                         ));
                     }
-                    candidates.push(project_package_entry);
+                    candidates.push((project_package_entry, CandidateForm::Directory));
                 }
 
                 if let Some(pkg) = ctx.extra_pkg_path.filter(|_| !is_std_import) {
-                    candidates.push(pkg.join(&dir_path));
-                    candidates.push(pkg.join(&rel_path));
+                    candidates.push((pkg.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((pkg.join(&rel_path), CandidateForm::Flat));
                     if decl.path.len() > 1 && !is_builtin_module(&module_str) {
                         let rest_dir = decl.path[1..]
                             .iter()
@@ -1777,8 +2553,8 @@ fn resolve_file_imports_internal(
                             .iter()
                             .collect::<PathBuf>()
                             .with_extension("hew");
-                        candidates.push(pkg.join(&rest_dir));
-                        candidates.push(pkg.join(&rest_flat));
+                        candidates.push((pkg.join(&rest_dir), CandidateForm::Directory));
+                        candidates.push((pkg.join(&rest_flat), CandidateForm::Flat));
                     }
                 }
 
@@ -1788,8 +2564,8 @@ fn resolve_file_imports_internal(
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push(pkg.join(&tail_dir));
-                        candidates.push(pkg.join(&tail_rel));
+                        candidates.push((pkg.join(&tail_dir), CandidateForm::Directory));
+                        candidates.push((pkg.join(&tail_rel), CandidateForm::Flat));
                     }
                 }
 
@@ -1799,8 +2575,8 @@ fn resolve_file_imports_internal(
                     let tail_dir = tail.join(format!("{tail_last}.hew"));
                     let tail_rel = tail.with_extension("hew");
                     if let Some(pkg) = ctx.extra_pkg_path {
-                        candidates.push(pkg.join(&tail_dir));
-                        candidates.push(pkg.join(&tail_rel));
+                        candidates.push((pkg.join(&tail_dir), CandidateForm::Directory));
+                        candidates.push((pkg.join(&tail_rel), CandidateForm::Flat));
                     }
                 }
 
@@ -1818,32 +2594,40 @@ fn resolve_file_imports_internal(
                     &discovered_search_paths
                 };
                 for root in search_paths {
-                    candidates.push(root.join(&dir_path));
-                    candidates.push(root.join(&rel_path));
+                    candidates.push((root.join(&dir_path), CandidateForm::Directory));
+                    candidates.push((root.join(&rel_path), CandidateForm::Flat));
                 }
 
                 // Collect ALL candidates that resolve, then deduplicate by canonical path.
                 // If two or more distinct canonical paths resolve, the import is ambiguous —
                 // fail-closed rather than silently picking the first match.
-                let mut resolved = Vec::new();
-                for candidate in &candidates {
-                    if let Ok(canonical) = candidate.canonicalize() {
+                let mut resolved: Vec<(PathBuf, CandidateForm)> = Vec::new();
+                for (candidate, form) in &candidates {
+                    if let Some(canonical) = resolve_candidate(ctx.documents, candidate) {
                         if let Some((_, check)) = locked_project_candidates
                             .iter()
                             .find(|(locked_candidate, _)| locked_candidate == candidate)
                         {
                             verify_locked_project_package(check)?;
                         }
-                        resolved.push(canonical);
+                        // One file reached by both shapes is a directory module
+                        // named by its directory: the directory candidate wins.
+                        match resolved.iter_mut().find(|(path, _)| *path == canonical) {
+                            Some((_, existing)) => {
+                                if *form == CandidateForm::Directory {
+                                    *existing = CandidateForm::Directory;
+                                }
+                            }
+                            None => resolved.push((canonical, *form)),
+                        }
                     }
                 }
-                resolved.sort();
-                resolved.dedup();
+                resolved.sort_by(|(left, _), (right, _)| left.cmp(right));
 
                 if resolved.len() > 1 {
                     let paths = resolved
                         .iter()
-                        .map(|p| p.display().to_string())
+                        .map(|(path, _)| path.display().to_string())
                         .collect::<Vec<_>>()
                         .join("` and `");
                     return Err(FrontendFailure::coded_message("E_IMPORT_AMBIGUOUS", format!(
@@ -1851,8 +2635,77 @@ fn resolve_file_imports_internal(
                     )));
                 }
 
-                if let Some(canonical) = resolved.into_iter().next() {
-                    canonical
+                if let Some((canonical, form)) = resolved.into_iter().next() {
+                    if is_module_import
+                        && is_directory_module_entry_alias(&decl.path, &canonical, form)
+                    {
+                        // A directory module is spelled by its directory, and
+                        // its entry file adds no second module (spec 3.5.1).
+                        // Accepting both spellings would let one compilation
+                        // reach one source under two names, so refuse the
+                        // longer one and name the module it aliases.
+                        let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                        let message = format!(
+                            "cannot import `{source_module}`: `{directory_module}` is a directory module and its entry file is not a module of its own; import `{directory_module}` instead"
+                        );
+                        return Err(match read_source(ctx.documents, source_file) {
+                            Ok(module_source) => FrontendFailure::coded_message_at(
+                                "E_ENTRY_FILE_IMPORT",
+                                message,
+                                items[*idx].1.clone(),
+                                &module_source,
+                                &source_file.display().to_string(),
+                            ),
+                            Err(_) => {
+                                FrontendFailure::coded_message("E_ENTRY_FILE_IMPORT", message)
+                            }
+                        });
+                    } else if is_module_import
+                        && canonical_directory_module_entry_source(&canonical) != canonical
+                        && decl.path.len() >= 2
+                    {
+                        // The shipped stdlib's directory peers stay importable
+                        // by file (`std.net.http.http_client`, D461); they load
+                        // through the directory's entry source so the module is
+                        // complete however it was reached. The entry-file
+                        // spelling is refused above for the stdlib too, so one
+                        // directory module has exactly one name everywhere.
+                        if hew_types::module_registry::canonical_stdlib_module_for_source(
+                            &canonical,
+                        )
+                        .is_some()
+                        {
+                            canonical_directory_module_entry_source(&canonical)
+                        } else {
+                            // A user package's peer file has no identity of its
+                            // own — spec 3.5.1 merges every peer into the
+                            // directory module's namespace. Importing it
+                            // directly would parse it standalone, isolated from
+                            // the sibling declarations it expects to share a
+                            // scope with, and any reference to one of those
+                            // siblings would surface downstream as a plain
+                            // "undefined function"/"undefined variable" with no
+                            // hint that the fix is to import the directory
+                            // module instead. Refuse here, before that isolated
+                            // module ever gets built.
+                            let directory_module = decl.path[..decl.path.len() - 1].join(".");
+                            let message = format!(
+                                "cannot import `{source_module}` directly: peer files are reached through the directory module; import `{directory_module}` instead"
+                            );
+                            return Err(match read_source(ctx.documents, source_file) {
+                                Ok(module_source) => FrontendFailure::coded_message_at(
+                                    "E_PEER_IMPORT",
+                                    message,
+                                    items[*idx].1.clone(),
+                                    &module_source,
+                                    &source_file.display().to_string(),
+                                ),
+                                Err(_) => FrontendFailure::coded_message("E_PEER_IMPORT", message),
+                            });
+                        }
+                    } else {
+                        canonical
+                    }
                 } else {
                     if let Some(package_dir) = installed_package_dir.filter(|dir| dir.is_dir()) {
                         let expected = package_dir.join(format!("{last}.hew"));
@@ -1867,7 +2720,7 @@ fn resolve_file_imports_internal(
                     }
                     let tried = candidates
                         .iter()
-                        .map(|candidate| candidate.display().to_string())
+                        .map(|(candidate, _)| candidate.display().to_string())
                         .collect::<Vec<_>>()
                         .join(", ");
                     let hint = if is_declared_dependency {
@@ -1893,7 +2746,7 @@ fn resolve_file_imports_internal(
                     let message = format!(
                         "module `{source_module}` not found (tried: {tried}){hint}{suggestion}"
                     );
-                    return Err(match std::fs::read_to_string(source_file) {
+                    return Err(match read_source(ctx.documents, source_file) {
                         Ok(module_source) => FrontendFailure::coded_message_at(
                             "E_MODULE_NOT_FOUND",
                             message,
@@ -2007,7 +2860,7 @@ fn build_resolved_import_internal(
             peer_canonical.clone(),
             peer_resolved.items.len(),
         ));
-        import_items.extend(peer_resolved.items);
+        import_items.extend(peer_resolved.items.iter().cloned());
         source_paths.push(peer_canonical);
     }
 
@@ -2026,7 +2879,7 @@ fn build_resolved_import_internal(
     }
 
     Ok(ResolvedImport {
-        items: import_items,
+        items: import_items.into(),
         item_source_paths: import_item_source_paths,
         source_paths,
     })
@@ -2044,7 +2897,7 @@ fn parse_and_resolve_file_internal(
     diagnostics: &mut Vec<FrontendDiagnostic>,
     mode: FrontendParseMode,
 ) -> Result<Vec<Spanned<Item>>, FrontendFailure> {
-    let source = std::fs::read_to_string(canonical).map_err(|e| {
+    let source = read_source(ctx.documents, canonical).map_err(|e| {
         FrontendFailure::message_only(format!(
             "Error reading imported file '{}': {e}",
             canonical.display()
@@ -2170,7 +3023,7 @@ pub fn run_file_frontend_to_typecheck(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Strict)
+    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict).into_result()
 }
 
 /// Run the shared file frontend for the checker-backed syntax migrator.
@@ -2188,51 +3041,202 @@ pub fn run_file_frontend_to_typecheck_for_migration(
     input: &str,
     options: &FrontendOptions,
 ) -> Result<FileFrontendState, FrontendFailure> {
-    run_file_frontend_to_typecheck_with_mode(input, options, FrontendParseMode::Migration)
+    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Migration)
+        .into_result()
 }
 
-fn run_file_frontend_to_typecheck_with_mode(
+/// What the shared frontend produced for one document.
+///
+/// The editor surfaces need the diagnostics and whatever the pipeline managed
+/// to build, not a single fatal failure, so this never reports an error by
+/// itself: [`Self::stopped`] carries the very [`FrontendFailure`] the fallible
+/// entry points return, and the artefacts built before that point stay
+/// available for hover, completion and navigation.
+#[allow(
+    missing_debug_implementations,
+    reason = "transient pipeline value; Debug not required by any current consumer"
+)]
+pub struct DocumentFrontendState {
+    /// The root buffer's text, from the document set or from disk.
+    pub source: String,
+    /// The root buffer's parse. `None` when the host supplied an already
+    /// parsed program through [`run_program_frontend_to_typecheck`].
+    pub parse_result: Option<hew_parser::ParseResult>,
+    /// The program after import resolution.
+    pub program: Program,
+    /// Every diagnostic the run produced, including those of the failure that
+    /// stopped it.
+    pub diagnostics: Vec<FrontendDiagnostic>,
+    /// The checker output. Present whenever type-checking ran, including when
+    /// it reported errors.
+    pub typecheck_result: Option<TypeCheckResult>,
+    /// The stage failure that ended the run, if any.
+    pub stopped: Option<FrontendFailure>,
+}
+
+impl DocumentFrontendState {
+    fn stop(mut self, failure: FrontendFailure) -> Self {
+        let failure = merge_prior_diagnostics(std::mem::take(&mut self.diagnostics), failure);
+        self.diagnostics.clone_from(&failure.diagnostics);
+        self.stopped = Some(failure);
+        self
+    }
+
+    fn into_result(self) -> Result<FileFrontendState, FrontendFailure> {
+        if let Some(failure) = self.stopped {
+            return Err(failure);
+        }
+        Ok(FileFrontendState {
+            program: self.program,
+            diagnostics: self.diagnostics,
+            typecheck_result: self
+                .typecheck_result
+                .expect("a completed frontend run has a type-check result"),
+            source: self.source,
+        })
+    }
+}
+
+/// Run the shared frontend over a document that may not match its file.
+///
+/// Same load → parse → import resolution → builtins preload → manifest
+/// validation → type check as [`run_file_frontend_to_typecheck`]. `input`
+/// names the document; every source read consults `options.documents` first,
+/// so an open buffer checks against its saved siblings.
+#[must_use]
+pub fn run_document_frontend(input: &str, options: &FrontendOptions) -> DocumentFrontendState {
+    run_document_frontend_with_mode(input, None, options, FrontendParseMode::Strict)
+}
+
+/// [`run_document_frontend`] for a buffer with no file behind it.
+///
+/// `label` names the buffer in diagnostics and anchors module resolution.
+#[must_use]
+pub fn run_source_frontend(
+    source: &str,
+    label: &str,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    run_document_frontend_with_mode(label, Some(source), options, FrontendParseMode::Strict)
+}
+
+fn run_document_frontend_with_mode(
+    input: &str,
+    source_override: Option<&str>,
+    options: &FrontendOptions,
+    mode: FrontendParseMode,
+) -> DocumentFrontendState {
+    let project = match load_project_context(input, Some(options), source_override) {
+        Ok(project) => project,
+        Err(failure) => {
+            let empty = parse_for_frontend("", mode);
+            return DocumentFrontendState {
+                source: String::new(),
+                program: empty.program.clone(),
+                parse_result: Some(empty),
+                diagnostics: Vec::new(),
+                typecheck_result: None,
+                stopped: None,
+            }
+            .stop(failure);
+        }
+    };
+
+    let parse_result = parse_for_frontend(&project.source, mode);
+    let diagnostics = parse_result
+        .errors
+        .iter()
+        .cloned()
+        .map(|diagnostic| FrontendDiagnostic::parse(&project.source, input, diagnostic))
+        .collect::<Vec<_>>();
+    let parse_failed = parse_result
+        .errors
+        .iter()
+        .any(|error| error.severity == hew_parser::Severity::Error);
+    let mut state = DocumentFrontendState {
+        source: project.source.clone(),
+        program: parse_result.program.clone(),
+        parse_result: Some(parse_result),
+        diagnostics,
+        typecheck_result: None,
+        stopped: None,
+    };
+    if parse_failed {
+        return state.stop(FrontendFailure::message_only("parsing failed"));
+    }
+
+    import_directory_module_entry_for_peer(
+        &mut state.program,
+        Path::new(input),
+        &options.documents,
+        mode,
+    );
+    let entry_selection = (mode == FrontendParseMode::Strict)
+        .then_some(options.entry_selection)
+        .flatten();
+    let companion = (mode == FrontendParseMode::Strict)
+        .then_some(options.companion.as_deref())
+        .flatten();
+    if let Some(companion) = companion {
+        state
+            .program
+            .items
+            .push(file_import(companion.display().to_string()));
+    }
+
+    run_frontend_after_parse(state, &project, input, options, mode, entry_selection)
+}
+
+/// The frontend stages every host shares once a program exists: import
+/// resolution, the builtins preload, manifest validation and type-checking.
+fn run_frontend_after_parse(
+    mut state: DocumentFrontendState,
+    project: &ProjectContext,
     input: &str,
     options: &FrontendOptions,
     mode: FrontendParseMode,
-) -> Result<FileFrontendState, FrontendFailure> {
-    let project = load_project_context(input, Some(options))?;
-    let (mut program, parse_diagnostics) =
-        parse_source_with_diagnostics(&project.source, input, mode)?;
-    import_directory_module_entry_for_peer(&mut program, Path::new(input), mode);
-    let mut diagnostics = parse_diagnostics;
-
+    entry_selection: Option<hew_types::DeclarationOccurrence>,
+) -> DocumentFrontendState {
     if let Err(failure) = resolve_imports_internal(
-        &mut program,
+        &mut state.program,
         &project.source,
         input,
-        &project,
+        project,
         options,
-        &mut diagnostics,
+        &mut state.diagnostics,
         mode,
     ) {
-        return Err(merge_prior_diagnostics(diagnostics, failure));
+        return state.stop(failure);
     }
 
-    let typecheck_result =
-        match typecheck_program_with_diagnostics(&program, &project.source, input, options, mode) {
-            Ok((result, type_diagnostics)) => {
-                diagnostics.extend(type_diagnostics);
-                result
-            }
-            Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-        };
+    let (typecheck_result, type_diagnostics) = typecheck_program_with_diagnostics(
+        &state.program,
+        &project.source,
+        input,
+        options,
+        mode,
+        entry_selection,
+    );
+    state.diagnostics.extend(type_diagnostics);
+    let type_check_failed = type_check_failed(&typecheck_result);
+    state.typecheck_result = Some(typecheck_result);
+    if type_check_failed {
+        return state.stop(FrontendFailure::message_only("type errors found"));
+    }
 
-    flatten_file_import_items(&mut program);
+    if let Some(normalized) = state
+        .typecheck_result
+        .as_mut()
+        .and_then(|result| result.tco.as_mut())
+        .and_then(|tco| tco.normalized_machines.as_mut())
+    {
+        flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
+    } else {
+        flatten_file_import_items(&mut state.program);
+    }
     let stdlib_roots = configured_stdlib_roots(options);
-    retain_user_facing_diagnostics(input, &stdlib_roots, &mut diagnostics);
-
-    Ok(FileFrontendState {
-        program,
-        diagnostics,
-        typecheck_result,
-        source: project.source,
-    })
+    retain_user_facing_diagnostics(input, &stdlib_roots, &mut state.diagnostics);
+    state
 }
 
 /// Shared frontend driver for already-parsed in-memory programs.
@@ -2246,51 +3250,61 @@ fn run_file_frontend_to_typecheck_with_mode(
 /// Returns [`FrontendFailure`] when manifest loading, import resolution, or
 /// type-checking fails.
 pub fn run_program_frontend_to_typecheck(
-    mut program: Program,
+    program: Program,
     source: &str,
     source_label: &str,
     options: &FrontendOptions,
 ) -> Result<ProgramFrontendState, FrontendFailure> {
-    let project = project_context_for_program(source, options)?;
-    let mut diagnostics = Vec::new();
-
-    if let Err(failure) = resolve_imports_internal(
-        &mut program,
-        source,
-        source_label,
-        &project,
-        options,
-        &mut diagnostics,
-        FrontendParseMode::Strict,
-    ) {
-        return Err(merge_prior_diagnostics(diagnostics, failure));
-    }
-
-    let typecheck_result = match typecheck_program_with_diagnostics(
-        &program,
-        source,
-        source_label,
-        options,
-        FrontendParseMode::Strict,
-    ) {
-        Ok((result, type_diagnostics)) => {
-            diagnostics.extend(type_diagnostics);
-            result
-        }
-        Err(failure) => return Err(merge_prior_diagnostics(diagnostics, failure)),
-    };
-
-    flatten_file_import_items(&mut program);
-    let stdlib_roots = configured_stdlib_roots(options);
-    retain_user_facing_diagnostics(source_label, &stdlib_roots, &mut diagnostics);
-
-    let diagnostics = fail_on_warning_diagnostics(diagnostics, options)?;
+    let state = run_program_frontend(program, source, source_label, options);
+    let file_state = state.into_result()?;
+    let diagnostics = fail_on_warning_diagnostics(file_state.diagnostics, options)?;
     Ok(ProgramFrontendState {
-        program,
+        program: file_state.program,
         diagnostics,
-        typecheck_result,
-        source: source.to_string(),
+        typecheck_result: file_state.typecheck_result,
+        source: file_state.source,
     })
+}
+
+/// [`run_program_frontend_to_typecheck`] without the fatal failure, for hosts
+/// that need the diagnostics and artefacts of a run that could not complete.
+#[must_use]
+pub fn run_program_frontend(
+    program: Program,
+    source: &str,
+    source_label: &str,
+    options: &FrontendOptions,
+) -> DocumentFrontendState {
+    let project = match project_context_for_program(source, options) {
+        Ok(project) => project,
+        Err(failure) => {
+            return DocumentFrontendState {
+                source: source.to_string(),
+                parse_result: None,
+                program,
+                diagnostics: Vec::new(),
+                typecheck_result: None,
+                stopped: None,
+            }
+            .stop(failure)
+        }
+    };
+    let state = DocumentFrontendState {
+        source: source.to_string(),
+        parse_result: None,
+        program,
+        diagnostics: Vec::new(),
+        typecheck_result: None,
+        stopped: None,
+    };
+    run_frontend_after_parse(
+        state,
+        &project,
+        source_label,
+        options,
+        FrontendParseMode::Strict,
+        None,
+    )
 }
 
 /// Parse, resolve imports, and type-check a Hew source file.
@@ -2514,13 +3528,15 @@ fn load_dependencies(dir: &Path) -> Result<Option<Vec<String>>, FrontendFailure>
 #[cfg(test)]
 mod tests {
     use super::{
-        check_file, check_file_with_state, check_program, checker_search_paths,
+        build_module_graph, check_file, check_file_with_state, check_program, checker_search_paths,
         hir_diagnostics_to_frontend, load_dependencies, load_lockfile, load_package_name,
-        parse_source, retain_user_facing_diagnostics, run_file_frontend_to_typecheck,
-        run_file_frontend_to_typecheck_for_migration, FrontendDiagnostic, FrontendDiagnosticKind,
-        FrontendOptions,
+        parse_source, retain_user_facing_diagnostics, run_document_frontend,
+        run_file_frontend_to_typecheck, run_file_frontend_to_typecheck_for_migration,
+        run_source_frontend, DiagnosticPolicy, DocumentSet, FrontendDiagnostic,
+        FrontendDiagnosticKind, FrontendOptions, ImportResolutionContext, Session, SessionTarget,
     };
     use hew_parser::ast::Item;
+    use std::collections::{HashMap, HashSet};
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
@@ -2535,12 +3551,276 @@ mod tests {
         file.write_all(content.as_bytes()).expect("write hew.lock");
     }
 
+    /// An unsaved buffer checks against its saved siblings: the driver reads
+    /// the open document for `lib.hew` and the file on disk for everything
+    /// else.
+    #[test]
+    fn an_open_buffer_overrides_the_file_on_disk() {
+        let dir = tempfile::tempdir().expect("create document-overlay fixture");
+        write_source(dir.path(), "lib.hew", "pub fn answer() -> i64 { 1 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"lib.hew\";\n\nfn main() { println(answer() + bonus()); }\n",
+        );
+
+        // Negative control: the saved `lib.hew` has no `bonus`.
+        let saved = run_document_frontend(&input, &FrontendOptions::default());
+        assert!(
+            saved.stopped.is_some(),
+            "the saved sibling declares no `bonus`: {:#?}",
+            saved.diagnostics
+        );
+
+        let mut documents = DocumentSet::new();
+        documents.insert(
+            dir.path().join("lib.hew"),
+            "pub fn answer() -> i64 { 1 }\npub fn bonus() -> i64 { 2 }\n",
+        );
+        let options = FrontendOptions {
+            documents,
+            ..FrontendOptions::default()
+        };
+        let open = run_document_frontend(&input, &options);
+        assert!(
+            open.stopped.is_none(),
+            "the open buffer declares `bonus`: {:#?}",
+            open.diagnostics
+        );
+    }
+
+    /// A buffer with no file behind it runs the same frontend, including the
+    /// implicit `std.text.regex` import a regex literal needs.
+    #[test]
+    fn a_buffer_without_a_file_gets_the_implicit_regex_import() {
+        let source = "fn main() { let pattern = re\"a+\"; println(pattern.is_match(\"aaa\")); }\n";
+        let state = run_source_frontend(source, "<buffer>", &FrontendOptions::default());
+        assert!(
+            state.stopped.is_none(),
+            "the driver injects the regex import: {:#?}",
+            state.diagnostics
+        );
+    }
+
+    /// The editors need the checker output of a run that reported errors, not
+    /// only the failure.
+    #[test]
+    fn a_stopped_run_still_carries_its_checker_output() {
+        let state = run_source_frontend(
+            "fn main() { let x: i64 = \"text\"; println(x); }\n",
+            "<buffer>",
+            &FrontendOptions::default(),
+        );
+        let stopped = state.stopped.as_ref().expect("the assignment is ill-typed");
+        assert_eq!(stopped.message, "type errors found");
+        let tco = state
+            .typecheck_result
+            .as_ref()
+            .and_then(|result| result.tco.as_ref())
+            .expect("a type-checked run keeps its checker output");
+        assert!(!tco.errors.is_empty());
+        assert!(state.parse_result.is_some());
+    }
+
     fn write_source(dir: &Path, name: &str, content: &str) -> String {
         let path = dir.join(name);
         let mut file = File::create(&path).expect("create source file");
         file.write_all(content.as_bytes())
             .expect("write source file");
         path.display().to_string()
+    }
+
+    #[test]
+    fn selected_occurrence_never_falls_back_to_authored_main() {
+        let dir = tempfile::tempdir().expect("create selected-entry fixture");
+        let source = "fn main() {}\n\n#[test]\nfn selected_test() {}\n";
+        let input = write_source(dir.path(), "entry_test.hew", source);
+        let program = parse_source(source, &input).expect("parse selected-entry fixture");
+        let selection = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_ordinal, (item, span))| match item {
+                Item::Function(function)
+                    if function
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name == "test") =>
+                {
+                    Some(
+                        hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                            None,
+                            span,
+                            item_ordinal,
+                            hew_types::DeclarationKind::Function,
+                            0,
+                        ),
+                    )
+                }
+                _ => None,
+            })
+            .expect("selected test occurrence");
+
+        let options = FrontendOptions {
+            entry_selection: Some(selection),
+            ..FrontendOptions::default()
+        };
+        let state = run_file_frontend_to_typecheck(&input, &options)
+            .expect("selected-entry fixture must type-check");
+
+        assert_eq!(
+            state
+                .typecheck_result
+                .tco
+                .expect("typecheck output")
+                .entry_exit_plan
+                .expect("selected entry plan")
+                .entry
+                .display_name(),
+            "selected_test",
+            "a present selection must not fall back to authored main"
+        );
+    }
+
+    #[test]
+    fn selected_occurrence_survives_directory_module_entry_import() {
+        let dir = tempfile::tempdir().expect("create directory-module fixture");
+        let module_dir = dir.path().join("greeting");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(
+            &module_dir,
+            "greeting.hew",
+            "pub trait Greeter {\n    fn greet(self);\n}\n",
+        );
+        let source = concat!(
+            "type Dog {}\n",
+            "impl Greeter for Dog {\n    fn greet(self) {}\n}\n",
+            "#[test]\n",
+            "fn selected_test() {}\n",
+        );
+        let input = write_source(&module_dir, "dog_test.hew", source);
+        let program = parse_source(source, &input).expect("parse selected-entry fixture");
+        let selection = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_ordinal, (item, span))| match item {
+                Item::Function(function) if function.name == "selected_test" => Some(
+                    hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                        None,
+                        span,
+                        item_ordinal,
+                        hew_types::DeclarationKind::Function,
+                        0,
+                    ),
+                ),
+                _ => None,
+            })
+            .expect("selected test occurrence");
+
+        let state = run_file_frontend_to_typecheck(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                entry_selection: Some(selection),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("selected occurrence must survive implicit entry import");
+
+        assert_eq!(
+            state
+                .typecheck_result
+                .tco
+                .expect("typecheck output")
+                .entry_exit_plan
+                .expect("selected entry plan")
+                .entry
+                .display_name(),
+            "selected_test"
+        );
+    }
+
+    #[test]
+    fn missing_selected_occurrence_is_a_type_error() {
+        let dir = tempfile::tempdir().expect("create selected-entry fixture");
+        let source = "fn main() {}\n\n#[test]\nfn selected_test() {}\n";
+        let input = write_source(dir.path(), "entry_test.hew", source);
+        let missing = hew_types::DeclarationOccurrence::new(
+            None,
+            &(source.len() + 1..source.len() + 2),
+            hew_types::DeclarationKind::Function,
+            0,
+        );
+
+        let options = FrontendOptions {
+            entry_selection: Some(missing),
+            ..FrontendOptions::default()
+        };
+        let Err(failure) = run_file_frontend_to_typecheck(&input, &options) else {
+            panic!("a missing selected entry must fail closed");
+        };
+
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("selected process entry occurrence")
+            )
+        }));
+    }
+
+    #[test]
+    fn selected_occurrence_from_another_module_is_rejected() {
+        let dir = tempfile::tempdir().expect("create selected-entry fixture");
+        write_source(dir.path(), "helper.hew", "pub fn value() -> i64 { 1 }\n");
+        let source =
+            "import helper;\n\nfn main() {}\n\n#[test]\nfn selected_test() { assert(true); }\n";
+        let input = write_source(dir.path(), "entry_test.hew", source);
+        let initial = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("fixture must establish module identities");
+        let helper_module = initial
+            .typecheck_result
+            .tco
+            .as_ref()
+            .expect("typecheck output")
+            .identity
+            .module_for_path("helper")
+            .expect("imported helper module identity");
+        let program = parse_source(source, &input).expect("parse selected-entry fixture");
+        let foreign_selection = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_ordinal, (item, span))| match item {
+                Item::Function(function) if function.name == "selected_test" => Some(
+                    hew_types::DeclarationOccurrence::new_with_synthetic_ordinal(
+                        Some(helper_module),
+                        span,
+                        item_ordinal,
+                        hew_types::DeclarationKind::Function,
+                        0,
+                    ),
+                ),
+                _ => None,
+            })
+            .expect("selected test occurrence");
+        let options = FrontendOptions {
+            entry_selection: Some(foreign_selection),
+            ..FrontendOptions::default()
+        };
+
+        let Err(failure) = run_file_frontend_to_typecheck(&input, &options) else {
+            panic!("a foreign-module occurrence must not select a root function");
+        };
+
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if error.message.contains("selected process entry occurrence")
+            )
+        }));
     }
 
     /// The checker's module search paths must anchor Tier 2 in-worktree
@@ -2664,12 +3944,15 @@ mod tests {
                     "diamond fixture must lower without HIR diagnostics: {:#?}",
                     hir.diagnostics
                 );
-                let output = session.lower_hir_module(&hir.module, tco);
-                hew_mir::dump_mir(&output.pipeline, hew_mir::DumpStage::Raw)
+                let output = session
+                    .lower_hir_module(&hir.module, tco, &[])
+                    .expect("diamond fixture must verify");
+                hew_sir::dump_lowering(&output.sir)
             })
             .collect();
         assert!(
-            dumps[0].contains("fn left$left_value") && dumps[0].contains("fn right$right_value"),
+            dumps[0].contains("fn __hew_fn_left$left_value")
+                && dumps[0].contains("fn __hew_fn_right$right_value"),
             "dump must contain both imported functions:\n{}",
             dumps[0]
         );
@@ -2755,7 +4038,7 @@ mod tests {
         let peer = write_source(
             &module_dir,
             "dog.hew",
-            "pub type Dog { label: string; }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
+            "pub type Dog { label: string, }\nimpl Greeter for Dog {\n    fn name(self) -> string { self.label }\n}\npub fn describe(d: Dog) -> string { d.greet() }\n",
         );
 
         let result = check_file(
@@ -2769,6 +4052,176 @@ mod tests {
             result.is_ok(),
             "a directly checked peer must share its directory module entry: {:#?}",
             result.err()
+        );
+    }
+
+    #[test]
+    fn stdlib_directory_peer_imports_share_one_complete_module_owner() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root")
+            .to_path_buf();
+
+        for imports in [
+            "import std.net.http;\nimport std.net.http.http_client;\n",
+            "import std.net.http.http_client;\nimport std.net.http;\n",
+            "import std.net.http.http_client;\n",
+        ] {
+            let dir = tempfile::tempdir().expect("create module-owner fixture");
+            let input = write_source(
+                dir.path(),
+                "main.hew",
+                &format!("{imports}\nfn main() {{}}\n"),
+            );
+            let source = fs::read_to_string(&input).expect("read module-owner fixture");
+            let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
+            let documents = DocumentSet::new();
+            let mut ctx = ImportResolutionContext {
+                in_progress_imports: HashSet::new(),
+                resolved_imports: HashMap::new(),
+                manifest_deps: None,
+                extra_pkg_path: None,
+                locked_versions: None,
+                package_name: None,
+                project_dir: dir.path(),
+                module_search_paths: Some(std::slice::from_ref(&repo_root)),
+                documents: &documents,
+            };
+
+            let graph = build_module_graph(
+                Path::new(&input),
+                &mut program.items,
+                program.module_doc.clone(),
+                &mut ctx,
+            )
+            .expect("stdlib peer imports should build a module graph");
+            let http_id = hew_parser::module::ModuleId::new(
+                ["std", "net", "http"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            );
+            let peer_id = hew_parser::module::ModuleId::new(
+                ["std", "net", "http", "http_client"]
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
+            );
+            let http = graph
+                .modules
+                .get(&http_id)
+                .expect("the canonical std.net.http module should be present");
+            assert!(
+                !graph.modules.contains_key(&peer_id),
+                "the peer must not become a second graph owner: {:?}",
+                graph.modules.keys().collect::<Vec<_>>()
+            );
+            assert!(
+                http.source_paths
+                    .iter()
+                    .any(|path| path.ends_with("std/net/http/http.hew")),
+                "the canonical module must retain its entry source: {:?}",
+                http.source_paths
+            );
+            assert!(
+                http.source_paths
+                    .iter()
+                    .any(|path| path.ends_with("std/net/http/http_client.hew")),
+                "the canonical module must retain its peer source: {:?}",
+                http.source_paths
+            );
+            assert!(
+                http.items.iter().any(|(item, _)| matches!(
+                    item,
+                    Item::TypeDecl(decl) if decl.name == "Response"
+                )),
+                "peer-only imports must load the complete package item set"
+            );
+        }
+    }
+
+    #[test]
+    fn check_file_accepts_shipped_directory_peer_reimports() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("hew-compile lives below the repository root")
+            .to_path_buf();
+        let dir = tempfile::tempdir().expect("create peer-reimport fixture");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import std.net.http;\n\
+             import std.net.http.http_client;\n\n\
+             fn main() {}\n",
+        );
+
+        check_file(
+            &input,
+            &FrontendOptions {
+                project_dir: Some(dir.path().to_path_buf()),
+                module_search_paths: Some(vec![repo_root]),
+                ..FrontendOptions::default()
+            },
+        )
+        .expect("reimporting a shipped directory peer must not duplicate declarations");
+    }
+
+    /// Reverses 10ec5abd6 (`fix(modules): limit peer promotion to shipped
+    /// stdlib`), which let a user package import one of its own directory
+    /// peers directly and kept it as an isolated module. That isolated
+    /// parse has no access to its sibling declarations — spec 3.5.1 merges
+    /// every peer into the directory module's one namespace — so any
+    /// reference to a sibling surfaced downstream as a bare "undefined
+    /// function"/"undefined variable" with no hint that the fix is to
+    /// import the directory module instead. Refusing the import outright,
+    /// naming the directory module to use, is the actionable diagnostic;
+    /// the isolated-parse path is no longer reachable.
+    #[test]
+    fn user_directory_peer_import_is_refused() {
+        let dir = tempfile::tempdir().expect("create module-owner fixture");
+        let module_dir = dir.path().join("greeting");
+        fs::create_dir(&module_dir).expect("create module directory");
+        write_source(&module_dir, "greeting.hew", "pub fn entry() -> i64 { 1 }\n");
+        write_source(&module_dir, "dog.hew", "pub fn bark() -> i64 { 2 }\n");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import greeting.dog;\n\nfn main() {}\n",
+        );
+        let source = fs::read_to_string(&input).expect("read module-owner fixture");
+        let mut program = parse_source(&source, &input).expect("parse module-owner fixture");
+        let documents = DocumentSet::new();
+        let mut ctx = ImportResolutionContext {
+            in_progress_imports: HashSet::new(),
+            resolved_imports: HashMap::new(),
+            manifest_deps: None,
+            extra_pkg_path: None,
+            locked_versions: None,
+            package_name: None,
+            project_dir: dir.path(),
+            module_search_paths: None,
+            documents: &documents,
+        };
+
+        let failure = build_module_graph(
+            Path::new(&input),
+            &mut program.items,
+            program.module_doc.clone(),
+            &mut ctx,
+        )
+        .expect_err("importing a directory peer directly must be refused");
+
+        let FrontendDiagnosticKind::Message(inner) = &failure.diagnostics[0].kind else {
+            panic!(
+                "expected a Message diagnostic, got {:?}",
+                failure.diagnostics[0].kind
+            );
+        };
+        assert_eq!(inner.code, "E_PEER_IMPORT");
+        assert!(
+            inner.message.contains("greeting"),
+            "message should name the directory module to import instead: {}",
+            inner.message
         );
     }
 
@@ -2788,12 +4241,12 @@ mod tests {
         write_source(
             &module_dir,
             "shapes.hew",
-            "type Point { x: i64; }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point { x: i64, }\npub fn ax() -> i64 { let p = Point { x: 1 }; p.x }\n",
         );
         write_source(
             &module_dir,
             "circle.hew",
-            "type Point { y: i64; }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
+            "type Point { y: i64, }\npub fn by() -> i64 { let p = Point { y: 2 }; p.y }\n",
         );
         let input = write_source(
             dir.path(),
@@ -2850,12 +4303,12 @@ mod tests {
         write_source(
             dir.path(),
             "lib.hew",
-            "type Point { x: i64; }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
+            "type Point { x: i64, }\npub fn lib_point() -> i64 { let p = Point { x: 1 }; p.x }\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import \"lib.hew\";\n\ntype Point { y: i64; }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
+            "import \"lib.hew\";\n\ntype Point { y: i64, }\n\n             fn main() { let p = Point { y: 2 }; println(p.y + lib_point()); }\n",
         );
 
         let failure = check_file(&input, &FrontendOptions::default())
@@ -2989,6 +4442,38 @@ mod tests {
             load_package_name(dir.path()).expect("valid manifest should load"),
             None
         );
+    }
+
+    #[test]
+    fn source_roots_keep_authored_exports_after_file_import_flattening() {
+        let dir = tempfile::tempdir().expect("create source-root fixture");
+        write_source(dir.path(), "helper.hew", "fn hidden() -> string { \"owned\".to_upper() } pub fn imported() -> string { hidden() }");
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import \"helper.hew\"; pub fn exported() -> string { imported() } fn main() {}",
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+        let tco = state.typecheck_result.tco.as_ref().unwrap();
+        let roots = Session::source_roots(&state.program, tco).unwrap();
+        assert_eq!(roots.len(), 1, "file imports are not implicit root exports");
+        assert!(roots[0].full_path().ends_with(".exported"));
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("an uncalled root export must retain its imported helper closure");
+        let module = &output.semantics().module;
+        for leaf in ["exported", "imported", "hidden"] {
+            let declaration = tco
+                .identity
+                .declarations()
+                .map(|(_, declaration)| declaration)
+                .find(|declaration| declaration.full_path().ends_with(&format!(".{leaf}")))
+                .unwrap();
+            let callable = module
+                .callable_for_declaration(declaration)
+                .expect("export helper must be retained");
+            assert!(module.function_index().function(callable.id).is_some());
+        }
     }
 
     /// A file-imported item reaches HIR lowering on two surfaces: its file's
@@ -3331,88 +4816,86 @@ mod tests {
             );
         }
 
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "MIR must project generic impl calls through their exact HIR body symbols: {:#?}",
-            pipeline.diagnostics
-        );
-        for (symbol, _) in &expected {
-            let concrete = hew_hir::monomorph::function_monomorph_symbol(
-                symbol,
-                &[hew_types::ResolvedTy::String],
-            );
+        let roots = Session::source_roots(&state.program, tco).unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_hir_module(&hir.module, tco, &roots)
+            .expect("imported generic impl calls must complete shared semantic lowering");
+        let module = &output.semantics().module;
+        for (_, declaration) in expected {
+            let key = hew_sir::SirInstanceKey {
+                template: hew_sir::GenericTemplateId { declaration },
+                type_args: vec![hew_types::ResolvedTy::String],
+            };
+            let callable = module
+                .callable_for_instance(&key)
+                .expect("each imported method must retain its exact string specialization");
             assert!(
-                pipeline
-                    .raw_mir
-                    .iter()
-                    .any(|function| function.name == concrete),
-                "generic imported impl `{symbol}` must lower its string specialization `{concrete}`"
+                module.function_index().function(callable.id).is_some(),
+                "the requested imported specialization must have a semantic body"
             );
         }
     }
 
-    #[cfg(feature = "codegen")]
     #[test]
-    fn remote_pid_lookup_annotation_reaches_mir_with_its_builtin_carrier() {
-        let dir = tempfile::tempdir().expect("create temp dir");
+    fn local_generic_impl_calls_reuse_exact_semantic_specializations() {
+        let dir = tempfile::tempdir().unwrap();
         let input = write_source(
             dir.path(),
             "main.hew",
             r#"
-            actor Echo { receive fn handle(request: i64) -> i64 { request } }
-            impl ActorMsg for Echo { type Msg = i64; type Reply = i64; }
-            actor Client {
-                receive fn go(unused: i64) {
-                    let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
-                    match found {
-                        .Ok(peer) => { let reply = peer.ask(7, 1000); },
-                        .Err(_) => {},
-                    }
-                }
+            type Holder<T> { value: T }
+            impl<T> Holder<T> { fn get(self) -> T { self.value } }
+            fn main() -> i64 {
+                let numbers = Holder { value: 7 };
+                let words = Holder { value: "kept" };
+                numbers.get() + numbers.get() + words.get().len() + words.get().len()
             }
-            "#,
+        "#,
         );
-        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
-            .expect("lookup fixture must type-check");
-        let tco = state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("successful fixture has type output");
-        let hir = hew_hir::lower_program(
-            &state.program,
-            tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+        let tco = state.typecheck_result.tco.as_ref().unwrap();
+        let declaration = tco.impl_method_declaration_ids["Holder::get"].clone();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("local generic impl calls must complete shared semantic lowering");
+        let module = &output.semantics().module;
+        let index = module.function_index();
+        let entry = index.function(module.entry_callable.unwrap()).unwrap();
+        assert_eq!(
+            module
+                .callables
+                .iter()
+                .filter(|callable| callable.declaration == declaration)
+                .count(),
+            2,
+            "one method declaration must have exactly its two demanded specializations"
         );
-        assert!(
-            hir.diagnostics.is_empty(),
-            "HIR diagnostics: {:#?}",
-            hir.diagnostics
-        );
-        let mut pipeline = hew_mir::lower_hir_module(&hir.module);
-        pipeline.attach_lowering_facts(tco);
-        assert!(
-            !pipeline.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                hew_mir::MirDiagnosticKind::UnknownType { ref name } if name == "RemotePid"
-            )),
-            "RemotePid must retain its builtin discriminator through MIR: {:#?}",
-            pipeline.diagnostics
-        );
-        let codegen = hew_codegen_rs::validate_codegen_front(&pipeline);
-        assert!(
-            codegen.is_ok(),
-            "the full compiler boundary must accept RemotePid lookup output: {codegen:?}"
-        );
+        for argument in [hew_types::ResolvedTy::I64, hew_types::ResolvedTy::String] {
+            let key = hew_sir::SirInstanceKey {
+                template: hew_sir::GenericTemplateId {
+                    declaration: declaration.clone(),
+                },
+                type_args: vec![argument.clone()],
+            };
+            let callable = module.callable_for_instance(&key).expect(
+                "the instance key must retain the checker declaration and concrete argument",
+            );
+            assert_eq!(callable.signature.return_ty, argument);
+            assert!(
+                index.function(callable.id).is_some(),
+                "the exact specialization must have a body"
+            );
+            let calls = entry.blocks.iter().filter(|block| matches!(
+                block.terminator, hew_sir::SemTerminator::Call { callee, .. } if callee == callable.id
+            )).count();
+            assert_eq!(
+                calls, 2,
+                "repeated source calls must reuse the same semantic callable"
+            );
+        }
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the generic direct-symbol regression covers every module origin in one identity matrix"
-    )]
     fn nested_generic_free_calls_keep_exact_direct_symbols_across_all_module_origins() {
         // Every invocation sits in a closure body, which lowers through a child
         // MIR builder.  Exercise all body origins that may be the selected
@@ -3495,9 +4978,12 @@ fn main() {
         // sharing a body symbol.
         let expected = [
             (hew_types::DefId::for_test("main.root_first"), "root_first"),
+            // A file import is spliced into the root namespace and lowered
+            // once, so its declaration keeps the declaring file's identity
+            // while its emitted body carries the root's bare symbol.
             (
                 hew_types::DefId::for_test("file_helpers.file_first"),
-                "file_helpers$file_first",
+                "file_first",
             ),
             (
                 hew_types::DefId::for_test("hew.genhelpers.first"),
@@ -3522,41 +5008,14 @@ fn main() {
             symbols.get(&hew_types::DefId::for_test("beta.alpha.first")),
             "same-leaf generic functions must not share a direct-call symbol"
         );
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "nested generic direct calls must inherit the exact HIR symbol map: {:#?}",
-            pipeline.diagnostics
-        );
-        for (symbol, expected_value) in [
-            ("root_first", 1_i64),
-            ("file_helpers$file_first", 3_i64),
-            ("hew$genhelpers$first", 5_i64),
-            ("alpha$first", 7_i64),
-            ("beta$alpha$first", 9_i64),
-        ] {
-            let concrete = hew_hir::monomorph::function_monomorph_symbol(
-                symbol,
-                &[hew_types::ResolvedTy::I64],
-            );
-            assert!(
-                pipeline
-                    .raw_mir
-                    .iter()
-                    .any(|function| function.name == concrete),
-                "closure call returning {expected_value} must emit `{concrete}`"
-            );
-        }
     }
 
     #[test]
-    fn self_qualified_module_type_keeps_its_full_owner_through_mir_layout() {
+    fn self_qualified_module_type_keeps_its_full_owner_through_typed_hir() {
         // The package fixture names Meter both bare and through its own
         // lexical leaf (`selfqualtype.Meter`) while its real owner is the
         // full module-graph path `hew.selfqualtype`. This checks every
-        // handoff: checker signature, HIR declaration/parameter, and MIR
-        // layout must carry that same exact owner. A short-name fallback would
+        // handoff: checker signature, HIR declaration/parameter, and HIR field access must carry that same exact owner. A short-name fallback would
         // falsely pass the fixture only until a same-leaf package is present.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -3629,22 +5088,6 @@ fn main() {
         assert!(
             matches!(read.params.as_slice(), [param] if param.name == "m" && matches!(&param.ty, hew_types::ResolvedTy::Named { name, .. } if name == expected)),
             "HIR read parameter must retain the full self-qualified owner: {read:#?}"
-        );
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "self-qualified Meter field access must find its exact MIR layout: {:#?}",
-            pipeline.diagnostics
-        );
-        assert!(
-            pipeline.record_layouts.iter().any(|layout| {
-                layout.name == expected
-                    && layout.field_names == ["v".to_string()]
-                    && layout.field_tys == [hew_types::ResolvedTy::I64]
-            }),
-            "MIR must register the full-owner Meter layout: {:#?}",
-            pipeline.record_layouts
         );
     }
 
@@ -3729,7 +5172,7 @@ fn main() {
              pub fn render(value: Box<i64>) -> string { \"specialised\" }\n}\n";
         const DECLARATIONS: &str = "pub trait Render {\n    \
              fn render(value: Self) -> string;\n}\n\n\
-             pub type Box<T> {\n    value: T;\n}\n\n";
+             pub type Box<T> {\n    value: T,\n}\n\n";
 
         let mut mismatches: Vec<String> = Vec::new();
         for (order, first, second) in [
@@ -3791,10 +5234,6 @@ fn main() {
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the same-leaf package regression proves both symbol publication and isolation together"
-    )]
     fn same_leaf_package_functions_publish_distinct_direct_body_symbols() {
         // `left::render` and `right::render` intentionally share the final
         // module component and the generic free-function leaves
@@ -3895,210 +5334,45 @@ fn main() {
                 "generic direct dispatch must use the shared MonoKey linker-symbol projection"
             );
         }
-
-        // Negative same-leaf control: both generic `Box<T>::render` bodies
-        // specialise to `bool`, so a later lookup by `Box::render` or by the
-        // `render` leaf would collapse these unrelated package owners.  MIR
-        // must preserve both qualified HIR symbols through monomorphisation.
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "same-leaf generic impl bodies must lower through MIR: {:#?}",
-            pipeline.diagnostics
-        );
-        for symbol in ["left.render.Box::render", "right.render.Box::render"] {
-            let concrete = hew_hir::monomorph::function_monomorph_symbol(
-                symbol,
-                &[hew_types::ResolvedTy::Bool],
-            );
-            assert!(
-                pipeline
-                    .raw_mir
-                    .iter()
-                    .any(|function| function.name == concrete),
-                "same-leaf generic impl must retain its full owner in `{concrete}`"
-            );
-        }
     }
 
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the imported-body regression keeps root/imported parity and transitive-call controls together"
-    )]
-    fn imported_impl_catalog_len_uses_emitted_borrowing_abi() {
-        // `echo_len` is intentionally an imported impl method whose body is
-        // the source builtin `len(s)`.  The HIR catalog endpoint is `len_str`,
-        // but raw MIR and codegen must agree on its concrete ABI symbol
-        // `hew_string_length`; otherwise the representation-effect pass sees
-        // an unknown call and incorrectly rejects the caller-visible `string`
-        // parameter. `echo_tag` is the transitive sibling control: if
-        // `echo_len` were not emitted safely, this package import would not
-        // make it through the full callable closure.
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-compile has a workspace parent");
-        let input = repo_root.join("tests/pkg-import/imported_actor_ask_i32.hew");
-        let state = run_file_frontend_to_typecheck(
-            input.to_str().expect("fixture path is utf-8"),
-            &FrontendOptions {
-                pkg_path: Some(repo_root.join("tests/pkg-import/pkgs")),
-                ..FrontendOptions::default()
-            },
-        )
-        .expect("imported actor fixture must type-check");
-        let tco = state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("type checking was enabled");
-        let hir = hew_hir::lower_program(
-            &state.program,
-            tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
+    fn imported_string_length_uses_the_shared_semantic_contract() {
+        let dir = tempfile::tempdir().unwrap();
+        write_source(
+            dir.path(),
+            "library.hew",
+            "pub fn echo_len(value: string) -> i64 { value.len() }",
         );
-        assert!(
-            hir.diagnostics.is_empty(),
-            "imported actor fixture must lower cleanly: {:#?}",
-            hir.diagnostics
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import library; fn main() -> i64 { library.echo_len(\"hello\") }",
         );
-
-        let pipeline = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            pipeline.diagnostics.is_empty(),
-            "imported catalog len must lower cleanly through MIR: {:#?}",
-            pipeline.diagnostics
-        );
-        let echo_len = pipeline
-            .raw_mir
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default()).unwrap();
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, state.typecheck_result.tco.as_ref().unwrap())
+            .unwrap();
+        let module = &output.semantics().module;
+        let entry = module
+            .function_index()
+            .function(module.entry_callable.unwrap())
+            .unwrap();
+        let callee = entry
+            .blocks
             .iter()
-            .find(|function| function.name.ends_with("Result::echo_len"))
-            .unwrap_or_else(|| {
-                panic!(
-                    "expected imported `Result::echo_len` MIR body; emitted functions: {:#?}",
-                    pipeline
-                        .raw_mir
-                        .iter()
-                        .map(|function| &function.name)
-                        .collect::<Vec<_>>()
-                )
-            });
-        assert!(
-            echo_len.blocks.iter().any(|block| matches!(
-                &block.terminator,
-                hew_mir::Terminator::Call { callee, .. } if callee == "hew_string_length"
-            )),
-            "the catalog ItemId join must project `len_str` to the concrete \
-             `hew_string_length` ABI symbol: {echo_len:#?}"
-        );
-        let string_param_boundary = echo_len
-            .decisions
-            .iter()
-            .find_map(|decision| match decision.strategy {
-                hew_mir::Strategy::ParamBoundary(fact) if fact.param_index == 1 => Some(fact),
+            .find_map(|block| match block.terminator {
+                hew_sir::SemTerminator::Call { callee, .. } => Some(callee),
                 _ => None,
             })
-            .expect("echo_len string parameter must carry a boundary fact");
-        assert_eq!(
-            string_param_boundary.mode,
-            hew_mir::ParamBoundaryMode::BorrowReadOnly,
-            "the audited string-length ABI must not create an unproven \
-             representation-mutation effect"
-        );
-
-        // The same checker-selected catalog shim must retain its audited FFI
-        // authority whether its body is root-local or emitted from an imported
-        // package.  Keep this table alongside the imported-actor regression:
-        // imported-body lowering is the place where an authority handoff can
-        // otherwise silently degrade to `Direct`.
-        let direct_dir = tempfile::tempdir().expect("create direct-call fixture dir");
-        let direct_input = write_source(
-            direct_dir.path(),
-            "direct_len.hew",
-            "fn direct_len(s: string) -> i64 { len(s) }\nfn main() {}\n",
-        );
-        let direct_state = run_file_frontend_to_typecheck(
-            &direct_input,
-            &FrontendOptions {
-                project_dir: Some(repo_root.to_path_buf()),
-                ..FrontendOptions::default()
-            },
-        )
-        .expect("root catalog-len fixture must type-check");
-        let direct_tco = direct_state
-            .typecheck_result
-            .tco
-            .as_ref()
-            .expect("type checking was enabled");
-        let direct_lowered = hew_hir::lower_program(
-            &direct_state.program,
-            direct_tco,
-            &hew_hir::ResolutionCtx,
-            hew_hir::TargetArch::host(),
-        );
+            .expect("entry must call the imported body");
+        let body = module.function_index().function(callee).unwrap();
+        assert_eq!(body.declaration.full_path(), "library.echo_len");
         assert!(
-            direct_lowered.diagnostics.is_empty(),
-            "root catalog-len fixture must lower cleanly: {:#?}",
-            direct_lowered.diagnostics
-        );
-        let direct_pipeline = hew_mir::lower_hir_module(&direct_lowered.module);
-        assert!(
-            direct_pipeline.diagnostics.is_empty(),
-            "root catalog-len fixture must lower through MIR: {:#?}",
-            direct_pipeline.diagnostics
-        );
-        let direct_len = direct_pipeline
-            .raw_mir
-            .iter()
-            .find(|function| function.name == "direct_len")
-            .expect("root catalog-len body must be emitted");
-        for (origin, function) in [("root", direct_len), ("imported", echo_len)] {
-            let boundary = function
-                .decisions
+            body.blocks
                 .iter()
-                .find_map(|decision| match decision.strategy {
-                    hew_mir::Strategy::ParamBoundary(fact)
-                        if fact.param_index == 0 || fact.param_index == 1 =>
-                    {
-                        matches!(decision.ty, hew_types::ResolvedTy::String).then_some(fact)
-                    }
-                    _ => None,
-                })
-                .unwrap_or_else(|| {
-                    panic!("{origin} catalog-len body must retain its string boundary")
-                });
-            assert_eq!(
-                boundary.mode,
-                hew_mir::ParamBoundaryMode::BorrowReadOnly,
-                "{origin} catalog-len body must retain the same audited FFI borrow authority"
-            );
-        }
-
-        let echo_tag = pipeline
-            .raw_mir
-            .iter()
-            .find(|function| function.name.ends_with("Result::echo_tag"))
-            .expect("the transitive echo_tag caller must remain emitted");
-        assert!(
-            echo_tag.blocks.iter().any(|block| matches!(
-                &block.terminator,
-                hew_mir::Terminator::Call { callee, .. } if callee.ends_with("Result::echo_len")
-            )),
-            "echo_tag must preserve its direct call to the catalog-backed sibling: {echo_tag:#?}"
-        );
-        let echo_tag_string_boundary = echo_tag
-            .decisions
-            .iter()
-            .find_map(|decision| match decision.strategy {
-                hew_mir::Strategy::ParamBoundary(fact) if fact.param_index == 1 => Some(fact),
-                _ => None,
-            })
-            .expect("echo_tag string parameter must carry a boundary fact");
-        assert_eq!(
-            echo_tag_string_boundary.mode,
-            hew_mir::ParamBoundaryMode::BorrowReadOnly,
-            "the emitted sibling must inherit echo_len's audited read-only boundary"
+                .any(|block| matches!(block.terminator, hew_sir::SemTerminator::RtCall { .. })),
+            "the imported body must use the verified runtime-call contract"
         );
     }
 
@@ -4397,21 +5671,21 @@ fn main() {
             "direct compilation of the shipped TCP module must retain std.net identity"
         );
 
-        let shipped_lambda = repo_root.join("std/concurrency/lambda_actor.hew");
+        let shipped_lifecycle = repo_root.join("std/concurrency/lifecycle.hew");
         assert_eq!(
-            super::canonical_direct_stdlib_module_for_source(&shipped_lambda)
+            super::canonical_direct_stdlib_module_for_source(&shipped_lifecycle)
                 .map(|module| module.path),
             Some(vec!["std".to_string(), "concurrency".to_string()]),
             "a direct check of a canonical directory-module peer must retain std.concurrency identity"
         );
         fs::create_dir_all(dir.path().join("concurrency")).expect("create user module dir");
-        let user_lambda = write_source(
+        let user_lifecycle = write_source(
             &dir.path().join("concurrency"),
-            "lambda_actor.hew",
-            "pub type LambdaActorHandle {}\n",
+            "lifecycle.hew",
+            "pub type Marker {}\n",
         );
         assert!(
-            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lambda)).is_none(),
+            super::canonical_direct_stdlib_module_for_source(Path::new(&user_lifecycle)).is_none(),
             "a same-named user directory peer must not acquire std.concurrency provenance"
         );
         let user_net = write_source(dir.path(), "net.hew", "fn main() {}\n");
@@ -4449,7 +5723,7 @@ fn main() {
 #[resource]
 #[opaque]
 type Foo {}
-impl Foo { fn close(foo: Foo) {} }
+impl Foo { fn close(consume self) {} }
 extern "C" { fn hew_tcp_read(foo: Foo); }
 "#,
         );
@@ -4971,13 +6245,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n",
         );
         let input = write_source(
@@ -5000,13 +6274,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import bank;\n\nactor Account {\n    var n: i64 = 0;\n    \
+            "import bank;\n\nactor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n\nfn main() -> i64 { 0 }\n",
         );
 
@@ -5023,9 +6297,9 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n\
-             pub actor Account {\n    var n: i64 = 0;\n    \
+             pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n",
         );
         let input = write_source(
@@ -5051,13 +6325,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "bank.hew",
-            "pub actor Account {\n    var n: i64 = 0;\n    \
+            "pub actor Account {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 1 }\n}\n",
         );
         write_source(
             dir.path(),
             "store.hew",
-            "pub actor Register {\n    var n: i64 = 0;\n    \
+            "pub actor Register {\n    var n: i64 = 0,\n    \
              receive fn who() -> i64 { 2 }\n}\n",
         );
         let input = write_source(
@@ -5081,7 +6355,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             dir.path(),
             "counter.hew",
-            "pub actor Counter {\n    var n: i64 = 0;\n    \
+            "pub actor Counter {\n    var n: i64 = 0,\n    \
              receive fn bump() -> i64 { n = n + 1; n }\n}\n",
         );
         let input = write_source(
@@ -5110,13 +6384,13 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             dir.path(),
             "secret.hew",
             // No `pub`: the actor is private to its module.
-            "actor Account {\n    var n: i64 = 0;\n    \
+            "actor Account {\n    var n: i64 = 0,\n    \
              receive fn id() -> i64 { 999 }\n}\n",
         );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    \
+            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
              receive fn id() -> i64 { 111 }\n}\n\n\
              fn main() { let a = spawn secret.Account(); }\n",
         );
@@ -5159,7 +6433,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import secret;\n\nactor Account {\n    var n: i64 = 0;\n    \
+            "import secret;\n\nactor Account {\n    var n: i64 = 0,\n    \
              receive fn id() -> i64 { 111 }\n}\n\n\
              fn main() { let a = spawn secret.Account(); }\n",
         );
@@ -5413,15 +6687,15 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         write_source(
             &workflow_dir,
             "workflow.hew",
-            "pub type Marker { value: i64; }\n",
+            "pub type Marker { value: i64, }\n",
         );
         let peer_source = concat!(
             "pub machine Workflow {\n",
-            "    events { Crash; }\n",
-            "    state Ready;\n",
-            "    state Faulted { code: i64; }\n",
+            "    events { Crash, }\n",
+            "    state Ready,\n",
+            "    state Faulted { code: i64, },\n",
             "    on Crash: Ready => .Faulted {\n",
-            "        Workflow.Faulted { wrong: 1 }\n",
+            "        wrong: 1\n",
             "    }\n",
             "    default { state }\n",
             "}\n",
@@ -5461,7 +6735,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             .filter(|byte| *byte == b'\n')
             .count()
             + 1;
-        assert_eq!(line, 6, "diagnostic must point at the deliberate error");
+        assert_eq!(line, 5, "diagnostic must point at the deliberate error");
 
         let inference = failure
             .diagnostics
@@ -5520,6 +6794,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("dep".to_string()))],
+            &DocumentSet::new(),
         );
 
         assert_eq!(diagnostics.len(), 1);
@@ -5552,6 +6827,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "probe",
             )
             .with_source_module(Some("missing".to_string()))],
+            &DocumentSet::new(),
         );
 
         assert_eq!(diagnostics.len(), 1);
@@ -5840,8 +7116,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn bundled_empty_type_decls_publish_owner_qualified_mir_layouts() {
-        fn lower_to_mir(input: &str) -> hew_mir::IrPipeline {
+    fn bundled_type_decls_preserve_qualified_declaration_identity() {
+        fn lower_to_hir(input: &str) -> hew_hir::HirModule {
             let state = run_file_frontend_to_typecheck(input, &FrontendOptions::default())
                 .unwrap_or_else(|failure| panic!("frontend failed: {failure:#?}"));
             let typecheck = state
@@ -5860,14 +7136,14 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                 "HIR must retain every bundled declaration: {:#?}",
                 lowered.diagnostics
             );
-            hew_mir::lower_hir_module(&lowered.module)
+            lowered.module
         }
 
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("hew-compile lives below repository root");
-        let direct = repo_root.join("std/concurrency/lambda_actor.hew");
-        let direct = lower_to_mir(direct.to_str().expect("std path is UTF-8"));
+        let direct = repo_root.join("std/concurrency/concurrency.hew");
+        let direct = lower_to_hir(direct.to_str().expect("std path is UTF-8"));
 
         let dir = tempfile::tempdir().expect("create temp project");
         let imported_input = write_source(
@@ -5881,64 +7157,50 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                  let _ = error;\n\
              }\n",
         );
-        let imported = lower_to_mir(&imported_input);
+        let imported = lower_to_hir(&imported_input);
 
         for (pipeline, owner) in [
             (&direct, Some("std.concurrency")),
             (&imported, Some("std.concurrency")),
         ] {
+            let leaf = "ScopeError";
+            let expected =
+                owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
             assert!(
-                pipeline.diagnostics.is_empty(),
-                "bundled source must lower without MIR authority diagnostics: {:#?}",
-                pipeline.diagnostics
+                pipeline
+                    .items
+                    .iter()
+                    .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == expected)),
+                "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
+                pipeline.items
             );
-            for leaf in ["LambdaActorHandle", "LambdaActorWeakHandle"] {
-                let expected =
-                    owner.map_or_else(|| leaf.to_string(), |owner| format!("{owner}.{leaf}"));
-                assert!(
-                    pipeline
-                        .record_layouts
-                        .iter()
-                        .any(|layout| layout.name == expected),
-                    "bundled declaration `{expected}` must publish its source-owned layout: {:#?}",
-                    pipeline.record_layouts
-                );
-            }
         }
 
         // A user package can legally use the same leaf name, but its source
-        // identity must never acquire the bundled lambda-actor layout.
-        write_source(dir.path(), "spoofed.hew", "pub type LambdaActorHandle {}\n");
+        // identity must never acquire the bundled layout.
+        write_source(dir.path(), "spoofed.hew", "pub type ScopeError {}\n");
         let foreign_input = write_source(
             dir.path(),
             "foreign_main.hew",
-            "import spoofed.{LambdaActorHandle};\n\
-             fn main() { let _ = LambdaActorHandle {}; }\n",
+            "import spoofed.{ScopeError};\n\
+             fn main() { let _ = ScopeError {}; }\n",
         );
-        let foreign = lower_to_mir(&foreign_input);
+        let foreign = lower_to_hir(&foreign_input);
         assert!(
             foreign
-                .record_layouts
+                .items
                 .iter()
-                .any(|layout| layout.name == "spoofed.LambdaActorHandle"),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "spoofed.ScopeError")),
             "foreign declaration must retain its own owner: {:#?}",
-            foreign.record_layouts
+            foreign.items
         );
         assert!(
             !foreign
-                .record_layouts
+                .items
                 .iter()
-                .any(|layout| layout.name == "std.concurrency.LambdaActorHandle"),
+                .any(|item| matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.qualified_name() == "std.concurrency.ScopeError")),
             "a same-leaf user declaration must not inherit bundled ownership: {:#?}",
-            foreign.record_layouts
-        );
-        assert!(
-            foreign.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                hew_mir::MirDiagnosticKind::DecisionMapTotal { .. }
-            )),
-            "the foreign same-leaf handle must remain fail-closed instead of inheriting the bundled resource class: {:#?}",
-            foreign.diagnostics
+            foreign.items
         );
     }
 
@@ -5957,7 +7219,7 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
                  let item: pipeline.PipelineItemI64 = PipelineItemI64 {\n\
                      value: 21, label: \"probe\", crash_stage: false\n\
                  };\n\
-                 match await chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
+                 match chain.push(item) { .Ok(_) => {}, .Err(_) => {} }\n\
              }\n",
         );
         let state = run_file_frontend_to_typecheck(
@@ -5984,12 +7246,6 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "imported pipeline bodies must lower: {:#?}",
             hir.diagnostics
         );
-        let mir = hew_mir::lower_hir_module(&hir.module);
-        assert!(
-            mir.diagnostics.is_empty(),
-            "imported pipeline actor layouts and calls must lower: {:#?}",
-            mir.diagnostics
-        );
         for actor in [
             "std.pipeline.AdmissionControlI64",
             "std.pipeline.SinkI64",
@@ -5997,10 +7253,123 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             "std.pipeline.SourceI64",
         ] {
             assert!(
-                mir.actor_layouts.iter().any(|layout| layout.name == actor),
-                "missing imported actor layout `{actor}`: {:#?}",
-                mir.actor_layouts
+                hir.module.items.iter().any(|item| matches!(
+                    item, hew_hir::HirItem::Actor(decl) if decl.declaration.full_path() == actor
+                )),
+                "missing imported actor declaration `{actor}`"
             );
         }
+    }
+
+    /// A cycle between two files in the SAME directory renders one positioned
+    /// location per import on the path (the header pointing at the first
+    /// edge, a note per remaining edge, in path order) and steers the fix
+    /// toward the directory-module form.
+    #[test]
+    fn import_cycle_in_same_directory_renders_positions_and_directory_help() {
+        let dir = tempfile::tempdir().expect("create cycle fixture");
+        let input = write_source(
+            dir.path(),
+            "a.hew",
+            "import \"b.hew\";\npub fn noop_a() {}\n",
+        );
+        write_source(
+            dir.path(),
+            "b.hew",
+            "import \"a.hew\";\npub fn noop_b() {}\n",
+        );
+
+        let failure =
+            check_file(&input, &FrontendOptions::default()).expect_err("cycle must be rejected");
+        assert_eq!(failure.diagnostics.len(), 1);
+        let FrontendDiagnosticKind::Message(inner) = &failure.diagnostics[0].kind else {
+            panic!(
+                "expected a Message diagnostic, got {:?}",
+                failure.diagnostics[0].kind
+            );
+        };
+
+        assert_eq!(inner.code, "E_IMPORT_CYCLE");
+        // Primary location: the first edge, at `a.hew`'s `import "b.hew";`.
+        assert!(crate::paths_name_same_file(
+            Path::new(
+                failure.diagnostics[0]
+                    .filename
+                    .as_deref()
+                    .expect("cycle source filename")
+            ),
+            Path::new(&input),
+        ));
+        let primary_span = inner
+            .span
+            .clone()
+            .expect("cycle diagnostic must carry a span");
+        let primary_source = inner
+            .source
+            .as_deref()
+            .expect("cycle diagnostic must carry source");
+        assert_eq!(primary_source[primary_span].trim_end(), "import \"b.hew\";");
+        assert!(
+            inner.message.contains('`') && inner.message.contains("imports"),
+            "primary message should label the edge it introduces: {}",
+            inner.message
+        );
+
+        // One note for the closing edge, in `b.hew`, labelled as closing the cycle.
+        assert_eq!(inner.notes.len(), 1);
+        assert!(inner.notes[0].filename.ends_with("b.hew"));
+        assert_eq!(
+            inner.notes[0].source[inner.notes[0].span.clone()].trim_end(),
+            "import \"a.hew\";"
+        );
+        assert!(
+            inner.notes[0].message.contains("closing the cycle"),
+            "closing edge should say so: {}",
+            inner.notes[0].message
+        );
+
+        assert_eq!(inner.help.len(), 1);
+        assert!(
+            inner.help[0].contains("share one directory") && inner.help[0].contains("spec 3.5.1"),
+            "same-directory cycle should recommend the directory-module form: {}",
+            inner.help[0]
+        );
+    }
+
+    /// A cycle spanning two DIFFERENT directories recommends moving the
+    /// shared declarations into a module both sides import instead.
+    #[test]
+    fn import_cycle_across_directories_recommends_a_shared_module() {
+        let dir = tempfile::tempdir().expect("create cross-directory cycle fixture");
+        let near = dir.path().join("near");
+        let far = dir.path().join("far");
+        fs::create_dir(&near).expect("create near directory");
+        fs::create_dir(&far).expect("create far directory");
+        let input = write_source(
+            &near,
+            "a.hew",
+            "import \"../far/b.hew\";\npub fn noop_a() {}\n",
+        );
+        write_source(
+            &far,
+            "b.hew",
+            "import \"../near/a.hew\";\npub fn noop_b() {}\n",
+        );
+
+        let failure = check_file(&input, &FrontendOptions::default())
+            .expect_err("cross-directory cycle must be rejected");
+        let FrontendDiagnosticKind::Message(inner) = &failure.diagnostics[0].kind else {
+            panic!(
+                "expected a Message diagnostic, got {:?}",
+                failure.diagnostics[0].kind
+            );
+        };
+
+        assert_eq!(inner.code, "E_IMPORT_CYCLE");
+        assert_eq!(inner.help.len(), 1);
+        assert_eq!(
+            inner.help[0],
+            "move the shared declarations into a module both sides import"
+        );
     }
 }

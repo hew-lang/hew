@@ -262,13 +262,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_deque_pop_front_empty_traps_main_context() {
         let output = run_deque_death_helper("vecdeque::tests::_helper_deque_pop_front_empty");
-        assert!(
-            !output.status.success(),
-            "empty Deque.pop_front() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "empty Deque.pop_front() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -276,7 +277,7 @@ mod tests {
             "empty Deque.pop_front() must report the operation; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "empty Deque.pop_front() must route through the trap code; got: {stderr}"
         );
     }
@@ -300,13 +301,14 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
         miri,
-        ignore = "spawns a subprocess to observe abort(); Miri cannot posix_spawn"
+        ignore = "spawns a subprocess to observe the trap exit; Miri cannot posix_spawn"
     )]
     fn test_deque_pop_back_empty_traps_main_context() {
         let output = run_deque_death_helper("vecdeque::tests::_helper_deque_pop_back_empty");
-        assert!(
-            !output.status.success(),
-            "empty Deque.pop_back() must terminate without actor context"
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "empty Deque.pop_back() must exit 1 without actor context"
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
@@ -314,7 +316,7 @@ mod tests {
             "empty Deque.pop_back() must report the operation; got: {stderr}"
         );
         assert!(
-            stderr.contains("hew: trap in main context: IndexOutOfBounds"),
+            stderr.contains("hew: failure: IndexOutOfBounds (205)"),
             "empty Deque.pop_back() must route through the trap code; got: {stderr}"
         );
     }

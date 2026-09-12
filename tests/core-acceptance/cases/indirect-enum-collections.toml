@@ -1,0 +1,11 @@
+[[case]]
+id = "indirect-enum-collections"
+intent = "Indirect enums live as Vec elements and HashMap values, come back out through consuming removal and through cloning reads, and release once on an early return and on a bounds fault that leaves a populated vector and map alive."
+source = "cases/indirect-enum-collections.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "late\nl/m/9\nbottom\na/1\n1\nb\nb\nfaulting/0\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

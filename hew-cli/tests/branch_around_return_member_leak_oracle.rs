@@ -92,7 +92,7 @@ fn whole_value_string_guard_return_source(frames: usize) -> String {
 fn whole_value_bytes_guard_return_source(frames: usize) -> String {
     format!(
         "fn decode_or_reject(reject: bool) -> bytes {{\n\
-         \x20   let out: bytes = bytes.new();\n\
+         \x20   var out: bytes = bytes.new();\n\
          \x20   out.push(1);\n\
          \x20   out.push(2);\n\
          \x20   out.push(3);\n\
@@ -121,7 +121,7 @@ fn whole_value_bytes_guard_return_source(frames: usize) -> String {
 /// Pre-fix: two leaked strings per bail call.
 fn returned_record_member_guard_return_source(frames: usize) -> String {
     format!(
-        "type Parsed {{ pre: string; build: string; n: i64; }}\n\
+        "type Parsed {{ pre: string, build: string, n: i64, }}\n\
          \n\
          fn parse_or_bail(bail: bool, seed: string) -> Parsed {{\n\
          \x20   let pre = seed + \"-pre\";\n\
@@ -163,7 +163,7 @@ fn build_or_bail(bail: bool, seed: string) -> string {\n\
 }\n\
 \n\
 fn decode_or_reject(reject: bool) -> bytes {\n\
-\x20   let out: bytes = bytes.new();\n\
+\x20   var out: bytes = bytes.new();\n\
 \x20   out.push(1);\n\
 \x20   out.push(2);\n\
 \x20   out.push(3);\n\
@@ -173,7 +173,7 @@ fn decode_or_reject(reject: bool) -> bytes {\n\
 \x20   out\n\
 }\n\
 \n\
-type Parsed { pre: string; build: string; n: i64; }\n\
+type Parsed { pre: string, build: string, n: i64, }\n\
 \n\
 fn parse_or_bail(bail: bool, seed: string) -> Parsed {\n\
 \x20   let pre = seed + \"-pre\";\n\

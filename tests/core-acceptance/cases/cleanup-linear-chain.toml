@@ -1,0 +1,10 @@
+[[case]]
+id = "cleanup-linear-chain"
+intent = "A chain of 64 actor calls where each record binding is used for the last time as the next call's argument: the compiler releases the one record still held at each suspension, and the chain runs to completion with every payload destroyed exactly once."
+source = "cases/cleanup-linear-chain.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 120
+
+[case.expected]
+stdout = "ok\n"
+exit = 0

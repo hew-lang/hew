@@ -13,12 +13,12 @@
 //! call site.
 
 type Slot<T> {
-    generation: i64;
-    value: Option<T>;
+    generation: i64,
+    value: Option<T>,
 }
 
 pub type Arena<T> {
-    slots: Vec<Slot<T>>;
+    slots: Vec<Slot<T>>,
 }
 
 pub fn new<T>() -> Arena<T> {
@@ -27,7 +27,7 @@ pub fn new<T>() -> Arena<T> {
 
 impl<T> Arena<T> {
     /// Insert a value wrapped in a fresh private `Slot`, returning its index.
-    fn insert(self, value: T) -> i64 {
+    fn insert(var self, value: T) -> i64 {
         let index = self.slots.len();
         self.slots.push(Slot { generation: index, value: Some(value) });
         index

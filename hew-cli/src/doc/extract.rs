@@ -146,10 +146,22 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
         TypeExpr::Function {
             params,
             return_type,
+            ..
         } => {
             let param_strs: Vec<String> = params.iter().map(|(t, _)| format_type(t)).collect();
             format!(
                 "fn({}) -> {}",
+                param_strs.join(", "),
+                format_type(&return_type.0)
+            )
+        }
+        TypeExpr::ActorFn {
+            params,
+            return_type,
+        } => {
+            let param_strs: Vec<String> = params.iter().map(|(t, _)| format_type(t)).collect();
+            format!(
+                "actor({}) -> {}",
                 param_strs.join(", "),
                 format_type(&return_type.0)
             )
@@ -162,6 +174,11 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             format!("{prefix}{}", format_type(&pointee.0))
         }
         TypeExpr::Option(inner) => format!("{}?", format_type(&inner.0)),
+        TypeExpr::Fallible { success, error } => format!(
+            "{} fails {}",
+            format_type(&success.0),
+            format_type(&error.0)
+        ),
         TypeExpr::Result { ok, err } => {
             format!("Result<{}, {}>", format_type(&ok.0), format_type(&err.0))
         }
@@ -271,9 +288,6 @@ fn visibility_prefix(v: Visibility) -> &'static str {
 fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     let mut sig = String::new();
     sig.push_str(visibility_prefix(f.visibility));
-    if f.is_async {
-        sig.push_str("async ");
-    }
     if f.is_generator {
         sig.push_str("gen ");
     }
@@ -588,9 +602,9 @@ pub fn foo() {}
         let source = r"/// A point in space.
 pub type Point {
     /// x coordinate.
-    x: i32;
+    x: i32,
     /// y coordinate.
-    y: i32;
+    y: i32,
 }
 ";
         let result = hew_parser::parse(source);
@@ -612,9 +626,9 @@ pub type Point {
     fn extract_enum_variants_with_docs() {
         let source = r"pub enum Error {
     /// The thing that went wrong.
-    Invalid(String);
+    Invalid(String),
     /// No payload.
-    Empty;
+    Empty,
 }
 ";
         let result = hew_parser::parse(source);
@@ -658,7 +672,7 @@ pub type Point {
         let source = r"/// A simple counter actor.
 pub actor Counter {
     /// How many so far.
-    let count: i32;
+    let count: i32,
     /// Bump the counter.
     receive fn increment() {
         self.count = self.count + 1;

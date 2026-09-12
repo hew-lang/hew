@@ -36,13 +36,13 @@ pub type TlsStream {
 }
 
 type TlsWriteFfiResult {
-    written: i32;
-    status: i32;
+    written: i32,
+    status: i32,
 }
 
 type TlsReadFfiResult {
-    data: bytes;
-    status: i32;
+    data: bytes,
+    status: i32,
 }
 
 const TLS_STATUS_SUCCESS: i32 = 0;
@@ -91,7 +91,7 @@ fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // IN
 /// import std.net.tls;
 ///
 /// actor TlsEcho {
-///     let stream: tls.TlsStream;
+///     let stream: tls.TlsStream,
 ///     receive fn on_data(data: bytes) {
 ///         stream.write(data);
 ///     }
@@ -134,8 +134,8 @@ trait TlsStreamMethods {
     ///
     /// `handler` is the actor that will receive `on_data` and `on_close`.
     /// The compiler synthesises both protocol message IDs from the concrete
-    /// actor type behind the `LocalPid`.
-    fn attach(self, handler: LocalPid<TlsHandler>);
+    /// actor type behind the handle.
+    fn attach(self, handler: TlsHandler);
 }
 
 impl TlsStreamMethods for TlsStream {
@@ -155,12 +155,12 @@ impl TlsStreamMethods for TlsStream {
     /// Every call site is rewritten to `hew_tls_attach_local`; codegen resolves
     /// the concrete actor's `on_data` / `on_close` protocol IDs and emits the
     /// four-argument runtime ABI. This stub is never lowered.
-    fn attach(stream: TlsStream, handler: LocalPid<TlsHandler>) {}
+    fn attach(stream: TlsStream, handler: TlsHandler) {}
 }
 
 impl TlsStream {
     /// Release this TLS stream early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_tls_close(self)
         };
@@ -185,7 +185,7 @@ pub fn connect(host: string, port: i64) -> TlsStream {
     let checked = match net.port_arg("tls.connect", port) {
         .Ok(value) => value,
         .Err(err) => {
-            panic(f"tls.connect failed: {err}");
+            panic(f"tls.connect failed");
             0
         },
     };

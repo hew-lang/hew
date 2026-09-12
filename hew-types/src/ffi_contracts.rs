@@ -1,6 +1,6 @@
 //! Machine-checked ownership facts for C-ABI extern symbols.
 //!
-//! `scripts/jit-symbol-classification.toml` is the single source of truth.
+//! `scripts/runtime-export-classification.toml` is the single source of truth.
 //! `hew-types/build.rs` projects it here so HIR can validate an extern
 //! resource boundary before MIR lowering, while MIR consumes the exact same
 //! table through its re-export.  An absent row is deliberately not a borrow.
@@ -21,6 +21,9 @@ pub enum ExternParamOwnership {
 pub enum ExternResultOwnership {
     Fresh,
     Retained,
+    /// An independently owned result, possibly reusing a consumed allocation.
+    /// This makes no new-allocation or additional-refcount claim.
+    Owned,
     Borrowed,
     None,
 }
@@ -164,7 +167,9 @@ pub(crate) fn owned_resource_result_for_contract(
     if owner_module.is_empty()
         || !matches!(
             contract.result,
-            ExternResultOwnership::Fresh | ExternResultOwnership::Retained
+            ExternResultOwnership::Fresh
+                | ExternResultOwnership::Retained
+                | ExternResultOwnership::Owned
         )
         || contract.release_symbol.is_empty()
         || contract.discharge_depth == ReleaseDischargeDepth::None
@@ -268,6 +273,34 @@ fn resource_param_is_audited_borrow_for_contract(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every C symbol a runtime-call-family consumer looks up by literal
+    /// name here must resolve to a row. The consumers with a fixed,
+    /// enumerable symbol set (as opposed to the checker's source-declared
+    /// `extern "rt"` consumer, which is driven by user source and cannot be
+    /// enumerated in a unit test) are:
+    ///
+    ///   - `RuntimeCallFamily::consumes_receiver` (`hew-types/src/runtime_call.rs`)
+    ///     reads `extern_param_ownership("hew_tcp_attach_local", 0)` directly.
+    ///   - `FileReadHandleKind::matches` (`hew-types/src/runtime_call/file_resources.rs`)
+    ///     reads `extern_owned_resource_result(FileReadOp::Open.c_symbol())`.
+    ///
+    /// An absent row here is not fail-closed for these two call sites: they
+    /// treat "no contract" as "not consuming" / "not this resource type"
+    /// rather than refusing, so a silently dropped row would misclassify
+    /// ownership instead of erroring loudly. Pin both rows directly.
+    #[test]
+    fn runtime_call_family_symbol_lookups_have_ownership_rows() {
+        assert!(
+            extern_param_ownership("hew_tcp_attach_local", 0).is_some(),
+            "RuntimeCallFamily::consumes_receiver reads this row for TcpAttachLocal"
+        );
+        assert!(
+            extern_owned_resource_result(crate::runtime_call::FileReadOp::Open.c_symbol())
+                .is_some(),
+            "FileReadHandleKind::matches reads this row for FileReadOp::Open"
+        );
+    }
 
     #[test]
     fn tcp_contracts_name_borrow_and_consume_per_parameter() {
@@ -601,7 +634,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "the exhaustive table intentionally keeps every value-tree ABI row visible"
     )]
-    fn value_tree_resource_parameters_are_complete_and_nominal() {
+    fn value_tree_parameter_effects_and_resource_identities_are_complete() {
         let families = [
             (
                 "std.encoding.json",
@@ -824,6 +857,7 @@ mod tests {
                     ("hew_yaml_get_int", &[ExternParamOwnership::Borrow][..]),
                     ("hew_yaml_get_string", &[ExternParamOwnership::Borrow][..]),
                     ("hew_yaml_int_status", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_yaml_object_keys", &[ExternParamOwnership::Borrow][..]),
                     (
                         "hew_yaml_object_set",
                         &[
@@ -884,6 +918,21 @@ mod tests {
                     .contract()
                     .unwrap_or_else(|| panic!("{symbol} must have a complete contract"));
                 assert_eq!(contract.params, *expected_params, "{symbol}");
+                if module != "std.encoding.toml" {
+                    assert!(
+                        contract.resource_param_types.is_empty(),
+                        "{symbol} takes managed values without resource identities"
+                    );
+                    for index in 0..expected_params.len() {
+                        assert!(!extern_resource_param_is_audited_borrow(
+                            symbol,
+                            index,
+                            Some(module),
+                            nominal,
+                        ));
+                    }
+                    continue;
+                }
                 assert_eq!(
                     contract.resource_param_types.len(),
                     contract.params.len(),
@@ -915,10 +964,11 @@ mod tests {
 
     #[test]
     fn value_tree_producers_transfer_one_deep_owner() {
-        for (prefix, release, symbols) in [
+        for (prefix, release, retention, symbols) in [
             (
                 "json",
                 "hew_json_free",
+                ExternResultRetention::Transferred,
                 &[
                     "hew_json_array_get",
                     "hew_json_array_new",
@@ -936,6 +986,7 @@ mod tests {
             (
                 "toml",
                 "hew_toml_free",
+                ExternResultRetention::ResourceTransfer,
                 &[
                     "hew_toml_array_get",
                     "hew_toml_array_new",
@@ -951,6 +1002,7 @@ mod tests {
             (
                 "yaml",
                 "hew_yaml_free",
+                ExternResultRetention::Transferred,
                 &[
                     "hew_yaml_array_get",
                     "hew_yaml_array_new",
@@ -960,6 +1012,7 @@ mod tests {
                     "hew_yaml_from_null",
                     "hew_yaml_from_string",
                     "hew_yaml_get_field",
+                    "hew_yaml_object_keys",
                     "hew_yaml_object_new",
                     "hew_yaml_parse",
                 ][..],
@@ -976,11 +1029,7 @@ mod tests {
                     ReleaseDischargeDepth::Deep,
                     "{symbol}"
                 );
-                assert_eq!(
-                    contract.result_retention,
-                    ExternResultRetention::ResourceTransfer,
-                    "{symbol}"
-                );
+                assert_eq!(contract.result_retention, retention, "{symbol}");
             }
         }
     }

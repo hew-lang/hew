@@ -1,0 +1,222 @@
+// Projecting a value payload out of a `match` arm hands the arm its own
+// value, so the scrutinee stays readable afterwards. A loop can re-project
+// the same place every iteration, an arm can move both fields of an aggregate
+// and still re-match it, and a guard that copies its binder leaves the payload
+// live for the arm the guard falls through to. Every buffer built here is
+// released exactly once.
+fn seed() -> Vec<i64> {
+    var v: Vec<i64> = Vec.new();
+    v.push(1);
+    v.push(2);
+    v.push(3);
+    v
+}
+
+enum Box {
+    Full(Vec<i64>),
+    Empty,
+}
+
+enum Pair {
+    Both(Vec<i64>, Vec<i64>),
+    Neither,
+}
+
+type Holder {
+    b: Box,
+}
+
+type Inner {
+    b: Box,
+}
+
+type Outer {
+    inner: Inner,
+}
+
+// A bare owning binding re-matched every iteration.
+fn binding_reread() {
+    let b = Box.Full(seed());
+    var sum = 0;
+    for _i in 0 .. 3 {
+        match b {
+            Box.Full(v) => {
+                sum = sum + v.len();
+                var w = v;
+                w = seed();
+                sum = sum + w.len();
+            },
+            Box.Empty => {},
+        }
+    }
+    println(f"binding {sum}");
+}
+
+// A record field place re-read after the projection.
+fn field_place_reread() {
+    let h = Holder { b: Box.Full(seed()) };
+    var sum = 0;
+    for _i in 0 .. 3 {
+        match h.b {
+            Box.Full(v) => {
+                sum = sum + v.len();
+                var w = v;
+                w = seed();
+                sum = sum + w.len();
+            },
+            Box.Empty => {},
+        }
+    }
+    println(f"field {sum}");
+}
+
+// The same through a projection chain.
+fn nested_field_place_reread() {
+    let o = Outer { inner: Inner { b: Box.Full(seed()) } };
+    var sum = 0;
+    for _i in 0 .. 3 {
+        match o.inner.b {
+            Box.Full(v) => {
+                sum = sum + v.len();
+                var w = v;
+                w = seed();
+                sum = sum + w.len();
+            },
+            Box.Empty => {},
+        }
+    }
+    println(f"nested-field {sum}");
+}
+
+// A tuple index place.
+fn tuple_place_reread() {
+    let pair = (Box.Full(seed()), 0);
+    var sum = 0;
+    for _i in 0 .. 3 {
+        match pair.0 {
+            Box.Full(v) => {
+                sum = sum + v.len();
+                var w = v;
+                w = seed();
+                sum = sum + w.len();
+            },
+            Box.Empty => {},
+        }
+    }
+    println(f"tuple {sum}");
+}
+
+// The place behind a block wrapper.
+fn block_wrapped_reread() {
+    let h = Holder { b: Box.Full(seed()) };
+    var sum = 0;
+    for _i in 0 .. 3 {
+        match {
+            h.b
+        } {
+            Box.Full(v) => {
+                sum = sum + v.len();
+                var w = v;
+                w = seed();
+                sum = sum + w.len();
+            },
+            Box.Empty => {},
+        }
+    }
+    println(f"block {sum}");
+}
+
+// The place behind an `if` wrapper, where both tails are places.
+fn if_wrapped_reread() {
+    let h = Holder { b: Box.Full(seed()) };
+    var sum = 0;
+    for i in 0 .. 3 {
+        match if i < 2 {
+            h.b
+        } else {
+            h.b
+        } {
+            Box.Full(v) => {
+                sum = sum + v.len();
+                var w = v;
+                w = seed();
+                sum = sum + w.len();
+            },
+            Box.Empty => {},
+        }
+    }
+    println(f"if {sum}");
+}
+
+// Both fields projected out of one arm, then the aggregate matched again.
+fn two_field_reread() {
+    let b = Pair.Both(seed(), seed());
+    var out = 0;
+    match b {
+        Pair.Both(x, y) => {
+            let wx = x;
+            let wy = y;
+            out = wx.len() + wy.len();
+        },
+        Pair.Neither => {},
+    }
+    match b {
+        Pair.Both(x2, y2) => {
+            out = out + x2.len() + y2.len();
+        },
+        Pair.Neither => {},
+    }
+    println(f"two-field {out}");
+}
+
+// A guard that copies its binder and then reports false: the arm it falls
+// through to still reads the payload.
+fn guard_fallthrough() {
+    let b = Box.Full(seed());
+    var out = 0;
+    match b {
+        Box.Full(v) if {
+            let w = v;
+            w.len() > 100
+        } => {
+            out = 1;
+        },
+        Box.Full(v2) => {
+            out = v2.len();
+        },
+        Box.Empty => {},
+    }
+    println(f"guard-false {out}");
+}
+
+// The same guard reporting true: the shape is judged the same way whichever
+// answer the guard gives.
+fn guard_taken() {
+    let b = Box.Full(seed());
+    var out = 0;
+    match b {
+        Box.Full(v) if {
+            let w = v;
+            w.len() > 2
+        } => {
+            out = 1;
+        },
+        Box.Full(v2) => {
+            out = v2.len();
+        },
+        Box.Empty => {},
+    }
+    println(f"guard-true {out}");
+}
+
+fn main() {
+    binding_reread();
+    field_place_reread();
+    nested_field_place_reread();
+    tuple_place_reread();
+    block_wrapped_reread();
+    if_wrapped_reread();
+    two_field_reread();
+    guard_fallthrough();
+    guard_taken();
+}

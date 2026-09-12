@@ -25,7 +25,7 @@ type Wrapper {
 }
 
 impl Wrapper {
-    fn release(consuming self) {
+    fn release(consume self) {
         unsafe { hew_handle_free(self.h) };
     }
 }
@@ -35,7 +35,7 @@ type Scalars {
 }
 
 impl Scalars {
-    fn take(consuming self) -> i64 {
+    fn take(consume self) -> i64 {
         self.a
     }
 }
@@ -46,8 +46,8 @@ type Conn {
 }
 
 impl Conn {
-    fn close(consuming self) {}
-    fn detach(consuming self) -> i64 {
+    fn close(consume self) {}
+    fn detach(consume self) -> i64 {
         self.fd
     }
 }

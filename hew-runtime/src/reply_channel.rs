@@ -18,9 +18,15 @@ use crate::lifetime::live_actors::ActorIncarnation;
 use crate::util::{CondvarExt, MutexExt};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU64, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
+
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "reply_channel_native.rs"]
+pub mod native;
 
 // ── Reply channel ───────────────────────────────────────────────────────
 
@@ -28,32 +34,6 @@ use std::time::{Duration, Instant};
 static ACTIVE_CHANNELS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 static FORCE_REPLY_ALLOC_FAILURE: AtomicBool = AtomicBool::new(false);
-
-/// Force the next `alloc_reply_buffer` call to fail (return null), simulating
-/// OOM in the reply-buffer copy path inside `hew_reply`. Exposed to other
-/// runtime modules (e.g. `lambda_actor` tests) so they can pin the
-/// status=Ok / payload=null edge case the codegen ask-payload guard catches.
-/// Auto-clears after the next call to `alloc_reply_buffer`.
-#[cfg(test)]
-pub(crate) fn force_reply_alloc_failure_for_test() {
-    FORCE_REPLY_ALLOC_FAILURE.store(true, Ordering::Release);
-}
-
-// ── Debug allocator-pairing tracker ────────────────────────────────────────
-//
-// Reply payloads allocated here via `libc::malloc` are registered in the
-// runtime-wide tracker (crate::alloc_tracker).  Lambda-actor body reply
-// buffers use Rust's `GlobalAlloc` (`Box::into_raw`) and are freed via
-// `lambda_actor::free_body_reply_buf` — each free site in that module asserts
-// the pointer is NOT in the set, catching any allocator crossing before it
-// reaches `Box::from_raw`.
-//
-// Active only in debug builds; zero overhead in release.
-
-#[cfg(debug_assertions)]
-use crate::alloc_tracker::{
-    debug_is_libc_tracked, debug_track_libc_alloc, debug_untrack_libc_alloc,
-};
 
 /// Typed destructor for a delivered-but-never-consumed reply payload.
 ///
@@ -63,7 +43,7 @@ use crate::alloc_tracker::{
 /// buffer. On the consumed leg the waiter takes the buffer and its scope-exit
 /// drop releases that heap; on the never-consumed leg (timeout/cancel/
 /// await-cancel/orphan-retire/shutdown) the channel itself must release it.
-/// This is that release: the semantic counterpart to the buffer's `libc::free`
+/// This is that release: the semantic counterpart to the buffer's `buf_free`
 /// (`alias-byte-copy-not-semantic-clone`). It receives the copied buffer
 /// (`value`) and drops `R` in place. Registered once by the ask caller (which
 /// knows `R` statically) via [`hew_reply_channel_set_reply_drop_fn`], before
@@ -86,13 +66,13 @@ pub struct HewReplyChannel {
     /// so the waiter can distinguish a mailbox-teardown null from a
     /// legitimate null reply deposited by the handler.
     pub(crate) orphaned: AtomicBool,
-    /// Reply payload (malloc'd by [`hew_reply`], owned by the waiter).
+    /// Reply payload (from [`hew_reply`]'s sized-block allocation, owned by the waiter).
     value: *mut c_void,
     /// Size of `value` in bytes.
     value_size: usize,
     /// Optional typed destructor for the reply payload (`R`'s embedded heap),
     /// run on the delivered-but-never-consumed leg in
-    /// [`hew_reply_channel_free`] before `value` is `libc::free`d. Null (the
+    /// [`hew_reply_channel_free`] before `value` is `buf_free`d. Null (the
     /// default) ⇒ the reply type is bit-copy (no embedded heap) and the buffer
     /// free alone suffices — current behaviour. Stored type-erased as the bits
     /// of a [`HewReplyDropFn`]; set once by the ask caller before submit (no
@@ -129,6 +109,13 @@ pub struct HewReplyChannel {
     cond: Condvar,
     /// Optional common cancellation/deadline record attached to a suspended ask.
     await_cancel: AtomicPtr<HewAwaitCancel>,
+    /// Retained readiness target for a checked native invocation. Registration
+    /// precedes admission; abandonment detaches it without touching the sender.
+    native_waker: Mutex<Option<crate::wake::OwnedWaker>>,
+    /// Native operation dispatch claim: 0 is an untracked foreign request,
+    /// 1 is withdrawable, 2 is dispatched, and 3 is withdrawn. The scheduler
+    /// and the request owner race one CAS, so a queued loser cannot execute.
+    native_dispatch: AtomicU8,
 }
 
 // SAFETY: `HewReplyChannel` is designed for cross-thread use. The atomic
@@ -173,7 +160,47 @@ pub extern "C" fn hew_reply_channel_new() -> *mut HewReplyChannel {
         lock: Mutex::new(()),
         cond: Condvar::new(),
         await_cancel: AtomicPtr::new(ptr::null_mut()),
+        native_waker: Mutex::new(None),
+        native_dispatch: AtomicU8::new(0),
     }))
+}
+
+/// Mark an unpublished native request as withdrawable until dispatch claims it.
+///
+/// # Safety
+/// The channel is exclusively owned and no request has been published.
+pub(crate) unsafe fn enable_native_withdrawal(channel: *mut HewReplyChannel) {
+    // SAFETY: the caller owns the unpublished channel.
+    unsafe { (*channel).native_dispatch.store(1, Ordering::Release) };
+}
+
+/// Withdraw before dispatch, or leave an already running handler alone.
+///
+/// # Safety
+/// The optional channel is retained throughout this call.
+pub(crate) unsafe fn withdraw_native_request(channel: *mut HewReplyChannel) {
+    // SAFETY: the caller retains the optional channel through this CAS.
+    if let Some(channel) = unsafe { channel.as_ref() } {
+        let _ = channel
+            .native_dispatch
+            .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire);
+    }
+}
+
+/// Claim a queued request immediately before the scheduler enters its handler.
+/// A withdrawal that won the race makes the scheduler discard its owned node.
+///
+/// # Safety
+/// The channel is null or retained by the scheduler's current request node.
+pub(crate) unsafe fn claim_native_request_dispatch(channel: *mut HewReplyChannel) -> bool {
+    // SAFETY: a non-null channel is retained by the owned message node.
+    let Some(channel) = (unsafe { channel.as_ref() }) else {
+        return true;
+    };
+    channel
+        .native_dispatch
+        .compare_exchange(1, 2, Ordering::AcqRel, Ordering::Acquire)
+        != Err(3)
 }
 
 /// Record that the waiter on this reply channel is a PARKED CONTINUATION
@@ -298,13 +325,7 @@ unsafe fn alloc_reply_buffer(size: usize) -> *mut c_void {
     if FORCE_REPLY_ALLOC_FAILURE.swap(false, Ordering::AcqRel) {
         return ptr::null_mut();
     }
-    // SAFETY: delegates to libc allocator for the requested reply payload size.
-    let ptr = unsafe { libc::malloc(size) };
-    #[cfg(debug_assertions)]
-    if !ptr.is_null() {
-        debug_track_libc_alloc(ptr.cast());
-    }
-    ptr
+    crate::mem::buf_try_alloc(size) // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 /// Retain an additional reference to a reply channel.
@@ -338,7 +359,7 @@ pub unsafe extern "C" fn hew_reply_channel_retain(ch: *mut HewReplyChannel) {
 /// No-op when `value` is null or no destructor is registered. A null
 /// `reply_drop_fn` means either a bit-copy `R` (no embedded heap to reclaim)
 /// or the legacy manual-reclaim contract used by the in-process unit tests
-/// (`strdup` + `libc::free` on the `false` leg) — in that case the caller
+/// (`cstr_strdup` + a matching `buf_free` on the `false` leg) — in that case the caller
 /// still owns `value` and the returned `false` signals it must free it.
 unsafe fn run_registered_reply_drop_on_value(ch: *mut HewReplyChannel, value: *mut c_void) {
     if value.is_null() {
@@ -417,7 +438,12 @@ unsafe fn publish_reply_from_sender_ref(
             (*ch).caller_actor_id.load(Ordering::Acquire),
             (*ch).caller_actor_serial.load(Ordering::Relaxed),
         );
-        if caller_actor.is_none() {
+        let native_waker = (*ch).native_waker.lock_or_recover().take();
+        if let Some(waker) = native_waker {
+            if reply_won {
+                waker.wake();
+            }
+        } else if caller_actor.is_none() {
             // Foreign/main-thread condvar waiter (E6 — unchanged). A condvar
             // waiter re-checks its `ready`/`cancelled` predicate under the lock,
             // so a notify on the losing edge is harmless; it is left ungated.
@@ -622,7 +648,7 @@ pub(crate) unsafe fn hew_reply_channel_retire_orphaned_ask_sender_ref(ch: *mut H
 /// never-consumed leg in [`hew_reply_channel_free`]). The producer must NOT
 /// also free `value` in that case. When **no** destructor is registered
 /// (a bit-copy `R` with no embedded heap, or the in-process unit-test contract
-/// that `strdup`s + `libc::free`s its own clone), the `false` return signals
+/// that `cstr_strdup`s + `buf_free`s its own clone), the `false` return signals
 /// the caller still owns `value` and must free it with the matching
 /// type-specific destructor — without one of these two paths, those clones
 /// leak.
@@ -724,46 +750,33 @@ pub unsafe extern "C" fn hew_reply_channel_signal_ready(ch: *mut c_void) {
 
 // ── Reply payload free ────────────────────────────────────────────────────
 
-/// Free a reply payload returned by [`hew_reply_wait`], [`hew_reply_wait_timeout`],
-/// or [`hew_lambda_actor_ask`].
+/// Free a reply payload returned by [`hew_reply_wait`] or
+/// [`hew_reply_wait_timeout`].
 ///
 /// # Allocator pairing contract
 ///
-/// Reply payloads are allocated via `libc::malloc` inside [`alloc_reply_buffer`].
-/// They **must** be freed with this function (which calls `libc::free`) — NOT
-/// with `hew_duplex_payload_free`, which uses Rust's `GlobalAlloc` and would
-/// produce **undefined behaviour** on any platform where `GlobalAlloc ≠ libc
-/// malloc` (e.g. jemalloc, mimalloc).
-///
-/// Lambda-actor body reply buffers use `GlobalAlloc` (`Box::into_raw`) and are
-/// freed via `lambda_actor::free_body_reply_buf` — see that module for the
-/// counterpart free path. The two allocators must never be crossed.
+/// Reply payloads come from the sized-block allocator inside
+/// [`alloc_reply_buffer`] (`buf_try_alloc`), which stamps a size header
+/// immediately before the payload. They **must** be freed with this function
+/// (which calls `buf_free`, reading that header back) — NOT with
+/// `hew_duplex_payload_free`, which reconstructs a headerless `Box<[u8]>`.
+/// Mixing the two would deallocate with the wrong `Layout` and produce
+/// **undefined behaviour**, even though both ultimately sit on the same
+/// Rust `GlobalAlloc`.
 ///
 /// Passing `ptr = null` is safe and a no-op.
 ///
 /// # Safety
 ///
-/// `ptr` must be a pointer previously returned by a successful reply wait call
-/// (or `hew_lambda_actor_ask`). The pointer is invalid after this call.
+/// `ptr` must be a pointer previously returned by a successful reply wait
+/// call. The pointer is invalid after this call.
 #[no_mangle]
 pub unsafe extern "C" fn hew_reply_payload_free(ptr: *mut u8, _len: usize) {
     if ptr.is_null() {
         return;
     }
-    #[cfg(debug_assertions)]
-    {
-        debug_assert!(
-            debug_is_libc_tracked(ptr),
-            "allocator-pairing contract violation: {ptr:p} is not libc-tracked; \
-             use hew_reply_payload_free only for reply-wait payloads (libc::malloc). \
-             Body reply buffers (Box/GlobalAlloc) are freed by lambda_actor::free_body_reply_buf.",
-        );
-        debug_untrack_libc_alloc(ptr);
-    }
-    // SAFETY: ptr was allocated by alloc_reply_buffer → libc::malloc.
-    // Symmetric deallocation via libc::free preserves allocator pairing on
-    // every platform regardless of Rust's GlobalAlloc configuration.
-    unsafe { libc::free(ptr.cast()) };
+    // SAFETY: ptr came from alloc_reply_buffer's sized-block allocation.
+    unsafe { crate::mem::buf_free(ptr.cast()) }; // ALLOCATOR-PAIRING: GlobalAlloc
 }
 
 // ── Wait (receiver side) ────────────────────────────────────────────────
@@ -804,7 +817,7 @@ pub unsafe extern "C" fn hew_reply_wait(ch: *mut HewReplyChannel) -> *mut c_void
 /// Block until a reply is available, returning both value and size.
 ///
 /// Writes the reply size to `*out_size`. The caller owns the returned
-/// pointer and must free it with [`libc::free`].
+/// pointer and must free it with [`hew_reply_payload_free`].
 ///
 /// # Safety
 ///
@@ -921,9 +934,7 @@ pub unsafe extern "C" fn hew_reply_channel_free(ch: *mut HewReplyChannel) {
                 let drop_fn = std::mem::transmute::<*mut c_void, HewReplyDropFn>(drop_raw);
                 drop_fn((*ch).value);
             }
-            #[cfg(debug_assertions)]
-            debug_untrack_libc_alloc((*ch).value.cast());
-            libc::free((*ch).value);
+            crate::mem::buf_free((*ch).value); // ALLOCATOR-PAIRING: GlobalAlloc
         }
         let await_cancel = (*ch).await_cancel.load(Ordering::Acquire);
         if !await_cancel.is_null() {
@@ -952,6 +963,8 @@ pub unsafe extern "C" fn hew_reply_channel_cancel(ch: *mut HewReplyChannel) {
     // SAFETY: Caller guarantees `ch` is valid while cancellation is recorded.
     unsafe {
         (*ch).cancelled.store(true, Ordering::Release);
+        let waker = (*ch).native_waker.lock_or_recover().take();
+        drop(waker);
     }
 }
 
@@ -1461,6 +1474,7 @@ mod tests {
         // reply path woke the caller.
         fn caller_actor(id: u64) -> Box<HewActor> {
             Box::new(HewActor {
+                dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
                 sched_link_next: AtomicPtr::new(ptr::null_mut()),
                 id,
                 state: ptr::null_mut(),
@@ -1504,6 +1518,11 @@ mod tests {
                 state_drop_consumed: AtomicBool::new(false),
                 state_drop_borrowed: AtomicBool::new(false),
                 parked_ask_channel: AtomicPtr::new(std::ptr::null_mut()),
+                checked_invocation: AtomicPtr::new(std::ptr::null_mut()),
+                #[cfg(not(target_arch = "wasm32"))]
+                pending_external_trap_code: AtomicI32::new(0),
+                #[cfg(not(target_arch = "wasm32"))]
+                native_completion: None,
             })
         }
 
@@ -1662,7 +1681,7 @@ mod tests {
             let reply = hew_reply_wait(ch).cast::<i32>();
             assert!(!reply.is_null());
             assert_eq!(*reply, 42);
-            libc::free(reply.cast());
+            crate::mem::buf_free(reply.cast());
 
             hew_reply_channel_free(ch);
         }
@@ -1867,7 +1886,7 @@ mod tests {
             let result = hew_reply_wait(ch).cast::<i64>();
             assert!(!result.is_null());
             assert_eq!(*result, 99);
-            libc::free(result.cast());
+            crate::mem::buf_free(result.cast());
             hew_reply_channel_free(ch);
         }
     }
@@ -1925,7 +1944,7 @@ mod tests {
             let result = hew_reply_wait(ch).cast::<i32>();
             assert!(!result.is_null());
             assert_eq!(*result, value);
-            libc::free(result.cast());
+            crate::mem::buf_free(result.cast());
             hew_reply_channel_free(ch);
             handle.join().unwrap();
         }
@@ -2018,7 +2037,7 @@ mod tests {
             let result = hew_reply_wait(ch).cast::<i32>();
             assert!(!result.is_null());
             assert_eq!(*result, 99);
-            libc::free(result.cast());
+            crate::mem::buf_free(result.cast());
             hew_reply_channel_free(ch);
         }
     }
@@ -2068,7 +2087,7 @@ mod tests {
             // reaps it on this leg instead — see the dtor-registered test — and
             // the caller must NOT also free it.) ASan/leak-checkers will flag a
             // leak if the contract is wrong.
-            libc::free(cloned_ptr.cast());
+            crate::mem::buf_free(cloned_ptr.cast());
 
             hew_reply_channel_free(ch);
         }
@@ -2106,7 +2125,7 @@ mod tests {
                 "alloc-fail must report not-delivered so caller can reclaim its clone"
             );
 
-            libc::free(cloned_ptr.cast());
+            crate::mem::buf_free(cloned_ptr.cast());
 
             // Drain the alloc-fail flag via reply_wait so other tests see a
             // clean error slot.
@@ -2141,7 +2160,7 @@ mod tests {
         unsafe {
             let embedded = *(buf.cast::<*mut libc::c_char>());
             if !embedded.is_null() {
-                libc::free(embedded.cast());
+                crate::mem::buf_free(embedded.cast());
             }
         }
     }
@@ -2232,7 +2251,7 @@ mod tests {
             assert!(!buf.is_null());
             let embedded_back = *(buf.cast::<*mut libc::c_char>());
             assert!(!embedded_back.is_null());
-            libc::free(embedded_back.cast()); // waiter's scope-exit drop of `R`
+            crate::mem::buf_free(embedded_back.cast()); // waiter's scope-exit drop of `R`
             hew_reply_payload_free(buf.cast(), 0); // free the copied buffer
 
             hew_reply_channel_free(ch);
@@ -2486,7 +2505,7 @@ mod tests {
                 // Consume the winning value.
                 let val = hew_reply_wait(chs[winner]);
                 if !val.is_null() {
-                    libc::free(val);
+                    crate::mem::buf_free(val);
                 }
                 hew_reply_channel_free(chs[winner]);
 
@@ -2543,7 +2562,7 @@ mod tests {
                             let result = hew_reply_wait(ch).cast::<i32>();
                             assert!(!result.is_null());
                             assert_eq!(*result, expected);
-                            libc::free(result.cast());
+                            crate::mem::buf_free(result.cast());
                             hew_reply_channel_free(ch);
                             sender.join().unwrap();
                         }

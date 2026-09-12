@@ -12,6 +12,7 @@ pub mod definition;
 pub mod folding;
 pub mod hover;
 pub mod inlay_hints;
+pub mod machine_scope;
 mod method_lookup;
 pub mod references;
 pub mod rename;
@@ -147,7 +148,6 @@ pub mod token_types {
 pub mod token_modifiers {
     pub const DECLARATION: u32 = 1 << 0;
     pub const READONLY: u32 = 1 << 1;
-    pub const ASYNC: u32 = 1 << 2;
 }
 
 // ── Rename ───────────────────────────────────────────────────────────

@@ -31,8 +31,8 @@ pub fn series() -> string {
 /// Wait for actor-turn observe attribution visible to `series`/`scrape`.
 ///
 pub enum ObserveError {
-    ActorTurn;
-    TimedOut;
+    ActorTurn,
+    TimedOut,
 }
 
 impl Display for ObserveError {

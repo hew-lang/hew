@@ -1,0 +1,49 @@
+import std.misc.uuid;
+import std.net.ipnet;
+import std.net.url;
+import std.time.datetime;
+import std.encoding.markdown;
+
+fn main() {
+    // A string returned by an extern is one owned managed value: readable on
+    // its own, and readable as a concatenation operand.
+    let id = uuid.v4();
+    println(id.len());
+    println(uuid.is_valid(id));
+
+    let tagged = "id=" + uuid.v4();
+    println(tagged.len());
+    println(tagged.starts_with("id="));
+
+    let seven = uuid.v7();
+    println(seven.len());
+    println(uuid.is_valid(seven));
+    println(uuid.is_valid("not-a-uuid"));
+
+    // Managed strings in both directions: borrowed argument, owned result.
+    println(ipnet.cidr_network("10.0.0.5/24"));
+    println(ipnet.cidr_broadcast("192.168.1.0/24") + "/32");
+    println(ipnet.is_v4("127.0.0.1"));
+    println(ipnet.is_v6("::1"));
+    println(ipnet.is_private("10.1.2.3"));
+    println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3"));
+
+    // Accessors on an opaque handle each hand back their own owner.
+    let u = url.parse("https://example.test:8080/a/b?q=hew#frag");
+    println(u.scheme() + "|" + u.host() + "|" + u.path() + "|" + u.query() + "|" + u.fragment());
+    println(u.to_string());
+
+    // A borrowed format string with an owned result, and a text transform.
+    match datetime.format(0, "%Y-%m-%dT%H:%M:%SZ") {
+        .Ok(text) => println(text),
+        .Err(reason) => println("format failed: " + reason),
+    }
+    println(markdown.to_html_safe("# title").trim());
+
+    // Repeated production and release inside a loop leaves the producer usable.
+    var total = 0;
+    for i in 0..4 {
+        total = total + uuid.v4().len();
+    }
+    println(total);
+}

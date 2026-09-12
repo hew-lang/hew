@@ -1,5 +1,7 @@
 // Counting Sort - for small non-negative integers
-fn counting_sort(v: Vec<i64>) {
+// A parameter is the callee's own copy, so the sorted vector travels back
+// through the return value.
+fn counting_sort(var v: Vec<i64>) -> Vec<i64> {
     let n = v.len();
     if n >= 2 {
         // Find max value
@@ -12,7 +14,7 @@ fn counting_sort(v: Vec<i64>) {
             i = i + 1;
         }
         // Build count array
-        let count: Vec<i64> = Vec.new();
+        var count: Vec<i64> = Vec.new();
         var c = 0;
         while c <= max_val {
             count.push(0);
@@ -37,6 +39,7 @@ fn counting_sort(v: Vec<i64>) {
             val = val + 1;
         }
     }
+    v
 }
 
 fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
@@ -54,7 +57,7 @@ fn vec_eq(a: Vec<i64>, b: Vec<i64>) -> i64 {
 }
 
 fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(a);
     v.push(b);
     v.push(c);
@@ -63,8 +66,8 @@ fn make_vec_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> Vec<i64> {
     v
 }
 
-fn run_test(name: string, input: Vec<i64>, expected: Vec<i64>) -> i64 {
-    counting_sort(input);
+fn run_test(name: string, var input: Vec<i64>, expected: Vec<i64>) -> i64 {
+    input = counting_sort(input);
     let pass = vec_eq(input, expected);
     if pass == 1 {
         println(f"Test {name} ... PASS");
@@ -86,9 +89,9 @@ fn main() {
     total = total + 1;
     passed = passed + run_test("zeros", make_vec_5(0, 0, 0, 0, 0), make_vec_5(0, 0, 0, 0, 0));
     total = total + 1;
-    let single: Vec<i64> = Vec.new();
+    var single: Vec<i64> = Vec.new();
     single.push(42);
-    let exp_single: Vec<i64> = Vec.new();
+    var exp_single: Vec<i64> = Vec.new();
     exp_single.push(42);
     passed = passed + run_test("single", single, exp_single);
     total = total + 1;

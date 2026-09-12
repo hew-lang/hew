@@ -1,15 +1,9 @@
-extern "C" {
-    fn hew_bytes_from_str(s: string) -> bytes;
-}
+import std.encoding.utf8;
 
 fn main() {
-    let xs: Vec<((bytes, i64), bool)> = Vec.new();
-    let a: bytes = unsafe {
-        hew_bytes_from_str("ab")
-    };
-    let b: bytes = unsafe {
-        hew_bytes_from_str("cd")
-    };
+    var xs: Vec<((bytes, i64), bool)> = Vec.new();
+    let a: bytes = "ab".to_bytes();
+    let b: bytes = "cd".to_bytes();
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
     let ys = xs.clone();
@@ -19,5 +13,13 @@ fn main() {
     let (f_b, f_n) = f_inner;
     let (s_inner, s_flag) = second;
     let (s_b, s_n) = s_inner;
-    println(f"{ys.len()}:{f_b.to_string()}:{f_n}:{f_flag}:{s_b.to_string()}:{s_n}:{s_flag}");
+    let decoded_f_b = utf8.decode(f_b) handle error {
+        println(f"invalid UTF-8: {error}");
+        return;
+    };
+    let decoded_s_b = utf8.decode(s_b) handle error {
+        println(f"invalid UTF-8: {error}");
+        return;
+    };
+    println(f"{ys.len()}:{decoded_f_b}:{f_n}:{f_flag}:{decoded_s_b}:{s_n}:{s_flag}");
 }

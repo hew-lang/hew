@@ -130,3 +130,6 @@ pub mod regex;
 // time
 #[cfg(not(target_family = "wasm"))]
 pub mod time;
+
+#[cfg(test)]
+mod test_string;

@@ -18,7 +18,7 @@ use std::fmt;
 
 use crate::builtin_type::BuiltinType;
 use crate::ty::{TraitObjectBound, Ty, TypeVar};
-use crate::{DefId, NominalId};
+use crate::{CallableCapabilities, DefId, NominalId};
 
 /// A concrete use of a declared nominal type.
 ///
@@ -151,6 +151,8 @@ pub enum ResolvedTy {
     },
     /// Function type: `fn(T1, T2) -> R`.
     Function {
+        /// Invocation and duplication guarantees of this callable value.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<ResolvedTy>,
         /// Return type
@@ -158,6 +160,8 @@ pub enum ResolvedTy {
     },
     /// Closure type: like `Function` with captured variable types tracked.
     Closure {
+        /// Invocation and duplication guarantees of this concrete closure.
+        capabilities: crate::CallableCapabilities,
         /// Parameter types
         params: Vec<ResolvedTy>,
         /// Return type
@@ -306,24 +310,122 @@ impl fmt::Display for BoundaryError {
 impl std::error::Error for BoundaryError {}
 
 impl ResolvedTy {
-    /// Return the canonical nominal instance carried by a user named type.
+    /// The actor declaration an actor-handle type names, with the actor's own
+    /// type arguments.
     ///
-    /// The checker canonicalises imported names before its output boundary, so
-    /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
-    /// semantic nominal identity. Builtins and abstract parameters have their
-    /// own closed discriminators and therefore do not produce a user nominal.
+    /// An actor is the type of its handle, so the handle carries the actor's
+    /// nominal identity directly. This is deliberately separate from
+    /// `nominal_instance`: a handle is an opaque pointer, never a record whose
+    /// fields a consumer may walk.
     #[must_use]
-    pub fn nominal_instance(&self) -> Option<NominalInstance> {
+    pub fn actor_handle_instance(&self) -> Option<NominalInstance> {
         match self {
             Self::Named {
                 name,
                 args,
-                builtin: None,
+                builtin: Some(crate::BuiltinType::ActorHandle),
                 ..
             } => Some(NominalInstance {
                 nominal: crate::identity::mint_nominal_id(name.clone()),
                 args: args.clone(),
             }),
+            _ => None,
+        }
+    }
+
+    /// The handle type of an actor named by a bare nominal carrier.
+    #[must_use]
+    pub fn actor_handle_from_nominal(nominal: &ResolvedTy) -> Option<ResolvedTy> {
+        let ResolvedTy::Named { name, args, .. } = nominal else {
+            return None;
+        };
+        Some(ResolvedTy::Named {
+            name: name.clone(),
+            args: args.clone(),
+            builtin: Some(crate::BuiltinType::ActorHandle),
+            is_opaque: false,
+        })
+    }
+
+    /// The bare nominal carrier of an actor-handle type: the same name and
+    /// arguments with no handle discriminator.
+    #[must_use]
+    pub fn actor_handle_nominal(&self) -> Option<ResolvedTy> {
+        match self {
+            Self::Named {
+                name,
+                args,
+                builtin: Some(crate::BuiltinType::ActorHandle),
+                ..
+            } => Some(ResolvedTy::Named {
+                name: name.clone(),
+                args: args.clone(),
+                builtin: None,
+                is_opaque: false,
+            }),
+            _ => None,
+        }
+    }
+
+    /// Return the canonical nominal instance carried by a source record type.
+    ///
+    /// The checker canonicalises imported names before its output boundary, so
+    /// this method is the only Stage-1 conversion from `ResolvedTy::Named` to
+    /// semantic nominal identity. Source-defined builtin records retain their
+    /// closed discriminator while selecting their canonical declaration.
+    #[must_use]
+    pub fn nominal_instance(&self) -> Option<NominalInstance> {
+        match self {
+            // The two compiler-owned cursor records. Both are declared in
+            // `std/builtins.hew` as ordinary generic records and are reached
+            // only through their closed builtin discriminator, so each names
+            // its canonical declaration here. Without this arm the cursor is
+            // not a checker-resolved named record, `record_fields` refuses it,
+            // and SIR reports it as having no semantic value contract.
+            Self::Named {
+                args,
+                builtin: Some(crate::BuiltinType::VecIter),
+                ..
+            } => Some(NominalInstance {
+                nominal: crate::identity::mint_nominal_id("std.builtins.VecIter"),
+                args: args.clone(),
+            }),
+            Self::Named {
+                args,
+                builtin: Some(crate::BuiltinType::HashMapIter),
+                ..
+            } => Some(NominalInstance {
+                nominal: crate::identity::mint_nominal_id("std.builtins.HashMapIter"),
+                args: args.clone(),
+            }),
+            Self::Named {
+                name,
+                args,
+                builtin,
+                ..
+            } if builtin.is_none()
+                || (matches!(
+                    builtin,
+                    Some(
+                        crate::BuiltinType::CrashInfo
+                            | crate::BuiltinType::CrashAction
+                            | crate::BuiltinType::CrashNotification
+                            | crate::BuiltinType::CrashKind
+                            | crate::BuiltinType::MonitorId
+                            | crate::BuiltinType::DownTarget
+                            | crate::BuiltinType::DownReason
+                            | crate::BuiltinType::DownNotification
+                            | crate::BuiltinType::MonitorRef
+                    )
+                ) && crate::builtin_type::has_exact_source_owned_lifecycle_identity(
+                    name, *builtin,
+                )) =>
+            {
+                Some(NominalInstance {
+                    nominal: crate::identity::mint_nominal_id(name.clone()),
+                    args: args.clone(),
+                })
+            }
             _ => None,
         }
     }
@@ -529,13 +631,16 @@ impl ResolvedTy {
                 Self::Function {
                     params: left_params,
                     ret: left_ret,
+                    capabilities: left_capabilities,
                 },
                 Self::Function {
                     params: right_params,
                     ret: right_ret,
+                    capabilities: right_capabilities,
                 },
             ) => {
-                left_params.len() == right_params.len()
+                left_capabilities == right_capabilities
+                    && left_params.len() == right_params.len()
                     && left_params
                         .iter()
                         .zip(right_params)
@@ -685,15 +790,32 @@ impl ResolvedTy {
                 // `false` here is correct and behaviour-preserving.
                 is_opaque: false,
             }),
-            Ty::Function { params, ret } => Ok(ResolvedTy::Function {
+            // A named function used as a value has no environment: lowering
+            // sees the function item it always saw.
+            Ty::Function {
+                capabilities,
+                params,
+                ret,
+            }
+            | Ty::Closure {
+                capabilities,
+                params,
+                ret,
+                identity: crate::ty::EffectBody::Declaration(_),
+                ..
+            } => Ok(ResolvedTy::Function {
+                capabilities: *capabilities,
                 params: Self::convert_vec(params, type_params)?,
                 ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
             }),
             Ty::Closure {
+                capabilities,
                 params,
                 ret,
                 captures,
+                ..
             } => Ok(ResolvedTy::Closure {
+                capabilities: *capabilities,
                 params: Self::convert_vec(params, type_params)?,
                 ret: Box::new(Self::from_ty_scoped(ret, type_params)?),
                 captures: Self::convert_vec(captures, type_params)?,
@@ -796,18 +918,22 @@ impl ResolvedTy {
                 builtin: *builtin,
                 args: args.iter().map(Self::to_ty).collect(),
             },
-            ResolvedTy::Function { params, ret } => Ty::Function {
-                params: params.iter().map(Self::to_ty).collect(),
-                ret: Box::new(ret.to_ty()),
-            },
-            ResolvedTy::Closure {
+            // A resolved closure no longer names the literal it came from, so
+            // its checker-facing type is the erased function type.
+            ResolvedTy::Function {
+                capabilities,
                 params,
                 ret,
-                captures,
-            } => Ty::Closure {
+            }
+            | ResolvedTy::Closure {
+                capabilities,
+                params,
+                ret,
+                ..
+            } => Ty::Function {
+                capabilities: *capabilities,
                 params: params.iter().map(Self::to_ty).collect(),
                 ret: Box::new(ret.to_ty()),
-                captures: captures.iter().map(Self::to_ty).collect(),
             },
             ResolvedTy::Pointer {
                 is_mutable,
@@ -1009,14 +1135,24 @@ pub fn mangle_resolved_ty_segment(
             Some(format!("slice$x{elem_seg}$g"))
         }
         ResolvedTy::Named { name, args, .. } => mangle_named_segment(name, args, type_param_mode),
-        ResolvedTy::Function { params, ret } => {
-            mangle_function_like_segment("fn", params, ret, type_param_mode)
-        }
-        // Captures are not part of the call-type identity — mirrors
-        // `hew-hir::monomorph::mangle_resolved_ty`.
-        ResolvedTy::Closure { params, ret, .. } => {
-            mangle_function_like_segment("closure", params, ret, type_param_mode)
-        }
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => mangle_function_like_segment("fn", *capabilities, params, ret, None, type_param_mode),
+        ResolvedTy::Closure {
+            capabilities,
+            params,
+            ret,
+            captures,
+        } => mangle_function_like_segment(
+            "closure",
+            *capabilities,
+            params,
+            ret,
+            Some(captures),
+            type_param_mode,
+        ),
         ResolvedTy::Pointer {
             is_mutable,
             pointee,
@@ -1077,13 +1213,34 @@ fn mangle_named_segment(
 /// Render a `Function`/`Closure` segment.
 fn mangle_function_like_segment(
     head: &str,
+    capabilities: CallableCapabilities,
     params: &[ResolvedTy],
     ret: &ResolvedTy,
+    captures: Option<&[ResolvedTy]>,
     type_param_mode: TypeParamMangle,
 ) -> Option<String> {
+    let call = match capabilities.call {
+        crate::CallableCallMode::Read => "read",
+        crate::CallableCallMode::Var => "var",
+        crate::CallableCallMode::Once => "once",
+    };
+    let clone = if capabilities.clone {
+        "clone"
+    } else {
+        "unique"
+    };
     let params_seg = mangle_type_list_segment(params, type_param_mode)?;
     let ret_seg = mangle_resolved_ty_segment(ret, type_param_mode)?;
-    Some(format!("{head}$x{params_seg}$r{ret_seg}$g"))
+    let mut out = format!("{head}$k{call}$k{clone}$x{params_seg}$r{ret_seg}");
+    if capabilities.suspends {
+        out.push_str("$ksuspends");
+    }
+    if let Some(captures) = captures {
+        out.push_str("$e");
+        out.push_str(&mangle_type_list_segment(captures, type_param_mode)?);
+    }
+    out.push_str("$g");
+    Some(out)
 }
 
 /// Render a `TraitObject` segment.
@@ -1149,6 +1306,62 @@ pub fn mangle_impl_self_name(name: &str, type_args: &[ResolvedTy]) -> Option<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn callable_keys_preserve_capabilities_and_capture_storage() {
+        use crate::CallableCallMode::{Once, Read, Var};
+        let mut keys = std::collections::HashSet::new();
+        let mut canonical = std::collections::HashSet::new();
+        let mut functions = Vec::new();
+        for call in [Read, Var, Once] {
+            for (clone, suspends) in [(false, false), (true, false), (false, true), (true, true)] {
+                let capabilities = CallableCapabilities {
+                    call,
+                    clone,
+                    suspends,
+                };
+                let function = ResolvedTy::Function {
+                    capabilities,
+                    params: vec![ResolvedTy::I64],
+                    ret: Box::new(ResolvedTy::Bool),
+                };
+                assert!(functions
+                    .iter()
+                    .all(|previous| !function.is_storage_congruent_with(previous)));
+                functions.push(function.clone());
+                for ty in [
+                    function,
+                    ResolvedTy::Closure {
+                        capabilities,
+                        params: vec![ResolvedTy::I64],
+                        ret: Box::new(ResolvedTy::Bool),
+                        captures: vec![ResolvedTy::String],
+                    },
+                    ResolvedTy::Closure {
+                        capabilities,
+                        params: vec![ResolvedTy::I64],
+                        ret: Box::new(ResolvedTy::Bool),
+                        captures: vec![ResolvedTy::I64],
+                    },
+                ] {
+                    assert!(keys.insert(
+                        mangle_resolved_ty_segment(&ty, TypeParamMangle::Concrete).unwrap()
+                    ));
+                    assert!(canonical.insert(ty.canonical_string()));
+                }
+            }
+        }
+        let abstract_capture = ResolvedTy::Closure {
+            capabilities: CallableCapabilities::default(),
+            params: vec![],
+            ret: Box::new(ResolvedTy::Unit),
+            captures: vec![ResolvedTy::TypeParam { name: "T".into() }],
+        };
+        assert_eq!(
+            mangle_resolved_ty_segment(&abstract_capture, TypeParamMangle::BareKeyFallback),
+            None
+        );
+    }
 
     #[test]
     fn storage_congruence_uses_nested_builtin_identity() {
@@ -1316,6 +1529,7 @@ mod tests {
     #[test]
     fn from_ty_rejects_nested_error_in_function_return() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32],
             ret: Box::new(Ty::Error),
         };
@@ -1366,6 +1580,7 @@ mod tests {
     #[test]
     fn from_ty_accepts_nested_composites() {
         let ty = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![
                 Ty::Array(Box::new(Ty::I32), 4),
                 Ty::Slice(Box::new(Ty::Bool)),
@@ -1373,6 +1588,7 @@ mod tests {
             ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::Unit])),
         };
         let expected = ResolvedTy::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![
                 ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
                 ResolvedTy::Slice(Box::new(ResolvedTy::Bool)),
@@ -1388,6 +1604,12 @@ mod tests {
     #[test]
     fn from_ty_accepts_pointer_and_closure() {
         let ty = Ty::Closure {
+            identity: crate::ty::EffectBody::Closure(crate::check::SpanKey {
+                start: 0,
+                end: 0,
+                module_idx: 0,
+            }),
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::Pointer {
                 is_mutable: true,
                 pointee: Box::new(Ty::I32),
@@ -1396,6 +1618,7 @@ mod tests {
             captures: vec![Ty::Bool],
         };
         let expected = ResolvedTy::Closure {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::I32),
@@ -1515,6 +1738,7 @@ mod tests {
                 args: vec![Ty::I32],
             },
             Ty::Function {
+                capabilities: crate::CallableCapabilities::default(),
                 params: vec![Ty::I32],
                 ret: Box::new(Ty::String),
             },

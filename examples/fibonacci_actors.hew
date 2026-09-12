@@ -1,4 +1,4 @@
-//! Status: runnable (actor fan-out via join{} structured concurrency; native codegen-rs)
+//! Status: runnable (actor fan-out via batch fork structured concurrency; native codegen-rs)
 //! Description: Actor-based Fibonacci - Hew language example
 
 // Actor-based Fibonacci - Hew language example
@@ -25,9 +25,14 @@ fn main() {
     println("=== Actor-based Fibonacci ===");
     let w1 = spawn FibWorker;
     let w2 = spawn FibWorker;
-    let (r1, r2) = join {
-        w1.compute(10),
-        w2.compute(15),
+    let (r1_result, r2_result) = await fork (w1.compute(10), w2.compute(15));
+    let r1 = match r1_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r2 = match r2_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     print_result(1, 10, r1);
     print_result(2, 15, r2);

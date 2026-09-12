@@ -3,7 +3,7 @@
 //! Empirical leak oracle for the heap-owning `Option<T>` let-binding that
 //! lives across a loop back-edge in the recv shapes:
 //!
-//!   * `for await item in rx` over `std::channel::Receiver<string>`,
+//!   * `for item in rx` over `std::channel::Receiver<string>`,
 //!     where the Some-arm binding `item` is the per-iteration heap
 //!     holder.
 //!   * Source-level `let opt = await rx.recv()` over the same channel,
@@ -180,7 +180,7 @@ const CHANNEL_CAPACITY: usize = 1024;
 // is ONE node growing in bytes, while a per-frame allocation leak
 // produces one node each.
 
-/// `for await item in rx` over `std::channel::Receiver<string>`.
+/// `for item in rx` over `std::channel::Receiver<string>`.
 /// `frames` drives the number of `send` calls before the channel
 /// closes. Channel capacity is `CHANNEL_CAPACITY` (constant across
 /// probes); main's `sleep_ms(3000)` lets the actor drain the queue
@@ -192,14 +192,14 @@ fn for_await_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor ForAwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
-         \x20       for await item in rx {{\n\
+         \x20       for item in rx {{\n\
          \x20           println(\"got\");\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -219,7 +219,7 @@ fn for_await_source(frames: usize) -> String {
 // handoff and the per-item drop path, but closes the sender before the loop.
 // Every receive therefore completes immediately. This fixture makes the
 // complementary ownership seam observable: each child transfers its direct
-// `Receiver<string>` into `for await`, consumes exactly one owned payload, and
+// `Receiver<string>` into `for`, consumes exactly one owned payload, and
 // then parks on the next receive while its Sender remains live in the same
 // coroutine frame. `supervisor_stop` destroys those parked children through the
 // production actor teardown path. A stale source authority would double-drop
@@ -248,14 +248,14 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
     });
 
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor ParkedReceiver {{\n\
          \x20   receive fn run(index: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(1);\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20       let payload = f\"parked-direct-receiver-{{index}}\";\n\
          \x20       tx.send(payload);\n\
-         \x20       for await item in rx {{\n\
+         \x20       for item in rx {{\n\
          \x20           if item.len() <= 0 {{ panic(\"receiver payload\"); }}\n\
          \x20           println(\"parked\");\n\
          \x20       }}\n\
@@ -297,7 +297,7 @@ fn assert_parked_for_await_receiver_work(bin: &Path, expected_frames: usize, con
     assert_eq!(
         lines.len(),
         expected_frames,
-        "{context}: work witness expected {expected_frames} parked Receiver handoffs, got {} lines {lines:?}. A missing line means the child did not consume its owned first payload and park on the next `for await` receive before supervisor teardown.",
+        "{context}: work witness expected {expected_frames} parked Receiver handoffs, got {} lines {lines:?}. A missing line means the child did not consume its owned first payload and park on the next `for` receive before supervisor teardown.",
         lines.len(),
     );
     assert!(
@@ -329,10 +329,10 @@ fn receiver_vec_drop_only_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          fn drop_receiver_vec() {{\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   tx.close();\n\
          \x20   let receivers: Vec<channel.Receiver<i64>> = [rx];\n\
          \x20   if receivers.len() != 1 {{ panic(\"receiver Vec move\"); }}\n\
@@ -396,10 +396,10 @@ fn sender_vec_clone_drop_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          fn clone_and_drop_sender_vec() {{\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);\n\
+         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   let senders: Vec<channel.Sender<i64>> = [tx];\n\
          \x20   let senders_copy = senders.clone();\n\
          \x20   if senders.len() != 1 {{ panic(\"sender Vec source clone\"); }}\n\
@@ -450,11 +450,11 @@ fn await_recv_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor AwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -486,11 +486,11 @@ fn try_recv_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor TryRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -526,11 +526,11 @@ fn try_recv_continue_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor TryRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -569,11 +569,11 @@ fn await_recv_continue_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor AwaitRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -600,7 +600,7 @@ fn await_recv_continue_source(frames: usize) -> String {
 
 /// Owned-payload send loop: every frame sends a FRESH heap string
 /// (`f"item-{i}"` — an owned f-string allocation per iteration), then
-/// drains via `for await`. The other shapes in this suite send string
+/// drains via `for`. The other shapes in this suite send string
 /// LITERALS, which are immortal rodata (no header, no drop obligation)
 /// — they exercise only the recv side. This shape covers the SEND seam
 /// for owned payloads: the per-iteration owned string flows through the
@@ -610,11 +610,11 @@ fn await_recv_continue_source(frames: usize) -> String {
 /// the borrow contract failed to balance) shows up as 1.0 leak / frame.
 fn owned_send_source(frames: usize) -> String {
     format!(
-        "import std.channel.channel;\n\
+        "import std.channel;\n\
          \n\
          actor OwnedSend {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new({CHANNEL_CAPACITY});\n\
+         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
          \x20           let s = f\"item-{{i}}\";\n\
@@ -622,7 +622,7 @@ fn owned_send_source(frames: usize) -> String {
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20       tx.close();\n\
-         \x20       for await item in rx {{\n\
+         \x20       for item in rx {{\n\
          \x20           println(\"got\");\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -638,7 +638,7 @@ fn owned_send_source(frames: usize) -> String {
 
 // ── per-shape slope tests ─────────────────────────────────────────────────
 
-/// `for await item in rx` over `Receiver<string>`: no per-frame leak
+/// `for item in rx` over `Receiver<string>`: no per-frame leak
 /// node growth. Drives the per-arm inline-drop discipline keyed on
 /// the recv-call scrutinee + Some-arm payload binding. The original
 /// bug class produced one `alloc_cstring_data` allocation per
@@ -658,7 +658,7 @@ fn for_await_recv_string_loop_no_per_frame_leak_slope() {
 }
 
 /// Direct `Receiver<string>` ownership handoff under the hard lifecycle edge:
-/// every child has transferred `rx` into `for await`, consumed one owned value,
+/// every child has transferred `rx` into `for`, consumed one owned value,
 /// then is destroyed while parked on the next receive. The low/high samples
 /// must have a flat leak slope, and the high sample must complete cleanly under
 /// Darwin's poisoned allocator — together pin no leaked cursor and no duplicate
@@ -958,7 +958,7 @@ fn owned_payload_send_loop_no_per_frame_leak_slope() {
 // The string oracle covers `Option<string>` (single-`ptr` slot). `bytes`
 // is the WIDER ABI variant: a native `bytes` value is a stack-resident
 // `BytesTriple { ptr, i32, i32 }`, not a single owned pointer. The
-// matching recv surface today is `for await frame in <Stream<bytes>>`
+// matching recv surface today is `for frame in <Stream<bytes>>`
 // (the layout-witness pop hands the consumer a fresh refcounted triple
 // per frame). Pre-fix, the per-iteration Some-arm payload was overwritten
 // on the back-edge with no `hew_bytes_drop` call (the codegen-side cow_
@@ -1011,7 +1011,7 @@ fn owned_payload_send_loop_no_per_frame_leak_slope() {
 // run before the drain loop starts. Emit more than `CHANNEL_CAPACITY`
 // sends and the actor parks forever inside `await sink.send(b)` with
 // nothing left to drain it — it never reaches `sink.close()`, never
-// enters the `for await`, and the probe measures a stalled process's
+// enters the `for`, and the probe measures a stalled process's
 // orphaned pipe buffer instead of a per-frame drop slope. That is the
 // defect this fixture shipped with: it spliced `frames` copies of the
 // send inside `while i < frames`, so the send count was `frames²` and
@@ -1019,10 +1019,10 @@ fn owned_payload_send_loop_no_per_frame_leak_slope() {
 // `assert_per_frame_slope_below_tolerance`'s drained-frame witness now
 // makes that stall a failure instead of a measurement.
 
-/// `for await frame in <Stream<bytes>>`: the canonical recv-scrutinee
+/// `for frame in <Stream<bytes>>`: the canonical recv-scrutinee
 /// payload-binding shape for the Bytes ABI variant. `frames` controls
 /// the number of `sink.send(b)` calls before `sink.close()`; the
-/// consumer drains via `for await`. Pre-fix the per-iteration triple
+/// consumer drains via `for`. Pre-fix the per-iteration triple
 /// from the layout-witness pop is overwritten on the back-edge with
 /// no `hew_bytes_drop` — 1.0 leak/frame (consumer-side). Post-fix the
 /// Some-arm payload binding's `Instr::Drop { ty: Bytes, drop_fn:
@@ -1038,7 +1038,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \n\
          actor ForAwaitStreamBytes {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (sink, input) = stream.bytes_pipe({CHANNEL_CAPACITY});\n\
+         \x20       let (sink, input) = match stream.bytes_pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20       let b = \"frame-some-long-data\".to_bytes();\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
@@ -1046,7 +1046,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20       sink.close();\n\
-         \x20       for await frame in input {{\n\
+         \x20       for frame in input {{\n\
          \x20           println(\"got\");\n\
          \x20       }}\n\
          \x20   }}\n\
@@ -1060,7 +1060,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
     )
 }
 
-/// `for await frame in <Stream<bytes>>` per-frame leak-slope oracle.
+/// `for frame in <Stream<bytes>>` per-frame leak-slope oracle.
 ///
 /// Trunk PRE-FIX leak counts on this exact probe (reuse-one-`bytes`
 /// producer, ONE send per iteration):
@@ -1120,7 +1120,7 @@ fn for_await_stream_bytes_loop_no_per_frame_leak_slope() {
 // or freed underlying buffer would surface as empty/garbage output
 // or a crash.
 
-/// `var carry; for await frame in <Stream<bytes>>(1 frame) { carry =
+/// `var carry; for frame in <Stream<bytes>>(1 frame) { carry =
 /// frame; }; println(carry.to_string())`. With the back-edge inline-
 /// drop for Bytes wired AND the escape-scan gate honouring scope
 /// boundaries (the same type-agnostic local-based gate that protects
@@ -1133,13 +1133,13 @@ fn carry_for_await_bytes_escape_source() -> String {
      \n\
      actor CarryStreamBytesEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (sink, input) = stream.bytes_pipe(4);\n\
+     \x20       let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20       let b = \"escaped-bytes-payload\".to_bytes();\n\
      \x20       await sink.send(b);\n\
      \x20       sink.close();\n\
      \x20       var carry = \"init\".to_bytes();\n\
      \x20       println(\"before\");\n\
-     \x20       for await frame in input {\n\
+     \x20       for frame in input {\n\
      \x20           carry = frame;\n\
      \x20       }\n\
      \x20       println(carry.to_string());\n\
@@ -1155,7 +1155,7 @@ fn carry_for_await_bytes_escape_source() -> String {
     .to_string()
 }
 
-/// `for await frame in <Stream<bytes>>` with outer-scope `carry =
+/// `for frame in <Stream<bytes>>` with outer-scope `carry =
 /// frame`: must print `before / escaped-bytes-payload / after`. If
 /// the Bytes back-edge inline-drop ever became scope-blind and freed
 /// `frame` while `carry` aliased it, the middle line would be empty
@@ -1211,11 +1211,11 @@ fn carry_for_await_bytes_payload_escape_no_uaf() {
 /// scan sees `item → carry` as an unbound-destination escape → root
 /// excluded → no back-edge drop → no UAF.
 fn carry_continue_escape_source() -> String {
-    "import std.channel.channel;\n\
+    "import std.channel;\n\
      \n\
      actor CarryContinueEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20       tx.send(\"escaped\");\n\
      \x20       tx.close();\n\
      \x20       var carry = \"init\";\n\
@@ -1252,11 +1252,11 @@ fn carry_continue_escape_source() -> String {
 /// both — the propagation step runs once and feeds both back-edge
 /// registrations identically.
 fn carry_fallthrough_escape_source() -> String {
-    "import std.channel.channel;\n\
+    "import std.channel;\n\
      \n\
      actor CarryFallEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = channel.new(4);\n\
+     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20       tx.send(\"escaped\");\n\
      \x20       tx.close();\n\
      \x20       var carry = \"init\";\n\
@@ -1385,7 +1385,7 @@ fn carry_fallthrough_payload_escape_no_uaf() {
 
 // ── Actor-generator stream: loop-var release across the early-return edge ──
 //
-// `for await v in m.items()` over a `receive gen fn` stream. The consuming
+// `for v in m.items()` over a `receive gen fn` stream. The consuming
 // body releases its received value on EVERY path out of the body: the
 // fall-through body-end drop, the break/continue edge drops, and the early-
 // `return` edge. Pre-fix, a `return` on any body path was treated as an
@@ -1415,7 +1415,7 @@ fn gen_stream_string_drain_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var seen: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await v in m.items() {{\n\
+         \x20   for v in m.items() {{\n\
          \x20       if v.len() < 6 {{ return 91; }}\n\
          \x20       seen = seen + 1;\n\
          \x20   }}\n\
@@ -1442,7 +1442,7 @@ fn gen_stream_string_early_return_source(frames: usize) -> String {
          fn main() -> i64 {{\n\
          \x20   var seen: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await v in m.items() {{\n\
+         \x20   for v in m.items() {{\n\
          \x20       if v.len() < 6 {{ return 91; }}\n\
          \x20       seen = seen + 1;\n\
          \x20       if seen >= {stop_at} {{\n\
@@ -1459,17 +1459,17 @@ fn gen_stream_string_early_return_source(frames: usize) -> String {
 fn gen_stream_bytes_early_return_source(frames: usize) -> String {
     let stop_at = frames / 2 + 1;
     format!(
-        "actor Maker {{\n\
+        "actor Maker {{ \n\
          \x20   receive gen fn frames() -> bytes {{\n\
          \x20       for i in 0..{frames} {{\n\
-         \x20           yield \"frame-data\".to_bytes();\n\
-         \x20       }}\n\
+         \x20           yield \"frame-data\".to_bytes(), \n\
+         \x20 }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var seen: i64 = 0;\n\
          \x20   let m = spawn Maker;\n\
-         \x20   for await b in m.frames() {{\n\
+         \x20   for b in m.frames() {{\n\
          \x20       if b.len() != 10 {{ return 91; }}\n\
          \x20       seen = seen + 1;\n\
          \x20       if seen >= {stop_at} {{\n\
@@ -1493,8 +1493,8 @@ fn gen_stream_return_carry_source() -> String {
      \x20       yield \"rest\";\n\
      \x20   }\n\
      }\n\
-     fn first(m: LocalPid<Maker>) -> string {\n\
-     \x20   for await v in m.items() {\n\
+     fn first(m: Maker) -> string {\n\
+     \x20   for v in m.items() {\n\
      \x20       return v;\n\
      \x20   }\n\
      \x20   \"none\"\n\
@@ -1608,8 +1608,8 @@ fn gen_stream_return_forwarded_via_call_source() -> String {
      fn wrap(v: string) -> string {\n\
      \x20   return v;\n\
      }\n\
-     fn first(m: LocalPid<Maker>) -> string {\n\
-     \x20   for await v in m.items() {\n\
+     fn first(m: Maker) -> string {\n\
+     \x20   for v in m.items() {\n\
      \x20       return wrap(v);\n\
      \x20   }\n\
      \x20   \"none\"\n\
@@ -1641,7 +1641,7 @@ fn gen_stream_break_forwarded_via_call_source() -> String {
      \x20   println(\"before\");\n\
      \x20   let m = spawn Maker;\n\
      \x20   var carry = \"init\";\n\
-     \x20   for await v in m.items() {\n\
+     \x20   for v in m.items() {\n\
      \x20       carry = wrap(v);\n\
      \x20       break;\n\
      \x20   }\n\

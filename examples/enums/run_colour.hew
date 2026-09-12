@@ -8,14 +8,14 @@
 // This fixture focuses on construction; see `run_colour_match.hew`
 // for match-expression dispatch over the same enum types.
 enum Colour {
-    Red;
-    Green;
-    Blue;
+    Red,
+    Green,
+    Blue,
 }
 
 enum Status {
-    Active;
-    Inactive;
+    Active,
+    Inactive,
 }
 
 fn colour_id(c: Colour) -> Colour {

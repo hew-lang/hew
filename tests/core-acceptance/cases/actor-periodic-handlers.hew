@@ -1,0 +1,53 @@
+actor Ticker {
+    var ticks: i64 = 0,
+    var text: string = "owned",
+
+    #[every(2ms)]
+    receive fn tick() {
+        sleep(1ms);
+        ticks = ticks + 1;
+        text = "tick".to_upper();
+    }
+
+    #[every(3ms)]
+    receive fn pulse() { text = "pulse".to_upper(); }
+
+    receive fn count() -> i64 { ticks }
+    receive fn fail() { panic("restart periodic child"); }
+}
+
+supervisor Timers {
+    intensity: 2 within 60s,
+    child ticker: Ticker,
+}
+
+fn wait_for_ticks(ticker: ChildRef<Ticker>) {
+    for i in 0..500 {
+        if ticker.count().expect("live timer") > 0 { return; }
+        sleep(2ms);
+    }
+    panic("periodic child did not fire");
+}
+
+fn main() {
+    let direct = spawn Ticker;
+    var fired = false;
+    for i in 0..500 {
+        if direct.count().expect("direct timer") > 0 {
+            fired = true;
+            break;
+        }
+        sleep(2ms);
+    }
+    assert(fired);
+    close(direct);
+
+    let tree = spawn Timers;
+    let role = tree.ticker;
+    wait_for_ticks(role);
+    let _ = role.fail();
+    let _ = await_restart tree.ticker;
+    wait_for_ticks(role);
+    close(tree);
+    println("periodic direct and restarted child");
+}

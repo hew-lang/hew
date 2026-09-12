@@ -52,8 +52,8 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
         verify_module(&lowered.module)
     );
     let ops = &main.blocks[0].ops;
-    assert!(matches!(ops[0].kind, SemOpKind::ConstI64(0)));
-    assert!(matches!(ops[1].kind, SemOpKind::ConstI64(42)));
+    assert!(matches!(ops[0].kind, SemOpKind::ConstInteger(0)));
+    assert!(matches!(ops[1].kind, SemOpKind::ConstInteger(42)));
     let tuple_value = ops[2]
         .results
         .first()
@@ -85,13 +85,17 @@ fn immutable_scalar_tuple_lowering_keeps_aggregate_semantics_in_sir() {
     assert_eq!(
         dump,
         concat!(
-            "fn main() -> i64 {\n",
+            "fn __hew_fn_main() -> i64 {\n",
             "bb0:\n",
             "    %0 = const 0\n",
             "    %1 = const 42\n",
             "    %2 = tuple.make(%0, %1)\n",
             "    %3 = tuple.get %2, 0\n",
+            "    goto bb1\n",
+            "bb1:\n",
             "    return move %3\n",
+            "bb2:\n",
+            "    resume_unwind\n",
             "}\n"
         )
     );
@@ -142,6 +146,15 @@ fn generic_scalar_instances_substitute_tuple_values_before_raw_mir() {
         tuple_make.results[0].ty,
         ResolvedTy::Tuple(vec![ResolvedTy::I64, ResolvedTy::I64]),
         "SIR must specialize semantic types before Raw MIR chooses a layout"
+    );
+    assert!(
+        lowered
+            .module
+            .type_facts
+            .contains_key(&hew_types::TypeInstanceKey(
+                tuple_make.results[0].ty.clone()
+            )),
+        "the SIR-specialized tuple must have a checker-context-derived fact row"
     );
 }
 
@@ -210,7 +223,7 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
                         ty: ResolvedTy::I64,
                         own: OwnKind::None,
                     }],
-                    kind: SemOpKind::ConstI64(0),
+                    kind: SemOpKind::ConstInteger(0),
                     provenance: Provenance::Synthesized,
                 },
                 SemOp {
@@ -420,10 +433,14 @@ fn the_module_carries_the_rows_its_own_bodies_mention() {
         ]))),
         "the tuple the body builds must have a row: {rows:?}"
     );
-    assert!(
-        !rows.contains_key(&key(ResolvedTy::String)),
-        "a type this module never mentions must not be projected: {rows:?}"
-    );
+    // The projection is demand-driven, not a dump of every checker row: these
+    // are registered types no body this module admits mentions.
+    for absent in [ResolvedTy::String, ResolvedTy::F64] {
+        assert!(
+            !rows.contains_key(&key(absent.clone())),
+            "a type this module never mentions must not be projected: {rows:?}"
+        );
+    }
     assert_eq!(
         Some(hew_types::ValueClass::BitCopy),
         rows.get(&key(ResolvedTy::I64)).map(|row| row.class),

@@ -25,7 +25,7 @@ trait Labeled {{
 }}
 
 type Person {{
-    label: string;
+    label: string,
 }}
 
 impl Person {{
@@ -35,8 +35,8 @@ impl Person {{
 }}
 
 type Parcel {{
-    label: string;
-    route: string;
+    label: string,
+    route: string,
 }}
 
 impl Parcel {{
@@ -87,7 +87,7 @@ trait Labeled {{
 }}
 
 type Person {{
-    label: string;
+    label: string,
 }}
 
 impl Person {{

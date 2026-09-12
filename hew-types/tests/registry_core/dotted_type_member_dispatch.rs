@@ -6,10 +6,10 @@ fn dotted_type_members_share_canonical_dispatch() {
     let output = typecheck_isolated(
         r#"
 machine Lifecycle {
-    events { Reset; }
-    state Start;
-    state Running { value: i64; }
-    on Reset: Running => .Start { .Start }
+    events { Reset, }
+    state Start,
+    state Running { value: i64, },
+    on Reset: Running => .Start,
     default { state }
 }
 
@@ -19,10 +19,13 @@ fn main() {
     let some: Option<i64> = Option.Some(5);
     let none: Option<i64> = Option.None;
     let ok: Result<i64, string> = Result.Ok(6);
-    let set: HashSet<i64> = HashSet<i64>.new();
+    var set: HashSet<i64> = HashSet<i64>.new();
     let explicit: Option<i64> = Option<i64>.Some(7);
     set.insert(8);
-    println(f"{start.state_name()} {running.state_name()} {some.unwrap()} {none.is_none()} {ok.unwrap()} {explicit.unwrap()} {set.len()}");
+    let some_value = some.expect("some is present");
+    let ok_value = ok.expect("ok succeeds");
+    let explicit_value = explicit.expect("explicit succeeds");
+    println(f"{start.state_name()} {running.state_name()} {some_value} {none.is_none()} {ok_value} {explicit_value} {set.len()}");
 }
 "#,
     );
@@ -67,10 +70,10 @@ fn bare_type_without_member_remains_an_error() {
     let output = typecheck_isolated(
         r"
 machine Lifecycle {
-    events { Reset; }
-    state Start;
-    state Running;
-    on Reset: Running => .Start { .Start }
+    events { Reset, }
+    state Start,
+    state Running,
+    on Reset: Running => .Start,
     default { state }
 }
 

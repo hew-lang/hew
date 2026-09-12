@@ -1,0 +1,23 @@
+// Historical supervisor-stop fixture; its executable spelling needs migration.
+// The decided public lifecycle forms are close(sup) and closed(sup), including
+// waiting for child cleanup. Their implementation is still pending.
+actor Worker {
+    receive fn ping(_n: i64) {
+        _n;
+    }
+}
+
+supervisor AppSupervisor {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+
+    child w1: Worker,
+}
+
+fn main() -> i64 {
+    let sup = spawn AppSupervisor;
+    let w = sup.w1;
+    let _ = w.ping(1);
+    supervisor_stop(sup);
+    0
+}

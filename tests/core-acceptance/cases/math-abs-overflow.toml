@@ -1,0 +1,11 @@
+[[case]]
+id = "math-abs-overflow"
+intent = "Absolute value of the minimum signed integer reports IntegerOverflow through the ordinary cleanup edge without continuing or leaking surrounding owners."
+source = "cases/math-abs-overflow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IntegerOverflow (201)\n"
+exit = 1

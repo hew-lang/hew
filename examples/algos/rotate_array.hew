@@ -1,6 +1,8 @@
 // Rotate array by k positions to the right
 // [1,2,3,4,5] k=2 -> [4,5,1,2,3]
-fn reverse_range(arr: Vec<i32>, start: i32, end: i32) {
+// A parameter is the callee's own copy, so the reversed vector travels back
+// through the return value.
+fn reverse_range(var arr: Vec<i32>, start: i32, end: i32) -> Vec<i32> {
     var l: i64 = start as i64;
     let end64: i64 = end as i64;
     var r: i64 = end64 - 1;
@@ -11,10 +13,11 @@ fn reverse_range(arr: Vec<i32>, start: i32, end: i32) {
         l = l + 1;
         r = r - 1;
     }
+    arr
 }
 
 fn main() {
-    let arr: Vec<i32> = Vec.new();
+    var arr: Vec<i32> = Vec.new();
     arr.push(1);
     arr.push(2);
     arr.push(3);
@@ -23,12 +26,12 @@ fn main() {
     let n = arr.len();
     let k = 2 % n;
     // Reverse entire array, then reverse first k, then reverse rest
-    reverse_range(arr, 0, n as i32);
-    reverse_range(arr, 0, k as i32);
-    reverse_range(arr, k as i32, n as i32);
+    arr = reverse_range(arr, 0, n as i32);
+    arr = reverse_range(arr, 0, k as i32);
+    arr = reverse_range(arr, k as i32, n as i32);
 
     // Expected: [4,5,1,2,3]
-    let expected: Vec<i32> = Vec.new();
+    var expected: Vec<i32> = Vec.new();
     expected.push(4);
     expected.push(5);
     expected.push(1);

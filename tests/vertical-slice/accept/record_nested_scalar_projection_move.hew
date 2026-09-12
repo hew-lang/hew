@@ -7,10 +7,10 @@ type NestedScalarMoveCarrier {
 fn project(i: i64) -> i64 {
     let r = NestedScalarMoveCarrier {
         inner: NestedScalarMoveInner {
-            text: string_concat("inner-", "payload"),
+            text: ("inner-" + "payload"),
             value: i,
         },
-        sibling: string_concat("sibling-", "payload"),
+        sibling: ("sibling-" + "payload"),
     };
     let moved = r.inner.value;
     moved

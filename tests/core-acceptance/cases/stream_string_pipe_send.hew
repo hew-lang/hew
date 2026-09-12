@@ -1,0 +1,21 @@
+// Send a string through a pipe from an actor handler.
+// The plain send call can suspend while the pipe is full.
+import std.stream;
+
+actor Echo {
+    receive fn run(unused: i64) {
+        let (sink, input) = match stream.pipe(2) {
+            .Ok(pair) => pair,
+            .Err(error) => panic(error),
+        };
+        sink.send("hi");
+        sink.close();
+        input.close();
+    }
+}
+
+fn main() {
+    let e = spawn Echo;
+    let _ = e.run(0);
+    sleep(100ms);
+}

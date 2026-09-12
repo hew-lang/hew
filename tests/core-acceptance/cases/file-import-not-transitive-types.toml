@@ -1,0 +1,19 @@
+[[case]]
+id = "file-import-not-transitive-types"
+intent = "The scope a file import publishes into is the importing file, for types and constants as much as for callables: the root imported `sub.hew`, so the names `helper.hew` published into `sub.hew` are refused here and the diagnostic names the file that declared them."
+source = "fixtures/file-import-not-transitive-types/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 8
+column = 13
+message = "type `Point` is not in scope; it is exported by module `helper`"
+
+[[case.expected.diagnostics]]
+code = "UndefinedVariable"
+line = 9
+column = 22
+message = "constant `ORIGIN_X` is not in scope; it is declared by file `helper`"

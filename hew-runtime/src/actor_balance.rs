@@ -7,8 +7,8 @@
 //! reclaimed still lets its program produce the right output and return the
 //! right code, so a corpus that only builds a fixture, runs it and diffs
 //! `exit status + stdout` is structurally blind to a leaked actor — which is
-//! exactly how `examples/v05/checked-mir/actor_ask_race.hew` kept a leaked
-//! loser through both the MIR-text gate and the execution gate.
+//! exactly how an ask-race fixture kept a leaked loser through both the
+//! MIR-text gate and the execution gate.
 //!
 //! `leaks --atExit` is not the answer either: it deadlocks (0% CPU, tracee
 //! wedged in `T`, still stuck after its target is killed), and it does not
@@ -28,8 +28,7 @@
 //! `hew_runtime_cleanup` (see [`verdict_after_runtime_cleanup`]). Unbalanced ⇒
 //! a diagnostic naming both counts and [`HEW_EXIT_ACTOR_LEAK`] as the process
 //! exit status, so the leak is visible to any exit-status oracle — including
-//! the checked-MIR execution gate, which arms the check for every fixture it
-//! runs.
+//! the core-acceptance `run` cases that arm the check in their `env` table.
 //!
 //! It is opt-in rather than always-on because a fail-closed leak at teardown is
 //! an existing, deliberate runtime policy on some paths (an actor that cannot
@@ -44,9 +43,9 @@
 //! [`leak_selftest_skips_free`] is the counterfactual: with
 //! `HEW_ACTOR_LEAK_SELFTEST=skip-free` the shutdown sweep omits the free of one
 //! actor it would otherwise reclaim, and the same program must then exit
-//! [`HEW_EXIT_ACTOR_LEAK`]. `scripts/checked-mir-corpus.sh run` runs that
-//! counterfactual before it trusts the check on any fixture, and fails the gate
-//! if the deliberately leaked actor still exits cleanly.
+//! [`HEW_EXIT_ACTOR_LEAK`]. `scripts/tests/test_actor_leak_oracle_counterfactual.sh`
+//! (reached by `make test-leak-oracle-selftest`) drives that counterfactual
+//! end to end and fails if the deliberately leaked actor still exits cleanly.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 

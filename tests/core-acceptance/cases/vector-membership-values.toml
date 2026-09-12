@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-membership-values"
+intent = "Resolved vector methods preserve selected generic and derived equality, borrow owning inputs, compare complete strings and evaluate receiver and needle once."
+source = "cases/vector-membership-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "receiver\nneedle\nmembership ok\n"
+stderr = ""
+exit = 0

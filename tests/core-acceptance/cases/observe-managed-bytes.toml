@@ -1,0 +1,10 @@
+[[case]]
+id = "observe-managed-bytes"
+intent = "Every allocation Hew owns reaches the std.observe heap gauge: a bytes buffer, a string, a Vec of strings, a HashMap of strings and a nested Vec each move heap.live_bytes by at least their payload while held and return it to the pre-build reading once released, with a bit-copy Vec as the already-counted control."
+source = "cases/observe-managed-bytes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 600
+
+[case.expected]
+stdout = "bytes len=4000000\nbytes grew=true settled=true\nstring len=2000000\nstring grew=true settled=true\nvec len=40000\nvec grew=true settled=true\nmap len=20000\nmap grew=true settled=true\nnested grew=true settled=true\ncontrol len=1000000\ncontrol grew=true settled=true\n"
+exit = 0

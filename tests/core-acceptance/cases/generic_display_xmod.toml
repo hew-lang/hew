@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_display_xmod"
+intent = "#1565 / #1929 Stage 3: a generic `T: Display` consumer dispatches to a `Display` impl defined in another module — proving the static-trait-dispatch resolution keys on the canonical `(Display, <concrete>, fmt)` triple regardless of the impl's defining module."
+source = "../vertical-slice/accept/generic_display_xmod.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "tag\n<tag>\n42\n"
+exit = 0

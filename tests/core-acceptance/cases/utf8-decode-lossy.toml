@@ -1,0 +1,10 @@
+[[case]]
+id = "utf8-decode-lossy"
+intent = "Named import aliases preserve decoder identity; lossy decoding replaces invalid and incomplete sequences and returns an independent string owner."
+source = "cases/utf8-decode-lossy.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "A�B�\n4:8:9\n"
+exit = 0

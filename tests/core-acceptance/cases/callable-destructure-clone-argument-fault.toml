@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-destructure-clone-argument-fault"
+intent = "A fault in the argument after destructuring a once, clone callable releases heap captures, the uncalled sibling and any retained original field."
+source = "cases/callable-destructure-clone-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

@@ -9,10 +9,10 @@
 //! import std.encoding.csv;
 //!
 //! fn main() {
-//!     let table = csv.parse("name,age\nAlice,30\nBob,25");
-//!     let rows = table.rows();
-//!     let name = table.get_by_name(0, "name");
-//!     println(name);  // "Alice"
+//!     match csv.parse("name,age\nAlice,30\nBob,25") {
+//!         .Ok(table) => println(table.get_by_name(0, "name")), // "Alice"
+//!         .Err(error) => println(error),
+//!     }
 //! }
 //! ```
 
@@ -20,8 +20,8 @@ import std.fs;
 
 /// A parsed CSV table with headers and data rows.
 type Table {
-    hdrs: Vec<string>;
-    data: Vec<Vec<string>>;
+    hdrs: Vec<string>,
+    data: Vec<Vec<string>>,
 }
 
 /// Methods available on a CSV `Table`.
@@ -41,7 +41,7 @@ trait TableMethods {
     /// Return the cell value at the given row for the named column.
     fn get_by_name(self, row: i64, col_name: string) -> string;
 
-    /// No-op for compatibility (struct tables don't need manual freeing).
+    /// No-op for compatibility (record tables don't need manual freeing).
     fn free(self);
 }
 
@@ -80,9 +80,9 @@ impl TableMethods for Table {
         }
         tbl.get(row, col as i64)
     }
-    /// No-op for compatibility (struct tables don't need manual freeing).
+    /// No-op for compatibility (record tables don't need manual freeing).
     fn free(tbl: Table) {
-        // No-op: struct tables are value types, no manual freeing needed.
+        // No-op: record tables are value types, no manual freeing needed.
     }
 }
 
@@ -131,14 +131,14 @@ pub fn parse_file(path: string) -> Result<Table, string> {
 /// consumed before advancing to the next field. Inside a quoted field
 /// (state 2), '\r\n' is preserved verbatim in the field value per RFC 4180 §2.6.
 fn parse_impl(data: string, has_headers: bool) -> Result<Table, string> {
-    let headers: Vec<string> = Vec.new();
-    let rows: Vec<Vec<string>> = Vec.new();
+    var headers: Vec<string> = Vec.new();
+    var rows: Vec<Vec<string>> = Vec.new();
     let ilen = data.len();
     if ilen == 0 {
         return Ok(Table { hdrs: headers, data: rows });
     }
     // Current row accumulator and field accumulator.
-    let cur_row: Vec<string> = Vec.new();
+    var cur_row: Vec<string> = Vec.new();
     var cur_field = "";
     // state: 0=Outside, 1=InUnquoted, 2=InQuoted, 3=AfterClosingQuote
     var state = 0;

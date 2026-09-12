@@ -9,7 +9,7 @@
 //! import std.net.smtp;
 //!
 //! fn main() {
-//!     smtp.send(
+//!     let _ = smtp.send(
 //!         "smtp.example.com",
 //!         587,
 //!         "user",
@@ -18,11 +18,11 @@
 //!         "to@example.com",
 //!         "Subject",
 //!         "Body",
-//!     );
+//!     ).expect("the call succeeds");
 //! }
 //! ```
 
-// WASM-TODO(smtp): std::net::smtp remains native-only until Hew has a WASM SMTP transport.
+// WASM-TODO(smtp): std.net.smtp remains native-only until Hew has a WASM SMTP transport.
 /// An open SMTP connection handle.
 ///
 /// Created by calling `smtp.connect(...)` or `smtp.connect_tls(...)`, which
@@ -71,7 +71,7 @@ impl ConnMethods for Conn {
 
 impl Conn {
     /// Release this SMTP connection early. Scope exit performs the same release.
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_smtp_close(self)
         };

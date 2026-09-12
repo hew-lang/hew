@@ -1,0 +1,19 @@
+[[case]]
+id = "spread-parse-refusals"
+intent = "A record literal takes one base, because two bases give two answers for every field the literal does not name; and a repeat literal repeats one value, so a spread has no repeat count."
+source = "cases/spread-parse-refusals.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "E_RECORD_ONE_BASE"
+line = 10
+column = 18
+message = "a record literal takes one `..base`"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 14
+column = 10
+message = "spread `..` splices a collection and has no repeat count"

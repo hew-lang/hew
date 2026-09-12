@@ -9,7 +9,7 @@
 
 /// Generic value record with an i64 payload field.
 pub type Key<T> {
-    v: i64;
+    v: i64,
 }
 
 /// Build a `Key<T>` from an i64.

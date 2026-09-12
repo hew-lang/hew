@@ -3,8 +3,7 @@
 //! Read, write, and query files on the local file system.
 //!
 //! For path-only helpers prefer `std.path`, and for stdin/stdout prefer
-//! `std.io`. This module keeps `fs.exists` as a compatibility surface
-//! for existing code.
+//! `std.io`. `fs.exists(path)` checks whether a file-system entry exists.
 //!
 //! # Error Handling
 //!
@@ -33,6 +32,8 @@
 //! }
 //! ```
 
+import std.encoding.utf8;
+
 // ── Error type ───────────────────────────────────────────────────────
 /// Structured error type for file-system operations.
 ///
@@ -43,20 +44,21 @@
 /// `net.NetError` in `std.net`.
 pub enum IoError {
     /// The target path does not exist.
-    NotFound(i64);
+    NotFound(i64),
     /// The process lacks permission for the operation.
-    PermissionDenied(i64);
+    PermissionDenied(i64),
     /// A file or directory already exists at the target path.
-    AlreadyExists(i64);
+    AlreadyExists(i64),
     /// The operation timed out (e.g. the blocking pool exceeded its deadline).
-    TimedOut(i64);
+    TimedOut(i64),
     /// Operation was cancelled (e.g., the blocking pool was shut down mid-call).
     ///
     /// Distinct from `TimedOut`: `TimedOut` means the deadline expired; `Cancelled`
     /// means the operation was abandoned for another reason.
-    Cancelled(i64);
-    /// Any other OS-level I/O failure.
-    Other(i64);
+    Cancelled(i64),
+    /// Any other I/O failure. The raw code is 0 when there is no OS error,
+    /// including invalid UTF-8 file contents.
+    Other(i64),
 }
 
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
@@ -154,6 +156,9 @@ impl Display for IoError {
     }
 }
 
+impl Error for IoError {
+}
+
 /// Construct an `IoError.TimedOut(0)` value without a platform-specific
 /// errno. Useful for in-process deadline expiry where there is no OS error
 /// to map (e.g. `fs.io_error_from_errno` would need a platform-aware errno
@@ -176,17 +181,14 @@ fn last_io_error() -> IoError {
         let kind = hew_stream_last_error_kind() as i64;
         let errno = hew_stream_last_errno() as i64;
         let _ = hew_stream_last_error();
-        if errno == 0 && kind == 0 {
-            IoError.Other(5)
-        } else {
-            io_error_from_kind(kind, errno)
-        }
+        io_error_from_kind(kind, errno)
     }
 }
 
 /// Read the entire contents of a file as a UTF-8 string.
 ///
 /// Returns a structured error if the file does not exist or cannot be read.
+/// Invalid UTF-8 returns `IoError.Other(0)`; an empty file is valid empty text.
 ///
 /// # Examples
 ///
@@ -194,25 +196,17 @@ fn last_io_error() -> IoError {
 /// import std.fs;
 ///
 /// fn main() {
-///     let src = fs.read("main.hew");
+///     match fs.read("main.hew") {
+///         .Ok(src) => println(src),
+///         .Err(_) => println("could not read main.hew"),
+///     }
 /// }
 /// ```
 pub fn read(file_path: string) -> Result<string, IoError> {
-    unsafe {
-        let file = hew_file_read_stream_open(file_path);
-        if hew_file_read_stream_is_valid(file) {
-            let contents = hew_file_read_stream_collect_string(file);
-            let kind = hew_stream_last_error_kind() as i64;
-            let errno = hew_stream_last_errno();
-            let _ = hew_stream_last_error();
-            if errno == 0 {
-                Ok(contents)
-            } else {
-                Err(io_error_from_kind(kind, errno as i64))
-            }
-        } else {
-            Err(last_io_error())
-        }
+    let data = read_bytes(file_path)?;
+    match utf8.decode(data) {
+        .Ok(text) => Ok(text),
+        .Err(_) => Err(IoError.Other(0)),
     }
 }
 
@@ -287,7 +281,7 @@ pub fn size(path: string) -> i64 {
 /// import std.fs;
 ///
 /// fn main() {
-///     let data = fs.read_bytes("image.png");
+///     let data = (fs.read_bytes("image.png")).expect("the call succeeds");
 ///     println(data.len());
 /// }
 /// ```
@@ -360,7 +354,7 @@ pub fn mkdir_all(dir_path: string) -> Result<(), IoError> {
 /// import std.fs;
 ///
 /// fn main() {
-///     let entries = fs.list_dir("/tmp");
+///     let entries = fs.list_dir("/tmp").expect("list_dir succeeds");
 ///     for entry in entries {
 ///         println(entry);
 ///     }
@@ -416,7 +410,7 @@ pub type FileReadStream {
 }
 
 impl FileReadStream {
-    fn close(consuming self) {
+    fn close(consume self) {
         unsafe {
             hew_file_read_stream_close(self)
         };
@@ -440,6 +434,7 @@ extern "C" {
     fn hew_fs_is_dir(path: string) -> bool;
     fn hew_file_read_stream_open(path: string) -> FileReadStream;
     fn hew_file_read_stream_is_valid(stream: FileReadStream) -> bool;
+    fn hew_stream_has_error() -> bool;
     fn hew_stream_last_error() -> string;
     fn hew_stream_last_errno() -> i32; // INTERNAL-ABI: OS errno from thread-local; 0 when none recorded
     fn hew_stream_last_error_kind() -> i32; // INTERNAL-ABI: canonical cross-platform error-kind tag; 0 when none

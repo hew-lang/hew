@@ -15,8 +15,6 @@ mod active_mode_handler_coercion;
 mod builtin_type_discriminator;
 #[path = "coverage/char_cast.rs"]
 mod char_cast;
-#[path = "coverage/checked_mir_corpus_coverage.rs"]
-mod checked_mir_corpus_coverage;
 #[path = "coverage/clone_expression.rs"]
 mod clone_expression;
 #[path = "coverage/generic_enum_variants.rs"]
@@ -27,8 +25,6 @@ mod generic_lambda_multi_instantiation;
 mod hash_eq_derivation_audit;
 #[path = "coverage/is_allowance.rs"]
 mod is_allowance;
-#[path = "coverage/numeric_method_lowering.rs"]
-mod numeric_method_lowering;
 #[path = "coverage/numerics.rs"]
 mod numerics;
 #[path = "coverage/tail_ok_coercion.rs"]

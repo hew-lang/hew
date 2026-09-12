@@ -13,7 +13,6 @@
 #   hew-suite    make test-hew-ratchet    `hew test tests/hew/`
 #   stdlib       make test-stdlib-ratchet `hew check` over std/**.hew
 #   hew-corpus   make hew-check-all       `hew check` over the tracked corpus
-#   doc-fences   make test-doc-examples   `hew check` over ```hew doc fences
 #
 # They differed in how the corpus is enumerated and run, and in the prose they
 # print. The comparison itself — parse the list, diff the two sets, refuse an
@@ -44,20 +43,17 @@
 #   scripts/corpus-ratchet.sh <corpus> [options]
 #   scripts/corpus-ratchet.sh --help
 #
-# Corpora: hew-suite | stdlib | hew-corpus | doc-fences
+# Corpora: hew-suite | stdlib | hew-corpus
 #
 # Options (accepted only for the corpora that define them):
 #   --expected-failures <path>  Override the corpus's expected-failures file.
-#   --hew-bin <path>            Override the hew binary.
-#                               [hew-corpus, doc-fences]
+#   --hew-bin <path>            Override the hew binary. [hew-corpus]
 #   --emit-o0-outcomes <path>   Write the sorted per-test outcome lines for
 #                               scripts/o2-differential.sh's --o0-outcomes to
 #                               reuse instead of re-running the identical O0
 #                               pass. [hew-suite]
 #   --junit-output <path>       Where to write the parsed JUnit report.
 #                               [hew-suite]
-#   --outdir <dir>              Scratch directory for extracted fences.
-#                               [doc-fences]
 #
 # The hew binary otherwise comes from $HEW_BIN, then from Cargo's resolved
 # debug output directory.
@@ -91,14 +87,12 @@ Corpora:
   hew-suite    `hew test tests/hew/`               (make test-hew-ratchet)
   stdlib       `hew check` over std/**.hew         (make test-stdlib-ratchet)
   hew-corpus   `hew check` over the tracked corpus (make hew-check-all)
-  doc-fences   `hew check` over ```hew doc fences  (make test-doc-examples)
 
 Options:
   --expected-failures <path>  Override the corpus's expected-failures file.
-  --hew-bin <path>            Override the hew binary.       [hew-corpus, doc-fences]
+  --hew-bin <path>            Override the hew binary.       [hew-corpus]
   --emit-o0-outcomes <path>   Write the O0 outcome set out.  [hew-suite]
   --junit-output <path>       Where to write the report.     [hew-suite]
-  --outdir <dir>              Fence scratch directory.       [doc-fences]
   --help                      Show this message.
 EOF
 }
@@ -110,7 +104,6 @@ EXPECTED_FAILURES_FILE=""
 HEW_BIN_ARG=""
 EMIT_O0_OUTCOMES_FILE=""
 JUNIT_OUTPUT_ARG=""
-OUTDIR_ARG=""
 
 if [[ $# -eq 0 ]]; then
     echo "error: a corpus is required" >&2
@@ -123,7 +116,7 @@ case "$1" in
     usage
     exit 0
     ;;
-hew-suite | stdlib | hew-corpus | doc-fences)
+hew-suite | stdlib | hew-corpus)
     CORPUS="$1"
     shift
     ;;
@@ -163,7 +156,7 @@ while [[ $# -gt 0 ]]; do
         shift 2
         ;;
     --hew-bin)
-        reject_unless_corpus --hew-bin hew-corpus doc-fences
+        reject_unless_corpus --hew-bin hew-corpus
         require_value "$@"
         HEW_BIN_ARG="$2"
         shift 2
@@ -178,12 +171,6 @@ while [[ $# -gt 0 ]]; do
         reject_unless_corpus --junit-output hew-suite
         require_value "$@"
         JUNIT_OUTPUT_ARG="$2"
-        shift 2
-        ;;
-    --outdir)
-        reject_unless_corpus --outdir doc-fences
-        require_value "$@"
-        OUTDIR_ARG="$2"
         shift 2
         ;;
     --help | -h)
@@ -330,7 +317,7 @@ find_expected_diagnostic() {
 }
 
 require_expected_failures_file() {
-    if [[ ! -f "$EXPECTED_FAILURES_FILE" ]]; then
+    if [[ ! -e "$EXPECTED_FAILURES_FILE" ]]; then
         echo "error: expected-failures file not found: $EXPECTED_FAILURES_FILE" >&2
         exit 1
     fi
@@ -392,7 +379,7 @@ RATCHET_TAIL_FN=""
 # or harness failure under the same fixture identity.
 RATCHET_REFUSAL_DRIFT_STR=""
 # Filled by RATCHET_EXTRA_FAIL_FN with the count of its own failure class, so a
-# corpus with a third mutation to detect (doc-fences' stale checksums) reports
+# corpus with an extra mutation class to detect beyond pass/fail reports
 # it without the shared core knowing what it is.
 RATCHET_EXTRA_FAIL_COUNT=0
 
@@ -765,7 +752,7 @@ stdlib_diagnostic() {
 #
 # Two conventions cover all known reject fixtures in the repo:
 #   1. Path contains /reject/ — files inside reject/ subdirectories, used by
-#      test-vertical-slice, test-pkg-import and fuzz-oracle. Multi-file reject
+#      core-acceptance and test-pkg-import. Multi-file reject
 #      cases include helper .hew files in the same directory that pass
 #      `hew check` individually; they are still part of the reject fixture.
 #   2. The basename contains "reject" — single-file reject tests use several
@@ -780,14 +767,12 @@ is_separately_gated_or_reject_fixture() {
     *"/reject/"*)
         return 0
         ;;
-    tests/core-matrix/cells/*)
-        # The core matrix is a deliberate enumeration of primitive x
-        # operation, so a large minority of its cells are combinations the
-        # compiler does not yet support. Their outcome is recorded per cell
-        # in tests/core-matrix/matrix.tsv and gated by make test-core-matrix,
-        # which fails on drift in either direction. Sweeping them here would
-        # duplicate that verdict as a second, weaker expected-failures list.
-        return 0
+    tests/core-acceptance/cases/*)
+        # The sibling manifest owns check/compile/run expectations, including
+        # deliberate diagnostics. Rechecking it here duplicates that oracle.
+        if [[ -f "$REPO_ROOT/${path%.hew}.toml" ]]; then
+            return 0
+        fi
         ;;
     tests/hew/*)
         # Files that contribute actual test cases are compiled and run through
@@ -810,18 +795,15 @@ is_separately_gated_or_reject_fixture() {
 
 HEW_CORPUS_DIAGNOSTIC_DRIFT=""
 HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT=0
-HEW_CORPUS_TMPDIR=""
 
 run_hew_corpus() {
     local swept=() excluded=0 total f
-    local check_log status expected_code actual_codes check_index=0
+    local check_log status expected_code actual_codes
 
     require_hew_bin
     require_expected_failures_file
     read_expected_failures
     HEW_CORPUS_DIAGNOSTIC_DRIFT=""
-    HEW_CORPUS_TMPDIR="$(mktemp -d)"
-    trap '[[ -z "${HEW_CORPUS_TMPDIR:-}" ]] || rm -rf "$HEW_CORPUS_TMPDIR"' EXIT
 
     # Enumerate the corpus first so the floor can reject an empty or shrunken
     # sweep before spending minutes type-checking it.
@@ -841,10 +823,8 @@ run_hew_corpus() {
 
     for f in "${swept[@]}"; do
         RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
-        check_index=$((check_index + 1))
-        check_log="$HEW_CORPUS_TMPDIR/check-$check_index.log"
         status=0
-        "$HEW_BIN" check "$REPO_ROOT/$f" >"$check_log" 2>&1 || status=$?
+        check_log="$("$HEW_BIN" check "$REPO_ROOT/$f" 2>&1)" || status=$?
         if ((status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
             if record_expected_refusal_status "$f" "$status" "$check_log" &&
@@ -912,417 +892,6 @@ hew_corpus_diagnostic() {
     "$HEW_BIN" check "$REPO_ROOT/$1" 2>&1 | sed -n '1,3{s/^/    /;p;}' || true
 }
 
-# ── Corpus: doc-fences ────────────────────────────────────────────────────────
-#
-# Extracts every ```hew fence from the language guide, the spec, the
-# docs/language/*.hew modules, and every std/**/*.hew doc comment into
-# individual files, then type-checks each one. A fence whose preceding five
-# lines carry a "Not yet implemented" callout or a `<!-- doctest: skip -->`
-# comment is SKIPPED — spec-ahead-of-implementation is not drift when a plan
-# exists. The default is fail-closed: a fence is checked unless marked.
-#
-# This corpus carries a third mutation class the others do not. Its
-# expected-failures entries are `<fence-id> <cksum>` pairs, so a fence whose
-# CONTENT changed under a listed id fails even when its verdict did not: the
-# root-cause label attached to that id was written about different text and has
-# to be re-verified rather than inherited by position.
-
-DOC_FENCE_OUTDIR=""
-DOC_FENCE_EXPECTED_CKSUM_STR=""
-DOC_FENCE_STALE=""
-DOC_FENCE_STALE_COUNT=0
-
-DOC_FENCE_SOURCES=(
-    "docs/hew-language-guide.md:guide"
-    "docs/specs/HEW-SPEC-2026.md:spec"
-)
-DOC_FENCE_LANGUAGE_DIR="$REPO_ROOT/docs/language"
-# Overridable so a test can point extraction at a small fixture tree instead
-# of the real std/ (hundreds of fences) to exercise the tri-state extractor.
-DOC_FENCE_STD_DIR="${DOC_FENCE_STD_DIR:-$REPO_ROOT/std}"
-STD_FENCE_SOURCES=()
-
-# Substrings that, in the five lines before a ```hew fence, mark it skippable.
-DOC_FENCE_NYI_PATTERNS=("Not yet implemented" "doctest: skip" "doctest:skip")
-
-DOC_FENCE_IDS=()
-DOC_FENCE_SKIPPED=()
-
-doc_fence_add_language_sources() {
-    local language_doc language_name relative_path
-    local found=0
-
-    if [[ ! -d "$DOC_FENCE_LANGUAGE_DIR" ]]; then
-        echo "error: language documentation directory not found: $DOC_FENCE_LANGUAGE_DIR" >&2
-        exit 1
-    fi
-
-    while IFS= read -r language_doc; do
-        found=1
-        relative_path="${language_doc#"$REPO_ROOT"/}"
-        language_name="${language_doc##*/}"
-        language_name="${language_name%.hew}"
-        DOC_FENCE_SOURCES+=("$relative_path:lang-$language_name")
-    done < <(find "$DOC_FENCE_LANGUAGE_DIR" -maxdepth 1 -type f -name '*.hew' -print | LC_ALL=C sort)
-
-    if ((found == 0)); then
-        echo "error: no language documentation modules found in $DOC_FENCE_LANGUAGE_DIR" >&2
-        exit 1
-    fi
-}
-
-# std/**/*.hew doc comments use a different fencing convention than the guide
-# and spec: item-level `///` comments (not only module-level `//!`), and a
-# BARE ``` open (implicit hew — the only language std fences are written in)
-# rather than an explicit ```hew tag. A handful of fences carry an explicit
-# non-hew tag (e.g. ```text) that must stay excluded. doc_fence_extract's
-# open condition (`stripped == '```hew'` only) and prefix strip (`//!` only)
-# don't cover either case, so std gets its own enumerator and extractor
-# instead of overloading the guide/spec one and risking a change in behaviour
-# there.
-# STD_FENCE_SOURCES pairs carry the ABSOLUTE file path (unlike
-# DOC_FENCE_SOURCES's REPO_ROOT-relative paths) because DOC_FENCE_STD_DIR is
-# overridable to a fixture tree outside REPO_ROOT for testing; run_doc_fences
-# uses the std entries as-is instead of rejoining them under REPO_ROOT.
-doc_fence_add_std_sources() {
-    local std_file relative_path slug
-    local found=0
-
-    if [[ ! -d "$DOC_FENCE_STD_DIR" ]]; then
-        echo "error: standard library directory not found: $DOC_FENCE_STD_DIR" >&2
-        exit 1
-    fi
-
-    while IFS= read -r std_file; do
-        found=1
-        relative_path="${std_file#"$DOC_FENCE_STD_DIR"/}"
-        slug="${relative_path%.hew}"
-        slug="${slug//\//-}"
-        STD_FENCE_SOURCES+=("$std_file:std-$slug")
-    done < <(find "$DOC_FENCE_STD_DIR" -type f -name '*.hew' -not -path '*/target/*' -print | LC_ALL=C sort)
-
-    if ((found == 0)); then
-        echo "error: no standard library modules found in $DOC_FENCE_STD_DIR" >&2
-        exit 1
-    fi
-}
-
-doc_fence_extract() {
-    local filepath="$1"
-    local prefix="$2"
-    local lines=()
-    local line total fence_num i stripped fence_id skip j ctx_line marker
-    local content fline fstripped outfile strip_doc_prefix=0
-
-    [[ "$filepath" == *.hew ]] && strip_doc_prefix=1
-
-    # mapfile requires bash 4; use a while loop for bash 3 (macOS ships 3.x).
-    while IFS= read -r line; do
-        if ((strip_doc_prefix)); then
-            case "$line" in
-            '//!'*)
-                line="${line#//!}"
-                line="${line# }"
-                ;;
-            *) line="" ;;
-            esac
-        fi
-        lines+=("$line")
-    done <"$filepath"
-
-    total="${#lines[@]}"
-    fence_num=0
-    i=0
-
-    while ((i < total)); do
-        line="${lines[$i]}"
-        stripped="${line%%$'\r'}"
-        if [[ "$stripped" != '```hew' ]]; then
-            ((i += 1))
-            continue
-        fi
-
-        fence_num=$((fence_num + 1))
-        printf -v fence_id "%s-%04d" "$prefix" "$fence_num"
-
-        skip=0
-        for ((j = i > 5 ? i - 5 : 0; j < i; j++)); do
-            ctx_line="${lines[$j]}"
-            for marker in "${DOC_FENCE_NYI_PATTERNS[@]}"; do
-                if [[ "$ctx_line" == *"$marker"* ]]; then
-                    skip=1
-                    break 2
-                fi
-            done
-        done
-
-        ((i += 1))
-        content=""
-        while ((i < total)); do
-            fline="${lines[$i]}"
-            fstripped="${fline%%$'\r'}"
-            if [[ "$fstripped" == '```' ]]; then
-                ((i += 1))
-                break
-            fi
-            content="${content}${fline}"$'\n'
-            ((i += 1))
-        done
-
-        outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
-        printf '%s' "$content" >"$outfile"
-
-        DOC_FENCE_IDS+=("$fence_id")
-        DOC_FENCE_SKIPPED+=("$skip")
-    done
-}
-
-# std's counterpart to doc_fence_extract: strips both `//!` and `///` doc
-# prefixes, and tracks a third "inside a non-hew fence" state so a bare ```
-# that closes e.g. a ```text block is never mistaken for the open of the next
-# implicit-hew fence (which is itself opened by a bare ```, since std never
-# tags its own fences ```hew). Content lines outside any comment prefix have
-# already been blanked by the strip pass, so a fence body line is never
-# confused with a fence delimiter.
-doc_fence_extract_std() {
-    local filepath="$1"
-    local prefix="$2"
-    local lines=()
-    local line total fence_num i stripped fence_id skip j ctx_line marker
-    local content fline fstripped outfile in_other=0
-
-    while IFS= read -r line; do
-        # doc comments on trait/impl members are indented (unlike the
-        # module-level `//!` sources doc_fence_extract handles), so the
-        # comment marker is matched after trimming leading whitespace rather
-        # than only at column 0.
-        local trimmed="${line#"${line%%[![:space:]]*}"}"
-        case "$trimmed" in
-        '//!'*)
-            line="${trimmed#//!}"
-            line="${line# }"
-            ;;
-        '///'*)
-            line="${trimmed#///}"
-            line="${line# }"
-            ;;
-        *) line="" ;;
-        esac
-        lines+=("$line")
-    done <"$filepath"
-
-    total="${#lines[@]}"
-    fence_num=0
-    i=0
-
-    while ((i < total)); do
-        line="${lines[$i]}"
-        stripped="${line%%$'\r'}"
-
-        if ((in_other)); then
-            [[ "$stripped" == '```' ]] && in_other=0
-            ((i += 1))
-            continue
-        fi
-
-        if [[ "$stripped" != '```' && "$stripped" != '```hew' ]]; then
-            [[ "$stripped" == '```'* ]] && in_other=1
-            ((i += 1))
-            continue
-        fi
-
-        fence_num=$((fence_num + 1))
-        printf -v fence_id "%s-%04d" "$prefix" "$fence_num"
-
-        skip=0
-        for ((j = i > 5 ? i - 5 : 0; j < i; j++)); do
-            ctx_line="${lines[$j]}"
-            for marker in "${DOC_FENCE_NYI_PATTERNS[@]}"; do
-                if [[ "$ctx_line" == *"$marker"* ]]; then
-                    skip=1
-                    break 2
-                fi
-            done
-        done
-
-        ((i += 1))
-        content=""
-        while ((i < total)); do
-            fline="${lines[$i]}"
-            fstripped="${fline%%$'\r'}"
-            if [[ "$fstripped" == '```' ]]; then
-                ((i += 1))
-                break
-            fi
-            content="${content}${fline}"$'\n'
-            ((i += 1))
-        done
-
-        outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
-        printf '%s' "$content" >"$outfile"
-
-        DOC_FENCE_IDS+=("$fence_id")
-        DOC_FENCE_SKIPPED+=("$skip")
-    done
-}
-
-# doc-fences' expected-failures entries carry a checksum, so the shared
-# name-only parser is not enough: the pair is validated here and the names are
-# handed to EXPECTED_STR in the same form every other corpus uses.
-doc_fence_read_expected() {
-    local line fields name recorded_cksum extra_field
-    EXPECTED_STR=""
-    DOC_FENCE_EXPECTED_CKSUM_STR=""
-    while IFS= read -r line; do
-        fields="${line%%#*}"
-        fields="${fields#"${fields%%[! ]*}"}"
-        fields="${fields%"${fields##*[! ]}"}"
-        [[ -z "$fields" ]] && continue
-        name=""
-        recorded_cksum=""
-        extra_field=""
-        read -r name recorded_cksum extra_field <<<"$fields"
-        if [[ -z "$name" || -z "$recorded_cksum" || -n "$extra_field" ]]; then
-            echo "error: expected-failures entry must be: <fence-id> <cksum>" >&2
-            echo "       bad entry: $line" >&2
-            exit 1
-        fi
-        if [[ ! "$recorded_cksum" =~ ^[0-9]+$ ]]; then
-            echo "error: expected-failures checksum must be decimal cksum output" >&2
-            echo "       bad entry: $line" >&2
-            exit 1
-        fi
-        EXPECTED_STR="${EXPECTED_STR}${name}"$'\n'
-        DOC_FENCE_EXPECTED_CKSUM_STR="${DOC_FENCE_EXPECTED_CKSUM_STR}${name} ${recorded_cksum}"$'\n'
-    done <"$EXPECTED_FAILURES_FILE"
-}
-
-run_doc_fences() {
-    local entry doc_path prefix full_path total_fences
-    local pass=0 fail=0 skip=0 idx fence_id is_skip outfile check_rc check_log
-
-    DOC_FENCE_OUTDIR="${OUTDIR_ARG:-$REPO_ROOT/.tmp/doc-fences}"
-
-    require_hew_bin
-    require_expected_failures_file
-    mkdir -p "$DOC_FENCE_OUTDIR"
-    doc_fence_add_language_sources
-
-    echo "==> Doc-test harness: extracting hew fences from docs/ and std/"
-    for entry in "${DOC_FENCE_SOURCES[@]}"; do
-        doc_path="${entry%%:*}"
-        prefix="${entry##*:}"
-        full_path="$REPO_ROOT/$doc_path"
-        if [[ ! -f "$full_path" ]]; then
-            echo "error: required doc-fence source not found: $full_path" >&2
-            exit 1
-        fi
-        echo "  Scanning: $doc_path"
-        doc_fence_extract "$full_path" "$prefix"
-    done
-
-    echo "  Scanning: std/ (standard library doc fences)"
-    doc_fence_add_std_sources
-    for entry in "${STD_FENCE_SOURCES[@]}"; do
-        # Unlike DOC_FENCE_SOURCES, entries here already carry an absolute
-        # path (see doc_fence_add_std_sources) — do not rejoin with REPO_ROOT.
-        full_path="${entry%%:*}"
-        doc_fence_extract_std "$full_path" "${entry##*:}"
-    done
-
-    total_fences="${#DOC_FENCE_IDS[@]}"
-    echo "  Extracted: $total_fences fences total"
-
-    # An extraction that produced nothing (a renamed doc, a changed fence
-    # marker) would make both sets trivially agree once the expected list is
-    # empty, so the extracted count is floored before anything is compared.
-    corpus_nonempty_assert "doc-hew-fences" "$total_fences" || exit 1
-
-    doc_fence_read_expected
-
-    for ((idx = 0; idx < total_fences; idx++)); do
-        fence_id="${DOC_FENCE_IDS[$idx]}"
-        RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${fence_id}"$'\n'
-        is_skip="${DOC_FENCE_SKIPPED[$idx]}"
-        outfile="$DOC_FENCE_OUTDIR/${fence_id}.hew"
-
-        if [[ "$is_skip" == "1" ]]; then
-            skip=$((skip + 1))
-            continue
-        fi
-
-        check_rc=0
-        check_log="$("$HEW_BIN" check "$outfile" 2>&1)" || check_rc=$?
-
-        if [[ "$check_rc" == "0" ]]; then
-            pass=$((pass + 1))
-            RATCHET_PASSED_STR="${RATCHET_PASSED_STR}${fence_id}"$'\n'
-        else
-            fail=$((fail + 1))
-            ACTUAL_STR="${ACTUAL_STR}${fence_id}"$'\n'
-            record_expected_refusal_status "$fence_id" "$check_rc" "$check_log"
-        fi
-    done
-
-    echo ""
-    echo "==> Results: $pass passed, $fail failed, $skip skipped (NYI/aspirational)"
-    echo "    Total fences: $total_fences"
-    echo ""
-    echo "==> Doc-test ratchet"
-    echo "    Expected failures: $(count_set "$EXPECTED_STR")"
-    echo "    Actual failures:   $(count_set "$ACTUAL_STR")"
-}
-
-# Reached through RATCHET_DIAGNOSTIC_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2317,SC2329
-doc_fence_diagnostic() {
-    local outfile first_err
-    outfile="$DOC_FENCE_OUTDIR/${1}.hew"
-    # hew check is expected to fail here; capture without letting the non-zero
-    # exit abort the script under set -e / pipefail.
-    first_err="$("$HEW_BIN" check "$outfile" 2>&1 || true)"
-    first_err="${first_err%%$'\n'*}"
-    echo "  UNEXPECTED: $1  ($first_err)"
-}
-
-# Third mutation class: content changed under a listed id, so the root-cause
-# label must be re-verified instead of trusted by position alone.
-# Reached through RATCHET_EXTRA_FAIL_FN; shellcheck cannot see an indirect call.
-# shellcheck disable=SC2317,SC2329
-doc_fence_extra_failures() {
-    local entry name recorded_cksum actual_cksum outfile plural
-
-    case "$1" in
-    detect)
-        DOC_FENCE_STALE=""
-        while IFS= read -r entry; do
-            [[ -z "$entry" ]] && continue
-            read -r name recorded_cksum <<<"$entry"
-            outfile="$DOC_FENCE_OUTDIR/${name}.hew"
-            [[ -f "$outfile" ]] || continue
-            actual_cksum="$(cksum "$outfile" | awk '{print $1}')"
-            if [[ "$recorded_cksum" != "$actual_cksum" ]]; then
-                DOC_FENCE_STALE="${DOC_FENCE_STALE}${name} ${recorded_cksum} ${actual_cksum}"$'\n'
-            fi
-        done <<<"$DOC_FENCE_EXPECTED_CKSUM_STR"
-        DOC_FENCE_STALE_COUNT="$(count_set "$DOC_FENCE_STALE")"
-        RATCHET_EXTRA_FAIL_COUNT="$DOC_FENCE_STALE_COUNT"
-        ;;
-    report)
-        ((DOC_FENCE_STALE_COUNT > 0)) || return 0
-        plural="ies"
-        ((DOC_FENCE_STALE_COUNT == 1)) && plural="y"
-        echo "RATCHET FAIL: $DOC_FENCE_STALE_COUNT stale expected-failure metadata entr${plural}:"
-        while IFS= read -r entry; do
-            [[ -z "$entry" ]] && continue
-            read -r name recorded_cksum actual_cksum <<<"$entry"
-            echo "  STALE METADATA: $name content changed since label was written (recorded=$recorded_cksum actual=$actual_cksum) — re-verify and update the label"
-        done <<<"$DOC_FENCE_STALE"
-        echo ""
-        ;;
-    esac
-}
-
 # ── Corpus table ──────────────────────────────────────────────────────────────
 
 case "$CORPUS" in
@@ -1366,24 +935,6 @@ hew-corpus)
   $EXPECTED_FAILURES_FILE
   (Do not restore a failing entry to make this green — fix the file.)"
     run_hew_corpus
-    ;;
-doc-fences)
-    EXPECTED_FAILURES_FILE="${EXPECTED_FAILURES_FILE:-$REPO_ROOT/scripts/doc-test-expected-failures.txt}"
-    RATCHET_INDENT="    "
-    RATCHET_ALL_PASS_TEXT="All doc fences pass. Consider removing the expected-failures file."
-    RATCHET_ALL_PASS_LEADING_BLANK=1
-    RATCHET_FAIL_LEADING_BLANK=1
-    RATCHET_VERDICT_LABEL="Doc-test ratchet"
-    RATCHET_DIAGNOSTIC_FN=doc_fence_diagnostic
-    RATCHET_EXTRA_FAIL_FN=doc_fence_extra_failures
-    RATCHET_UNEXPECTED_HELP="  A doc fence that previously passed now fails — this is a documentation
-  regression.  Fix the fence in the doc file, OR if the failure is
-  intentional (e.g. the surface is now NYI), add a '<!-- doctest: skip -->'
-  comment before the fence and remove it from the expected-failures list.
-  To accept as a known failure (discouraged): add to $EXPECTED_FAILURES_FILE"
-    RATCHET_NOWPASS_HELP="  Delete these lines from: $EXPECTED_FAILURES_FILE
-  (Do not restore a failing entry to keep this green — fix the docs.)"
-    run_doc_fences
     ;;
 esac
 

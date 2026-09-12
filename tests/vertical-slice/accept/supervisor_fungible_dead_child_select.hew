@@ -1,28 +1,9 @@
-// F-04 fail-closed guard for the SELECT-ask path: a `select` arm asking a
-// fungible reference to a PERMANENTLY-DEAD child fail-closes recoverably — the
-// dead-child arm is skipped (it never becomes ready), so the select falls
-// through to its `after` arm. It NEVER traps the program.
-//
-// The budget is intensity 1: a sustained crash loop exhausts it, so the child
-// ends permanently Dead (BudgetExhausted) and will never restart again. Each
-// crash drives through the SAME held fungible handle, re-resolving to the
-// current child.
-//
-// Once the child is down, a single-shot ask returns Err (the recoverable arm,
-// 20) and the select's dead-child ask arm is skipped so the `after 100ms` arm
-// wins (25). The printed `46` = 20 + 25 + 1 is the sentinel proving BOTH the
-// single-shot ask Err'd AND the select reached its after arm — neither trapped.
-// Pre-F-04 the select-ask through the dead handle issued a failed setup status
-// that codegen treated as process-fatal (HEW_TRAP_ACTOR_SEND_FAILED → SIGTRAP,
-// exit 133), even though the tell + single-shot ask siblings already
-// fail-closed.
-//
-// The sentinel is printed, not returned: exhausting a ROOT supervisor's restart
-// budget leaves the fault unrecovered at the top of the supervision tree, so it
-// owns the process exit status (HEW-SPEC-2026 §5.8, exit 1). Exit 1 versus a
-// SIGTRAP's 133 still carries the no-trap claim.
+// A permanently dead supervised role produces a ready error in both an
+// ordinary call and a select arm. The error arm must beat the timer without
+// trapping. Exhausting the root supervisor's restart budget still owns the
+// process exit status; the stdout sentinel proves the recoverable call results.
 actor Worker {
-    var value: i64 = 5;
+    var value: i64 = 5,
     receive fn get_value() -> i64 {
         value
     }
@@ -32,10 +13,10 @@ actor Worker {
 }
 
 supervisor App {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
+    strategy: one_for_one,
+    intensity: 1 within 60s,
 
-    child w1: Worker(value: 5);
+    child w1: Worker(value: 5),
 }
 
 fn main() -> i64 {
@@ -49,12 +30,12 @@ fn main() -> i64 {
     var attempts: i64 = 0;
     var dead = false;
     while attempts < 30 && !dead {
-        let alive = match await w.get_value() {
+        let alive = match w.get_value() {
             .Ok(_) => true,
             .Err(_) => false,
         };
         if alive {
-            w.crash_me();
+            let _ = w.crash_me();
             sleep(120ms);
         } else {
             dead = true;
@@ -69,15 +50,17 @@ fn main() -> i64 {
     sleep(200ms);
 
     // Single-shot ask to a permanently-dead child: recoverable Err, NOT a trap.
-    let ask_code = match await w.get_value() {
+    let ask_code = match w.get_value() {
         .Ok(_) => 1,
         .Err(_) => 20,
     };
-    // Select-ask through the same dead fungible handle: the dead-child arm is
-    // skipped (never ready), so the `after` arm wins — NOT a trap.
+    // A terminal error is a completion, not an indefinitely pending source.
     let select_code = select {
-        reply from w.get_value() => reply,
-        after 100ms => 25,
+        reply from w.get_value() => match reply {
+            .Ok(value) => value,
+            .Err(_) => 25,
+        },
+        after 100ms => 500,
     };
     let sentinel = if ask_code == 20 && select_code == 25 {
         46

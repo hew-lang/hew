@@ -7,8 +7,8 @@
 // use-after-free garbles the totals; a double-free aborts), Ok and Err arms
 // are both taken, and break/continue exercise the loop-exit edges.
 type Row {
-    name: string;
-    id: i64;
+    name: string,
+    id: i64,
 }
 
 fn ok_bytes(n: i64) -> Result<bytes, string> {

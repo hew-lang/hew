@@ -1,0 +1,12 @@
+[[case]]
+id = "file-resource-fault"
+intent = "A checked arithmetic fault releases simultaneous local, record, captured and caller file owners while preserving the original failure."
+source = "cases/file-resource-fault.hew"
+fixtures = "fixtures/file-resources"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

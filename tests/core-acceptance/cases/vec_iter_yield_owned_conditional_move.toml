@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_iter_yield_owned_conditional_move"
+intent = "A conditionally moved owned element yielded from a Vec iterator is observed once per pass."
+source = "../vertical-slice/accept/vec_iter_yield_owned_conditional_move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "n=3\nn=3\nconditional-move-ok\n"
+exit = 0

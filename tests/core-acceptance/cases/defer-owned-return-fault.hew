@@ -1,0 +1,8 @@
+fn saved() -> string {
+    defer { panic("cleanup"); }
+    return "été\0saved".to_upper();
+}
+
+fn main() {
+    println(saved());
+}

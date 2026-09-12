@@ -1,0 +1,13 @@
+[[case]]
+id = "borrow_type_outside_extern"
+intent = "The fixture is refused, and the refusal names Other."
+source = "../vertical-slice/reject/borrow_type_outside_extern.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 1
+column = 20
+message = "`&T` is only allowed in `extern` function signatures; write `T` in ordinary Hew code"

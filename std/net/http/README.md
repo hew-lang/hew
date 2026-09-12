@@ -1,36 +1,28 @@
-# std::net::http
+# std.net.http
 
-std::net::http — HTTP client and server
+HTTP client and server helpers. The package contains the inbound server at
+`std.net.http` and outbound requests at `std.net.http.http_client`.
 
-The package contains the inbound server surface at `std::net::http` and the
-bounded outbound client surface at `std::net::http::http_client`.
+## HTTP/1.1 codecs
 
-## Async (`await`) HTTP/1.1 surface
+The pure Hew codecs operate on `std.net` connections:
 
-Two `await`-suspended codecs let an actor serve and fetch HTTP/1.1 without
-stranding a scheduler worker — the suspend points free the worker while I/O is
-pending and the reactor resumes the handler when it is ready:
+- `std.net.http.http_async_client`: build a request with `build_get` or
+  `build_request`, read with `conn.read()`, and parse accumulated bytes with
+  `parse_response`. `AsyncResponse` exposes `status()`, `body()`, `header()`
+  and `content_type()`.
+- `std.net.http.http_async_server`: call `listener.accept()`, read until
+  `request_complete()`, parse with `parse_request`, and write a response built
+  by `response_text`, `response_json` or `build_response`.
 
-- `std::net::http::http_async_client` — build a request with `build_get` /
-  `build_request`, split a URL with `split_address` / `host_of`, then drive an
-  inline `await conn.read()` loop and parse the bytes with `parse_response`
-  into an `AsyncResponse` (`status()` / `body()` / `header()` / `content_type()`).
-- `std::net::http::http_async_server` — create a listener with `net.listen`,
-  `await listener.accept()` a connection, drive an inline `await conn.read()`
-  loop until `request_complete()`, parse with `parse_request`, and reply with
-  the bytes from `response_text` / `response_json` / `build_response`.
+Calls wait directly. Accept and read can suspend the caller while I/O is
+pending. Use `fork` when the client and server must make progress concurrently;
+`await` joins the resulting task. Keep connection handles local to the handler
+and release them through consuming `close()` or scope cleanup.
 
-The suspend points are the inline `await listener.accept()` (the
-`SuspendingAccept` carrier) and `await conn.read()` (the `SuspendingRead`
-carrier); the codecs themselves are pure Hew. `Listener`/`Connection` handles
-are handler LOCALs, never actor state (the supervisor-restart clone gate rejects
-opaque handles in state).
+These codecs buffer HTTP/1.1 bodies and use a connection per request. They do
+not provide HTTPS or connection pooling. The separate `http_client` uses a
+blocking native engine. Codec declarations and examples are not evidence that
+all native or sandbox networking paths have passed acceptance.
 
-**Scope (v0.5.0):** HTTP/1.1 only, fully-buffered request/response bodies, one
-connection per request/accept (`Connection: close`, read-to-close framing).
-Streaming bodies are NEW-7; HTTPS is BUG-NET-3; connection pooling and a
-suspending connect/write are v0.5.1. The blocking `http_client` (native engine)
-and blocking `http` server stay for `main`/synchronous callers. See
-`examples/net/await_http_roundtrip.hew` for a runnable round trip.
-
-Part of the [Hew](https://hew.sh) standard library. See the [std overview](../../README.md) for all modules.
+See the [standard library overview](../../README.md) for all modules.

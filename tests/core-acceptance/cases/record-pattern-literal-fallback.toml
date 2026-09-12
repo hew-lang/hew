@@ -1,0 +1,10 @@
+[[case]]
+id = "record-pattern-literal-fallback"
+intent = "An ordered record pattern chain selects on integer and owned-string field tests, leaves the scrutinee whole for each later candidate, and covers an all-scalar tuple with no aggregate storage."
+source = "cases/record-pattern-literal-fallback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "zero\nreading-b\ntagged\nother\n9\n4\n"
+exit = 0

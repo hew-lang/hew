@@ -1,0 +1,13 @@
+[[case]]
+id = "isize_shift_boundary"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/isize_shift_boundary.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -14,35 +14,35 @@ if [[ "${1:-}" == "--worker" ]]; then
     result_file="$(mktemp "$results_dir/$action.result.XXXXXX")"
 
     case "$action" in
-        discover)
-            if "$worker_hew_bin" check --project-dir "$worker_repo_root" \
-                "$worker_repo_root/$rel" >/dev/null 2>&1; then
-                printf 'compilable\t%s\n' "$rel" > "$result_file"
-            else
-                printf 'not_compilable\t%s\n' "$rel" > "$result_file"
-            fi
-            ;;
-        format)
-            if "$worker_hew_bin" fmt "$worker_mirror_root/$rel" >/dev/null 2>&1; then
-                printf 'formatted\t%s\n' "$rel" > "$result_file"
-            else
-                printf 'format_failure\t%s\n' "$rel" > "$result_file"
-            fi
-            ;;
-        validate)
-            : > "$result_file"
-            if ! "$worker_hew_bin" check --project-dir "$worker_mirror_root" \
-                "$worker_mirror_root/$rel" >/dev/null 2>&1; then
-                printf 'check_failure\t%s\n' "$rel" >> "$result_file"
-            fi
-            if ! "$worker_hew_bin" fmt --check "$worker_mirror_root/$rel" >/dev/null 2>&1; then
-                printf 'idempotence_failure\t%s\n' "$rel" >> "$result_file"
-            fi
-            ;;
-        *)
-            echo "error: unknown formatter property worker action: $action" >&2
-            exit 2
-            ;;
+    discover)
+        if "$worker_hew_bin" check --project-dir "$worker_repo_root" \
+            "$worker_repo_root/$rel" >/dev/null 2>&1; then
+            printf 'compilable\t%s\n' "$rel" >"$result_file"
+        else
+            printf 'not_compilable\t%s\n' "$rel" >"$result_file"
+        fi
+        ;;
+    format)
+        if "$worker_hew_bin" fmt "$worker_mirror_root/$rel" >/dev/null 2>&1; then
+            printf 'formatted\t%s\n' "$rel" >"$result_file"
+        else
+            printf 'format_failure\t%s\n' "$rel" >"$result_file"
+        fi
+        ;;
+    validate)
+        : >"$result_file"
+        if ! "$worker_hew_bin" check --project-dir "$worker_mirror_root" \
+            "$worker_mirror_root/$rel" >/dev/null 2>&1; then
+            printf 'check_failure\t%s\n' "$rel" >>"$result_file"
+        fi
+        if ! "$worker_hew_bin" fmt --check "$worker_mirror_root/$rel" >/dev/null 2>&1; then
+            printf 'idempotence_failure\t%s\n' "$rel" >>"$result_file"
+        fi
+        ;;
+    *)
+        echo "error: unknown formatter property worker action: $action" >&2
+        exit 2
+        ;;
     esac
     exit 0
 fi
@@ -63,37 +63,32 @@ repo_total=0
 vertical_candidates=0
 hew_test_candidates=0
 example_candidates=0
-core_matrix_candidates=0
 stdlib_candidates=0
 while IFS= read -r -d '' path; do
     repo_total=$((repo_total + 1))
     case "$path" in
-        tests/vertical-slice/*)
-            CORPUS_FILES+=("$path")
-            vertical_candidates=$((vertical_candidates + 1))
-            ;;
-        tests/hew/*)
-            CORPUS_FILES+=("$path")
-            hew_test_candidates=$((hew_test_candidates + 1))
-            ;;
-        examples/*)
-            CORPUS_FILES+=("$path")
-            example_candidates=$((example_candidates + 1))
-            ;;
-        tests/core-matrix/cells/*)
-            CORPUS_FILES+=("$path")
-            core_matrix_candidates=$((core_matrix_candidates + 1))
-            ;;
-        std/*)
-            CORPUS_FILES+=("$path")
-            stdlib_candidates=$((stdlib_candidates + 1))
-            ;;
+    tests/vertical-slice/*)
+        CORPUS_FILES+=("$path")
+        vertical_candidates=$((vertical_candidates + 1))
+        ;;
+    tests/hew/*)
+        CORPUS_FILES+=("$path")
+        hew_test_candidates=$((hew_test_candidates + 1))
+        ;;
+    examples/*)
+        CORPUS_FILES+=("$path")
+        example_candidates=$((example_candidates + 1))
+        ;;
+    std/*)
+        CORPUS_FILES+=("$path")
+        stdlib_candidates=$((stdlib_candidates + 1))
+        ;;
     esac
 done < <(git -C "$REPO_ROOT" ls-files -z -- '*.hew')
 
 candidate_count=${#CORPUS_FILES[@]}
 outside_count=$((repo_total - candidate_count))
-if (( candidate_count == 0 )); then
+if ((candidate_count == 0)); then
     echo "error: formatter property corpus is empty" >&2
     exit 1
 fi
@@ -122,8 +117,8 @@ cp -R "$REPO_ROOT/tests" "$MIRROR_ROOT/tests"
 run_workers() {
     local action="$1"
     shift
-    printf '%s\0' "$@" \
-        | xargs -0 -n 1 -P "$jobs" bash "$0" --worker "$action" "$RESULTS_DIR" \
+    printf '%s\0' "$@" |
+        xargs -0 -n 1 -P "$jobs" bash "$0" --worker "$action" "$RESULTS_DIR" \
             "$HEW_BIN" "$REPO_ROOT" "$MIRROR_ROOT"
 }
 
@@ -135,40 +130,36 @@ not_compilable=0
 vertical_compilable=0
 hew_test_compilable=0
 example_compilable=0
-core_matrix_compilable=0
 stdlib_compilable=0
 COMPILED_FILES=()
 for result_file in "$RESULTS_DIR"/discover.result.*; do
-    IFS=$'\t' read -r kind rel < "$result_file"
+    IFS=$'\t' read -r kind rel <"$result_file"
     case "$kind" in
-        compilable)
-            compilable=$((compilable + 1))
-            COMPILED_FILES+=("$rel")
-            case "$rel" in
-                tests/vertical-slice/*)
-                    vertical_compilable=$((vertical_compilable + 1))
-                    ;;
-                tests/hew/*)
-                    hew_test_compilable=$((hew_test_compilable + 1))
-                    ;;
-                examples/*)
-                    example_compilable=$((example_compilable + 1))
-                    ;;
-                tests/core-matrix/cells/*)
-                    core_matrix_compilable=$((core_matrix_compilable + 1))
-                    ;;
-                std/*)
-                    stdlib_compilable=$((stdlib_compilable + 1))
-                    ;;
-            esac
+    compilable)
+        compilable=$((compilable + 1))
+        COMPILED_FILES+=("$rel")
+        case "$rel" in
+        tests/vertical-slice/*)
+            vertical_compilable=$((vertical_compilable + 1))
             ;;
-        not_compilable)
-            not_compilable=$((not_compilable + 1))
+        tests/hew/*)
+            hew_test_compilable=$((hew_test_compilable + 1))
             ;;
-        *)
-            echo "error: unknown formatter discovery result: $kind" >&2
-            exit 1
+        examples/*)
+            example_compilable=$((example_compilable + 1))
             ;;
+        std/*)
+            stdlib_compilable=$((stdlib_compilable + 1))
+            ;;
+        esac
+        ;;
+    not_compilable)
+        not_compilable=$((not_compilable + 1))
+        ;;
+    *)
+        echo "error: unknown formatter discovery result: $kind" >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -177,19 +168,19 @@ FORMATTED_FILES=()
 FAILURES=()
 run_workers format "${COMPILED_FILES[@]}"
 for result_file in "$RESULTS_DIR"/format.result.*; do
-    IFS=$'\t' read -r kind rel < "$result_file"
+    IFS=$'\t' read -r kind rel <"$result_file"
     case "$kind" in
-        formatted)
-            FORMATTED_FILES+=("$rel")
-            ;;
-        format_failure)
-            format_failures=$((format_failures + 1))
-            FAILURES+=("$rel: first format failed")
-            ;;
-        *)
-            echo "error: unknown formatter result: $kind" >&2
-            exit 1
-            ;;
+    formatted)
+        FORMATTED_FILES+=("$rel")
+        ;;
+    format_failure)
+        format_failures=$((format_failures + 1))
+        FAILURES+=("$rel: first format failed")
+        ;;
+    *)
+        echo "error: unknown formatter result: $kind" >&2
+        exit 1
+        ;;
     esac
 done
 
@@ -201,29 +192,29 @@ run_workers validate "${FORMATTED_FILES[@]}"
 for result_file in "$RESULTS_DIR"/validate.result.*; do
     while IFS=$'\t' read -r kind rel; do
         case "$kind" in
-            check_failure)
-                check_failures=$((check_failures + 1))
-                FAILURES+=("$rel: formatted text failed parse/check")
-                ;;
-            idempotence_failure)
-                idempotence_failures=$((idempotence_failures + 1))
-                FAILURES+=("$rel: second format changed bytes")
-                ;;
-            *)
-                echo "error: unknown formatter validation result: $kind" >&2
-                exit 1
-                ;;
+        check_failure)
+            check_failures=$((check_failures + 1))
+            FAILURES+=("$rel: formatted text failed parse/check")
+            ;;
+        idempotence_failure)
+            idempotence_failures=$((idempotence_failures + 1))
+            FAILURES+=("$rel: second format changed bytes")
+            ;;
+        *)
+            echo "error: unknown formatter validation result: $kind" >&2
+            exit 1
+            ;;
         esac
-    done < "$result_file"
+    done <"$result_file"
 done
 
 echo "==> Hew formatter behaviour-preservation property"
 echo "Total tracked .hew files:        $repo_total"
 echo "Outside property roots:         $outside_count"
 echo "Candidates discovered:          $candidate_count"
-echo "Candidate roots: vertical-slice=$vertical_candidates tests/hew=$hew_test_candidates examples=$example_candidates core-matrix=$core_matrix_candidates std=$stdlib_candidates"
+echo "Candidate roots: vertical-slice=$vertical_candidates tests/hew=$hew_test_candidates examples=$example_candidates std=$stdlib_candidates"
 echo "Original files compilable:      $compilable"
-echo "Compilable roots: vertical-slice=$vertical_compilable tests/hew=$hew_test_compilable examples=$example_compilable core-matrix=$core_matrix_compilable std=$stdlib_compilable"
+echo "Compilable roots: vertical-slice=$vertical_compilable tests/hew=$hew_test_compilable examples=$example_compilable std=$stdlib_compilable"
 echo "Original files not compilable:  $not_compilable"
 echo "First-format failures:          $format_failures"
 echo "Formatted parse/check failures: $check_failures"
@@ -233,13 +224,13 @@ floor_failed=0
 corpus_nonempty_assert "hew-fmt-property-files" "$compilable" \
     "compilable files formatted, rechecked, and checked for idempotence" || floor_failed=1
 
-if (( ${#FAILURES[@]} > 0 )); then
+if ((${#FAILURES[@]} > 0)); then
     echo ""
     echo "Formatter property failures:" >&2
     printf '  - %s\n' "${FAILURES[@]}" | sort >&2
 fi
 
-if (( floor_failed != 0 || ${#FAILURES[@]} > 0 )); then
+if ((floor_failed != 0 || ${#FAILURES[@]} > 0)); then
     echo "==> Hew formatter behaviour-preservation property: FAILED" >&2
     exit 1
 fi

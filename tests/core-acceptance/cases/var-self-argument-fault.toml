@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-argument-fault"
+intent = "A later argument fault releases an earlier consuming argument and leaves the untaken method receiver available for caller cleanup."
+source = "cases/var-self-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "CALLER\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

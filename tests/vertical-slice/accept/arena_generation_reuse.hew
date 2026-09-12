@@ -3,12 +3,12 @@
 import std.arena.{ Arena, Key };
 
 fn main() {
-    let store: Arena<string> = arena.new();
+    var store: Arena<string> = arena.new();
     let ka = store.insert("A");
     store.remove(ka);
     let kb = store.insert("B");
     println(ka.index == kb.index);
     println(kb.generation != ka.generation);
     println(store.get(ka).is_none());
-    println(store.get(kb).unwrap());
+    println(store.get(kb).expect("get succeeds"));
 }

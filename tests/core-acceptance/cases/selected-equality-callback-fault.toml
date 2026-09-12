@@ -1,0 +1,11 @@
+[[case]]
+id = "selected-equality-callback-fault"
+intent = "Selected equality propagates callback faults while ending borrowed field loans and releasing callback locals, retained siblings and operands."
+source = "cases/selected-equality-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

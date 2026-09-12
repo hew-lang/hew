@@ -20,19 +20,19 @@ import std.testing;
 
 #[resource]
 type Buf {
-    data: Vec<i64>;
+    data: Vec<i64>,
 }
 
 impl Buf {
     // Consumes `b`; `b.data` (a heap Vec) drops here. Running this twice on
     // one value double-frees and aborts.
-    fn close(b: Buf) {
-        let _len = b.data.len();
+    fn close(consume self) {
+        let _len = self.data.len();
     }
 }
 
 fn make(n: i64) -> Buf {
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(n);
     Buf { data: v }
 }

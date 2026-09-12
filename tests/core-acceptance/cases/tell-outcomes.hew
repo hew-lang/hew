@@ -1,0 +1,35 @@
+// A call through a `mailbox(..)` view submits and returns as soon as the
+// message is accepted, yielding `Result<Delivery, SendFailure<_>>`. `let _ =`
+// discards a rejection deliberately. A call on the actor handle itself waits
+// for the handler instead.
+actor Worker {
+    var seen: i64 = 0,
+    receive fn process(job: string) {
+        seen = seen + 1;
+        assert(job == "a" || job == "b");
+    }
+    receive fn total() -> i64 { seen }
+}
+
+fn drive(w: Worker) -> Result<(), SendError> {
+    let inbox = mailbox(w, on_full: .Reject);
+    match inbox.process("a") {
+        .Ok(Delivery.Accepted) => println("accepted"),
+        .Ok(Delivery.Discarded) => println("discarded"),
+        .Err(failure) => return Err(failure.reason),
+    }
+    let _ = inbox.process("b");
+    Ok(())
+}
+
+fn main() {
+    let w = spawn Worker();
+    match drive(w) {
+        .Ok(_) => {},
+        .Err(_) => panic("submission refused"),
+    }
+    match w.total() {
+        .Ok(total) => println(total),
+        .Err(_) => panic("ask failed"),
+    }
+}

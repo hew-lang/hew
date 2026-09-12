@@ -1,21 +1,25 @@
 // Adjacency Matrix - Flat n*n Vec<i64> representation
 // matrix[i*n + j] = 1 if edge (i,j) exists, 0 otherwise
+//
+// A parameter is the callee's own copy, so every helper that writes a cell
+// returns the matrix and the caller reassigns.
 fn mat_get(matrix: Vec<i64>, n: i64, i: i64, j: i64) -> i64 {
     matrix[i * n + j]
 }
 
-fn mat_set(matrix: Vec<i64>, n: i64, i: i64, j: i64, val: i64) {
+fn mat_set(var matrix: Vec<i64>, n: i64, i: i64, j: i64, val: i64) -> Vec<i64> {
     matrix.set(i * n + j, val);
+    matrix
 }
 
-fn add_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) {
-    mat_set(matrix, n, u, v, 1);
-    mat_set(matrix, n, v, u, 1);
+fn add_edge(var matrix: Vec<i64>, n: i64, u: i64, v: i64) -> Vec<i64> {
+    matrix = mat_set(matrix, n, u, v, 1);
+    mat_set(matrix, n, v, u, 1)
 }
 
-fn remove_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) {
-    mat_set(matrix, n, u, v, 0);
-    mat_set(matrix, n, v, u, 0);
+fn remove_edge(var matrix: Vec<i64>, n: i64, u: i64, v: i64) -> Vec<i64> {
+    matrix = mat_set(matrix, n, u, v, 0);
+    mat_set(matrix, n, v, u, 0)
 }
 
 fn has_edge(matrix: Vec<i64>, n: i64, u: i64, v: i64) -> bool {
@@ -48,19 +52,19 @@ fn main() {
     var failed = 0;
     let n = 6;
     // Initialize n*n matrix to 0
-    let matrix: Vec<i64> = Vec.new();
+    var matrix: Vec<i64> = Vec.new();
     for i in 0 .. n * n {
         matrix.push(0);
     }
     // Build graph: (0,1),(0,2),(1,2),(1,3),(2,4),(3,4),(3,5),(4,5)
-    add_edge(matrix, n, 0, 1);
-    add_edge(matrix, n, 0, 2);
-    add_edge(matrix, n, 1, 2);
-    add_edge(matrix, n, 1, 3);
-    add_edge(matrix, n, 2, 4);
-    add_edge(matrix, n, 3, 4);
-    add_edge(matrix, n, 3, 5);
-    add_edge(matrix, n, 4, 5);
+    matrix = add_edge(matrix, n, 0, 1);
+    matrix = add_edge(matrix, n, 0, 2);
+    matrix = add_edge(matrix, n, 1, 2);
+    matrix = add_edge(matrix, n, 1, 3);
+    matrix = add_edge(matrix, n, 2, 4);
+    matrix = add_edge(matrix, n, 3, 4);
+    matrix = add_edge(matrix, n, 3, 5);
+    matrix = add_edge(matrix, n, 4, 5);
 
     // Test 1: Edge existence
     if has_edge(matrix, n, 0, 1) {
@@ -108,7 +112,7 @@ fn main() {
         failed = failed + 1;
     }
     // Test 6: Remove edge (1,2), verify gone
-    remove_edge(matrix, n, 1, 2);
+    matrix = remove_edge(matrix, n, 1, 2);
     if has_edge(matrix, n, 1, 2) {
         println("FAIL: edge (1,2) not removed");
         failed = failed + 1;

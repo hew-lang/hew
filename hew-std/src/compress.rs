@@ -5,8 +5,9 @@
 //! `max_output_len` to each decompression entry point so compressed input fails
 //! closed instead of expanding until OOM. A conservative starting cap is
 //! [`DEFAULT_MAX_OUTPUT_LEN`] bytes; tighten it per call site when a smaller
-//! decoded payload is expected. All returned buffers are allocated with
-//! `libc::malloc` so callers can free them with [`hew_compress_free`].
+//! decoded payload is expected. Raw C codec buffers come from the sized-block
+//! allocator and are released with [`hew_compress_free`]. The `_hew` adapters
+//! instead return managed byte or string owners to compiled Hew code.
 use hew_runtime::bytes::BytesTriple;
 use std::io::{self, Read};
 
@@ -15,6 +16,7 @@ use flate2::read::{
 };
 use flate2::Compression;
 use hew_cabi::cabi::{malloc_bytes, str_to_malloc};
+use hew_cabi::string::{string_from_str, HewString};
 use std::os::raw::c_char;
 
 /// Conservative starting point for explicit decompression caps.
@@ -45,10 +47,21 @@ fn get_last_error() -> String {
 /// successful call can never be read as the earlier failure. This is what
 /// separates a valid empty codec result from a failed one: both produce zero
 /// bytes, only the failure leaves a reason here.
+/// The returned legacy C string is released with [`hew_cabi::cabi::free_cstring`].
 #[no_mangle]
 pub extern "C" fn hew_compress_last_error() -> *mut c_char {
     let message = LAST_ERROR.with(|error| error.borrow_mut().take());
     str_to_malloc(&message.unwrap_or_default())
+}
+
+/// Return and clear the latest codec error as an owned managed Hew string.
+///
+/// The C entry point keeps its legacy header-bearing, NUL-terminated contract;
+/// compiled Hew callers use this entry point and release through string glue.
+#[no_mangle]
+pub extern "C" fn hew_compress_last_error_hew() -> *mut HewString {
+    let message = LAST_ERROR.with(|error| error.borrow_mut().take());
+    string_from_str(&message.unwrap_or_default())
 }
 
 #[derive(Debug)]
@@ -410,8 +423,8 @@ pub unsafe extern "C" fn hew_compress_free(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: ptr was allocated with libc::malloc in read_to_malloc.
-    unsafe { libc::free(ptr.cast()) }; // CSTRING-FREE: libc-bytes (read_to_malloc = malloc_bytes byte buffer)
+    // SAFETY: ptr came from read_to_malloc's sized-block allocation.
+    unsafe { hew_cabi::mem::buf_free(ptr.cast()) }; // CSTRING-FREE: sized-block (read_to_malloc = malloc_bytes byte buffer)
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +512,7 @@ unsafe fn compress_triple(
     // SAFETY: ptr is valid for out_len bytes.
     let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
     let result = bytes_triple_from_slice(slice);
-    // SAFETY: ptr was allocated by the codec function via libc::malloc.
+    // SAFETY: ptr came from the codec function's sized-block allocation.
     unsafe { hew_compress_free(ptr) };
     result
 }
@@ -547,7 +560,7 @@ unsafe fn decompress_triple(
     // SAFETY: ptr is valid for out_len bytes.
     let slice = unsafe { std::slice::from_raw_parts(ptr, out_len) };
     let result = bytes_triple_from_slice(slice);
-    // SAFETY: ptr was allocated by the codec function via libc::malloc.
+    // SAFETY: ptr came from the codec function's sized-block allocation.
     unsafe { hew_compress_free(ptr) };
     result
 }
@@ -556,7 +569,7 @@ unsafe fn decompress_triple(
 ///
 /// Receives `data` as `*const BytesTriple` (by-pointer consumer convention).
 /// Returns a `BytesTriple` by value; codegen classifies the aggregate return
-/// per target (register pair on SysV/AAPCS, sret on MSVC/wasm32).
+/// per target (register pair on 64-bit SysV/AAPCS, sret on x64 Windows).
 ///
 /// # Safety
 ///
@@ -639,6 +652,30 @@ pub unsafe extern "C" fn hew_zlib_decompress_hew(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn error_readers_preserve_c_and_managed_string_contracts() {
+        use hew_cabi::string::{string_as_str, string_release};
+
+        set_last_error("raw codec error");
+        let raw = hew_compress_last_error();
+        // SAFETY: the C error reader returns a legacy header-bearing C string.
+        unsafe {
+            assert_eq!(std::ffi::CStr::from_ptr(raw).to_bytes(), b"raw codec error");
+            hew_cabi::cabi::free_cstring(raw);
+        }
+        set_last_error("managed codec error 雪");
+        let managed = hew_compress_last_error_hew();
+        let cleared = hew_compress_last_error_hew();
+        // SAFETY: the managed reader transfers independent string owners;
+        // the empty representation may be null and the shared helpers accept it.
+        unsafe {
+            assert_eq!(string_as_str(managed), "managed codec error 雪");
+            assert_eq!(string_as_str(cleared), "");
+            string_release(managed);
+            string_release(cleared);
+        }
+    }
 
     fn copy_and_free(ptr: *mut u8, len: usize) -> Vec<u8> {
         assert!(!ptr.is_null(), "pointer must be non-null");

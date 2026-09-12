@@ -9,9 +9,9 @@
 // This fixture proves the full pipeline (check + HIR lowering) handles the
 // shadow correctly: the program compiles clean and exits 0.
 enum AppError {
-    NotFound(string);
-    Forbidden;
-    Internal;
+    NotFound(string),
+    Forbidden,
+    Internal,
 }
 
 fn lookup(key: string) -> AppError {

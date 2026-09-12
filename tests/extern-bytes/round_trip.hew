@@ -1,0 +1,73 @@
+import std.encoding.base64;
+
+import std.encoding.compress;
+
+extern "C" {
+    fn oracle_expect(count: i32);
+    fn oracle_make(seed: i32) -> bytes;
+    fn oracle_relay(before: i32, consume value: bytes, after: i32, cookie: i64) -> bytes;
+    fn oracle_empty() -> bytes;
+}
+
+fn round_trip(seed: i32) {
+    let value = unsafe {
+        oracle_relay(17, oracle_make(seed), 23, 0x123456789ABCDEF0)
+    };
+    let copy = value;
+    assert(copy.len() == 5);
+    assert(copy[0] == 72);
+    assert(copy[1] == 0);
+    assert(copy[2] == seed as u8);
+    assert(copy[3] == 255);
+    assert(copy[4] == 119);
+    assert(value[2] == seed as u8);
+}
+
+fn codecs() {
+    let source = unsafe {
+        oracle_make(42)
+    };
+    let encoded = base64.encode(source);
+    assert(encoded == "SAAq/3c=");
+    let decoded = base64.decode(encoded);
+    assert(decoded == source);
+    assert(decoded[1] == 0);
+    let compressed = compress.gzip_compress(source) handle error {
+        panic(error)
+    };
+    let expanded = compress.gzip_decompress(compressed, 1024) handle error {
+        panic(error)
+    };
+    assert(expanded == source);
+    // Codec errors must be ordinary managed strings, including after a
+    // successful byte result. A later success must not retain the old error.
+    match compress.gzip_decompress(source, 1024) {
+        .Ok(_) => panic("invalid gzip unexpectedly decoded"),
+        .Err(reason) => assert(reason.len() > 0),
+    }
+    match compress.gzip_decompress(compressed, 2) {
+        .Ok(_) => panic("gzip output limit was ignored"),
+        .Err(reason) => assert(reason.len() > 0),
+    }
+    let again = compress.gzip_decompress(compressed, 1024) handle error {
+        panic(error)
+    };
+    assert(again == source);
+}
+
+fn main() {
+    unsafe {
+        oracle_expect(34);
+    };
+    for i in 0 .. 32 {
+        round_trip(i);
+    }
+    // A discarded foreign result still transfers an owner to this scope.
+    unsafe {
+        oracle_make(99);
+    };
+    assert(unsafe {
+        oracle_empty()
+    }.len() == 0);
+    codecs();
+}

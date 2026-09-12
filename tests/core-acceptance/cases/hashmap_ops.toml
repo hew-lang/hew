@@ -1,0 +1,11 @@
+[[case]]
+id = "hashmap_ops"
+intent = "Layout-backed HashMap runtime surface."
+source = "cases/hashmap_ops.hew"
+suites = ["acceptance"]
+kind = "run"
+timeout_seconds = 60
+
+[case.expected]
+stdout = "10\nhas=true removed=true len=1\n1\n1\nv\n"
+exit = 0

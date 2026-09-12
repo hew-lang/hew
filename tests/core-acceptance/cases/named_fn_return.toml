@@ -1,0 +1,13 @@
+[[case]]
+id = "named_fn_return"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/named_fn_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "14\n"
+exit = 0

@@ -1,7 +1,7 @@
 import std.iter;
 
 fn call_or_return(k: i64, enter: bool) -> i64 {
-    let xs: Vec<i64> = Vec.new();
+    var xs: Vec<i64> = Vec.new();
     xs.push(k);
     xs.push(k + 1);
     xs.into_iter().fold(

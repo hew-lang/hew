@@ -1,7 +1,7 @@
 # Standalone crate: the [workspace] table detaches it from the repository
 # workspace so `hew`'s [native] auto-link can build it in isolation, exactly
-# like an out-of-tree ecosystem package. No dependencies — malloc/free come
-# from the C runtime so the build works offline.
+# like an out-of-tree ecosystem package. Managed string allocation resolves
+# against the linked Hew runtime without another Rust dependency.
 [package]
 name = "hew-testffi-fixture"
 version = "0.1.0"

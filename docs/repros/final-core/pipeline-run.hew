@@ -1,0 +1,11 @@
+// Repro: `std.pipeline.run` returns `SourceI64`, an actor handle whose
+// declaration lives in the imported module and is not pub.
+import std.pipeline;
+
+fn main() {
+    let source = pipeline.run(pipeline.from(1));
+    match source.count() {
+        .Ok(value) => println(value),
+        .Err(_) => println(-1),
+    }
+}

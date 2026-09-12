@@ -1,0 +1,69 @@
+// One structure: a unit target is body-less, a fielded target writes the field
+// list with the target elided, and an expression body stays for the computed
+// (`_`) target, for a rule that emits, and for the `{ state }` identity. The
+// field list is a record literal's field list, so `..state` carries the fields
+// the rule does not change. The body reads the source state through `state`
+// and the input through `event`.
+machine Session {
+    events {
+        Open { user: string },
+        Touch { weight: i64 },
+        Close,
+    }
+
+    emits {
+        Trace { text: string },
+    }
+
+    state Idle,
+    state Live {
+        user: string,
+        weight: i64,
+        entry {
+            emit Trace { text: "enter:" + state.user };
+        }
+        exit {
+            emit Trace { text: "exit:" + state.user };
+        }
+    },
+    state Spent,
+
+    on Open(user): Idle => Live { user: user, weight: 0 }
+    on Touch: Live => _ when state.weight + event.weight >= 3 {
+        emit Trace { text: "spent:" + state.user };
+        Spent
+    }
+    on Touch: Live => Live reenter { ..state, weight: state.weight + event.weight }
+    on Close: Live => Idle,
+    on Close: Spent => Idle,
+    on Open: Spent => Spent { state }
+
+    default { state }
+}
+
+fn show(report: SessionStep) {
+    match report.disposition {
+        .Taken => {},
+        .Ignored => println("ignored"),
+    }
+    for output in report.outputs {
+        match output {
+            .Trace { text } => println(text),
+        }
+    }
+}
+
+fn main() {
+    var session: Session = .Idle;
+    show(session.step(.Open { user: "ada" }));
+    show(session.step(.Touch { weight: 1 }));
+    println(session.state_name());
+    show(session.step(.Touch { weight: 5 }));
+    println(session.state_name());
+    show(session.step(.Open { user: "grace" }));
+    println(session.state_name());
+    show(session.step(.Close));
+    println(session.state_name());
+    show(session.step(.Touch { weight: 1 }));
+    println(session.state_name());
+}

@@ -1,0 +1,31 @@
+// A record hands one owned field away and keeps the rest. The move takes
+// `booking.ticket` and nothing else, so reading the sibling `booking.label`
+// afterwards is an ordinary read of storage the record still owns.
+//
+// Harness verb: hew run (must succeed)
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closing ticket {self.id}");
+    }
+}
+
+type Booking {
+    ticket: Ticket,
+    label: string,
+}
+
+fn redeem(consume ticket: Ticket) -> i64 {
+    ticket.id
+}
+
+fn main() {
+    let booking = Booking { ticket: Ticket { id: 7 }, label: "seat-1" };
+    let redeemed = redeem(booking.ticket);
+    println(f"redeemed {redeemed}");
+    println(booking.label);
+}

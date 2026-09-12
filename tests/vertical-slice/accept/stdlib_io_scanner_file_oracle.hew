@@ -1,5 +1,6 @@
 import std.fs;
 import std.io.scanner;
+import std.os;
 
 fn print_line(label: string, line: Option<string>) {
     match line {
@@ -9,7 +10,9 @@ fn print_line(label: string, line: Option<string>) {
 }
 
 fn main() {
-    let path = ".tmp/stdlib-io-scanner-oracle-input.txt";
+    // One file per process: the O0 and O2 profiles of this case run at the
+    // same time and must not delete each other's input.
+    let path = f"{os.temp_dir()}/stdlib-io-scanner-oracle-{os.pid()}.txt";
     let _ = fs.write(path, "red\n\nblue\n");
 
     match scanner.from_file(path) {
@@ -33,7 +36,7 @@ fn main() {
 
     let _ = fs.delete(path);
 
-    match scanner.from_file(".tmp/stdlib-io-scanner-definitely-missing.txt") {
+    match scanner.from_file(f"{os.temp_dir()}/stdlib-io-scanner-definitely-missing-{os.pid()}.txt") {
         .Ok(_) => println("missing=unexpected-ok"),
         .Err(e) => println("missing=" + to_string(e)),
     }

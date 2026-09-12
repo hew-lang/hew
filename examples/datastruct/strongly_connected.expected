@@ -1,0 +1,11 @@
+PASS: 3 SCCs found
+PASS: {0,1,2} in same SCC
+PASS: {3,4} in same SCC
+PASS: {5,6,7} in same SCC
+PASS: 0 and 3 in different SCCs
+PASS: 3 and 5 in different SCCs
+PASS: 0 and 7 in different SCCs
+PASS: all nodes assigned
+---
+Passed: 8/8
+ALL PASS

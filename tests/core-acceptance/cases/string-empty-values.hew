@@ -1,0 +1,12 @@
+fn main() -> i64 {
+    let empty = "".to_upper();
+    let nul = "\0".to_upper();
+    let text = "é".to_upper();
+    println(empty.is_empty());
+    println(nul.is_empty());
+    println(text.is_empty());
+    println(empty.byte_len());
+    println(nul.byte_len());
+    println(text.byte_len());
+    0
+}

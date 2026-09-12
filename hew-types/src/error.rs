@@ -323,29 +323,6 @@ impl TypeError {
         .with_suggestion(format!("consider changing this to `var {name}`"))
     }
 
-    /// Create a mutability error for an assignment rooted at a **by-value
-    /// aggregate parameter**, whose mutation the caller can never observe.
-    ///
-    /// Deliberately does not suggest `var {name}`. On such a parameter `var`
-    /// is itself rejected (`reject_ineffective_mutable_value_param`), so the
-    /// generic suggestion routed the user straight into a construct the
-    /// compiler refuses — and, before that guard was widened in #2810, into a
-    /// mutation that silently applied to a throwaway copy. The advice here is
-    /// the advice that guard already gives.
-    #[must_use]
-    pub fn value_param_mutability_error(span: Span, name: &str, ty: &str) -> Self {
-        Self::new(
-            TypeErrorKind::MutabilityError,
-            span,
-            format!("cannot assign to immutable variable `{name}`"),
-        )
-        .with_suggestion(format!(
-            "`{name}` is a by-value parameter of type `{ty}`; mutating it has no caller-visible effect"
-        ))
-        .with_suggestion("return the modified value to the caller".to_string())
-        .with_suggestion("move the mutation into an actor or a mutable receiver method".to_string())
-    }
-
     /// Create a mutability error for an assignment to an immutable actor
     /// state field outside `init { }`.
     ///
@@ -639,20 +616,11 @@ pub enum SupervisorErrorKind {
     /// `E_SUPERVISOR_POOL_COUNT_NON_POSITIVE`: a pool child's compile-time
     /// `count:` is zero or negative.
     PoolCountNonPositive,
-    /// `E_SUPERVISOR_PERIODIC_CHILD`: a supervised child's actor declares an
-    /// `#[every]` periodic handler, which is not armed for supervised children.
-    PeriodicChild,
-    /// `E_SUPERVISOR_INIT_ARG_NON_BITCOPY`: a supervised child init arg has a
-    /// type the init-closure restart thunk cannot reproduce per incarnation.
-    InitArgNonBitcopy,
     /// `E_SUPERVISOR_INTENSITY_RESTARTS`: a negative `intensity:` restart budget.
     IntensityRestarts,
     /// `E_SUPERVISOR_INTENSITY_WINDOW`: the `intensity:` window is zero-length or
     /// not a valid duration literal.
     IntensityWindow,
-    /// `E_SUPERVISOR_PERMANENT_OWNED_HEAP`: a permanent child's state carries an
-    /// owned-heap field that byte-copy restart would alias.
-    PermanentOwnedHeap,
     /// `E_SUPERVISOR_DUPLICATE_CHILD`: two children share a name.
     DuplicateChild,
     /// `E_SUPERVISOR_STRATEGY_POOL_MISMATCH`: `pool` children and the chosen
@@ -662,7 +630,8 @@ pub enum SupervisorErrorKind {
     /// that is not declared in this supervisor.
     WiredToUnknownSibling,
     /// `E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`: a `wired_to` key has no matching
-    /// init parameter, or the parameter type is not `LocalPid<sibling>`.
+    /// init parameter, or the parameter type is not the sibling's own
+    /// actor-handle type.
     WiredToTypeMismatch,
     /// `E_SUPERVISOR_WIRED_CYCLE`: the `wired_to` dependency graph has a cycle.
     WiredCycle,
@@ -679,11 +648,8 @@ impl SupervisorErrorKind {
             Self::PoolCountMissing => "SupervisorPoolCountMissing",
             Self::PoolCountType => "SupervisorPoolCountType",
             Self::PoolCountNonPositive => "SupervisorPoolCountNonPositive",
-            Self::PeriodicChild => "SupervisorPeriodicChild",
-            Self::InitArgNonBitcopy => "SupervisorInitArgNonBitcopy",
             Self::IntensityRestarts => "SupervisorIntensityRestarts",
             Self::IntensityWindow => "SupervisorIntensityWindow",
-            Self::PermanentOwnedHeap => "SupervisorPermanentOwnedHeap",
             Self::DuplicateChild => "SupervisorDuplicateChild",
             Self::StrategyPoolMismatch => "SupervisorStrategyPoolMismatch",
             Self::WiredToUnknownSibling => "SupervisorWiredToUnknownSibling",
@@ -822,6 +788,16 @@ pub enum TypeErrorKind {
     UseAfterMove,
     /// A linear value was used after its unique consume operation.
     UseAfterConsume,
+    /// A consuming operation requires ownership of a borrowed parameter.
+    OwnConsumeBorrowed,
+    /// Mutation of borrowed storage requires an independent clone or owner.
+    OwnMutateBorrowed,
+    /// A projection's enclosing value cannot be split into independent owners.
+    OwnPartialConsume,
+    /// A `#[resource]` / `#[opaque]` type's `close` method borrows its
+    /// receiver instead of consuming it (D442). A borrowing `close` runs the
+    /// implicit scope-exit release a second time when called explicitly.
+    ResourceCloseMustConsume,
     /// Yield used outside a generator function
     YieldOutsideGenerator,
     /// A `gen fn` return-type annotation spells the generator handle
@@ -829,7 +805,11 @@ pub enum TypeErrorKind {
     /// §4.12). The compiler synthesizes the handle wrapper itself; naming it
     /// in the annotation says the body yields handles, not `Y` values.
     GenReturnSpelling,
-    /// Actor types form a reference cycle via `LocalPid` fields
+    /// A statement-position send or ask whose typed delivery outcome is
+    /// discarded (HEW-SPEC-2026 §2.1.1, §5.6). Losing a delivery failure by
+    /// accident is not available; the discard has to be written down.
+    SendResultDropped,
+    /// Actor types form a reference cycle via actor-handle fields
     ActorRefCycle,
     /// A value-typed enum/record/struct contains itself by value, directly or
     /// through another inline value type, making its layout infinitely sized.
@@ -892,6 +872,12 @@ pub enum TypeErrorKind {
     /// cannot be named in user source. Bindings of this type are inferred from
     /// `fork name = expr` context only.
     TaskNotNameable,
+    /// A retired actor-handle spelling (`LocalPid<A>`, `Pid<A>`,
+    /// `LambdaPid<M, R>`) was written in a type position. An actor is the type
+    /// of its handle, so the actor's own name is the only spelling.
+    ///
+    /// Envelope code: `E_ACTOR_HANDLE_TYPE`.
+    ActorHandleTypeNotNameable,
     /// An operation that requires an `unsafe { ... }` block was performed
     /// outside of one.  The `operation` field names the specific unsafe
     /// construct (e.g. `"raw pointer dereference"`, `"extern fn call"`).
@@ -941,7 +927,7 @@ pub enum TypeErrorKind {
     },
     /// A closure implicitly captured a non-`Copy` binding by value.
     ///
-    /// v0.5 closure captures are by value only; non-copy values must be captured
+    /// Closure captures are independent values; non-clone values must be captured
     /// with an explicit `move |...|` closure so the source binding is consumed
     /// at a visible source span.
     ClosureExplicitMoveRequired {
@@ -950,36 +936,16 @@ pub enum TypeErrorKind {
         /// User-facing type of the captured binding.
         ty: String,
     },
-    /// A closure capture's body-usage inference produced no resolved
-    /// `ClosureCaptureMode`. This is a structural bug, not a user-code
-    /// shape — the checker→MIR contract requires every fact's `mode` to
-    /// be one of `Copy`/`Move`/`Borrow`/`BorrowMut` before lowering.
-    /// Fail-closed defense.
+    /// Checker output is missing the binding-resolved capture contract.
+    /// This is a structural checker-to-HIR boundary violation.
     ClosureCaptureModeUnresolved {
         /// Captured binding name whose mode the checker could not classify.
         name: String,
-    },
-    /// A closure captures a non-`Sync` binding by mutable reference, and
-    /// the closure body contains a suspend point (`await`, channel recv,
-    /// fork-handle await). Hard error until a future auto-lock pass
-    /// subscribes to this kind and rewrites the closure.
-    NonSyncMutCaptureCrossesSuspend {
-        /// Captured binding name being mutated across the suspend point.
-        capture_name: String,
-        /// Surface-facing label for the suspend point form ("await", "for await", …).
-        suspend_kind: String,
     },
     /// The escape classifier produced no `ClosureEscapeKind` at all
     /// (distinct from returning `Escapes` conservatively). Structural
     /// bug in the classifier, not user-code shape.
     ClosureEscapeKindUnresolved,
-    /// Advisory (non-blocking): a closure was conservatively classified
-    /// `Escapes` and could be restructured to admit `Local`. Names the
-    /// inference rule that fired so the user can see why.
-    ClosureEscapeAdvisory {
-        /// Surface-facing label for the rule that rejected `Local`.
-        rule: String,
-    },
     /// A closure attempted to capture the binding being defined by the same
     /// closure literal. Recursive closures require a fixed-point surface that
     /// v0.5 intentionally does not expose.
@@ -988,16 +954,13 @@ pub enum TypeErrorKind {
         name: String,
     },
     /// A regular fn-closure attempted to capture a lambda-actor handle
-    /// (`Duplex<S, R>`) from an enclosing scope and call it with call syntax.
+    /// (`actor(M) -> R`) from an enclosing scope and call it with call syntax.
     ///
     /// Lambda-actor handles have no materialization protocol through a closure
-    /// capture env: the MIR routing discriminator (`Place::LambdaActorHandle`)
-    /// is attached to the spawning-scope slot, not to the env-loaded copy, and
-    /// the runtime ABI (`hew_lambda_actor_send` vs `hew_duplex_send`) cannot
-    /// be selected without it. Until a full env-materialization protocol exists,
-    /// fn-closure capture of lambda handles must be refused at the checker
-    /// boundary so the permissive MIR path (`lower_lambda_actor_call` via
-    /// `capture_env_sources`) is never silently reached.
+    /// capture env: the handle's release is owned by its spawning-scope slot,
+    /// not by an env-loaded copy, so a captured copy would release the wrapper
+    /// twice. Until a full env-materialization protocol exists, fn-closure
+    /// capture of lambda handles is refused at the checker boundary.
     ///
     /// Envelope code: `E_CLOSURE_CAPTURES_LAMBDA_HANDLE`.
     ClosureCapturesDuplexHandle {
@@ -1060,11 +1023,11 @@ pub enum TypeErrorKind {
         msg_id: u32,
     },
     /// An `extern "rt"` function declaration names a symbol that is not in
-    /// the `stable` section of `scripts/jit-symbol-classification.toml`.
+    /// the `stable` section of `scripts/runtime-export-classification.toml`.
     ///
-    /// `extern "rt"` is the user-facing surface for JIT-runtime functions that
+    /// `extern "rt"` is the user-facing surface for runtime functions that
     /// the Hew compiler validates at check time. Only symbols in the `stable`
-    /// classification are legal `extern "rt"` targets; `internal` symbols are
+    /// classification are legal `extern "rt"` targets; `non-declarable` symbols are
     /// scheduler/lifecycle-only and must not be named in user code.
     ///
     /// Envelope code: `E_EXTERN_RT_SYMBOL_UNCLASSIFIED`.
@@ -1090,21 +1053,6 @@ pub enum TypeErrorKind {
     ///
     /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
     GenBlockInActorReceive,
-    /// A `gen { }` generator block appeared inside a machine transition body.
-    ///
-    /// Machine transition bodies are pure state transformations; generator
-    /// suspension would make the transition non-atomic and is statically
-    /// forbidden.
-    ///
-    /// Envelope code: `E_GENBLOCK_IN_MACHINE_TRANSITION`.
-    GenBlockInMachineTransition,
-    /// An `await` expression appeared inside a machine transition body.
-    ///
-    /// Machine transition bodies are pure state transformations; awaiting a
-    /// task would suspend inside the transition and is statically forbidden.
-    ///
-    /// Envelope code: `E_AWAIT_IN_MACHINE_TRANSITION`.
-    AwaitInMachineTransition,
     /// A `gen { }` generator block whose body contains no `yield` expression.
     ///
     /// The checker infers the yield type from `yield` expressions inside the
@@ -1269,6 +1217,17 @@ pub enum TypeErrorKind {
         /// or `"return type"`. Used by tests to pin diagnostic precision.
         detail: &'static str,
     },
+    /// An `impl <Trait> for <Type>` names a trait that no declaration in
+    /// scope defines. Nothing constrains the impl's method set, so admitting
+    /// it silently registers methods under a contract that does not exist.
+    ///
+    /// Envelope code: `E_UNKNOWN_TRAIT_IN_IMPL`.
+    UnknownTraitInImpl {
+        /// The unresolved trait name written on the impl block.
+        trait_name: String,
+        /// The impl target type.
+        type_name: String,
+    },
     /// An `impl <Trait> for <Type>` omits one or more REQUIRED (bodyless) trait
     /// methods. The required method set is resolved through the trait's
     /// owner-qualified identity, so a same-name trait collision cannot leak a
@@ -1326,7 +1285,7 @@ pub enum TypeErrorKind {
     /// tuples) are legal. Enum variants, literal patterns, and or-patterns
     /// are refutable and must be used in `if let` or `match` instead.
     ///
-    /// Envelope code: `E_REFUTABLE_LET_PATTERN`.
+    /// Envelope code: `E_REFUTABLE_LET`.
     RefutableLetPattern {
         /// Human-readable label for the rejected pattern kind,
         /// e.g. `"enum variant"`, `"literal"`, or `"or-pattern"`.
@@ -1341,7 +1300,7 @@ pub enum TypeErrorKind {
     /// type is `Ty::Never`. A non-diverging else block would let execution
     /// reach code that reads an unbound binder, so it is rejected.
     ///
-    /// Envelope code: `E_LET_ELSE_DOES_NOT_DIVERGE`.
+    /// Envelope code: `E_LET_ELSE_FALLTHROUGH`.
     LetElseDoesNotDiverge,
     /// A function carrying `#[intrinsic("…")]` was declared outside the
     /// designated stdlib-floor modules.
@@ -1381,6 +1340,18 @@ pub enum TypeErrorKind {
         /// The fully-qualified method key (`"Type::method"`) that carried
         /// the attribute. Used by tests to pin diagnostic precision.
         method_key: String,
+    },
+    /// A canonical stdlib intrinsic declaration does not match the semantic
+    /// runtime contract selected by its exact intrinsic key.
+    ///
+    /// The declaration is never admitted into `intrinsic_declarations`, so a
+    /// stale or malformed compiler-owned source signature cannot reach HIR as
+    /// a runtime call with different argument or result types.
+    ///
+    /// Envelope code: `E_INTRINSIC_SIGNATURE_MISMATCH`.
+    IntrinsicSignatureMismatch {
+        /// The closed intrinsic catalogue key.
+        intrinsic_key: String,
     },
     /// A struct-init expression attempted to directly construct an `#[opaque]`
     /// handle type.
@@ -1531,8 +1502,13 @@ impl TypeErrorKind {
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
             Self::UseAfterMove => "UseAfterMove",
             Self::UseAfterConsume => "UseAfterConsume",
+            Self::OwnConsumeBorrowed => "E_OWN_CONSUME_BORROWED",
+            Self::OwnMutateBorrowed => "E_OWN_MUTATE_BORROWED",
+            Self::OwnPartialConsume => "E_OWN_PARTIAL_CONSUME",
+            Self::ResourceCloseMustConsume => "E_RESOURCE_CLOSE_MUST_CONSUME",
             Self::YieldOutsideGenerator => "YieldOutsideGenerator",
             Self::GenReturnSpelling => "E_GEN_RETURN_SPELLING",
+            Self::SendResultDropped => "E_SEND_RESULT_DROPPED",
             Self::ActorRefCycle => "ActorRefCycle",
             Self::RecursiveValueType { .. } => "RecursiveValueType",
             Self::UnusedVariable => "UnusedVariable",
@@ -1554,15 +1530,14 @@ impl TypeErrorKind {
             Self::OrPatternBindingMismatch => "OrPatternBindingMismatch",
             Self::UnsafeCollectionElement => "UnsafeCollectionElement",
             Self::TaskNotNameable => "TaskNotNameable",
+            Self::ActorHandleTypeNotNameable => "E_ACTOR_HANDLE_TYPE",
             Self::UnsafeOperationRequiresBlock { .. } => "UnsafeOperationRequiresBlock",
             Self::RawPointerOpNotLowered { .. } => "RawPointerOpNotLowered",
             Self::TraitNotObjectSafe { .. } => "TraitNotObjectSafe",
             Self::MissingAssocTypeBinding { .. } => "MissingAssocTypeBinding",
             Self::ClosureExplicitMoveRequired { .. } => "ClosureExplicitMoveRequired",
             Self::ClosureCaptureModeUnresolved { .. } => "ClosureCaptureModeUnresolved",
-            Self::NonSyncMutCaptureCrossesSuspend { .. } => "NonSyncMutCaptureCrossesSuspend",
             Self::ClosureEscapeKindUnresolved => "ClosureEscapeKindUnresolved",
-            Self::ClosureEscapeAdvisory { .. } => "ClosureEscapeAdvisory",
             Self::RecursiveClosureUnsupported { .. } => "RecursiveClosureUnsupported",
             Self::ClosureCapturesDuplexHandle { .. } => "ClosureCapturesDuplexHandle",
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
@@ -1571,8 +1546,6 @@ impl TypeErrorKind {
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
             Self::ConflictingExternDeclaration { .. } => "ConflictingExternDeclaration",
             Self::GenBlockInActorReceive => "GenBlockInActorReceive",
-            Self::GenBlockInMachineTransition => "GenBlockInMachineTransition",
-            Self::AwaitInMachineTransition => "AwaitInMachineTransition",
             Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
             Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",
@@ -1585,13 +1558,15 @@ impl TypeErrorKind {
             Self::AmbiguousActorReference { .. } => "AmbiguousActorReference",
             Self::ActorTypeArgArityMismatch { .. } => "ActorTypeArgArityMismatch",
             Self::TraitImplSignatureMismatch { .. } => "TraitImplSignatureMismatch",
+            Self::UnknownTraitInImpl { .. } => "UnknownTraitInImpl",
             Self::TraitImplMissingMethods { .. } => "TraitImplMissingMethods",
             Self::TraitImplExtraMethods { .. } => "TraitImplExtraMethods",
             Self::ConflictingTraitImpl { .. } => "ConflictingTraitImpl",
             Self::IntrinsicOutsideFloor { .. } => "IntrinsicOutsideFloor",
             Self::IntrinsicOnMethod { .. } => "IntrinsicOnMethod",
-            Self::RefutableLetPattern { .. } => "RefutableLetPattern",
-            Self::LetElseDoesNotDiverge => "LetElseDoesNotDiverge",
+            Self::IntrinsicSignatureMismatch { .. } => "E_INTRINSIC_SIGNATURE_MISMATCH",
+            Self::RefutableLetPattern { .. } => "E_REFUTABLE_LET",
+            Self::LetElseDoesNotDiverge => "E_LET_ELSE_FALLTHROUGH",
             Self::OpaqueDirectConstruct { .. } => "OpaqueDirectConstruct",
             Self::OpaqueMessagePayload { .. } => "OpaqueMessagePayload",
             Self::StreamAdapterNotSupported { .. } => "StreamAdapterNotSupported",
@@ -1948,26 +1923,6 @@ mod tests {
     }
 
     #[test]
-    fn test_value_param_mutability_error_display() {
-        let err = TypeError::value_param_mutability_error(0..10, "acc", "Account");
-        assert_eq!(
-            err.to_string(),
-            "cannot assign to immutable variable `acc`\n  help: `acc` is a by-value parameter of \
-             type `Account`; mutating it has no caller-visible effect\n  help: return the modified \
-             value to the caller\n  help: move the mutation into an actor or a mutable receiver \
-             method"
-        );
-        assert_eq!(err.kind, TypeErrorKind::MutabilityError);
-        assert!(
-            !err.suggestions
-                .iter()
-                .any(|s| s.contains("consider changing this to `var")),
-            "a by-value parameter must never be steered into `var`: {:?}",
-            err.suggestions
-        );
-    }
-
-    #[test]
     fn test_return_type_mismatch_display() {
         let err = TypeError::return_type_mismatch(0..10, &Ty::String, &Ty::I32);
         assert_eq!(
@@ -2117,6 +2072,7 @@ mod tests {
     #[test]
     fn test_mismatch_with_complex_types() {
         let expected = Ty::Function {
+            capabilities: crate::CallableCapabilities::default(),
             params: vec![Ty::I32, Ty::Bool],
             ret: Box::new(Ty::String),
         };
@@ -2209,20 +2165,14 @@ mod tests {
             SupervisorErrorKind::PoolCountMissing,
             SupervisorErrorKind::PoolCountType,
             SupervisorErrorKind::PoolCountNonPositive,
-            SupervisorErrorKind::PeriodicChild,
-            SupervisorErrorKind::InitArgNonBitcopy,
             SupervisorErrorKind::IntensityRestarts,
             SupervisorErrorKind::IntensityWindow,
-            SupervisorErrorKind::PermanentOwnedHeap,
             SupervisorErrorKind::DuplicateChild,
             SupervisorErrorKind::StrategyPoolMismatch,
             SupervisorErrorKind::WiredToUnknownSibling,
             SupervisorErrorKind::WiredToTypeMismatch,
             SupervisorErrorKind::WiredCycle,
         ];
-
-        // 13 distinct E_SUPERVISOR_* codes → 13 subkinds.
-        assert_eq!(ALL.len(), 13, "expected 13 supervisor subkinds");
 
         let via_subkind: HashSet<&'static str> = ALL.iter().map(|s| s.as_kind_str()).collect();
         assert_eq!(

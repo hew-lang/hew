@@ -5,6 +5,83 @@
 pub(super) use super::*;
 use crate::{DefId, LangItem};
 
+#[test]
+fn var_self_methods_accept_mutable_field_places_and_reject_immutable_roots() {
+    let declarations = r"
+        trait Bump { fn bump(var self) -> i64; }
+        type Counter { value: i64 }
+        impl Bump for Counter {
+            fn bump(var self) -> i64 { self.value += 1; self.value }
+        }
+        type Inner<T> { counter: T }
+        type Outer<T> { inner: Inner<T> }
+    ";
+    for (binding, mutable) in [("var", true), ("let", false)] {
+        for (ty, value, receiver) in [
+            (
+                "Outer<Counter>",
+                "Outer { inner: Inner { counter: Counter { value: 0 } } }",
+                "owner.inner.counter",
+            ),
+            ("(Counter, i64)", "(Counter { value: 0 }, 7)", "owner.0"),
+        ] {
+            let output = check_source(&format!(
+                "{declarations} fn main() -> i64 {{ {binding} owner: {ty} = {value}; {receiver}.bump() }}"
+            ));
+            if mutable {
+                assert!(output.errors.is_empty(), "{receiver}: {:?}", output.errors);
+                assert!(!output
+                    .warnings
+                    .iter()
+                    .any(|warning| warning.message.contains("never reassigned")));
+            } else {
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::MutabilityError
+                            && error.message.contains("`owner` is not declared with `var`")),
+                    "{:?}",
+                    output.errors
+                );
+            }
+        }
+        let output = check_source(&format!(
+            "{declarations} fn bump<T: Bump>(source: Outer<T>) -> i64 {{ {binding} owner = source; owner.inner.counter.bump() }}"
+        ));
+        if mutable {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == TypeErrorKind::MutabilityError
+                        && error
+                            .message
+                            .contains("statically dispatched on type parameter")
+                        && error.message.contains("`owner` is not declared with `var`")),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
+    let output = check_source(&format!(
+        "{declarations} fn main() -> i64 {{ Counter {{ value: 0 }}.bump() }}"
+    ));
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::MutabilityError
+                && error
+                    .message
+                    .contains("this expression is not declared with `var`")),
+        "{:?}",
+        output.errors
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Q297 Stage 1 — receiver-mutability flag plumbing.
 //
@@ -229,7 +306,7 @@ fn concrete_specialised_builtin_var_self_preserves_vec_dispatch_authority() {
 fn user_generic_builtin_shadow_var_self_preserves_source_identity() {
     let output = check_source_allowing_prelude_redeclaration(
         r"
-        type Option<T> { value: T; }
+        type Option<T> { value: T, }
 
         trait Bump {
             fn bump(var self);

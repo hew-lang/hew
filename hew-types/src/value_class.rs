@@ -86,6 +86,9 @@ pub enum DeclarationMarker {
 /// own `type_params`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DeclaredType {
+    /// Source-owned encoding representation selected by the checker.
+    /// A source spelling or opacity alone cannot grant this discriminator.
+    pub builtin: Option<BuiltinType>,
     pub marker: DeclarationMarker,
     /// The declaration carries `#[opaque]`, so its members are not the whole
     /// value and the Aggregate rule cannot see through it.
@@ -192,6 +195,8 @@ impl<'a> ClassContext<'a> {
 /// Every variant is a fail-closed refusal. There is no fallback class.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClassError {
+    /// A callable claims independent duplication over an owning resource field.
+    CallableCloneConflict,
     /// §1.1 `TypeParam` row: the instance service substitutes first, so an
     /// abstract parameter never reaches SIR.
     TypeParam { name: String },
@@ -216,6 +221,7 @@ pub enum ClassError {
 impl std::fmt::Display for ClassError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::CallableCloneConflict => f.write_str("callable Clone capability conflicts with captured ownership"),
             Self::TypeParam { name } => {
                 write!(f, "abstract type parameter `{name}` has no value class")
             }
@@ -312,12 +318,13 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[String]) -> bool {
             params: p,
             ret,
             captures,
+            ..
         } => {
             p.iter().any(|t| mentions_type_param(t, params))
                 || mentions_type_param(ret, params)
                 || captures.iter().any(|t| mentions_type_param(t, params))
         }
-        ResolvedTy::Function { params: p, ret } => {
+        ResolvedTy::Function { params: p, ret, .. } => {
             p.iter().any(|t| mentions_type_param(t, params)) || mentions_type_param(ret, params)
         }
         _ => false,
@@ -487,7 +494,7 @@ fn is_polymorphically_recursive(name: &str, decls: &ClassContext<'_>) -> bool {
 }
 
 /// Class and clone of a heap collection over its element facts (§1.1
-/// `Vec`/`HashMap`/`HashSet` row).
+/// `Vec`/`HashMap`/`HashSet` and fixed-array rows).
 ///
 /// The collection is never `BitCopy`: its buffer is heap, so the class floor
 /// is `CowValue`.
@@ -509,7 +516,7 @@ fn collection_facts(elements: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneK
 }
 
 /// Class and clone of an ordinary aggregate over its member facts (§1.1
-/// Aggregate rule): records, enums, tuples, arrays, `Option`/`Result`.
+/// Aggregate rule): records, enums, tuples, `Option`/`Result`.
 fn aggregate_facts(members: &[(ValueClass, CloneKind)]) -> (ValueClass, CloneKind) {
     let class = members
         .iter()
@@ -533,7 +540,7 @@ fn classify_all(
 }
 
 /// Substitute a declaration's own type parameters out of a member type.
-fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> ResolvedTy {
+pub(crate) fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> ResolvedTy {
     // A declaration's own parameter reaches here spelled either as an abstract
     // `TypeParam` or, when the declaration was resolved without a type-parameter
     // scope, as a zero-argument user `Named`. Both are the same parameter.
@@ -581,6 +588,45 @@ fn substitute(ty: &ResolvedTy, params: &[String], args: &[ResolvedTy]) -> Resolv
             builtin: *builtin,
             is_opaque: *is_opaque,
         },
+        ResolvedTy::Function {
+            capabilities,
+            params: callable_params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities: *capabilities,
+            params: callable_params
+                .iter()
+                .map(|param| substitute(param, params, args))
+                .collect(),
+            ret: Box::new(substitute(ret, params, args)),
+        },
+        ResolvedTy::Closure {
+            capabilities,
+            params: callable_params,
+            ret,
+            captures,
+        } => ResolvedTy::Closure {
+            capabilities: *capabilities,
+            params: callable_params
+                .iter()
+                .map(|param| substitute(param, params, args))
+                .collect(),
+            ret: Box::new(substitute(ret, params, args)),
+            captures: captures
+                .iter()
+                .map(|capture| substitute(capture, params, args))
+                .collect(),
+        },
+        ResolvedTy::Pointer {
+            is_mutable,
+            pointee,
+        } => ResolvedTy::Pointer {
+            is_mutable: *is_mutable,
+            pointee: Box::new(substitute(pointee, params, args)),
+        },
+        ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
+            pointee: Box::new(substitute(pointee, params, args)),
+        },
         ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(substitute(inner, params, args))),
         other => other.clone(),
     }
@@ -600,7 +646,12 @@ fn classify(
     let cow_retain = (ValueClass::CowValue, CloneKind::Retain);
     let affine_none = (ValueClass::AffineResource, CloneKind::None);
     let affine_retain = (ValueClass::AffineResource, CloneKind::Retain);
-    let share_retain = (ValueClass::PersistentShare, CloneKind::Retain);
+    // A trait object erases its concrete type, and its vtable carries a drop
+    // slot but no clone slot, so there is nothing a copy could call. The
+    // checker already refuses `dyn T.clone()`; recording `CloneKind::None`
+    // keeps the physical stages from selecting a clone action that has no
+    // implementation behind it.
+    let share_none = (ValueClass::PersistentShare, CloneKind::None);
     let linear_none = (ValueClass::Linear, CloneKind::None);
 
     Ok(match ty {
@@ -623,32 +674,51 @@ fn classify(
         | ResolvedTy::Unit
         | ResolvedTy::Never => bits,
         ResolvedTy::String | ResolvedTy::Bytes => cow_retain,
-        ResolvedTy::CancellationToken => affine_none,
+        ResolvedTy::CancellationToken | ResolvedTy::Task(_) => affine_none,
         ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => view,
-        ResolvedTy::Function { .. } | ResolvedTy::TraitObject { .. } => share_retain,
-        // §1.1 Closure row: PersistentShare joined with the capture classes;
-        // `clone` stays `Retain` in every case, because retaining a closure is
-        // an env refcount bump that duplicates no capture.
-        ResolvedTy::Closure { captures, .. } => {
+        ResolvedTy::TraitObject { .. } => share_none,
+        ResolvedTy::Function { capabilities, .. } => {
+            if capabilities.clone {
+                (ValueClass::CowValue, CloneKind::FieldWise)
+            } else {
+                affine_none
+            }
+        }
+        ResolvedTy::Closure {
+            capabilities,
+            captures,
+            ..
+        } => {
             let capture_facts = classify_all(captures, decls, walk)?;
             let class = if capture_facts
                 .iter()
                 .any(|(class, _)| *class == ValueClass::Linear)
             {
                 ValueClass::Linear
-            } else if capture_facts
-                .iter()
-                .any(|(class, _)| *class == ValueClass::AffineResource)
-            {
+            } else if !capabilities.clone {
                 ValueClass::AffineResource
+            } else if capture_facts.iter().any(|(class, clone)| {
+                *class == ValueClass::AffineResource || *clone == CloneKind::None
+            }) {
+                return Err(ClassError::CallableCloneConflict);
             } else {
-                ValueClass::PersistentShare
+                ValueClass::CowValue
             };
-            (class, CloneKind::Retain)
+            if capabilities.clone && class == ValueClass::Linear {
+                return Err(ClassError::CallableCloneConflict);
+            }
+            (
+                class,
+                if capabilities.clone {
+                    CloneKind::FieldWise
+                } else {
+                    CloneKind::None
+                },
+            )
         }
         ResolvedTy::Tuple(elements) => aggregate_facts(&classify_all(elements, decls, walk)?),
-        ResolvedTy::Array(element, _) => aggregate_facts(&[classify(element, decls, walk)?]),
-        ResolvedTy::Task(_) => linear_none,
+        // Arrays own their element storage; copying uses the element recipe.
+        ResolvedTy::Array(element, _) => collection_facts(&[classify(element, decls, walk)?]),
         ResolvedTy::TypeParam { name } => return Err(ClassError::TypeParam { name: name.clone() }),
         ResolvedTy::Named {
             name,
@@ -677,7 +747,7 @@ fn classify(
             | BuiltinType::CrashAction
             | BuiltinType::CrashKind
             | BuiltinType::SendError
-            | BuiltinType::AskError
+            | BuiltinType::NodeError
             | BuiltinType::LookupError
             | BuiltinType::RecvError
             | BuiltinType::LinkError
@@ -685,7 +755,10 @@ fn classify(
             | BuiltinType::CloseError
             // §1.1 decision, overrides `marker() = Resource`: a pid never owns
             // the actor, so its drop frees nothing.
-            | BuiltinType::LocalPid
+            | BuiltinType::ActorHandle
+            // A lambda actor's handle is a pid under another spelling, and
+            // owns the actor no more than `ActorHandle` does.
+            | BuiltinType::ActorFn
             | BuiltinType::HewActor => bits,
             // Enums whose class is the join over their payload arguments.
             BuiltinType::Option | BuiltinType::Result => {
@@ -693,22 +766,30 @@ fn classify(
             }
             // Heap collections: aggregate over the element (key, value) classes
             // with a `CowValue` floor for the buffer.
-            BuiltinType::Vec
-            | BuiltinType::HashMap
-            | BuiltinType::HashSet
-            // A `VecIter`/`HashMapIter` is a collection field plus BitCopy
-            // cursor fields, so it takes the collection's own facts.
-            | BuiltinType::VecIter
-            | BuiltinType::HashMapIter => {
+            BuiltinType::Vec | BuiltinType::HashMap | BuiltinType::HashSet => {
                 collection_facts(&classify_all(args, decls, walk)?)
+            }
+            // Both cursor records take their std declaration's own fields.
+            // `HashMapIter<K, V>` is a record of two snapshot `Vec`s and a
+            // `BitCopy` index, not a collection of `K` and `V`: reading it as
+            // one gives `HashMapIter<i64, i64>` a `DeepCopy` clone that physical
+            // MIR cannot realize, because the record's heap fields must be
+            // cloned field-wise however cheap their elements are.
+            BuiltinType::VecIter => {
+                classify_declaration("std.builtins.VecIter", args, decls, walk)?
+            }
+            BuiltinType::HashMapIter => {
+                classify_declaration("std.builtins.HashMapIter", args, decls, walk)?
             }
             // Aggregate rule over the std declaration's fields.
             BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
                 classify_declaration(name, args, decls, walk)?
             }
-            BuiltinType::Rc | BuiltinType::Weak | BuiltinType::LambdaPid => affine_retain,
+            BuiltinType::JsonValue | BuiltinType::YamlValue => {
+                (ValueClass::CowValue, CloneKind::DeepCopy)
+            }
+            BuiltinType::Rc | BuiltinType::Weak => affine_retain,
             BuiltinType::Generator
-            | BuiltinType::AsyncGenerator
             | BuiltinType::StreamPair
             | BuiltinType::BoxedActor
             | BuiltinType::Duplex
@@ -721,10 +802,8 @@ fn classify(
             | BuiltinType::HewRecvHalf
             | BuiltinType::SendHalf
             | BuiltinType::RecvHalf
-            | BuiltinType::LambdaActorHandle
             | BuiltinType::MonitorRef
-            | BuiltinType::CancellationToken => affine_none,
-            BuiltinType::Task => linear_none,
+            | BuiltinType::CancellationToken | BuiltinType::Task | BuiltinType::ActorCall => affine_none,
             // Never the type of a value: `Iterator` is the std trait name, and
             // `ActorState`/`MachineState` are compiler-internal payload carriers.
             BuiltinType::Iterator | BuiltinType::ActorState | BuiltinType::MachineState => {

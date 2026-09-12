@@ -1,0 +1,11 @@
+[[case]]
+id = "selected-equality-read-order"
+intent = "Equality, direct calls and runtime operations capture earlier operands before later arguments mutate their owners."
+source = "cases/selected-equality-read-order.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\n0\ntrue\n0\ntrue\n0\nOLD:tail\nNEW\n"
+stderr = ""
+exit = 0

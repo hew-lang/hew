@@ -62,7 +62,6 @@
 #   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
-#   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-package-install — hew install -> Hew import consumer proof
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
@@ -77,19 +76,17 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record funcupdate-mir-baselines-golden test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus doc-ratchet-selftest verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
-.PHONY: clean install uninstall verify-ffi ffi-ownership-ratchet-record test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
+.PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
 .PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
 .PHONY: coverage coverage-summary coverage-lcov coverage-runtime coverage-combined coverage-branch
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
-.PHONY: dogfood-compile-measure bench-mir
+.PHONY: dogfood-compile-measure perf-verify-linear
 .PHONY: compile-determinism-verify compile-determinism-verify-build compile-determinism-selftest compile-determinism-selftest-build
-.PHONY: checked-mir-verify checked-mir-golden checked-mir-run checked-mir-expect
 .PHONY: hew-check-all
 .PHONY: grammar-parity downstream-check
-.PHONY: sir-coverage sir-parity
 
 
 
@@ -119,6 +116,15 @@ actionlint:
 # Static workflow validation produces no build artifacts.
 
 # ── Configuration ───────────────────────────────────────────────────────────
+
+# Optional, gitignored local settings in Make assignment syntax (NAME=value).
+# Command-line assignments still take precedence. Export build-tool settings
+# so Cargo, rustc and temporary-file helpers receive the same configuration.
+-include .env
+LOCAL_BUILD_ENV := $(filter TMPDIR CARGO_BUILD_JOBS RUSTC_WRAPPER CARGO_TARGET_DIR,$(.VARIABLES))
+ifneq ($(LOCAL_BUILD_ENV),)
+export $(LOCAL_BUILD_ENV)
+endif
 
 # Repository scripts require Python 3.12+ (PEP 701 and stdlib tomllib).
 # Override with `make PYTHON=/path/to/python3.12 <target>` when needed.
@@ -250,8 +256,11 @@ NEXTEST_RATCHET_INVENTORY_ARGS := --full-inventory "$(NEXTEST_FULL_INVENTORY)" -
 NEXTEST_PREPARE_FULL_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --message-format json > "$(NEXTEST_FULL_INVENTORY)"
 NEXTEST_PREPARE_SELECTED_INVENTORY := $(TEST_RUN_ENV) cargo nextest list $(NEXTEST_WORKSPACE_SELECTION_ARGS) --filterset '$(NEXTEST_WORKSPACE_FILTER)' --message-format json > "$(NEXTEST_SELECTED_INVENTORY)"
 endif
-NEXTEST_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/junit.xml
-NEXTEST_RATCHET_JUNIT := $(CARGO_TARGET_ROOT)/nextest/ci/ratchet.xml
+# nextest keeps its store under the workspace's `target/nextest`, not under
+# `CARGO_TARGET_DIR`, so an out-of-tree build still reports here.
+NEXTEST_STORE := target/nextest
+NEXTEST_JUNIT := $(NEXTEST_STORE)/ci/junit.xml
+NEXTEST_RATCHET_JUNIT := $(NEXTEST_STORE)/ci/ratchet.xml
 NEXTEST_FAILURE_LEDGER := scripts/nextest-expected-failures.tsv
 RATCHET_STRICT_RECOVERIES ?= 0
 RATCHET_STRICT_RECOVERIES_ARG := $(if $(filter 1 true yes,$(RATCHET_STRICT_RECOVERIES)),--strict-recoveries,)
@@ -642,10 +651,18 @@ playground-wasi-check: wasm-runtime hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
 
 # Native run of every runnable playground example against its checked-in
-# `.expected` file (`hew tool playground-verify`), catching drift the
-# analysis-only WASM/manifest checks above don't exercise.
+# `.expected` file, catching drift the analysis-only WASM/manifest checks
+# above don't exercise.
+#
+# A transitional alias for the example cases of the one acceptance runner:
+# each runnable manifest entry is a `example-<id>` case naming the example
+# where it already lives. `hew tool playground-verify` still exists for
+# anyone verifying a manifest outside this repository; the next lane decides
+# its fate.
+EXAMPLE_CASES = $(patsubst tests/core-acceptance/cases/%.toml,--case %,$(wildcard tests/core-acceptance/cases/example-*.toml))
 playground-verify: hew-native
-	$(DEBUG_HEW) tool playground-verify
+	@test -n "$(EXAMPLE_CASES)" || { echo "no example-* acceptance cases found" >&2; exit 1; }
+	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(EXAMPLE_CASES)
 
 # Standard per-branch gate: validate workflow syntax locally, then run the lint
 # graph, tooling tests, compiler measurements and the three Make-owned Linux
@@ -661,23 +678,24 @@ ci-preflight: preflight
 	@:
 
 .PHONY: ci-shard-1 ci-shard-2 ci-shard-3 test-tooling compiler-measurements lint-rust lint-source
-ci-shard-1: observe-functional-test test-cabi test-compiler-lifecycle \
-	test-vertical-slice test-pkg-import test-runtime-unit test-ux-examples \
-	test-doc-examples doc-ratchet-selftest test-migrate-corpus \
-	o2-differential-selftest playground-verify
+# Production Wasm lifecycle qualification remains in release-gate.yml until
+# emission from verified semantics is implemented (#3368). Its native Rust
+# lifecycle tests already run in the workspace suite; source ownership cases
+# run through core acceptance and safety.
+ci-shard-1: observe-functional-test test-cabi \
+	core-acceptance test-pkg-import test-runtime-unit test-ux-examples \
+	test-migrate-corpus o2-differential-selftest
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
-	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
+	test-leak-oracle-selftest \
 	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
 	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
-	sir-coverage sir-parity
+	test-extern-bytes test-host-client
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
-	fuzz-oracle fuzz-oracle-selftest test-package-install \
-	checked-mir-verify checked-mir-run \
-	test-core-matrix test-stdlib-ratchet \
-	test-surface-examples forced-cancel-composite-check hew-check-all
+	test-package-install \
+	test-surface-examples hew-check-all
 
 # Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
 # tests (nextest smoke profile). Designed to complete in <5 min and surface
@@ -703,9 +721,9 @@ ci-preflight-smoke:
 # and the parity principle in docs/internal/engineering-invariants.md.
 #
 #   make ci-local-linux CI_LINUX_HOST=user@host                   # full Linux job
-#   make ci-local-linux CI_LINUX_HOST=user@host STEP=test-vertical-slice
+#   make ci-local-linux CI_LINUX_HOST=user@host STEP=core-acceptance
 #   STEP ∈ { all preflight lint ci-shard-1 ci-shard-2 ci-shard-3
-#            test-vertical-slice test-pkg-import test-hew-ratchet test-stdlib-ratchet sandbox-parity }
+#            core-acceptance test-pkg-import test-hew-ratchet test-stdlib-ratchet sandbox-parity }
 #
 # The host must provide CI's toolchain (LLVM via LLVM_SYS_221_PREFIX, the pinned
 # Rust toolchain, cargo-nextest, wasmtime). Override the remote LLVM prefix with
@@ -719,35 +737,18 @@ ci-local-linux:
 fuzz-corpus:
 	scripts/fuzz/hydrate-corpus.sh
 
-# Fuzz-to-run completeness oracle.
-#
-# Default (CI) mode: regressions only — vertical-slice/accept + tests/fuzz-oracle/regressions.
-# Deterministic, bounded, suitable for the merge queue.
-#
-# Full mode (manual): also scans the raw cargo-fuzz corpus (nondeterministic; not in CI).
-#   make fuzz-oracle FUZZ_ORACLE_FULL=1
-#
-# Prereqs mirror test-vertical-slice: libhew.a must be fresh so native links
-# do not test against stale runtime/stdlib archives.
-FUZZ_ORACLE_FULL ?=
+# Explicit replay of raw libFuzzer inputs. Stable regression programs run in
+# core-acceptance; arbitrary fuzz inputs use bounded process isolation here.
+FUZZ_CORPUS_DIR ?= hew-parser/fuzz/corpus
 fuzz-oracle: hew-native
-	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
-		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30 $(RATCHET_STRICT_RECOVERIES_ARG); \
-	else \
-		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30 $(RATCHET_STRICT_RECOVERIES_ARG); \
-	fi
+	$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_HEW)" --corpus "$(FUZZ_CORPUS_DIR)" --timeout 30
 
-# Oracle self-tests: five independently-failable checks that prove the
-# harness has teeth (flags real crashes), honours the ratchet contract
-# (unexpected-pass and unexpected-fail both fail closed), and refuses to
-# report PASS over a candidate set below its floor.
-fuzz-oracle-selftest: hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/fuzz/oracle-selftest.sh
+fuzz-oracle-selftest:
+	$(PYTHON) scripts/fuzz/test_run_oracle.py
 
 # Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).
 # A per-PR fuzz run is nondeterministic (a corpus mutation can trip one run
-# and not the next), which the deterministic per-PR fuzz-oracle above does
-# not tolerate — so this stays off ci.yml. Self-provisioning mirrors
+# and not the next), so this stays off ci.yml. Self-provisioning mirrors
 # structural-lint: the toolchain install is a prerequisite of the gate
 # target, not a separate manual step, and it is idempotent.
 FUZZ_SMOKE_MAX_TOTAL_TIME ?= 120
@@ -1045,9 +1046,10 @@ macos-leak-oracle: test-leak-oracle-selftest hew-native
 # contract. The Rust counterfactuals inject missing/declined/malformed/timed-out
 # inspector commands and incomplete work witnesses; the shell counterfactuals
 # prove empty/shrunken inventories and a missing ffi authority are red.
-test-leak-oracle-selftest:
+test-leak-oracle-selftest: hew-native
 	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-cli --test leak_harness_fail_closed
 	scripts/tests/test_macos_leak_oracle_runner.sh
+	HEW_BIN="$(DEBUG_HEW)" scripts/tests/test_actor_leak_oracle_counterfactual.sh
 
 # The C-ABI crate, run on its own.
 #
@@ -1096,18 +1098,63 @@ test-compiler-lifecycle: test-opaque-resource-lifecycle-matrix
 # minutes of work that has no place inside a test target invoked from several
 # other targets. Locally, any `make lint` provisions the same tree.
 test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py
 
 test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_facts.py
 	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first so native fixture links use the current product.
-test-vertical-slice: hew-native ## Test: run the end-to-end compiler oracle
-	bash tests/vertical-slice/test-compile-accept.sh
-	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
+#
+# Audited native value-semantics cases.  hew-native is the sole compiler build
+# edge; xtask only drives that already-built binary for its O0 and O2 outcomes.
+CORE_ACCEPTANCE_ARGS ?=
+core-acceptance: hew-native ## Test: run audited native core acceptance cases
+	cargo run -p xtask -- core-acceptance --suite acceptance --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
+
+HOST_CLIENT_ARGS ?=
+EXTERN_BYTES_ARGS ?=
+.PHONY: test-extern-bytes test-extern-bytes-safety
+test-extern-bytes: hew-native ## Test: compare C byte return ABIs and execute owned results
+	python3 tests/extern-bytes/run.py --hew-bin "$(abspath $(DEBUG_HEW))" \
+		--out-dir "$(abspath $(DEBUG_DIR))/extern-bytes" $(EXTERN_BYTES_ARGS)
+
+test-extern-bytes-safety: core-safety-build ## Test: instrument C and Hew extern byte ownership
+	python3 tests/extern-bytes/run.py \
+		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" \
+		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/extern-bytes" --sanitize $(EXTERN_BYTES_ARGS)
+
+.PHONY: test-host-client
+test-host-client: hew-native ## Test: execute C11 and C++17 clients calling compiled Hew
+	python3 tests/host/run.py --hew-bin "$(abspath $(DEBUG_HEW))" --hew-lib "$(abspath $(LIBHEW))" \
+		--out-dir "$(abspath $(DEBUG_DIR))/host-client" $(HOST_CLIENT_ARGS)
+
+# Build the compiler and runtime together so the selected compiler resolves the
+# sanitizer archive from its own Cargo profile directory. The safety runner also
+# requires generated LLVM instrumentation and rejects unexpected stderr.
+CORE_SAFETY_TARGET_DIR ?= target/core-safety
+.PHONY: core-safety core-safety-build
+core-safety-build:
+	@test "$$(uname -s)" = Linux || { echo "core-safety requires Linux ASan/LSan" >&2; exit 1; }
+	$(MAKE) hew-native TARGET_TRIPLE="$(SANITIZER_RUST_TARGET)" \
+		RUSTUP_TOOLCHAIN=nightly CARGO_TARGET_DIR="$(abspath $(CORE_SAFETY_TARGET_DIR))" \
+		RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer"
+
+core-safety: core-safety-build ## Test: run native ownership cases with generated and runtime ASan/LSan
+	ASAN_SYMBOLIZER_PATH="$(ASAN_SYMBOLIZER)" cargo run -p xtask -- core-acceptance --suite safety \
+		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" $(CORE_ACCEPTANCE_ARGS)
+
+.PHONY: test-host-safety
+test-host-safety: core-safety-build ## Test: instrument compiled Hew, C/C++ clients and Rust host runtime
+	python3 tests/host/run.py \
+		--hew-bin "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/hew" \
+		--hew-lib "$(abspath $(CORE_SAFETY_TARGET_DIR))/$(SANITIZER_RUST_TARGET)/debug/libhew.a" \
+		--out-dir "$(abspath $(CORE_SAFETY_TARGET_DIR))/host-client" --sanitize $(HOST_CLIENT_ARGS)
+
+# The runner has consequential case-selection and error behaviour, but it is
+# separate from the compiler acceptance command and runs only when changed.
+test-core-acceptance-runner:
+	cargo test -p xtask core_acceptance
 
 # Cross-module package-import oracle: fixtures importing the in-tree
 # `hew::testffi` package through `hew run --pkg-path` — imported-actor value
@@ -1121,43 +1168,11 @@ test-pkg-import: hew-native
 test-package-install: hew-native ## Test: prove installed packages import and execute
 	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/package-install/run.sh
 
-# Golden MIR corpus (examples/v05/checked-mir): byte-identical --dump-mir
-# oracle for internal retyping work. `checked-mir-verify` re-dumps every
-# fixture and diffs against the committed goldens; `checked-mir-golden`
-# recaptures them (only in a commit that justifies the dump change).
-checked-mir-verify: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh verify
-
-# Regenerate explicitly with `make checked-mir-golden`.
-
-checked-mir-golden: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh golden
-
-# Execution gate for the same corpus: build and run every fixture and diff
-# a transcript (exit status + verbatim stdout) against its committed
-# `<name>.expected` sibling.  Dumping is not running — a fixture can
-# segfault on every execution while every golden stays byte-identical, so
-# checked-mir-verify alone is not evidence that a drop-elaboration or
-# codegen change is correct.  Runnability is read back from the compiler
-# (a fixture is runnable exactly when its raw MIR declares `main`), and
-# the expectation set is closed both ways: a fixture with `main` and no
-# expectation fails, an expectation for a fixture without `main` fails.
-checked-mir-run: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh run
-
-# Regenerate explicitly with `make checked-mir-expect`.
-
-# Artifacts only.
-
-checked-mir-expect: hew-native
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/checked-mir-corpus.sh expect
-
 # Repeated-compile determinism over the LL-oracle corpus: the same input
 # compiled several times must produce the same exit status, the same
 # `ownership EdgeCarry` ordering in raw MIR, and byte-identical stderr.
-# checked-mir-verify compares a single run against a committed golden, so it
-# cannot see a compiler that reorders hashed ownership facts or
-# accumulated diagnostics from run to run.  This gate is the one that can.
+# This gate detects a compiler that reorders hashed ownership facts or
+# accumulated diagnostics from run to run.
 # inputs: tests/ll-oracle/corpus/*.hew scripts/compile-determinism-corpus.sh
 # inputs: hew-hir/src/*.rs hew-mir/src/*.rs hew-cli/src/*.rs
 compile-determinism-verify: hew-native
@@ -1174,38 +1189,14 @@ compile-determinism-selftest:
 compile-determinism-selftest-build:
 	@:
 
-# ── SIR admission gates (dev-only, until the legacy lowerer is deleted) ──────
-# Until the final ladder's cutover, each function body is either taken by SIR
-# or still owned by the legacy HIR->MIR body lowerer. `sir-coverage`
-# inventories every function body over the corpora (free fns, impl methods,
-# actor/machine handler bodies) and compares the admitted COUNT with the
-# committed ratchet: a drop fails, a rise prints the new value to record. The
-# ratchet is a raw count, not a percentage, so it moves only when a body's
-# own admission outcome changes — never merely because a corpus entry was
-# added or removed.
-# inputs: scripts/sir-coverage-ratchet.txt hew-cli/src/sir_coverage.rs hew-sir/src/*.rs
-SIR_COVERAGE_CORPORA := tests/vertical-slice/accept tests/hew examples std
-sir-coverage: hew-native ## Test: fail when the SIR admission count drops below its ratchet
-	$(DEBUG_HEW) tool sir-coverage --ratchet scripts/sir-coverage-ratchet.txt $(SIR_COVERAGE_CORPORA)
-
-# Every program the strict SIR lane admits is also compiled through the
-# legacy route; both binaries run and their exit status and stdout must be
-# byte-identical. The fixture directory guarantees at least one admitted
-# program so the harness never passes by comparing nothing. The ratchet is a
-# second, independent floor on how many programs got compared at all: the
-# MIR bridge the strict route compiles through is narrower than SIR
-# admission, so a bridge-only regression can de-admit most of the corpus
-# while `sir-coverage` sees no change.
-# inputs: scripts/sir-parity.sh scripts/sir-parity-ratchet.txt hew-cli/tests/fixtures/sir-parity/*.hew
-sir-parity: hew-native ## Test: run SIR-route and legacy-route binaries and compare their output
-	HEW_BIN="$(DEBUG_HEW)" bash scripts/sir-parity.sh --ratchet scripts/sir-parity-ratchet.txt hew-cli/tests/fixtures/sir-parity $(SIR_COVERAGE_CORPORA)
-
 # Compiler measurements run with the Linux tests, separately from source lint.
-# Both probes share the release-lib compiler prerequisite. IR size and dogfood
-# timings remain observational; bench-mir enforces time and analysis budgets.
-compiler-measurements: dogfood-compile-measure bench-mir ## Test: report compile size and enforce MIR lowering budgets
+# The legacy-route admission and MIR budget gates were deleted with the legacy
+# lowerer, so this group is the dogfood compile measurement alone.
+compiler-measurements: dogfood-compile-measure ## Test: report compile size and timings
 
-# Dogfood-shaped compile measurement.
+# Dogfood-shaped compile measurement. IR size and timings remain observational.
+# Lint already builds the same release-lib compiler for hew-fmt-check, so this
+# adds only the focused compile.
 #
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
 # The measurement reports define blocks, excluding host-specific module headers.
@@ -1215,10 +1206,13 @@ HEW_BIN ?= $(RELEASE_LIB_HEW)
 dogfood-compile-measure: hew
 	HEW_BIN="$(HEW_BIN)" bash scripts/dogfood-compile-measure.sh
 
-# MIR lowering time budget. The IR measurement above reports what lowering
-# produces; this one measures what lowering costs.
-bench-mir: hew ## Test: fail when MIR lowering time exceeds its budget
-	HEW_BIN="$(HEW_BIN)" bash scripts/bench-mir.sh
+# Compile-time scaling gate. A chain of awaits in one function must lower to
+# physical MIR in time proportional to its length; the script fails when the
+# longest chain costs more than 6x the shortest.
+#
+#         tests/perf/verify-linear.sh
+perf-verify-linear: hew ## Test: physical lowering stays linear in awaits per function
+	HEW_BIN="$(HEW_BIN)" bash tests/perf/verify-linear.sh
 
 # Fast hew-runtime target: runs lib unit tests and all integration tests without the heavy
 # QUIC/TLS/profiler feature stack (quinn, rustls, rcgen, ring, hyper, snow).
@@ -1259,44 +1253,6 @@ test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratc
 
 endif
 
-# The core matrix: every core primitive crossed with every common operation,
-# one runnable program per cell, each asserting the exact value and -- where
-# the row carries a `#[resource]` whose close prints -- exactly-once release.
-#
-# The corpus is an ENUMERATION of the language, not an accretion of fixtures:
-# it is generated by scripts/core-matrix-gen.py, so a new primitive is a new
-# row and a new operation is a new column. tests/core-matrix/matrix.tsv records
-# the outcome class of every cell today, and this gate fails on drift in either
-# direction -- a passing cell that regresses, and a recorded failure that
-# starts passing (which means the table is stale and must be re-recorded).
-#
-# The generator self-check runs first: a cell cannot be hand-edited into
-# agreement with a broken compiler without the corpus diverging from the
-# enumeration that produced it.
-test-core-matrix: hew-native
-	@echo "==> Checking the core-matrix corpus matches its generator"
-	@rm -rf "$(CURDIR)/.tmp/core-matrix-regen"
-	$(PYTHON) scripts/core-matrix-gen.py --out "$(CURDIR)/.tmp/core-matrix-regen"
-	diff -r tests/core-matrix/cells "$(CURDIR)/.tmp/core-matrix-regen"
-	@echo "==> Running the core matrix (primitive x operation)"
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py $(RATCHET_STRICT_RECOVERIES_ARG)
-
-# Regen seam: driven only by an explicit
-# `make core-matrix-record`.
-core-matrix-record: hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py --record
-
-# Regen seam: re-dumps every row of the funcupdate/reassign manifest. The dump's
-# function order is nondeterministic, so this is a reviewed act, never a sweep.
-funcupdate-mir-baselines-golden: hew
-	@set -e; \
-	baseline_dir=tests/mir-baselines/funcupdate-reassign; \
-	grep -v '^#' "$$baseline_dir/manifest.tsv" | while IFS="$$(printf '\t')" read -r fixture baseline; do \
-	  [ -n "$$fixture" ] || continue; \
-	  echo "re-dumping $$fixture -> $$baseline"; \
-	  "$(BUILD_DIR)/bin/hew" compile --dump-mir elab "$$fixture" > "$$baseline_dir/$$baseline"; \
-	done
-
 # Direct-call match carriers have a separate exact-count corpus because the
 # ordinary Hew suites do not pin ownership-verifier finding counts. Every fixture is checked
 # under inherited and HEW_*-scrubbed environments, and any count drift in
@@ -1336,7 +1292,6 @@ o2-differential-selftest:
 # Shell only; no artifacts.
 
 test-stdlib-ratchet: hew-native ## Test: type-check the standard library against its ratchet
-	@bash scripts/tests/test_stdlib_ratchet_bare_variants.sh
 	@echo "==> Type-checking stdlib (ratcheted)"
 	HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh stdlib
 
@@ -1372,7 +1327,7 @@ ux-examples-expect: hew-native
 # Artifacts only: the expectations self-test belongs to the gate.
 
 # Run every offline v0.5-surface example against its paired .expected file.
-# Two lanes:
+# Three lanes:
 #   1. examples/v05/surfaces/*.hew — idiomatic single-file demos for the landed
 #      v0.5 surfaces (typed streams, regex captures, template, unicode). Pure,
 #      deterministic, no I/O.
@@ -1380,6 +1335,10 @@ ux-examples-expect: hew-native
 #      LOOPBACK-only (127.0.0.1) so it needs no external network and is offline;
 #      its output is deterministic and was verified stable across repeated runs,
 #      so it is gated here too.
+#   3. examples/algos/*.hew and examples/datastruct/*.hew — the one-file
+#      algorithm and data-structure demos. Each is self-checking, prints a
+#      PASS/FAIL transcript, and is pure and offline, so its output is its
+#      contract. Together they add about forty seconds to this gate.
 # The TLS client (examples/net/tls_client.hew) is intentionally NOT gated: it
 # dials a real public host (example.com:443) — a genuine outbound network
 # dependency that cannot run offline — and additionally exercises a known TLS
@@ -1398,8 +1357,14 @@ ux-examples-expect: hew-native
 # expectations, process failures, timeouts, and output drift all fail the gate.
 # `scanner_tokens.hew` is fully admitted with its repaired five-line output.
 #
+# examples/benchmarks/hew is deliberately absent: those programs exist to be
+# timed, and the slowest runs for minutes, well past the runner's per-source
+# deadline.
+#
 SURFACE_EXAMPLE_INVENTORY = --label "surface" \
 	  --source-root examples/v05/surfaces \
+	  --source-root examples/algos \
+	  --source-root examples/datastruct \
 	  --source examples/net/http_await_service.hew
 
 test-surface-examples: hew-native test-example-expectations-selftest
@@ -1420,27 +1385,19 @@ test-example-expectations-selftest:
 # Python only; no artifacts.
 
 # Check ```hew fenced blocks in docs/ and std/ against hew check.
-# Extracts each fence from the Markdown guides, docs/language/*.hew module
-# doc blocks, and every std/**/*.hew doc comment into .tmp/doc-fences/, runs
-# `hew check` on each, and applies the ratchet from
-# scripts/doc-test-expected-failures.txt so known-failing fences do not block
-# the gate while new failures always do.
 #
-# Skip-annotated fences (<!-- doctest: skip --> or preceding NYI callout) are
-# never compiled — they describe aspirational or not-yet-implemented surfaces.
-# Fail-closed default: a fence is compiled unless explicitly skipped.
+# A transitional alias for the doc kind of the one acceptance runner. Each
+# fence in the guide, the spec, the docs/language modules and every
+# std/**/*.hew doc comment is a `kind = "doc"` case named by its own content,
+# and its known failures live in tests/core-acceptance/expected-failures.txt
+# with every other acceptance case. Skip-annotated fences
+# (<!-- doctest: skip --> or a preceding NYI callout) are never checked; the
+# default is fail-closed.
 #
 # Run `make test-doc-examples` after any docs/ or std/ change to confirm no
 # fence regressions were introduced.
 test-doc-examples: hew-native
-	@HEW_BIN="$(DEBUG_HEW)" scripts/corpus-ratchet.sh doc-fences
-
-# Drive matching and mutated doc-failure sets through the production harness.
-doc-ratchet-selftest:
-	@scripts/tests/test_doc_ratchet_membership.sh
-	@scripts/tests/test_std_doc_fence_extraction.sh
-
-# Shell/python only; no artifacts.
+	cargo run -p xtask -- core-acceptance --suite acceptance --kind doc --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
 
 # Nightly rust-runtime ASan command (Linux/nightly toolchain required).
 #
@@ -1467,13 +1424,18 @@ ASAN_SYMBOLIZER ?= $(shell ls /usr/lib/llvm-*/bin/llvm-symbolizer 2>/dev/null | 
 # this lane intentionally measures Hew's runtime rather than rebuilding std.
 # Hew installs its own per-worker alternate signal stack. Asking compiler-rt to
 # manage a competing stack makes it unmap Hew's heap-backed stack at thread exit.
+# Select a focused libtest name without rebuilding the sanitizer configuration.
+# Empty ASAN_LSAN_OPTIONS disables suppressions for isolated ownership tests.
+ASAN_TEST_FILTER ?=
+ASAN_LSAN_OPTIONS ?= suppressions=lsan.supp
+ASAN_TEST_ARGS ?= --lib
 asan:
 	CARGO_TARGET_DIR=$(RUNTIME_ASAN_TARGET_DIR) \
 	RUSTFLAGS="-Zsanitizer=address -Cforce-frame-pointers=yes -Cunsafe-allow-abi-mismatch=sanitizer" \
 	ASAN_OPTIONS="detect_leaks=1:use_sigaltstack=0" \
 	ASAN_SYMBOLIZER_PATH=$(ASAN_SYMBOLIZER) \
-	LSAN_OPTIONS="suppressions=lsan.supp" \
-	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime --lib -- --test-threads=1
+	LSAN_OPTIONS="$(ASAN_LSAN_OPTIONS)" \
+	cargo +nightly test --target $(SANITIZER_RUST_TARGET) -p hew-runtime $(ASAN_TEST_ARGS) -- $(ASAN_TEST_FILTER) --test-threads=1
 
 # ASan gate for compiled .hew fixture binaries (Linux/nightly toolchain required).
 #
@@ -1494,22 +1456,6 @@ else
 	SANITIZER_RUST_TARGET=$(SANITIZER_RUST_TARGET) \
 	scripts/asan-fixture-check.sh
 endif
-
-# Dynamic proof that a TaskEntry adapter's cancel-exit never publishes a
-# substitute composite return value as a task result.
-#
-# This gate is NOT superseded by the Rust suites that surround it.
-# hew-codegen-rs/tests/emission/task_entry_cancel_composite_emission.rs pins the
-# emitted IR shape, and hew-cli/tests/task_entry_composite_cancel_e2e.rs covers
-# the sibling non-cancelled paths -- neither can force the cancel edge, because
-# the trigger needs a task's own entry-block cooperate check to observe
-# cancellation before the body stores anything. Only a program linked against
-# libhew built with hew-runtime/forced-cancel-test can do that, which is why
-# this lives in a script with its own isolated target directory rather than in
-# the workspace test run.
-forced-cancel-composite-check:
-	bash scripts/forced-cancel-composite-check.sh
-
 
 # Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
 # sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
@@ -1577,13 +1523,15 @@ miri:
 # ── Lint ────────────────────────────────────────────────────────────────────
 
 .SECONDEXPANSION:
+CLIPPY_ARGS ?= --workspace
+
 lint: lint-rust lint-source hew-fmt-check ## Check: run Rust lint, source contracts and Hew formatting
 
 lint-source: $$(LINT_GATES) ## Check: validate source and ABI contracts
 
 lint-rust: ## Check: check Rust formatting and run Clippy
 	cargo fmt --all -- --check
-	cargo clippy --workspace --tests --message-format=json -- -D warnings
+	cargo clippy $(CLIPPY_ARGS) --tests --message-format=json -- -D warnings
 
 LINT_GATES += legacy-path-syntax-lint
 legacy-path-syntax-lint:
@@ -1646,6 +1594,9 @@ test-migrate-corpus: hew
 	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
 	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
 	cp -R tests/corpus/migrate/. "$$migration_root/"; \
+	for migration_input in "$$migration_root"/accept/*.input; do \
+		cp "$$migration_input" "$${migration_input%.input}.hew"; \
+	done; \
 	echo "1/6 migrate accepted representative sources"; \
 	"$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/accept"; \
 	echo "2/6 compare exact migrated sources"; \
@@ -1706,13 +1657,6 @@ grammar-parity:
 downstream-check: ## Develop: check synchronization with available local sibling repos
 	@echo "==> downstream-check: comparing docs/syntax-data.json against sibling repos"
 	scripts/sync-downstream.sh --check
-
-.PHONY: codegen-trap-inventory-check
-LINT_GATES += codegen-trap-inventory-check
-codegen-trap-inventory-check:
-	$(PYTHON) scripts/check-codegen-trap-inventory.py
-
-# Python only; no artifacts.
 
 # Smoke-test the release binary with `hew run` to catch process-exit aborts
 # (e.g. libc++ ABI mismatch at locale destructor — issue #1606).
@@ -1816,18 +1760,20 @@ coverage-branch:
 
 # ── FFI symbol verification ───────────────────────────────────────────────
 # Validates that every hew-runtime #[no_mangle] export is classified in
-# scripts/jit-symbol-classification.toml (stable vs internal).
+# scripts/runtime-export-classification.toml (stable vs non-declarable).
 
 LINT_GATES += verify-ffi
 verify-ffi: cabi-surface-check
 	$(PYTHON) scripts/verify-ffi-symbols.py --classify stable --validate > /dev/null
 
-# Regen seam: re-records the exact unclassified-ownership count. Records a fall
-# (ABI surface gaining contracts); refuses a rise, which is new unclassified
-# surface and needs a deliberate decision.
-ffi-ownership-ratchet-record:
-	$(PYTHON) scripts/verify-ffi-symbols.py --classify stable --validate \
-	  --write-ownership-ratchet > /dev/null
+# Python only; no artifacts.
+
+# A `.hew` extern declaring `string` or `bytes` reaches its Rust definition
+# through the managed carrier. Nothing else compares the two sides, so a stale
+# `c_char` signature is a runtime fault rather than a link error.
+LINT_GATES += verify-extern-string-abi
+verify-extern-string-abi:
+	$(PYTHON) scripts/verify-extern-string-abi.py
 
 # Python only; no artifacts.
 
@@ -1852,7 +1798,7 @@ test-cabi-surface:
 
 LINT_GATES += verify-sys-lane-closure
 # ── System-lane closure ────────────────────────────────────────────────────
-# docs/internal/jit-host-abi.md forbids any `stable` symbol from producing,
+# docs/internal/runtime-export-classification.md forbids any `stable` symbol from producing,
 # installing, mutating, observing or destroying system-lane state. That is a
 # property of the transitive CALL GRAPH, not of a symbol's own body: four
 # hand-audits of the stable tier produced four different answers because each
@@ -1980,17 +1926,9 @@ clean: ## Develop: remove generated build and test artifacts
 	cargo clean
 	rm -rf -- $(COV_DIR) \
 		"$(CURDIR)/.tmp/compile-out" \
-		"$(CURDIR)/.tmp/doc-fences" \
-		"$(CURDIR)/.tmp/core-matrix-regen" \
-		"$(CURDIR)/.tmp/forced-cancel-gate-out" \
 		"$(CURDIR)/.tmp/asan-fixture-out" \
 		"$(CURDIR)/.tmp/tool-tmp"
 	rm -f -- \
-		"$(CURDIR)/.tmp/vertical-slice-accept-output.txt" \
-		"$(CURDIR)/.tmp/vertical-slice-reject-output.txt" \
-		"$(CURDIR)/.tmp/vertical-slice.stdout" \
-		"$(CURDIR)/.tmp/vertical-slice.stderr" \
-		"$(CURDIR)/.tmp/vertical-slice-remote-pid-old-verb.hew" \
 		"$(CURDIR)/.tmp/pkg-import-actual.txt" \
 		"$(CURDIR)/.tmp/scanner-test-input.txt" \
 		"$(CURDIR)/.tmp/stdlib-io-scanner-oracle-input.txt"

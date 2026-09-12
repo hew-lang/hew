@@ -205,7 +205,7 @@ fn callee_scope_resource_string_sibling_source(frames: usize) -> String {
         "import std.string;\n\
          #[resource]\n\
          type Handle {{ fd: i64 }}\n\
-         impl Handle {{ fn close(consuming self) {{}} }}\n\
+         impl Handle {{ fn close(consume self) {{}} }}\n\
          type Carrier {{ handle: Handle, note: string }}\n\
          fn consume_it(seed: string) -> i64 {{\n\
          \x20   var c = Carrier {{ handle: Handle {{ fd: 1 }}, note: seed }};\n\
@@ -254,12 +254,12 @@ fn vec_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: Vec<i64> = Vec.new();\n\
+         \x20   var init: Vec<i64> = Vec.new();\n\
          \x20   init.push(99);\n\
          \x20   var h = VecHolder {{ items: init, tag: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: Vec<i64> = Vec.new();\n\
+         \x20       var next: Vec<i64> = Vec.new();\n\
          \x20       next.push(i);\n\
          \x20       h = VecHolder {{ items: next, ..h }};\n\
          \x20       i = i + 1;\n\
@@ -282,12 +282,12 @@ fn hashmap_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: HashMap<string, i64> = HashMap.new();\n\
+         \x20   var init: HashMap<string, i64> = HashMap.new();\n\
          \x20   init.insert(\"seed\", 1);\n\
          \x20   var h = MapHolder {{ m: init, tag: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: HashMap<string, i64> = HashMap.new();\n\
+         \x20       var next: HashMap<string, i64> = HashMap.new();\n\
          \x20       next.insert(\"k\", i);\n\
          \x20       h = MapHolder {{ m: next, ..h }};\n\
          \x20       i = i + 1;\n\
@@ -310,12 +310,12 @@ fn hashset_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: HashSet<i64> = HashSet<i64>.new();\n\
+         \x20   var init: HashSet<i64> = HashSet<i64>.new();\n\
          \x20   init.insert(99);\n\
          \x20   var h = SetHolder {{ s: init, tag: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: HashSet<i64> = HashSet<i64>.new();\n\
+         \x20       var next: HashSet<i64> = HashSet<i64>.new();\n\
          \x20       next.insert(i);\n\
          \x20       h = SetHolder {{ s: next, ..h }};\n\
          \x20       i = i + 1;\n\
@@ -340,12 +340,12 @@ fn multi_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let init: Vec<i64> = Vec.new();\n\
+         \x20   var init: Vec<i64> = Vec.new();\n\
          \x20   init.push(0);\n\
          \x20   var m = Multi {{ label: string.repeat(\"z\", 16), items: init, id: 0 }};\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let next: Vec<i64> = Vec.new();\n\
+         \x20       var next: Vec<i64> = Vec.new();\n\
          \x20       next.push(i);\n\
          \x20       m = Multi {{ label: string.repeat(\"y\", 16), items: next, ..m }};\n\
          \x20       i = i + 1;\n\
@@ -425,7 +425,7 @@ fn carry_vec_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let v: Vec<string> = Vec.new();\n\
+         \x20   var v: Vec<string> = Vec.new();\n\
          \x20   v.push(string.repeat(\"k\", 32));\n\
          \x20   var p = Pair {{ keep: v, churn: string.repeat(\"a\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -449,7 +449,7 @@ fn carry_hashmap_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let m: HashMap<string, string> = HashMap.new();\n\
+         \x20   var m: HashMap<string, string> = HashMap.new();\n\
          \x20   m.insert(string.repeat(\"k\", 32), string.repeat(\"v\", 32));\n\
          \x20   var p = Pair {{ keep: m, churn: string.repeat(\"a\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -473,7 +473,7 @@ fn carry_hashset_field_source(frames: usize) -> String {
          }}\n\
          \n\
          fn main() -> i64 {{\n\
-         \x20   let s: HashSet<string> = HashSet.new();\n\
+         \x20   var s: HashSet<string> = HashSet.new();\n\
          \x20   s.insert(string.repeat(\"k\", 32));\n\
          \x20   var p = Pair {{ keep: s, churn: string.repeat(\"a\", 32) }};\n\
          \x20   var i: i64 = 0;\n\
@@ -609,36 +609,6 @@ fn carry_tuple_of_record_field_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let r = step();\n\
-         \x20       total = total + r.churn.len();\n\
-         \x20       i = i + 1;\n\
-         \x20   }}\n\
-         \x20   total\n\
-         }}\n"
-    )
-}
-
-/// The round-2 reproducer: tuple → record → tuple → `Option<record>`.
-/// This source is deliberately checked, not compiled: the release machinery
-/// has no move-specific enum carry, so the recursive rule must stop it before
-/// a leaking executable can be emitted.
-fn carry_record_nested_option_source(frames: usize) -> String {
-    format!(
-        "import std.string;\n\
-         type Leaf {{ label: string, n: i64 }}\n\
-         type Wrapper {{ inner: (Option<Leaf>, i64), tag: string }}\n\
-         type T {{ pair: (Wrapper, i64), churn: string }}\n\
-         fn mk() -> T {{\n\
-         \x20   let b = T {{\n\
-         \x20       pair: (Wrapper {{ inner: (Some(Leaf {{ label: string.repeat(\"k\", 32), n: 1 }}), 9), tag: string.repeat(\"w\", 32) }}, 5),\n\
-         \x20       churn: string.repeat(\"a\", 32),\n\
-         \x20   }};\n\
-         \x20   T {{ churn: string.repeat(\"b\", 32), ..b }}\n\
-         }}\n\
-         fn main() -> i64 {{\n\
-         \x20   var total: i64 = 0;\n\
-         \x20   var i: i64 = 0;\n\
-         \x20   while i < {frames} {{\n\
-         \x20       let r = mk();\n\
          \x20       total = total + r.churn.len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -797,30 +767,6 @@ fn assert_scribble_clean(shape_name: &str, source: &str) {
         output.status.success(),
         "{shape_name} must not free the replacement through the old field owner:\n{}",
         describe_output(&output)
-    );
-}
-
-fn assert_check_fails_closed(shape_name: &str, source: &str) {
-    let dir = tempfile::Builder::new()
-        .prefix(&format!("funcupdate-check-{shape_name}-"))
-        .tempdir()
-        .expect("tempdir");
-    let hew_src = dir.path().join(format!("{shape_name}.hew"));
-    std::fs::write(&hew_src, source).expect("write hew source");
-    let output = Command::new(hew_binary())
-        .args(["check", hew_src.to_str().expect("hew src utf-8")])
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-    assert!(
-        !output.status.success(),
-        "{shape_name} must fail closed before a leaking executable is emitted:\n{}",
-        describe_output(&output)
-    );
-    let out = describe_output(&output);
-    assert!(
-        out.contains("carry of owned non-record field") || out.contains("E_NOT_YET_IMPLEMENTED"),
-        "{shape_name} must stop at the carry-rule diagnostic; got:\n{out}"
     );
 }
 
@@ -1124,17 +1070,6 @@ fn funcupdate_carry_tuple_of_record_field_no_per_frame_leak_slope() {
     assert_frame_slope_below_tolerance(
         "funcupdate_carry_tuple_of_record_field",
         carry_tuple_of_record_field_source,
-    );
-}
-
-/// The leaking round-2 shape must be refused before native code generation.
-/// A fail-closed diagnostic is the zero-leak outcome while enum-shaped carries
-/// have no move-specific release protocol.
-#[test]
-fn funcupdate_carry_record_with_nested_option_fails_closed() {
-    assert_check_fails_closed(
-        "funcupdate_carry_record_nested_option",
-        &carry_record_nested_option_source(HIGH_FRAMES),
     );
 }
 

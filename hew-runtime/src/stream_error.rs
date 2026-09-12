@@ -23,8 +23,8 @@
 //! `hew-cabi` declares these four symbols as `extern "C"` imports and exposes
 //! thin safe wrappers, so the public `hew_cabi::sink` API is unchanged.
 
+use hew_cabi::string::{string_from_str, HewString};
 use std::cell::RefCell;
-use std::ffi::c_char;
 
 thread_local! {
     static LAST_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
@@ -123,6 +123,13 @@ pub fn set_last_error_with_errno_and_kind(msg: String, errno: i32, kind: i32) {
     LAST_ERROR_KIND.with(|k| *k.borrow_mut() = kind);
 }
 
+/// Whether the current thread has a stream/sink error, even with an empty
+/// message and no OS errno. This Boolean probe does not consume any metadata.
+#[no_mangle]
+pub extern "C" fn hew_stream_has_error() -> bool {
+    LAST_ERROR.with(|error| error.borrow().is_some())
+}
+
 /// Take and clear the last error, if any. Also clears the associated errno and
 /// error-kind.
 #[must_use]
@@ -209,36 +216,14 @@ pub unsafe extern "C" fn hew_stream_set_last_error_with_errno(
     set_last_error_with_errno(msg, errno);
 }
 
-/// Return the last stream/sink error as a header-aware C string, or NULL if none.
+/// Take the last stream/sink error as an owned managed UTF-8 string.
 ///
-/// Clears both the error message and the associated errno after reading.
-/// The returned string is allocated via [`hew_cabi::cabi::alloc_cstring_from_str`]
-/// (the header-aware path) and MUST be released through `hew_string_drop` /
-/// [`hew_cabi::cabi::free_cstring`]. Bare `libc::free` will abort.
-///
-/// ALLOCATOR-PAIRING: cstring (`alloc_cstring_from_str` — header-aware; must be
-/// freed via `free_cstring` / `hew_string_drop`, never bare `libc::free`).
+/// Clears the message, errno and error kind. Null represents either no error
+/// or an empty message. Release the result with `hew_string_drop`.
 #[no_mangle]
-pub extern "C" fn hew_stream_last_error() -> *mut c_char {
+pub extern "C" fn hew_stream_last_error() -> *mut HewString {
     match take_last_error() {
-        Some(msg) => {
-            // Use the header-aware allocator so that the Hew drop spine's
-            // hew_string_drop → free_cstring can verify the magic sentinel and
-            // release the allocation without aborting.  If the message contains
-            // interior NUL bytes (rare: OS errors never do, but defensive), fall
-            // back to a safe diagnostic string before allocating.
-            let safe_msg: &str = if msg.contains('\0') {
-                "hew_stream_last_error: stored error message contained interior NUL"
-            } else {
-                &msg
-            };
-            let ptr = hew_cabi::cabi::alloc_cstring_from_str(safe_msg); // ALLOCATOR-PAIRING: cstring
-            if ptr.is_null() {
-                set_last_error("hew_stream_last_error: allocation failed".to_string());
-                return std::ptr::null_mut();
-            }
-            ptr
-        }
+        Some(msg) => string_from_str(&msg),
         None => std::ptr::null_mut(),
     }
 }
@@ -278,7 +263,7 @@ pub extern "C" fn hew_stream_last_error_kind() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CStr;
+    use hew_cabi::string::{string_as_str, string_release};
 
     // ── Thread-local error helpers ───────────────────────────────────────
 
@@ -311,9 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn set_last_error_empty_string() {
+    fn empty_error_remains_present_until_consumed() {
+        let _ = take_last_error();
+        assert!(!hew_stream_has_error());
         set_last_error(String::new());
-        assert_eq!(take_last_error().as_deref(), Some(""));
+        assert!(hew_stream_has_error());
+        assert_eq!(hew_stream_last_errno(), 0);
+        assert!(hew_stream_has_error());
+        // Empty error text and no error share a null string carrier, but not status.
+        assert!(hew_stream_last_error().is_null());
+        assert!(!hew_stream_has_error());
     }
 
     // ── hew_stream_last_error (C ABI) ────────────────────────────────────
@@ -327,15 +319,15 @@ mod tests {
     }
 
     #[test]
-    fn hew_stream_last_error_returns_valid_cstring() {
+    fn hew_stream_last_error_returns_managed_string() {
         set_last_error("connection refused".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a freshly alloc_cstring_from_str (header-aware) allocation.
+        // SAFETY: ptr is a fresh managed allocation.
         unsafe {
-            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            let recovered = string_as_str(ptr);
             assert_eq!(recovered, "connection refused");
-            hew_cabi::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
+            string_release(ptr);
         }
     }
 
@@ -344,9 +336,9 @@ mod tests {
         set_last_error("timeout".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
-        unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open
-                                                      // Second call should return null — error was consumed.
+        // SAFETY: ptr is a managed allocation.
+        unsafe { string_release(ptr) };
+        // Second call should return null — error was consumed.
         let ptr2 = hew_stream_last_error();
         assert!(ptr2.is_null(), "error should be cleared after first read");
     }
@@ -356,24 +348,24 @@ mod tests {
         set_last_error("échec de connexion 🔥".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
+        // SAFETY: ptr is a managed allocation.
         unsafe {
-            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            let recovered = string_as_str(ptr);
             assert_eq!(recovered, "échec de connexion 🔥");
-            hew_cabi::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
+            string_release(ptr);
         }
     }
 
     #[test]
-    fn hew_stream_last_error_surfaces_interior_nul_diagnostic() {
+    fn hew_stream_last_error_preserves_interior_nul() {
         set_last_error("bad\0message".to_string());
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
+        // SAFETY: ptr is a managed allocation.
         unsafe {
-            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
-            assert!(recovered.contains("contained interior NUL"));
-            hew_cabi::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
+            let recovered = string_as_str(ptr);
+            assert_eq!(recovered, "bad\0message");
+            string_release(ptr);
         }
     }
 
@@ -394,11 +386,11 @@ mod tests {
         // Consuming errno does not consume the message.
         let ptr = hew_stream_last_error();
         assert!(!ptr.is_null());
-        // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
+        // SAFETY: ptr is a managed allocation.
         unsafe {
-            let recovered = CStr::from_ptr(ptr).to_str().unwrap();
+            let recovered = string_as_str(ptr);
             assert_eq!(recovered, "connection refused");
-            hew_cabi::cabi::free_cstring(ptr); // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
+            string_release(ptr);
         }
     }
 
@@ -417,8 +409,8 @@ mod tests {
         // Clean up the message side.
         let ptr = hew_stream_last_error();
         if !ptr.is_null() {
-            // SAFETY: ptr is a header-aware alloc_cstring_from_str allocation.
-            unsafe { hew_cabi::cabi::free_cstring(ptr) }; // CSTRING-FREE: str-open (hew_stream_last_error via alloc_cstring_from_str)
+            // SAFETY: ptr is a managed allocation.
+            unsafe { string_release(ptr) };
         }
     }
 
@@ -495,7 +487,8 @@ mod tests {
             17,
             IO_ERROR_KIND_ALREADY_EXISTS,
         );
-        // Read kind before errno (documented ordering).
+        // The Boolean peek preserves all metadata; read kind before errno.
+        assert!(hew_stream_has_error());
         assert_eq!(hew_stream_last_error_kind(), IO_ERROR_KIND_ALREADY_EXISTS);
         assert_eq!(hew_stream_last_errno(), 17);
         // Kind is consumed after reading.
@@ -540,30 +533,30 @@ mod tests {
         assert_eq!(take_last_errno(), 0);
     }
 
-    // ── free_cstring roundtrip: hew_stream_last_error allocator contract ──
+    // ── string_release roundtrip: hew_stream_last_error allocator contract ──
     //
     // This test acts as the Hew drop spine: it calls hew_stream_last_error and
-    // releases the result via free_cstring (exactly what hew_string_drop does at
+    // releases the result via string_release (exactly what hew_string_drop does at
     // runtime). It asserts no abort/leak, proving the allocator pairing survives
-    // the move into hew-runtime (the allocator still comes from hew_cabi::cabi).
+    // the move into hew-runtime (the allocator still comes from hew_cabi::string).
 
-    /// Drop-spine simulation: `hew_stream_last_error` + `free_cstring` roundtrip.
+    /// Drop-spine simulation: `hew_stream_last_error` + `string_release` roundtrip.
     #[test]
-    fn hew_stream_last_error_free_cstring_roundtrip() {
+    fn hew_stream_last_error_string_release_roundtrip() {
         set_last_error("connection reset by peer".to_string());
         let ptr = hew_stream_last_error();
         assert!(
             !ptr.is_null(),
             "error must be non-null after set_last_error"
         );
-        // SAFETY: ptr was produced by hew_stream_last_error via alloc_cstring_from_str
-        // (header-aware). Reading it as a C string and releasing via free_cstring
-        // both satisfy the header-aware precondition.
+        // SAFETY: ptr was produced by hew_stream_last_error via string_from_str
+        // (managed). Reading it as a managed string and releasing via string_release
+        // both satisfy the managed precondition.
         unsafe {
-            let msg = CStr::from_ptr(ptr).to_str().unwrap();
+            let msg = string_as_str(ptr);
             assert_eq!(msg, "connection reset by peer");
             // This is the exact call the Hew drop spine makes via hew_string_drop.
-            hew_cabi::cabi::free_cstring(ptr); // CSTRING-FREE: str-open
+            string_release(ptr);
         }
         // Error was consumed; a second call must return null.
         assert!(hew_stream_last_error().is_null());

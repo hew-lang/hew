@@ -3,9 +3,9 @@
 
 // Regression: enum variant match guards with short-circuit conditions
 enum Event {
-    Number(i32);
-    Text(string);
-    Empty;
+    Number(i32),
+    Text(string),
+    Empty,
 }
 
 fn classify(e: Event) -> i32 {

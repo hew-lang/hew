@@ -1,36 +1,22 @@
 // Runnable fixture: TCP handshake state machine executed end-to-end.
 machine TcpHandshake {
     events {
-        Syn;
-        Ack;
-        Reset;
+        Syn,
+        Ack,
+        Reset,
     }
 
-    state Closed;
-    state SynReceived;
-    state Established;
+    state Closed,
+    state SynReceived,
+    state Established,
 
-    on Syn: Closed => SynReceived {
-        TcpHandshake.SynReceived
-    }
-    on Ack: Closed => Closed reenter {
-        TcpHandshake.Closed
-    }
-    on Syn: SynReceived => SynReceived reenter {
-        TcpHandshake.SynReceived
-    }
-    on Ack: SynReceived => Established {
-        TcpHandshake.Established
-    }
-    on Syn: Established => Established reenter {
-        TcpHandshake.Established
-    }
-    on Ack: Established => Established reenter {
-        TcpHandshake.Established
-    }
-    on Reset: _ => Closed {
-        TcpHandshake.Closed
-    }
+    on Syn: Closed => SynReceived,
+    on Ack: Closed => Closed reenter,
+    on Syn: SynReceived => SynReceived reenter,
+    on Ack: SynReceived => Established,
+    on Syn: Established => Established reenter,
+    on Ack: Established => Established reenter,
+    on Reset: _ => Closed,
 }
 
 fn main() {

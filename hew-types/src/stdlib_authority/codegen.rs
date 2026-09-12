@@ -34,6 +34,13 @@ struct BuiltinEnumAbi {
 const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
+        name: "NodeError",
+        variant_count: 1,
+        order_fingerprint: 0xb89f_e6dc_5d57_7668,
+        suppress_from_sandbox_emit: true,
+    },
+    BuiltinEnumAbi {
+        module: "std.builtins",
         name: "LookupError",
         variant_count: 8,
         order_fingerprint: 0x7ab9_6324_a0dd_7d1f,
@@ -42,15 +49,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "SendError",
-        variant_count: 11,
-        order_fingerprint: 0xf06c_8f5f_fb00_58bc,
-        suppress_from_sandbox_emit: false,
-    },
-    BuiltinEnumAbi {
-        module: "std.builtins",
-        name: "AskError",
-        variant_count: 21,
-        order_fingerprint: 0x53ef_8aef_92ec_a49e,
+        variant_count: 12,
+        order_fingerprint: 0xf926_0253_f09e_3577,
         suppress_from_sandbox_emit: false,
     },
     BuiltinEnumAbi {
@@ -63,8 +63,8 @@ const BUILTIN_ENUM_ABI: &[BuiltinEnumAbi] = &[
     BuiltinEnumAbi {
         module: "std.builtins",
         name: "LinkError",
-        variant_count: 10,
-        order_fingerprint: 0x3a85_b1f1_0849_9938,
+        variant_count: 3,
+        order_fingerprint: 0xd92a_6973_af1e_05dc,
         suppress_from_sandbox_emit: true,
     },
     BuiltinEnumAbi {
@@ -317,8 +317,8 @@ mod tests {
     #[test]
     fn reordered_abi_enum_is_rejected() {
         let reordered_failure = include_str!("../../../std/failure.hew").replacen(
-            "    Restart;\n    Escalate;",
-            "    Escalate;\n    Restart;",
+            "    Restart,\n    Escalate,",
+            "    Escalate,\n    Restart,",
             1,
         );
         let sources = [

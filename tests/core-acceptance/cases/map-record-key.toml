@@ -1,0 +1,10 @@
+[[case]]
+id = "map-record-key"
+intent = "Owning record keys use content equality and hashing, retain their input owners and preserve independent map copies."
+source = "cases/map-record-key.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "VALUE\n7\n1\n"
+exit = 0

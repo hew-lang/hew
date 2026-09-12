@@ -3,7 +3,7 @@
 // the closure pair and alias its sole-owner environment. Direct Vec<fn(...)>
 // elements remain the supported boxed-pair class.
 type Holder {
-    cb: fn(i64) -> i64;
+    cb: fn(i64) -> i64,
 }
 
 fn main() {

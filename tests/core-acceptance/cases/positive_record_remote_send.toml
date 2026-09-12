@@ -1,0 +1,14 @@
+[[case]]
+id = "positive_record_remote_send"
+intent = "Accept: record-value messages are admitted by the RemotePid<T>::send Serializable gate."
+source = "../vertical-slice/accept/positive_record_remote_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 16
+column = 1
+message = "function `send_remote` is never called"

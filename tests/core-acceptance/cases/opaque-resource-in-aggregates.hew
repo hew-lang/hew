@@ -1,0 +1,55 @@
+// The same authored `#[resource] #[opaque]` handle releases exactly once
+// through its own `close` when it is owned by a record field, by a vector
+// element, and by a frame cancelled at its suspension.
+#[resource]
+#[opaque]
+type Dq {}
+
+impl Dq {
+    fn close(consume self) {
+        unsafe { hew_deque_free(self) };
+        println("closed");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> Dq;
+    fn hew_deque_free(consume dq: Dq);
+}
+
+type Holder {
+    handle: Dq,
+    label: string,
+}
+
+fn in_record() {
+    let holder = Holder { handle: unsafe { hew_deque_new() }, label: "record" };
+    println(holder.label);
+}
+
+fn in_vector() {
+    let handles: Vec<Dq> = [unsafe { hew_deque_new() }, unsafe { hew_deque_new() }];
+    println("vector " + to_string(handles.len()));
+}
+
+// Cancelled at `sleep`: the losing frame's record is still held, so the
+// cancellation edge runs the field's close exactly once.
+fn cancelled() -> i64 {
+    let holder = Holder { handle: unsafe { hew_deque_new() }, label: "cancelled" };
+    println(holder.label);
+    sleep(5s);
+    0
+}
+
+fn winner() -> i64 {
+    sleep(50ms);
+    println("winner");
+    7
+}
+
+fn main() {
+    in_record();
+    in_vector();
+    let picked = race { winner(), cancelled() };
+    println("picked " + to_string(picked));
+}

@@ -1,7 +1,7 @@
 //! Tests for the `BlockingCallInReceiveFn` warning.
 //!
 //! Actor receive functions run synchronously on scheduler worker threads.
-//! Blocking operations inside them (`Receiver.recv`, `net.Connection.read`,
+//! Blocking operations inside them (`net.Connection.read`,
 //! `net.Listener.accept`, `http.Server.accept`) can stall the thread and
 //! prevent other actors from being scheduled, potentially deadlocking the
 //! program.  The type-checker emits a `BlockingCallInReceiveFn` warning for
@@ -29,25 +29,6 @@ fn assert_single_blocking_warning(output: &hew_types::TypeCheckOutput, operation
         "warning message should name the operation, got: {:?}",
         blocking_warnings[0].message
     );
-}
-
-/// `Receiver.recv` inside a receive function triggers a warning.
-#[test]
-fn warn_receiver_recv_inside_receive_fn() {
-    let output = typecheck(
-        r"
-        import std.channel;
-
-        actor Worker {
-            receive fn process(rx: channel.Receiver<string>) {
-                let msg = rx.recv();
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    assert_single_blocking_warning(&output, "Receiver.recv");
 }
 
 /// `net.Connection.read` inside a receive function triggers a warning.
@@ -92,15 +73,15 @@ fn warn_net_listener_accept_inside_receive_fn() {
 // Negative cases: no spurious warnings outside receive fns
 // ---------------------------------------------------------------------------
 
-/// `Receiver.recv` in a plain function must NOT trigger the warning.
+/// `net.Connection.read` in a plain function must NOT trigger the warning.
 #[test]
-fn no_warn_receiver_recv_outside_actor() {
+fn no_warn_connection_read_outside_actor() {
     let output = typecheck(
         r"
-        import std.channel;
+        import std.net;
 
-        fn process(rx: channel.Receiver<string>) -> Option<string> {
-            rx.recv()
+        fn process(conn: net.Connection) -> bytes {
+            conn.read()
         }
 
         fn main() {}
@@ -113,20 +94,20 @@ fn no_warn_receiver_recv_outside_actor() {
         .collect();
     assert!(
         blocking_warnings.is_empty(),
-        "Receiver.recv outside receive fn must not produce BlockingCallInReceiveFn, got: {blocking_warnings:#?}",
+        "Connection.read outside receive fn must not produce BlockingCallInReceiveFn, got: {blocking_warnings:#?}",
     );
 }
 
-/// `Receiver::try_recv` (non-blocking) inside a receive function must NOT warn.
+/// Configuring a connection timeout inside a receive function must NOT warn.
 #[test]
-fn no_warn_try_recv_inside_receive_fn() {
+fn no_warn_connection_timeout_inside_receive_fn() {
     let output = typecheck(
         r"
-        import std.channel;
+        import std.net;
 
         actor Worker {
-            receive fn poll(rx: channel.Receiver<string>) {
-                let msg = rx.try_recv();
+            receive fn configure(conn: net.Connection) {
+                let _result = conn.set_read_timeout(100);
             }
         }
 
@@ -140,21 +121,20 @@ fn no_warn_try_recv_inside_receive_fn() {
         .collect();
     assert!(
         blocking_warnings.is_empty(),
-        "try_recv is non-blocking and must not warn, got: {blocking_warnings:#?}",
+        "set_read_timeout is non-blocking and must not warn, got: {blocking_warnings:#?}",
     );
 }
 
-/// Multiple blocking calls in the same receive fn produce one warning each.
+// Multiple blocking calls in the same receive fn produce one warning each.
 #[test]
 fn multiple_blocking_calls_each_warned() {
     let output = typecheck(
         r"
-        import std.channel;
         import std.net;
 
         actor Combo {
-            receive fn handle(rx: channel.Receiver<string>, conn: net.Connection) {
-                let msg = rx.recv();
+            receive fn handle(listener: net.Listener, conn: net.Connection) {
+                let accepted = listener.accept();
                 let data = conn.read();
             }
         }
@@ -180,11 +160,11 @@ fn multiple_blocking_calls_each_warned() {
 fn warning_message_mentions_scheduler_with_suggestion() {
     let output = typecheck(
         r"
-        import std.channel;
+        import std.net;
 
         actor Worker {
-            receive fn process(rx: channel.Receiver<string>) {
-                let _ = rx.recv();
+            receive fn process(conn: net.Connection) {
+                let _ = conn.read();
             }
         }
 
@@ -227,91 +207,49 @@ fn warn_http_server_accept_inside_receive_fn() {
 }
 
 // ---------------------------------------------------------------------------
-// Suggestion text: accept/read point at `await`, other blocking ops don't
+// Suggestion text: no blocking op has a drop-in suspending spelling
 // ---------------------------------------------------------------------------
 
-/// `net.Listener.accept`'s suggestion names the `await` form — it has a
-/// direct, drop-in suspending replacement, unlike a generic blocking call.
+/// `await` is reserved for tasks, asks and actor handles, so no blocking-call
+/// suggestion may point the programmer at an `await` form.  The remedy is to
+/// move the wait off the receive function.
 #[test]
-fn accept_suggestion_names_await() {
+fn no_blocking_suggestion_names_await() {
     let output = typecheck(
         r"
         import std.net;
 
-        actor Server {
-            receive fn serve(listener: net.Listener) {
-                let conn = listener.accept();
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .expect("expected a BlockingCallInReceiveFn warning");
-    assert!(
-        w.suggestions.iter().any(|s| s.contains("await")),
-        "accept's suggestion should point at the await form, got: {:?}",
-        w.suggestions
-    );
-}
-
-/// `net.Connection.read`'s suggestion names the `await` form.
-#[test]
-fn read_suggestion_names_await() {
-    let output = typecheck(
-        r"
-        import std.net;
-
-        actor Networker {
-            receive fn handle(conn: net.Connection) {
+        actor Mixed {
+            receive fn serve(
+                listener: net.Listener,
+                conn: net.Connection,
+                second: net.Connection,
+            ) {
+                let accepted = listener.accept();
                 let data = conn.read();
+                let other = second.read();
             }
         }
 
         fn main() {}
         ",
     );
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .expect("expected a BlockingCallInReceiveFn warning");
-    assert!(
-        w.suggestions.iter().any(|s| s.contains("await")),
-        "read's suggestion should point at the await form, got: {:?}",
-        w.suggestions
+    let blocking_warnings = warnings_of_kind(&output, &TypeErrorKind::BlockingCallInReceiveFn);
+    assert_eq!(
+        blocking_warnings.len(),
+        3,
+        "expected one warning per blocking call, got: {:#?}",
+        output.warnings
     );
-}
-
-/// `Receiver.recv` has no direct suspending replacement in a receive fn, so
-/// its suggestion stays the generic "send it as a message" text, not `await`.
-#[test]
-fn recv_suggestion_stays_generic() {
-    let output = typecheck(
-        r"
-        import std.channel;
-
-        actor Worker {
-            receive fn process(rx: channel.Receiver<string>) {
-                let msg = rx.recv();
-            }
-        }
-
-        fn main() {}
-        ",
-    );
-    let w = output
-        .warnings
-        .iter()
-        .find(|w| w.kind == TypeErrorKind::BlockingCallInReceiveFn)
-        .expect("expected a BlockingCallInReceiveFn warning");
-    assert!(
-        !w.suggestions.iter().any(|s| s.contains("await")),
-        "recv has no suspending replacement; suggestion should not mention await, got: {:?}",
-        w.suggestions
-    );
+    for w in blocking_warnings {
+        assert!(
+            !w.suggestions.iter().any(|s| s.contains("await")),
+            "no blocking suggestion may name an await form, got: {:?}",
+            w.suggestions
+        );
+        assert!(
+            !w.suggestions.is_empty(),
+            "warning should carry at least one suggestion"
+        );
+    }
 }

@@ -8,7 +8,7 @@
 import hew.supertraits.{ Deep };
 
 type DW {
-    id: i64;
+    id: i64,
 }
 
 impl Deep for DW {

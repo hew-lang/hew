@@ -1,0 +1,61 @@
+[[case]]
+id = "affine_record_clone_transitive"
+intent = "An unmarked record cannot hide an affine field from structural clone."
+source = "../vertical-slice/reject/affine_record_clone_transitive.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 46
+column = 23
+message = "type `PlainWrapper` contains `#[resource]` value `ResourceToken` and cannot be cloned: member `token` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 50
+column = 34
+message = "type `GenericWrapper<ResourceToken>` contains `#[resource]` value `ResourceToken` and cannot be cloned: member `value` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 54
+column = 32
+message = "type `GenericWrapper<LinearTicket>` contains `#[linear]` value `LinearTicket` and cannot be cloned: member `value` contains `LinearTicket`, which must be consumed exactly once and has no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 57
+column = 26
+message = "type `ResourceEnvelope` contains `#[resource]` value `ResourceToken` and cannot be cloned: member `Full.0` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 61
+column = 23
+message = "type `TupleWrapper` contains `#[resource]` value `ResourceToken` and cannot be cloned: member `value.1.Full.0` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 64
+column = 23
+message = "type `ArrayWrapper` contains `#[linear]` value `LinearTicket` and cannot be cloned: member `values.element` contains `LinearTicket`, which must be consumed exactly once and has no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 68
+column = 27
+message = "type `Vec<ResourceToken>` contains `#[resource]` value `ResourceToken` and cannot be cloned: member `element` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 72
+column = 25
+message = "type `HashMap<string, LinearTicket>` contains `#[linear]` value `LinearTicket` and cannot be cloned: member `1` contains `LinearTicket`, which must be consumed exactly once and has no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 81
+column = 30
+message = "type `Vec<ResourceToken>` contains `#[resource]` value `ResourceToken` and cannot be cloned: member `element` contains `ResourceToken`, which has an affine close contract and no semantic clone"

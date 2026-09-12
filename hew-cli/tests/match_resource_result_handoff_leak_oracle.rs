@@ -41,7 +41,7 @@ impl ResourceShape {
                  type Handle {}\n\
                  impl Handle {\n\
                  \x20   fn probe(self) -> i64 { 7 }\n\
-                 \x20   fn close(self) { unsafe { hew_deque_free(self) }; }\n\
+                 \x20   fn close(consume self) { unsafe { hew_deque_free(self) }; }\n\
                  }\n\
                  extern \"C\" {\n\
                  \x20   fn hew_deque_new() -> Handle;\n\
@@ -53,10 +53,10 @@ impl ResourceShape {
                 "#[opaque]\n\
                  type Raw {}\n\
                  #[resource]\n\
-                 type Handle { raw: Raw; tag: i64; }\n\
+                 type Handle { raw: Raw, tag: i64, }\n\
                  impl Handle {\n\
                  \x20   fn probe(self) -> i64 { self.tag }\n\
-                 \x20   fn close(self) { unsafe { hew_deque_free(self.raw) }; }\n\
+                 \x20   fn close(consume self) { unsafe { hew_deque_free(self.raw) }; }\n\
                  }\n\
                  extern \"C\" {\n\
                  \x20   fn hew_deque_new() -> Raw;\n\

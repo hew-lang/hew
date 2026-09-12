@@ -1,15 +1,20 @@
 // Stack - LIFO data structure using Vec<i64>
+//
+// A parameter is the callee's own copy, so every operation that grows or
+// shrinks the stack hands it back through the return value and the caller
+// reassigns.
 fn stack_new() -> Vec<i64> {
-    let s: Vec<i64> = Vec.new();
+    Vec.new()
+}
+
+fn stack_push(var s: Vec<i64>, val: i64) -> Vec<i64> {
+    s.push(val);
     s
 }
 
-fn stack_push(s: Vec<i64>, val: i64) {
-    s.push(val);
-}
-
-fn stack_pop(s: Vec<i64>) -> i64 {
-    s.pop()
+fn stack_pop(var s: Vec<i64>) -> (Vec<i64>, i64) {
+    let val = s.pop();
+    (s, val)
 }
 
 fn stack_peek(s: Vec<i64>) -> i64 {
@@ -21,7 +26,7 @@ fn stack_size(s: Vec<i64>) -> i64 {
 }
 
 fn stack_is_empty(s: Vec<i64>) -> i64 {
-    if s.len() == 0 {
+    if s.is_empty() {
         1
     } else {
         0
@@ -42,7 +47,7 @@ fn main() {
     var passed = 0;
     // Test 1: new stack is empty
     total = total + 1;
-    let s = stack_new();
+    var s = stack_new();
     let r1 = if stack_is_empty(s) == 1 {
         1
     } else {
@@ -52,9 +57,9 @@ fn main() {
 
     // Test 2: push and size
     total = total + 1;
-    stack_push(s, 10);
-    stack_push(s, 20);
-    stack_push(s, 30);
+    s = stack_push(s, 10);
+    s = stack_push(s, 20);
+    s = stack_push(s, 30);
     let r2 = if stack_size(s) == 3 {
         1
     } else {
@@ -73,9 +78,10 @@ fn main() {
 
     // Test 4: pop returns LIFO order
     total = total + 1;
-    let p1 = stack_pop(s);
-    let p2 = stack_pop(s);
-    let p3 = stack_pop(s);
+    let (after_p1, p1) = stack_pop(s);
+    let (after_p2, p2) = stack_pop(after_p1);
+    let (after_p3, p3) = stack_pop(after_p2);
+    s = after_p3;
     var r4 = 0;
     if p1 == 30 {
         if p2 == 20 {
@@ -97,7 +103,7 @@ fn main() {
 
     // Test 6: push after empty
     total = total + 1;
-    stack_push(s, 99);
+    s = stack_push(s, 99);
     var r6 = 0;
     if stack_size(s) == 1 {
         if stack_peek(s) == 99 {
@@ -108,9 +114,9 @@ fn main() {
 
     // Test 7: many elements
     total = total + 1;
-    let s2 = stack_new();
+    var s2 = stack_new();
     for i in 0 .. 100 {
-        stack_push(s2, i);
+        s2 = stack_push(s2, i);
     }
     var r7 = 0;
     if stack_size(s2) == 100 {

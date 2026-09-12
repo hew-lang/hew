@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_slice_full"
+intent = "A full byte-slice `b[..]` yields every byte and its length is the exit code."
+source = "../vertical-slice/accept/bytes_slice_full.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "wxyz\n"
+exit = 4

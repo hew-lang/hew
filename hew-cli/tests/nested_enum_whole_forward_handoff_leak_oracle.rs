@@ -13,33 +13,31 @@
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
     HIGH_FRAMES, LOW_FRAMES,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Inner {
-    Text(string);
-    Empty;
+    Text(string),
+    Empty,
 }
 
 enum Outer {
-    Wrap(Inner);
-    Empty;
+    Wrap(Inner),
+    Empty,
 }
 
 enum Middle {
-    Wrap(Inner);
-    Empty;
+    Wrap(Inner),
+    Empty,
 }
 
 enum DeepOuter {
-    Wrap(Middle);
-    Empty;
+    Wrap(Middle),
+    Empty,
 }
 
 type Holder {
@@ -48,13 +46,13 @@ type Holder {
 }
 
 enum RecordOuter {
-    Wrap(Holder);
-    Empty;
+    Wrap(Holder),
+    Empty,
 }
 
 enum TupleOuter {
-    Wrap((Inner, i64));
-    Empty;
+    Wrap((Inner, i64)),
+    Empty,
 }
 
 fn whole(i: i64) -> i64 {
@@ -142,113 +140,15 @@ fn source(frames: usize) -> String {
     SOURCE_TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
-fn dump_mir(stage: &str) -> String {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("nested-enum-whole-forward-mir-")
-        .tempdir()
-        .expect("tempdir");
-    let path = dir.path().join("nested_enum_whole_forward.hew");
-    std::fs::write(&path, source(1)).expect("write Hew source");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--dump-mir",
-            stage,
-            path.to_str().expect("Hew source path is UTF-8"),
-        ])
-        .current_dir(repo_root())
-        .output()
-        .unwrap_or_else(|error| panic!("invoke hew compile --dump-mir {stage}: {error}"));
-    assert!(
-        output.status.success(),
-        "{stage} MIR dump failed:\n{}",
-        describe_output(&output)
-    );
-    String::from_utf8(output.stdout).expect("MIR dump is UTF-8")
-}
-
-fn function_section<'a>(dump: &'a str, name: &str) -> &'a str {
-    let marker = format!("fn {name}");
-    let start = dump
-        .find(&marker)
-        .unwrap_or_else(|| panic!("missing `{marker}` in MIR dump:\n{dump}"));
-    let tail = &dump[start..];
-    tail.find("\nfn ").map_or(tail, |next| &tail[..next])
-}
-
-fn count(section: &str, needle: &str) -> usize {
-    section.match_indices(needle).count()
-}
-
-fn enum_drop_locals<'a>(section: &'a str, ty: &str) -> Vec<&'a str> {
-    let marker = format!("ty={ty} kind=enum_in_place");
-    let mut locals = section
-        .lines()
-        .filter(|line| line.contains(&marker))
-        .filter_map(|line| line.split_whitespace().nth(1))
-        .collect::<Vec<_>>();
-    locals.sort_unstable();
-    locals.dedup();
-    locals
-}
-
-#[test]
-fn raw_and_elaborated_mir_pin_forwarding_shapes_and_single_drop_authority() {
-    let raw = dump_mir("raw");
-    let whole_raw = function_section(&raw, "whole");
-    let record_raw = function_section(&raw, "record_field");
-    let tuple_raw = function_section(&raw, "tuple_field");
-    assert!(
-        whole_raw.contains("neutralize_payload")
-            && whole_raw.match_indices(" = move ").count() >= 2,
-        "whole-local handoff must retain its move-out neutralization and forwarding move:\n\
-         {whole_raw}"
-    );
-    assert!(
-        record_raw.contains(".field[0]") && record_raw.contains(" = move "),
-        "record-field handoff must remain visible before elaboration:\n{record_raw}"
-    );
-    assert!(
-        tuple_raw.contains(".0") && tuple_raw.contains(" = move "),
-        "tuple-field handoff must remain visible before elaboration:\n{tuple_raw}"
-    );
-
-    let elaborated = dump_mir("elab");
-    let whole = function_section(&elaborated, "whole");
-    let direct = function_section(&elaborated, "direct");
-    let depth_two = function_section(&elaborated, "depth_two");
-    let record = function_section(&elaborated, "record_field");
-    let tuple = function_section(&elaborated, "tuple_field");
-
-    assert_eq!(
-        enum_drop_locals(whole, "Inner"),
-        ["_16"],
-        "every child-scope handoff exit must use the same final Inner owner:\n{whole}"
-    );
-    assert_eq!(
-        enum_drop_locals(whole, "Outer"),
-        ["_8"],
-        "the neutralized outer shell may retain only its one tag-aware no-op authority:\n{whole}"
-    );
-    for (name, section, outer_ty) in [
-        ("direct", direct, "Outer"),
-        ("depth_two", depth_two, "DeepOuter"),
-        ("record_field", record, "RecordOuter"),
-        ("tuple_field", tuple, "TupleOuter"),
-    ] {
-        assert_eq!(
-            enum_drop_locals(section, outer_ty).len(),
-            1,
-            "{name} must use one outer local as its tag-aware owner on every exit:\n{section}"
-        );
-        assert_eq!(
-            count(section, "ty=Inner kind=enum_in_place"),
-            0,
-            "{name} must not grant a competing nested-enum drop:\n{section}"
-        );
-    }
-}
+// Lost coverage: `raw_and_elaborated_mir_pin_forwarding_shapes_and_single_drop_authority`
+// used `--dump-mir raw`/`elab` (both retired) to pin the move/neutralization
+// text visible pre-elaboration and to count post-elaboration tag-aware
+// drop-local occurrences per function section for the whole-local,
+// record-field and tuple-field forwarding shapes. Physical MIR's structured
+// (Debug) dump has no equivalent single-line text to grep or count per
+// function, so this MIR-emission coverage has no direct replacement. The
+// same leak/double-free behaviour for the same shapes is still proven end to
+// end below by the leak-slope and malloc-scribble oracles in this file.
 
 #[cfg_attr(
     not(target_os = "macos"),

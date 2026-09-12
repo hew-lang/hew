@@ -87,10 +87,13 @@ The body shapes (the `wire-body` rule and its parts):
   that is not an array.
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
   (CBOR text), `bytes` (CBOR byte string), `Option<T>` (`null` for `None`,
-  the inner encoding for `Some`), `Vec<T>` (a CBOR array), and nested
-  `#[wire]` types/enums (nested maps / unit-tag / map-of-one). A value
-  type outside this floor fails closed at codegen ("unsupported value type …
-  outside the supported wire-body floor") and never reaches the wire.
+  the inner encoding for `Some`), `Vec<T>` (a CBOR array), `HashMap<K, V>`
+  (a map of recursively encoded keys and values), `HashSet<T>` (a canonical
+  array), and nested `#[wire]` types/enums. Nested owned containers and
+  optional elements use the same native copy/drop recipes as ordinary values;
+  strings preserve their full UTF-8 payload, including NUL. SIR checks the
+  exact schema before native code generation. `Option<Option<T>>` remains
+  ambiguous under null encoding and is rejected.
 
 Field presence and value shape are orthogonal. A required `Option<T>` always
 emits its key (`None` is CBOR null) and rejects an absent key. An
@@ -213,7 +216,7 @@ The round-trip and version-rejection tests live in
 
 User code that needs to read or write wire bytes at the **language
 layer** (HTTP bodies, file formats, third-party APIs) reaches for a
-module under `std::encoding::*`. Hew does **not** expose the runtime
+module under `std.encoding.*`. Hew does **not** expose the runtime
 CBOR envelope to user code as a general-purpose serialisation surface.
 That envelope is an internal trust boundary, not a user API.
 
@@ -225,18 +228,18 @@ and was settled by issue #1247.
 
 | Module | Status | What's there today |
 | --- | --- | --- |
-| `std::encoding::json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
-| `std::encoding::yaml` | **Real.** Full parser/serialiser. | `std/encoding/yaml/` (~2.4k LOC). |
-| `std::encoding::toml` | **Real.** Parser/generator + datetime variant. | `std/encoding/toml/` (~1.2k LOC). |
-| `std::encoding::msgpack` | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface. | `std/encoding/msgpack/` (~1k LOC). |
-| `std::encoding::protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler. | `std/encoding/protobuf/` (~1.5k LOC). |
-| `std::encoding::xml` | **Real, scoped.** Parse/serialise. | `std/encoding/xml/` (~850 LOC). |
-| `std::encoding::csv` | **Real, scoped.** | `std/encoding/csv/`. |
-| `std::encoding::markdown` | **Real, scoped.** Markdown → HTML rendering only. | `std/encoding/markdown/`. |
-| `std::encoding::base64` | **Real.** | `std/encoding/base64/`. |
-| `std::encoding::hex` | **Real.** | `std/encoding/hex/`. |
-| `std::encoding::compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
-| `std::encoding::wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
+| `std.encoding.json` | **Real.** Production-shape encoder/decoder. | `std/encoding/json/` (~2k LOC). Backing parser + the opaque `Value` surface. |
+| `std.encoding.yaml` | **Real.** Full parser/serialiser. | `std/encoding/yaml/` (~2.4k LOC). |
+| `std.encoding.toml` | **Real.** Parser/generator + datetime variant. | `std/encoding/toml/` (~1.2k LOC). |
+| `std.encoding.msgpack` | **Real, JSON-bridged.** Encode/decode against the canonical `Value`; per the `wire` README it bridges through JSON's value model when crossing the opaque surface. | `std/encoding/msgpack/` (~1k LOC). |
+| `std.encoding.protobuf` | **Real, scoped.** Wire-format encode/decode helpers; not a schema compiler. | `std/encoding/protobuf/` (~1.5k LOC). |
+| `std.encoding.xml` | **Real, scoped.** Parse/serialise. | `std/encoding/xml/` (~850 LOC). |
+| `std.encoding.csv` | **Real, scoped.** | `std/encoding/csv/`. |
+| `std.encoding.markdown` | **Real, scoped.** Markdown → HTML rendering only. | `std/encoding/markdown/`. |
+| `std.encoding.base64` | **Real.** | `std/encoding/base64/`. |
+| `std.encoding.hex` | **Real.** | `std/encoding/hex/`. |
+| `std.encoding.compress` | **Real.** gzip/deflate/zlib. | `std/encoding/compress/`. |
+| `std.encoding.wire` | **Substrate.** Holds the opaque `Value` contract (issue #1247). The legacy HBF byte-layout helpers (`encode_header` / framing) were removed when the CBOR-native wire format replaced HBF. | `std/encoding/wire/` — see §5 for history. |
 
 Each module's README states its own scope. The doctrine here is about
 **which one to reach for**, not how each one is implemented.
@@ -253,9 +256,9 @@ Each module's README states its own scope. The doctrine here is about
 - **Talking to a non-Hew consumer that wants to read your message
   types:** see §3 — this is consumer-interop, deferred.
 
-### Anti-pattern: do not use `std::encoding::wire` directly
+### Anti-pattern: do not use `std.encoding.wire` directly
 
-`std::encoding::wire` held low-level HBF byte-layout helpers
+`std.encoding.wire` held low-level HBF byte-layout helpers
 (`encode_header` and friends) that reflected the pre-v0.5 format.
 Those helpers were deleted when the CBOR-native wire format replaced HBF (see §5 S1). The module now holds
 only the opaque `Value` contract. User or stdlib code that needs wire
@@ -301,7 +304,7 @@ surface are **out of scope** for v0.5.
 ### What this doctrine forbids in the interim
 
 - Do not land partial OpenAPI / proto-gen tooling under
-  `std::encoding::*` or anywhere else in the workspace as a "preview"
+  `std.encoding.*` or anywhere else in the workspace as a "preview"
   surface. If it is not the effort's deliverable, it does not ship.
 - Do not advertise OpenAPI / proto-gen support in user-facing docs,
   examples, or release notes for v0.5.x.
@@ -371,15 +374,16 @@ failure. The existing `EnvelopeFrame::encode` surface is the template.
 
 ## 5. Stubs and migration commitments
 
-### S1. `std::encoding::wire` — legacy HBF helpers
+### S1. `std.encoding.wire` — legacy HBF helpers
 
 **State: DELETED.** The `encode_header`, `decode_header`, and
 `validate_header` helpers in `std/encoding/wire/wire.hew` were removed.
 The CBOR envelope substrate (`hew-runtime/src/envelope.rs`, commit
-`04bfb422`) was the replacement; the migration is complete. The opaque
-`Value` contract under `std::encoding::wire` (in `value_trait.hew`)
-remains active — it is a shared surface for `json`, `yaml`, `toml`, and
-`msgpack`, not part of the HBF path.
+`04bfb422`) was the replacement; the migration is complete. JSON and YAML
+now expose format-specific owning values with automatic cleanup and checked
+accessors. Their former shared resource-shaped `CanonicalValueMethods` trait
+has been removed. TOML retains its independent resource API; MessagePack
+converts between its bytes and JSON text.
 
 ### S2. Cap'n Proto stub crate
 
@@ -409,7 +413,7 @@ checklist.
 
 ### S4. Module renames / deprecations
 
-No stdlib `std::encoding::*` modules are scheduled for rename or
+No stdlib `std.encoding.*` modules are scheduled for rename or
 deprecation in v0.5. The list in §2 is the v0.5 surface. S1 is closed
 (HBF helpers deleted); no other module has an active obsolescence trigger.
 

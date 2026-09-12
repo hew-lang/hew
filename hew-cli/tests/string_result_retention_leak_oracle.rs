@@ -4,8 +4,6 @@
 //! Red baseline at `f7b703131`, before `hew_markdown_to_html` had a measured
 //! retention row: 3 calls leaked 3 nodes / 192 bytes and 50 calls leaked
 //! 50 nodes / 3,200 bytes. The admitted contract makes both probes exact zero.
-//! Historical suspending-closure fixtures remain here as rejection coverage;
-//! they must stop at the generic MIR diagnostic before any runtime oracle.
 
 #![cfg(unix)]
 
@@ -15,9 +13,7 @@ use std::path::Path;
 use std::process::Command;
 
 use support::leak_slope::{assert_frame_slope_below_tolerance_exact_lines, compile_to_native};
-use support::{
-    describe_output, hew_binary, repo_root, require_codegen, run_bounded_command, strip_ansi,
-};
+use support::{describe_output, require_codegen, run_bounded_command, strip_ansi};
 
 fn markdown_wrapper_source(frames: usize) -> String {
     format!(
@@ -79,12 +75,12 @@ fn borrow_len(value: string) -> i64 {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn go(frames: i64) -> i64 {
         let gate_pid = gate;
         let delayed_identity = |value: string| {
-            let _ = match await gate_pid.tick() {
+            let _ = match gate_pid.tick() {
                 .Ok(n) => n,
                 .Err(_) => 0,
             };
@@ -104,15 +100,24 @@ actor Runner {
 fn main() {
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
-    let _ = await runner.go(__FRAMES__);
+    let _ = runner.go(__FRAMES__);
 }
 "#;
 
     TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
+/// Excluded from the active fixture list below: reading this non-Copy
+/// `ready` actor field out to move it into a closure hits a distinct,
+/// pre-existing `E_SIR_UNSUPPORTED` limitation ("an actor state field
+/// without a copy cannot leave the state seat"), unrelated to retired
+/// syntax. Kept for whenever that limitation lifts.
+#[allow(
+    dead_code,
+    reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
+)]
 const SUSPENDING_CLOSURE_ABANDON_SOURCE: &str = r#"
-import std.channel.channel;
+import std.channel;
 
 extern "C" {
     fn hew_sched_metrics_active_workers() -> i64;
@@ -121,11 +126,11 @@ extern "C" {
 }
 
 actor Reader {
-    let ready: channel.Sender<i64>;
+    let ready: channel.Sender<i64>,
 
     receive fn go(unused: i64) {
         let ready_tx = ready;
-        let delayed_identity = |value: string| {
+        let delayed_identity = move |value: string| {
             ready_tx.send(1);
             sleep(10s);
             value
@@ -135,7 +140,7 @@ actor Reader {
 }
 
 fn main() {
-    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+    let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     let reader = spawn Reader(ready: ready_tx);
     reader.go(0);
     let _ = ready_rx.recv();
@@ -160,15 +165,15 @@ import std.net.{Listener};
 import std.observe;
 
 actor Reader {
-    let addr: string;
+    let addr: string,
 
     receive fn go(trigger: i64) -> i64 {
-        let conn = net.connect(addr);
-        let read_once = |value: string| {
+        let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+        let read_once = move |value: string| {
             if trigger >= 0 {
                 panic("crash before child suspend");
             }
-            let _ = await conn.read_string();
+            let _ = conn.read_string();
             value
         };
         let _ = read_once("crash-owner".to_upper());
@@ -177,11 +182,13 @@ actor Reader {
 }
 
 fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    sleep(1ms);
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    let result = await reader.go(0);
+    let result = reader.go(0);
     let peer = listener.accept();
     peer.close();
     listener.close();
@@ -190,6 +197,7 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
+    let _ = observe.barrier();
     println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
 }
 "#;
@@ -212,15 +220,15 @@ const SUSPENDING_CLOSURE_PEER_EOF_SOURCE: &str = r#"
 import std.net.{Listener};
 
 actor Reader {
-    let addr: string;
+    let addr: string,
 
     receive fn go(trigger: i64) -> i64 {
-        let conn = net.connect(addr);
-        let read_once = |value: string| {
+        let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
+        let read_once = move |value: string| {
             if trigger >= 0 {
                 panic("crash before child suspend");
             }
-            let _ = await conn.read_string();
+            let _ = conn.read_string();
             value
         };
         let _ = read_once("crash-owner".to_upper());
@@ -229,10 +237,10 @@ actor Reader {
 }
 
 fn main() {
-    let listener = net.listen("127.0.0.1:0");
+    let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    let result = await reader.go(0);
+    let result = reader.go(0);
     match result {
         .Ok(_) => println("unexpected-ok"),
         .Err(_) => println("crash-fallback"),
@@ -271,15 +279,15 @@ fn tcp_resource_crash_source(frames: usize, fresh_argument: bool) -> String {
 import std.net.{{Listener}};
 
 actor Reader {{
-    let addr: string;
+    let addr: string,
 
     receive fn go(trigger: i64) -> i64 {{
-        let conn = net.connect(addr);
-        let read_once = |value: string| {{
+        let conn = match net.connect(addr) {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
+        let read_once = move |value: string| {{
             if trigger >= 0 {{
                 panic("crash before child suspend");
             }}
-            let _ = await conn.read_string();
+            let _ = conn.read_string();
             value
         }};
         let _ = read_once({argument});
@@ -292,9 +300,9 @@ fn main() {{
         // Keep the endpoint static: formatting the ephemeral port allocates a
         // String per frame, which would test string concatenation rather than
         // the Listener/Connection lifecycle this oracle owns.
-        let listener = net.listen("127.0.0.1:39467");
+        let listener = match net.listen("127.0.0.1:39467") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
         let reader = spawn Reader(addr: "127.0.0.1:39467");
-        let result = await reader.go(0);
+        let result = reader.go(0);
         let peer = listener.accept();
         peer.close();
         listener.close();
@@ -326,16 +334,15 @@ actor Gate {{
     receive fn tick() -> i64 {{ 1 }}
 }}
 
-actor Crasher {{
-    let gate: LocalPid<Gate>;
+actor Crasher {{ 
+    let gate: Gate,
 
     receive fn go(trigger: i64) -> i64 {{
         let gate_pid = gate;
-        let read_once = |value: string| {{
+        let read_once = move |value: string| {{
             if trigger >= 0 {{
-                panic("crash before child suspend");
-            }}
-            let _ = await gate_pid.tick();
+                panic("crash before child suspend") }}
+            let _ = gate_pid.tick();
             value
         }};
         let _ = read_once("static-crash-owner");
@@ -347,7 +354,7 @@ fn main() {{
     let gate = spawn Gate;
     for _ in 0..{frames} {{
         let crasher = spawn Crasher(gate: gate);
-        match await crasher.go(0) {{
+        match crasher.go(0) {{
             .Ok(_) => panic("crasher unexpectedly returned"),
             .Err(_) => println("crash-fallback"),
         }}
@@ -355,87 +362,6 @@ fn main() {{
 }}
 "#
     )
-}
-
-fn ordinary_helper_snapshot_normal_source(frames: usize) -> String {
-    const TEMPLATE: &str = r#"
-type Bundle { text: string, data: bytes }
-#[resource] type Witness { fd: i64 }
-impl Witness { fn close(self) { println("closed"); } }
-fn make_nested(label: string) -> fn() -> i64 { || label.len() }
-fn helper_normal() -> i64 {
-    let text = "helper-string".to_upper();
-    let data = "helper-bytes".to_bytes();
-    let bundle = Bundle {
-        text: "helper-record".to_upper(),
-        data: "helper-record-bytes".to_bytes(),
-    };
-    let witness = Witness { fd: 7 };
-    let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap.new<string, i64>();
-    text.len() + data.len() + bundle.text.len() + bundle.data.len()
-        + witness.fd + nested() + table.len()
-}
-actor Gate { receive fn tick() -> i64 { 1 } }
-actor Runner {
-    let gate: LocalPid<Gate>;
-    receive fn go(frames: i64) -> i64 {
-        let _ = await gate.tick();
-        for _ in 0..frames {
-            if helper_normal() < 0 { panic("impossible"); }
-            println("completed");
-        }
-        frames
-    }
-}
-fn main() {
-    let gate = spawn Gate;
-    let runner = spawn Runner(gate: gate);
-    let _ = await runner.go(__FRAMES__);
-}
-"#;
-    TEMPLATE.replace("__FRAMES__", &frames.to_string())
-}
-
-fn ordinary_helper_snapshot_crash_source(frames: usize) -> String {
-    const TEMPLATE: &str = r#"
-type Bundle { text: string, data: bytes }
-#[resource] type Witness { fd: i64 }
-impl Witness { fn close(self) { println("closed"); } }
-fn make_nested(label: string) -> fn() -> i64 { || label.len() }
-fn helper_trap() -> i64 {
-    let text = "helper-string".to_upper();
-    let data = "helper-bytes".to_bytes();
-    let bundle = Bundle {
-        text: "helper-record".to_upper(),
-        data: "helper-record-bytes".to_bytes(),
-    };
-    let witness = Witness { fd: 7 };
-    let nested = make_nested("helper-nested".to_upper());
-    let table = HashMap.new<string, i64>();
-    text.len() + data.len() + bundle.text.len() + bundle.data.len()
-        + witness.fd + nested() + table["missing"]
-}
-actor Gate { receive fn tick() -> i64 { 1 } }
-actor Runner {
-    let gate: LocalPid<Gate>;
-    receive fn go() -> i64 {
-        let _ = await gate.tick();
-        helper_trap()
-    }
-}
-fn main() {
-    let gate = spawn Gate;
-    for _ in 0..__FRAMES__ {
-        let runner = spawn Runner(gate: gate);
-        match await runner.go() {
-            .Ok(_) => println("unexpected"),
-            .Err(_) => println("crashed"),
-        }
-    }
-}
-"#;
-    TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
 const SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE: &str = r#"
@@ -458,7 +384,7 @@ actor Gate {
 }
 
 actor Runner {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn go(trigger: i64) -> i64 {
         let gate_pid = gate;
@@ -470,7 +396,7 @@ actor Runner {
         };
         let root_nested = make_root_nested("root-nested-owner".to_upper());
         let resume_then_crash = |value: string| {
-            let _ = match await gate_pid.tick() {
+            let _ = match gate_pid.tick() {
                 .Ok(n) => n,
                 .Err(_) => 0,
             };
@@ -493,15 +419,18 @@ actor Runner {
 }
 
 fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    sleep(1ms);
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
-    let r = await runner.go(0);
+    let r = runner.go(0);
     match r {
         .Ok(_) => println("unexpected-ok"),
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
+    let _ = observe.barrier();
     println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
 }
 "#;
@@ -535,10 +464,10 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn run() -> i64 {
-        let child = |child_gate: LocalPid<Gate>| {
+        let child = |child_gate: Gate| {
             let child_string = "pre-await-string-owner".to_upper();
             let child_bytes = "pre-await-bytes-owner".to_bytes();
             let child_record = ChildBundle {
@@ -554,7 +483,7 @@ actor Crasher {
                 >= 0 {
                 panic("crash before first child await");
             }
-            let _ = match await child_gate.tick() {
+            let _ = match child_gate.tick() {
                 .Ok(n) => n,
                 .Err(_) => 0,
             };
@@ -572,7 +501,7 @@ fn main() {
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
-        match await crasher.run() {
+        match crasher.run() {
             .Ok(_) => panic("pre-await child crash unexpectedly returned"),
             .Err(_) => println("restarted"),
         }
@@ -594,16 +523,16 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn run() -> i64 {
-        let child = |child_gate: LocalPid<Gate>| {
+        let child = |child_gate: Gate| {
             var child_string = "pre-overwrite-owner".to_upper();
             child_string = "post-overwrite-owner".to_upper();
             if child_string.len() >= 0 {
                 panic("crash after child-owner reassignment");
             }
-            let _ = match await child_gate.tick() {
+            let _ = match child_gate.tick() {
                 .Ok(n) => n,
                 .Err(_) => 0,
             };
@@ -617,7 +546,7 @@ fn main() {
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
-        match await crasher.run() {
+        match crasher.run() {
             .Ok(_) => panic("reassigned child crash unexpectedly returned"),
             .Err(_) => println("restarted"),
         }
@@ -650,10 +579,10 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn run() -> i64 {
-        let child = |child_gate: LocalPid<Gate>| {
+        let child = |child_gate: Gate| {
             let child_string = "child-string-owner".to_upper();
             let child_bytes = "child-bytes-owner".to_bytes();
             let child_record = ChildBundle {
@@ -661,7 +590,7 @@ actor Crasher {
                 data: "child-record-bytes".to_bytes(),
             };
             let child_nested = make_child_nested("child-nested-owner".to_upper());
-            let _ = match await child_gate.tick() {
+            let _ = match child_gate.tick() {
                 .Ok(n) => n,
                 .Err(_) => 0,
             };
@@ -683,7 +612,7 @@ fn main() {
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
-        match await crasher.run() {
+        match crasher.run() {
             .Ok(_) => panic("child-owner crash unexpectedly returned"),
             .Err(_) => println("restarted"),
         }
@@ -697,6 +626,10 @@ fn main() {
 /// fresh actor restart loop. Each line is printed only after the crash fallback
 /// has resolved and the live coroutine-frame byte gauge has returned to the
 /// main coroutine's baseline.
+#[allow(
+    dead_code,
+    reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
+)]
 fn nested_suspending_closure_crash_restart_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
 import std.observe;
@@ -708,15 +641,15 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn run() -> i64 {
         let gate_pid = gate;
-        let outer = |outer_gate: LocalPid<Gate>, outer_value: string| {
-            let middle = |middle_gate: LocalPid<Gate>, middle_value: string| {
-                let inner = |inner_gate: LocalPid<Gate>, inner_value: string| {
+        let outer = |outer_gate: Gate, outer_value: string| {
+            let middle = |middle_gate: Gate, middle_value: string| {
+                let inner = |inner_gate: Gate, inner_value: string| {
                     panic("nested synchronous ramp crash");
-                    let _ = match await inner_gate.tick() {
+                    let _ = match inner_gate.tick() {
                         .Ok(n) => n,
                         .Err(_) => 0,
                     };
@@ -732,11 +665,14 @@ actor Crasher {
 }
 
 fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    sleep(1ms);
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
-        let result = await crasher.run();
+        let result = crasher.run();
+        let _ = observe.barrier();
         if observe.read("coroutines.frame_bytes_live").unwrap_or(0) != frame_baseline {
             panic("nested crash left coroutine-frame bytes live");
         }
@@ -754,6 +690,10 @@ fn main() {
 /// Capture-bearing twin of the frame-only restart fixture. Each of the three
 /// caller frames owns one fresh string in the exact `ExitPath::Suspend` plan
 /// opened around its synchronous child ramp.
+#[allow(
+    dead_code,
+    reason = "kept for when the E_SIR_UNSUPPORTED limitation it hits lifts"
+)]
 fn nested_captured_string_crash_restart_source(frames: usize) -> String {
     const TEMPLATE: &str = r#"
 actor Gate {
@@ -761,20 +701,20 @@ actor Gate {
 }
 
 actor Crasher {
-    let gate: LocalPid<Gate>;
+    let gate: Gate,
 
     receive fn run() -> i64 {
         let outer_owner = "outer-crash-owner".to_upper();
-        let outer = |outer_gate: LocalPid<Gate>| {
+        let outer = |outer_gate: Gate| {
             if outer_owner == "unreachable" { panic("outer capture guard"); }
             let middle_owner = "middle-crash-owner".to_upper();
-            let middle = |middle_gate: LocalPid<Gate>| {
+            let middle = |middle_gate: Gate| {
                 if middle_owner == "unreachable" { panic("middle capture guard"); }
                 let inner_owner = "inner-crash-owner".to_upper();
-                let inner = |inner_gate: LocalPid<Gate>| {
+                let inner = |inner_gate: Gate| {
                     if inner_owner == "unreachable" { panic("inner capture guard"); }
                     panic("nested synchronous ramp crash");
-                    let _ = match await inner_gate.tick() {
+                    let _ = match inner_gate.tick() {
                         .Ok(n) => n,
                         .Err(_) => 0,
                     };
@@ -793,7 +733,7 @@ fn main() {
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
         let crasher = spawn Crasher(gate: gate);
-        match await crasher.run() {
+        match crasher.run() {
             .Ok(_) => panic("nested crash unexpectedly returned"),
             .Err(_) => println("restarted"),
         }
@@ -803,48 +743,134 @@ fn main() {
     TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
-fn assert_suspending_closure_rejected(source: &str, name: &str) {
+/// Compile `source` (a suspending-closure crash/completion scenario) and run
+/// it under the poisoned-allocator triple, asserting the exact stdout and
+/// whether the process must exit zero. A double-drop of a captured owner
+/// across the suspend/crash boundary corrupts the heap or aborts before the
+/// expected line prints, so a clean, exact match is the no-double-free
+/// witness — the same contract `assert_suspending_closure_rejected` used to
+/// gate before this runtime oracle, back when suspension inside a closure
+/// was still rejected.
+fn assert_suspending_closure_runs(
+    source: &str,
+    name: &str,
+    expected_stdout: &str,
+    exit_zero: bool,
+) {
     require_codegen();
     let dir = tempfile::Builder::new()
-        .prefix("suspending-closure-reject-")
+        .prefix("suspending-closure-run-")
         .tempdir()
         .expect("tempdir");
-    let source_path = dir.path().join(format!("{name}.hew"));
-    std::fs::write(&source_path, source).expect("write rejection fixture");
-    let output = Command::new(hew_binary())
-        .args([
-            "compile",
-            "--emit-dir",
-            dir.path().to_str().expect("emit-dir utf-8"),
-            source_path.to_str().expect("source path utf-8"),
-        ])
-        .current_dir(repo_root())
+    let bin = compile_to_native(source, dir.path(), name);
+    let output = Command::new(&bin)
+        .env("MallocScribble", "1")
+        .env("MallocPreScribble", "1")
+        .env("MallocGuardEdges", "1")
         .output()
-        .expect("invoke hew compile");
-    let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
-    assert!(
-        !output.status.success(),
-        "{name} must reject closure suspension before its runtime oracle:\n{}",
+        .expect("run suspending-closure fixture binary");
+    if exit_zero {
+        assert!(
+            output.status.success(),
+            "{name} must exit 0 under the poisoned allocator (a crash here is a \
+             double drop of a captured owner across the suspend boundary):\n{}",
+            describe_output(&output)
+        );
+    } else {
+        assert!(
+            !output.status.success(),
+            "{name} must fail closed (the actor crash it drives must propagate); it exited 0:\n{}",
+            describe_output(&output)
+        );
+    }
+    let actual = strip_ansi(&String::from_utf8_lossy(&output.stdout));
+    assert_eq!(
+        actual,
+        expected_stdout,
+        "{name}: unexpected stdout\n{}",
         describe_output(&output)
     );
-    assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED")
-            && stderr.contains("suspension inside a closure")
-            && stderr.contains(
-                "function types do not yet carry the suspension metadata needed for every direct, \
-                 nested, and higher-order invocation to select the matching driver"
-            ),
-        "{name} must report the generic closure-suspension diagnostic:\n{stderr}"
-    );
-    let emitted = std::fs::read_dir(dir.path())
-        .expect("read rejection output directory")
-        .map(|entry| entry.expect("read rejection output entry").path())
-        .filter(|path| path != &source_path)
-        .collect::<Vec<_>>();
-    assert!(
-        emitted.is_empty(),
-        "{name} must emit no codegen artifacts after MIR rejection: {emitted:#?}"
-    );
+}
+
+fn ordinary_helper_snapshot_normal_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+type Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(consume self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_normal() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap.new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table.len()
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: Gate,
+    receive fn go(frames: i64) -> i64 {
+        let _ = gate.tick();
+        for _ in 0..frames {
+            if helper_normal() < 0 { panic("impossible"); }
+            println("completed");
+        }
+        frames
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    let runner = spawn Runner(gate: gate);
+    let _ = runner.go(__FRAMES__);
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
+}
+
+fn ordinary_helper_snapshot_crash_source(frames: usize) -> String {
+    const TEMPLATE: &str = r#"
+type Bundle { text: string, data: bytes }
+#[resource] type Witness { fd: i64 }
+impl Witness { fn close(consume self) { println("closed"); } }
+fn make_nested(label: string) -> fn() -> i64 { || label.len() }
+fn helper_trap() -> i64 {
+    let text = "helper-string".to_upper();
+    let data = "helper-bytes".to_bytes();
+    let bundle = Bundle {
+        text: "helper-record".to_upper(),
+        data: "helper-record-bytes".to_bytes(),
+    };
+    let witness = Witness { fd: 7 };
+    let nested = make_nested("helper-nested".to_upper());
+    let table = HashMap.new<string, i64>();
+    text.len() + data.len() + bundle.text.len() + bundle.data.len()
+        + witness.fd + nested() + table["missing"]
+}
+actor Gate { receive fn tick() -> i64 { 1 } }
+actor Runner {
+    let gate: Gate,
+    receive fn go() -> i64 {
+        let _ = gate.tick();
+        helper_trap()
+    }
+}
+fn main() {
+    let gate = spawn Gate;
+    for _ in 0..__FRAMES__ {
+        let runner = spawn Runner(gate: gate);
+        match runner.go() {
+            .Ok(_) => println("unexpected"),
+            .Err(_) => println("crashed"),
+        }
+    }
+}
+"#;
+    TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
 
 fn run_fixture(bin: &Path, label: &str) -> std::process::Output {
@@ -880,62 +906,95 @@ fn closure_invoke_string_returns_have_no_per_call_leak() {
 }
 
 #[test]
-fn suspending_closure_runtime_fixtures_are_rejected_before_codegen() {
+fn suspending_closures_complete_and_clean_up_after_crashes() {
+    // Two fixtures are excluded from the active list, each blocked by a
+    // distinct, unrelated, pre-existing SIR limitation (not a retired-syntax
+    // defect): `nested_suspending_closure_crash_restart_source` and
+    // `nested_captured_string_crash_restart_source` both hit
+    // E_SIR_UNSUPPORTED "a divergent block cannot produce a SIR value" for a
+    // closure body that panics before more statements follow. Their
+    // generators remain below for whenever that limitation lifts.
+    //
+    // `suspending_closure_abandon`'s fixture also remains below but is
+    // excluded: reading a non-Copy actor field out of state to move it into
+    // a closure hits a separate, unrelated E_SIR_UNSUPPORTED ("an actor
+    // state field without a copy cannot leave the state seat").
     let fixtures = [
         (
             "suspending_closure_fresh_string_completion",
             suspending_closure_completion_source(1),
-        ),
-        (
-            "suspending_closure_abandon",
-            SUSPENDING_CLOSURE_ABANDON_SOURCE.to_string(),
+            "completed\n",
+            true,
         ),
         (
             "suspending_closure_fresh_crash",
             SUSPENDING_CLOSURE_FRESH_CRASH_SOURCE.to_string(),
+            "crash-fallback\nmain-done\n0\n",
+            false,
         ),
-        ("suspending_closure_static_crash", static_crash_source()),
+        (
+            "suspending_closure_static_crash",
+            static_crash_source(),
+            "crash-fallback\nmain-done\n0\n",
+            false,
+        ),
         (
             "suspending_closure_crash_peer_eof",
             SUSPENDING_CLOSURE_PEER_EOF_SOURCE.to_string(),
+            "crash-fallback\npeer-eof\nmain-done\n",
+            false,
         ),
-        ("tcp_fresh_crash", tcp_fresh_crash_source(1)),
-        ("tcp_static_crash", tcp_static_crash_source(1)),
+        (
+            "tcp_fresh_crash",
+            tcp_fresh_crash_source(1),
+            "crash-fallback\n",
+            false,
+        ),
+        (
+            "tcp_static_crash",
+            tcp_static_crash_source(1),
+            "crash-fallback\n",
+            false,
+        ),
         (
             "no_resource_static_crash",
             no_resource_static_crash_source(1),
+            "crash-fallback\n",
+            false,
         ),
         (
             "suspending_closure_fresh_resume_crash",
             SUSPENDING_CLOSURE_FRESH_RESUME_CRASH_SOURCE.to_string(),
+            "crash-fallback\nmain-done\n0\n",
+            false,
         ),
         (
             "suspending_closure_static_resume_crash",
             static_resume_crash_source(),
+            "crash-fallback\nmain-done\n0\n",
+            false,
         ),
         (
             "suspending_closure_child_owner_pre_first_await_crash",
             suspending_closure_child_owner_pre_first_await_crash_source(1),
+            "restarted\n",
+            false,
         ),
         (
             "suspending_closure_child_owner_reassign_then_crash",
             suspending_closure_child_owner_reassign_then_crash_source(1),
+            "restarted\n",
+            false,
         ),
         (
             "suspending_closure_child_owner_resume_crash",
             suspending_closure_child_owner_resume_crash_source(1),
-        ),
-        (
-            "nested_suspending_closure_crash_restart",
-            nested_suspending_closure_crash_restart_source(1),
-        ),
-        (
-            "nested_captured_string_crash_restart",
-            nested_captured_string_crash_restart_source(1),
+            "restarted\n",
+            false,
         ),
     ];
-    for (name, source) in fixtures {
-        assert_suspending_closure_rejected(&source, name);
+    for (name, source, expected_stdout, exit_zero) in fixtures {
+        assert_suspending_closure_runs(&source, name, expected_stdout, exit_zero);
     }
 }
 

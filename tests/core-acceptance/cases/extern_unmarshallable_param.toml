@@ -1,0 +1,13 @@
+[[case]]
+id = "extern_unmarshallable_param"
+intent = "The fixture is refused, and the refusal names this diagnostic."
+source = "../vertical-slice/reject/extern_unmarshallable_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 5
+column = 31
+message = "is a tuple and has no C-ABI representation"

@@ -525,75 +525,49 @@ struct AnalyzedSource {
     /// boundary-violation diagnostics; this gate remains for any construct the
     /// checker still leaves unresolved at the HIR boundary.
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
-    /// MIR-stage lint findings (`dead_store` today, plus any future lint that
-    /// lands on `IrPipeline::lint_warnings`), surfaced in the playground as
-    /// **warnings** (issue #2176).
+    /// Findings from the shared semantic boundary at the browser target -
+    /// today the SIR verification failure `collect_semantic_diagnostics`
+    /// reports, carrying its own severity.
     ///
     /// Distinct from [`Self::hir_diagnostics`], which is converted with an
-    /// unconditional `"error"` severity: MIR lints are level-controlled style
-    /// findings and must never make the playground show red for code the
-    /// native compiler accepts.
-    mir_lints: Vec<hew_mir::MirLint>,
+    /// unconditional `"error"` severity.
+    semantic_diagnostics: Vec<WasmDiagnostic>,
 }
 
-/// Lower to MIR and collect the MIR-stage lint findings, applying the same
-/// suppression policy the CLI's `render_pipeline_mir_lints` applies.
-///
-/// Degrades silently to an empty vector on any lowering trouble. The shared
-/// session still runs the build check set at wasm32 pointer width; this browser
-/// renderer retains its historical warning-only presentation policy.
-fn collect_mir_lints(
-    source: &str,
+/// Run the shared semantic boundary with the browser target and render errors.
+/// Root selection matches native compilation; bytecode execution is a separate
+/// consumer and does not replace semantic verification.
+fn collect_semantic_diagnostics(
+    program: &hew_parser::ast::Program,
     hir_module: &hew_hir::HirModule,
     tco: &hew_types::TypeCheckOutput,
-) -> Vec<hew_mir::MirLint> {
+) -> Vec<WasmDiagnostic> {
     let session = hew_compile::Session::new(
         hew_compile::SessionTarget::wasm32(),
         hew_compile::DiagnosticPolicy::default(),
     );
-    let pipeline = session.lower_hir_module(hir_module, tco).pipeline;
-    let levels = hew_types::LintLevels::default();
-    pipeline
-        .lint_warnings
-        .into_iter()
-        .filter(|warning| {
-            let span_start = warning.span.0 as usize;
-            let span_end = warning.span.1 as usize;
-            // A span past the end of the buffer belongs to an imported module
-            // we cannot position in the single-source playground.
-            span_end <= source.len()
-                && !hew_types::directive_suppresses(source, span_start, warning.lint)
-                && levels.level(warning.lint) != hew_types::LintLevel::Allow
-        })
-        .collect()
-}
-
-/// Convert a MIR lint finding into a playground diagnostic.
-///
-/// Severity is `"warning"`, never `"error"` — the MIR lint path deliberately
-/// does not reuse [`hir_diagnostic_to_wasm`]'s unconditional error mapping.
-fn mir_lint_to_wasm(lint: &hew_mir::MirLint) -> WasmDiagnostic {
-    let span = WasmSpan {
-        start: lint.span.0 as usize,
-        end: lint.span.1 as usize,
-    };
-    WasmDiagnostic {
-        severity: "warning".to_string(),
-        phase: "mir",
-        message: lint.message.clone(),
-        span,
-        start_offset: span.start,
-        end_offset: span.end,
-        kind: lint.lint.as_str().to_string(),
-        notes: Vec::new(),
-        suggestions: Vec::new(),
-        source_module: None,
+    let result = hew_compile::Session::source_roots(program, tco)
+        .and_then(|roots| session.lower_hir_module(hir_module, tco, &roots));
+    match result {
+        Ok(_) => Vec::new(),
+        Err(error) => vec![WasmDiagnostic {
+            severity: "error".to_string(),
+            phase: "sir",
+            message: error.to_string(),
+            span: WasmSpan { start: 0, end: 0 },
+            start_offset: 0,
+            end_offset: 0,
+            kind: "E_SIR_VERIFY".to_string(),
+            notes: Vec::new(),
+            suggestions: Vec::new(),
+            source_module: None,
+        }],
     }
 }
 
 fn parse_and_type_check(source: &str) -> AnalyzedSource {
     let parse_result = hew_parser::parse(source);
-    let (type_output, hir_diagnostics, mir_lints) = if parse_result.errors.is_empty() {
+    let (type_output, hir_diagnostics, semantic_diagnostics) = if parse_result.errors.is_empty() {
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
@@ -614,7 +588,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         // sandbox VM, which has its own coroutine scheduler). Using X86_64
         // lets actors/machines pass HIR lowering while still catching
         // CheckerBoundaryViolation diagnostics that arise regardless of target.
-        let mut mir_lints = Vec::new();
+        let mut semantic_diagnostics = Vec::new();
         let hir_diagnostics = if tco.errors.is_empty() {
             let lower_output = hew_hir::lower_program(
                 &parse_result.program,
@@ -641,13 +615,14 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
             // skipping it also keeps the added browser cost off every buffer
             // that is mid-edit and already erroring.
             if diags.is_empty() {
-                mir_lints = collect_mir_lints(source, &lower_output.module, &tco);
+                semantic_diagnostics =
+                    collect_semantic_diagnostics(&parse_result.program, &lower_output.module, &tco);
             }
             diags
         } else {
             Vec::new()
         };
-        (Some(tco), hir_diagnostics, mir_lints)
+        (Some(tco), hir_diagnostics, semantic_diagnostics)
     } else {
         (None, Vec::new(), Vec::new())
     };
@@ -656,7 +631,7 @@ fn parse_and_type_check(source: &str) -> AnalyzedSource {
         parse_result,
         type_output,
         hir_diagnostics,
-        mir_lints,
+        semantic_diagnostics,
     }
 }
 
@@ -696,7 +671,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
         K::NotYetImplemented { .. } => "NotYetImplemented",
         K::ConstIntegerEvaluation { .. } => "ConstIntegerEvaluation",
-        K::MachineEventFieldNotFound { .. } => "MachineEventFieldNotFound",
         K::UnresolvedSymbol { .. } => "UnresolvedSymbol",
         K::ImportMissing { .. } => "ImportMissing",
         K::UnresolvedBuiltinOverload { .. } => "UnresolvedBuiltinOverload",
@@ -732,13 +706,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::SelectArmNotSealedForm { .. } => "SelectArmNotSealedForm",
         K::SelectArmTypeMismatch { .. } => "SelectArmTypeMismatch",
         K::SelectMultipleAfterArms => "SelectMultipleAfterArms",
-        K::SelectNoArms => "SelectNoArms",
         K::SelectStreamNextArity { .. } => "SelectStreamNextArity",
-        K::JoinBranchNotActorAsk { .. } => "JoinBranchNotActorAsk",
-        K::JoinNoBranches => "JoinNoBranches",
-        K::MachineExhaustivenessViolation { .. } => "MachineExhaustivenessViolation",
-        K::MachineSelfTransitionNeedsReenter { .. } => "MachineSelfTransitionNeedsReenter",
-        K::MachineEffectParityViolation { .. } => "MachineEffectParityViolation",
         K::MachineEmitCycle { .. } => "MachineEmitCycle",
         K::MachineEmitNotInManifest { .. } => "MachineEmitNotInManifest",
         K::MethodCallNoRewrite { .. } => "MethodCallNoRewrite",
@@ -746,6 +714,7 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::TraitObjectMethodNoSideTableEntry { .. } => "TraitObjectMethodNoSideTableEntry",
         K::TraitObjectCoercionMissing { .. } => "TraitObjectCoercionMissing",
         K::ActorStateGuardMissing { .. } => "ActorStateGuardMissing",
+        K::RecursiveLambdaActorHandle { .. } => "RecursiveLambdaActorHandle",
         K::CheckerBoundaryViolation { .. } => "CheckerBoundaryViolation",
         K::MonomorphisationCallTypeArgsViolation { .. } => "MonomorphisationCallTypeArgsViolation",
         K::MonomorphisationCapExceeded { .. } => "MonomorphisationCapExceeded",
@@ -754,8 +723,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::RecordLayoutMissing { .. } => "RecordLayoutMissing",
         K::RecursiveGenericTypeUnsupported { .. } => "RecursiveGenericTypeUnsupported",
         K::EnumLayoutCapExceeded { .. } => "EnumLayoutCapExceeded",
-        K::UnresolvedMachineTypeParamPostMono { .. } => "UnresolvedMachineTypeParamPostMono",
-        K::MachineMonomorphisationCapExceeded { .. } => "MachineMonomorphisationCapExceeded",
         K::UnresolvedLayoutTypeParamPostMono { .. } => "UnresolvedLayoutTypeParamPostMono",
         K::UnknownIntrinsic { .. } => "UnknownIntrinsic",
         K::ImportedBodyMissingPrivateHelper { .. } => "ImportedBodyMissingPrivateHelper",
@@ -764,9 +731,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::BlockingChannelRecvUnsupportedOnWasm { .. } => "BlockingChannelRecvUnsupportedOnWasm",
         K::TaskSpawnSignatureUnsupported { .. } => "TaskSpawnSignatureUnsupported",
         K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
-        K::SpawnedClosureSignatureUnsupported { .. } => "SpawnedClosureSignatureUnsupported",
-        K::SpawnedClosureNonSendCapture { .. } => "SpawnedClosureNonSendCapture",
-        K::ForkBlockBodyUnsupported { .. } => "ForkBlockBodyUnsupported",
         K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
         K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
         K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
@@ -846,7 +810,7 @@ fn convert_diagnostics(
     parse_errors: Vec<hew_parser::ParseError>,
     type_output: Option<hew_types::TypeCheckOutput>,
     hir_diagnostics: Vec<hew_hir::HirDiagnostic>,
-    mir_lints: &[hew_mir::MirLint],
+    semantic_diagnostics: Vec<WasmDiagnostic>,
 ) -> Vec<WasmDiagnostic> {
     let mut diagnostics = convert_parse_diagnostics(parse_errors);
     if let Some(type_output) = type_output {
@@ -854,7 +818,7 @@ fn convert_diagnostics(
         diagnostics.extend(type_output.warnings.into_iter().map(type_error_to_wasm));
     }
     diagnostics.extend(hir_diagnostics.into_iter().map(hir_diagnostic_to_wasm));
-    diagnostics.extend(mir_lints.iter().map(mir_lint_to_wasm));
+    diagnostics.extend(semantic_diagnostics);
     diagnostics
 }
 
@@ -890,13 +854,13 @@ fn run_type_check(source: &str) -> TypeCheckResult {
         parse_result,
         type_output,
         hir_diagnostics,
-        mir_lints,
+        semantic_diagnostics,
     } = analysis;
     let diagnostics = convert_diagnostics(
         parse_result.errors,
         type_output,
         hir_diagnostics,
-        &mir_lints,
+        semantic_diagnostics,
     );
 
     TypeCheckResult {
@@ -942,13 +906,13 @@ fn run_analysis(source: &str) -> AnalysisResult {
         parse_result,
         type_output,
         hir_diagnostics,
-        mir_lints,
+        semantic_diagnostics,
     } = analysis;
     let diagnostics = convert_diagnostics(
         parse_result.errors,
         type_output,
         hir_diagnostics,
-        &mir_lints,
+        semantic_diagnostics,
     );
 
     AnalysisResult {
@@ -1136,6 +1100,50 @@ mod tests {
             parsed["diagnostics"].as_array().unwrap().is_empty(),
             "in-source hew:allow directive must suppress the lint in the playground: {parsed}"
         );
+    }
+
+    #[test]
+    fn parse_source_encodes_every_integer_literal_as_a_decimal_string() {
+        // D421: JavaScript cannot read `u64::MAX` exactly as a JSON number, so
+        // the integer payload is a decimal string for every integer literal --
+        // one schema, no threshold for consumers to guess at.
+        let result = ok(parse_source(
+            "fn main() { let small = 42; let big: u64 = 18446744073709551615; }",
+        ));
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let mut payloads = Vec::new();
+        collect_integer_payloads(&parsed["ast"], &mut payloads);
+        assert_eq!(
+            payloads,
+            vec!["42".to_string(), "18446744073709551615".to_string()],
+            "integer payloads must be exact decimal strings: {result}"
+        );
+    }
+
+    /// Every `{ "Integer": <payload> }` node in document order.
+    fn collect_integer_payloads(value: &serde_json::Value, out: &mut Vec<String>) {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, child) in fields {
+                    if key == "Integer" {
+                        out.push(
+                            child
+                                .as_str()
+                                .expect("integer literal payload must be a string")
+                                .to_string(),
+                        );
+                    } else {
+                        collect_integer_payloads(child, out);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    collect_integer_payloads(item, out);
+                }
+            }
+            _ => {}
+        }
     }
 
     #[test]
@@ -2266,58 +2274,11 @@ mod tests {
         );
     }
 
-    // ── MIR-stage lint surfacing (issue #2176) ───────────────────────────
-
-    const MIR_DEAD_STORE: &str =
-        "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n";
-
-    /// Near-identical control: every store is read.
-    const MIR_CLEAN: &str = "fn sum(n: i64) -> i64 {\nvar total = 0;\nfor i in 0..n {\ntotal = total + i;\n}\ntotal\n}\nfn main() {\nlet _ = sum(3);\n}\n";
-
-    fn diagnostics_of(source: &str) -> Vec<serde_json::Value> {
-        let parsed: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
-        parsed["diagnostics"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    #[test]
-    fn wasm_mir_dead_store_surfaces_as_a_warning() {
-        let diags = diagnostics_of(MIR_DEAD_STORE);
-        let lint = diags
-            .iter()
-            .find(|d| d["kind"] == "dead_store")
-            .unwrap_or_else(|| panic!("dead_store must reach the playground: {diags:?}"));
-
-        // #2176's constraint: not the unconditional "error" HIR mapping.
-        assert_eq!(lint["severity"], "warning");
-        assert_eq!(lint["phase"], "mir");
-    }
-
-    #[test]
-    fn wasm_mir_lint_stays_silent_on_the_clean_control() {
-        let diags = diagnostics_of(MIR_CLEAN);
-        assert!(
-            !diags.iter().any(|d| d["kind"] == "dead_store"),
-            "an accumulator loop must not trip dead_store: {diags:?}"
-        );
-    }
-
-    #[test]
-    fn wasm_mir_lint_honours_an_in_source_allow_directive() {
-        let suppressed =
-            MIR_DEAD_STORE.replace("var x = 5;", "// hew:allow(dead_store)\nvar x = 5;");
-        let diags = diagnostics_of(&suppressed);
-        assert!(
-            !diags.iter().any(|d| d["kind"] == "dead_store"),
-            "hew:allow must suppress the playground surfacing too: {diags:?}"
-        );
-    }
-
     #[test]
     fn wasm_session_uses_build_checks_at_wasm32_width() {
-        let parsed = hew_parser::parse(MIR_DEAD_STORE);
+        let parsed = hew_parser::parse(
+            "fn f() -> i64 {\nvar x = 5;\nx = 6;\nx\n}\nfn main() {\nlet _ = f();\n}\n",
+        );
         let mut checker = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
             hew_types::module_registry::build_module_search_paths(),
         ));
@@ -2340,13 +2301,13 @@ mod tests {
         assert_eq!(wasm.checks, build.checks);
         assert_eq!(wasm.target.pointer_width, hew_mir::PointerWidth::Bits32);
         assert_eq!(
-            wasm.lower_hir_module(&hir.module, &tco)
-                .pipeline
-                .lint_warnings,
+            wasm.lower_hir_module(&hir.module, &tco, &[])
+                .map(|output| format!("{:?}", output.semantics()))
+                .map_err(|error| error.to_string()),
             build
-                .lower_hir_module(&hir.module, &tco)
-                .pipeline
-                .lint_warnings,
+                .lower_hir_module(&hir.module, &tco, &[])
+                .map(|output| format!("{:?}", output.semantics()))
+                .map_err(|error| error.to_string()),
             "wasm must run the build check set while retaining its own ABI width"
         );
     }

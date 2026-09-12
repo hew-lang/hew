@@ -1,5 +1,5 @@
 actor Counter {
-    var count: i64;
+    var count: i64,
 
     init(initial: i64) {
         count = initial;
@@ -26,8 +26,8 @@ actor Counter {
 
 fn main() -> i64 {
     let counter = spawn Counter(initial: 9);
-    counter.increment(32);
-    match await counter.total() {
+    let _ = counter.increment(32);
+    match counter.total() {
         .Ok(v) => v,
         .Err(_e) => 0,
     }

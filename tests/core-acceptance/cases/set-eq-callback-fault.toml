@@ -1,0 +1,11 @@
+[[case]]
+id = "set-eq-callback-fault"
+intent = "An equality callback fault releases both the set's stored elements and the incoming owner that the runtime did not adopt."
+source = "cases/set-eq-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

@@ -61,6 +61,6 @@ wall_ms="$(((wall_end - wall_start) / 1000000))"
 
 echo "dogfood-compile-measure: dogfood measurement complete"
 echo "  LLVM define-block bytes: $ll_bytes"
-grep '^hew measure: MIR lowering ' "$log" || echo "hew measure: MIR lowering unavailable"
-grep '^hew measure: backend ' "$log" || echo "hew measure: backend unavailable"
+grep '^hew measure: physical lowering ' "$log" || echo "hew measure: physical lowering unavailable"
+grep '^hew measure: total ' "$log" || echo "hew measure: total unavailable"
 echo "hew measure: wall ${wall_ms} ms"

@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-iteration-fault"
+intent = "A fault inside vector iteration cleans the cursor, current item and enclosing owners."
+source = "cases/vector-iteration-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 1
+stderr = "hew: failure: IndexOutOfBounds (205)\n"

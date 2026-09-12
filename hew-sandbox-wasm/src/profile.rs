@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use hew_parser::ast::{
-    BinaryOp, CallArg, Expr, ImportDecl, Item, Pattern, Program, Spanned, Stmt, TypeExpr,
+    BinaryOp, CallArg, ConditionItem, Expr, ImportDecl, Item, Pattern, Program, Span, Spanned,
+    Stmt, TypeExpr,
 };
 use hew_types::{check::SpanKey, BuiltinType, Ty};
 
@@ -169,14 +170,21 @@ impl<'a> ProfileChecker<'a> {
                     NativeOnlySurface::NativeFfi,
                     NativeOnlySurface::NativeFfi.reason(),
                 ),
-                Item::Function(function) => self.check_block(&function.body),
+                Item::Function(function) => {
+                    self.check_return_clause(function.return_type.as_ref());
+                    self.check_block(&function.body);
+                }
                 Item::Actor(actor) => {
                     // Actors are admitted: the VM runtime (ActorScheduler) executes
                     // actor bytecode. Walk each receive handler body fail-closed.
                     for receive_fn in &actor.receive_fns {
+                        self.check_return_clause(receive_fn.return_type.as_ref());
                         self.in_receive_handler = true;
                         self.check_block(&receive_fn.body);
                         self.in_receive_handler = false;
+                    }
+                    for method in &actor.methods {
+                        self.check_return_clause(method.return_type.as_ref());
                     }
                 }
                 Item::Supervisor(supervisor) => {
@@ -212,6 +220,11 @@ impl<'a> ProfileChecker<'a> {
                 ),
                 Item::Const(const_decl) => self.check_expr(&const_decl.value),
                 Item::TypeDecl(type_decl) => {
+                    for item in &type_decl.body {
+                        if let hew_parser::ast::TypeBodyItem::Method(method) = item {
+                            self.check_return_clause(method.return_type.as_ref());
+                        }
+                    }
                     // W3.030 V15: `#[resource]` types carry an implicit drop
                     // contract that dispatches `<T>::close` through the
                     // unified `ScopeExitPlan` stream. The sandbox-WASM
@@ -438,15 +451,7 @@ impl<'a> ProfileChecker<'a> {
                 }
                 self.check_block(body);
             }
-            Stmt::For { is_await, iterable, body, label, .. } => {
-                if *is_await {
-                    self.reject(
-                        span.clone(),
-                        "reserved_runtime_feature",
-                        "for-await requires async runtime support reserved for a later sandbox VM milestone",
-                    );
-                    return;
-                }
+            Stmt::For { iterable, body, label, .. } => {
                 if label.is_some() {
                     self.reject(
                         span.clone(),
@@ -469,8 +474,7 @@ impl<'a> ProfileChecker<'a> {
                 self.check_block(body);
             }
             Stmt::WhileLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 label,
             } => {
@@ -481,18 +485,7 @@ impl<'a> ProfileChecker<'a> {
                         "labeled while-let loops are not yet admitted in the sandbox profile",
                     );
                 }
-                self.check_pattern(pattern);
-                if !matches!(
-                    pattern.0,
-                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
-                ) {
-                    self.reject(
-                        pattern.1.clone(),
-                        "reserved_runtime_feature",
-                        "non-constructor while-let patterns are reserved until native HIR lowering supports them",
-                    );
-                }
-                self.check_expr(expr);
+                self.check_condition(conditions, span);
                 self.check_block(body);
             }
             Stmt::Break { value, label } => {
@@ -526,26 +519,14 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Stmt::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.check_pattern(pattern);
-                if !matches!(
-                    pattern.0,
-                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
-                ) {
-                    self.reject(
-                        pattern.1.clone(),
-                        "reserved_runtime_feature",
-                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
-                    );
-                }
-                self.check_expr(expr);
+                self.check_condition(conditions, span);
                 self.check_block(body);
-                if let Some(block) = else_body {
-                    self.check_block(block);
+                if let Some(else_expr) = else_body {
+                    self.check_expr(else_expr);
                 }
             }
             Stmt::Defer(_) => self.reject(
@@ -563,7 +544,36 @@ impl<'a> ProfileChecker<'a> {
     fn check_expr(&mut self, expr: &Spanned<Expr>) {
         let (expr, span) = expr;
         match expr {
-            Expr::Literal(_) | Expr::Identifier(_) | Expr::This | Expr::RegexLiteral(_) => {}
+            // The sandbox VM's integer values are `i64`. Native admits the
+            // full `u64` range (D421), so a literal outside `i64` is rejected
+            // here rather than silently encoded as a negative `const.i64`.
+            //
+            // `-<literal>` is judged as one negated value, before the generic
+            // unary arm below recurses into the operand: `i64::MIN`'s magnitude
+            // does not fit `i64` on its own but the negated literal does, and
+            // the emitter folds the same shape.
+            Expr::Unary {
+                op: hew_parser::ast::UnaryOp::Negate,
+                operand,
+            } if matches!(
+                operand.0,
+                Expr::Literal(hew_parser::ast::Literal::Integer { .. })
+            ) =>
+            {
+                let Expr::Literal(hew_parser::ast::Literal::Integer { value, .. }) = operand.0
+                else {
+                    unreachable!("guarded to a negated integer literal")
+                };
+                if value.checked_neg().is_none_or(|v| i64::try_from(v).is_err()) {
+                    self.reject_out_of_range_literal(span.clone(), -value);
+                }
+            }
+            Expr::Literal(hew_parser::ast::Literal::Integer { value, .. })
+                if i64::try_from(*value).is_err() =>
+            {
+                self.reject_out_of_range_literal(span.clone(), *value);
+            }
+            Expr::Literal(_) | Expr::Identifier(_) | Expr::RegexLiteral(_) => {}
             Expr::ContextVariant(context) => {
                 if let Some(record) = &context.record {
                     for (_, value) in &record.fields {
@@ -638,6 +648,13 @@ impl<'a> ProfileChecker<'a> {
             | Expr::PostfixTry(operand) => {
                 self.check_expr(operand);
             }
+            Expr::Coalesce { left, right }
+            | Expr::Handle { operand: left, body: right, .. } => {
+                self.reject(span.clone(), "reserved_runtime_feature",
+                    "local optional/error recovery requires the shared semantic backend");
+                self.check_expr(left);
+                self.check_expr(right);
+            }
             Expr::Return(operand) => {
                 // `return` in expression position is not yet lowered by the
                 // sandbox-wasm emitter (it emits `unsupported`). Reject it here
@@ -651,6 +668,10 @@ impl<'a> ProfileChecker<'a> {
                 if let Some(operand) = operand {
                     self.check_expr(operand);
                 }
+            }
+            Expr::ReturnError(value) => {
+                self.reject(span.clone(), "reserved_runtime_feature", "typed error returns require the shared semantic backend");
+                self.check_expr(value);
             }
             Expr::Clone(operand) => {
                 // `clone expr` produces an independent deep copy. The emitter
@@ -688,9 +709,14 @@ impl<'a> ProfileChecker<'a> {
                 );
                 self.check_expr(operand);
             }
-            Expr::Tuple(items) | Expr::Array(items) | Expr::Join(items) => {
+            Expr::Tuple(items) | Expr::Race(items) => {
                 for item in items {
                     self.check_expr(item);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    self.check_expr(element.expr());
                 }
             }
             Expr::ArrayRepeat { value, count } => {
@@ -725,26 +751,14 @@ impl<'a> ProfileChecker<'a> {
                 }
             }
             Expr::IfLet {
-                pattern,
-                expr,
+                conditions,
                 body,
                 else_body,
             } => {
-                self.check_pattern(pattern);
-                if !matches!(
-                    pattern.0,
-                    Pattern::Constructor { .. } | Pattern::ContextVariant(_)
-                ) {
-                    self.reject(
-                        pattern.1.clone(),
-                        "reserved_runtime_feature",
-                        "non-constructor if-let patterns are reserved until native HIR lowering supports them",
-                    );
-                }
-                self.check_expr(expr);
+                self.check_condition(conditions, span);
                 self.check_block(body);
-                if let Some(block) = else_body {
-                    self.check_block(block);
+                if let Some(else_expr) = else_body {
+                    self.check_expr(else_expr);
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -815,7 +829,6 @@ impl<'a> ProfileChecker<'a> {
             | Expr::ForkChild { .. }
             | Expr::ForkBlock { .. }
             | Expr::ScopeDeadline { .. }
-            | Expr::Timeout { .. }
             | Expr::Yield(_)
             | Expr::MachineEmit { .. } => self.reject(
                 span.clone(),
@@ -1043,6 +1056,38 @@ impl<'a> ProfileChecker<'a> {
         }
     }
 
+    /// Admit a pattern condition (§12.5). The sandbox emitter lowers one
+    /// constructor `let` operand; chained operands and the wider pattern shapes
+    /// the native lowering now accepts are refused until it catches up.
+    fn check_condition(&mut self, conditions: &[ConditionItem], span: &Span) {
+        if conditions.len() > 1 {
+            self.reject(
+                span.clone(),
+                "reserved_runtime_feature",
+                "chained `let` conditions are reserved until the sandbox emitter supports them",
+            );
+        }
+        for item in conditions {
+            match item {
+                ConditionItem::Let { pattern, expr } => {
+                    self.check_pattern(pattern);
+                    if !matches!(
+                        pattern.0,
+                        Pattern::Constructor { .. } | Pattern::ContextVariant(_)
+                    ) {
+                        self.reject(
+                            pattern.1.clone(),
+                            "reserved_runtime_feature",
+                            "non-constructor pattern-condition patterns are reserved until the sandbox emitter supports them",
+                        );
+                    }
+                    self.check_expr(expr);
+                }
+                ConditionItem::Expr(expr) => self.check_expr(expr),
+            }
+        }
+    }
+
     fn check_pattern(&mut self, pattern: &Spanned<Pattern>) {
         match &pattern.0 {
             Pattern::Wildcard | Pattern::Literal(_) | Pattern::Identifier(_) => {}
@@ -1118,9 +1163,9 @@ impl<'a> ProfileChecker<'a> {
 
         // Actor asks: `await ref.handler(...)` where `handler` is a declared
         // receive function AND the receiver is a handle to an admitted actor.
-        // Type-check the receiver: an actor handle is `LocalPid<ActorName>` or
-        // `ChildRef<ActorName>` where `ActorName` is in the program's declared
-        // actors set.
+        // Type-check the receiver: an actor handle is the actor's own named
+        // type or `ChildRef<ActorName>` where `ActorName` is in the program's
+        // declared actors set.
         // A name-only check without the receiver type would admit spurious method
         // calls on non-actor receivers that happen to share a handler name.
         if self.actor_methods.contains(method) {
@@ -1182,14 +1227,14 @@ impl<'a> ProfileChecker<'a> {
                 ..
             } => matches!(
                 method,
-                "is_some" | "is_none" | "unwrap" | "unwrap_or" | "to_string"
+                "is_some" | "is_none" | "expect" | "unwrap_or" | "to_string"
             ),
             Ty::Named {
                 builtin: Some(BuiltinType::Result),
                 ..
             } => matches!(
                 method,
-                "is_ok" | "is_err" | "unwrap" | "unwrap_or" | "to_string"
+                "is_ok" | "is_err" | "expect" | "unwrap_or" | "to_string"
             ),
             // User-defined records and other named types admit `clone` (deep
             // structural copy via the VM's `local.set` → `cloneValue` path) and
@@ -1206,9 +1251,9 @@ impl<'a> ProfileChecker<'a> {
     }
 
     /// True if `ty` is an actor handle type for a declared actor in this program.
-    /// Actor handles are `LocalPid<ActorName>`, `ChildRef<ActorName>`, or
-    /// `Named { name: ActorName }` when the typechecker inlines the actor type
-    /// directly. All are present in practice depending on the call site.
+    /// Actor handles are `Named { name: ActorName, builtin: Some(ActorHandle) }`
+    /// or `ChildRef<ActorName>`. Both are present in practice depending on the
+    /// call site.
     fn ty_is_actor_handle(&self, ty: &Ty) -> bool {
         let materialized = ty.materialize_literal_defaults();
         if let Some(Ty::Named {
@@ -1239,6 +1284,11 @@ impl<'a> ProfileChecker<'a> {
             TypeExpr::Function {
                 params,
                 return_type,
+                ..
+            }
+            | TypeExpr::ActorFn {
+                params,
+                return_type,
             } => {
                 for (param, param_span) in params {
                     self.check_type_expr(param, param_span);
@@ -1248,6 +1298,15 @@ impl<'a> ProfileChecker<'a> {
             TypeExpr::Result { ok, err } => {
                 self.check_type_expr(&ok.0, &ok.1);
                 self.check_type_expr(&err.0, &err.1);
+            }
+            TypeExpr::Fallible { success, error } => {
+                self.reject(
+                    span.clone(),
+                    "reserved_runtime_feature",
+                    "fallible function returns require the shared semantic backend",
+                );
+                self.check_type_expr(&success.0, &success.1);
+                self.check_type_expr(&error.0, &error.1);
             }
             TypeExpr::Option(inner)
             | TypeExpr::Array { element: inner, .. }
@@ -1260,6 +1319,22 @@ impl<'a> ProfileChecker<'a> {
             }
             TypeExpr::Named { .. } | TypeExpr::TraitObject(_) | TypeExpr::Infer => {}
         }
+    }
+
+    fn check_return_clause(&mut self, ty: Option<&Spanned<TypeExpr>>) {
+        if let Some((ty @ TypeExpr::Fallible { .. }, span)) = ty {
+            self.check_type_expr(ty, span);
+        }
+    }
+
+    fn reject_out_of_range_literal(&mut self, span: std::ops::Range<usize>, value: i128) {
+        self.reject(
+            span,
+            "sandbox_profile_rejected",
+            format!(
+                "integer literal `{value}` is outside the i64 range the browser sandbox admits"
+            ),
+        );
     }
 
     fn reject(
@@ -1338,15 +1413,26 @@ fn let_pattern_is_unconditional(pattern: &Pattern) -> bool {
 
 /// Returns true if the expression is a constant literal that the emitter
 /// can bake directly into a bytecode layout (integer, float, string, bool, char).
+/// A literal the emitter can bake: a scalar literal, or a numeric literal
+/// under unary minus (the parser keeps `-1` as a negation of `1`).
 fn is_literal_expr(expr: &Expr) -> bool {
-    matches!(
-        expr,
+    match expr {
         Expr::Literal(
             hew_parser::ast::Literal::Integer { .. }
-                | hew_parser::ast::Literal::Float(_)
-                | hew_parser::ast::Literal::String(_)
-                | hew_parser::ast::Literal::Bool(_)
-                | hew_parser::ast::Literal::Char(_)
-        )
-    )
+            | hew_parser::ast::Literal::Float(_)
+            | hew_parser::ast::Literal::String(_)
+            | hew_parser::ast::Literal::Bool(_)
+            | hew_parser::ast::Literal::Char(_),
+        ) => true,
+        Expr::Unary {
+            op: hew_parser::ast::UnaryOp::Negate,
+            operand,
+        } => matches!(
+            operand.0,
+            Expr::Literal(
+                hew_parser::ast::Literal::Integer { .. } | hew_parser::ast::Literal::Float(_)
+            )
+        ),
+        _ => false,
+    }
 }

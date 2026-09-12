@@ -1,0 +1,43 @@
+machine Slot<T> {
+    events { Put { value: T }, Clear }
+    emits { Stored { note: string } }
+    state Empty,
+    state Full { value: T },
+    on Put: Empty => Full {
+        emit Stored { note: "stored" };
+        Full { value: event.value }
+    }
+    on Clear: Full => Empty {
+        emit Stored { note: "cleared" };
+        Empty
+    }
+    default { state }
+}
+
+fn trace<T>(report: SlotStep<T>) {
+    match report.disposition {
+        .Taken => {},
+        .Ignored => println("ignored"),
+    }
+    for output in report.outputs {
+        match output { .Stored { note } => println(note), }
+    }
+}
+
+fn main() {
+    var numbers: Slot<i64> = .Empty;
+    trace(numbers.step(.Put { value: 7 }));
+    match numbers {
+        .Full { value } => println(f"number {value}"),
+        .Empty => panic("number slot stayed empty"),
+    }
+    trace(numbers.step(.Clear));
+
+    var words: Slot<string> = .Empty;
+    trace(words.step(.Put { value: "hew" }));
+    match words {
+        .Full { value } => println(f"word {value}"),
+        .Empty => panic("word slot stayed empty"),
+    }
+    trace(words.step(.Clear));
+}

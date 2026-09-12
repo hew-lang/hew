@@ -1,0 +1,38 @@
+import std.encoding.utf8;
+// MIR-corpus fixture: blocking stream recv/try_recv from a
+// context-free caller.
+//
+// `main` carries no execution context, so `input.recv()` keeps the
+// blocking layout-witness call (`hew_stream_next_layout` as a
+// Terminator::Call) instead of the suspending terminator, and
+// `input.try_recv()` lowers to `hew_stream_try_next_layout`.
+import std.stream;
+
+fn main() {
+    let (sink, input) = match stream.bytes_pipe(2) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    sink.close();
+    match input.recv() {
+        .Some(b) => {
+            let text = utf8.decode(b) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            };
+            println(text);
+        },
+        .None => println("eof"),
+    }
+    match input.try_recv() {
+        .Some(b) => {
+            let text = utf8.decode(b) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            };
+            println(text);
+        },
+        .None => println("empty"),
+    }
+    input.close();
+}

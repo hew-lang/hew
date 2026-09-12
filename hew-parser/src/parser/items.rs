@@ -26,6 +26,7 @@ const FOREIGN_KEYWORD_IDENTS: &[&str] = &[
     "interface",
     "protocol",
     "wire",
+    "foreign",
 ];
 
 impl Parser<'_> {
@@ -228,8 +229,8 @@ impl Parser<'_> {
         }
     }
 
-    /// Parse a function declaration with optional `async`/`gen` modifiers.
-    /// The current token must be `fn`, `async`, or `gen`.
+    /// Parse a function declaration with an optional `gen` modifier.
+    /// The current token must be `fn` or `gen`.
     #[expect(clippy::ref_option, reason = "avoids cloning option contents")]
     pub(crate) fn parse_fn_with_modifiers(
         &mut self,
@@ -237,25 +238,11 @@ impl Parser<'_> {
         attrs: Vec<Attribute>,
         doc_comment: &Option<String>,
     ) -> Option<Item> {
-        let (fn_start, is_async, is_gen) = match self.peek() {
+        let (fn_start, is_gen) = match self.peek() {
             Some(Token::Fn) => {
                 let fn_start = self.peek_span().start;
                 self.advance();
-                (fn_start, false, false)
-            }
-            Some(Token::Async) => {
-                self.advance();
-                if self.eat(&Token::Gen) {
-                    let fn_start = self.peek_span().start;
-                    if !self.eat(&Token::Fn) {
-                        self.error("expected 'fn' after 'async gen'".to_string());
-                        return None;
-                    }
-                    (fn_start, true, true)
-                } else {
-                    self.error("expected 'gen fn' after 'async'".to_string());
-                    return None;
-                }
+                (fn_start, false)
             }
             Some(Token::Gen) => {
                 self.advance();
@@ -264,13 +251,43 @@ impl Parser<'_> {
                     self.error("expected 'fn' after 'gen'".to_string());
                     return None;
                 }
-                (fn_start, false, true)
+                (fn_start, true)
             }
-            _ => unreachable!("parse_fn_with_modifiers called without fn/async/gen"),
+            _ => unreachable!("parse_fn_with_modifiers called without fn/gen"),
         };
-        let mut f = self.parse_function(fn_start, is_async, is_gen, vis, attrs)?;
+        let mut f = self.parse_function(fn_start, is_gen, vis, attrs)?;
         f.doc_comment.clone_from(doc_comment);
         Some(Item::Function(f))
+    }
+
+    /// Reject the retired `async fn` spellings while keeping `async` available
+    /// as an ordinary identifier everywhere else.
+    fn retired_async_fn(&mut self) -> bool {
+        if !matches!(self.peek(), Some(Token::Identifier(name)) if *name == "async") {
+            return false;
+        }
+        let is_generator = matches!(self.peek_at(self.pos + 1), Some(Token::Gen));
+        let is_function = matches!(self.peek_at(self.pos + 1), Some(Token::Fn))
+            || (is_generator && matches!(self.peek_at(self.pos + 2), Some(Token::Fn)));
+        if !is_function {
+            return false;
+        }
+
+        let span = self.peek_span();
+        let (code, kind) = if is_generator {
+            ("E_NO_ASYNC_GEN", ParseDiagnosticKind::NoAsyncGen)
+        } else {
+            ("E_NO_ASYNC_FN", ParseDiagnosticKind::NoAsyncFn)
+        };
+        self.error_at_with_kind_and_hint(
+            format!(
+                "{code}: `async` no longer marks a callable; suspension is inferred from its body"
+            ),
+            span,
+            "delete `async`",
+            kind,
+        );
+        true
     }
 
     /// Redirect a foreign-language keyword found where an item was expected
@@ -327,6 +344,13 @@ impl Parser<'_> {
                 );
                 true
             }
+            "foreign" => {
+                self.error_with_hint(
+                    "unexpected 'foreign'".to_string(),
+                    "use 'extern' instead of 'foreign'",
+                );
+                true
+            }
             _ => false,
         }
     }
@@ -344,8 +368,8 @@ impl Parser<'_> {
     /// table lists no attribute for.
     ///
     /// Returns `None` when the upcoming token is one [`Self::foreign_keyword_redirect`]
-    /// recognises (`struct`, `class`, `func`, bare `wire`, and friends) or the
-    /// reserved `foreign` keyword: these paths never construct an item — they
+    /// recognises (`struct`, `class`, `func`, bare `wire`, `foreign`, and
+    /// friends): these paths never construct an item — they
     /// emit their own targeted diagnostic (e.g. "write `#[wire] type Name {
     /// .. }` instead") and return `None` from [`Self::parse_item`] — so the
     /// closed table stays silent rather than layering `E_UNKNOWN_ATTRIBUTE`
@@ -358,7 +382,7 @@ impl Parser<'_> {
         };
 
         match self.peek_at(target_pos) {
-            Some(Token::Fn | Token::Async | Token::Gen) => Some(AttrPosition::FreeFn),
+            Some(Token::Fn | Token::Gen) => Some(AttrPosition::FreeFn),
             Some(Token::Enum | Token::Indirect) => Some(AttrPosition::TypeDecl),
             Some(Token::Type)
                 if !self.is_type_alias_lookahead_at(target_pos)
@@ -368,7 +392,6 @@ impl Parser<'_> {
             }
             Some(Token::Trait) => Some(AttrPosition::TraitDecl),
             Some(Token::Actor) => Some(AttrPosition::ActorDecl),
-            Some(Token::Foreign) => None,
             Some(Token::Identifier(id)) if FOREIGN_KEYWORD_IDENTS.contains(id) => None,
             // `type` alias/tuple-record forms, `const`, `import`,
             // `supervisor`, `machine`, `impl`, `extern`, and anything else:
@@ -416,7 +439,7 @@ impl Parser<'_> {
             Some(Token::Pub | Token::Package) => {
                 let vis = self.parse_visibility();
                 match self.peek() {
-                    Some(Token::Fn | Token::Async | Token::Gen) => {
+                    Some(Token::Fn | Token::Gen) => {
                         self.parse_fn_with_modifiers(vis, attrs, &doc_comment)?
                     }
                     Some(Token::Indirect) => {
@@ -476,6 +499,9 @@ impl Parser<'_> {
                         Item::Const(self.parse_const_decl(vis, doc_comment)?)
                     }
                     _ => {
+                        if self.retired_async_fn() {
+                            return None;
+                        }
                         if let Some(Token::Identifier(id)) = self.peek() {
                             let id = *id;
                             if self.foreign_keyword_redirect(id, has_wire_attr) {
@@ -489,8 +515,15 @@ impl Parser<'_> {
                     }
                 }
             }
-            Some(Token::Fn | Token::Async | Token::Gen) => {
+            Some(Token::Fn | Token::Gen) => {
                 self.parse_fn_with_modifiers(Visibility::Private, attrs, &doc_comment)?
+            }
+            Some(Token::Identifier("async")) => {
+                if self.retired_async_fn() {
+                    return None;
+                }
+                self.error("expected item declaration".to_string());
+                return None;
             }
             Some(Token::Indirect) => {
                 let mut t = self.parse_indirect_enum(Visibility::Private, &attrs)?;
@@ -554,13 +587,6 @@ impl Parser<'_> {
                 self.advance();
                 Item::ExternBlock(self.parse_extern_block()?)
             }
-            Some(Token::Foreign) => {
-                self.error_with_hint(
-                    "unexpected 'foreign'".to_string(),
-                    "use 'extern' instead of 'foreign'",
-                );
-                return None;
-            }
             _ => {
                 let found = match self.peek() {
                     Some(tok) => format!("{tok}"),
@@ -607,7 +633,6 @@ impl Parser<'_> {
     pub(crate) fn parse_function(
         &mut self,
         fn_start: usize,
-        is_async: bool,
         is_gen: bool,
         visibility: Visibility,
         attributes: Vec<Attribute>,
@@ -623,17 +648,17 @@ impl Parser<'_> {
 
         self.expect(&Token::LeftParen)?;
         // Inherent-impl methods (where `self` receivers are allowed) may declare
-        // a `consuming self` receiver — the terminal single-consume surface
-        // (`fn build(consuming self) -> T`, a `#[linear]` type's consuming
+        // a `consume self` receiver — the terminal single-consume surface
+        // (`fn build(consume self) -> T`, a `#[linear]` type's consuming
         // method). The receiver is lowered as the by-value `self` parameter; the
         // `consumes_self` fact drives the checker's consume-receiver marking. A
-        // `consuming self` outside the first position, or in a context that does
+        // `consume self` outside the first position, or in a context that does
         // not allow `self` receivers (a free function), falls through to the
         // regular param path and is rejected there.
         let consuming_self_span = self.peek_span();
-        let consumes_self = self.allow_implicit_self_params && self.eat_consuming_self_receiver();
+        let consumes_self = self.allow_implicit_self_params && self.eat_consume_self_receiver();
         let mut params = self.parse_params_with_implicit_self(self.allow_implicit_self_params);
-        // A `consuming self` receiver is materialised as a leading by-value
+        // A `consume self` receiver is materialised as a leading by-value
         // `self: Self` parameter so the checker's receiver binding and HIR's
         // method-symbol minting treat it identically to a bare `self` receiver;
         // the move (consume) semantics ride on `consumes_self`, not on the
@@ -684,8 +709,8 @@ impl Parser<'_> {
         };
 
         Some(FnDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             attributes,
-            is_async,
             is_generator: is_gen,
             visibility,
             name,
@@ -704,7 +729,7 @@ impl Parser<'_> {
 
     /// Parse a method inside a type body, returning `(FnDecl, has_consuming_self)`.
     ///
-    /// Unlike `parse_function`, this variant accepts `consuming self` as the first
+    /// Unlike `parse_function`, this variant accepts `consume self` as the first
     /// parameter. The boolean return indicates whether the method declared such a
     /// receiver; callers record this in `TypeDecl.consuming_methods`.
     pub(crate) fn parse_type_method(
@@ -729,8 +754,8 @@ impl Parser<'_> {
         let fn_end = self.peek_span().start;
 
         let decl = FnDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             attributes,
-            is_async: false,
             is_generator: false,
             visibility: Visibility::Private,
             name,
@@ -913,6 +938,7 @@ impl Parser<'_> {
         }
 
         Some(TypeDecl {
+            origin: crate::ast::DeclarationOrigin::Authored,
             visibility,
             kind,
             name,
@@ -1126,7 +1152,7 @@ impl Parser<'_> {
     /// Parse one item in a type body, returning `(item, has_consuming_self)`.
     ///
     /// `has_consuming_self` is `true` only when the item is a method whose
-    /// first parameter is a `consuming self` receiver.  The caller records
+    /// first parameter is a `consume self` receiver.  The caller records
     /// consuming method names in `TypeDecl.consuming_methods`.
     pub(crate) fn parse_type_body_item(
         &mut self,
@@ -1154,7 +1180,7 @@ impl Parser<'_> {
                     self.validate_attributes_for(&attributes, AttrPosition::Unsupported);
                     let fn_start = self.peek_span().start;
                     self.advance();
-                    // Use parse_type_method so `consuming self` receivers are accepted.
+                    // Use parse_type_method so `consume self` receivers are accepted.
                     let (mut method, has_consuming_self) =
                         self.parse_type_method(fn_start, attributes)?;
                     method.doc_comment = doc_comment;
@@ -1165,10 +1191,8 @@ impl Parser<'_> {
                     let name = self.expect_ident()?;
                     self.expect(&Token::Colon)?;
                     let ty = self.parse_type()?;
-                    if !self.eat(&Token::Semicolon) {
-                        self.eat(&Token::Comma);
-                    }
-                    // peek_span().start is now the first token after the `;` or `,`,
+                    self.expect_structural_separator();
+                    // peek_span().start is now the first token after the `,`,
                     // which captures any trailing comment on this field's line in the
                     // range item_start..item_end (comments are skipped by the lexer,
                     // but extract_comments scans the raw source for them).
@@ -1205,9 +1229,7 @@ impl Parser<'_> {
                         self.expect(&Token::Colon)?;
                         let ty = self.parse_type()?;
                         fields.push((field_name, ty));
-                        if !(self.eat(&Token::Comma) || self.eat(&Token::Semicolon)) {
-                            break;
-                        }
+                        self.expect_structural_separator();
                     }
                     self.expect(&Token::RightBrace)?;
                     VariantKind::Struct(fields)
@@ -1215,11 +1237,8 @@ impl Parser<'_> {
                     VariantKind::Unit
                 };
 
-                if !self.eat(&Token::Semicolon) && self.peek() == Some(&Token::Comma) {
-                    self.error("use `;` instead of `,` to separate variants".to_string());
-                    self.advance();
-                }
-                // peek_span() is now the position after the trailing `;`
+                self.expect_structural_separator();
+                // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
                 Some((
                     TypeBodyItem::Variant(VariantDecl {
@@ -1300,7 +1319,7 @@ impl Parser<'_> {
 
                 self.expect(&Token::LeftParen)?;
                 let consuming_self_span = self.peek_span();
-                let consumes_self = self.eat_consuming_self_receiver();
+                let consumes_self = self.eat_consume_self_receiver();
                 let mut params = self.parse_params_with_implicit_self(true);
                 if consumes_self {
                     params.insert(
@@ -1457,8 +1476,7 @@ impl Parser<'_> {
                     self.advance();
                     let prev_allow_implicit_self =
                         std::mem::replace(&mut self.allow_implicit_self_params, true);
-                    let parsed_method =
-                        self.parse_function(fn_start, false, false, vis, method_attrs);
+                    let parsed_method = self.parse_function(fn_start, false, vis, method_attrs);
                     self.allow_implicit_self_params = prev_allow_implicit_self;
                     if let Some(mut method) = parsed_method {
                         if let Some(doc) = doc_comment {

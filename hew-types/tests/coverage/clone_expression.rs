@@ -33,7 +33,7 @@ fn clone_string_typechecks_and_leaves_operand_usable() {
 fn clone_vec_typechecks() {
     let source = r"
         fn main() {
-            let xs: Vec<i64> = Vec.new();
+            var xs: Vec<i64> = Vec.new();
             xs.push(1);
             let ys = clone xs;
             println(ys.len());
@@ -53,7 +53,7 @@ fn existing_method_clone_still_typechecks() {
     // Regression guard: the prefix must not disturb `x.clone()`.
     let source = r"
         fn main() {
-            let xs: Vec<i64> = Vec.new();
+            var xs: Vec<i64> = Vec.new();
             xs.push(1);
             let ys = xs.clone();
             println(ys.len());
@@ -101,14 +101,14 @@ fn clone_on_unsupported_scalar_fails_closed() {
 fn actor_send_snapshot_does_not_suggest_clone() {
     let source = r"
         actor SnapshotSink {
-            let id: i64;
+            let id: i64,
             receive fn take(v: Vec<i64>) {}
         }
         fn main() {
-            let xs: Vec<i64> = Vec.new();
+            var xs: Vec<i64> = Vec.new();
             xs.push(1);
             let sink = spawn SnapshotSink(id: 0);
-            sink.take(xs);
+            let _ = sink.take(xs);
             println(xs.len());
         }
     ";

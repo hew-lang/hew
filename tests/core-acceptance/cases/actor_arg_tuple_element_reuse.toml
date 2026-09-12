@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_arg_tuple_element_reuse"
+intent = "The fixture is refused with exactly 1 error(s), and no cascade beyond them."
+source = "../vertical-slice/reject/actor_arg_tuple_element_reuse.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 26
+column = 12
+message = "use of moved place `pair.0`"

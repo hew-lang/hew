@@ -35,17 +35,46 @@ fn main() {
     let w9 = spawn Computer;
     let w10 = spawn Computer;
     // Send different workloads to each
-    let (r1, r2, r3, r4, r5, r6, r7, r8, r9, r10) = join {
-        w1.compute(5),
-        w2.compute(8),
-        w3.compute(10),
-        w4.compute(12),
-        w5.compute(6),
-        w6.compute(9),
-        w7.compute(11),
-        w8.compute(7),
-        w9.compute(13),
-        w10.compute(14),
+    let (r1_result, r2_result, r3_result, r4_result, r5_result, r6_result, r7_result, r8_result, r9_result, r10_result) = await fork (w1.compute(5), w2.compute(8), w3.compute(10), w4.compute(12), w5.compute(6), w6.compute(9), w7.compute(11), w8.compute(7), w9.compute(13), w10.compute(14));
+    let r1 = match r1_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r2 = match r2_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r3 = match r3_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r4 = match r4_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r5 = match r5_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r6 = match r6_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r7 = match r7_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r8 = match r8_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r9 = match r9_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
+    };
+    let r10 = match r10_result {
+        .Ok(value) => value,
+        .Err(_) => -1,
     };
     print_result(1, 5, r1);
     print_result(2, 8, r2);
@@ -65,17 +94,46 @@ fn main() {
     var checksum_total = r1 + r2 + r3 + r4 + r5 + r6 + r7 + r8 + r9 + r10;
     for i in 0 .. 5 {
         let round: i64 = i;
-        let (b1, b2, b3, b4, b5, b6, b7, b8, b9, b10) = join {
-            w1.compute(round + 3),
-            w2.compute(round + 4),
-            w3.compute(round + 5),
-            w4.compute(round + 6),
-            w5.compute(round + 7),
-            w6.compute(round + 3),
-            w7.compute(round + 4),
-            w8.compute(round + 5),
-            w9.compute(round + 6),
-            w10.compute(round + 7),
+        let (b1_result, b2_result, b3_result, b4_result, b5_result, b6_result, b7_result, b8_result, b9_result, b10_result) = await fork (w1.compute(round + 3), w2.compute(round + 4), w3.compute(round + 5), w4.compute(round + 6), w5.compute(round + 7), w6.compute(round + 3), w7.compute(round + 4), w8.compute(round + 5), w9.compute(round + 6), w10.compute(round + 7));
+        let b1 = match b1_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b2 = match b2_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b3 = match b3_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b4 = match b4_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b5 = match b5_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b6 = match b6_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b7 = match b7_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b8 = match b8_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b9 = match b9_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
+        };
+        let b10 = match b10_result {
+            .Ok(value) => value,
+            .Err(_) => -1,
         };
         let round_checksum = b1 + b2 + b3 + b4 + b5 + b6 + b7 + b8 + b9 + b10;
         completed = completed + 10;

@@ -1,0 +1,13 @@
+[[case]]
+id = "vector-value-parameter"
+intent = "A mutable vector value parameter returns an updated vector and preserves the caller."
+source = "cases/vector-value-parameter.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "independent vector\n"
+exit = 0

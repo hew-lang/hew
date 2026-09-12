@@ -1,0 +1,13 @@
+[[case]]
+id = "duplex_non_send"
+intent = "Reject fixture: E_DUPLEX_NON_SEND A lambda actor whose message type (or captured type) is not Send is rejected."
+source = "../vertical-slice/reject/duplex_non_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 8
+column = 19
+message = "lambda actor message type `Rc<i64>` is not Send (E_DUPLEX_NON_SEND)"

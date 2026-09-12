@@ -47,6 +47,11 @@ fn block_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(block: &HirBlock, pred: F)
                     return true;
                 }
             }
+            HirStmtKind::Destructure { value, .. } => {
+                if expr_has_kind(value, pred) {
+                    return true;
+                }
+            }
             HirStmtKind::Assign { value, .. } => {
                 if expr_has_kind(value, pred) {
                     return true;
@@ -54,15 +59,6 @@ fn block_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(block: &HirBlock, pred: F)
             }
             HirStmtKind::Defer { body, .. } => {
                 if expr_has_kind(body, pred) {
-                    return true;
-                }
-            }
-            HirStmtKind::LetElse {
-                scrutinee,
-                else_body,
-                ..
-            } => {
-                if expr_has_kind(scrutinee, pred) || block_has_kind(else_body, pred) {
                     return true;
                 }
             }
@@ -84,8 +80,7 @@ fn expr_has_kind<F: Fn(&HirExprKind) -> bool + Copy>(expr: &hew_hir::HirExpr, pr
     match &expr.kind {
         HirExprKind::Loop { body, .. }
         | HirExprKind::While { body, .. }
-        | HirExprKind::ForRange { body, .. }
-        | HirExprKind::WhileLet { body, .. } => block_has_kind(body, pred),
+        | HirExprKind::ForRange { body, .. } => block_has_kind(body, pred),
         HirExprKind::Block(block) => block_has_kind(block, pred),
         HirExprKind::Break {
             value: Some(value), ..

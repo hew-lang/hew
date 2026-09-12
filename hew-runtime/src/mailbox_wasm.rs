@@ -148,7 +148,7 @@ fn mailbox_malloc(size: usize) -> *mut c_void {
     }
 
     // SAFETY: `size` is forwarded to libc unchanged.
-    unsafe { libc::malloc(size) }
+    crate::mem::buf_try_alloc(size)
 }
 
 fn reserve_queue_capacity<T>(queue: &mut VecDeque<T>, additional: usize) -> bool {
@@ -189,7 +189,7 @@ fn report_sys_enqueue_failure(msg_type: i32, size: usize) {
 
 /// A single message in a mailbox queue.
 ///
-/// Allocated with [`libc::malloc`] and freed by [`msg_node_free`].
+/// Allocated with the sized-block allocator and freed by [`msg_node_free`].
 /// The `next` field is unused on WASM (queues are `VecDeque`-backed)
 /// but kept for struct layout compatibility with the native mailbox.
 ///
@@ -208,7 +208,7 @@ pub struct HewMsgNode {
     pub next: AtomicPtr<HewMsgNode>,
     /// Application-defined message type tag.
     pub msg_type: i32,
-    /// Pointer to deep-copied message payload (malloc'd) on the legacy
+    /// Pointer to deep-copied message payload (sized-block allocated) on the legacy
     /// copy path. Unused (and may be null) when `envelope` is non-null.
     pub data: *mut c_void,
     /// Size of `data` in bytes on the legacy copy path.
@@ -263,8 +263,9 @@ wasm_no_mangle! {
     ///
     /// # Safety
     ///
-    /// `payload` must be a malloc-compatible allocation of `payload_size`
-    /// bytes (or null for zero bytes). Ownership transfers to the envelope.
+    /// `payload` must be a sized-block allocation of `payload_size`
+    /// bytes from the sized-block allocator (or null for zero bytes).
+    /// Ownership transfers to the envelope.
     pub unsafe extern "C" fn hew_msg_envelope_new(
         payload: *mut c_void,
         payload_size: usize,
@@ -339,7 +340,7 @@ wasm_no_mangle! {
     }
 }
 
-/// Allocate a [`HewMsgNode`] via `libc::malloc`, deep-copying `data`.
+/// Allocate a [`HewMsgNode`] via the sized-block allocator, deep-copying `data`.
 ///
 /// # Safety
 ///
@@ -367,7 +368,7 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
         if data_size > 0 && !data.is_null() {
             let buf = mailbox_malloc(data_size);
             if buf.is_null() {
-                libc::free(node.cast());
+                crate::mem::buf_free(node.cast());
                 return ptr::null_mut();
             }
             libc::memcpy(buf, data, data_size);
@@ -388,13 +389,13 @@ unsafe fn msg_node_alloc(msg_type: i32, data: *const c_void, data_size: usize) -
 /// # Safety
 ///
 /// `node` must have been allocated by [`msg_node_alloc`] (or
-/// [`libc::malloc`] with the same layout) and must not be used after
+/// the sized-block allocator with the same layout) and must not be used after
 /// this call.
 unsafe fn msg_node_free(node: *mut HewMsgNode) {
     if node.is_null() {
         return;
     }
-    // SAFETY: Caller guarantees `node` was malloc'd and is exclusively owned.
+    // SAFETY: caller guarantees `node` came from the sized-block allocator and is exclusively owned.
     unsafe {
         // If a reply channel was set (ask pattern) but the message was never
         // replied to, deposit an empty reply so the waiting side observes the
@@ -405,12 +406,12 @@ unsafe fn msg_node_free(node: *mut HewMsgNode) {
         }
         // Phase-α: branch on the envelope discriminator.
         if (*node).envelope.is_null() {
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
         }
-        libc::free(node.cast());
+        crate::mem::buf_free(node.cast());
     }
 }
 
@@ -421,7 +422,7 @@ wasm_no_mangle! {
     ///
     /// Same requirements as [`msg_node_free`].
     pub unsafe extern "C" fn hew_msg_node_free(node: *mut HewMsgNode) {
-        // SAFETY: Caller guarantees `node` was malloc'd.
+        // SAFETY: caller guarantees `node` came from the sized-block allocator.
         unsafe { msg_node_free(node) };
     }
 }
@@ -514,7 +515,7 @@ unsafe fn replace_node_payload(
             if let Some(drop_fn) = message_drop_fn {
                 drop_fn((*node).msg_type, (*node).data, (*node).data_size);
             }
-            libc::free((*node).data);
+            crate::mem::buf_free((*node).data);
         } else {
             hew_msg_envelope_release((*node).envelope);
             (*node).envelope = ptr::null_mut();
@@ -2903,7 +2904,7 @@ mod tests {
         // SAFETY: test owns the mailbox exclusively; all pointers are valid.
         unsafe {
             let mb = hew_mailbox_new();
-            for raw in [i32::MIN, -1, 0, 8, 99, 100, 101, 103, 104, 105, i32::MAX] {
+            for raw in [i32::MIN, -1, 0, 99, 100, 101, 103, 104, 105, i32::MAX] {
                 crate::hew_clear_error();
                 hew_mailbox_send_sys(mb, raw, ptr::null_mut(), 0);
                 assert_eq!(

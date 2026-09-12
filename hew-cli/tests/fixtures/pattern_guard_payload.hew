@@ -5,8 +5,8 @@
 // Oracle: "positive" for Some(n) where n > 0, "non-positive" for Some(n)
 //         where n <= 0, "absent" for None.
 enum MyOpt {
-    Some(i64);
-    None;
+    Some(i64),
+    None,
 }
 
 fn describe(v: MyOpt) -> string {

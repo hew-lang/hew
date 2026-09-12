@@ -1,0 +1,27 @@
+import std.math;
+
+fn near(actual: f64, expected: f64) {
+    assert(math.abs(actual - expected) < 0.0000001);
+}
+
+fn main() {
+    near(math.sqrt(81.0), 9.0);
+    near(math.exp(0.0), 1.0);
+    near(math.log(math.exp(2.0)), 2.0);
+    near(math.sin(math.pi() / 2.0), 1.0);
+    near(math.cos(math.pi()), -1.0);
+    near(math.pow(2.0, 5.0), 32.0);
+    near(math.floor(-1.25), -2.0);
+    near(math.ceil(-1.25), -1.0);
+    near(math.round(-1.5), -2.0);
+    near(math.round(1.5), 2.0);
+    near(math.min(-3.5, 2.5), -3.5);
+    near(math.max(-3.5, 2.5), 2.5);
+    let number: i64 = -42;
+    assert(math.abs(number) == 42);
+    assert(math.min(number, 7 as i64) == number);
+    assert(math.max(number, 7 as i64) == 7);
+    assert(math.abs(0 as i64) == 0);
+    assert(math.abs(9223372036854775807 as i64) == 9223372036854775807);
+    println("numeric math intrinsics preserve their checked semantics");
+}

@@ -1,0 +1,19 @@
+[[case]]
+id = "loaned-payload-projection"
+intent = "D490: a record element carrying a resource has no copy, so `get` refuses before any projection through it; the owning drain releases each nested resource exactly once."
+source = "cases/loaned-payload-projection.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 42
+column = 18
+message = "E_ELEMENT_NO_COPY: `Vec<Crate>` cannot be read with `get`"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 43
+column = 19
+message = "E_ELEMENT_NO_COPY: `Vec<Crate>` cannot be read with `get`"

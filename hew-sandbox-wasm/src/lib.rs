@@ -553,6 +553,76 @@ mod tests {
         assert!(ops.contains(&"i64.checked_add"));
     }
 
+    #[test]
+    fn negated_i64_min_literal_folds_to_one_constant() {
+        // The native carrier keeps `-9223372036854775808` as a unary negation
+        // over its magnitude. `i64.neg` cannot build i64::MIN from any positive
+        // i64, so the emitter must fold the pair into a single constant.
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(
+            "fn main() -> i64 { let z: i64 = -9223372036854775808; 0 }",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "i64::MIN must be admitted: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let opcodes: Vec<&str> = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .map(|instruction| instruction.op.as_str())
+            .collect();
+        assert!(
+            !opcodes.contains(&"i64.neg"),
+            "the literal must be folded, not negated at runtime: {opcodes:?}"
+        );
+        let constants: Vec<String> = bytecode
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.instructions)
+            .filter(|instruction| instruction.op == "const.i64")
+            .flat_map(|instruction| &instruction.args)
+            .map(|operand| format!("{operand:?}"))
+            .collect();
+        assert!(
+            constants
+                .iter()
+                .any(|operand| operand.contains("-9223372036854775808")),
+            "i64::MIN must appear as one constant: {constants:?}"
+        );
+    }
+
+    #[test]
+    fn literal_outside_i64_is_rejected_by_sandbox_admission() {
+        // The sandbox VM's integers are i64. Native admits the full u64 range,
+        // so the sandbox refuses the program rather than encoding u64::MAX as
+        // a negative const.i64.
+        set_test_hewpath();
+        let output = compile_to_sandbox_bytecode(
+            "fn main() -> i64 { let big: u64 = 18446744073709551615; 0 }",
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|d| d.severity == "error" && d.message.contains("outside the i64 range")),
+            "u64::MAX must be refused by admission: {:#?}",
+            output.diagnostics
+        );
+        assert!(
+            output.bytecode.is_none(),
+            "a refused program must emit no bytecode"
+        );
+    }
+
     /// Bytecode for one actor handler, with every span reference erased.
     ///
     /// Two programs that differ only in how they spell a state access carry
@@ -589,7 +659,7 @@ mod tests {
     fn actor_self_field_emits_the_bare_field_bytecode() {
         let receiver = r"
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn bump(n: i64) {
         self.count = self.count + n;
         self.count += 1;
@@ -601,12 +671,12 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.bump(4);
+    let _ = c.bump(4);
 }
 ";
         let bare = r"
 actor Counter {
-    var count: i64;
+    var count: i64,
     receive fn bump(n: i64) {
         count = count + n;
         count += 1;
@@ -618,7 +688,7 @@ actor Counter {
 
 fn main() {
     let c = spawn Counter(count: 0);
-    c.bump(4);
+    let _ = c.bump(4);
 }
 ";
         assert_eq!(
@@ -713,7 +783,7 @@ fn main() {
     fn match_arm_guard_gates_arm_body() {
         set_test_hewpath();
         let source = r#"
-enum Score { High(i64); Low(i64); Zero; }
+enum Score { High(i64), Low(i64), Zero, }
 
 fn classify(s: Score) -> string {
     match s {
@@ -772,7 +842,7 @@ fn main() {
     fn guarded_catch_all_guard_failure_falls_through_to_next_check() {
         set_test_hewpath();
         let source = r#"
-enum Score { High(i64); Low(i64); }
+enum Score { High(i64), Low(i64), }
 
 fn classify(s: Score) -> string {
     match s {
@@ -875,6 +945,45 @@ fn main() {
             .any(|block| block.terminator.op == "return"));
     }
 
+    /// `opt.expect(reason)` is the sandbox's only Option/Result extraction with
+    /// a panic arm; the arm must carry the same message the native lowering
+    /// builds, `expect failed: <reason>`.
+    #[test]
+    fn expect_emits_a_panic_arm_carrying_its_reason() {
+        let source = r#"
+fn main() {
+    let opt = Some(7);
+    println(opt.expect("the value was checked"));
+}
+"#;
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let ops = all_instruction_ops(&bytecode);
+        assert!(
+            ops.contains(&"panic"),
+            "expect must emit a panic arm: {ops:?}"
+        );
+        assert!(
+            ops.contains(&"string.concat"),
+            "the panic message concatenates the reason: {ops:?}"
+        );
+        let serialized = serde_json::to_string(&bytecode).expect("bytecode should serialize");
+        assert!(
+            serialized.contains("expect failed: "),
+            "the panic message must match the native prefix"
+        );
+        assert!(
+            serialized.contains("the value was checked"),
+            "the panic message must carry the caller's reason"
+        );
+    }
+
     #[test]
     fn vector_fixture_emits_new_push_len_and_get() {
         let output =
@@ -897,7 +1006,7 @@ fn main() {
     fn vector_index_expression_emits_bounds_trapping_index_opcode() {
         let source = r"
 fn main() {
-    let values = Vec<i64>.new();
+    var values = Vec<i64>.new();
     values.push(7);
     println(values[0]);
 }
@@ -1014,7 +1123,7 @@ fn main() {
         set_test_hewpath();
         let source = r#"
 type Pattern {
-    value: string;
+    value: string,
 }
 
 impl Pattern {
@@ -1050,7 +1159,7 @@ fn main() {
         set_test_hewpath();
         let source = r"
 type Regex {
-    value: i64;
+    value: i64,
 }
 
 fn main() {
@@ -1088,7 +1197,7 @@ fn main() {
 import std.text.regex;
 
 type Regex {
-    value: i64;
+    value: i64,
 }
 
 fn main() {
@@ -1135,7 +1244,7 @@ fn main() {
         set_test_hewpath();
         let source = r#"
 type Regex {
-    value: string;
+    value: string,
 }
 
 impl Regex {
@@ -1196,6 +1305,58 @@ fn main() {
         let bytecode = output.bytecode.expect("bytecode should be emitted");
         let ops = all_instruction_ops(&bytecode);
         assert!(ops.contains(&"i64.checked_div"));
+    }
+
+    #[test]
+    fn machine_fixture_admits_the_one_structure() {
+        // The sandbox reads the same AST the native path does and records only
+        // the transition table, so parity here is the same acceptance: a
+        // machine written in the one structure compiles and emits bytecode.
+        let output = compile_to_sandbox_bytecode(
+            &fixture("20-machine-traffic-light"),
+            Some("sandbox-vm-export"),
+        )
+        .expect("compile should not throw");
+        assert!(
+            output.diagnostics.iter().all(|d| d.severity != "error"),
+            "unexpected diagnostics: {:#?}",
+            output.diagnostics
+        );
+        let bytecode = output.bytecode.expect("bytecode should be emitted");
+        let machine = bytecode
+            .layouts
+            .machines
+            .iter()
+            .find(|machine| machine.name == "TrafficLight")
+            .expect("the machine layout should be recorded");
+        assert_eq!(machine.transitions.len(), 3);
+    }
+
+    #[test]
+    fn machine_self_in_a_transition_body_is_refused() {
+        // Negative control for the parity above: the sandbox runs the checker
+        // before emitting, so it refuses exactly what the native path refuses.
+        let source = concat!(
+            "machine Counter {\n",
+            "    events { Tick }\n",
+            "    state Idle,\n",
+            "    state Live { hits: i64 },\n",
+            "    on Tick: Idle => Live { hits: 0 }\n",
+            "    on Tick: Live => Live reenter { hits: self.hits + 1 }\n",
+            "}\n",
+            "fn main() { println(\"x\"); }\n",
+        );
+        let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
+            .expect("compile should not throw");
+        assert!(output.bytecode.is_none());
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("E_MACHINE_SELF")),
+            "expected the machine `self` refusal, got {:#?}",
+            output.diagnostics
+        );
     }
 
     #[test]
@@ -1332,7 +1493,7 @@ fn main() {
         // specific stdlib module short-names and NOT a user-declared type, so
         // legitimate field access on user records must continue to compile.
         let source = r"
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
 fn main() {
     let p = Point { x: 3, y: 7 };
@@ -1364,7 +1525,7 @@ fn main() {
         // Over-reject regression: the previous `is_user_local` guard only tracked
         // top-level declarations and would have falsely rejected `net.connect` here.
         let source = r"
-type Conn { connect: i64; }
+type Conn { connect: i64, }
 
 fn main() {
     let net = Conn { connect: 42 };
@@ -1389,7 +1550,7 @@ fn main() {
     fn sandbox_admits_local_binding_named_stream() {
         // Same regression check for `stream` (another common collision name).
         let source = r"
-type Packet { value: i64; }
+type Packet { value: i64, }
 
 fn process(stream: Packet) -> i64 {
     stream.value
@@ -1418,7 +1579,7 @@ fn main() {
     fn sandbox_admits_local_binding_named_os() {
         // Same regression check for `os`.
         let source = r"
-type Cfg { name: i64; }
+type Cfg { name: i64, }
 
 fn main() {
     let os = Cfg { name: 1 };
@@ -1538,7 +1699,7 @@ fn main() {
         // `lower_binary` emits `cmp.eq`/`cmp.ne`; the VM's `canonicalComparable`
         // handles these structurally.
         let record_source = r"
-type Point { x: i64; y: i64; }
+type Point { x: i64, y: i64, }
 
 fn main() {
     let a = Point { x: 1, y: 2 };
@@ -1562,8 +1723,8 @@ fn main() {
 
         let enum_source = r"
 enum Shape {
-    Circle(i64);
-    Empty;
+    Circle(i64),
+    Empty,
 }
 
 fn main() {
@@ -1662,12 +1823,12 @@ fn main() {
             r#"
 machine Boxed<T> {
     events {
-        Store;
+        Store,
     }
-    state Idle;
-    state Full;
-    on Store: Idle => .Full;
-    on Store: Full => .Full;
+    state Idle,
+    state Full,
+    on Store: Idle => .Full,
+    on Store: Full => .Full,
 }
 
 fn main() {
@@ -1689,7 +1850,7 @@ actor Probe {
     receive fn ping() {}
 }
 
-fn same(left: LocalPid<Probe>, right: LocalPid<Probe>) -> bool {
+fn same(left: Probe, right: Probe) -> bool {
     left is right
 }
 
@@ -1750,7 +1911,7 @@ fn main() {
     // Source matches hew-lsp/tests/fixtures/v05_impl_where_clause.hew.
     const IMPL_WHERE_SOURCE: &str = r"
 type Holder<T> {
-    value: T;
+    value: T,
 }
 
 impl<T> Holder<T> where T: Display {
@@ -1897,14 +2058,14 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Bounds {
-    let max: i64;
-    let min: i64;
+    let max: i64,
+    let min: i64,
 }
 
 supervisor BoundsTree {
-    strategy: one_for_one;
-    intensity: 1 within 60s;
-    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808);
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child bounds: Bounds(max: 9223372036854775807, min: -9223372036854775808),
 }
 
 fn main() {
@@ -2105,7 +2266,7 @@ fn main() {
         // `lower_stmt_if_let` lowers into a tag check + branch.
         assert_admits_with_branches(
             r"
-enum Wrapped { Value(i64); Empty; }
+enum Wrapped { Value(i64), Empty, }
 fn main() {
     let w: Wrapped = .Value(7);
     if let .Value(n) = w {
@@ -2138,7 +2299,7 @@ actor Echo {
 }
 fn main() {
     let e = spawn Echo;
-    let r = match await e.echo(42) {
+    let r = match e.echo(42) {
         .Ok(v) => v,
         .Err(_) => -1,
     };
@@ -2181,14 +2342,14 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Counter {
-    let count: i64;
+    let count: i64,
     receive fn bump(n: i64) -> i64 { return n; }
     receive fn get() -> i64 { return count; }
 }
 fn main() {
     let c = spawn Counter(count: 100);
-    println(match await c.bump(5) { .Ok(v) => v, .Err(_e) => 0-1 });
-    println(match await c.get()   { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match c.bump(5) { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match c.get()   { .Ok(v) => v, .Err(_e) => 0-1 });
 }
 ";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -2259,8 +2420,8 @@ fn main() {
         set_test_hewpath();
         let source = r"
 actor Pair {
-    var a: i64;
-    let b: i64;
+    var a: i64,
+    let b: i64,
     receive fn set_a_return_b(x: i64) -> i64 {
         a = x;
         return b;
@@ -2269,8 +2430,8 @@ actor Pair {
 }
 fn main() {
     let p = spawn Pair(a: 1, b: 99);
-    println(match await p.set_a_return_b(42) { .Ok(v) => v, .Err(_e) => 0-1 });
-    println(match await p.get_a()            { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match p.set_a_return_b(42) { .Ok(v) => v, .Err(_e) => 0-1 });
+    println(match p.get_a()            { .Ok(v) => v, .Err(_e) => 0-1 });
 }
 ";
         let output = compile_to_sandbox_bytecode(source, Some("sandbox-vm-export"))
@@ -2327,7 +2488,7 @@ fn main() {
         // cover is exercised by the dotted positive control below.
         set_test_hewpath();
         let source = r#"
-enum Op { Add; Sub; }
+enum Op { Add, Sub, }
 fn apply(op: Op, x: i64, y: i64) -> i64 {
     match op {
         .Add => x + y,
@@ -2364,7 +2525,7 @@ fn main() {
         // path the retired bare-form regression test used to cover.
         set_test_hewpath();
         let source = r#"
-enum Op { Add; Sub; }
+enum Op { Add, Sub, }
 fn apply(op: Op, x: i64, y: i64) -> i64 {
     match op {
         .Add => x + y,

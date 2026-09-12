@@ -4,11 +4,11 @@ use common::typecheck_isolated as typecheck;
 use hew_types::{ActorMethodKind, Ty};
 
 #[test]
-fn actor_method_dispatch_classifies_fire_and_ask_sites() {
+fn actor_method_dispatch_classifies_message_and_ask_sites() {
     let output = typecheck(
         r"
         actor Counter {
-            let count: i32;
+            let count: i32,
 
             receive fn increment(n: i32) {
             }
@@ -20,8 +20,8 @@ fn actor_method_dispatch_classifies_fire_and_ask_sites() {
 
         fn main() -> i32 {
             let c = spawn Counter(count: 0);
-            c.increment(10);
-            await c.print_total();
+            let _ = c.increment(10);
+            _ = c.print_total();
             return 0;
         }
         ",
@@ -32,18 +32,25 @@ fn actor_method_dispatch_classifies_fire_and_ask_sites() {
         "counter actor should typecheck: {:?}",
         output.errors
     );
+    // The call is the send (no `send` keyword): a plain call on an actor
+    // handle waits for completion like any other call, so `increment` is
+    // dispatched as an ask with a `Unit` reply, not a fire-and-forget
+    // `Message`. The one-way view lives in `mailbox(target, on_full: ..)`.
     assert!(
         output.actor_method_dispatch.values().any(|kind| {
-            matches!(kind, ActorMethodKind::Fire(method_id) if method_id == "Counter::increment")
+            matches!(
+                kind,
+                ActorMethodKind::Ask { method_id, reply_ty: Ty::Unit, .. } if method_id == "Counter::increment"
+            )
         }),
-        "increment call should be recorded as actor fire dispatch: {:?}",
+        "increment call should be recorded as an actor ask with a Unit reply: {:?}",
         output.actor_method_dispatch
     );
     assert!(
         output.actor_method_dispatch.values().any(|kind| {
             matches!(
                 kind,
-                ActorMethodKind::Ask(method_id, Ty::I32) if method_id == "Counter::print_total"
+                ActorMethodKind::Ask { method_id, reply_ty: Ty::I32, .. } if method_id == "Counter::print_total"
             )
         }),
         "print_total call should be recorded as actor ask dispatch: {:?}",

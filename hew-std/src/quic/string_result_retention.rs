@@ -9,28 +9,30 @@
 //! Every admitted result proves:
 //!
 //! - R1: two simultaneously-live results occupy distinct allocations.
-//! - R2: `cstring_ensure_unique(result) == result`, hence refcount one at
-//!   handoff.
+//! - R2: releasing one result leaves its sibling readable, so each is an
+//!   independent owner.
 //! - R3: releasing both results leaves the live source able to produce a
 //!   third.
 //!
 //! Successful endpoint connect and stream send also prove their prior error
-//! state clears without invalidating the handle. Null/allocated-empty paths
-//! are audited separately and are not used as positive admission evidence.
+//! state clears without invalidating the handle. Null handles and cleared
+//! slots produce the canonical empty string, audited separately and never
+//! used as positive admission evidence.
 
-use std::ffi::{c_char, CStr, CString};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
+use hew_cabi::string::string_release;
 use hew_runtime::bytes::hew_bytes_drop;
+
+use crate::test_string::ManagedString;
 
 use super::*;
 
 fn assert_transferred(
     symbol: &str,
-    mut call: impl FnMut() -> *mut c_char,
-    validate: impl Fn(&CStr),
+    mut call: impl FnMut() -> *mut HewString,
+    validate: impl Fn(&str),
 ) {
     let first = call();
     let second = call();
@@ -40,24 +42,17 @@ fn assert_transferred(
     );
     assert_ne!(
         first, second,
-        "{symbol}: R1 failed: two live results share an address"
+        "{symbol}: R1 failed: two live results share an allocation"
     );
 
-    for (label, ptr) in [("first", first), ("second", second)] {
-        // SAFETY: `ptr` is a live header-aware result from the named producer.
-        let unique = unsafe { cstring_ensure_unique(ptr) };
-        assert_eq!(
-            unique, ptr,
-            "{symbol}: R2 failed: the {label} result was shared at handoff"
-        );
-        // SAFETY: the uniqueness probe returned the live pointer unchanged.
-        validate(unsafe { CStr::from_ptr(ptr) });
-    }
-
-    // SAFETY: R1/R2 establish two distinct, solely-owned live results.
+    // SAFETY: both results are live owners held by this test.
     unsafe {
-        free_cstring(first);
-        free_cstring(second);
+        validate(string_as_str(first));
+        validate(string_as_str(second));
+        string_release(first);
+        // R2: releasing one owner must leave its sibling intact.
+        validate(string_as_str(second));
+        string_release(second);
     }
 
     let third = call();
@@ -65,21 +60,18 @@ fn assert_transferred(
         !third.is_null(),
         "{symbol}: R3 failed after caller releases"
     );
-    // SAFETY: `third` is a fresh live result.
-    validate(unsafe { CStr::from_ptr(third) });
-    // SAFETY: the third result is solely owned by this caller.
-    unsafe { free_cstring(third) };
+    // SAFETY: `third` is a fresh live owner.
+    unsafe {
+        validate(string_as_str(third));
+        string_release(third);
+    }
 }
 
-fn assert_allocated_empty(symbol: &str, ptr: *mut c_char) {
-    assert!(!ptr.is_null(), "{symbol}: empty result must be allocated");
-    // SAFETY: `ptr` is the live header-aware result under test.
-    let unique = unsafe { cstring_ensure_unique(ptr) };
-    assert_eq!(unique, ptr, "{symbol}: empty result must have refcount one");
-    // SAFETY: `ptr` is live and NUL-terminated.
-    assert!(unsafe { CStr::from_ptr(ptr) }.to_bytes().is_empty());
-    // SAFETY: `ptr` is solely owned by this caller.
-    unsafe { free_cstring(ptr) };
+fn assert_canonical_empty(symbol: &str, value: *mut HewString) {
+    assert!(
+        value.is_null(),
+        "{symbol}: an empty result is the canonical empty string"
+    );
 }
 
 unsafe fn take_event_kind(event: *mut HewQuicEvent) -> i32 {
@@ -97,8 +89,8 @@ unsafe fn take_event_kind(event: *mut HewQuicEvent) -> i32 {
     reason = "one ordered QUIC lifecycle is the ownership proof; splitting it would obscure handle validity and cleanup"
 )]
 fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
-    let bind = c"127.0.0.1:0";
-    // SAFETY: `bind` is a live NUL-terminated address.
+    let bind = ManagedString::new("127.0.0.1:0");
+    // SAFETY: `bind` owns a live managed address.
     let server_endpoint = unsafe { hew_quic_new_server(bind.as_ptr()) };
     let client_endpoint = hew_quic_new_client();
     assert!(
@@ -111,7 +103,6 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         // SAFETY: the client endpoint remains live through all calls.
         || unsafe { hew_quic_endpoint_local_addr(client_endpoint) },
         |text| {
-            let text = text.to_str().expect("endpoint address is UTF-8");
             let (_, port) = text
                 .rsplit_once(':')
                 .expect("endpoint address includes a port");
@@ -119,9 +110,9 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         },
     );
 
-    let bad_address = c"not-an-address";
-    let server_name = c"localhost";
-    // SAFETY: the endpoint and both C strings remain live through the call.
+    let bad_address = ManagedString::new("not-an-address");
+    let server_name = ManagedString::new("localhost");
+    // SAFETY: the endpoint and both managed strings remain live through the call.
     let failed = unsafe {
         hew_quic_endpoint_connect(client_endpoint, bad_address.as_ptr(), server_name.as_ptr())
     };
@@ -134,7 +125,6 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         // SAFETY: the failed connect leaves the endpoint live.
         || unsafe { hew_quic_endpoint_last_error(client_endpoint) },
         |text| {
-            let text = text.to_str().expect("endpoint error is UTF-8");
             assert!(text.contains("could not resolve connect address"));
             assert!(text.contains("parse failure"));
         },
@@ -162,7 +152,7 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
             .expect("send accepted QUIC handles");
     });
 
-    let address = CString::new(format!("127.0.0.1:{server_port}")).unwrap();
+    let address = ManagedString::new(format!("127.0.0.1:{server_port}"));
     // SAFETY: endpoint/address/server-name remain live through the call.
     let client_connection = unsafe {
         hew_quic_endpoint_connect(client_endpoint, address.as_ptr(), server_name.as_ptr())
@@ -174,7 +164,7 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
     // A successful connect clears the error used for the positive retention
     // proof while leaving the endpoint address available.
     // SAFETY: the endpoint remains live after connecting.
-    assert_allocated_empty("hew_quic_endpoint_last_error(clear)", unsafe {
+    assert_canonical_empty("hew_quic_endpoint_last_error(clear)", unsafe {
         hew_quic_endpoint_last_error(client_endpoint)
     });
     // SAFETY: observation getter borrows the live endpoint.
@@ -185,7 +175,6 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         // SAFETY: the client connection remains live through all calls.
         || unsafe { hew_quic_conn_local_addr(client_connection) },
         |text| {
-            let text = text.to_str().expect("connection local address is UTF-8");
             let (_, port) = text
                 .rsplit_once(':')
                 .expect("connection local address includes a port");
@@ -197,14 +186,11 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         // SAFETY: the client connection remains live through all calls.
         || unsafe { hew_quic_conn_peer_addr(client_connection) },
         |text| {
-            assert!(text
-                .to_str()
-                .expect("connection peer address is UTF-8")
-                .ends_with(&server_port.to_string()));
+            assert!(text.ends_with(&server_port.to_string()));
         },
     );
-    // SAFETY: a healthy live connection returns an allocated empty result.
-    assert_allocated_empty("hew_quic_conn_last_error(healthy)", unsafe {
+    // SAFETY: a healthy live connection reports no error.
+    assert_canonical_empty("hew_quic_conn_last_error(healthy)", unsafe {
         hew_quic_conn_last_error(client_connection)
     });
 
@@ -219,7 +205,7 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         || unsafe { hew_quic_stream_last_error(client_stream) },
         |text| {
             assert_eq!(
-                text.to_str().expect("stream error is UTF-8"),
+                text,
                 "invalid QUIC application error code -7: expected 0..=2^62-1"
             );
         },
@@ -236,7 +222,7 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
     unsafe { hew_bytes_drop(probe.ptr) };
     // A successful send clears the invalid-stop error.
     // SAFETY: the stream remains live after the successful send.
-    assert_allocated_empty("hew_quic_stream_last_error(clear)", unsafe {
+    assert_canonical_empty("hew_quic_stream_last_error(clear)", unsafe {
         hew_quic_stream_last_error(client_stream)
     });
 
@@ -296,7 +282,7 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
         || unsafe { hew_quic_conn_last_error(server_connection) },
         |text| {
             assert!(
-                !text.to_bytes().is_empty(),
+                !text.is_empty(),
                 "closed connection must retain a diagnostic"
             );
         },
@@ -305,7 +291,7 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
     let peer_after_release = unsafe { hew_quic_conn_peer_addr(server_connection) };
     assert!(!peer_after_release.is_null());
     // SAFETY: this telemetry result is caller-owned and released exactly once.
-    unsafe { free_cstring(peer_after_release) };
+    unsafe { string_release(peer_after_release) };
 
     // SAFETY: each remaining transport handle is released exactly once.
     assert_eq!(unsafe { hew_quic_conn_disconnect(server_connection) }, 0);
@@ -316,41 +302,39 @@ fn loopback_handle_string_results_are_transferred_and_sources_remain_usable() {
 }
 
 #[test]
-fn null_handle_paths_return_distinct_allocated_empty_results() {
-    assert_transferred(
-        "hew_quic_endpoint_local_addr(null)",
-        // SAFETY: null is explicitly accepted.
-        || unsafe { hew_quic_endpoint_local_addr(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
-    );
-    assert_transferred(
-        "hew_quic_endpoint_last_error(null)",
-        // SAFETY: null is explicitly accepted.
-        || unsafe { hew_quic_endpoint_last_error(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
-    );
-    assert_transferred(
-        "hew_quic_conn_local_addr(null)",
-        // SAFETY: null is explicitly accepted.
-        || unsafe { hew_quic_conn_local_addr(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
-    );
-    assert_transferred(
-        "hew_quic_conn_peer_addr(null)",
-        // SAFETY: null is explicitly accepted.
-        || unsafe { hew_quic_conn_peer_addr(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
-    );
-    assert_transferred(
-        "hew_quic_conn_last_error(null)",
-        // SAFETY: null is explicitly accepted.
-        || unsafe { hew_quic_conn_last_error(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
-    );
-    assert_transferred(
-        "hew_quic_stream_last_error(null)",
-        // SAFETY: null is explicitly accepted.
-        || unsafe { hew_quic_stream_last_error(std::ptr::null()) },
-        |text| assert!(text.to_bytes().is_empty()),
-    );
+fn null_handle_paths_return_the_canonical_empty_string() {
+    for (symbol, value) in [
+        (
+            "hew_quic_endpoint_local_addr(null)",
+            // SAFETY: null is explicitly accepted.
+            unsafe { hew_quic_endpoint_local_addr(std::ptr::null()) },
+        ),
+        (
+            "hew_quic_endpoint_last_error(null)",
+            // SAFETY: null is explicitly accepted.
+            unsafe { hew_quic_endpoint_last_error(std::ptr::null()) },
+        ),
+        (
+            "hew_quic_conn_local_addr(null)",
+            // SAFETY: null is explicitly accepted.
+            unsafe { hew_quic_conn_local_addr(std::ptr::null()) },
+        ),
+        (
+            "hew_quic_conn_peer_addr(null)",
+            // SAFETY: null is explicitly accepted.
+            unsafe { hew_quic_conn_peer_addr(std::ptr::null()) },
+        ),
+        (
+            "hew_quic_conn_last_error(null)",
+            // SAFETY: null is explicitly accepted.
+            unsafe { hew_quic_conn_last_error(std::ptr::null()) },
+        ),
+        (
+            "hew_quic_stream_last_error(null)",
+            // SAFETY: null is explicitly accepted.
+            unsafe { hew_quic_stream_last_error(std::ptr::null()) },
+        ),
+    ] {
+        assert_canonical_empty(symbol, value);
+    }
 }

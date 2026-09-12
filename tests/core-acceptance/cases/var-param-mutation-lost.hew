@@ -1,0 +1,11 @@
+// A `var` parameter is the callee's own copy, so this push reaches nobody:
+// `main` still sees one element.
+fn grow(var items: Vec<i64>) {
+    items.push(9);
+}
+
+fn main() {
+    let items = [1];
+    grow(items);
+    println(f"{items.len()}");
+}

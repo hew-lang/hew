@@ -1,0 +1,29 @@
+#[resource]
+type Token {
+    label: string,
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.label}{self.id}");
+    }
+}
+
+type Holder {
+    token: Token,
+    tag: i64,
+}
+
+fn divide(left: i64, right: i64) -> i64 {
+    return left / right
+}
+
+fn main() {
+    let held = Holder { token: Token { label: "h", id: 1 }, tag: 7 };
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { label: "v", id: 1 });
+    println(f"live {held.tag}");
+    let zero = tokens.len() - 1;
+    println(f"quotient={divide(4, zero)}");
+}

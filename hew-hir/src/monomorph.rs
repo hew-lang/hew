@@ -165,10 +165,7 @@ pub fn synthetic_cursor_layout_key(
     builtin: hew_types::BuiltinType,
     type_args: &[ResolvedTy],
 ) -> Option<String> {
-    if !matches!(
-        builtin,
-        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
-    ) {
+    if !matches!(builtin, hew_types::BuiltinType::HashMapIter) {
         return None;
     }
     let canonical_args: Vec<ResolvedTy> = type_args
@@ -195,10 +192,7 @@ pub fn compiler_record_layout_key(
     builtin: hew_types::BuiltinType,
     type_args: &[ResolvedTy],
 ) -> Option<String> {
-    if matches!(
-        builtin,
-        hew_types::BuiltinType::VecIter | hew_types::BuiltinType::HashMapIter
-    ) {
+    if matches!(builtin, hew_types::BuiltinType::HashMapIter) {
         return synthetic_cursor_layout_key(builtin, type_args);
     }
     let registration = crate::builtin_type_classes::compiler_record_layout_registration(builtin)?;
@@ -276,16 +270,7 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             builtin,
             is_opaque,
         } => {
-            // Channel endpoint message types are semantic parameters, but the
-            // handles themselves are opaque pointer words. Erase those
-            // parameters only while deriving a containing nominal's layout
-            // key so a source declaration's bare endpoint and a checked
-            // `Sender<T>` / `Receiver<T>` call share one ABI identity.
-            let args = if builtin.is_some_and(hew_types::BuiltinType::is_channel_handle) {
-                Vec::new()
-            } else {
-                args.into_iter().map(shorten_named_arg_qualifiers).collect()
-            };
+            let args = args.into_iter().map(shorten_named_arg_qualifiers).collect();
             ResolvedTy::Named {
                 name,
                 args,
@@ -301,14 +286,25 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
         ),
         ResolvedTy::Array(elem, n) => ResolvedTy::Array(shorten_boxed(*elem), n),
         ResolvedTy::Slice(elem) => ResolvedTy::Slice(shorten_boxed(*elem)),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities,
             params: params
                 .into_iter()
                 .map(shorten_named_arg_qualifiers)
                 .collect(),
             ret: shorten_boxed(*ret),
         },
-        ResolvedTy::Closure { params, ret, .. } => ResolvedTy::Closure {
+        ResolvedTy::Closure {
+            capabilities,
+            params,
+            ret,
+            ..
+        } => ResolvedTy::Closure {
+            capabilities,
             params: params
                 .into_iter()
                 .map(shorten_named_arg_qualifiers)
@@ -501,32 +497,30 @@ impl RecordLayoutRegistry {
         fields: Vec<(String, ResolvedTy)>,
         span: Range<usize>,
     ) -> Result<bool, ()> {
-        let normalized_args: Vec<ResolvedTy> = key
-            .type_args
-            .iter()
-            .cloned()
-            .map(shorten_named_arg_qualifiers)
-            .collect();
-        let key = RecordMonoKey {
-            type_args: normalized_args,
-            ..key
-        };
         if self.seen.contains_key(&key) {
             return Ok(false);
         }
         if self.order.len() >= self.cap {
             return Err(());
         }
+        // Keyed by the exact instantiation, mangled by the erased one: see
+        // `EnumLayoutRegistry::insert`.
+        let mangled_args: Vec<ResolvedTy> = key
+            .type_args
+            .iter()
+            .cloned()
+            .map(shorten_named_arg_qualifiers)
+            .collect();
         let mangled_name = if matches!(key.symbol_class, crate::mono::SymbolClass::SyntheticRecord)
         {
             crate::mono::mangle_instantiation(
                 key.symbol_class,
                 &key.origin_name,
-                &key.type_args,
+                &mangled_args,
                 &[],
             )
         } else {
-            mangle_layout_key(&key.origin_name, &key.type_args)
+            mangle_layout_key(&key.origin_name, &mangled_args)
         };
         let idx = self.order.len();
         self.order.push(RecordLayout {
@@ -622,9 +616,11 @@ pub fn substitute_type_params(
             ResolvedTy::Slice(Box::new(substitute_type_params(elem, params, args)))
         }
         ResolvedTy::Function {
+            capabilities,
             params: fn_params,
             ret,
         } => ResolvedTy::Function {
+            capabilities: *capabilities,
             params: fn_params
                 .iter()
                 .map(|p| substitute_type_params(p, params, args))
@@ -632,10 +628,12 @@ pub fn substitute_type_params(
             ret: Box::new(substitute_type_params(ret, params, args)),
         },
         ResolvedTy::Closure {
+            capabilities,
             params: fn_params,
             ret,
             captures,
         } => ResolvedTy::Closure {
+            capabilities: *capabilities,
             params: fn_params
                 .iter()
                 .map(|p| substitute_type_params(p, params, args))
@@ -776,23 +774,19 @@ impl EnumLayoutRegistry {
         variants: Vec<EnumVariantLayout>,
         is_indirect: bool,
     ) -> Result<bool, ()> {
-        let normalized_args: Vec<ResolvedTy> = key
-            .type_args
-            .iter()
-            .cloned()
-            .map(shorten_named_arg_qualifiers)
-            .collect();
-        let key = EnumMonoKey {
-            type_args: normalized_args,
-            ..key
-        };
         if self.seen.contains_key(&key) {
             return Ok(false);
         }
         if self.order.len() >= self.cap {
             return Err(());
         }
-        let mangled_name = mangle_layout_key(&key.origin_name, &key.type_args);
+        let mangled_args: Vec<ResolvedTy> = key
+            .type_args
+            .iter()
+            .cloned()
+            .map(shorten_named_arg_qualifiers)
+            .collect();
+        let mangled_name = mangle_layout_key(&key.origin_name, &mangled_args);
         let idx = self.order.len();
         self.order.push(EnumLayout {
             key: key.clone(),
@@ -831,7 +825,7 @@ fn is_nested_subterm(needle: &ResolvedTy, haystack: &ResolvedTy) -> bool {
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             elem.as_ref() == needle || is_nested_subterm(needle, elem)
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             params
                 .iter()
                 .any(|p| p == needle || is_nested_subterm(needle, p))
@@ -842,6 +836,7 @@ fn is_nested_subterm(needle: &ResolvedTy, haystack: &ResolvedTy) -> bool {
             params,
             ret,
             captures,
+            ..
         } => {
             params
                 .iter()
@@ -911,7 +906,7 @@ pub(crate) fn contains_recursive_polymorphic_self(
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => {
             contains_recursive_polymorphic_self(elem, origin_name, current_args)
         }
-        ResolvedTy::Function { params, ret } => {
+        ResolvedTy::Function { params, ret, .. } => {
             params
                 .iter()
                 .any(|p| contains_recursive_polymorphic_self(p, origin_name, current_args))
@@ -921,6 +916,7 @@ pub(crate) fn contains_recursive_polymorphic_self(
             params,
             ret,
             captures,
+            ..
         } => {
             params
                 .iter()
@@ -968,30 +964,6 @@ mod tests {
     fn mangle_module_qualified_encodes_colons() {
         let ty = ResolvedTy::named_user("widgets::Label", vec![]);
         assert_eq!(mangle("describe", &[ty]), "describe$$widgets$mLabel");
-    }
-
-    #[test]
-    fn result_layout_key_erases_channel_endpoint_message_types() {
-        let channel_pair = |element: Option<ResolvedTy>| {
-            let args = element.into_iter().collect::<Vec<_>>();
-            ResolvedTy::Tuple(vec![
-                ResolvedTy::named_builtin(
-                    "channel.Sender",
-                    hew_types::BuiltinType::Sender,
-                    args.clone(),
-                ),
-                ResolvedTy::named_builtin(
-                    "channel.Receiver",
-                    hew_types::BuiltinType::Receiver,
-                    args,
-                ),
-            ])
-        };
-        let result_key = |pair| mangle_layout_key("Result", &[pair, ResolvedTy::String]);
-        let bare = result_key(channel_pair(None));
-
-        assert_eq!(result_key(channel_pair(Some(ResolvedTy::I64))), bare);
-        assert_eq!(result_key(channel_pair(Some(ResolvedTy::String))), bare);
     }
 
     #[test]
@@ -1120,11 +1092,6 @@ mod tests {
 
     #[test]
     fn synthetic_cursor_layout_keys_do_not_collide_with_user_same_leaf_records() {
-        let vec_args = vec![ResolvedTy::String];
-        let synthetic_vec = synthetic_cursor_layout_key(hew_types::BuiltinType::VecIter, &vec_args)
-            .expect("VecIter is a synthetic cursor");
-        assert_ne!(synthetic_vec, mangle_layout_key("VecIter", &vec_args));
-
         let map_args = vec![ResolvedTy::String, ResolvedTy::I64];
         let synthetic_map =
             synthetic_cursor_layout_key(hew_types::BuiltinType::HashMapIter, &map_args)

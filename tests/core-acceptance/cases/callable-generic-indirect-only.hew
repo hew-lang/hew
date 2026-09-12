@@ -1,0 +1,17 @@
+fn identity<T>(value: T) -> T { value }
+
+fn main() -> i64 {
+    let number: fn[clone](i64) -> i64 = identity;
+    let text: fn[clone](string) -> string = identity;
+    let explicit = identity<i64>;
+    let inferred = identity;
+    let copied = clone text;
+    println(number(7));
+    println(explicit(11));
+    println(inferred(13));
+    let source = "generic owned".to_upper();
+    println(text(source));
+    println(copied(source));
+    println(source);
+    0
+}

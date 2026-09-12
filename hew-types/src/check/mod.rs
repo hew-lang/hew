@@ -6,22 +6,25 @@ use crate::module_registry::ModuleError;
 use crate::resolved_ty::{BoundaryError, ResolvedTy};
 use crate::traits::{MarkerTrait, TraitRegistry};
 use crate::ty::{Ty, TypeVar};
-use crate::type_facts::{SendFact, TypeFacts, TypeInstanceKey};
+use crate::type_facts::{TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey};
 use crate::unify::unify;
 use crate::{WasmFeatureDisposition, WasmUnsupportedFeature};
+use hew_parser::ast::condition_exprs;
 use hew_parser::ast::{
-    ActorDecl, ActorInit, Attribute, AttributeArg, BinaryOp, Block, CallArg, ChildSpec, ConstDecl,
-    Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl, ImplDecl, ImportDecl, ImportSpec, Item,
-    LambdaParam, Literal, MachineDecl, MatchArm, Param, Pattern, Program, ReceiveFnDecl,
-    RecordDecl, RecordKind, RestartPolicy, Span, Spanned, Stmt, StringPart, SupervisorDecl,
-    SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
+    ActorDecl, ActorInit, ArrayElement, Attribute, AttributeArg, BinaryOp, Block, CallArg,
+    ChildSpec, ConditionItem, ConstDecl, Expr, ExternBlock, ExternFnDecl, FieldDecl, FnDecl,
+    ImplDecl, ImportDecl, ImportSpec, Item, LambdaParam, Literal, MachineDecl, MatchArm, Param,
+    Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, Span, Spanned, Stmt, StringPart,
+    SupervisorDecl, SupervisorStrategy, TraitBound, TraitDecl, TraitItem, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantKind, WhereClause,
 };
 use std::collections::{hash_map::Entry, BTreeMap, HashMap, HashSet};
 use std::sync::OnceLock;
 
+mod actor_delivery;
 pub(crate) mod admissibility;
 mod branch_join;
+mod callables;
 mod calls;
 mod closure_inference;
 mod coerce;
@@ -32,11 +35,17 @@ pub use self::dispatch::{
     Bound, CallAbiHint, CallTarget, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
     LookupError, MethodTarget, MethodTargetFamily, ResolvedCall, RuntimeAbi, TyPattern, VecMethod,
 };
+pub mod effects;
+mod exhaustiveness;
 mod expressions;
 mod generics;
 mod items;
 mod lints;
+mod race;
 pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintSources};
+mod machine_effects;
+mod machine_normalize;
+pub use machine_normalize::NormalizedMachines;
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
@@ -54,30 +63,29 @@ mod types;
 mod util;
 mod visibility;
 
+pub use self::types::{
+    type_def_for_spelling, ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution,
+    AssignTargetKind, AssignTargetShape, CheckedSelectSource, Checker, ChildKind, ChildSlot,
+    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
+    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, EntryCallableInstance,
+    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, MachineMethodKind, MathGenericOp,
+    MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
+    PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind, SpanKey,
+    StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
+    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
+    WireLayoutTable, WireTextFormat,
+};
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
-    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingDirectCallOwnership,
-    PendingLoweringFact, PendingMethodCallOwnership, SourceExternDeclaration,
-    TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
-};
-pub use self::types::{
-    ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
-    AssignTargetShape, CaptureModeOrigin, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
-    ClosureCaptureMode, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, DynAssocBinding,
-    DynCoercion, DynMethodCall, DynVtableEntry, DynVtableKey, ExecutionContextReader,
-    ExternMethodCallIdentity, FnSig, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, NumericMethodFamily, NumericMethodLowering, NumericMethodOp,
-    NumericSignedness, NumericWidth, OpaqueResourceCandidateGraph,
-    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
-    OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
-    PayloadBinding, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor, PoolAccessorKind,
-    ProducedValueDependency, ProducedValueFact, RcIntrinsicOp, SpanKey, StackHint,
-    TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
-    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
-    WireLayoutTable, WireTextFormat,
+    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -85,7 +93,7 @@ use self::util::{
     integer_fits_type, integer_type_info, integer_type_range, is_float_literal, is_integer_literal,
     lookup_scoped_item, scoped_module_item_name,
 };
-use crate::lowering_facts::{LoweringFact, LoweringFactError};
+use crate::lowering_facts::LoweringFact;
 
 static BUILTIN_FUNCTION_NAMES: OnceLock<HashSet<String>> = OnceLock::new();
 
@@ -124,139 +132,6 @@ impl NominalNamespace {
         } else {
             Self::Owned
         }
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "graph resolution keeps raw facts, validation, type, traversal, and memo state explicit"
-)]
-fn resolve_produced_node(
-    key: &SpanKey,
-    dependencies: &HashMap<SpanKey, ProducedValueDependency>,
-    leaves: &HashMap<SpanKey, ProducedValueFact>,
-    expr_types: &HashMap<SpanKey, Ty>,
-    declarations: &dyn crate::value_class::ClassDeclarations,
-    invalid: &HashSet<SpanKey>,
-    visiting: &mut HashSet<SpanKey>,
-    memo: &mut HashMap<SpanKey, ProducedValueFact>,
-) -> ProducedValueFact {
-    use crate::runtime_call::{
-        ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
-    };
-
-    if let Some(fact) = memo.get(key) {
-        return fact.clone();
-    }
-    if invalid.contains(key) {
-        return ProducedValueFact::result(Ownership::Unknown);
-    }
-    if !visiting.insert(key.clone()) {
-        return ProducedValueFact::result(Ownership::Unknown);
-    }
-    let mut fact = match dependencies.get(key) {
-        None | Some(ProducedValueDependency::Leaf) => leaves
-            .get(key)
-            .cloned()
-            .unwrap_or_else(|| ProducedValueFact::result(Ownership::Unknown)),
-        Some(
-            ProducedValueDependency::Identity(child) | ProducedValueDependency::Subsumes(child),
-        ) => {
-            let child = resolve_produced_node(
-                child,
-                dependencies,
-                leaves,
-                expr_types,
-                declarations,
-                invalid,
-                visiting,
-                memo,
-            );
-            ProducedValueFact {
-                ownership: child.ownership,
-                receiver_span: child.receiver_span,
-                receiver_boundary: matches!(child.ownership, Ownership::ReceiverIdentity)
-                    .then_some(child.receiver_boundary)
-                    .flatten(),
-                arguments: Vec::new(),
-            }
-        }
-        Some(ProducedValueDependency::Join(children)) => {
-            let mut children = children.iter().map(|child| {
-                resolve_produced_node(
-                    child,
-                    dependencies,
-                    leaves,
-                    expr_types,
-                    declarations,
-                    invalid,
-                    visiting,
-                    memo,
-                )
-            });
-            let Some(first) = children.next() else {
-                visiting.remove(key);
-                return ProducedValueFact::result(Ownership::Unknown);
-            };
-            if children.all(|child| {
-                child.ownership == first.ownership && child.receiver_span == first.receiver_span
-            }) {
-                ProducedValueFact {
-                    ownership: first.ownership,
-                    receiver_span: first.receiver_span,
-                    receiver_boundary: matches!(first.ownership, Ownership::ReceiverIdentity)
-                        .then_some(first.receiver_boundary)
-                        .flatten(),
-                    arguments: Vec::new(),
-                }
-            } else {
-                ProducedValueFact::result(Ownership::Unknown)
-            }
-        }
-        Some(
-            ProducedValueDependency::MoveOut(child) | ProducedValueDependency::Projection(child),
-        ) => {
-            let child = resolve_produced_node(
-                child,
-                dependencies,
-                leaves,
-                expr_types,
-                declarations,
-                invalid,
-                visiting,
-                memo,
-            );
-            ProducedValueFact::result(match child.ownership {
-                Ownership::Owned { .. } => Ownership::owned(Acquisition::MoveOut),
-                Ownership::Borrowed | Ownership::ReceiverIdentity => Ownership::Borrowed,
-                Ownership::NoOwner | Ownership::Unknown => Ownership::Unknown,
-            })
-        }
-    };
-    clear_copy_owner_authority(key, &mut fact, expr_types, declarations);
-    visiting.remove(key);
-    memo.insert(key.clone(), fact.clone());
-    fact
-}
-
-fn clear_copy_owner_authority(
-    key: &SpanKey,
-    fact: &mut ProducedValueFact,
-    expr_types: &HashMap<SpanKey, Ty>,
-    declarations: &dyn crate::value_class::ClassDeclarations,
-) {
-    use crate::runtime_call::ProducedValueOwnership as Ownership;
-
-    let copy_result = expr_types
-        .get(key)
-        .is_some_and(|ty| class_is_non_owning(ty, declarations));
-    if copy_result && !matches!(fact.ownership, Ownership::Unknown) {
-        // Copy-ness governs only the published result. Call leaves also carry
-        // receiver and source-argument contracts, so clear only its obligation.
-        // `Unknown` is excluded on purpose: an unresolved ownership fact must
-        // stay `Unknown` rather than being downgraded to `NoOwner`, so MIR
-        // still rejects it fail-closed instead of silently treating it as safe.
-        fact.ownership = Ownership::NoOwner;
     }
 }
 
@@ -311,6 +186,7 @@ fn value_type_kind_label(kind: TypeDefKind) -> &'static str {
     match kind {
         TypeDefKind::Enum => "enum",
         TypeDefKind::Record => "record",
+        TypeDefKind::Supervisor => "supervisor",
         TypeDefKind::Struct | TypeDefKind::Actor | TypeDefKind::Machine => "type",
     }
 }
@@ -344,6 +220,16 @@ pub(crate) struct CheckerClassDeclarations<'a> {
     /// Resolves an imported `#[opaque]` handle spelling, which the set above
     /// does not carry.
     module_registry: &'a crate::module_registry::ModuleRegistry,
+    /// Supervisor declarations. A supervisor is a nominal with no value
+    /// members: only its own actor-handle type is ever a value, so the
+    /// declaration classes `BitCopy` from an empty member list.
+    supervisors: &'a HashMap<String, crate::check::types::SupervisorChildren>,
+}
+
+impl CheckerClassDeclarations<'_> {
+    fn is_opaque_type(&self, name: &str) -> bool {
+        self.user_opaque_type_names.contains(name) || self.module_registry.is_handle_type(name)
+    }
 }
 
 impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
@@ -353,11 +239,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // The `#[opaque]` attribute is a declaration fact, carried for a
         // program's own declarations by the checker's set and for an imported
         // handle by the module registry.
-        let is_opaque = self.user_opaque_type_names.contains(name)
-            || name
-                .split_once('.')
-                .is_some_and(|(_, leaf)| self.user_opaque_type_names.contains(leaf))
-            || self.module_registry.is_handle_type(name);
+        let is_opaque = self.is_opaque_type(name);
         let marker = if self.registry.is_resource(name) {
             DeclarationMarker::Resource
         } else if self.registry.is_linear(name) {
@@ -365,30 +247,20 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         } else {
             DeclarationMarker::None
         };
-        // `type_defs` is keyed by both the qualified path and its bare-name
-        // twin; a resolved type may carry either spelling.
-        let definition = self.type_defs.get(name).or_else(|| {
-            name.split_once('.')
-                .and_then(|(_, leaf)| self.type_defs.get(leaf))
-        });
+        let definition = crate::check::types::type_def_for_spelling(self.type_defs, name);
         let Some(definition) = definition else {
+            if self.supervisors.contains_key(name) {
+                return Some(DeclaredType::default());
+            }
             // A marker with no field table still decides the class outright.
             return (marker != DeclarationMarker::None).then(|| DeclaredType {
+                builtin: None,
                 marker,
                 is_opaque,
                 type_params: Vec::new(),
                 members: Vec::new(),
             });
         };
-        if marker != DeclarationMarker::None {
-            return Some(DeclaredType {
-                marker,
-                is_opaque,
-                type_params: definition.type_params.clone(),
-                members: Vec::new(),
-            });
-        }
-
         let mut member_tys: Vec<Ty> = Vec::new();
         if definition.field_order.is_empty() {
             let mut names: Vec<&String> = definition.fields.keys().collect();
@@ -438,12 +310,24 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         for ty in member_tys {
             // A member the boundary cannot render leaves the whole declaration
             // unclassifiable: an aggregate over the members that happened to
-            // convert would be a guess.
-            let resolved = ResolvedTy::from_ty(&ty.materialize_literal_defaults()).ok()?;
-            let resolved = match module_prefix {
-                Some(prefix) => canonicalize_member_ty(resolved, prefix, self.type_defs),
-                None => resolved,
+            // convert would be a guess. A marked declaration's class comes
+            // from its marker, not its members, so it keeps its row with no
+            // members instead - consumers that need the fields refuse there.
+            let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+                if marker == DeclarationMarker::None {
+                    return None;
+                }
+                return Some(DeclaredType {
+                    builtin: None,
+                    marker,
+                    is_opaque,
+                    type_params: definition.type_params.clone(),
+                    members: Vec::new(),
+                });
             };
+            let resolved = resolve_member_ty(resolved, module_prefix, self.type_defs, &|name| {
+                self.is_opaque_type(name)
+            });
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -457,6 +341,7 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // builtin row is for a name the checker has no declaration of at
         // all.
         Some(DeclaredType {
+            builtin: None,
             marker,
             is_opaque,
             type_params: definition.type_params.clone(),
@@ -472,13 +357,19 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
 /// Only rewrites a bare name that has a `{prefix}.{bare}` twin registered in
 /// `type_defs` — an unqualified reference to a type outside this module (a
 /// builtin, or a name `type_defs` never published under the prefix) is left
-/// exactly as resolved.
-fn canonicalize_member_ty(
+/// exactly as resolved. Restore opacity from the same declaration authority
+/// after qualifying each name, including nominals nested inside members.
+/// `Ty` carries no opacity, so its boundary conversion alone is insufficient.
+pub(crate) fn resolve_member_ty(
     ty: ResolvedTy,
-    prefix: &str,
+    prefix: Option<&str>,
     type_defs: &HashMap<String, crate::check::types::TypeDef>,
+    is_opaque_type: &impl Fn(&str) -> bool,
 ) -> ResolvedTy {
     let rewrite_name = |name: String| -> String {
+        let Some(prefix) = prefix else {
+            return name;
+        };
         if name.starts_with(prefix) && name[prefix.len()..].starts_with('.') {
             return name;
         }
@@ -489,6 +380,7 @@ fn canonicalize_member_ty(
             name
         }
     };
+    let resolve = |ty| resolve_member_ty(ty, prefix, type_defs, is_opaque_type);
     match ty {
         ResolvedTy::Named {
             name,
@@ -496,10 +388,7 @@ fn canonicalize_member_ty(
             builtin,
             is_opaque,
         } => {
-            let args = args
-                .into_iter()
-                .map(|a| canonicalize_member_ty(a, prefix, type_defs))
-                .collect();
+            let args = args.into_iter().map(resolve).collect();
             // A builtin already carries its identity in `builtin`; the name
             // string is display-only there and rewriting it would be a
             // second, redundant identity authority.
@@ -508,6 +397,16 @@ fn canonicalize_member_ty(
             } else {
                 name
             };
+            // Source-owned lifecycle fields retain the same exact declaration
+            // discriminator as annotations and constructed values. The lookup
+            // requires the qualified declaration already present in this scope.
+            let builtin = builtin.or_else(|| {
+                (name.contains('.') && type_defs.contains_key(&name))
+                    .then(|| crate::lookup_source_owned_lifecycle_type(&name))
+                    .flatten()
+            });
+            let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_channel_handle)
+                && (is_opaque || is_opaque_type(&name));
             ResolvedTy::Named {
                 name,
                 args,
@@ -515,68 +414,56 @@ fn canonicalize_member_ty(
                 is_opaque,
             }
         }
-        ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
-            elements
-                .into_iter()
-                .map(|e| canonicalize_member_ty(e, prefix, type_defs))
-                .collect(),
-        ),
-        ResolvedTy::Array(element, len) => ResolvedTy::Array(
-            Box::new(canonicalize_member_ty(*element, prefix, type_defs)),
-            len,
-        ),
-        ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(canonicalize_member_ty(
-            *element, prefix, type_defs,
-        ))),
-        ResolvedTy::Function { params, ret } => ResolvedTy::Function {
-            params: params
-                .into_iter()
-                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
-                .collect(),
-            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
+        ResolvedTy::Tuple(elements) => {
+            ResolvedTy::Tuple(elements.into_iter().map(resolve).collect())
+        }
+        ResolvedTy::Array(element, len) => ResolvedTy::Array(Box::new(resolve(*element)), len),
+        ResolvedTy::Slice(element) => ResolvedTy::Slice(Box::new(resolve(*element))),
+        ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } => ResolvedTy::Function {
+            capabilities,
+            params: params.into_iter().map(resolve).collect(),
+            ret: Box::new(resolve(*ret)),
         },
         ResolvedTy::Closure {
+            capabilities,
             params,
             ret,
             captures,
         } => ResolvedTy::Closure {
-            params: params
-                .into_iter()
-                .map(|p| canonicalize_member_ty(p, prefix, type_defs))
-                .collect(),
-            ret: Box::new(canonicalize_member_ty(*ret, prefix, type_defs)),
-            captures: captures
-                .into_iter()
-                .map(|c| canonicalize_member_ty(c, prefix, type_defs))
-                .collect(),
+            capabilities,
+            params: params.into_iter().map(resolve).collect(),
+            ret: Box::new(resolve(*ret)),
+            captures: captures.into_iter().map(resolve).collect(),
         },
         ResolvedTy::Pointer {
             is_mutable,
             pointee,
         } => ResolvedTy::Pointer {
             is_mutable,
-            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+            pointee: Box::new(resolve(*pointee)),
         },
         ResolvedTy::Borrow { pointee } => ResolvedTy::Borrow {
-            pointee: Box::new(canonicalize_member_ty(*pointee, prefix, type_defs)),
+            pointee: Box::new(resolve(*pointee)),
         },
         ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
             traits: traits
                 .into_iter()
                 .map(|bound| crate::resolved_ty::ResolvedTraitBound {
                     trait_name: bound.trait_name,
-                    args: bound
-                        .args
+                    args: bound.args.into_iter().map(resolve).collect(),
+                    assoc_bindings: bound
+                        .assoc_bindings
                         .into_iter()
-                        .map(|a| canonicalize_member_ty(a, prefix, type_defs))
+                        .map(|(name, ty)| (name, resolve(ty)))
                         .collect(),
-                    assoc_bindings: bound.assoc_bindings,
                 })
                 .collect(),
         },
-        ResolvedTy::Task(inner) => {
-            ResolvedTy::Task(Box::new(canonicalize_member_ty(*inner, prefix, type_defs)))
-        }
+        ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(resolve(*inner))),
         other => other,
     }
 }
@@ -614,7 +501,7 @@ pub(crate) fn class_is_non_owning(
     clippy::too_many_lines,
     reason = "the walk enumerates every Ty and VariantDef shape it descends through"
 )]
-fn declaration_walk_terminates(
+pub(crate) fn declaration_walk_terminates(
     ty: &ResolvedTy,
     type_defs: &HashMap<String, crate::check::types::TypeDef>,
 ) -> bool {
@@ -622,10 +509,7 @@ fn declaration_walk_terminates(
         name: &str,
         type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
     ) -> Option<&'a crate::check::types::TypeDef> {
-        type_defs.get(name).or_else(|| {
-            name.split_once('.')
-                .and_then(|(_, local)| type_defs.get(local))
-        })
+        crate::check::types::type_def_for_spelling(type_defs, name)
     }
 
     fn nominal_names(ty: &ResolvedTy, out: &mut Vec<String>) {
@@ -657,7 +541,7 @@ fn declaration_walk_terminates(
             | Ty::Task(inner)
             | Ty::Pointer { pointee: inner, .. }
             | Ty::Borrow { pointee: inner } => member_names(inner, out),
-            Ty::Function { params, ret } => {
+            Ty::Function { params, ret, .. } => {
                 for param in params {
                     member_names(param, out);
                 }
@@ -667,6 +551,7 @@ fn declaration_walk_terminates(
                 params,
                 ret,
                 captures,
+                ..
             } => {
                 for param in params.iter().chain(captures) {
                     member_names(param, out);
@@ -734,6 +619,11 @@ fn declaration_walk_terminates(
 }
 
 impl Checker {
+    /// Select one exact root declaration for the process entry plan.
+    pub fn set_entry_selection(&mut self, selection: crate::DeclarationOccurrence) {
+        self.entry_selection = Some(selection);
+    }
+
     /// Build the §6.3 fact table over every concrete accepted expression type.
     ///
     /// The walk is closed under a type's own components so a `Vec<Conn>` row is
@@ -751,10 +641,13 @@ impl Checker {
     fn build_type_facts(
         &self,
         resolved: &HashMap<SpanKey, ResolvedTy>,
-    ) -> (BTreeMap<TypeInstanceKey, TypeFacts>, Vec<TypeError>) {
-        let declarations = self.class_declarations();
-        let context = crate::value_class::ClassContext::new(&declarations);
-        let mut facts: BTreeMap<TypeInstanceKey, TypeFacts> = BTreeMap::new();
+    ) -> (
+        TypeFactContext,
+        BTreeMap<TypeInstanceKey, TypeFacts>,
+        Vec<TypeError>,
+    ) {
+        let fact_context = self.type_fact_context();
+        let mut service = TypeFactService::new(fact_context.clone(), BTreeMap::new());
         // Visited is tracked separately from the table: a type §1.1 refuses
         // gets no row, and keying the walk on the table alone would revisit it
         // for ever through a recursive declaration.
@@ -779,38 +672,7 @@ impl Checker {
             if !visited.insert(key.clone()) {
                 continue;
             }
-            let as_ty = ty.to_ty();
-            let send = SendFact::Known(self.registry.implements_marker(&as_ty, MarkerTrait::Send));
-            // MARKED SHORTCUT — the hash and eq columns are asked only of a
-            // type whose declaration graph terminates.
-            // WHY: `hash_ineligibility` and `eq_ineligibility` carry no visited
-            // set, so a legal self-recursive nominal
-            // (`enum RedisReply { Array(Vec<RedisReply>) }`) walks its own
-            // declaration for ever and overflows the stack. No P1 consumer
-            // reads these two columns; the class and clone columns, which do
-            // have consumers, are computed for every type either way.
-            // WHEN: the two eligibility walks carry a visited set, with the
-            // collection descriptors that read hash and eq (P2, §5.3).
-            // WHAT: ask them unconditionally, as class and clone already are.
-            let terminates = declaration_walk_terminates(&ty, &self.type_defs);
-            let hash = terminates
-                && matches!(
-                    crate::hash_eligibility::ty_is_hash_eligible_with_resources(
-                        &as_ty,
-                        &self.type_defs,
-                        self.registry.resource_type_names(),
-                    ),
-                    crate::hash_eligibility::HashEligibility::Eligible
-                );
-            let eq = terminates
-                && matches!(
-                    crate::eq_eligibility::ty_is_eq_eligible(&as_ty, &self.type_defs),
-                    crate::eq_eligibility::EqEligibility::Eligible
-                );
-            match TypeFacts::of_type(&ty, &context, send, hash, eq) {
-                Ok(row) => {
-                    facts.insert(key, row);
-                }
+            match service.require(&ty) {
                 Err(crate::value_class::ClassError::RecursiveInstantiation { name }) => {
                     refusals.entry(format!("recursion:{name}")).or_insert_with(|| {
                         TypeError::new(
@@ -848,7 +710,7 @@ impl Checker {
                 // substitutes first, a name genuinely outside `type_defs`
                 // (a checker-internal state), or a compiler-internal carrier
                 // that is never the type of a value.
-                Err(_) => {}
+                Ok(_) | Err(_) => {}
             }
             let mut components = Vec::new();
             crate::type_facts::push_type_components(&ty, &mut components);
@@ -858,7 +720,40 @@ impl Checker {
                     .map(|component| (component, span.clone())),
             );
         }
-        (facts, refusals.into_values().collect())
+        (
+            fact_context,
+            service.into_rows(),
+            refusals.into_values().collect(),
+        )
+    }
+
+    /// Snapshot the declaration authority used to classify accepted types.
+    fn type_fact_context(&self) -> TypeFactContext {
+        let declarations = self.class_declarations();
+        let mut names: std::collections::BTreeSet<String> =
+            self.type_defs.keys().cloned().collect();
+        names.extend(self.registry.resource_type_names().iter().cloned());
+        names.extend(self.user_opaque_type_names.iter().cloned());
+        names.extend(self.module_registry.all_handle_types());
+        names.extend(self.supervisor_children.keys().cloned());
+        let rendered = names
+            .into_iter()
+            .filter_map(|name| {
+                crate::value_class::ClassDeclarations::declared_type(&declarations, &name).map(
+                    |mut declaration| {
+                        declaration.builtin = self
+                            .resolved_builtin_type(&name)
+                            .filter(|kind| kind.is_encoding_value());
+                        (name, declaration)
+                    },
+                )
+            })
+            .collect();
+        TypeFactContext::new(rendered, self.registry.clone(), self.type_defs.clone())
+            .with_impl_methods(
+                self.trait_impl_method_declaration_ids.clone(),
+                self.trait_impl_method_binders.clone(),
+            )
     }
 
     /// The §1.1 declaration lookup backed by this checker's tables.
@@ -868,6 +763,7 @@ impl Checker {
             type_defs: &self.type_defs,
             user_opaque_type_names: &self.user_opaque_type_names,
             module_registry: &self.module_registry,
+            supervisors: &self.supervisor_children,
         }
     }
 
@@ -906,19 +802,6 @@ impl Checker {
         self.current_module
             .as_deref()
             .or_else(|| self.identity.root_module_path())
-    }
-
-    /// Canonical-first `fn_sigs` key for a bare free-fn spelling written in
-    /// ROOT context. Returns the root-canonical key only when it is actually
-    /// registered, so bare builtin/extern registrations keep resolving
-    /// unchanged (the bare rung is the builtin/extern floor, not a root
-    /// fallback).
-    pub(super) fn root_canonical_fn_sig_key(&self, name: &str) -> Option<String> {
-        if self.current_module.is_some() {
-            return None;
-        }
-        let scoped = scoped_module_item_name(self.identity.root_module_path(), name)?;
-        self.fn_sigs.contains_key(&scoped).then_some(scoped)
     }
 
     /// Mint the declaration-table identity for a free function owned by a
@@ -1011,7 +894,6 @@ impl Checker {
     /// borrowing a display-name namespace.
     fn mint_module_identities(&mut self, program: &Program) {
         self.identity = crate::identity::IdentityTable::new();
-        self.canonical_module_spellings.clear();
         let Some(module_graph) = &program.module_graph else {
             self.identity.mint_synthetic_root();
             return;
@@ -1024,20 +906,10 @@ impl Checker {
             let Some(module) = module_graph.modules.get(mod_id) else {
                 continue;
             };
-            let dotted = mod_id.path.join(".");
             let canonical = crate::module_registry::canonical_source_module_identity(
-                &dotted,
+                &mod_id.path.join("."),
                 &module.source_paths,
             );
-            // `import std.channel.channel;` names the primary file of the
-            // directory module `std.channel`, and registration keys that
-            // module's items by the spelling the import used. Record the pair
-            // now, while both are in hand, so declaration lookup can resolve
-            // one through the other.
-            if canonical != dotted {
-                self.canonical_module_spellings
-                    .insert(dotted.clone(), canonical.clone());
-            }
             self.identity.mint_module(&canonical, &module.source_paths);
         }
         // Second pass — per-file identities for directory modules' peer
@@ -1169,24 +1041,7 @@ impl Checker {
                     .as_deref()
                     .and_then(|module| self.identity.module_for_path(module))
             })
-            .or_else(|| {
-                // The module may be keyed by an import spelling that is not
-                // its canonical owner; the identities were minted under the
-                // owner.
-                self.current_module
-                    .as_deref()
-                    .and_then(|module| self.canonical_module_spellings.get(module))
-                    .and_then(|canonical| self.identity.module_for_path(canonical))
-            })
             .or_else(|| self.identity.root_module())
-    }
-
-    /// Rewrite a declaration path whose module part is an import spelling of
-    /// a differently-owned module into that module's canonical spelling.
-    fn canonical_spelling_of(&self, path: &str) -> Option<String> {
-        let (module, leaf) = path.rsplit_once('.')?;
-        let canonical = self.canonical_module_spellings.get(module)?;
-        Some(format!("{canonical}.{leaf}"))
     }
 
     pub(super) fn require_declaration_path(
@@ -1197,23 +1052,55 @@ impl Checker {
         if let Some(declaration) = self.identity.declaration_by_path(path) {
             return Some(declaration.clone());
         }
-        // A module reached under an import spelling that is not its canonical
-        // owner keys its registrations by that spelling, while its
-        // declarations were minted under the owner. Resolve the one through
-        // the other rather than leaving the lookup to fail closed on a name
-        // the checker itself produced.
-        if let Some(declaration) = self
-            .canonical_spelling_of(path)
-            .and_then(|canonical| self.identity.declaration_by_path(&canonical))
-        {
-            return Some(declaration.clone());
-        }
         self.errors.push(TypeError::new(
             TypeErrorKind::InvalidOperation,
             span.clone(),
             format!("checker identity table has no source declaration `{path}`"),
         ));
         None
+    }
+
+    /// Mint the actor and receive-handler identities for one lambda actor.
+    ///
+    /// The `actor |msg| { .. }` expression has no source name, so its exact
+    /// span is its occurrence key. Both identities are established here, in
+    /// the resolver that owns declaration minting; HIR looks them up by
+    /// re-deriving the same paths from the same span.
+    pub(super) fn declare_lambda_actor(&mut self, span: &std::ops::Range<usize>) {
+        let module = self.current_declaration_module();
+        let actor_path =
+            crate::identity::lambda_actor_declaration_path(self.current_module.as_deref(), span);
+        let handler_path = crate::identity::lambda_actor_handler_path(&actor_path);
+        let mut minted = Vec::new();
+        for (kind, path) in [
+            (crate::DeclarationKind::Actor, actor_path.clone()),
+            (crate::DeclarationKind::ActorReceive, handler_path),
+        ] {
+            let occurrence = crate::DeclarationOccurrence::new(module, span, kind, 0);
+            match self.identity.declare(occurrence, path) {
+                Ok(declaration) => minted.push(declaration),
+                Err(error) => {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "lambda actor identity conflicts with an existing declaration: {error}"
+                        ),
+                    ));
+                    return;
+                }
+            }
+        }
+        let [actor, handler] = <[crate::DefId; 2]>::try_from(minted)
+            .expect("one actor and one handler identity per lambda actor");
+        self.lambda_actor_declarations.insert(
+            SpanKey::from(span),
+            crate::actor_protocol::LambdaActorIdentity {
+                actor,
+                handler,
+                path: actor_path,
+            },
+        );
     }
 
     pub(super) fn require_declaration_occurrence(
@@ -1240,6 +1127,275 @@ impl Checker {
             ),
         ));
         None
+    }
+
+    fn selected_entry_item<'a>(
+        &mut self,
+        program: &'a Program,
+    ) -> Option<(crate::DeclarationOccurrence, &'a std::ops::Range<usize>)> {
+        let selected_entry = self.entry_selection?;
+        let selected_entry = if selected_entry.module().is_none() {
+            selected_entry.with_module(self.identity.root_module())
+        } else {
+            selected_entry
+        };
+        let matched = program
+            .items
+            .iter()
+            .enumerate()
+            .find_map(|(item_index, (item, span))| {
+                let Item::Function(_) = item else {
+                    return None;
+                };
+                let occurrence = crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                    self.identity.root_module(),
+                    span,
+                    item_index,
+                    crate::DeclarationKind::Function,
+                    0,
+                );
+                (selected_entry == occurrence).then_some((occurrence, span))
+            });
+        if matched.is_none() {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                selected_entry.span(),
+                "selected process entry occurrence is not a root function in this compilation",
+            ));
+        }
+        matched
+    }
+
+    fn classify_entry_exit_action(
+        &mut self,
+        return_type: Ty,
+        span: &std::ops::Range<usize>,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<EntryExitAction> {
+        let resolved_return_type = ResolvedTy::from_ty(&return_type).ok();
+        match return_type {
+            Ty::Unit => Some(EntryExitAction::Unit),
+            integer if EntryIntegerType::from_ty(&integer).is_some() => Some(
+                EntryExitAction::Integer(EntryIntegerType::from_ty(&integer)?),
+            ),
+            Ty::Named {
+                builtin: Some(crate::BuiltinType::Result),
+                args,
+                ..
+            } if matches!(args.as_slice(), [Ty::Unit, _]) => {
+                let error_ty = args[1].clone();
+                if !self.type_satisfies_trait_bound(&error_ty, "Error") {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span.clone(),
+                        format!(
+                            "process entry error type `{}` does not satisfy the bound `Error`",
+                            error_ty.user_facing()
+                        ),
+                    ));
+                    return None;
+                }
+                // An erased entry error renders through its vtable rather
+                // than a concrete declaration: the slot the coercion site
+                // published is the whole realization.
+                if let Ty::TraitObject { traits } = &error_ty {
+                    let slot = traits.iter().find_map(|bound| {
+                        self.dyn_vtable_slot_for_method(&bound.trait_name, "fmt")
+                            .map(|(slot, _, _)| slot)
+                    });
+                    let Some(slot) = slot else {
+                        self.errors.push(TypeError::new(
+                            TypeErrorKind::BoundsNotSatisfied,
+                            span.clone(),
+                            format!(
+                                "process entry error type `{}` publishes no Display vtable slot",
+                                error_ty.user_facing()
+                            ),
+                        ));
+                        return None;
+                    };
+                    return Some(EntryExitAction::Result {
+                        result_ty: resolved_return_type?,
+                        error_ty: ResolvedTy::from_ty(&error_ty).ok()?,
+                        display: EntryDisplayTarget::DynSlot { slot },
+                    });
+                }
+                let Some((display_declaration, display_signature_key)) =
+                    self.trait_impl_method_declaration(&error_ty, "Display", "fmt")
+                else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::BoundsNotSatisfied,
+                        span.clone(),
+                        format!(
+                            "process entry error type `{}` has no resolved Display format target",
+                            error_ty.user_facing()
+                        ),
+                    ));
+                    return None;
+                };
+                let resolved_error_ty = ResolvedTy::from_ty(&error_ty).ok()?;
+                let type_args = match &resolved_error_ty {
+                    ResolvedTy::Named { args, .. } => args.clone(),
+                    _ => Vec::new(),
+                };
+                let Some(display_signature) = resolved_fn_sigs.get(&display_signature_key) else {
+                    self.errors.push(TypeError::new(
+                        TypeErrorKind::InvalidOperation,
+                        span.clone(),
+                        format!(
+                            "checker has no resolved signature for entry Display target `{}`",
+                            display_declaration.display_name()
+                        ),
+                    ));
+                    return None;
+                };
+                let instance = if display_signature.type_params.is_empty() {
+                    EntryCallableInstance::Declared
+                } else {
+                    EntryCallableInstance::Generic { type_args }
+                };
+                Some(EntryExitAction::Result {
+                    result_ty: resolved_return_type?,
+                    error_ty: resolved_error_ty,
+                    display: EntryDisplayTarget::Declared {
+                        declaration: display_declaration,
+                        instance,
+                    },
+                })
+            }
+            unsupported => {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::InvalidOperation,
+                    span.clone(),
+                    format!(
+                        "process entry must return `()`, an integer, or `Result<(), E>`; found `{}`",
+                        unsupported.user_facing()
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
+    /// Record how each `fails` handler's declared error renders when it has
+    /// no caller. A one-way submission through a mailbox view turns the
+    /// handler's `Err(e)` into the actor's own fault, and the fault carries
+    /// the error's text; a handler whose error the checker cannot render is
+    /// refused at the submission rather than faulting with nothing to say.
+    fn attach_receive_failure_displays(&mut self, resolved_fn_sigs: &HashMap<String, FnSig>) {
+        let mut targets: HashMap<String, crate::actor_protocol::ReceiveFailureDisplay> =
+            HashMap::new();
+        for method_id in self.receive_fails_methods.clone() {
+            let Some(sig) = resolved_fn_sigs.get(&method_id) else {
+                continue;
+            };
+            let Some((_, error_ty)) = sig.return_type.as_result() else {
+                continue;
+            };
+            let error_ty = self.subst.resolve(error_ty);
+            if let Some(target) = self.receive_failure_display(&error_ty, resolved_fn_sigs) {
+                targets.insert(method_id, target);
+                continue;
+            }
+            if let Some(span) = self.view_submitted_fails_methods.get(&method_id).cloned() {
+                let handler = method_id
+                    .rsplit_once("::")
+                    .map_or(method_id.as_str(), |(_, name)| name);
+                self.report_error(
+                    TypeErrorKind::BoundsNotSatisfied,
+                    &span,
+                    format!(
+                        "`{handler}` fails with `{}`, which has no `impl Display` body to render \
+                         the fault a one-way submission raises; give the error type a `Display` \
+                         impl, or call `{handler}` on the actor handle to receive its failure",
+                        error_ty.user_facing()
+                    ),
+                );
+            }
+        }
+        for descriptor in self.actor_protocol_descriptors.values_mut() {
+            for handler in &mut descriptor.handlers {
+                let key = format!("{}::{}", descriptor.actor_name, handler.name);
+                handler.failure_display = targets.get(&key).cloned();
+            }
+        }
+    }
+
+    /// The rendering for one declared failure type, or `None` when the
+    /// checker cannot name one.
+    fn receive_failure_display(
+        &mut self,
+        error_ty: &Ty,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<crate::actor_protocol::ReceiveFailureDisplay> {
+        if matches!(error_ty, Ty::String) {
+            return Some(crate::actor_protocol::ReceiveFailureDisplay::Identity);
+        }
+        let (declaration, signature_key) =
+            self.trait_impl_method_declaration(error_ty, "Display", "fmt")?;
+        let signature = resolved_fn_sigs.get(&signature_key)?;
+        let instance = if signature.type_params.is_empty() {
+            EntryCallableInstance::Declared
+        } else {
+            let ResolvedTy::Named { args, .. } = ResolvedTy::from_ty(error_ty).ok()? else {
+                return None;
+            };
+            EntryCallableInstance::Generic { type_args: args }
+        };
+        Some(crate::actor_protocol::ReceiveFailureDisplay::Declared {
+            declaration,
+            instance,
+        })
+    }
+
+    fn classify_entry_exit_plan(
+        &mut self,
+        program: &Program,
+        resolved_fn_sigs: &HashMap<String, FnSig>,
+    ) -> Option<EntryExitPlan> {
+        let (occurrence, span) =
+            if self.entry_selection.is_some() {
+                self.selected_entry_item(program)?
+            } else {
+                program.items.iter().enumerate().find_map(
+                    |(item_index, (item, span))| match item {
+                        Item::Function(declaration)
+                            if declaration.name == "main"
+                                && declaration.type_params.as_ref().is_none_or(Vec::is_empty) =>
+                        {
+                            Some((
+                                crate::DeclarationOccurrence::new_with_synthetic_ordinal(
+                                    self.identity.root_module(),
+                                    span,
+                                    item_index,
+                                    crate::DeclarationKind::Function,
+                                    0,
+                                ),
+                                span,
+                            ))
+                        }
+                        _ => None,
+                    },
+                )?
+            };
+        let entry = self.identity.declaration(occurrence)?.clone();
+        let Some(return_type) = resolved_fn_sigs
+            .get(entry.full_path())
+            .map(|signature| signature.return_type.clone())
+        else {
+            self.errors.push(TypeError::new(
+                TypeErrorKind::InvalidOperation,
+                span.clone(),
+                format!(
+                    "checker has no resolved signature for process entry `{}`",
+                    entry.display_name()
+                ),
+            ));
+            return None;
+        };
+        let action = self.classify_entry_exit_action(return_type, span, resolved_fn_sigs)?;
+
+        Some(EntryExitPlan { entry, action })
     }
 
     #[expect(
@@ -1389,9 +1545,14 @@ impl Checker {
             }
             Item::TypeDecl(decl) => {
                 let owner = owner_path(&decl.name);
-                declare(Kind::Type, 0, owner.clone());
+                let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                    Kind::Machine
+                } else {
+                    Kind::Type
+                };
+                declare(kind, 0, owner.clone());
                 if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::Type, 0, alias);
+                    declare(kind, 0, alias);
                 }
                 for (index, method) in decl
                     .body
@@ -1541,6 +1702,16 @@ impl Checker {
         } else {
             self.has_checked_program = true;
         }
+        let normalized_machines = match machine_normalize::normalize(program) {
+            Ok(normalized) => normalized,
+            Err(errors) => {
+                self.errors.extend(errors);
+                None
+            }
+        };
+        let program = normalized_machines
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         // Mint the compile's module identities FIRST (rc1-F1 stage A): every
         // registration pass below resolves declaration identity through this
         // table, so it must be complete before any key is minted.
@@ -1650,6 +1821,12 @@ impl Checker {
         // derived marker/codec facts. It must run after `collect_functions` (so
         // alias maps exist) and before body checking + descriptor building (so
         // every member-derived consumer sees the corrected types).
+        //
+        // It closes declaration order for actor handles the same way (D489):
+        // an actor state field or init parameter naming an actor declared
+        // below it, or in a module registered by `collect_functions`, resolves
+        // here with the whole declaration table in view and receives the
+        // handle carrier its backward-referencing sibling already had.
         self.reresolve_member_types_after_imports(program);
         // `optional` is a wire-schema admission marker, not an implicit
         // default. Check it only after member re-resolution so aliases and
@@ -1661,7 +1838,7 @@ impl Checker {
         // The descriptor maps each `receive fn` to its stable, hash-derived
         // `msg_id` (`SipHash-1-3("Actor::handler")`). Body checking needs this
         // map available because the active-mode `conn.attach(this)` coercion
-        // (`LocalPid<Actor>` → `LocalPid<ConnectionHandler>`) consults
+        // (`Actor`'s own actor-handle type → `ConnectionHandler`'s) consults
         // `actor_satisfies_handler_trait`, which reads
         // `self.actor_protocol_descriptors` to confirm an actor's `receive fn`s
         // structurally satisfy the handler trait. Building it after body
@@ -1833,7 +2010,20 @@ impl Checker {
             self.current_module_idx = 0;
         }
 
-        for (item, span) in &program.items {
+        // Resolve declared child types before any function projects a child
+        // role, including a child whose type arguments come from config.
+        for (item, span) in program
+            .items
+            .iter()
+            .filter(|(item, _)| matches!(item, Item::Supervisor(_)))
+        {
+            self.check_item(item, span);
+        }
+        for (item, span) in program
+            .items
+            .iter()
+            .filter(|(item, _)| !matches!(item, Item::Supervisor(_)))
+        {
             self.check_item(item, span);
         }
 
@@ -1866,6 +2056,11 @@ impl Checker {
         if !self.repl_fragment {
             for (key, (import_span, stored_module)) in &self.import_spans {
                 if self.is_canonical_prelude_manifest_import(stored_module.as_deref()) {
+                    continue;
+                }
+                // A compiler-injected import carries an empty span; the
+                // programmer has no line to remove.
+                if import_span.start == import_span.end {
                     continue;
                 }
                 if !self.used_modules.borrow().contains(key) {
@@ -1946,6 +2141,10 @@ impl Checker {
                     (k, resolved)
                 })
                 .collect();
+        // Effect and transfer checks consume capture and actor-dispatch facts
+        // before those facts are moved into the checked-program handoff.
+        self.report_completion_call_cycles();
+        let suspension_effects = self.finish_suspension_effects();
         let resolved_closure_capture_facts = std::mem::take(&mut self.closure_capture_facts)
             .into_iter()
             .map(|(k, facts)| {
@@ -1963,16 +2162,26 @@ impl Checker {
             .into_iter()
             .map(|(k, kind)| {
                 let resolved_kind = match kind {
-                    ActorMethodKind::Fire(method_id) => ActorMethodKind::Fire(method_id),
-                    ActorMethodKind::BlockingFire(method_id) => {
-                        ActorMethodKind::BlockingFire(method_id)
-                    }
-                    ActorMethodKind::CheckedFire(method_id) => {
-                        ActorMethodKind::CheckedFire(method_id)
-                    }
-                    ActorMethodKind::Ask(method_id, reply_ty) => {
-                        ActorMethodKind::Ask(method_id, self.finalize_type_for_handoff(&reply_ty))
-                    }
+                    ActorMethodKind::Message {
+                        method_id,
+                        policy,
+                        argument_order,
+                    } => ActorMethodKind::Message {
+                        method_id,
+                        policy,
+                        argument_order,
+                    },
+                    ActorMethodKind::Ask {
+                        method_id,
+                        reply_ty,
+                        policy,
+                        argument_order,
+                    } => ActorMethodKind::Ask {
+                        method_id,
+                        reply_ty: self.finalize_type_for_handoff(&reply_ty),
+                        policy,
+                        argument_order,
+                    },
                     ActorMethodKind::StreamProducer(method_id, elem_ty) => {
                         ActorMethodKind::StreamProducer(
                             method_id,
@@ -2000,12 +2209,17 @@ impl Checker {
             })
             .collect();
 
-        let mut resolved_type_defs: HashMap<String, TypeDef> = std::mem::take(&mut self.type_defs)
-            .into_iter()
-            .map(|(name, type_def)| {
-                let resolved = self.resolve_type_def(&type_def);
-                (name, resolved)
-            })
+        // Resolve declarations against the live declaration table. Taking
+        // `type_defs` here left `canonical_nominal_name` with nothing to prove
+        // an import alias against, so a package-local `cfg.Config` kept its
+        // alias spelling while the expression table - finalized just above,
+        // with the table populated - carried the canonical `probe.cfg.Config`.
+        // Only std spellings survived, through the `canonical_std_module_sources`
+        // disjunct.
+        let mut resolved_type_defs: HashMap<String, TypeDef> = self
+            .type_defs
+            .iter()
+            .map(|(name, type_def)| (name.clone(), self.resolve_type_def(type_def)))
             .collect();
 
         let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
@@ -2025,7 +2239,7 @@ impl Checker {
         );
         // The output-contract validator may rebuild a surviving expression
         // type while pruning invalid siblings.  Re-run the same finalizer at
-        // that mutation boundary so produced-value joins, layout facts, and
+        // that mutation boundary so layout facts and
         // the published expression table observe one nominal identity.  In
         // particular, a source module's `CryptoError` match arms must not keep
         // their provisional bare spelling after the enclosing match has its
@@ -2039,6 +2253,8 @@ impl Checker {
         for sig in resolved_fn_sigs.values_mut() {
             *sig = self.resolve_fn_sig(sig);
         }
+        let entry_exit_plan = self.classify_entry_exit_plan(program, &resolved_fn_sigs);
+        self.attach_receive_failure_displays(&resolved_fn_sigs);
         for type_def in resolved_type_defs.values_mut() {
             *type_def = self.resolve_type_def(type_def);
         }
@@ -2061,11 +2277,7 @@ impl Checker {
                 &cycle.edge.to,
             ));
         }
-        // The layout-backed HashMap/HashSet admission finalizers below still
-        // consult `self.type_defs` to prove named record hash-eligibility and
-        // compute key/value ABI sizes. `resolved_type_defs` is the authoritative
-        // post-substitution snapshot after the checked-output boundary pass, so
-        // restore it into the checker before draining those deferred queues.
+        // Admission consumes the complete post-substitution declarations.
         self.type_defs = resolved_type_defs.clone();
         self.finalize_builtin_clone_admission();
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
@@ -2077,15 +2289,7 @@ impl Checker {
         self.finalize_hashset_admission();
         self.finalize_vec_admission();
         self.finalize_channel_rewrites();
-        self.finalize_generic_structural_eq();
-
-        // Prune any layout facts whose span is not in the validated expr_types map.
-        // This prevents orphaned layout facts (from expressions that were pruned
-        // by validate_checker_output_contract) from reaching codegen.
-        self.hashmap_layout_facts
-            .retain(|key, _| resolved_expr_types.contains_key(key));
-        self.hashset_layout_facts
-            .retain(|key, _| resolved_expr_types.contains_key(key));
+        self.finalize_eq_requirements();
 
         self.report_unresolved_inference_holes(program);
         self.report_unresolved_monomorphic_sites();
@@ -2218,228 +2422,38 @@ impl Checker {
             &resolved_type_defs,
         );
 
-        // Finalize direct-call ownership only after substitution, generated
-        // FFI lifecycle validation, and deferred dispatch rewrites have all
-        // settled. Earlier expression checking records provisional syntax
-        // facts, but only this pass may authorize a foreign owned result.
-        let mut produced_value_ownership = std::mem::take(&mut self.produced_value_ownership);
-        for (key, pending) in std::mem::take(&mut self.resolved_direct_call_ownership) {
-            if !resolved_expr_types.contains_key(&key) {
-                continue;
-            }
-            let resolved_result = self
-                .subst
-                .resolve(&pending.resolved_result_ty)
-                .materialize_literal_defaults();
-            let non_owning = self.ty_is_non_owning(&resolved_result);
-            let mut fact = pending.fact;
-            if let Some(symbol) = pending.extern_symbol.as_deref() {
-                use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
-                use crate::runtime_call::{
-                    ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
-                };
-                if !matches!(&resolved_result, Ty::String | Ty::Bytes | Ty::Named { .. }) {
-                    fact.ownership = Ownership::NoOwner;
-                    produced_value_ownership.insert(key, fact);
-                    continue;
-                }
-                let contract = crate::ffi_contracts::extern_ownership_contract(symbol)
-                    .contract()
-                    .filter(|contract| contract.params.len() == pending.extern_param_count)
-                    .filter(|contract| {
-                        contract.result_retention.authorizes_caller_release()
-                            && contract.discharge_depth != ReleaseDischargeDepth::None
-                            && !contract.release_symbol.is_empty()
-                    });
-                let trusted_compiled_stdlib = pending
-                    .extern_declaring_module
-                    .as_ref()
-                    .is_some_and(|module| self.canonical_std_module_sources.contains(module));
-                let lifecycle_matches = contract.is_some_and(|contract| match &resolved_result {
-                    Ty::String => {
-                        contract.resource_result_type.is_none()
-                            && contract.release_symbol == "hew_string_drop"
-                            && contract.discharge_depth == ReleaseDischargeDepth::Shallow
-                    }
-                    Ty::Bytes => {
-                        contract.resource_result_type.is_none()
-                            && contract.release_symbol == "hew_bytes_drop"
-                            && contract.discharge_depth == ReleaseDischargeDepth::Shallow
-                    }
-                    Ty::Named { name, .. } => {
-                        contract
-                            .resource_result_type
-                            .map_or(trusted_compiled_stdlib, |_| {
-                                opaque_resource_candidates
-                                    .candidates
-                                    .get(name.as_str())
-                                    .filter(|candidate| candidate.producer_symbols.contains(symbol))
-                                    .is_some_and(|candidate| {
-                                        pending.extern_declaring_module.as_ref().is_some_and(
-                                            |module| candidate.producer_modules.contains(module),
-                                        )
-                                    })
-                            })
-                    }
-                    _ => false,
-                });
-                let owned =
-                    contract
-                        .filter(|_| lifecycle_matches)
-                        .map(|contract| match contract.result {
-                            ExternResultOwnership::Fresh => Ownership::owned(Acquisition::Fresh),
-                            ExternResultOwnership::Retained => {
-                                Ownership::owned(Acquisition::Retained)
-                            }
-                            ExternResultOwnership::Borrowed | ExternResultOwnership::None => {
-                                Ownership::Unknown
-                            }
-                        });
-                // An opaque extern-produced nominal without an audited
-                // transfer lifecycle is foreign-owned. The caller must not
-                // invent a release obligation for it. String and Bytes stay
-                // Unknown above/below because they require a concrete adoption
-                // or release contract.
-                let fallback = if matches!(resolved_result, Ty::Named { .. }) {
-                    Ownership::NoOwner
-                } else {
-                    Ownership::Unknown
-                };
-                fact.ownership = owned.unwrap_or(fallback);
-            } else if non_owning {
-                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
-            }
-            produced_value_ownership.insert(key, fact);
-        }
-        for (key, pending) in std::mem::take(&mut self.resolved_method_call_ownership) {
-            if !resolved_expr_types.contains_key(&key) {
-                continue;
-            }
-            let resolved_result = self
-                .subst
-                .resolve(&pending.resolved_result_ty)
-                .materialize_literal_defaults();
-            let mut fact = pending.fact;
-            if let Some(identity) = pending.extern_identity {
-                use crate::ffi_contracts::{ExternResultOwnership, ReleaseDischargeDepth};
-                use crate::runtime_call::{
-                    ProducedValueAcquisition as Acquisition, ProducedValueOwnership as Ownership,
-                };
-                if !matches!(&resolved_result, Ty::String | Ty::Bytes | Ty::Named { .. }) {
-                    fact.ownership = Ownership::NoOwner;
-                    produced_value_ownership.insert(key, fact);
-                    continue;
-                }
-                let contract =
-                    crate::ffi_contracts::extern_ownership_contract(&identity.endpoint).contract();
-                let lifecycle_authorized = contract.is_some_and(|contract| {
-                    contract.result_retention.authorizes_caller_release()
-                        && contract.discharge_depth != ReleaseDischargeDepth::None
-                        && !contract.release_symbol.is_empty()
-                        && match (&resolved_result, contract.resource_result_type) {
-                            (Ty::Named { name, .. }, Some(resource_type)) => {
-                                name == resource_type
-                                    && opaque_resource_candidates
-                                        .candidates
-                                        .get(name.as_str())
-                                        .is_some_and(|candidate| {
-                                            candidate.producer_symbols.contains(&identity.endpoint)
-                                                && identity.declaring_module.as_ref().is_some_and(
-                                                    |module| {
-                                                        candidate.producer_modules.contains(module)
-                                                    },
-                                                )
-                                        })
-                            }
-                            (_, Some(_)) => false,
-                            (_, None) => identity.trusted_compiled_stdlib,
-                        }
-                });
-                fact.ownership = if lifecycle_authorized {
-                    match contract.map(|contract| contract.result) {
-                        Some(ExternResultOwnership::Fresh) => Ownership::owned(Acquisition::Fresh),
-                        Some(ExternResultOwnership::Retained) => {
-                            Ownership::owned(Acquisition::Retained)
-                        }
-                        Some(ExternResultOwnership::Borrowed | ExternResultOwnership::None)
-                        | None => Ownership::Unknown,
-                    }
-                } else if matches!(resolved_result, Ty::Named { .. }) {
-                    // Same caller-obligation authority as direct extern calls:
-                    // an unaudited opaque nominal stays foreign-owned.
-                    Ownership::NoOwner
-                } else {
-                    Ownership::Unknown
-                };
-            } else if self.ty_is_non_owning(&resolved_result) {
-                fact.ownership = crate::runtime_call::ProducedValueOwnership::NoOwner;
-            }
-            produced_value_ownership.insert(key, fact);
-        }
-        produced_value_ownership.retain(|key, _| resolved_expr_types.contains_key(key));
-        self.produced_value_dependencies
-            .retain(|key, _| resolved_expr_types.contains_key(key));
-        let leaves = produced_value_ownership;
-        let invalid_produced_nodes =
-            self.validate_produced_value_graph(&resolved_expr_types, &leaves);
-        let mut memo = HashMap::with_capacity(resolved_expr_types.len());
-        let mut finalized = HashMap::with_capacity(resolved_expr_types.len());
-        let class_declarations = self.class_declarations();
-        for key in resolved_expr_types.keys() {
-            let mut visiting = HashSet::new();
-            let fact = resolve_produced_node(
-                key,
-                &self.produced_value_dependencies,
-                &leaves,
-                &resolved_expr_types,
-                &class_declarations,
-                &invalid_produced_nodes,
-                &mut visiting,
-                &mut memo,
-            );
-            finalized.insert(key.clone(), fact);
-        }
-        let produced_value_ownership = finalized;
-        // The carrier is deliberately total: downstream lowering must not
-        // interpret absence from a sparse implementation map as permission to
-        // invent provenance.  A checker-authored expression with no edge is a
-        // structural leaf, not an omitted fact.
-        let produced_value_dependencies = resolved_expr_types
-            .keys()
-            .cloned()
-            .map(|key| {
-                let dependency = self
-                    .produced_value_dependencies
-                    .remove(&key)
-                    .unwrap_or(ProducedValueDependency::Leaf);
-                (key, dependency)
-            })
-            .collect();
-
         // The §6.3 fact table describes an accepted program. A rejected one
         // hands off no CheckedProgram, and its declaration graph may be
         // ill-formed - `type Direct { next: Direct }` has no finite value
         // layout - so the hash and eq eligibility walks it would drive have no
         // bottom. Building nothing there is the same rule the typed
         // `resolved_expr_types` handoff above states for its own totality.
-        let type_facts = if self.errors.is_empty() {
-            let (facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
+        let (type_fact_context, type_facts) = if self.errors.is_empty() {
+            let (context, facts, refusals) = self.build_type_facts(&resolved_expr_types_typed);
             self.errors.extend(refusals);
-            facts
+            (context, facts)
         } else {
-            BTreeMap::new()
+            (TypeFactContext::default(), BTreeMap::new())
         };
         let mut output = TypeCheckOutput {
+            normalized_machines: normalized_machines.clone(),
+            select_sources: std::mem::take(&mut self.select_sources),
+            suspension_effects,
+            recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             user_comparison_dispatch: std::mem::take(&mut self.user_comparison_dispatch),
-            produced_value_ownership,
-            produced_value_dependencies,
-            caller_visible_param_projections: std::mem::take(
-                &mut self.caller_visible_param_projections,
-            ),
+            numeric_operand_coercions: std::mem::take(&mut self.numeric_operand_coercions),
+            extern_method_signatures: std::mem::take(&mut self.extern_method_signatures),
             actor_self_state_fields: std::mem::take(&mut self.actor_self_state_fields),
+            actor_deferred_field_decls: std::mem::take(&mut self.actor_deferred_field_decls),
+            actor_init_first_stores: std::mem::take(&mut self.actor_init_first_stores),
+            borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
+            borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),
+            owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),
+            borrowed_element_option_reads: std::mem::take(&mut self.borrowed_element_option_reads),
             type_facts,
+            type_fact_context,
             resolved_expr_types: resolved_expr_types_typed,
             is_type_patterns: std::mem::take(&mut self.is_type_patterns),
             method_call_receiver_kinds: std::mem::take(&mut self.method_call_receiver_kinds),
@@ -2465,14 +2479,15 @@ impl Checker {
             resolved_calls: std::mem::take(&mut self.resolved_calls),
             import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
             module_import_bindings: std::mem::take(&mut self.module_import_bindings),
-            numeric_method_lowerings: std::mem::take(&mut self.numeric_method_lowerings),
+            published_bare_const_owners: std::mem::take(&mut self.published_bare_const_owners),
+            import_fn_name_aliases: std::mem::take(&mut self.import_fn_name_aliases),
             width_cast_lowerings: std::mem::take(&mut self.width_cast_lowerings),
             try_width_cast_lowerings: std::mem::take(&mut self.try_width_cast_lowerings),
             actor_method_dispatch: std::mem::take(&mut self.actor_method_dispatch),
+            actor_delivery_calls: std::mem::take(&mut self.actor_delivery_calls),
             machine_method_dispatch: std::mem::take(&mut self.machine_method_dispatch),
-            conn_await_reads: std::mem::take(&mut self.conn_await_reads),
-            listener_await_accepts: std::mem::take(&mut self.listener_await_accepts),
             tail_ok_coercions: std::mem::take(&mut self.tail_ok_coercions),
+            result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
             errors: std::mem::take(&mut self.errors),
@@ -2481,6 +2496,7 @@ impl Checker {
             type_defs: resolved_type_defs,
             internal_builtin_enum_names,
             identity: std::mem::take(&mut self.identity).freeze(),
+            entry_exit_plan,
             extern_contracts: std::mem::take(&mut self.extern_table),
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
@@ -2505,6 +2521,7 @@ impl Checker {
             closure_capture_facts: resolved_closure_capture_facts,
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,
+            lambda_actor_declarations: std::mem::take(&mut self.lambda_actor_declarations),
             intrinsic_declarations: std::mem::take(&mut self.intrinsic_declarations),
             pattern_resolutions: std::mem::take(&mut self.pending_pattern_resolutions)
                 .into_iter()
@@ -2526,22 +2543,6 @@ impl Checker {
                 })
                 .collect(),
             lang_items: std::mem::take(&mut self.lang_items),
-            hashmap_layout_facts: std::mem::take(&mut self.hashmap_layout_facts),
-            hashset_layout_facts: std::mem::take(&mut self.hashset_layout_facts),
-            actor_spawn_type_args: {
-                // Resolve any lingering inference variables in the type args
-                // before publishing to the output table.
-                std::mem::take(&mut self.actor_spawn_type_args)
-                    .into_iter()
-                    .map(|(k, (name, args))| {
-                        let resolved_args = args
-                            .into_iter()
-                            .map(|ty| self.finalize_type_for_handoff(&ty))
-                            .collect();
-                        (k, (name, resolved_args))
-                    })
-                    .collect()
-            },
         };
 
         // Detect actor reference cycles and emit warnings.
@@ -2558,8 +2559,59 @@ impl Checker {
                 .push(TypeError::actor_ref_cycle(span, &desc));
         }
         output.cycle_capable_actors = cycle_capable;
+        if output.errors.is_empty() {
+            output.errors.extend(machine_effects::validate(&output));
+        }
+        if let Some(normalized) = &normalized_machines {
+            for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
+                if let Some(source) = normalized.source_spans.get(&diagnostic.span) {
+                    diagnostic.span = source.clone();
+                }
+            }
+            Self::project_machine_expr_types(normalized, &mut output.expr_types);
+        }
 
         output
+    }
+
+    /// Republish machine body types at the source spans they came from.
+    ///
+    /// A machine is normalized into ordinary declarations before checking, so
+    /// every expression inside a transition body is checked at a generated
+    /// span. Editors read `expr_types` by source span, so without this
+    /// projection hover and inlay hints go blank inside a machine. Source
+    /// spans that already carry a type keep it, and a source span reached by
+    /// two generated spans that disagree is dropped rather than resolved
+    /// arbitrarily.
+    fn project_machine_expr_types(
+        normalized: &NormalizedMachines,
+        expr_types: &mut HashMap<SpanKey, Ty>,
+    ) {
+        let mut projected: HashMap<SpanKey, Ty> = HashMap::new();
+        let mut ambiguous: HashSet<SpanKey> = HashSet::new();
+        for (key, ty) in expr_types.iter() {
+            let Some(source) = normalized.source_spans.get(&(key.start..key.end)) else {
+                continue;
+            };
+            let source_key = SpanKey::in_module(source, key.module_idx);
+            if expr_types.contains_key(&source_key) {
+                continue;
+            }
+            match projected.entry(source_key.clone()) {
+                Entry::Occupied(existing) => {
+                    if existing.get() != ty {
+                        ambiguous.insert(source_key);
+                    }
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(ty.clone());
+                }
+            }
+        }
+        for key in &ambiguous {
+            projected.remove(key);
+        }
+        expr_types.extend(projected);
     }
 
     /// Restore the checker to the same program-owned state as a fresh instance.
@@ -2583,6 +2635,7 @@ impl Checker {
         let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
+        let entry_selection = self.entry_selection;
 
         *self = Self::new(module_registry);
         self.wasm_target = wasm_target;
@@ -2593,6 +2646,7 @@ impl Checker {
         self.consume_receiver_methods = consume_receiver_methods;
         self.lint_levels = lint_levels;
         self.lint_sources = lint_sources;
+        self.entry_selection = entry_selection;
     }
 
     /// The canonical prelude is an import-only authority manifest: its imports
@@ -2600,292 +2654,6 @@ impl Checker {
     fn is_canonical_prelude_manifest_import(&self, stored_module: Option<&str>) -> bool {
         stored_module == Some("std.prelude")
             || (stored_module.is_none() && self.canonical_std_root_sources.contains("std.prelude"))
-    }
-
-    /// Validate the raw checker-authored ownership graph before following any
-    /// dependency edge. Structural gaps are compiler errors, never permission
-    /// to infer an owner. The returned set is consumed by the resolver as a
-    /// fail-closed deny-list: every invalid node resolves to `Unknown`.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one fail-closed pass validates every raw ownership graph invariant"
-    )]
-    fn validate_produced_value_graph(
-        &mut self,
-        expr_types: &HashMap<SpanKey, Ty>,
-        leaves: &HashMap<SpanKey, ProducedValueFact>,
-    ) -> HashSet<SpanKey> {
-        use crate::runtime_call::{
-            ProducedArgumentBoundary as Boundary, ProducedValueOwnership as Ownership,
-        };
-
-        fn children(dependency: &ProducedValueDependency) -> &[SpanKey] {
-            match dependency {
-                ProducedValueDependency::Leaf => &[],
-                ProducedValueDependency::Identity(child)
-                | ProducedValueDependency::Subsumes(child)
-                | ProducedValueDependency::MoveOut(child)
-                | ProducedValueDependency::Projection(child) => std::slice::from_ref(child),
-                ProducedValueDependency::Join(children) => children,
-            }
-        }
-
-        fn is_checker_numeric_normalization(from: &Ty, to: &Ty, pointer_width: u8) -> bool {
-            from != to
-                && from.is_numeric()
-                && to.is_numeric()
-                && coerce::common_numeric_type(from, to, pointer_width).as_ref() == Some(to)
-        }
-
-        fn visit(
-            key: &SpanKey,
-            expr_types: &HashMap<SpanKey, Ty>,
-            dependencies: &HashMap<SpanKey, ProducedValueDependency>,
-            states: &mut HashMap<SpanKey, u8>,
-            stack: &mut Vec<SpanKey>,
-            cycle_nodes: &mut HashSet<SpanKey>,
-        ) {
-            states.insert(key.clone(), 1);
-            stack.push(key.clone());
-            if let Some(dependency) = dependencies.get(key) {
-                for child in children(dependency) {
-                    if child.module_idx != key.module_idx || !expr_types.contains_key(child) {
-                        continue;
-                    }
-                    match states.get(child).copied().unwrap_or(0) {
-                        0 => visit(child, expr_types, dependencies, states, stack, cycle_nodes),
-                        1 => {
-                            if let Some(start) = stack.iter().position(|entry| entry == child) {
-                                cycle_nodes.extend(stack[start..].iter().cloned());
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            stack.pop();
-            states.insert(key.clone(), 2);
-        }
-
-        let mut invalid = HashSet::new();
-        let mut findings: Vec<(SpanKey, String)> = Vec::new();
-        for key in expr_types.keys() {
-            if !leaves.contains_key(key) {
-                invalid.insert(key.clone());
-                findings.push((
-                    key.clone(),
-                    "source expression has no raw produced-value fact".to_string(),
-                ));
-            }
-        }
-
-        for (parent, dependency) in &self.produced_value_dependencies {
-            if !expr_types.contains_key(parent) {
-                continue;
-            }
-            if matches!(dependency, ProducedValueDependency::Join(children) if children.is_empty())
-            {
-                invalid.insert(parent.clone());
-                findings.push((
-                    parent.clone(),
-                    "join dependency has no children".to_string(),
-                ));
-            }
-            for child in children(dependency) {
-                let detail = if child.module_idx != parent.module_idx {
-                    Some(format!(
-                        "dependency crosses modules (parent module {}, child module {})",
-                        parent.module_idx, child.module_idx
-                    ))
-                } else if !expr_types.contains_key(child) {
-                    Some(format!(
-                        "dependency child {child:?} has no surviving expression"
-                    ))
-                } else if !leaves.contains_key(child) {
-                    Some(format!(
-                        "dependency child {child:?} has no raw produced-value fact"
-                    ))
-                } else {
-                    None
-                };
-                if let Some(detail) = detail {
-                    invalid.insert(parent.clone());
-                    findings.push((parent.clone(), detail));
-                }
-            }
-            if let ProducedValueDependency::Identity(child) = dependency {
-                if let (Some(parent_ty), Some(child_ty)) =
-                    (expr_types.get(parent), expr_types.get(child))
-                {
-                    // Tail `Ok` coercion is a recorded materialization boundary: HIR
-                    // wraps this payload child before validating the identity edge.
-                    if parent_ty != child_ty
-                        && !self.tail_ok_coercions.contains(child)
-                        && !is_checker_numeric_normalization(
-                            child_ty,
-                            parent_ty,
-                            self.pointer_width(),
-                        )
-                    {
-                        invalid.insert(parent.clone());
-                        findings.push((
-                            parent.clone(),
-                            format!(
-                                "identity dependency changes type from {child_ty:?} to {parent_ty:?}"
-                            ),
-                        ));
-                    }
-                }
-            }
-            if let ProducedValueDependency::Join(children) = dependency {
-                if let Some(parent_ty) = expr_types.get(parent) {
-                    for child in children {
-                        if let Some(child_ty) = expr_types.get(child) {
-                            // As above, marked children acquire the parent `Result`
-                            // type when the HIR wrapper is materialized.
-                            //
-                            // A diverging branch (`panic(...)`, an early return,
-                            // `if true { panic() } else { 0 }`) is `Never`, which
-                            // unifies with any type: the join's checked value type
-                            // legitimately comes from the non-diverging arm. `Never`
-                            // on either side of the edge is that unification, not a
-                            // representation change, so it must not fail the graph
-                            // the way the tail-`Ok` and numeric-normalization
-                            // boundaries above are exempted.
-                            let is_dyn_materialization =
-                                // A concrete arm checked against `dyn Trait`
-                                // keeps its concrete `expr_types` entry so HIR
-                                // can build the payload before wrapping it.
-                                // The coercion side table is the materialization
-                                // boundary that makes the arm produce the
-                                // join's trait-object representation.
-                                matches!(parent_ty, Ty::TraitObject { .. })
-                                    && self.dyn_trait_coercions.contains_key(child);
-                            if child_ty != parent_ty
-                                && !matches!(child_ty, Ty::Never)
-                                && !matches!(parent_ty, Ty::Never)
-                                && !self.tail_ok_coercions.contains(child)
-                                && !is_dyn_materialization
-                                && !is_checker_numeric_normalization(
-                                    child_ty,
-                                    parent_ty,
-                                    self.pointer_width(),
-                                )
-                            {
-                                invalid.insert(parent.clone());
-                                findings.push((
-                                    parent.clone(),
-                                    format!(
-                                        "join dependency child {child:?} changes type from {child_ty:?} to {parent_ty:?}"
-                                    ),
-                                ));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut states = HashMap::new();
-        let mut stack = Vec::new();
-        let mut cycle_nodes = HashSet::new();
-        for key in expr_types.keys() {
-            if states.get(key).copied().unwrap_or(0) == 0 {
-                visit(
-                    key,
-                    expr_types,
-                    &self.produced_value_dependencies,
-                    &mut states,
-                    &mut stack,
-                    &mut cycle_nodes,
-                );
-            }
-        }
-        for key in cycle_nodes {
-            invalid.insert(key.clone());
-            findings.push((key, "produced-value dependency cycle".to_string()));
-        }
-
-        for (key, fact) in leaves {
-            if !expr_types.contains_key(key) {
-                continue;
-            }
-            if matches!(fact.ownership, Ownership::ReceiverIdentity) {
-                let valid_anchor = fact.receiver_boundary == Some(Boundary::Transfer)
-                    && fact.receiver_span.as_ref().is_some_and(|receiver| {
-                        receiver.module_idx == key.module_idx
-                            && expr_types.contains_key(receiver)
-                            && leaves.contains_key(receiver)
-                            && expr_types.get(receiver) == expr_types.get(key)
-                    });
-                if !valid_anchor {
-                    invalid.insert(key.clone());
-                    findings.push((
-                        key.clone(),
-                        "receiver-identity result lacks an existing same-module receiver anchor with a transfer boundary"
-                            .to_string(),
-                    ));
-                }
-            }
-        }
-
-        for (key, (has_receiver, arg_count)) in &self.produced_call_arities {
-            if !expr_types.contains_key(key) {
-                continue;
-            }
-            let Some(fact) = leaves.get(key) else {
-                // Missing raw facts were diagnosed above.
-                continue;
-            };
-            if fact.arguments.len() != *arg_count {
-                invalid.insert(key.clone());
-                findings.push((
-                    key.clone(),
-                    format!(
-                        "call boundary arity mismatch: expected {arg_count}, found {}",
-                        fact.arguments.len()
-                    ),
-                ));
-            }
-            if fact.receiver_boundary.is_some() != *has_receiver {
-                invalid.insert(key.clone());
-                findings.push((
-                    key.clone(),
-                    format!(
-                        "call receiver-boundary mismatch: receiver expected={has_receiver}, boundary present={}",
-                        fact.receiver_boundary.is_some()
-                    ),
-                ));
-            }
-        }
-
-        findings.sort_by(|(left_key, left_message), (right_key, right_message)| {
-            (
-                left_key.module_idx,
-                left_key.start,
-                left_key.end,
-                left_message,
-            )
-                .cmp(&(
-                    right_key.module_idx,
-                    right_key.start,
-                    right_key.end,
-                    right_message,
-                ))
-        });
-        findings.dedup();
-        for (key, detail) in findings {
-            self.errors.push(TypeError {
-                severity: crate::error::Severity::Error,
-                kind: TypeErrorKind::InvalidOperation,
-                span: key.start..key.end,
-                message: format!("checker produced-value graph is incomplete: {detail}"),
-                notes: vec![],
-                suggestions: vec![],
-                source_module: self.expr_type_source_modules.get(&key).cloned().flatten(),
-            });
-        }
-        invalid
     }
 
     /// Escape classifier. Walks the program AST after type-checking,
@@ -3044,7 +2812,6 @@ impl Checker {
             module_idx,
             source_module,
             source: Some(source),
-            type_params: HashMap::new(),
         };
         lints::lint_source(&ctx, levels, source, out);
     }
@@ -3066,44 +2833,28 @@ impl Checker {
             module_idx,
             source_module,
             source: self.lint_sources.source_for(source_module),
-            type_params: HashMap::new(),
         };
-        // Each body is linted under the type parameters actually in scope for
-        // it — the enclosing item's, extended by the body's own. A lint that
-        // proposes a rewrite reads bounds from here; a parameter missing from
-        // the map is not treated as generic, and a rewrite over it is refused
-        // by the unregistered-nominal path instead.
         match item {
-            Item::Function(fn_decl) => {
-                let ctx = ctx.with_type_params(fn_decl.type_params.as_ref());
-                lints::lint_block(&ctx, levels, &fn_decl.body, out);
-            }
+            Item::Function(fn_decl) => lints::lint_block(&ctx, levels, &fn_decl.body, out),
             Item::Impl(impl_decl) => {
-                let impl_ctx = ctx.with_type_params(impl_decl.type_params.as_ref());
                 for method in &impl_decl.methods {
-                    let ctx = impl_ctx.with_type_params(method.type_params.as_ref());
                     lints::lint_block(&ctx, levels, &method.body, out);
                 }
             }
             Item::Actor(actor) => {
-                let actor_ctx = ctx.with_type_params(Some(&actor.type_params));
                 for method in &actor.methods {
-                    let ctx = actor_ctx.with_type_params(method.type_params.as_ref());
                     lints::lint_block(&ctx, levels, &method.body, out);
                 }
                 for rec in &actor.receive_fns {
-                    let ctx = actor_ctx.with_type_params(rec.type_params.as_ref());
                     lints::lint_receive_fn_definition(&ctx, levels, rec, out);
                     lints::lint_block(&ctx, levels, &rec.body, out);
                     lints::lint_receive_fn(&ctx, levels, &rec.body, out);
                 }
             }
             Item::Trait(trait_decl) => {
-                let trait_ctx = ctx.with_type_params(trait_decl.type_params.as_ref());
                 for trait_item in &trait_decl.items {
                     if let TraitItem::Method(trait_method) = trait_item {
                         if let Some(body) = &trait_method.body {
-                            let ctx = trait_ctx.with_type_params(trait_method.type_params.as_ref());
                             lints::lint_block(&ctx, levels, body, out);
                         }
                     }
@@ -3219,7 +2970,6 @@ impl Checker {
                             SpanKey::in_module(lambda_span, self.current_module_idx),
                             fact,
                         );
-                        self.maybe_emit_escape_advisory(lambda_span, fact);
                     }
                 }
             }
@@ -3283,15 +3033,21 @@ impl Checker {
                 }
             }
             Stmt::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                for expr in condition_exprs(conditions) {
+                    self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                }
                 self.classify_escapes_in_block(body, in_fork);
-                if let Some(b) = else_body {
-                    self.classify_escapes_in_block(b, in_fork);
+                if let Some(else_expr) = else_body {
+                    self.classify_escapes_in_expr(
+                        &else_expr.0,
+                        &else_expr.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
                 }
             }
             Stmt::Match { scrutinee, arms } => {
@@ -3334,8 +3090,12 @@ impl Checker {
                 );
                 self.classify_escapes_in_block(body, in_fork);
             }
-            Stmt::WhileLet { expr, body, .. } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+            Stmt::WhileLet {
+                conditions, body, ..
+            } => {
+                for expr in condition_exprs(conditions) {
+                    self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                }
                 self.classify_escapes_in_block(body, in_fork);
             }
             Stmt::Break { value, .. } => {
@@ -3415,7 +3175,6 @@ impl Checker {
                 self.closure_escape_facts
                     .entry(SpanKey::in_module(expr_span, self.current_module_idx))
                     .or_insert(fact);
-                self.maybe_emit_escape_advisory(expr_span, fact);
                 // Recurse into the body so nested closures inside this
                 // lambda get classified too.
                 self.classify_escapes_in_expr(
@@ -3466,15 +3225,21 @@ impl Checker {
                 }
             }
             Expr::IfLet {
-                expr,
+                conditions,
                 body,
                 else_body,
-                ..
             } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                for expr in condition_exprs(conditions) {
+                    self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, AnonContext::Other);
+                }
                 self.classify_escapes_in_block(body, in_fork);
-                if let Some(b) = else_body {
-                    self.classify_escapes_in_block(b, in_fork);
+                if let Some(else_expr) = else_body {
+                    self.classify_escapes_in_expr(
+                        &else_expr.0,
+                        &else_expr.1,
+                        in_fork,
+                        AnonContext::Other,
+                    );
                 }
             }
             Expr::Match { scrutinee, arms } => {
@@ -3560,9 +3325,20 @@ impl Checker {
                     self.classify_escapes_in_expr(&base.0, &base.1, in_fork, AnonContext::Other);
                 }
             }
-            Expr::Tuple(items) | Expr::Array(items) => {
+            Expr::Tuple(items) => {
                 for (e, s) in items {
                     self.classify_escapes_in_expr(e, s, in_fork, AnonContext::StoredInBinding);
+                }
+            }
+            Expr::Array(elements) => {
+                for element in elements {
+                    let (operand, operand_span) = element.expr();
+                    self.classify_escapes_in_expr(
+                        operand,
+                        operand_span,
+                        in_fork,
+                        AnonContext::StoredInBinding,
+                    );
                 }
             }
             Expr::ArrayRepeat { value, count } => {
@@ -3580,11 +3356,17 @@ impl Checker {
                     self.classify_escapes_in_expr(v, vs, in_fork, AnonContext::StoredInBinding);
                 }
             }
-            Expr::Binary { left, right, .. } => {
+            Expr::Binary { left, right, .. }
+            | Expr::Coalesce { left, right }
+            | Expr::Handle {
+                operand: left,
+                body: right,
+                ..
+            } => {
                 self.classify_escapes_in_expr(&left.0, &left.1, in_fork, AnonContext::Other);
                 self.classify_escapes_in_expr(&right.0, &right.1, in_fork, AnonContext::Other);
             }
-            Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+            Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
                 self.classify_escapes_in_expr(&operand.0, &operand.1, in_fork, AnonContext::Other);
             }
             Expr::FieldAccess { object, .. } => {
@@ -3642,19 +3424,15 @@ impl Checker {
                     );
                 }
             }
-            Expr::Join(items) => {
+            Expr::Race(items) => {
                 for (e, s) in items {
-                    self.classify_escapes_in_expr(e, s, in_fork, AnonContext::PassedToHigherOrder);
+                    self.classify_escapes_in_expr(
+                        e,
+                        s,
+                        in_fork || matches!(expr, Expr::Race(_)),
+                        AnonContext::PassedToHigherOrder,
+                    );
                 }
-            }
-            Expr::Timeout { expr, duration } => {
-                self.classify_escapes_in_expr(&expr.0, &expr.1, in_fork, ctx);
-                self.classify_escapes_in_expr(
-                    &duration.0,
-                    &duration.1,
-                    in_fork,
-                    AnonContext::Other,
-                );
             }
             Expr::UnsafeBlock(block) => self.classify_escapes_in_block(block, in_fork),
             // `yield <expr>` and `return <expr>` both carry the operand out of
@@ -3688,62 +3466,10 @@ impl Checker {
             Expr::Literal(_)
             | Expr::Identifier(_)
             | Expr::QualifiedAssoc(_)
-            | Expr::This
             | Expr::RegexLiteral(_)
             | Expr::ByteStringLiteral(_)
             | Expr::ByteArrayLiteral(_) => {}
         }
-    }
-
-    fn maybe_emit_escape_advisory(
-        &mut self,
-        lambda_span: &hew_parser::ast::Span,
-        fact: ClosureEscapeFact,
-    ) {
-        // Advisory diagnostic when conservatively classified `Escapes`
-        // AND the rule indicates restructuring could admit `Local`.
-        // Emitted at warning severity (the diagnostic surface has no
-        // Info level).
-        if !matches!(fact.kind, ClosureEscapeKind::Escapes) {
-            return;
-        }
-        // PassedToHigherOrder is intentionally excluded: inlining a let-bound
-        // closure at its call site does not relieve the escape — an anonymous
-        // closure in argument position is still classified PassedToHigherOrder
-        // (via AnonContext::PassedToHigherOrder), so the advisory would fire
-        // again.  Only rules where inlining genuinely admits Local are kept.
-        let admit_local = matches!(
-            fact.rule,
-            ClosureEscapeRule::EscapesViaBlockValue | ClosureEscapeRule::NoStaticBinding
-        );
-        if !admit_local {
-            return;
-        }
-        // One advisory per closure literal: the classifier visits the same
-        // span more than once (let-bound block walk + anonymous-expression
-        // walk; top-level item list + module graph for the entry module).
-        // Gate on first-insert; distinct spans still warn independently.
-        if !self
-            .closure_escape_advisory_spans
-            .insert(SpanKey::from(lambda_span))
-        {
-            return;
-        }
-        self.warnings.push(crate::error::TypeError {
-            severity: crate::error::Severity::Warning,
-            kind: TypeErrorKind::ClosureEscapeAdvisory {
-                rule: format!("{:?}", fact.rule),
-            },
-            span: lambda_span.clone(),
-            message: format!(
-                "closure conservatively classified as escaping ({:?}); \
-                 inlining the closure at its call site would admit `Local`",
-                fact.rule
-            ),
-            notes: vec![],
-            suggestions: vec![],
-            source_module: None,
-        });
     }
 
     /// Post-pass: walk the program once collecting every closure
@@ -3886,15 +3612,16 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
             }
         }
         Stmt::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            for expr in condition_exprs(conditions) {
+                collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            }
             collect_lambda_spans_in_block(body, out);
-            if let Some(b) = else_body {
-                collect_lambda_spans_in_block(b, out);
+            if let Some(else_expr) = else_body {
+                collect_lambda_spans_in_expr(&else_expr.0, &else_expr.1, out);
             }
         }
         Stmt::Match { scrutinee, arms } => {
@@ -3917,8 +3644,12 @@ fn collect_lambda_spans_in_stmt(stmt: &Stmt, out: &mut Vec<(Span, Option<String>
             collect_lambda_spans_in_expr(&condition.0, &condition.1, out);
             collect_lambda_spans_in_block(body, out);
         }
-        Stmt::WhileLet { expr, body, .. } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+        Stmt::WhileLet {
+            conditions, body, ..
+        } => {
+            for expr in condition_exprs(conditions) {
+                collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            }
             collect_lambda_spans_in_block(body, out);
         }
         Stmt::Break { value, .. } => {
@@ -3968,15 +3699,16 @@ fn collect_lambda_spans_in_expr(
             }
         }
         Expr::IfLet {
-            expr,
+            conditions,
             body,
             else_body,
-            ..
         } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            for expr in condition_exprs(conditions) {
+                collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
+            }
             collect_lambda_spans_in_block(body, out);
-            if let Some(b) = else_body {
-                collect_lambda_spans_in_block(b, out);
+            if let Some(else_expr) = else_body {
+                collect_lambda_spans_in_expr(&else_expr.0, &else_expr.1, out);
             }
         }
         Expr::Match { scrutinee, arms } => {
@@ -4042,9 +3774,15 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&base.0, &base.1, out);
             }
         }
-        Expr::Tuple(items) | Expr::Array(items) => {
+        Expr::Tuple(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
+            }
+        }
+        Expr::Array(elements) => {
+            for element in elements {
+                let (operand, operand_span) = element.expr();
+                collect_lambda_spans_in_expr(operand, operand_span, out);
             }
         }
         Expr::ArrayRepeat { value, count } => {
@@ -4057,11 +3795,17 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(v, vs, out);
             }
         }
-        Expr::Binary { left, right, .. } => {
+        Expr::Binary { left, right, .. }
+        | Expr::Coalesce { left, right }
+        | Expr::Handle {
+            operand: left,
+            body: right,
+            ..
+        } => {
             collect_lambda_spans_in_expr(&left.0, &left.1, out);
             collect_lambda_spans_in_expr(&right.0, &right.1, out);
         }
-        Expr::Unary { operand, .. } | Expr::Clone(operand) => {
+        Expr::Unary { operand, .. } | Expr::ReturnError(operand) | Expr::Clone(operand) => {
             collect_lambda_spans_in_expr(&operand.0, &operand.1, out);
         }
         Expr::FieldAccess { object, .. } => {
@@ -4104,14 +3848,10 @@ fn collect_lambda_spans_in_expr(
                 collect_lambda_spans_in_expr(&t.body.0, &t.body.1, out);
             }
         }
-        Expr::Join(items) => {
+        Expr::Race(items) => {
             for (e, s) in items {
                 collect_lambda_spans_in_expr(e, s, out);
             }
-        }
-        Expr::Timeout { expr, duration } => {
-            collect_lambda_spans_in_expr(&expr.0, &expr.1, out);
-            collect_lambda_spans_in_expr(&duration.0, &duration.1, out);
         }
         Expr::UnsafeBlock(block) => collect_lambda_spans_in_block(block, out),
         Expr::Yield(opt) => {
@@ -4143,7 +3883,6 @@ fn collect_lambda_spans_in_expr(
         Expr::Literal(_)
         | Expr::Identifier(_)
         | Expr::QualifiedAssoc(_)
-        | Expr::This
         | Expr::RegexLiteral(_)
         | Expr::ByteStringLiteral(_)
         | Expr::ByteArrayLiteral(_) => {}

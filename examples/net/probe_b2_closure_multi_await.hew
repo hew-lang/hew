@@ -1,10 +1,8 @@
-//! Retained future semantic fixture for a closure that awaits a captured
-//! Connection twice. Once function types carry suspension metadata, this will
-//! exercise a matching closure driver across both parks: the first read should
-//! bind the server payload and the second should resume on EOF with an empty
-//! string. Today closure invocation sites cannot select that driver safely, so
-//! MIR deliberately rejects this fixture with `suspension inside a closure`
-//! before code generation.
+//! Closure probe with two reads from a captured connection.
+//! Each ordinary read waits for data or EOF; the closure must preserve its
+//! captured handle across suspension. `await_e2e` runs this under both pools.
+
+import std.encoding.utf8;
 
 import std.net.{Listener};
 
@@ -13,35 +11,44 @@ extern "C" {
 }
 
 actor Reader {
-    let addr: string;
+    let addr: string,
 
     receive fn go(unused: i64) {
         sleep(200ms);
         let conn = match net.connect(addr) {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
-        let read_twice = || {
-            let first = await conn.read_string();
-            let second = await conn.read_string();
-            f"{first}|{second}"
+        let read_twice = move || {
+            let first = utf8.decode(conn.read());
+            let second = utf8.decode(conn.read());
+            let _ = conn.close();
+            (first, second)
         };
-        let body = read_twice();
+        let (first_result, second_result) = read_twice();
+        let first = first_result handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
+        let second = second_result handle error {
+            println(f"invalid UTF-8: {error}");
+            return;
+        };
+        let body = f"{first}|{second}";
         println(f"reader-received: {body}");
-        let _ = conn.close();
     }
 }
 
 fn main() {
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    reader.go(0);
+    fork reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("payload");
     sleep(300ms);

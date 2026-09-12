@@ -5,33 +5,17 @@
 //! hew-runtime.  The actual `hew_vec_*` function bodies live in hew-runtime;
 //! here we provide `extern "C"` declarations that resolve at link time.
 
-use core::ffi::{c_char, c_void};
+use crate::string::HewString;
+pub use crate::value::{
+    HewTypeOwnershipKind, HewValueCloneThunk, HewValueDropThunk, HewValueLayout,
+};
+use core::ffi::c_void;
 use core::mem;
-
-/// Descriptor-level ownership discipline for runtime-managed aggregate values.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HewTypeOwnershipKind {
-    /// Elements can be copied and dropped as raw bytes.
-    Plain = 0,
-    /// Elements are C string pointers with refcounted retain/release ownership
-    /// (`hew_string_clone` / `hew_string_drop`).
-    String = 1,
-    /// Elements require layout-driven clone/drop semantics not implemented yet.
-    LayoutManaged = 2,
-    /// Elements are `bytes` values (`BytesTriple` at the ABI). Used by the
-    /// channel/stream element witness, where a bytes element travels as its
-    /// contents (the queue envelope IS the value, matching what platform
-    /// stream backings produce natively). Collection constructors reject this
-    /// kind fail-closed — `Vec`/`HashMap` describe bytes elements through
-    /// their own dedicated paths, never through this discriminant.
-    Bytes = 3,
-}
 
 /// Runtime-visible layout descriptor for a plain Hew value type.
 ///
 /// This remains the per-call descriptor for the legacy `BitCopy` `_layout`
-/// operations. `HewVec` stores only the thunk-bearing [`HewVecElemLayout`]
+/// operations. `HewVec` stores only the thunk-bearing [`HewValueLayout`]
 /// witness, so clone/drop never depend on this thunk-less shape.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -53,15 +37,13 @@ pub struct HewTypeLayout {
 pub enum ElemKind {
     /// Plain value type (i32, i64, f64, structs, etc.) — no special handling.
     Plain = 0,
-    /// String (`*const c_char`) — elements are header-aware, refcounted
-    /// buffers. On ingress (`hew_vec_push_str`/`set_str`) the producer's bytes
-    /// are **copied in** to a fresh header-bearing allocation (internal
-    /// producers hand over headerless buffers that cannot be retained). On
-    /// internal propagation (`clone`/`slice`/`append`/`get_str`) an element is
-    /// **retained** (refcount bump, same buffer); on removal or drop
-    /// (`free`/`truncate`/`pop_str`) it is **released** (refcount decrement,
-    /// free at zero). Built only through the typed `hew_vec_new_str` family —
-    /// the untyped `hew_vec_new_generic` rejects this kind fail-closed.
+    /// Managed string (`*const HewString`). Push/set retain the borrowed input;
+    /// clone/slice/append retain each stored owner. Get returns a retained owner
+    /// and pop transfers the removed owner to the caller. The caller releases
+    /// either result with `string_release`; free/truncate release stored owners.
+    /// Null is the canonical empty string and remains a valid element.
+    /// Built only through the typed `hew_vec_new_str` family; the untyped
+    /// `hew_vec_new_generic` rejects this kind.
     String = 1,
 }
 
@@ -83,14 +65,14 @@ pub struct HewVec {
     ///
     /// When non-null, always points into `layout_storage` (same allocation).
     /// Callers must not assume this pointer outlives the `HewVec`.
-    pub layout: *const HewVecElemLayout,
+    pub layout: *const HewValueLayout,
     /// Inline storage for the descriptor copied in by
     /// `hew_vec_new_with_layout` or `hew_vec_new_with_elem_layout`.
     ///
     /// Keeping the descriptor inside the vec allocation means the pointer above
     /// never dangles. Plain `_layout` constructors widen their thunk-less
     /// `HewTypeLayout` argument into this authoritative shape with null thunks.
-    pub layout_storage: HewVecElemLayout,
+    pub layout_storage: HewValueLayout,
 }
 
 /// Equality callback for layout-backed Vec contains.
@@ -99,136 +81,25 @@ pub struct HewVec {
 /// codegen for the concrete element type, so it must not inspect padding bytes.
 pub type HewVecEqThunk = unsafe extern "C" fn(a: *const c_void, b: *const c_void) -> i32;
 
-// ---------------------------------------------------------------------------
-// Owned-element descriptor (W5.016 — Vec<non-Copy / owned composite>)
-// ---------------------------------------------------------------------------
+// Vectors use the shared `HewValueLayout` value protocol.
+// Plain values may omit callbacks; owning values require semantic clone/drop.
+// The descriptor is copied into each vector, so its storage outlives the call
+// that creates the vector. Callback code must outlive every vector using it.
 //
-// `HewVecElemLayout` is the authoritative per-element witness for every
-// descriptor-backed Vec. Plain elements carry null thunks; heap-owning elements
-// carry semantic clone/drop thunks. `HewTypeLayout` remains only as the
-// compatibility argument shape of BitCopy `_layout` operations and is widened
-// into this descriptor at construction.
+// Copy-in push/set borrow their input and create an independent logical value.
+// Move-in push/set transfer the input's cleanup obligation. Pop moves a value
+// out. `get_owned` returns an interior borrow valid until mutation or release;
+// `get_clone` instead writes an independent value that may outlive the vector.
+// Clear, overwrite and release destroy each removed live value exactly once.
 //
-// # Ownership contract (LESSONS `container-ingress-ownership-is-per-container`
-// P0) — the per-element discipline the owned runtime ops enforce:
-//
-// | Owned op                       | element argument        | runtime responsibility                                                                                     |
-// |--------------------------------|-------------------------|------------------------------------------------------------------------------------------------------------|
-// | `hew_vec_push_owned` (ingress) | **owned** (transferred) | memcpy `src` bytes into the new slot, then `clone_fn(src, slot)` to deep-copy the owned heap. Vec owns it.  |
-// | `hew_vec_get_owned`            | **borrowed**            | return `*const c_void` into the live buffer; valid until the next mutation. Caller must NOT free or drop.   |
-// | `hew_vec_set_owned`            | **owned** (transferred) | `drop_fn(old_slot)` to release the replaced element, then memcpy + `clone_fn(new, slot)`.                   |
-// | `hew_vec_pop_owned`            | n/a                     | memcpy the last slot to `out` (move out), NO drop — possession transfers to the caller.                     |
-// | `hew_vec_free_owned`           | n/a                     | `drop_fn(slot)` on every LIVE slot exactly once, then free the buffer.                                      |
-// | `hew_vec_clone_owned`          | n/a                     | allocate a fresh buffer, memcpy + `clone_fn(src_slot, dst_slot)` per element (deep copy).                   |
-//
-// **Invariants (P0):**
-// 1. push clones the element in exactly once; pop moves it out (no drop).
-// 2. get/for-in BORROW; no `clone_fn`/`drop_fn` runs — the caller must never
-//    free or drop a borrowed element.
-// 3. set drops the OLD element exactly once, then clones the new one in.
-// 4. free drops every live element exactly once; the buffer is freed afterward.
-// 5. clone deep-copies every element via `clone_fn` (independent owners).
-//
-// The `clone_fn`/`drop_fn` thunks point at codegen's existing per-type
-// `__hew_record_{clone,drop}_inplace_X` / `__hew_enum_{clone,drop}_inplace_X`
-// helpers (W5.011 + Result-spine W5.020). The clone thunk deep-copies only the
-// owned fields and REQUIRES the caller to have memcpy'd `dst <- src` first
-// (BitCopy fields and the enum tag/inactive bytes are correct from the memcpy);
-// the owned push/set/clone ops satisfy this precondition.
-//
-// # Fail-closed contract (LESSONS `boundary-fail-closed` P0)
-// Both thunks are `Option<...>`. `None` means "no thunk provided". A non-Plain
-// descriptor must provide a drop thunk; clone entry points fail closed when the
-// clone thunk is absent. This permits release-only witnesses such as closure
-// pairs without weakening recursive drop.
-
-/// Thunk that clones an owned Vec element from `src` to `dst`.
-///
-/// - `src` — non-null read-only pointer to the source element blob.
-/// - `dst` — non-null mutable pointer to the destination slot. The caller MUST
-///   have memcpy'd `dst <- src` (size bytes) BEFORE invoking this thunk so that
-///   `BitCopy` fields and any enum tag/inactive bytes are already correct; the
-///   thunk deep-clones only the owned (heap-owning) fields in place.
-/// - Returns 0 on success, non-zero when a partial clone was rolled back.
-///
-/// Matches the codegen `__hew_record_clone_inplace_X` /
-/// `__hew_enum_clone_inplace_X` ABI (`i32 fn(*const, *mut)`).
-pub type HewVecElemCloneThunk = unsafe extern "C" fn(src: *const c_void, dst: *mut c_void) -> i32;
-
-/// Thunk that drops an owned Vec element in place.
-///
-/// - `slot` — non-null mutable pointer to the owned element blob. The thunk
-///   releases the element's owned heap (free of inner C strings, recursive drop
-///   of nested owned aggregates/inner Vecs) but does NOT deallocate the slot
-///   bytes themselves — the Vec owns the buffer and frees it afterward.
-/// - Invoked exactly once per dropped element: at set-overwrite (old element),
-///   and at free (every live slot).
-///
-/// Matches the codegen `__hew_record_drop_inplace_X` /
-/// `__hew_enum_drop_inplace_X` ABI (`void fn(*mut)`).
-pub type HewVecElemDropThunk = unsafe extern "C" fn(slot: *mut c_void);
-
-// Rust guarantees fn pointers are non-null, so `Option<fn>` niche-optimises to
-// the underlying fn-pointer width — the null value is the `None` discriminant.
-// These asserts lock the invariant so a future Rust change breaks loudly here
-// rather than silently at the C boundary.
-const _: () = assert!(
-    size_of::<Option<HewVecElemCloneThunk>>() == size_of::<HewVecElemCloneThunk>(),
-    "Option<HewVecElemCloneThunk> must be niche-optimised to the same size as HewVecElemCloneThunk",
-);
-const _: () = assert!(
-    size_of::<Option<HewVecElemDropThunk>>() == size_of::<HewVecElemDropThunk>(),
-    "Option<HewVecElemDropThunk> must be niche-optimised to the same size as HewVecElemDropThunk",
-);
-
-/// Per-element layout descriptor for an owned-element Vec (W5.016).
-///
-/// Carries the element's `size`/`align`/`ownership_kind` plus the clone/drop
-/// thunks the runtime invokes to maintain the per-element ownership contract
-/// (see the module-level table above). A NEW struct per R307 — never an
-/// extension of `HewTypeLayout`.
-///
-/// # C layout
-///
-/// `#[repr(C)]` guarantees field order and alignment match the C struct:
-///
-/// ```c
-/// typedef struct {
-///     size_t                  size;
-///     size_t                  align;
-///     HewTypeOwnershipKind    ownership_kind;
-///     /* padding to pointer alignment */
-///     HewVecElemCloneThunk    clone_fn;  /* may be NULL only when ownership_kind == Plain */
-///     HewVecElemDropThunk     drop_fn;   /* may be NULL only when ownership_kind == Plain */
-/// } HewVecElemLayout;
-/// ```
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct HewVecElemLayout {
-    /// Size of one element in bytes.
-    pub size: usize,
-    /// Required alignment in bytes (a non-zero power of two).
-    pub align: usize,
-    /// Ownership discipline of the element type.
-    pub ownership_kind: HewTypeOwnershipKind,
-    /// Clone thunk invoked on push/set/clone (deep copy in). `None` is valid for
-    /// Plain elements and release-only descriptors; clone entry points reject a
-    /// missing thunk when semantic cloning is required.
-    pub clone_fn: Option<HewVecElemCloneThunk>,
-    /// Drop thunk invoked on set-overwrite, truncate/clear, and free. `None` is
-    /// valid only for `ownership_kind == Plain`.
-    pub drop_fn: Option<HewVecElemDropThunk>,
-}
+// Before invoking a clone callback, the runtime copies the complete element
+// bytes into the destination. The callback replaces owning fields with their
+// semantic copies; scalar fields and tags are already initialized. On failure,
+// it releases its partial copies and leaves no live destination obligation.
+// A release-only descriptor may omit cloning, but copy operations reject it.
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(core::mem::offset_of!(HewVecElemLayout, size) == 0);
-    assert!(core::mem::offset_of!(HewVecElemLayout, align) == 8);
-    assert!(core::mem::offset_of!(HewVecElemLayout, ownership_kind) == 16);
-    assert!(core::mem::offset_of!(HewVecElemLayout, clone_fn) == 24);
-    assert!(core::mem::offset_of!(HewVecElemLayout, drop_fn) == 32);
-    assert!(core::mem::size_of::<HewVecElemLayout>() == 40);
-
     assert!(core::mem::offset_of!(HewVec, data) == 0);
     assert!(core::mem::offset_of!(HewVec, len) == 8);
     assert!(core::mem::offset_of!(HewVec, cap) == 16);
@@ -236,18 +107,11 @@ const _: () = {
     assert!(core::mem::offset_of!(HewVec, elem_kind) == 32);
     assert!(core::mem::offset_of!(HewVec, layout) == 40);
     assert!(core::mem::offset_of!(HewVec, layout_storage) == 48);
-    assert!(core::mem::size_of::<HewVec>() == 88);
+    assert!(core::mem::size_of::<HewVec>() == 96);
 };
 
 #[cfg(target_pointer_width = "32")]
 const _: () = {
-    assert!(core::mem::offset_of!(HewVecElemLayout, size) == 0);
-    assert!(core::mem::offset_of!(HewVecElemLayout, align) == 4);
-    assert!(core::mem::offset_of!(HewVecElemLayout, ownership_kind) == 8);
-    assert!(core::mem::offset_of!(HewVecElemLayout, clone_fn) == 12);
-    assert!(core::mem::offset_of!(HewVecElemLayout, drop_fn) == 16);
-    assert!(core::mem::size_of::<HewVecElemLayout>() == 20);
-
     assert!(core::mem::offset_of!(HewVec, data) == 0);
     assert!(core::mem::offset_of!(HewVec, len) == 4);
     assert!(core::mem::offset_of!(HewVec, cap) == 8);
@@ -255,7 +119,7 @@ const _: () = {
     assert!(core::mem::offset_of!(HewVec, elem_kind) == 16);
     assert!(core::mem::offset_of!(HewVec, layout) == 20);
     assert!(core::mem::offset_of!(HewVec, layout_storage) == 24);
-    assert!(core::mem::size_of::<HewVec>() == 44);
+    assert!(core::mem::size_of::<HewVec>() == 48);
 };
 
 // ---------------------------------------------------------------------------
@@ -280,7 +144,7 @@ extern "C" {
     pub fn hew_vec_new_with_layout(layout: *const HewTypeLayout) -> *mut HewVec;
     // Owned-element constructor (W5.016). Stamps `elem_layout` from the
     // descriptor; the owned ops below read the clone/drop thunks from it.
-    pub fn hew_vec_new_with_elem_layout(layout: *const HewVecElemLayout) -> *mut HewVec;
+    pub fn hew_vec_new_with_elem_layout(layout: *const HewValueLayout) -> *mut HewVec;
 
     // Push
     pub fn hew_vec_push_bool(v: *mut HewVec, val: bool);
@@ -292,7 +156,8 @@ extern "C" {
     pub fn hew_vec_push_i64(v: *mut HewVec, val: i64);
     pub fn hew_vec_push_f32(v: *mut HewVec, val: f32);
     pub fn hew_vec_push_f64(v: *mut HewVec, val: f64);
-    pub fn hew_vec_push_str(v: *mut HewVec, val: *const c_char);
+    /// Retain a borrowed managed string, including canonical empty.
+    pub fn hew_vec_push_str(v: *mut HewVec, val: *const HewString);
     pub fn hew_vec_push_ptr(v: *mut HewVec, val: *mut c_void);
     pub fn hew_vec_push_generic(v: *mut HewVec, data: *const c_void);
     pub fn hew_vec_push_layout(v: *mut HewVec, data: *const c_void, layout: *const HewTypeLayout);
@@ -314,7 +179,8 @@ extern "C" {
     pub fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64;
     pub fn hew_vec_get_f32(v: *mut HewVec, index: i64) -> f32;
     pub fn hew_vec_get_f64(v: *mut HewVec, index: i64) -> f64;
-    pub fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const c_char;
+    /// Return one retained managed owner; the caller must release it.
+    pub fn hew_vec_get_str(v: *mut HewVec, index: i64) -> *const HewString;
     pub fn hew_vec_get_ptr(v: *mut HewVec, index: i64) -> *mut c_void;
     pub fn hew_vec_get_generic(v: *const HewVec, index: i64) -> *const c_void;
     pub fn hew_vec_get_layout(
@@ -340,7 +206,8 @@ extern "C" {
     pub fn hew_vec_set_i64(v: *mut HewVec, index: i64, val: i64);
     pub fn hew_vec_set_f32(v: *mut HewVec, index: i64, val: f32);
     pub fn hew_vec_set_f64(v: *mut HewVec, index: i64, val: f64);
-    pub fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const c_char);
+    /// Retain the borrowed replacement and release the previous stored owner.
+    pub fn hew_vec_set_str(v: *mut HewVec, index: i64, val: *const HewString);
     pub fn hew_vec_set_generic(v: *mut HewVec, index: i64, data: *const c_void);
     pub fn hew_vec_set_layout(
         v: *mut HewVec,
@@ -361,7 +228,8 @@ extern "C" {
     pub fn hew_vec_pop_i64(v: *mut HewVec) -> i64;
     pub fn hew_vec_pop_f32(v: *mut HewVec) -> f32;
     pub fn hew_vec_pop_f64(v: *mut HewVec) -> f64;
-    pub fn hew_vec_pop_str(v: *mut HewVec) -> *const c_char;
+    /// Transfer the removed managed owner to the caller for release.
+    pub fn hew_vec_pop_str(v: *mut HewVec) -> *const HewString;
     pub fn hew_vec_pop_generic(v: *mut HewVec, out: *mut c_void) -> i32;
     pub fn hew_vec_pop_layout(
         v: *mut HewVec,
@@ -399,7 +267,8 @@ extern "C" {
     pub fn hew_vec_contains_i32(v: *const HewVec, val: i32) -> i32;
     pub fn hew_vec_contains_i64(v: *const HewVec, val: i64) -> i32;
     pub fn hew_vec_contains_f64(v: *const HewVec, val: f64) -> i32;
-    pub fn hew_vec_contains_str(v: *const HewVec, val: *const c_char) -> i32;
+    /// Compare complete managed text, including embedded NUL and empty values.
+    pub fn hew_vec_contains_str(v: *const HewVec, val: *const HewString) -> i32;
     pub fn hew_vec_contains_layout(
         v: *const HewVec,
         data: *const c_void,

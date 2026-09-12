@@ -1,0 +1,13 @@
+[[case]]
+id = "structural_clone_resource_member"
+intent = "The fixture is refused, and the refusal names E_RESOURCE_CLOSE_MUST_CONSUME."
+source = "../vertical-slice/reject/structural_clone_resource_member.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 16
+column = 17
+message = "type `Holder` contains `#[resource]` value `Token` and cannot be cloned: member `item.Some.1` contains `Token`, which has an affine close contract and no semantic clone"

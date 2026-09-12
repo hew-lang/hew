@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_block_empty"
+intent = "Reject fixture: E_EMPTY_GENERATOR A gen { } block with no yield expressions cannot have its yield type inferred."
+source = "../vertical-slice/reject/gen_block_empty.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "EmptyGenerator"
+line = 5
+column = 14
+message = "`gen { }` body contains no `yield` expression and no value-producing tail expression or `return`; the yield type cannot be inferred — add at least one `yield <value>` statement"

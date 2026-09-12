@@ -9,12 +9,12 @@
 
 /// Error type returned on the failure arm of `Proc::close`.
 pub type ProcErr {
-    code: i64;
+    code: i64,
 }
 
 /// Success payload returned by `Proc::close`.
 pub type Tally {
-    code: i64;
+    code: i64,
 }
 
 /// A two-method process trait: `tick` advances and `close` surfaces a Result.

@@ -1,0 +1,31 @@
+actor Worker {
+    var value: i64,
+    receive fn get_value() -> i64 { value }
+    receive fn crash_me() { panic("worker failed"); }
+}
+
+supervisor App {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child w1: Worker(value: 7),
+}
+
+fn main() {
+    let app = spawn App;
+    let w = app.w1;
+    match w.get_value() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+    let _ = w.crash_me();
+    // Discard the handle the barrier re-fetches: the read below goes through a
+    // fresh supervisor slot lookup, which must find the replacement Live.
+    let _ = await_restart app.w1;
+    let fresh = app.w1;
+    match fresh.get_value() {
+        .Ok(value) => println(value),
+        .Err(_) => println("read failed"),
+    }
+    supervisor_stop(app);
+    println("stopped");
+}

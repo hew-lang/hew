@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn rename_struct_field_updates_declaration_and_accesses() {
-        let source = "type Point { x: i32; y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
+        let source = "type Point { x: i32, y: i32 }\nfn main() { let p = Point { x: 1, y: 2 }; let q = Point { x: 3, y: 4 }; p.x + q.x }";
         let pr = parse(source);
         let offset = source.find("p.x").unwrap() + 2;
         let edits = rename(source, &pr, offset, "z").expect("should rename struct field");
@@ -436,7 +436,7 @@ mod tests {
         assert!(edits.iter().any(|edit| edit.span.start == decl_start));
 
         let renamed = apply_edits(source, &edits);
-        assert!(renamed.contains("type Point { z: i32; y: i32 }"));
+        assert!(renamed.contains("type Point { z: i32, y: i32 }"));
         assert!(renamed.contains("Point { z: 1, y: 2 }"));
         assert!(renamed.contains("Point { z: 3, y: 4 }"));
         assert!(renamed.contains("p.z + q.z"));
@@ -474,25 +474,13 @@ mod tests {
         let offset = source.find("let x").unwrap() + 4;
 
         let newly_added = [
-            // Math
-            "min",
-            "max",
-            "to_float",
-            // String utilities
-            "string_concat",
-            "string_length",
-            "string_equals",
-            "string_from_int",
-            "string_contains",
-            "string_split",
-            "string_starts_with",
-            "substring",
-            "string_slice",
-            "string_trim",
-            "string_replace",
-            "string_to_upper",
-            "string_to_lower",
-            "string_ends_with",
+            // Math free functions are gone (A409: one module-qualified
+            // spelling) and `to_float` was a dead builtin; a rename onto any
+            // of them is allowed.
+            // String conversions. The legacy string free functions
+            // (string_concat, substring, string_split and the rest) were
+            // retired in favour of `string` methods, so they are no longer
+            // builtin names and a rename onto them is allowed.
             "int_to_string",
             "float_to_string",
             "char_to_string",
@@ -534,13 +522,20 @@ mod tests {
         // enters `builtin_function_names`, so it does not belong in this
         // list either.
 
-        for name in newly_added {
-            let err = plan_rename(source, &pr, offset, name).unwrap_err();
-            assert!(
-                matches!(err, RenameError::Builtin { .. }),
-                "expected Builtin error for '{name}', got {err:?}"
-            );
-        }
+        let not_refused: Vec<&str> = newly_added
+            .iter()
+            .copied()
+            .filter(|name| {
+                !matches!(
+                    plan_rename(source, &pr, offset, name),
+                    Err(RenameError::Builtin { .. })
+                )
+            })
+            .collect();
+        assert!(
+            not_refused.is_empty(),
+            "these names are no longer refused as builtins: {not_refused:?}"
+        );
     }
 
     #[test]
@@ -715,7 +710,7 @@ mod tests {
         // actor field must be rejected with ShadowsTopLevel.  Prior to the
         // fix, find_definition skipped Actor.fields so detect_conflicts
         // silently bypassed the conflict check.
-        let source = "actor Counter { count: i64; receive fn inc() {} }\nfn foo() -> i64 { 0 }";
+        let source = "actor Counter { count: i64, receive fn inc() {} }\nfn foo() -> i64 { 0 }";
         let pr = parse(source);
         let offset = source.find("fn foo").unwrap() + 3;
         let err = plan_rename(source, &pr, offset, "count").unwrap_err();

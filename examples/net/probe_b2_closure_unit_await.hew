@@ -1,9 +1,5 @@
-// Retained future semantic fixture for a unit-returning suspending closure.
-// `read_once` awaits a captured Connection and discards the read value. Once
-// function types carry suspension metadata, this will exercise the closure
-// driver's unit-result cleanup path. Today invocation sites cannot select that
-// driver safely, so MIR deliberately rejects this fixture with `suspension
-// inside a closure` before code generation.
+// Closure probe that reads a captured connection and discards the value.
+// The ordinary read can suspend; this probe checks the captured handle lifetime.
 import std.net.{Listener};
 
 extern "C" {
@@ -11,32 +7,32 @@ extern "C" {
 }
 
 actor Reader {
-    let addr: string;
+    let addr: string,
     receive fn go(unused: i64) {
         sleep(200ms);
         let conn = match net.connect(addr) {
             .Ok(conn) => conn,
-            .Err(err) => panic(f"network setup failed: {err}"),
+            .Err(_) => panic(f"network setup failed"),
         };
-        let read_once = || {
-            let _ = await conn.read_string();
+        let read_once = move || {
+            let _ = conn.read_string();
+            let _ = conn.close();
         };
         read_once();
         println("reader-unit-done");
-        let _ = conn.close();
     }
 }
 
 fn main() {
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(listener) => listener,
-        .Err(err) => panic(f"network setup failed: {err}"),
+        .Err(_) => panic(f"network setup failed"),
     };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
-    reader.go(0);
+    fork reader.go(0);
     let client = listener.accept();
     let _ = client.write_string("hello-from-server");
     sleep(500ms);

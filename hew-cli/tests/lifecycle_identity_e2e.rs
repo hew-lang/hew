@@ -29,14 +29,14 @@ import std.link_monitor.{DownNotification, DownReason};
 import lifecyclepkg.events;
 
 type RootEnvelope {
-    exit: CrashNotification;
-    down: DownNotification;
+    exit: CrashNotification,
+    down: DownNotification,
 }
 
 enum RootEvent {
-    Exit(CrashNotification);
-    Kind(CrashKind);
-    Down(DownReason);
+    Exit(CrashNotification),
+    Kind(CrashKind),
+    Down(DownReason),
 }
 
 fn main() -> i64 {
@@ -51,7 +51,7 @@ fn main() -> i64 {
 import std.failure.{CrashNotification};
 
 pub enum PeerEvent {
-    Exit(CrashNotification);
+    Exit(CrashNotification),
 }
 
 pub fn code() -> i64 {

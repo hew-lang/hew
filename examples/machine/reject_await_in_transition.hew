@@ -1,18 +1,16 @@
 machine Door {
     events {
-        Toggle;
+        Toggle,
     }
 
-    state Closed;
-    state Open;
+    state Closed,
+    state Open,
 
     on Toggle: Closed => Open {
         await pending;
         Open
     }
-    on Toggle: Open => Closed {
-        Door.Closed
-    }
+    on Toggle: Open => Closed,
 }
 
 fn main() {}

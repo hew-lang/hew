@@ -2,7 +2,7 @@
 //!
 //! B2 slice: pins that
 //!   - `link(handle)` → `Result<(), LinkError>`
-//!   - `monitor(handle)` → `Result<MonitorRef, MonitorError>`
+//!   - `monitor(handle)` → `Result<MonitorRef, LinkError>`
 //!   - `link(non_actor)` → `TYPE_MISMATCH`
 //!   - `monitor(non_actor)` → `TYPE_MISMATCH`
 
@@ -20,7 +20,7 @@ actor Worker {
 ";
 
 fn with_actor(body: &str) -> String {
-    format!("{ACTOR_DECL}\nfn main() {{\n{body}\n}}")
+    format!("{ACTOR_DECL}\nfn exercise() {{\n{body}\n}}")
 }
 
 // ── link return type ──────────────────────────────────────────────────────────
@@ -90,17 +90,17 @@ fn link_result_bound_to_let_wildcard_typechecks() {
 
 #[test]
 fn monitor_actor_ref_returns_typed_result() {
-    // `monitor(handle) -> Result<MonitorRef, MonitorError>` must typecheck.
+    // `monitor(handle) -> Result<MonitorRef, LinkError>` must typecheck.
     let src = with_actor(
         r"
         let w = spawn Worker;
-        let m: Result<MonitorRef, MonitorError> = monitor(w);
+        let m: Result<MonitorRef, LinkError> = monitor(w);
     ",
     );
     let out = typecheck(&src);
     assert!(
         out.errors.is_empty(),
-        "monitor(actor_ref) should produce Result<MonitorRef, MonitorError> with no errors; got: {:?}",
+        "monitor(actor_ref) should produce Result<MonitorRef, LinkError> with no errors; got: {:?}",
         out.errors
     );
 }
@@ -128,9 +128,9 @@ fn monitor_result_not_assignable_to_int() {
 
 #[test]
 fn link_non_actor_produces_mismatch() {
-    // `link` requires `LocalPid<_>`; passing a plain `i64` must be rejected.
+    // `link` requires an actor handle; passing a plain `i64` must be rejected.
     let src = r"
-fn main() {
+fn exercise() {
     let x: i64 = 42;
     let _ = link(x);
 }
@@ -150,9 +150,9 @@ fn main() {
 
 #[test]
 fn monitor_non_actor_produces_mismatch() {
-    // `monitor` requires `LocalPid<_>`; passing a `string` must be rejected.
+    // `monitor` requires an actor handle; passing a `string` must be rejected.
     let src = r#"
-fn main() {
+fn exercise() {
     let s: string = "hello";
     let _ = monitor(s);
 }

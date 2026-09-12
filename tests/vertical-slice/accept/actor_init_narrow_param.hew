@@ -7,9 +7,9 @@
 // small count, or a flag) and asserts the EXACT stored value survives
 // through a receive fn read, not just that the module compiles.
 actor NarrowInit {
-    var n32: i32;
-    var n16: i16;
-    var n8: u8;
+    var n32: i32,
+    var n16: i16,
+    var n8: u8,
     init(a: i32, b: i16, c: u8) {
         n32 = a;
         n16 = b;
@@ -22,7 +22,7 @@ actor NarrowInit {
 
 fn main() -> i64 {
     let handle = spawn NarrowInit(a: 100, b: 20, c: 3);
-    match await handle.sum() {
+    match handle.sum() {
         .Ok(v) => v,
         .Err(_e) => -1,
     }

@@ -207,7 +207,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(HashSet, BuiltinTypeShape::Opaque),
     registration!(CancellationToken, BuiltinTypeShape::Opaque),
     registration!(ChildRef, BuiltinTypeShape::Opaque),
-    registration!(LocalPid, BuiltinTypeShape::Opaque),
+    registration!(ActorHandle, BuiltinTypeShape::Opaque),
     registration!(NodeId, BuiltinTypeShape::Struct(NODE_ID_FIELDS)),
     registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(RemotePid, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
@@ -218,8 +218,7 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(BoxedActor, BuiltinTypeShape::Opaque),
     registration!(ActorState, BuiltinTypeShape::Opaque),
     registration!(MachineState, BuiltinTypeShape::Opaque),
-    registration!(LambdaActorHandle, BuiltinTypeShape::Opaque),
-    registration!(LambdaPid, BuiltinTypeShape::Opaque),
+    registration!(ActorFn, BuiltinTypeShape::Opaque),
     registration!(SendHalf, BuiltinTypeShape::Opaque),
     registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
@@ -300,7 +299,7 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// builtins return `Ty::Duplex { .. }` which crosses the checker boundary as
 /// `ResolvedTy::Named { name: "Duplex", .. }`.  `Sink<T>` and `Stream<T>` have
 /// no builtin constructors (the `channel()` builtin was retired in favour of
-/// `std::channel::channel.new`, which yields `(Sender<T>, Receiver<T>)`) but are
+/// `std.channel.new`, which yields `(Sender<T>, Receiver<T>)`) but are
 /// still registered here so that `ValueClass::of_ty` resolves them correctly for
 /// drop elaboration when they appear as values from std / runtime surfaces.
 /// Without this seeding, `ValueClass::of_ty` returns `Unknown` for every
@@ -422,21 +421,11 @@ mod tests {
     }
 
     #[test]
-    fn lambda_actor_handle_is_seeded_as_resource() {
+    fn anonymous_actor_handle_is_seeded_as_resource() {
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         assert_eq!(
-            table.get("LambdaActorHandle"),
-            Some(&(ResourceMarker::Resource, Some("close".to_string())))
-        );
-    }
-
-    #[test]
-    fn lambda_pid_is_seeded_as_resource() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        assert_eq!(
-            table.get("LambdaPid"),
+            table.get("ActorFn"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }
@@ -593,15 +582,15 @@ mod tests {
     fn handle_and_project_cap_registrations_carry_shape_marker_and_roles() {
         let expected = [
             (
-                BuiltinType::LocalPid,
+                BuiltinType::ActorHandle,
                 ResourceMarker::Resource,
                 None,
                 BuiltinTypeShape::Opaque,
                 Some(BuiltinHandleFamily::ActorPid),
-                1,
+                0,
                 &[
                     BuiltinRegistrationRole::ActorDispatchLocal,
-                    BuiltinRegistrationRole::SupervisorLocalPid,
+                    BuiltinRegistrationRole::SupervisorHandle,
                 ][..],
             ),
             (

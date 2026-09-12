@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_self_state_field"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/actor_self_state_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "recorded\n8207\n"
+exit = 0

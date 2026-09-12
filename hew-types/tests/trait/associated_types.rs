@@ -13,7 +13,7 @@ fn impl_requires_associated_type_definition() {
         }
 
         type Counter {
-            value: i64;
+            value: i64,
         }
 
         impl Iterator for Counter {
@@ -43,7 +43,7 @@ fn impl_type_aliases_resolve_in_methods() {
         }
 
         type Counter {
-            value: i64;
+            value: i64,
         }
 
         impl Iterator for Counter {
@@ -78,7 +78,7 @@ fn trait_default_associated_type_used_in_impl() {
         }
 
         type Answer {
-            x: i64;
+            x: i64,
         }
 
         impl Identity for Answer {

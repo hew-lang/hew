@@ -12,7 +12,7 @@ trait Describe {
     fn describe(val: Self) -> string;
 }
 
-type Wrapper<T> { inner: T; }
+type Wrapper<T> { inner: T, }
 
 impl Describe for Wrapper<i64> {
     fn describe(w: Wrapper<i64>) -> string { "i64-wrapper" }

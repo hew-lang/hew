@@ -4,10 +4,10 @@
 import std.testing;
 
 actor IntCoalescer {
-    var processed: i64 = 0;
-    var latest: i64 = -1;
+    var processed: i64 = 0,
+    var latest: i64 = -1,
 
-    mailbox 1 overflow coalesce(id) fallback drop_new;
+    mailbox 1 overflow coalesce(id) fallback drop_new,
 
     receive fn update(id: i64, value: i64, pause: duration) {
         sleep(pause);
@@ -34,11 +34,11 @@ fn coalesce_int_key_latest_wins() {
     let _ = worker.update(7, 3, 0ns);
     let _ = worker.update(7, 4, 0ns);
     sleep(350ms);
-    match await worker.count() {
+    match worker.count() {
         .Ok(value) => testing.assert_eq(value, 2),
         .Err(_) => testing.assert_true(false),
     }
-    match await worker.value() {
+    match worker.value() {
         .Ok(value) => testing.assert_eq(value, 4),
         .Err(_) => testing.assert_true(false),
     }

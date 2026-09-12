@@ -1,6 +1,6 @@
 [[case]]
 id = "fork_multi_statement_concurrent"
-intent = "Two anonymous children each execute a multi-statement body."
+intent = "Two anonymous children run multi-statement bodies that overlap: the parent reads both children's ready before releasing either, and sequences every printed marker."
 source = "../vertical-slice/accept/fork_multi_statement_concurrent.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "first-start\nsecond-start\nfirst-end\nsecond-end\ncomplete\n"
+stdout = "both-started\nfirst-end\nsecond-end\ncomplete\n"
 exit = 0

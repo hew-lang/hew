@@ -1,6 +1,12 @@
-// Two anonymous children each execute a multi-statement body. The second
-// child's middle marker must appear while the first child is sleeping, which
-// proves the bodies overlap instead of running sequentially.
+// Two anonymous children each execute a multi-statement body, and the bodies
+// overlap: every child reaches its blocking read before the parent releases
+// any of them. The parent reads both children's `ready` before it writes a
+// single `finish`, so a runtime that ran the bodies one after another would
+// deadlock on the second read rather than print a different order.
+//
+// Every printed marker is sequenced by the parent, so the output is exact:
+// the child prints its end marker and then answers `done`, and the parent
+// waits for that answer before releasing the next child.
 import std.net;
 
 actor Driver {
@@ -19,17 +25,17 @@ actor Driver {
         scope {
             fork {
                 let conn = first_listener.accept();
-                println("first-start");
                 let _ = conn.write_string("ready");
                 let _ = conn.read_string();
                 println("first-end");
+                let _ = conn.write_string("done");
             };
             fork {
                 let conn = second_listener.accept();
-                println("second-start");
                 let _ = conn.write_string("ready");
                 let _ = conn.read_string();
                 println("second-end");
+                let _ = conn.write_string("done");
             };
 
             let first_client = match net.connect(first_addr) {
@@ -42,8 +48,11 @@ actor Driver {
             };
             let _ = first_client.read_string();
             let _ = second_client.read_string();
+            println("both-started");
             let _ = first_client.write_string("finish");
+            let _ = first_client.read_string();
             let _ = second_client.write_string("finish");
+            let _ = second_client.read_string();
         };
         println("complete");
         0

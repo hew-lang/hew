@@ -24,7 +24,6 @@ machine ConnectionLifecycle {
         initial state Authenticating,
         state Active,
         state Draining,
-
         on Disconnect: _ => Disconnected,
     },
 

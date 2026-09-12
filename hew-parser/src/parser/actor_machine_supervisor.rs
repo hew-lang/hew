@@ -504,6 +504,7 @@ impl Parser<'_> {
         for group in composite_groups {
             for transition in transitions.iter_mut() {
                 if transition.target_state == group.name {
+                    transition.target_composite = Some(group.name.clone());
                     transition.target_state.clone_from(&group.initial);
                     // Rewrite a bare-identifier passthrough body that named the
                     // composite to name the initial substate instead.
@@ -651,6 +652,7 @@ impl Parser<'_> {
             source_state,
             target_state,
             target_is_contextual,
+            target_composite: None,
             event_bindings: head_bindings,
             composite_prelude_len: 0,
             guard,

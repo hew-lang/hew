@@ -1896,6 +1896,16 @@ pub struct MachineTransition {
     /// and strip that prelude. Empty when the rule used no head binding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_bindings: Vec<String>,
+    /// The composite state this rule named as its target, when it named one.
+    /// `target_state` holds the group's `initial` substate, which is the live
+    /// target; without this the formatter would rewrite `=> Connected` into
+    /// `=> Authenticating` and the source would stop following a later change
+    /// of which substate is `initial`.
+    ///
+    /// Additive and serde-defaulted, like `target_is_contextual`: a rule that
+    /// named a leaf state keeps the field out of the wire form entirely.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_composite: Option<String>,
     /// Number of leading `body` statements that are composite entry/exit hook
     /// splices (D2/D3), prepended by the parser's composite post-pass. The
     /// formatter strips exactly this many leading statements so the authored

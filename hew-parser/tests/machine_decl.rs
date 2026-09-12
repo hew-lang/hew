@@ -688,6 +688,48 @@ fn composite_block_round_trips_through_formatter() {
     );
 }
 
+/// A rule targeting a composite by name keeps that spelling through the
+/// formatter. Rewriting it to the initial substate would silently stop the
+/// source following a later change of which substate is `initial`.
+#[test]
+fn composite_name_target_survives_formatting() {
+    let source = r"machine Conn {
+    events {
+        Disconnect,
+        Connect,
+    }
+
+    state Disconnected,
+
+    state Connected {
+        initial state Authenticating,
+        state Active,
+        on Disconnect: _ => Disconnected,
+    },
+
+    on Connect: Disconnected => Connected,
+    on Connect: _ => _ {
+        state
+    }
+    on Disconnect: _ => _ {
+        state
+    }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    assert!(
+        formatted.contains("on Connect: Disconnected => Connected,"),
+        "formatter must keep the composite-name target; got:\n{formatted}"
+    );
+    assert_eq!(source, formatted, "composite-name target is not idempotent");
+}
+
 #[test]
 fn reject_depth_two_composite_nesting() {
     // Depth-1 composites are accepted; a `state` inside a substate body nests

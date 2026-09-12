@@ -1443,7 +1443,12 @@ impl<'a> Formatter<'a> {
         if transition.target_is_contextual {
             self.write(".");
         }
-        self.write(&transition.target_state);
+        self.write(
+            transition
+                .target_composite
+                .as_deref()
+                .unwrap_or(&transition.target_state),
+        );
         if transition.reenter {
             self.write(" reenter");
         }

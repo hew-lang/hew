@@ -23,7 +23,7 @@ machine ConnectionLifecycle {
     }
 
     emits {
-        Trace { text: string },
+        Trace { text: string, },
     }
 
     state Disconnected,
@@ -59,7 +59,6 @@ machine ConnectionLifecycle {
                 emit Trace { text: "Draining.exit" };
             }
         },
-
         on Disconnect: _ => Disconnected,
     },
 

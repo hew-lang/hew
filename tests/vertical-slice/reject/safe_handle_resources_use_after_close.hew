@@ -20,57 +20,57 @@ import std.encoding.protobuf;
 
 import std.encoding.xml;
 
-fn use_glob(value: path.GlobResult) {
+fn use_glob(consume value: path.GlobResult) {
     value.close();
     let _ = value.len();
 }
 
-fn use_semaphore(value: semaphore.Semaphore) {
+fn use_semaphore(consume value: semaphore.Semaphore) {
     value.close();
     let _ = value.count();
 }
 
-fn use_deque(value: deque.Deque) {
+fn use_deque(consume value: deque.Deque) {
     value.close();
     let _ = value.len();
 }
 
-fn use_cron(value: cron.Expr) {
+fn use_cron(consume value: cron.Expr) {
     value.close();
     let _ = value.to_string();
 }
 
-fn use_request(value: http.Request) {
+fn use_request(consume value: http.Request) {
     value.close();
     let _ = value.path();
 }
 
-fn use_response(value: http_client.Response) {
+fn use_response(consume value: http_client.Response) {
     value.close();
     let _ = value.status();
 }
 
-fn use_event(value: quic.QUICEvent) {
+fn use_event(consume value: quic.QUICEvent) {
     value.close();
     let _ = value.kind();
 }
 
-fn use_url(value: url.Url) {
+fn use_url(consume value: url.Url) {
     value.close();
     let _ = value.host();
 }
 
-fn use_message(value: websocket.Message) {
+fn use_message(consume value: websocket.Message) {
     value.close();
     let _ = value.msg_type();
 }
 
-fn use_protobuf(value: protobuf.Message) {
+fn use_protobuf(consume value: protobuf.Message) {
     value.close();
     let _ = value.has_field(1);
 }
 
-fn use_xml(value: xml.Node) {
+fn use_xml(consume value: xml.Node) {
     value.close();
     let _ = value.get_tag();
 }

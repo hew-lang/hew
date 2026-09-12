@@ -11,16 +11,10 @@
 # text changes arrives as a new case.
 
 # ── Documentation fences ────────────────────────────────────────────────
-guide-144626557  # SURFACE-PENDING: `commit`/`rollback(consume self)` — same receiver spelling (#3257)
-spec-1607851950  # SNIPPET: bare `let` — fn-type/Rc illustration; Rc/Weak wording owned by feat/rc-physical-path, left untouched by this lane
-spec-3936244856  # IMPL-GAP: an actor `receive fn` parameter typed `fn(...) -> ...` type-checks (discarding the completion result correctly raises `E_SEND_RESULT_DROPPED`) but SIR lowering of the ask/completion for such a handler is not implemented (`E_SIR_UNSUPPORTED: ... ask must return its complete checked Result`)
-std-arena-3714386937  # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
-std-net-http-http-223475752  # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
+guide-144626557  # IMPL-GAP: linear Tx has no semantic value contract for explicit consuming methods
+spec-2852945253  # IMPL-GAP: callable actor handler arguments reach SIR but ask lacks its complete checked Result
+std-arena-3905187364  # IMPL-GAP: Arena.remove retains an element loan while mutating its backing vector
 
 # ── Remaining migrated execution defects ──────────────────────────────
 # These programs assert the documented behaviour; current native execution
 # still disagrees. Source repairs removed old ABI and shared-mutation probes.
-
-std_net_dns_execution  # DEFECT: localhost resolution panics (UserPanic 212)
-
-# Affine ownership diagnostics exposed by fixing stale close declarations.

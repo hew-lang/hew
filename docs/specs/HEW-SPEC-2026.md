@@ -1959,9 +1959,12 @@ fn eval(e: Expr) -> i64 {
   restrictions
 
 ```hew
-let data: Rc<string> = Rc.new(expensive_computation());
-let alias = data.clone();  // refcount++, no data copy
-// data and alias share the same string
+fn main() {
+    let data: Rc<string> = Rc.new("shared data".to_upper());
+    let alias = data.clone();
+    assert(data.strong_count() == 2);
+    println(alias.strong_count());
+}
 ```
 
 **`Weak<T>` — non-owning cycle-breaking handle:**
@@ -2617,12 +2620,18 @@ actor Calculator {
     receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
         result = op(result, value);
     }
+
+    receive fn value() -> i64 { result }
 }
 
-let calc = spawn Calculator();
-// Lambda types inferred from receive fn signature
-calc.apply_operation(|a, b| a + b, 10);  // a: i64, b: i64 inferred
-calc.apply_operation(|a, b| a * b, 5);   // also inferred
+fn main() {
+    let calc = spawn Calculator;
+    // Lambda parameter types are inferred from the handler signature.
+    calc.apply_operation(|a, b| a + b, 10).expect("add");
+    calc.apply_operation(|a, b| a * b, 5).expect("multiply");
+    assert(calc.value().expect("read result") == 50);
+    close(calc);
+}
 ```
 
 **Generic lambda constraints:**

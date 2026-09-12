@@ -27,7 +27,7 @@ actor TestSink {
     }
 }
 
-fn select_bodies_are_alternatives(held: Conn) -> i64 {
+fn select_bodies_are_alternatives(consume held: Conn) -> i64 {
     let a = spawn TestSink;
     let b = spawn TestSink;
     let _winner = select {

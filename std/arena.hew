@@ -16,7 +16,7 @@
 //! import std.arena;
 //!
 //! fn main() {
-//!     let store: arena.Arena<string> = arena.new();
+//!     var store: arena.Arena<string> = arena.new();
 //!     let key = store.insert("hello");
 //!     println(store.get(key).expect("get succeeds"));   // hello
 //!     store.remove(key);

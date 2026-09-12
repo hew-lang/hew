@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 0
-column = 0
-message = "semantic lowering of `__hew_fn_main` is not implemented: E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value; declare the forwarding parameter consume"
+code = "E_OWN_CONSUME_BORROWED"
+line = 15
+column = 16
+message = "E_OWN_CONSUME_BORROWED: cannot consume borrowed collection element `first`"

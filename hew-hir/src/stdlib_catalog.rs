@@ -2641,7 +2641,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
 ];
 
 pub static CATALOG: std::sync::LazyLock<Vec<BuiltinEntry>> = std::sync::LazyLock::new(|| {
-    let mut entries = HANDWRITTEN_CATALOG.to_vec();
     use hew_types::runtime_call::{CanonicalExternTy, DECLARED_DIRECT_RUNTIME_METHODS};
     fn scalar(ty: CanonicalExternTy) -> BuiltinTy {
         match ty {
@@ -2652,6 +2651,7 @@ pub static CATALOG: std::sync::LazyLock<Vec<BuiltinEntry>> = std::sync::LazyLock
             _ => unreachable!("generated direct runtime descriptor contains unsupported scalar"),
         }
     }
+    let mut entries = HANDWRITTEN_CATALOG.to_vec();
     entries.extend(DECLARED_DIRECT_RUNTIME_METHODS.iter().map(|method| {
         // The catalogue and these parameter slices live for the process lifetime.
         let params = method

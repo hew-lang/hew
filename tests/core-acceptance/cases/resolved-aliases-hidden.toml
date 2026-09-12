@@ -1,0 +1,13 @@
+[[case]]
+id = "resolved-aliases-hidden"
+intent = "A qualified alias remains private to its declaring module even though public aliases from that module are available."
+source = "fixtures/resolved-aliases-modules/hidden.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "VisibilityViolationPrivate"
+file = "resolved-aliases-modules/hidden.hew"
+line = 4
+column = 17

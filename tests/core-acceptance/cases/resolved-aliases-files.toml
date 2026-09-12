@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-aliases-files"
+intent = "Private same-named aliases in sibling imported files resolve to each file's own string or integer type without leaking into the peer."
+source = "fixtures/resolved-aliases-files/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "LEFT\n42\n"
+exit = 0

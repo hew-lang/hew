@@ -1,0 +1,6 @@
+type Value = string;
+
+pub fn left_value() -> Value {
+    let value: Value = "left".to_upper();
+    value
+}

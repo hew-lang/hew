@@ -1,0 +1,16 @@
+pub type Handle {
+    label: string,
+    count: i64,
+}
+
+pub fn make() -> Handle {
+    Handle { label: "ordinary".to_upper(), count: 7 }
+}
+
+pub fn increment(handle: Handle) -> Handle {
+    Handle { label: handle.label + "!", count: handle.count + 1 }
+}
+
+pub fn show(handle: Handle) {
+    println(f"{handle.label} {handle.count}");
+}

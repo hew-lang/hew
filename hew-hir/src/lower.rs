@@ -19,11 +19,10 @@ use std::{
 use hew_parser::ast::{
     condition_exprs, ActorDecl, ArrayElement, AttributeArg, BinaryOp, Block, CallArg,
     CompoundAssignOp, ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal,
-    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
-    VariantKind,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
+    SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -1818,85 +1817,6 @@ fn collect_trait_declaring_surfaces(
     (supers, methods)
 }
 
-/// Harvest opaque-type identity from the whole program (root items + every
-/// imported module) for the `ResolvedTy::Named.is_opaque` discriminator
-/// stamped by [`LowerCtx::lower_type`]:
-///
-/// * `opaque` — opaque type names in BOTH forms: the bare short name
-///   (`"Value"` for a `#[opaque] type Value` in `std::encoding::json`) AND
-///   the module-qualified form (`"json.Value"`). A bare reference matches the
-///   short form; a qualified reference (`json.Value`) matches the qualified
-///   form EXACTLY, so it cannot be confused with a same-short-name user type
-///   in a different module (`m.Value`).
-/// * `non_opaque` — short names of every non-opaque user type declaration
-///   (`type`/`record`/`enum`/`actor`/`machine`). Used to resolve a BARE
-///   reference whose short name is opaque-in-one-module: if a local user type
-///   shadows the short name, the bare reference is the user type, not the
-///   opaque handle.
-///
-/// Keeping qualified opaque keys is what makes the discriminator a precise
-/// identity fact rather than a short-name heuristic: `m.Value` (user record
-/// from module `m`) and `json.Value` (opaque handle) both have short name
-/// `"Value"`, but only `json.Value` is in `opaque` under its qualified key.
-fn collect_opaque_type_short_names(
-    program: &Program,
-    opaque: &mut HashSet<String>,
-    non_opaque: &mut HashSet<String>,
-) {
-    fn visit_items(
-        items: &[(Item, Span)],
-        module_short: Option<&str>,
-        opaque: &mut HashSet<String>,
-        non_opaque: &mut HashSet<String>,
-    ) {
-        for (item, _) in items {
-            match item {
-                Item::TypeDecl(decl) => {
-                    if decl.is_opaque {
-                        opaque.insert(decl.name.clone());
-                        if let Some(m) = module_short {
-                            opaque.insert(format!("{m}.{}", decl.name));
-                        }
-                    } else {
-                        non_opaque.insert(decl.name.clone());
-                    }
-                }
-                // `record`/`enum`/`actor`/`machine` are never `#[opaque]`
-                // (opacity is only expressible on `type` decls), so they only
-                // ever contribute to the non-opaque complement.
-                Item::Record(decl) => {
-                    non_opaque.insert(decl.name.clone());
-                }
-                Item::Actor(decl) => {
-                    non_opaque.insert(decl.name.clone());
-                }
-                Item::Machine(decl) => {
-                    non_opaque.insert(decl.name.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    visit_items(&program.items, None, opaque, non_opaque);
-    if let Some(ref mg) = program.module_graph {
-        for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
-                continue;
-            }
-            if let Some(module) = mg.modules.get(mod_id) {
-                let module_identity = mod_id.path.join(".");
-                visit_items(
-                    &module.items,
-                    Some(module_identity.as_str()),
-                    opaque,
-                    non_opaque,
-                );
-            }
-        }
-    }
-}
-
 /// Synthesize a `FnDecl` from a `TraitMethod` for HIR lowering purposes.
 /// The resulting `FnDecl` carries the default body and the same signature
 /// as the trait declaration. `current_impl_self_ty` in the lowering context
@@ -2633,7 +2553,6 @@ pub fn lower_program_with_mono_cap(
                 .keys()
                 .any(|module| module.path.join(".") == "std.prelude")
     });
-    ctx.type_aliases = collect_type_aliases(program);
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
     // declaration namespace.  Compute the checker-aligned module-name carrier
@@ -2729,36 +2648,6 @@ pub fn lower_program_with_mono_cap(
     ctx.trait_super = trait_super;
     ctx.trait_declared_methods = trait_declared_methods;
 
-    // Pre-pre-pass: harvest `#[opaque]` type-decl short names (and the
-    // complement of non-opaque user type short names) from the whole program
-    // — root items and every imported module. `lower_type` reads these to
-    // stamp the `ResolvedTy::Named.is_opaque` discriminator BEFORE any actor
-    // state-field type is resolved, so the actor-state clone/drop classifier
-    // can tell a real opaque handle apart from a colliding user type by
-    // identity rather than by name. See the field docs on `LowerCtx`.
-    collect_opaque_type_short_names(
-        program,
-        &mut ctx.opaque_type_short_names,
-        &mut ctx.non_opaque_type_short_names,
-    );
-    if let Some(builtins) = &builtin_declarations {
-        for (item, _) in &builtins.items {
-            if let Item::TypeDecl(decl) = item {
-                if decl.is_opaque {
-                    ctx.opaque_type_short_names.insert(decl.name.clone());
-                    ctx.opaque_type_short_names
-                        .insert(format!("std.builtins.{}", decl.name));
-                }
-            }
-        }
-    }
-    ctx.root_opaque_type_short_names
-        .extend(program.items.iter().filter_map(|(item, _)| {
-            let Item::TypeDecl(decl) = item else {
-                return None;
-            };
-            decl.is_opaque.then(|| decl.name.clone())
-        }));
     // Root-authored declarations only: items spliced into `program.items` by
     // `flatten_file_import_items` keep their defining file's module identity
     // (`file_import_module_idx`), so they must not claim the root bare
@@ -7844,32 +7733,6 @@ struct LowerCtx {
     trait_default_module_idx: HashMap<String, u32>,
     trait_super: HashMap<String, Vec<String>>,
     trait_declared_methods: HashMap<String, HashSet<String>>,
-    /// Short names of every `#[opaque]` type declaration in the program
-    /// (root + imported modules), e.g. `"Value"` for `json.Value`.
-    ///
-    /// Consulted by [`LowerCtx::lower_type`] to stamp the
-    /// `ResolvedTy::Named.is_opaque` discriminator so the actor-state
-    /// clone/drop classifier (`hew-mir::state_clone`) can distinguish a real
-    /// opaque handle from a user record/enum that merely shares its short
-    /// name. Populated by the type-decl pre-passes (root + imported) before
-    /// any actor body lowers, so the discriminator is available when actor
-    /// state-field types are resolved.
-    ///
-    /// `non_opaque_type_short_names` carries the complement: short names that
-    /// are user records/enums/actors. A bare (unqualified) annotation whose
-    /// short name is in BOTH sets refers to the user type (the local
-    /// declaration shadows the imported opaque handle); only a qualified
-    /// reference (`json.Value`) or a bare name that is exclusively opaque
-    /// resolves to the opaque handle. This keeps the discriminator a type
-    /// identity fact rather than a short-name heuristic.
-    opaque_type_short_names: HashSet<String>,
-    non_opaque_type_short_names: HashSet<String>,
-    /// Root-visible opaque declarations: declarations authored in the root
-    /// source plus flattened file-import declarations, kept separate from
-    /// package-imported compiler carriers. A root-visible
-    /// `#[opaque] type Receiver {}` shadows the builtin by declaration identity
-    /// even though its short name is registered in the builtin catalog.
-    root_opaque_type_short_names: HashSet<String>,
     /// Source-declared type names visible in the root namespace, including
     /// declarations flattened from file imports. These identities must be
     /// considered before the compiler-only `Task`, `Unit`, and
@@ -7940,9 +7803,7 @@ struct LowerCtx {
     declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
     /// Immutable checker declaration authority. This view cannot mint.
     identity: hew_types::IdentityView,
-    type_aliases: HashMap<String, TypeAliasLowering>,
-    type_alias_substitutions: Vec<HashMap<String, ResolvedTy>>,
-    resolving_type_aliases: HashSet<String>,
+    type_aliases: HashMap<hew_types::DefId, hew_types::TypeAliasDef>,
     /// Checker-authoritative import resolution table: maps `(importer_module,
     /// source spelling)` → canonical qualified source identity for named/glob
     /// imports and canonical lifecycle whole-module aliases.
@@ -7980,55 +7841,6 @@ struct LowerCtx {
     /// Root-scope value bindings the program itself declares. A root
     /// declaration outranks a name an import published into the root scope.
     root_value_bindings: HashSet<String>,
-}
-
-#[derive(Debug, Clone)]
-struct TypeAliasLowering {
-    type_params: Vec<String>,
-    target: Spanned<TypeExpr>,
-}
-
-fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering> {
-    fn insert_alias(
-        aliases: &mut HashMap<String, TypeAliasLowering>,
-        owner: Option<&str>,
-        decl: &TypeAliasDecl,
-    ) {
-        let alias = TypeAliasLowering {
-            type_params: decl
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|param| param.name.clone()).collect())
-                .unwrap_or_default(),
-            target: decl.ty.clone(),
-        };
-        if let Some(owner) = owner {
-            aliases.insert(format!("{owner}.{}", decl.name), alias);
-        } else {
-            aliases.insert(decl.name.clone(), alias);
-        }
-    }
-
-    let mut aliases = HashMap::new();
-    for (item, _) in &program.items {
-        if let Item::TypeAlias(decl) = item {
-            insert_alias(&mut aliases, None, decl);
-        }
-    }
-    if let Some(graph) = &program.module_graph {
-        for module_id in &graph.topo_order {
-            let Some(module) = graph.modules.get(module_id) else {
-                continue;
-            };
-            let owner = module_id.path.join(".");
-            for (item, _) in &module.items {
-                if let Item::TypeAlias(decl) = item {
-                    insert_alias(&mut aliases, Some(&owner), decl);
-                }
-            }
-        }
-    }
-    aliases
 }
 
 /// Whether `ty` transitively carries a value whose SOLE ownership crosses an
@@ -8280,9 +8092,6 @@ impl LowerCtx {
             trait_default_module_idx: HashMap::new(),
             trait_super: HashMap::new(),
             trait_declared_methods: HashMap::new(),
-            opaque_type_short_names: HashSet::new(),
-            non_opaque_type_short_names: HashSet::new(),
-            root_opaque_type_short_names: HashSet::new(),
             root_visible_source_type_short_names: HashSet::new(),
             file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
@@ -8308,9 +8117,7 @@ impl LowerCtx {
             lowering_injected_items: false,
             current_module_name: None,
             declaration_module_by_file_index: HashMap::new(),
-            type_aliases: HashMap::new(),
-            type_alias_substitutions: Vec::new(),
-            resolving_type_aliases: HashSet::new(),
+            type_aliases: tc_output.resolved_type_aliases.clone(),
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
@@ -13094,7 +12901,12 @@ impl LowerCtx {
         // such as `Vec`, `Option`, and `Result` are ordinary user nominals
         // unless they carry the corresponding builtin discriminator.
         let target_is_alias = self.type_alias_for_name(self_type_name).is_some();
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            type_params.iter().cloned().collect(),
+        );
         let mut resolved_impl_self_ty = self.lower_type(&decl.target_type);
+        self.current_fn_type_params = previous_type_params;
         // Injected `std/builtins.hew` impls are compiler-owned declarations.
         // A root user declaration with the same source leaf must not retag
         // their `Self` type or their static-dispatch metadata. Recover the
@@ -14239,11 +14051,36 @@ impl LowerCtx {
         span: Span,
         declaration: hew_types::DefId,
     ) -> HirTypeDecl {
+        let facts = self
+            .type_declarations
+            .get(declaration.full_path())
+            .cloned()
+            .unwrap_or_else(|| {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: declaration.full_path().to_string(),
+                        reason: "missing declared type facts".to_string(),
+                    },
+                    span.clone(),
+                    "type declaration reached HIR without checker classification",
+                ));
+                hew_types::value_class::DeclaredType::default()
+            });
+        let marker = match facts.marker {
+            hew_types::value_class::DeclarationMarker::Resource => ResourceMarker::Resource,
+            hew_types::value_class::DeclarationMarker::Linear => ResourceMarker::Linear,
+            hew_types::value_class::DeclarationMarker::None if facts.is_opaque => {
+                ResourceMarker::BitCopy
+            }
+            hew_types::value_class::DeclarationMarker::None => ResourceMarker::None,
+        };
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
         // first place the marker is durable, so the check lands here.
-        if decl.resource_marker != AstResourceMarker::None && decl.type_params.is_some() {
+        if matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
+            && !facts.type_params.is_empty()
+        {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceGenericUnsupported {
                     name: decl.name.clone(),
@@ -14253,15 +14090,20 @@ impl LowerCtx {
             ));
         }
 
-        match decl.resource_marker {
-            AstResourceMarker::Resource => {
+        match marker {
+            ResourceMarker::Resource => {
                 self.check_resource_close_discipline(decl, &span, &declaration);
             }
-            AstResourceMarker::Linear => {
+            ResourceMarker::Linear => {
                 self.check_linear_consume_discipline(decl, &span, &declaration);
             }
-            AstResourceMarker::None => {}
+            ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
+
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            facts.type_params.iter().cloned().collect(),
+        );
 
         // Carry the field set so dump-hir and future analysis have something
         // to reason about; methods are out of scope for v0.5 MIR lowering
@@ -14342,15 +14184,7 @@ impl LowerCtx {
             .type_params
             .as_ref()
             .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-        // `#[opaque]`-only handles classify as `BitCopy`: pointer-width,
-        // copied wholesale by memcpy, no implicit drop. `#[resource]`/`#[linear]`
-        // ownership (if also declared) takes precedence — representation and
-        // ownership are orthogonal axes.
-        let marker = if decl.is_opaque && decl.resource_marker == AstResourceMarker::None {
-            ResourceMarker::BitCopy
-        } else {
-            ResourceMarker::from(decl.resource_marker)
-        };
+        self.current_fn_type_params = previous_type_params;
         HirTypeDecl {
             kind: match decl.kind {
                 TypeDeclKind::Struct => HirTypeDeclKind::Struct,
@@ -14365,7 +14199,7 @@ impl LowerCtx {
             // package-exported types.
             defining_module: None,
             marker,
-            is_opaque: decl.is_opaque,
+            is_opaque: facts.is_opaque,
             is_indirect: decl.is_indirect,
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
@@ -14391,6 +14225,10 @@ impl LowerCtx {
             params.iter().map(|p| p.name.clone()).collect()
         });
 
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            type_params.iter().cloned().collect(),
+        );
         let (fields, positional_field_tys): (Vec<HirField>, Vec<ResolvedTy>) = match &decl.kind {
             RecordKind::Named(record_fields) => (
                 record_fields
@@ -14425,6 +14263,7 @@ impl LowerCtx {
             .record_registry
             .get(&decl.name)
             .map_or_else(|| self.ids.item(), |entry| entry.id);
+        self.current_fn_type_params = previous_type_params;
         Some(HirRecordDecl {
             id,
             node: self.ids.node(),
@@ -22425,7 +22264,7 @@ impl LowerCtx {
         // because the short spelling collides.
         if self.current_module_name.is_none()
             && !name.contains('.')
-            && self.root_opaque_type_short_names.contains(name)
+            && self.declared_type_is_opaque(name)
         {
             return ResolvedTy::named_opaque(name.to_string(), args);
         }
@@ -22449,7 +22288,7 @@ impl LowerCtx {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
-                if self.resolves_to_opaque_handle(&qualified, name) {
+                if self.declared_type_is_opaque(&qualified) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
@@ -22508,7 +22347,7 @@ impl LowerCtx {
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
                 return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
-            if self.resolves_to_opaque_handle(&canonical, type_name) {
+            if self.declared_type_is_opaque(&canonical) {
                 return ResolvedTy::named_opaque(canonical, args);
             }
             return ResolvedTy::named_user(canonical, args);
@@ -22521,7 +22360,7 @@ impl LowerCtx {
         // CrashInfo }` into a user type, losing the crash-hook ABI identity.
         if !name.contains('.')
             && self.current_scope_declares_source_type(name, current_module_is_file_import)
-            && !self.resolves_to_opaque_handle(name, type_name)
+            && !self.declared_type_is_opaque(name)
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
@@ -22565,7 +22404,7 @@ impl LowerCtx {
             && self.record_registry.contains_key(name)
             && hew_types::lookup_source_owned_lifecycle_type(name).is_none()
             && crate::builtin_type_classes::builtin_type_registration(type_name).is_none()
-            && !self.resolves_to_opaque_handle(name, type_name)
+            && !self.declared_type_is_opaque(name)
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
@@ -22609,12 +22448,12 @@ impl LowerCtx {
             }
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
             Self::resolved_source_builtin_ty(name, builtin, args)
-        } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
+        } else if name.contains('.') && self.declared_type_is_opaque(name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
             // type-identity discriminator so the actor-state clone/drop
             // classifier fails closed on the handle even when its short name
             // collides with a user record/enum of the same name. See
-            // `LowerCtx::resolves_to_opaque_handle`.
+            // `LowerCtx::declared_type_is_opaque`.
             ResolvedTy::named_opaque(name.to_string(), args)
         } else if name.contains('.') {
             // Module-qualified user type (`widgeti64.Widget`). Preserve the
@@ -22636,7 +22475,7 @@ impl LowerCtx {
             .filter(|builtin| !builtin.requires_source_import())
         {
             ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
-        } else if self.resolves_to_opaque_handle(name, type_name) {
+        } else if self.declared_type_is_opaque(name) {
             ResolvedTy::named_opaque(name.to_string(), args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
@@ -22679,7 +22518,7 @@ impl LowerCtx {
         if self.current_module_name.is_none()
             && self.root_visible_source_type_short_names.contains(name)
         {
-            return Some(if self.root_opaque_type_short_names.contains(name) {
+            return Some(if self.declared_type_is_opaque(name) {
                 ResolvedTy::named_opaque(name.to_string(), args)
             } else {
                 ResolvedTy::named_user(name.to_string(), args)
@@ -22692,7 +22531,7 @@ impl LowerCtx {
                 if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                     return Some(Self::resolved_source_builtin_ty(&qualified, builtin, args));
                 }
-                return Some(if self.resolves_to_opaque_handle(&qualified, name) {
+                return Some(if self.declared_type_is_opaque(&qualified) {
                     ResolvedTy::named_opaque(qualified, args)
                 } else {
                     ResolvedTy::named_user(qualified, args)
@@ -22894,7 +22733,7 @@ impl LowerCtx {
                     return Self::resolved_source_builtin_ty(&canonical, builtin, args);
                 }
             }
-            if self.resolves_to_opaque_handle(&canonical, &name) {
+            if self.declared_type_is_opaque(&canonical) {
                 return ResolvedTy::named_opaque(canonical, args);
             }
             return ResolvedTy::named_user(canonical, args);
@@ -22911,7 +22750,7 @@ impl LowerCtx {
         }
         if !name.contains('.')
             && self.current_module_name.is_none()
-            && self.root_opaque_type_short_names.contains(&name)
+            && self.declared_type_is_opaque(&name)
         {
             return ResolvedTy::named_opaque(name, args);
         }
@@ -22927,7 +22766,7 @@ impl LowerCtx {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
-                if self.resolves_to_opaque_handle(&qualified, &name) {
+                if self.declared_type_is_opaque(&qualified) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
@@ -22952,11 +22791,11 @@ impl LowerCtx {
             // `http.ResponseHandle`), which is harvested as an exact opaque
             // key but otherwise reached MIR as an ordinary user type.
             || (builtin.is_none()
-                && self.resolves_to_opaque_handle(&name, hew_types::short_name(&name)))
+                && self.declared_type_is_opaque(&name))
             || (builtin.is_none()
                 && self.current_module_name.is_none()
                 && !name.contains('.')
-                && self.root_opaque_type_short_names.contains(&name));
+                && self.declared_type_is_opaque(&name));
         // Checker expression facts for a flat-file-imported return type can
         // retain the root-visible bare spelling. Project it through the same
         // declaration map source annotations use before MIR observes the
@@ -23068,7 +22907,7 @@ impl LowerCtx {
             }
         } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
             Self::resolved_source_builtin_ty(&canonical, builtin, args)
-        } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
+        } else if self.declared_type_is_opaque(&canonical) {
             ResolvedTy::named_opaque(canonical, args)
         } else {
             ResolvedTy::named_user(canonical, args)
@@ -23490,94 +23329,74 @@ impl LowerCtx {
         ))
     }
 
-    /// Decide whether a `Named` type reference resolves to a `#[opaque]`
-    /// runtime handle, used to stamp `ResolvedTy::Named.is_opaque`.
-    ///
-    /// `full_name` is the annotation as written (qualified `json.Value` /
-    /// `m.Value`, or bare `Value`); `short_name` is its module-prefix-stripped
-    /// form. The decision is made from declared identity (the opaque sets
-    /// harvested by `collect_opaque_type_short_names`), never from a
-    /// name-collision heuristic:
-    ///
-    /// * A qualified reference (`json.Value`, `m.Value`) is opaque IFF its
-    ///   EXACT qualified name is a registered opaque key. `json.Value` is
-    ///   (it names the opaque handle); `m.Value` is NOT (it names a user
-    ///   record in module `m` that merely shares the short name). A user type
-    ///   cannot be declared `#[opaque]`, so the qualified key is unambiguous.
-    /// * A bare reference (`Value`) is opaque ONLY when its short name is
-    ///   opaque AND no non-opaque user type shares that short name. When both
-    ///   exist, the local user declaration shadows the imported opaque handle
-    ///   for an unqualified reference (matching name resolution), so the bare
-    ///   reference resolves to the user type (`is_opaque: false`).
-    fn resolves_to_opaque_handle(&self, full_name: &str, short_name: &str) -> bool {
-        let is_qualified = full_name.contains('.');
-        if is_qualified {
-            // Exact qualified-key match only: distinguishes `json.Value`
-            // (opaque) from `m.Value` (user record sharing the short name).
-            return self.opaque_type_short_names.contains(full_name);
-        }
-        // Bare reference: opaque only if the short name is opaque and no user
-        // type shadows it.
-        self.opaque_type_short_names.contains(short_name)
-            && !self.non_opaque_type_short_names.contains(short_name)
+    /// Opacity belongs to the checker declaration at this exact identity.
+    fn declared_type_is_opaque(&self, identity: &str) -> bool {
+        self.type_declarations
+            .get(identity)
+            .is_some_and(|decl| decl.is_opaque)
     }
 
-    fn type_alias_for_name(&self, name: &str) -> Option<(String, TypeAliasLowering)> {
-        if let Some(alias) = self.type_aliases.get(name) {
-            return Some((name.to_string(), alias.clone()));
+    fn type_alias_for_name(&self, name: &str) -> Option<&hew_types::TypeAliasDef> {
+        let local = self.current_module_name.as_ref().map_or_else(
+            || name.to_string(),
+            |module| {
+                if name.contains('.') {
+                    name.to_string()
+                } else {
+                    format!("{module}.{name}")
+                }
+            },
+        );
+        if let Some(declaration) = self.identity.declaration_by_path(&local) {
+            return self.type_aliases.get(declaration);
         }
-        let module = self.current_module_name.as_deref()?;
-        let qualified = format!("{module}.{name}");
-        self.type_aliases
-            .get(&qualified)
+        let canonical = self
+            .import_type_name_aliases
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
             .cloned()
-            .map(|alias| (qualified, alias))
+            .or_else(|| {
+                let (binding, tail) = name.split_once('.')?;
+                self.module_import_bindings
+                    .get(&(
+                        self.current_module_name.clone(),
+                        self.current_module_idx,
+                        binding.to_string(),
+                    ))
+                    .map(|owner| format!("{owner}.{tail}"))
+            })?;
+        let declaration = self.identity.declaration_by_path(&canonical)?;
+        self.type_aliases.get(declaration)
     }
 
-    fn lower_type_alias(
+    fn instantiate_type_alias(
         &mut self,
-        identity: String,
-        alias: TypeAliasLowering,
-        args: Vec<ResolvedTy>,
+        alias: &hew_types::TypeAliasDef,
+        args: &[ResolvedTy],
         span: &Span,
     ) -> ResolvedTy {
-        if alias.type_params.len() != args.len() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: identity,
-                    reason: format!(
-                        "alias arity mismatch: expected {}, found {}",
-                        alias.type_params.len(),
-                        args.len()
-                    ),
-                },
-                span.clone(),
-                "type alias reached HIR with invalid type arguments",
-            ));
-            return ResolvedTy::Unit;
+        let parameters = alias.type_params.iter().cloned().collect();
+        let target = ResolvedTy::from_ty_with_type_params(&alias.target, &parameters);
+        match target {
+            Ok(target) if alias.type_params.len() == args.len() => {
+                let instantiated = substitute_type_params(&target, &alias.type_params, args);
+                self.qualify_current_module_record_ty(instantiated)
+            }
+            target => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: alias.declaration.full_path().to_string(),
+                        reason: format!("invalid resolved alias target or arity: {target:?}"),
+                    },
+                    span.clone(),
+                    "type alias reached HIR without a resolved checker contract",
+                ));
+                ResolvedTy::Unit
+            }
         }
-        if !self.resolving_type_aliases.insert(identity.clone()) {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: identity.clone(),
-                    reason: "recursive type alias".to_string(),
-                },
-                span.clone(),
-                "recursive type aliases are not supported",
-            ));
-            return ResolvedTy::Unit;
-        }
-        self.type_alias_substitutions.push(
-            alias
-                .type_params
-                .into_iter()
-                .zip(args)
-                .collect::<HashMap<_, _>>(),
-        );
-        let lowered = self.lower_type(&alias.target);
-        self.type_alias_substitutions.pop();
-        self.resolving_type_aliases.remove(&identity);
-        lowered
     }
 
     #[expect(
@@ -23591,19 +23410,11 @@ impl LowerCtx {
                     .as_ref()
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
                     .unwrap_or_default();
-                if args.is_empty() {
-                    if let Some(substituted) = self
-                        .type_alias_substitutions
-                        .iter()
-                        .rev()
-                        .find_map(|scope| scope.get(name))
-                        .cloned()
-                    {
-                        return substituted;
-                    }
+                if args.is_empty() && self.current_fn_type_params.contains(name) {
+                    return ResolvedTy::TypeParam { name: name.clone() };
                 }
-                if let Some((identity, alias)) = self.type_alias_for_name(name) {
-                    return self.lower_type_alias(identity, alias, args, &ty.1);
+                if let Some(alias) = self.type_alias_for_name(name).cloned() {
+                    return self.instantiate_type_alias(&alias, &args, &ty.1);
                 }
                 // W3.042 S2-S1: `Self` in an impl-method body annotation
                 // resolves to the concrete impl-target type. Without this
@@ -34070,13 +33881,19 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        ctx.opaque_type_short_names.extend([
-            "Receiver".to_string(),
-            "Connection".to_string(),
-            "foo.Receiver".to_string(),
-            "foo.Connection".to_string(),
-            "net.Connection".to_string(),
-        ]);
+        ctx.type_declarations.extend(
+            ["foo.Receiver", "foo.Connection", "net.Connection"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        hew_types::value_class::DeclaredType {
+                            is_opaque: true,
+                            ..Default::default()
+                        },
+                    )
+                }),
+        );
 
         for qualified in ["foo.Receiver", "foo.Connection", "net.Connection"] {
             assert_eq!(
@@ -34136,15 +33953,20 @@ impl Widget {
         );
 
         ctx.import_type_name_aliases.clear();
-        ctx.root_opaque_type_short_names
-            .insert("Receiver".to_string());
+        ctx.type_declarations.insert(
+            "Receiver".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             ctx.resolve_named_type_ref("Receiver", Vec::new()),
             ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
             "a flattened file-import declaration must outrank the bare builtin"
         );
 
-        ctx.root_opaque_type_short_names.clear();
+        ctx.type_declarations.remove("Receiver");
         ctx.current_module_name = Some("std.channel".to_string());
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
@@ -34160,8 +33982,13 @@ impl Widget {
         );
 
         ctx.current_module_name = Some("std.net.http".to_string());
-        ctx.opaque_type_short_names
-            .insert("http.ResponseHandle".to_string());
+        ctx.type_declarations.insert(
+            "http.ResponseHandle".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
                 "http.ResponseHandle".to_string(),
@@ -34346,9 +34173,13 @@ impl Widget {
         std_ctx
             .source_type_identities
             .insert("std.net.Connection".to_string());
-        std_ctx
-            .opaque_type_short_names
-            .insert("std.net.Connection".to_string());
+        std_ctx.type_declarations.insert(
+            "std.net.Connection".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(
             std_ctx.resolve_named_type_ref("Connection", Vec::new()),
@@ -34361,9 +34192,13 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        root_ctx
-            .opaque_type_short_names
-            .insert("std.net.Connection".to_string());
+        root_ctx.type_declarations.insert(
+            "std.net.Connection".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
                 "std.net.Connection".to_string(),
@@ -34601,55 +34436,6 @@ impl Widget {
         );
     }
 
-    #[test]
-    fn nested_imported_opaque_identity_keeps_only_full_module_owner() {
-        use hew_parser::module::{Module, ModuleGraph, ModuleId};
-
-        let parsed = hew_parser::parse("#[opaque] type Handle {}");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-
-        let root_id = ModuleId::root();
-        let nested_id = ModuleId::new(vec!["a".to_string(), "b".to_string()]);
-        let mut graph = ModuleGraph::new(root_id.clone());
-        graph
-            .add_module(Module {
-                id: nested_id.clone(),
-                items: parsed.program.items,
-                imports: Vec::new(),
-                source_paths: Vec::new(),
-                doc: None,
-            })
-            .unwrap();
-        graph.topo_order = vec![nested_id, root_id];
-        let program = Program {
-            module_graph: Some(graph),
-            items: Vec::new(),
-            module_doc: None,
-        };
-
-        let mut opaque = HashSet::new();
-        let mut non_opaque = HashSet::new();
-        collect_opaque_type_short_names(&program, &mut opaque, &mut non_opaque);
-
-        assert!(opaque.contains("a.b.Handle"));
-        assert!(
-            !opaque.contains("b.Handle"),
-            "a nested module leaf is not declaration authority for opaque identity"
-        );
-        assert!(opaque.contains("Handle"));
-
-        let mut ctx = LowerCtx::new(
-            &TypeCheckOutput::default(),
-            MONOMORPHISATION_REGISTRY_CAP,
-            TargetArch::host(),
-        );
-        ctx.opaque_type_short_names = opaque;
-        assert_eq!(
-            ctx.resolve_named_type_ref("a.b.Handle", Vec::new()),
-            ResolvedTy::named_opaque("a.b.Handle".to_string(), Vec::new()),
-        );
-    }
-
     fn named_type_ref(name: &str, args: Vec<Spanned<TypeExpr>>) -> Spanned<TypeExpr> {
         (
             TypeExpr::Named {
@@ -34672,8 +34458,13 @@ impl Widget {
             "Unit".to_string(),
             "CancellationToken".to_string(),
         ]);
-        ctx.root_opaque_type_short_names
-            .insert("CancellationToken".to_string());
+        ctx.type_declarations.insert(
+            "CancellationToken".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
 
         let i64_arg = || vec![named_type_ref("i64", Vec::new())];
         assert_eq!(
@@ -34696,7 +34487,7 @@ impl Widget {
         );
 
         ctx.root_visible_source_type_short_names.clear();
-        ctx.root_opaque_type_short_names.clear();
+        ctx.type_declarations.remove("CancellationToken");
         assert_eq!(
             ctx.lower_type(&named_type_ref("Unit", Vec::new())),
             ResolvedTy::Unit
@@ -34735,8 +34526,13 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        ctx.opaque_type_short_names
-            .insert("foo.CancellationToken".to_string());
+        ctx.type_declarations.insert(
+            "foo.CancellationToken".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(
             ctx.lower_type(&named_type_ref(
@@ -35027,7 +34823,8 @@ impl Widget {
         assert_eq!(error.message, "use of moved value `self`");
         assert_eq!(error.source_module.as_deref(), Some("std.fs"));
         // The checker now rejects the duplicate release through the branch.
-        // HIR must still refuse lifecycle authority for this malformed body.
+        // A rejected checker output supplies no declaration classification;
+        // HIR must not grant lifecycle authority to this malformed body.
         let candidate = output
             .opaque_resource_candidates
             .candidates
@@ -35035,10 +34832,6 @@ impl Widget {
             .expect("checker candidate")
             .clone();
         let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
-        assert!(lowered.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::OpaqueResourceCloseMismatch { .. }
-        )));
         assert!(
             lowered
                 .module
@@ -36971,7 +36764,13 @@ impl Widget {
         );
         for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
             let name = builtin.canonical_name();
-            ctx.opaque_type_short_names.insert(name.to_string());
+            ctx.type_declarations.insert(
+                name.to_string(),
+                hew_types::value_class::DeclaredType {
+                    is_opaque: true,
+                    ..Default::default()
+                },
+            );
             ctx.canonical_std_source_type_identities
                 .insert(name.to_string());
             let opaque = ResolvedTy::named_opaque(name, vec![]);

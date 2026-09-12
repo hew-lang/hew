@@ -1,0 +1,27 @@
+type T = i64;
+
+type Pair<T> = (T, T);
+
+type Box<T> {
+    value: Pair<T>,
+}
+
+enum Delivery<T> {
+    Ready(Pair<T>),
+}
+
+fn echo<T>(value: Pair<T>) -> Pair<T> {
+    value
+}
+
+fn main() {
+    let pair: Pair<string> = echo(("left".to_upper(), "right".to_upper()));
+    let boxed = Box<string> { value: pair };
+    let delivery = Delivery.Ready(boxed.value);
+    let delivered = match delivery {
+        Delivery.Ready(value) => value,
+    };
+    let (left, right) = delivered;
+    println(left);
+    println(right);
+}

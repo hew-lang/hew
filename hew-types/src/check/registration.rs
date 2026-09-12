@@ -2483,6 +2483,9 @@ impl Checker {
                             Item::TypeDecl(td) => {
                                 self.pre_register_type_decl(td);
                             }
+                            Item::TypeAlias(decl) => {
+                                self.register_type_alias_decl(decl, _item_span);
+                            }
                             // Function-signature registration runs over
                             // module-graph bodies before the root import
                             // declarations are processed. Seed each source
@@ -2564,54 +2567,7 @@ impl Checker {
                     if !self.register_type_namespace_name(None, &ta.name, span) {
                         continue;
                     }
-                    let type_params: Vec<String> = ta
-                        .type_params
-                        .as_ref()
-                        .map(|params| params.iter().map(|param| param.name.clone()).collect())
-                        .unwrap_or_default();
-                    let generic_bindings: HashMap<String, Ty> = type_params
-                        .iter()
-                        .map(|name| {
-                            (
-                                name.clone(),
-                                Ty::Named {
-                                    name: name.clone(),
-                                    args: Vec::new(),
-                                    builtin: None,
-                                },
-                            )
-                        })
-                        .collect();
-                    if !generic_bindings.is_empty() {
-                        self.generic_ctx.push(generic_bindings);
-                    }
-                    let mut hole_vars = Vec::new();
-                    let resolved = self.resolve_type_expr_tracking_holes(&ta.ty, &mut hole_vars);
-                    if !type_params.is_empty() {
-                        self.generic_ctx.pop();
-                    }
-                    self.type_aliases.insert(
-                        ta.name.clone(),
-                        TypeAliasDef {
-                            type_params,
-                            target: resolved,
-                        },
-                    );
-                    // Detect a self-referential alias (`type Loop = Loop;`, or
-                    // through a chain) right here, once, instead of leaving
-                    // every USE site's `expand_type_aliases` recursion guard
-                    // to return `Ty::Error` silently. An unreported `Ty::Error`
-                    // reaching a use site let HIR lowering discover the bogus
-                    // shape independently at 3-4 different consumers — one
-                    // root cause read as a multi-error cascade.
-                    if self.alias_expansion_is_recursive(&ta.name) {
-                        self.report_error(
-                            TypeErrorKind::InvalidOperation,
-                            span,
-                            format!("type alias `{}` is recursive: aliases cannot refer to themselves, directly or through a chain", ta.name),
-                        );
-                    }
-                    self.record_type_def_inference_holes(&ta.name, hole_vars);
+                    self.register_type_alias_decl(ta, span);
                     self.local_type_defs.insert(ta.name.clone());
                     self.source_type_defs.insert(ta.name.clone());
                 }
@@ -2735,6 +2691,108 @@ impl Checker {
                 | Item::ExternBlock(_) => {}
             }
         }
+    }
+
+    /// Register the target under the declaration's canonical identity. Imports
+    /// publish bindings separately and never create another alias definition.
+    fn register_type_alias_decl(&mut self, decl: &hew_parser::ast::TypeAliasDecl, span: &Span) {
+        let path = scoped_module_item_name(self.current_module.as_deref(), &decl.name)
+            .unwrap_or_else(|| decl.name.clone());
+        let Some(declaration) = self.require_declaration_path(&path, span) else {
+            return;
+        };
+        let identity = declaration.full_path().to_string();
+        self.known_types.insert(identity.clone());
+        self.type_visibility.insert(
+            identity.clone(),
+            (decl.visibility, self.current_module.clone()),
+        );
+        self.type_def_spans
+            .entry(identity.clone())
+            .or_insert_with(|| span.clone());
+        let type_params: Vec<String> = decl
+            .type_params
+            .iter()
+            .flatten()
+            .map(|param| param.name.clone())
+            .collect();
+        self.generic_ctx.push(
+            type_params
+                .iter()
+                .map(|param| (param.clone(), Ty::named(param, vec![])))
+                .collect(),
+        );
+        let mut holes = Vec::new();
+        let target = self.resolve_type_expr_tracking_holes(&decl.ty, &mut holes);
+        self.generic_ctx.pop();
+        self.type_aliases.insert(
+            identity.clone(),
+            TypeAliasDef {
+                declaration,
+                type_params,
+                target,
+                source_module: self.current_module.clone(),
+                file_index: self.current_module_idx,
+            },
+        );
+        self.record_type_def_inference_holes(&identity, holes);
+    }
+
+    /// Complete alias targets once all lexical imports have been published.
+    pub(super) fn resolve_alias_declarations(&mut self, program: &Program) {
+        if let Some(graph) = &program.module_graph {
+            let indices = graph.file_span_indices();
+            for module_id in &graph.topo_order {
+                if *module_id == graph.root {
+                    continue;
+                }
+                let Some(module) = graph.modules.get(module_id) else {
+                    continue;
+                };
+                self.current_module = Some(module_id.path.join("."));
+                for (index, (item, span)) in module.items.iter().enumerate() {
+                    self.current_module_idx =
+                        indices.item_index(module_id, index).unwrap_or_default();
+                    if let Item::TypeAlias(decl) = item {
+                        self.register_type_alias_decl(decl, span);
+                    }
+                }
+            }
+        }
+        self.current_module = None;
+        self.current_module_idx = 0;
+        for (item, span) in &program.items {
+            if let Item::TypeAlias(decl) = item {
+                self.register_type_alias_decl(decl, span);
+            }
+        }
+        for (name, alias) in self.type_aliases.clone() {
+            if self.alias_expansion_is_recursive(&name) {
+                let span = self.type_def_spans.get(&name).cloned().unwrap_or_default();
+                let mut error = TypeError::new(TypeErrorKind::InvalidOperation, span,
+                    format!("type alias `{name}` is recursive: aliases cannot refer to themselves, directly or through a chain"));
+                error.source_module = alias.source_module;
+                self.errors.push(error);
+            }
+        }
+    }
+
+    pub(super) fn resolved_type_aliases(&mut self) -> HashMap<crate::DefId, TypeAliasDef> {
+        let previous_module = self.current_module.clone();
+        let previous_index = self.current_module_idx;
+        let aliases = self.type_aliases.values().cloned().collect::<Vec<_>>();
+        let mut resolved = HashMap::new();
+        for mut alias in aliases {
+            self.current_module = alias.source_module.clone();
+            self.current_module_idx = alias.file_index;
+            alias.target = self
+                .normalize_for_type_params(&alias.target, &alias.type_params)
+                .materialize_literal_defaults();
+            resolved.insert(alias.declaration.clone(), alias);
+        }
+        self.current_module = previous_module;
+        self.current_module_idx = previous_index;
+        resolved
     }
 
     /// Seed root-owned names before resolving any root declaration members.
@@ -11603,6 +11661,17 @@ impl Checker {
                         .or_default()
                         .insert(source_identity);
                 }
+                Item::TypeAlias(decl) => {
+                    if decl.visibility.is_pub()
+                        && self.register_flat_file_import_type_name(
+                            &mut current_import_pub_spans,
+                            &decl.name,
+                            span,
+                        )
+                    {
+                        self.publish_file_import_type_name(owner, &decl.name);
+                    }
+                }
                 Item::TypeDecl(td) => {
                     if !td.visibility.is_pub() {
                         continue;
@@ -12125,6 +12194,42 @@ impl Checker {
                                 self.current_module.clone(),
                                 self.current_module_idx,
                                 binding_name,
+                            ),
+                            module_full_path.to_string(),
+                        );
+                    }
+                }
+                Item::TypeAlias(decl) => {
+                    let saved_module = self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
+                    self.register_type_alias_decl(decl, span);
+                    self.current_module = saved_module;
+                    self.current_module_idx = importer_file_idx;
+                    if !decl.visibility.is_pub() {
+                        continue;
+                    }
+                    self.record_module_type_export(module_full_path, &decl.name);
+                    if spec.is_none() {
+                        self.record_module_type_export(module_short, &decl.name);
+                    }
+                    if Self::should_import_name(&decl.name, spec) {
+                        let binding = Self::resolve_import_name(spec, &decl.name)
+                            .unwrap_or_else(|| decl.name.clone());
+                        let source = format!("{module_full_path}.{}", decl.name);
+                        self.import_type_name_aliases.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding.clone(),
+                            ),
+                            source.clone(),
+                        );
+                        self.record_published_bare_type(&binding, &source);
+                        self.unqualified_to_module.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding,
                             ),
                             module_full_path.to_string(),
                         );

@@ -1,0 +1,51 @@
+type Text = string;
+
+type Pair<T> = (T, T);
+
+type Names = Pair<Text>;
+
+type Transform<T> = fn(T) -> T;
+
+type Job {
+    names: Names,
+}
+
+enum Delivery {
+    Ready(Names),
+}
+
+#[resource]
+type Ticket {
+    label: Text,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"closed {self.label}");
+    }
+}
+
+type Handle = Ticket;
+
+fn uppercase(value: Text) -> Text {
+    value.to_upper()
+}
+
+fn deliver() {
+    let _ticket: Handle = Ticket { label: "ticket".to_upper() };
+    let job = Job { names: ("ada".to_upper(), "grace".to_upper()) };
+    let delivery = Delivery.Ready(job.names);
+    let transform: Transform<Text> = uppercase;
+    match delivery {
+        Delivery.Ready(names) => {
+            let (first, second) = names;
+            println(transform(first));
+            println(transform(second));
+        },
+    }
+}
+
+fn main() {
+    deliver();
+    println("finished");
+}

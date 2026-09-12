@@ -1,0 +1,6 @@
+type Value = i64;
+
+pub fn right_value() -> Value {
+    let value: Value = 42;
+    value
+}

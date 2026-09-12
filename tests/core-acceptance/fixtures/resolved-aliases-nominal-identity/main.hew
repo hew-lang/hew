@@ -1,0 +1,25 @@
+import nominal.native;
+
+import nominal.ordinary;
+
+type NativeHandle = native.Handle;
+
+type Holder {
+    handle: NativeHandle,
+}
+
+fn use_native() {
+    let holder = Holder { handle: native.open() };
+    let _handle: NativeHandle = native.forward(holder.handle);
+    println("using opaque");
+}
+
+fn main() {
+    let original: ordinary.Handle = ordinary.make();
+    let changed: ordinary.Handle = ordinary.increment(original);
+    ordinary.show(original);
+    ordinary.show(changed);
+    use_native();
+    ordinary.show(original);
+    println("finished");
+}

@@ -188,28 +188,6 @@ repros/ladder/vec_resource.hew E_SIR_VERIFY
 
 # ── tests/core-acceptance/ ──────────────────────────────────────────────────────
 
-# corpus-intentional-refusal: `kind = "check"` acceptance cases. Each one's
-# .toml pins the exact diagnostics and `make core-acceptance` is the oracle;
-# this row only keeps the repo-wide sweep from reading the refusal as a
-# regression.
-tests/core-acceptance/cases/actor-handle-legacy-types-refused.hew E_ACTOR_HANDLE_TYPE
-tests/core-acceptance/cases/check-actor-field-deferred-spawn-arg.hew E_ACTOR_FIELD_DEFERRED
-tests/core-acceptance/cases/check-actor-field-uninitialized-read.hew E_ACTOR_FIELD_UNINITIALIZED
-tests/core-acceptance/cases/check-rc-not-send.hew
-tests/core-acceptance/cases/check-partial-move-field-read-refused.hew
-tests/core-acceptance/cases/check-select-no-arms.hew
-tests/core-acceptance/cases/listener-accept-loop-return.hew E_OWN_CONSUME_BORROWED
-tests/core-acceptance/cases/loan-ends-at-last-use.hew E_ELEMENT_NO_COPY
-tests/core-acceptance/cases/loaned-payload-projection.hew E_ELEMENT_NO_COPY
-tests/core-acceptance/cases/machine-composite-depth-refused.hew
-tests/core-acceptance/cases/machine-legacy-forms-refused.hew
-tests/core-acceptance/cases/resource-missing-close.hew E_HIR
-tests/core-acceptance/cases/spread-parse-refusals.hew
-tests/core-acceptance/cases/spread-refusals.hew
-tests/core-acceptance/cases/vec-element-refusals.hew E_ELEMENT_NO_COPY
-tests/core-acceptance/cases/vec-get-affine-element.hew E_ELEMENT_NO_COPY
-tests/core-acceptance/cases/vector-get-borrowed.hew E_ELEMENT_NO_COPY
-
 # requires-file-import-program: members of a multi-file program. Standalone
 # `hew check` cannot resolve the sibling modules; the owning core-acceptance
 # case compiles the program's root.
@@ -375,4 +353,3 @@ tests/vertical-slice/accept/returns_receiver_consuming_result.hew
 tools/downstream/syntax-fixtures/syntax_test.hew
 
 # Intended local rebinding currently fails ownership lowering.
-tests/core-acceptance/cases/collection-borrow-rebind.hew E_SIR_VERIFY

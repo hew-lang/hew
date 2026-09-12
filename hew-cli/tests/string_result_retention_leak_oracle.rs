@@ -182,6 +182,8 @@ actor Reader {
 }
 
 fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    sleep(1ms);
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
@@ -417,6 +419,8 @@ actor Runner {
 }
 
 fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    sleep(1ms);
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
@@ -661,6 +665,8 @@ actor Crasher {
 }
 
 fn main() {
+    // Enter the root continuation before sampling its live-frame baseline.
+    sleep(1ms);
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {
@@ -900,17 +906,7 @@ fn closure_invoke_string_returns_have_no_per_call_leak() {
 }
 
 #[test]
-fn suspending_closure_runtime_fixtures_are_rejected_before_codegen() {
-    // Historical name: this test used to prove every listed shape was
-    // rejected before codegen with E_NOT_YET_IMPLEMENTED ("suspension inside
-    // a closure"). That checker pass is fully retired — it has zero
-    // producers anywhere in the compiler outside test files — because
-    // suspending closures are a supported, working feature now. This test
-    // proves the opposite of its name today: each active shape below
-    // compiles and runs to its documented crash/completion behaviour under
-    // the poisoned-allocator triple, which is the same no-double-free
-    // contract the old rejection used to gate ahead of.
-    //
+fn suspending_closures_complete_and_clean_up_after_crashes() {
     // Two fixtures are excluded from the active list, each blocked by a
     // distinct, unrelated, pre-existing SIR limitation (not a retired-syntax
     // defect): `nested_suspending_closure_crash_restart_source` and

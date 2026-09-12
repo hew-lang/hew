@@ -767,6 +767,13 @@ is_separately_gated_or_reject_fixture() {
     *"/reject/"*)
         return 0
         ;;
+    tests/core-acceptance/cases/*)
+        # The sibling manifest owns check/compile/run expectations, including
+        # deliberate diagnostics. Rechecking it here duplicates that oracle.
+        if [[ -f "$REPO_ROOT/${path%.hew}.toml" ]]; then
+            return 0
+        fi
+        ;;
     tests/hew/*)
         # Files that contribute actual test cases are compiled and run through
         # `make test-hew-ratchet`, with exact per-test expected failures. Keep

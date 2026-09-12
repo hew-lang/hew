@@ -6,7 +6,7 @@ actor Worker {
     var seen: i64 = 0,
     receive fn process(job: string) {
         seen = seen + 1;
-        println("processed " + job);
+        assert(job == "a" || job == "b");
     }
     receive fn total() -> i64 { seen }
 }

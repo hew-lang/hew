@@ -2361,7 +2361,7 @@ impl Checker {
             .map(|(depth, binding)| (depth, binding.clone()))
         {
             if matches!(
-                self.subst.resolve(&binding.ty),
+                self.normalize_for_use(&binding.ty),
                 Ty::Function { .. } | Ty::Closure { .. }
             ) {
                 self.synthesize(&func.0, &func.1);
@@ -2624,7 +2624,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         self.record_direct_call_target(span, CallTarget::IndirectFunctionValue);
-        let resolved = self.subst.resolve(func_ty);
+        let resolved = self.normalize_for_use(func_ty);
         match resolved {
             Ty::Function { params, ret, .. } | Ty::Closure { params, ret, .. } => {
                 self.check_arity(args, params.len(), "this function", span);

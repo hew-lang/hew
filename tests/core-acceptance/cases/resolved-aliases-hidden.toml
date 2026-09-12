@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "VisibilityViolation"
+code = "VisibilityViolationPrivate"
 file = "resolved-aliases-modules/hidden.hew"
 line = 4
 column = 17

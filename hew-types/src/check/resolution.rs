@@ -1412,31 +1412,50 @@ impl Checker {
         }
     }
 
+    /// Instantiate generic binders with fresh variables while normalizing, then
+    /// restore their names. An unrelated alias with a binder's spelling must
+    /// never capture a generic parameter in a published declaration template.
+    pub(super) fn normalize_for_type_params(&self, ty: &Ty, params: &[String]) -> Ty {
+        if params.is_empty() {
+            return self.normalize_for_use(ty);
+        }
+        let binders: Vec<_> = params.iter().map(|name| (name, TypeVar::fresh())).collect();
+        let substitutions = binders
+            .iter()
+            .map(|(name, var)| ((*name).clone(), Ty::Var(*var)))
+            .collect();
+        let protected = ty.substitute_named_params_parallel(&substitutions);
+        let resolved = self.normalize_for_use(&protected);
+        binders.into_iter().fold(resolved, |ty, (name, var)| {
+            ty.substitute(var, &Ty::named(name, vec![]))
+        })
+    }
+
     pub(super) fn resolve_fn_sig(&self, sig: &FnSig) -> FnSig {
         FnSig {
             params: sig
                 .params
                 .iter()
-                .map(|param| self.normalize_for_use(param))
+                .map(|param| self.normalize_for_type_params(param, &sig.type_params))
                 .collect(),
-            return_type: self.normalize_for_use(&sig.return_type),
+            return_type: self.normalize_for_type_params(&sig.return_type, &sig.type_params),
             ..sig.clone()
         }
     }
 
-    pub(super) fn resolve_variant_def(&self, variant: &VariantDef) -> VariantDef {
+    fn resolve_variant_def(&self, variant: &VariantDef, params: &[String]) -> VariantDef {
         match variant {
             VariantDef::Unit => VariantDef::Unit,
             VariantDef::Tuple(fields) => VariantDef::Tuple(
                 fields
                     .iter()
-                    .map(|field| self.normalize_for_use(field))
+                    .map(|field| self.normalize_for_type_params(field, params))
                     .collect(),
             ),
             VariantDef::Struct(fields) => VariantDef::Struct(
                 fields
                     .iter()
-                    .map(|(name, ty)| (name.clone(), self.normalize_for_use(ty)))
+                    .map(|(name, ty)| (name.clone(), self.normalize_for_type_params(ty, params)))
                     .collect(),
             ),
         }
@@ -1447,12 +1466,22 @@ impl Checker {
             fields: type_def
                 .fields
                 .iter()
-                .map(|(name, ty)| (name.clone(), self.normalize_for_use(ty)))
+                .map(|(name, ty)| {
+                    (
+                        name.clone(),
+                        self.normalize_for_type_params(ty, &type_def.type_params),
+                    )
+                })
                 .collect(),
             variants: type_def
                 .variants
                 .iter()
-                .map(|(name, variant)| (name.clone(), self.resolve_variant_def(variant)))
+                .map(|(name, variant)| {
+                    (
+                        name.clone(),
+                        self.resolve_variant_def(variant, &type_def.type_params),
+                    )
+                })
                 .collect(),
             methods: type_def
                 .methods
@@ -2495,6 +2524,71 @@ impl Checker {
         }
     }
 
+    /// Resolve only a declaration in this module or an exact imported binding.
+    pub(super) fn resolved_alias_name(&self, name: &str) -> Option<String> {
+        let local = self.current_module.as_ref().map_or_else(
+            || name.to_string(),
+            |module| {
+                if name.contains('.') {
+                    name.to_string()
+                } else {
+                    format!("{module}.{name}")
+                }
+            },
+        );
+        if let Some(declaration) = self.identity.declaration_by_path(&local) {
+            if self.type_aliases.contains_key(declaration.full_path()) {
+                return Some(declaration.full_path().to_string());
+            }
+            return None;
+        }
+        self.import_type_name_aliases
+            .get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
+            .and_then(|source| self.identity.declaration_by_path(source))
+            .filter(|declaration| self.type_aliases.contains_key(declaration.full_path()))
+            .map(|declaration| declaration.full_path().to_string())
+    }
+
+    fn type_reference_is_visible(&mut self, name: &str, span: &Span) -> bool {
+        if !name.contains('.') || name.contains("::") {
+            return true;
+        }
+        let Some((vis, declaring_module)) = self.type_visibility.get(name).cloned() else {
+            return true;
+        };
+        if visibility::access_allowed(
+            declaring_module.as_deref(),
+            self.current_module.as_deref(),
+            vis,
+        ) {
+            return true;
+        }
+        if self
+            .reported_type_visibility_violations
+            .insert(name.to_string())
+        {
+            let declaration_span = self
+                .type_def_spans
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| span.clone());
+            self.errors.push(TypeError::visibility_violation(
+                vis,
+                span.clone(),
+                crate::short_name(name),
+                declaring_module.as_deref().unwrap_or("(root)"),
+                self.current_module.as_deref().unwrap_or("(root)"),
+                declaration_span,
+                self.current_module.clone(),
+            ));
+        }
+        false
+    }
+
     pub(super) fn alias_target_for_instance(&self, name: &str, args: &[Ty]) -> Option<Ty> {
         let alias = self.type_aliases.get(name)?;
         if alias.type_params.len() != args.len() {
@@ -3381,7 +3475,11 @@ impl Checker {
                 }
                 // Preserve the alias's nominal identity for impl lookup. Semantic
                 // compatibility expands it at normalize-for-use boundaries.
-                if let Some(alias) = self.type_aliases.get(name) {
+                if let Some(identity) = self.resolved_alias_name(name) {
+                    if !self.type_reference_is_visible(&identity, &te.1) {
+                        return Ty::Error;
+                    }
+                    let alias = &self.type_aliases[&identity];
                     if args.len() != alias.type_params.len() {
                         self.report_error(
                             TypeErrorKind::ArityMismatch,
@@ -3394,11 +3492,20 @@ impl Checker {
                         );
                         return Ty::Error;
                     }
-                    return Ty::Named {
-                        name: name.clone(),
-                        args,
-                        builtin: None,
-                    };
+                    if let Some(binding) = imported_module_binding {
+                        self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                            self.current_module.clone(),
+                            self.current_module_idx,
+                            binding,
+                        ));
+                    } else if let Some(module) = self.unqualified_to_module.get(&(
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        name.clone(),
+                    )) {
+                        self.mark_module_owner_bindings_used(module);
+                    }
+                    return Ty::named(identity, args);
                 }
                 // A qualified lifecycle source identity is valid only when its
                 // canonical owner was imported directly by this lexical module.
@@ -3596,47 +3703,8 @@ impl Checker {
                     // references reached via an explicit opt-in or glob.
                     self.mark_module_owner_bindings_used(module);
                 }
-                // Visibility enforcement for qualified type references.
-                // Only fires when the resolved name is module-qualified (contains
-                // '.').  Root programs (current_module == None) are subject to
-                // the same check: referencing a private type via a qualified
-                // name is a cross-module access regardless of caller context.
-                // access_allowed handles the None caller correctly.
-                if resolved_name.contains('.') && !resolved_name.contains("::") {
-                    if let Some(&(vis, ref decl_module_opt)) =
-                        self.type_visibility.get(&resolved_name)
-                    {
-                        let decl_module = decl_module_opt.as_deref();
-                        let acc_module = self.current_module.as_deref();
-                        if !visibility::access_allowed(decl_module, acc_module, vis) {
-                            // Deduplicate: emit at most one E_VISIBILITY per qualified
-                            // type name per check pass so a private type appearing in
-                            // multiple positions (e.g. param + return) doesn't produce
-                            // a wall of identical diagnostics.
-                            if self
-                                .reported_type_visibility_violations
-                                .insert(resolved_name.clone())
-                            {
-                                let symbol = crate::short_name(&resolved_name);
-                                let decl_span = self
-                                    .type_def_spans
-                                    .get(&resolved_name)
-                                    .cloned()
-                                    .unwrap_or_else(|| te.1.clone());
-                                let err = TypeError::visibility_violation(
-                                    vis,
-                                    te.1.clone(),
-                                    symbol,
-                                    decl_module.unwrap_or("(root)"),
-                                    acc_module.unwrap_or("(root)"),
-                                    decl_span,
-                                    self.current_module.clone(),
-                                );
-                                self.errors.push(err);
-                            }
-                            return Ty::Error;
-                        }
-                    }
+                if !self.type_reference_is_visible(&resolved_name, &te.1) {
+                    return Ty::Error;
                 }
                 let generated_prelude_builtin = (!name.contains('.'))
                     .then(|| self.published_bare_type_qualified(name))

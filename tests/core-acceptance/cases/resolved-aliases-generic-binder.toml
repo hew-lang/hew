@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-aliases-generic-binder"
+intent = "A generic alias parameter retains its binder identity when an unrelated alias has the same name; owned tuple elements survive generic calls and destructuring."
+source = "fixtures/resolved-aliases-generic-binder/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "LEFT\nRIGHT\n"
+exit = 0

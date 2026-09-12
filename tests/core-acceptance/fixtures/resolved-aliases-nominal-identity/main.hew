@@ -2,8 +2,15 @@ import nominal.native;
 
 import nominal.ordinary;
 
+type NativeHandle = native.Handle;
+
+type Holder {
+    handle: NativeHandle,
+}
+
 fn use_native() {
-    let _handle: native.Handle = native.forward(native.open());
+    let holder = Holder { handle: native.open() };
+    let _handle: NativeHandle = native.forward(holder.handle);
     println("using opaque");
 }
 

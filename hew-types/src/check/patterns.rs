@@ -342,7 +342,7 @@ impl Checker {
     /// variant) from a record destructure (`Point { … }` where it names the
     /// scrutinee's own type). Resolution decides it, never casing (#2116).
     pub(super) fn names_struct_variant_of(&self, name: &str, ty: &Ty) -> bool {
-        let resolved = self.project_assoc_types(&self.subst.resolve(ty));
+        let resolved = self.normalize_for_use(ty);
         let Some(type_name) = resolved.type_name() else {
             return false;
         };
@@ -391,7 +391,7 @@ impl Checker {
             _ => return,
         };
 
-        let resolved = self.project_assoc_types(&self.subst.resolve(ty));
+        let resolved = self.normalize_for_use(ty);
         if self.reject_sealed_delivery_access(&resolved, span) {
             self.invalid_pattern_plan_spans.insert(key);
             return;
@@ -775,9 +775,8 @@ impl Checker {
         is_mutable: bool,
         span: &Span,
     ) {
-        let resolved_ty = self.subst.resolve(ty);
-        let projected_ty = self.project_assoc_types(&resolved_ty);
-        let ty = &projected_ty;
+        let resolved_ty = self.normalize_for_use(ty);
+        let ty = &resolved_ty;
         // The place this pattern node destructures, if any. Taking it here is
         // what stops it leaking into a shape that is not a field of it: only
         // the aggregate arms below hand it on to their own subpatterns.

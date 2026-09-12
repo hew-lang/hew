@@ -49,6 +49,7 @@ fn lower_without_type_facts(source: &str) -> hew_hir::LowerOutput {
     let identity_only = TypeCheckOutput {
         identity: checked.identity,
         fn_sigs: checked.fn_sigs,
+        type_fact_context: checked.type_fact_context,
         ..TypeCheckOutput::default()
     };
     lower_program(

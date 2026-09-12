@@ -562,6 +562,8 @@ pub struct TypeCheckOutput {
     /// Duplicates are harmless (the seed collector deduplicates).
     pub user_clone_record_seeds: Vec<String>,
     pub type_defs: HashMap<String, TypeDef>,
+    /// Fully expanded alias targets keyed by their source declaration.
+    pub resolved_type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
     /// pre-registered into `type_defs` from `std/builtins.hew` for use in
     /// pattern-matching dispatch (`match Err(LookupError::NotFound) { … }`)
@@ -1466,6 +1468,7 @@ impl Default for TypeCheckOutput {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
+            resolved_type_aliases: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             identity: crate::IdentityView::default(),
             entry_exit_plan: None,
@@ -2466,9 +2469,12 @@ pub struct TypeDef {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct TypeAliasDef {
-    pub(super) type_params: Vec<String>,
-    pub(super) target: Ty,
+pub struct TypeAliasDef {
+    pub declaration: crate::DefId,
+    pub type_params: Vec<String>,
+    pub target: Ty,
+    pub source_module: Option<String>,
+    pub file_index: u32,
 }
 
 #[derive(Debug, Clone)]

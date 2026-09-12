@@ -69,9 +69,9 @@ pub use check::{
     PatternKind, PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern,
     PlanField, PlanSub, PoolAccessor, PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate,
     ResolvedCall, ResultReturnKind, RuntimeAbi, SpanKey, TryConversionKind, TryWidthCastLowering,
-    TyPattern, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp,
-    VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
-    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
+    TyPattern, TypeAliasDef, TypeCheckOutput, UserComparisonDispatch, VariantDef, VariantMatch,
+    VecHigherOrderOp, VecMethod, WidthCastKind, WidthCastLowering, WireCodecDirection,
+    WireFieldLayout, WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 pub use error::TypeError;
 pub use extern_symbol::{

@@ -75,8 +75,8 @@ pub use self::types::{
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind, SpanKey,
-    StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
+    StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef,
+    TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
     WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
     WireLayoutTable, WireTextFormat,
 };
@@ -85,7 +85,7 @@ use self::types::{
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -1596,8 +1596,10 @@ impl Checker {
             }
             Item::TypeAlias(decl) => {
                 declare(Kind::TypeAlias, 0, owner_path(&decl.name));
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::TypeAlias, 0, alias);
+                if matches!(namespace, NominalNamespace::RootBare) {
+                    if let Some(alias) = nominal_alias(&decl.name) {
+                        declare(Kind::TypeAlias, 0, alias);
+                    }
                 }
             }
             Item::Record(decl) => {
@@ -1837,6 +1839,7 @@ impl Checker {
         // forward-declared sibling type that is not yet registered.
         self.type_decls_registered = true;
         self.collect_functions(program);
+        self.resolve_alias_declarations(program);
 
         // Pass 1.5 (#2202): re-resolve type-declaration MEMBER types now that
         // import-alias maps are live. `collect_types` resolves record/struct
@@ -2249,6 +2252,8 @@ impl Checker {
             .map(|(name, type_def)| (name.clone(), self.resolve_type_def(type_def)))
             .collect();
 
+        let resolved_type_aliases = self.resolved_type_aliases();
+
         let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
             .map(|(name, sig)| {
@@ -2522,6 +2527,7 @@ impl Checker {
             warnings: std::mem::take(&mut self.warnings),
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
+            resolved_type_aliases,
             internal_builtin_enum_names,
             identity: std::mem::take(&mut self.identity).freeze(),
             entry_exit_plan,

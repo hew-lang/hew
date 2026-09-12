@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-aliases-nominal-identity"
+intent = "Same-named module types retain separate nominal layout and ownership through parameter and return boundaries: a real deque-backed opaque resource closes once while an ordinary record keeps its string and integer value semantics."
+source = "fixtures/resolved-aliases-nominal-identity/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ORDINARY 7\nORDINARY! 8\nusing opaque\nclosed opaque\nORDINARY 7\nfinished\n"
+exit = 0

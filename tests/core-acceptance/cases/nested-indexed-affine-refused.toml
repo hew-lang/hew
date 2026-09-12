@@ -1,0 +1,18 @@
+[[case]]
+id = "nested-indexed-affine-refused"
+intent = "An indexed affine element remains a loan and cannot be copied into a writable path."
+source = "cases/nested-indexed-affine-refused.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 15
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 7
+column = 5
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 8
+column = 5

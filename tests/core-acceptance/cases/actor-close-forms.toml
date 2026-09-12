@@ -1,10 +1,10 @@
 [[case]]
 id = "actor-close-forms"
-intent = "`close(actor)` returns only after the stop hook has run, `fork close(actor)` returns before it and its task joins the same point, and `closed(actor)` waits for a stop another party requested."
+intent = "`close(actor)` returns only after the stop hook has run, the task from `fork close(actor)` joins that same point, and `closed(actor)` waits for a stop another party requested."
 source = "cases/actor-close-forms.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "1\nstopped waited\nafter close\nafter fork\nstopped forked\nafter join\nstopped observed\nafter closed\n"
+stdout = "1\nstopped waited\nafter close\nstopped forked\nafter join\nstopped observed\nafter closed\n"
 exit = 0

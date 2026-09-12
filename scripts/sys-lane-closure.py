@@ -66,11 +66,12 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-import tomllib
 from collections import deque
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "scripts" / "lib"))
+from runtime_classification import load_document  # noqa: E402
 
 SCAN_DIRS = [ROOT / "hew-runtime" / "src", ROOT / "hew-std" / "src"]
 RUNTIME_EXPORT_CLASSIFICATION = ROOT / "scripts" / "runtime-export-classification.toml"
@@ -547,12 +548,18 @@ _EDGE_RE = re.compile(r"^\s*([A-Za-z_]\w*)\s*->\s*([A-Za-z_]\w*)\s*$")
 def load_classification(
     path: Path | None = None,
 ) -> tuple[dict[str, set[str]], Waivers]:
-    text = (path or RUNTIME_EXPORT_CLASSIFICATION).read_text(encoding=SOURCE_ENCODING)
-    document = tomllib.loads(text)
+    selected = path or RUNTIME_EXPORT_CLASSIFICATION
+    generated = (
+        ROOT / "scripts" / "generated-runtime-declarations.toml"
+        if selected == RUNTIME_EXPORT_CLASSIFICATION
+        else None
+    )
+    document = load_document(selected, generated)
     allowed_keys = {
         "stable",
         "stable-stdlib",
         "non-declarable",
+        "non-declarable-stdlib",
         "public-host",
         "public-host-stdlib",
         "sys-lane-closure",

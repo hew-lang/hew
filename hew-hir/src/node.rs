@@ -18,6 +18,9 @@ use crate::{IntentKind, ValueClass};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
+    /// Checker-selected read/replacement contracts for indexed writable paths.
+    pub indexed_place_operations:
+        HashMap<SiteId, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
     pub items: Vec<HirItem>,
     /// Source-module attribution for non-root top-level HIR items, keyed by
     /// item id. Diagnostics emitted while verifying one of these items inherit
@@ -1037,6 +1040,9 @@ pub struct HirFn {
     /// and returned in the second field of its `(result, Self)` result.
     /// This internal transfer is independent of source `consume` spelling.
     pub var_self_receiver: Option<BindingId>,
+    /// Checker-selected consuming inherent receiver. Its surviving linear
+    /// obligation is finished at normal return; returning it transfers it.
+    pub terminal_receiver: Option<BindingId>,
     /// For ordinary functions this is the declared return type. For generator
     /// functions (`is_generator`) this remains the declared `-> T` yield element
     /// type; the body itself lowers with unit expectation and produces a
@@ -1264,6 +1270,9 @@ pub enum HirExprKind {
         value: Box<HirExpr>,
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
+        /// Target-resolved integer bounds selected by the checker.
+        from_range: Option<(i128, i128)>,
+        to_range: Option<(i128, i128)>,
     },
     /// Exact fallible numeric conversion: `.try_to_<W>() -> Option<W>`.
     ///
@@ -1275,6 +1284,9 @@ pub enum HirExprKind {
         from_ty: ResolvedTy,
         to_ty: ResolvedTy,
         kind: TryConversionKind,
+        /// Target-resolved integer bounds selected by the checker.
+        from_range: Option<(i128, i128)>,
+        to_range: Option<(i128, i128)>,
     },
     /// Tuple literal construction (`(1, 2)`, `(a, b, c)`).
     ///

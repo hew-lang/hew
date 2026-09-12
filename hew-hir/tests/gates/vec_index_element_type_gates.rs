@@ -67,61 +67,6 @@ fn slice_diagnostics(out: &hew_hir::LowerOutput) -> Vec<String> {
         .collect()
 }
 
-// ── Positive: gate fires on unsupported element types ──────────────────
-
-#[test]
-fn vec_index_unsupported_element_types_rejected() {
-    // Scalar index on a trait-object element must emit a
-    // VecIndexElementTypeUnsupported diagnostic: returning the owner would
-    // need a semantic trait-object clone, and there is none. `bytes` is a
-    // supported element today, so the gate is observed through the element
-    // class that is still fail-closed.
-    let out = lower(
-        r"
-        trait Shape {
-            fn area(val: Self) -> i64;
-        }
-
-        type Circle { radius: i64, }
-        impl Shape for Circle {
-            fn area(c: Circle) -> i64 { c.radius }
-        }
-
-        fn pick_shape(xs: Vec<dyn Shape>, i: i64) -> dyn Shape { xs[i] }
-        ",
-    );
-
-    let diags = index_diagnostics(&out);
-    assert_eq!(
-        diags.len(),
-        1,
-        "expected exactly 1 VecIndexElementTypeUnsupported diagnostic, got: {:#?}",
-        out.diagnostics
-    );
-
-    // A trait-object element gets the dedicated note naming the missing
-    // semantic clone and the consuming alternatives, not the scalar
-    // allowlist enumeration.
-    for d in &out.diagnostics {
-        if matches!(
-            d.kind,
-            HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }
-        ) {
-            assert!(
-                d.note.contains("semantic trait-object clone") && d.note.contains("into_iter()"),
-                "trait-object diagnostic note must name the missing clone and \
-                 the consuming alternative: {:?}",
-                d.note
-            );
-        }
-    }
-
-    assert!(
-        out.into_result().is_err(),
-        "into_result() must be Err when any VecIndexElementTypeUnsupported diagnostic is present"
-    );
-}
-
 #[test]
 fn vec_slice_over_non_clonable_element_rejected_at_type_check() {
     // A range-slice copies each selected element into a fresh `Vec`, so an

@@ -54,6 +54,7 @@ hir-ast-boundary	expr-use:lower_expr_inner	hew-hir/src/lower.rs	stage-2	D486 sta
 hir-ast-boundary	expr-use:lower_fluent_vec_iter_receiver	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_for_iter_desugar	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_hashmap_for_in_init	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
+hir-ast-boundary	expr-use:lower_index_assignment	hew-hir/src/lower.rs	stage-2	Indexed assignment consumes the checker-selected mutation and source operands; typed source-shape handoff remains part of D486
 hir-ast-boundary	expr-use:lower_method_call	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_race	hew-hir/src/lower/race.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:lower_select	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
@@ -184,6 +185,7 @@ sir-hir-fact-rederivation	require-variant-shape-call	hew-sir/src/lower_defer.rs	
 sir-hir-fact-rederivation	require-variant-shape-call	hew-sir/src/lower_entry.rs	stage-3	D486 stage one freeze: entry lowering computes its result's variant shape from a ResolvedTy instead of reading a shape HIR published
 sir-hir-fact-rederivation	require-variant-shape-call	hew-sir/src/lower_generators.rs	stage-3	D486 stage one freeze: generator output lowering computes its variant shape from a ResolvedTy instead of reading a shape HIR published
 sir-hir-fact-rederivation	require-variant-shape-call	hew-sir/src/lower_match.rs	stage-3	D486 stage one freeze: match lowering computes the scrutinee's and payload's variant shape from a ResolvedTy instead of reading a shape HIR published
+sir-hir-fact-rederivation	require-variant-shape-call	hew-sir/src/lower_numeric.rs	stage-3	Checked conversion materializes the checked Option result through the shared variant-shape service; explicit HIR result-shape handoff remains part of D486
 sir-hir-fact-rederivation	require-variant-shape-call	hew-sir/src/lower_wire.rs	stage-3	D486 stage one freeze: wire codec lowering computes its payload's variant shape from a ResolvedTy instead of reading a shape HIR published
 string-method-identity	qualified-format-macro	hew-analysis/src/hover.rs	stage-1	reviewed qualified string identity construction
 string-method-identity	qualified-format-macro	hew-analysis/src/inlay_hints.rs	stage-1	reviewed qualified string identity construction

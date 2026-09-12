@@ -1,0 +1,68 @@
+type Holder {
+    values: HashMap<string, Vec<string>>,
+    label: string,
+}
+
+type Row { count: i64, label: string }
+
+fn key() -> string {
+    println("key");
+    "main".to_upper()
+}
+
+fn replacement(label: string) -> Vec<string> {
+    println("replacement");
+    [label.to_upper()]
+}
+
+fn suffix() -> string {
+    println("suffix");
+    "!".to_upper()
+}
+
+fn position() -> i64 {
+    println("position");
+    0
+}
+
+fn increment() -> i64 {
+    println("increment");
+    3
+}
+
+fn main() {
+    var values: HashMap<string, Vec<string>> = HashMap.new();
+    values.insert("MAIN", ["old".to_upper()]);
+    var holder = Holder { values: values, label: "new".to_upper() };
+    let alias = holder;
+    holder.values[key()] = replacement(holder.label);
+    assert(holder.values["MAIN"][0] == "NEW");
+    assert(alias.values["MAIN"][0] == "OLD");
+    holder.values["second".to_upper()] = holder.values["MAIN"];
+    assert(holder.values["SECOND"][0] == "NEW");
+    assert(alias.values.len() == 1);
+    var words: HashMap<string, string> = HashMap.new();
+    words["MAIN"] = "old".to_upper();
+    let words_alias = words;
+    words[key()] += suffix();
+    assert(words["MAIN"] == "OLD!");
+    assert(words_alias["MAIN"] == "OLD");
+    var counts: Vec<i64> = [1];
+    let counts_alias = counts;
+    counts[position()] += increment();
+    assert(counts[0] == 4);
+    assert(counts_alias[0] == 1);
+    var fixed: [i64; 1] = [5];
+    fixed[position()] += increment();
+    assert(fixed[0] == 8);
+    var raw = bytes[4];
+    raw[position()] += 1;
+    assert(raw[0] == 5);
+    var rows: Vec<Row> = [Row { count: 1, label: "row".to_upper() }];
+    let row_alias = rows;
+    rows[position()].count += increment();
+    assert(rows[0].count == 4);
+    assert(row_alias[0].count == 1);
+    assert(rows[0].label == "ROW");
+    println("assigned");
+}

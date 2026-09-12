@@ -1,0 +1,10 @@
+[[case]]
+id = "runtime-vector-producers"
+intent = "Typed runtime vector results share ordinary vector mutation, copy, equality and cleanup, including process argument ingress."
+source = "cases/runtime-vector-producers.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "runtime vector producers compose\n"
+exit = 0

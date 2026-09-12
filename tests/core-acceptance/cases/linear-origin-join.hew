@@ -1,0 +1,12 @@
+#[linear]
+type Tx { label: string }
+fn fresh_pair() -> (Tx, i64) { (Tx { label: "fresh".to_upper() }, 0) }
+impl Tx {
+    fn done(consume self) {}
+    fn choose(consume self, flag: bool) {
+        let pair = if flag { (self, 0) } else { self.done(); fresh_pair() };
+        let (selected, _) = pair;
+        println(selected.label);
+    }
+}
+fn main() { Tx { label: "receiver".to_upper() }.choose(false); }

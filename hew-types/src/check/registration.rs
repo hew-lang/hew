@@ -7127,6 +7127,10 @@ impl Checker {
         else {
             return FnSig::default();
         };
+        if trait_bound.is_none() && method.consumes_self {
+            self.consuming_inherent_methods
+                .insert(declaration_id.clone());
+        }
         // Preserve the exact trait declaration selected while this impl's
         // source scope is active. A bare module import can make a trait
         // unambiguous without publishing it as an ordinary named import; HIR

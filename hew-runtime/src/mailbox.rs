@@ -1547,42 +1547,6 @@ impl HewMailbox {
     pub(crate) fn use_slow_path(&self) -> bool {
         self.use_slow_path
     }
-
-    /// `true` when this mailbox's overflow policy can free an already-queued
-    /// node's payload *without* the consumer handler ever running on it —
-    /// i.e. `DropOld` (evicts the oldest queued node) or `Coalesce` (replaces
-    /// a matching node's payload, or falls back to `DropOld`). Both retire the
-    /// superseded node's `data` buffer via `buf_free` / `hew_msg_node_free`.
-    ///
-    /// The active-mode I/O reactor relies on this to fail closed at attach
-    /// time: its `on_data` envelope is a raw (`envelope == null`) node whose
-    /// embedded `BytesTriple` refcount is dropped *only* by the handler that
-    /// consumes it. An eviction would free the triple container as plain bytes
-    /// and leak the underlying refcounted buffer, so attaching to such a
-    /// mailbox is refused rather than risk a leak (or a double-free, were the
-    /// node given evict-time drop glue that the happy path would re-run).
-    #[inline]
-    pub(crate) fn overflow_evicts_queued_payload(&self) -> bool {
-        matches!(
-            self.overflow,
-            HewOverflowPolicy::DropOld | HewOverflowPolicy::Coalesce
-        )
-    }
-}
-
-/// Read the overflow-eviction classification for a mailbox behind a raw
-/// pointer. Returns `false` for a null pointer (no mailbox = nothing to
-/// evict). Used by the active-mode reactor's attach-time fail-closed guard.
-///
-/// # Safety
-///
-/// `mb`, when non-null, must be a valid pointer to a live [`HewMailbox`].
-pub(crate) unsafe fn mailbox_overflow_evicts_queued_payload(mb: *const HewMailbox) -> bool {
-    if mb.is_null() {
-        return false;
-    }
-    // SAFETY: caller guarantees `mb` is a live mailbox when non-null.
-    unsafe { (*mb).overflow_evicts_queued_payload() }
 }
 
 /// Update the high-water mark after incrementing `count`.
@@ -2327,7 +2291,8 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
 
 /// Publish an already-allocated node to a bounded mutex-backed mailbox.
 ///
-/// The caller must hold `slow_path` continuously from its capacity decision
+/// The caller must hold `slow_path` continuously from its admission decision
+/// (ordinary capacity or the native terminal-event exception)
 /// through this publication.  Unlike the lock-free queue, `count` is only an
 /// observability counter here: `user_queue.len()` is the sole admission
 /// predicate, so a producer whose count update is visible can never leave an
@@ -2335,7 +2300,6 @@ unsafe fn enqueue_user_node(mb: &HewMailbox, node: *mut HewMsgNode) {
 fn enqueue_bounded_slow_path_node(mb: &HewMailbox, q: &mut SlowPathQueue, node: *mut HewMsgNode) {
     debug_assert!(mb.use_slow_path);
     debug_assert!(mb.capacity > 0);
-    debug_assert!(i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX) < mb.capacity);
 
     mb.count.fetch_add(1, Ordering::Release);
     q.user_queue.push_back(node);
@@ -2672,6 +2636,29 @@ pub(crate) unsafe fn try_admit_native_request(
     envelope: *mut HewMsgEnvelope,
     reply: *mut c_void,
 ) -> SendOutcome {
+    // SAFETY: preserves the caller's pinned mailbox and unique references.
+    unsafe { admit_native_request(mb, msg_type, envelope, reply, false) }
+}
+
+/// Admit a terminal attachment event behind queued data, bypassing capacity.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn admit_native_terminal(
+    mb: &HewMailbox,
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+) -> SendOutcome {
+    // SAFETY: the caller pins the mailbox and owns the unpublished envelope.
+    unsafe { admit_native_request(mb, msg_type, envelope, ptr::null_mut(), true) }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn admit_native_request(
+    mb: &HewMailbox,
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+    reply: *mut c_void,
+    terminal: bool,
+) -> SendOutcome {
     if mb.closed.load(Ordering::Acquire) {
         return SendOutcome::Closed;
     }
@@ -2684,7 +2671,9 @@ pub(crate) unsafe fn try_admit_native_request(
         let mut queue = mb.slow_path.lock_or_recover();
         if mb.closed.load(Ordering::Acquire) {
             SendOutcome::Closed
-        } else if i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity {
+        } else if !terminal
+            && i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity
+        {
             SendOutcome::Failed
         } else {
             enqueue_bounded_slow_path_node(mb, &mut queue, node);
@@ -2693,7 +2682,7 @@ pub(crate) unsafe fn try_admit_native_request(
             MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
             return SendOutcome::Enqueued;
         }
-    } else if mb.capacity > 0 {
+    } else if mb.capacity > 0 && !terminal {
         if try_reserve_fast_path_capacity(mb) {
             // SAFETY: this producer owns the node and its reserved capacity slot.
             unsafe { enqueue_reserved_fast_user_node(mb, node) };
@@ -3132,65 +3121,6 @@ pub unsafe extern "C" fn hew_mailbox_try_send(
         SendOutcome::Dropped | SendOutcome::Failed => HewError::ErrMailboxFull as i32,
         SendOutcome::Oom => HewError::ErrOom as i32,
     }
-}
-
-/// Non-blocking send that **bypasses the bounded-capacity overflow policy** and
-/// appends to the tail of the *user* queue, so a terminal/out-of-band event is
-/// delivered even when the mailbox is at capacity — without dropping, blocking,
-/// or evicting any queued message.
-///
-/// This is the guaranteed-delivery channel for events that must never be lost
-/// under data backpressure (the active-mode reactor's one-shot `on_close`). It
-/// enqueues into the **user** queue (not the priority system queue) precisely so
-/// per-mailbox FIFO is preserved: the terminal event is ordered *after* every
-/// already-queued `on_data`, never ahead of it. At most one extra node is
-/// admitted past capacity per call, and the connection it belongs to is
-/// unregistered immediately afterward, so the overshoot is bounded by one slot
-/// per terminating connection and the queue drains back under capacity as the
-/// actor consumes it (the consumer's `not_full.notify_one` on each recv still
-/// applies).
-///
-/// A *closed* mailbox is still refused: a closed mailbox means the actor is
-/// already terminating, so the terminal event is moot and the caller may treat
-/// `ErrClosed` as "no delivery needed" (no leak — the actor is going away).
-///
-/// Returns `0` ([`HewError::Ok`]) once the node is enqueued, `-4`
-/// ([`HewError::ErrClosed`]) if the mailbox is closed, or `-5`
-/// ([`HewError::ErrOom`]) if node allocation fails.
-///
-/// # Safety
-///
-/// Same requirements as [`hew_mailbox_send`].
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn hew_mailbox_send_guaranteed(
-    mb: *mut HewMailbox,
-    msg_type: i32,
-    data: *const c_void,
-    size: usize,
-) -> i32 {
-    if mb.is_null() {
-        return HewError::ErrClosed as i32;
-    }
-    // SAFETY: Caller guarantees `mb` is valid when non-null.
-    let mb = unsafe { &*mb };
-
-    if mb.closed.load(Ordering::Acquire) {
-        return HewError::ErrClosed as i32;
-    }
-
-    // SAFETY: `data` validity guaranteed by caller (or null when size == 0).
-    let node = unsafe { msg_node_alloc(msg_type, data, size, ptr::null_mut()) };
-    if node.is_null() {
-        return HewError::ErrOom as i32;
-    }
-
-    // Append to the user queue unconditionally, skipping the bounded-capacity
-    // check in `send_with_overflow`. `enqueue_user_node` routes to the slow or
-    // fast queue exactly as the policy-aware path does, so the consumer dequeues
-    // it in FIFO order behind any already-queued message.
-    // SAFETY: `node` was just allocated with next == null and is owned here.
-    unsafe { enqueue_user_node(mb, node) };
-    HewError::Ok as i32
 }
 
 /// Send a runtime lifecycle signal, bypassing capacity limits.
@@ -5018,83 +4948,25 @@ mod tests {
     }
 
     #[test]
-    fn guaranteed_send_admits_terminal_event_past_full_capacity() {
-        // The dropped-close bug shape at the mailbox layer: a bounded mailbox at
-        // capacity (Fail policy) rejects `try_send` — the path that lost the
-        // active-mode `on_close`. `hew_mailbox_send_guaranteed` must admit the
-        // terminal event anyway, appended AFTER the buffered message (FIFO), so
-        // the actor still observes it.
-        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
-        unsafe {
-            const DATA_TYPE: i32 = 7;
-            const CLOSE_TYPE: i32 = 9;
-            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Fail);
-            let val: i32 = 1;
-            let p = (&raw const val).cast_mut().cast();
-
-            // Fill the single slot with a buffered "on_data".
-            assert_eq!(
-                hew_mailbox_try_send(mb, DATA_TYPE, p, size_of::<i32>()),
-                HewError::Ok as i32
-            );
-
-            // Reproduce the bug: a plain try_send for the terminal event is
-            // rejected on the full mailbox — this is the silent drop.
-            assert_eq!(
-                hew_mailbox_try_send(mb, CLOSE_TYPE, ptr::null_mut(), 0),
-                HewError::ErrMailboxFull as i32,
-                "try_send must drop the terminal event on a full mailbox (the bug)"
-            );
-
-            // The fix: guaranteed-send admits it past capacity.
-            assert_eq!(
-                hew_mailbox_send_guaranteed(mb, CLOSE_TYPE, ptr::null_mut(), 0),
-                HewError::Ok as i32,
-                "guaranteed-send must admit the terminal event past a full mailbox"
-            );
-
-            // FIFO: the buffered on_data drains FIRST, the terminal event SECOND.
-            let first = hew_mailbox_try_recv(mb);
-            assert!(!first.is_null());
-            assert_eq!(
-                (*first).msg_type,
-                DATA_TYPE,
-                "buffered on_data must drain before the terminal close (FIFO)"
-            );
-            hew_msg_node_free(first);
-
-            let second = hew_mailbox_try_recv(mb);
-            assert!(!second.is_null());
-            assert_eq!(
-                (*second).msg_type,
-                CLOSE_TYPE,
-                "the guaranteed terminal close must drain after the buffered data"
-            );
-            hew_msg_node_free(second);
-
-            assert!(
-                hew_mailbox_try_recv(mb).is_null(),
-                "exactly one buffered + one terminal node; no extras"
-            );
-
-            hew_mailbox_free(mb);
+    fn native_terminal_refusal_preserves_envelope_ownership() {
+        static DROPPED: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "C" fn drop_payload(_: *mut c_void) {
+            DROPPED.fetch_add(1, Ordering::Relaxed);
         }
-    }
-
-    #[test]
-    fn guaranteed_send_refused_on_closed_mailbox() {
-        // A closed mailbox means the actor is already terminating; the terminal
-        // event is moot, so guaranteed-send reports ErrClosed (no enqueue, no
-        // leak) rather than admitting a node into a dead mailbox.
-        // SAFETY: test owns the mailbox exclusively; all pointers are valid.
+        // SAFETY: the test owns the mailbox and unpublished envelope throughout.
         unsafe {
             let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Fail);
             mailbox_close(mb);
-            assert_eq!(
-                hew_mailbox_send_guaranteed(mb, 9, ptr::null_mut(), 0),
-                HewError::ErrClosed as i32,
-                "guaranteed-send must refuse a closed mailbox"
-            );
+            let payload = crate::actor_native::hew_actor_payload_alloc(1);
+            let envelope = hew_msg_envelope_new(payload, 1, Some(drop_payload));
+            assert!(matches!(
+                admit_native_terminal(&*mb, 9, envelope),
+                SendOutcome::Closed
+            ));
+            assert_eq!(DROPPED.load(Ordering::Relaxed), 0);
+            hew_msg_envelope_release(envelope);
+            assert_eq!(DROPPED.load(Ordering::Relaxed), 1);
+            assert!(hew_mailbox_try_recv(mb).is_null());
             hew_mailbox_free(mb);
         }
     }

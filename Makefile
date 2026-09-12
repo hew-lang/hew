@@ -1195,8 +1195,7 @@ compile-determinism-selftest-build:
 compiler-measurements: dogfood-compile-measure ## Test: report compile size and timings
 
 # Dogfood-shaped compile measurement. IR size and timings remain observational.
-# Lint already builds the same release-lib compiler for hew-fmt-check, so this
-# adds only the focused compile.
+# Build the release-lib compiler explicitly for optimized measurements.
 #
 #         tests/compile-measure/** scripts/dogfood-compile-measure.sh
 # The measurement reports define blocks, excluding host-specific module headers.
@@ -1578,12 +1577,12 @@ test-build-harness:
 
 # Check that std/ and examples/ .hew sources are formatted.
 # Run `find std examples -name "*.hew" -print0 | xargs -0 hew fmt` to fix.
-hew-fmt-check: hew
+hew-fmt-check: hew-native
 	@echo "==> hew-fmt-check: checking std/ and examples/ .hew sources"
 	@total=$$(find std examples -name "*.hew" | wc -l | tr -d ' '); \
 	bash scripts/lib/corpus-nonempty.sh hew-fmt-check-files "$$total" || exit 1; \
 	find std examples -name "*.hew" -print0 \
-	    | xargs -0 "$(BUILD_DIR)/bin/hew" fmt --check \
+	    | xargs -0 "$(DEBUG_HEW)" fmt --check \
 	    && echo "hew-fmt-check passed: all $$total .hew sources are formatted." \
 	    || { echo "error: unformatted .hew sources found — run 'find std examples -name \"*.hew\" -print0 | xargs -0 hew fmt' to fix." >&2; exit 1; }
 
@@ -1780,13 +1779,14 @@ verify-extern-string-abi:
 test-verify-ffi:
 	$(PYTHON) scripts/tests/test_verify_ffi_symbols.py
 
-# Python only; no artifacts.
-
+# Generate declaration-owned metadata before projecting the complete C ABI.
 cabi-surface:
+	cargo run -p xtask -- runtime-declarations --write
 	$(PYTHON) scripts/generate-cabi-surface.py --write
 
 
 cabi-surface-check:
+	cargo run -p xtask -- runtime-declarations --check
 	$(PYTHON) scripts/generate-cabi-surface.py --check
 
 # Python only; no artifacts.

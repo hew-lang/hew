@@ -706,6 +706,9 @@ fn primitive_repr(
             integer_layout(ctx, target, 32)?,
         ]),
         ResolvedTy::Unit => PhysicalRepr::Unit,
+        callback if *callback == hew_mir::physical::ActorIngressAdapter::pointer_type() => {
+            PhysicalRepr::Pointer
+        }
         // An `#[opaque]` nominal with no resource descriptor is a bit-copied
         // FFI id of pointer width; its lifecycle belongs to whatever owns it.
         ResolvedTy::Named {
@@ -1964,6 +1967,7 @@ fn build_module_with_host<'ctx>(
     emitter.emit_callable_descriptors()?;
     emitter.value_callbacks = emitter.emit_selected_value_callbacks()?;
     emitter.emit_actor_descriptors()?;
+    emitter.emit_actor_ingress_adapters()?;
     emitter.emit_functions()?;
     emitter.emit_entry()?;
     if let Some(export) = host {
@@ -3238,6 +3242,15 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     fn emit_const(&self, dest: StorageId, value: &PhysicalConst) -> CodegenResult<()> {
         let llvm_ty = llvm_type(self.ctx, &self.storage(dest)?.layout.repr)?;
         match value {
+            PhysicalConst::ActorIngressAdapter(adapter) => {
+                let function = self
+                    .llvm
+                    .get_function(&actor::ingress_symbol(*adapter))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed("missing actor ingress adapter".into())
+                    })?;
+                self.store(dest, function.as_global_value().as_pointer_value().into())
+            }
             // Physical MIR already derived the exact destination-width bit
             // pattern, so the backend emits it verbatim: no sign inference, no
             // widening decision.
@@ -3702,6 +3715,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 result_abi,
                 normal,
+                ..
             } => self.emit_extern_call(symbol, args, *result, result_abi, normal),
             PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
             PhysicalTerminator::Trap(kind) => {
@@ -9608,6 +9622,7 @@ mod tests {
             name: "main".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::RootUnit,
+            terminal_receiver: None,
             params: vec![],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -9774,6 +9789,7 @@ mod tests {
             name: "copy_bytes".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::RootUnit,
+            terminal_receiver: None,
             params: vec![],
             return_ty: ResolvedTy::Bytes,
             entry: BlockId(0),

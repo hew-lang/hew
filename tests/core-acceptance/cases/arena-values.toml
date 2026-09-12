@@ -1,0 +1,9 @@
+[[case]]
+id = "arena-values"
+intent = "Arena insertion, lookup, removal and slot reuse retain value snapshots and refuse stale or foreign keys."
+source = "cases/arena-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "arena keys and values\n"
+exit = 0

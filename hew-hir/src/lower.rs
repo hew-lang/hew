@@ -6132,6 +6132,7 @@ pub fn lower_program_with_mono_cap(
     );
 
     let module = HirModule {
+        indexed_place_operations: ctx.indexed_place_operations,
         items,
         diagnostic_source_modules,
         root_item_ids: ctx.root_item_ids,
@@ -7670,6 +7671,7 @@ struct LowerCtx {
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
     impl_method_declaration_ids: HashMap<String, hew_types::DefId>,
+    consuming_inherent_methods: HashSet<hew_types::DefId>,
     /// Exact declaration-ID → emitted-body-symbol projection, populated only
     /// after HIR emits an impl body.  This is deliberately separate from
     /// `impl_method_declaration_ids`: the checker table retains compatibility
@@ -7885,15 +7887,7 @@ struct LowerCtx {
     /// Checker-resolved assignment target classification keyed by the target
     /// expression span.
     ///
-    /// Passive pass-through: `Stmt::Assign` is fully lowered in HIR and MIR,
-    /// but neither simple-assign nor compound-assign lowering consults this map
-    /// yet.  Future consumer: compound-assignment signedness dispatch in codegen
-    /// and Machine Lane B actor-field write classification.
-    /// (LESSONS: checker-authority P0, end-to-end-before-layer-thickening P1)
-    #[expect(
-        dead_code,
-        reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
-    )]
+    /// Selects indexed-write lowering before consuming the resolved mutation.
     assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     /// Checker-resolved assignment target type-shape metadata (signedness flag)
     /// keyed by the target expression span.  Populated alongside
@@ -7906,6 +7900,10 @@ struct LowerCtx {
         reason = "passive pass-through; future consumer is compound-assignment signedness in codegen"
     )]
     assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    checked_indexed_place_operations:
+        HashMap<SpanKey, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
+    indexed_place_operations:
+        HashMap<SiteId, (hew_types::RuntimeCallFamily, hew_types::RuntimeCallFamily)>,
     /// Checker-owned actor receive-handler guard policy keyed by receive span.
     actor_handler_state_guards: HashMap<SpanKey, ActorStateGuard>,
     /// Actor type names that participate in reference cycles, computed by the
@@ -8517,6 +8515,7 @@ impl LowerCtx {
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
+            consuming_inherent_methods: tc_output.consuming_inherent_methods.clone(),
             impl_method_body_symbols: HashMap::new(),
             impl_body_plan: ImplBodyPlan::default(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
@@ -8567,6 +8566,8 @@ impl LowerCtx {
             lowering_facts: tc_output.lowering_facts.clone(),
             assign_target_kinds: tc_output.assign_target_kinds.clone(),
             assign_target_shapes: tc_output.assign_target_shapes.clone(),
+            checked_indexed_place_operations: tc_output.indexed_place_operations.clone(),
+            indexed_place_operations: HashMap::new(),
             actor_handler_state_guards: tc_output.actor_handler_state_guards.clone(),
             cycle_capable_actors: tc_output.cycle_capable_actors.clone(),
             actor_protocol_descriptors: tc_output.actor_protocol_descriptors.clone(),
@@ -13223,10 +13224,12 @@ impl LowerCtx {
     /// structured dispatch will carry to MIR.
     fn call_target_presentation_name(target: &CallTarget) -> String {
         match target {
-            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => {
+            CallTarget::User(declaration)
+            | CallTarget::ImplMethod(declaration)
+            | CallTarget::Extern { declaration, .. }
+            | CallTarget::DeclaredRuntime { declaration, .. } => {
                 declaration.full_path().to_string()
             }
-            CallTarget::Extern { declaration, .. } => declaration.full_path().to_string(),
             CallTarget::Runtime(family) => format!("runtime::{family:?}"),
             CallTarget::Builtin { endpoint } => endpoint.clone(),
             CallTarget::RuntimeCollection(family) => format!("runtime collection::{family:?}"),
@@ -14199,6 +14202,7 @@ impl LowerCtx {
                 type_params: Self::concat_type_params(impl_type_params, func),
                 params,
                 var_self_receiver: None,
+                terminal_receiver: None,
                 return_ty: generator_ty,
                 body,
                 span,
@@ -14239,6 +14243,10 @@ impl LowerCtx {
         self.pop_scope();
         self.current_fn_type_params = prior_fn_type_params;
 
+        let terminal_receiver = params
+            .first()
+            .filter(|_| self.consuming_inherent_methods.contains(&declaration))
+            .map(|parameter| parameter.id);
         Some(HirFn {
             id,
             node: self.ids.node(),
@@ -14247,6 +14255,7 @@ impl LowerCtx {
             type_params: Self::concat_type_params(impl_type_params, func),
             params,
             var_self_receiver: var_self_receiver.map(|receiver| receiver.id),
+            terminal_receiver,
             return_ty,
             body,
             span,
@@ -16294,7 +16303,9 @@ impl LowerCtx {
                 HirStmtKind::Let(binding, value)
             }
             Stmt::Assign { target, op, value } => {
-                if let Some(op) = op {
+                if let Some(assignment) = self.lower_index_assignment(target, *op, value, &span) {
+                    assignment
+                } else if let Some(op) = op {
                     self.lower_compound_assignment(target, *op, value, &span)
                 } else {
                     let first_store = self
@@ -17138,6 +17149,151 @@ impl LowerCtx {
         })
     }
 
+    /// An indexed write is the mutation selected by the checker at its target
+    /// span. Reuse ordinary collection-call lowering so replacement ownership
+    /// and argument evaluation agree with the method spelling.
+    fn lower_index_assignment(
+        &mut self,
+        target: &Spanned<Expr>,
+        op: Option<CompoundAssignOp>,
+        value: &Spanned<Expr>,
+        span: &Span,
+    ) -> Option<HirStmtKind> {
+        let key = self.mk_key(&target.1);
+        if self.assign_target_kinds.get(&key) != Some(&AssignTargetKind::Index) {
+            return None;
+        }
+        let Expr::Index { object, index } = &target.0 else {
+            return None;
+        };
+        let family = self
+            .resolved_calls
+            .get(&key)
+            .and_then(|resolved| match resolved.target {
+                CallTarget::RuntimeCollection(method) => Self::semantic_collection_method(method),
+                _ => None,
+            });
+        if family.is_none() && op.is_none() {
+            return None;
+        }
+        let value_ty = self.resolved_expr_types.get(&key)?.clone();
+        let mut receiver = self.lower_expr(object, IntentKind::Read);
+        let index = self.lower_expr(index, IntentKind::Read);
+        let replacement = self.lower_expr(value, IntentKind::Read);
+        let mut statements = Vec::new();
+        let (index, replacement) = if let Some(op) = op {
+            // The read and write share one evaluated key. The receiver remains
+            // a place, taken by SIR only after argument evaluation succeeds.
+            let (capture, read_key, key_ref) = self.capture_assignment_index(index);
+            let mut read_receiver = self.lower_expr(object, IntentKind::Read);
+            self.capture_compound_place_indices(&mut read_receiver, &mut receiver, &mut statements);
+            statements.push(capture);
+            let read = self.make_expr(
+                HirExprKind::Index {
+                    container: Box::new(read_receiver),
+                    index: Box::new(read_key),
+                },
+                value_ty.clone(),
+                IntentKind::Read,
+                target.1.clone(),
+            );
+            let updated = self.make_expr(
+                HirExprKind::Binary {
+                    op: Self::compound_assign_binary_op(op),
+                    left: Box::new(read),
+                    right: Box::new(replacement),
+                },
+                value_ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            );
+            (key_ref, updated)
+        } else {
+            (index, replacement)
+        };
+        let assignment = if let Some(family) = family {
+            let kind = self.collection_call_kind(
+                family,
+                vec![receiver, index, replacement],
+                &ResolvedTy::Unit,
+                span,
+            );
+            HirStmtKind::Expr(self.make_expr(
+                kind,
+                ResolvedTy::Unit,
+                IntentKind::Read,
+                span.clone(),
+            ))
+        } else {
+            let target = self.make_expr(
+                HirExprKind::Index {
+                    container: Box::new(receiver),
+                    index: Box::new(index),
+                },
+                value_ty,
+                IntentKind::Modify,
+                target.1.clone(),
+            );
+            HirStmtKind::Assign {
+                target,
+                value: Box::new(replacement),
+                first_store: false,
+            }
+        };
+        Some(self.assignment_with_prelude(statements, assignment, span))
+    }
+
+    fn assignment_with_prelude(
+        &mut self,
+        mut statements: Vec<HirStmt>,
+        assignment: HirStmtKind,
+        span: &Span,
+    ) -> HirStmtKind {
+        if statements.is_empty() {
+            return assignment;
+        }
+        statements.push(HirStmt {
+            node: self.ids.node(),
+            kind: assignment,
+            span: span.clone(),
+        });
+        let block = HirBlock {
+            node: self.ids.node(),
+            scope: self.ids.scope(),
+            statements,
+            tail: None,
+            ty: ResolvedTy::Unit,
+            span: span.clone(),
+        };
+        HirStmtKind::Expr(self.make_expr(
+            HirExprKind::Block(block),
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        ))
+    }
+
+    /// Bind a compound assignment's key once and return distinct HIR reads.
+    fn capture_assignment_index(&mut self, index: HirExpr) -> (HirStmt, HirExpr, HirExpr) {
+        self.push_scope();
+        let name = format!("__hew_assignment_key_{}", self.ids.binding().0);
+        let binding = self.bind(name.clone(), index.ty.clone(), false, index.span.clone());
+        self.pop_scope();
+        let read = self.binding_ref_expr(
+            name.clone(),
+            binding.id,
+            binding.ty.clone(),
+            index.span.clone(),
+        );
+        let write = self.binding_ref_expr(name, binding.id, binding.ty.clone(), index.span.clone());
+        let statement = HirStmt {
+            node: self.ids.node(),
+            span: index.span.clone(),
+            kind: HirStmtKind::Let(binding, Some(index)),
+        };
+        (statement, read, write)
+    }
+
     fn lower_compound_assignment(
         &mut self,
         target: &Spanned<Expr>,
@@ -17146,9 +17302,11 @@ impl LowerCtx {
         span: &Span,
     ) -> HirStmtKind {
         let binary_op = Self::compound_assign_binary_op(op);
-        let target_read = self.lower_expr(target, IntentKind::Read);
+        let mut target_read = self.lower_expr(target, IntentKind::Read);
         let rhs = self.lower_expr(value, IntentKind::Read);
-        let target_write = self.lower_expr(target, IntentKind::Modify);
+        let mut target_write = self.lower_expr(target, IntentKind::Modify);
+        let mut prelude = Vec::new();
+        self.capture_compound_place_indices(&mut target_read, &mut target_write, &mut prelude);
         let value = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -17162,10 +17320,55 @@ impl LowerCtx {
             },
             span: span.clone(),
         };
-        HirStmtKind::Assign {
+        let assignment = HirStmtKind::Assign {
             target: target_write,
             value: Box::new(value),
             first_store: false,
+        };
+        self.assignment_with_prelude(prelude, assignment, span)
+    }
+
+    /// Stabilize the existing read/write projection pair without deciding
+    /// whether that place is writable; SIR retains that authority.
+    fn capture_compound_place_indices(
+        &mut self,
+        read: &mut HirExpr,
+        write: &mut HirExpr,
+        prelude: &mut Vec<HirStmt>,
+    ) {
+        match (&mut read.kind, &mut write.kind) {
+            (
+                HirExprKind::Index {
+                    container: read,
+                    index: read_index,
+                },
+                HirExprKind::Index {
+                    container: write,
+                    index: write_index,
+                },
+            ) => {
+                self.capture_compound_place_indices(read, write, prelude);
+                let (capture, key_read, key_write) =
+                    self.capture_assignment_index((**read_index).clone());
+                **read_index = key_read;
+                **write_index = key_write;
+                prelude.push(capture);
+            }
+            (
+                HirExprKind::FieldAccess { object: read, .. },
+                HirExprKind::FieldAccess { object: write, .. },
+            )
+            | (
+                HirExprKind::TupleIndex { tuple: read, .. },
+                HirExprKind::TupleIndex { tuple: write, .. },
+            )
+            | (
+                HirExprKind::SubsumedValue { source: read },
+                HirExprKind::SubsumedValue { source: write },
+            ) => {
+                self.capture_compound_place_indices(read, write, prelude);
+            }
+            _ => {}
         }
     }
 
@@ -17439,6 +17642,12 @@ impl LowerCtx {
         // SiteId counts in tests stay stable (lower_expr previously
         // allocated node before site at the same call).
         let site = self.ids.site();
+        if let Some(operations) = self
+            .checked_indexed_place_operations
+            .get(&self.mk_key(&span))
+        {
+            self.indexed_place_operations.insert(site, *operations);
+        }
         if let Some(operation) = self.actor_delivery_calls.get(&self.mk_key(&span)).cloned() {
             use hew_types::actor_delivery::ActorDeliveryCall;
             let (receiver, args) = match (&operation, &expr.0) {
@@ -24040,9 +24249,16 @@ impl LowerCtx {
         } else {
             ValueClass::of_ty(&ty, &self.type_classes)
         };
+        let site = self.ids.site();
+        if let Some(operations) = self
+            .checked_indexed_place_operations
+            .get(&self.mk_key(&span))
+        {
+            self.indexed_place_operations.insert(site, *operations);
+        }
         HirExpr {
             node: self.ids.node(),
-            site: self.ids.site(),
+            site,
             value_class,
             ty,
             intent,
@@ -26371,6 +26587,8 @@ impl LowerCtx {
                 hew_types::WidthCastKind::Saturating => (
                     HirExprKind::SaturatingWidthCast {
                         value: Box::new(lowered_receiver),
+                        from_range: lowering.from_range,
+                        to_range: lowering.to_range,
                         from_ty,
                         to_ty: to_ty.clone(),
                     },
@@ -26426,6 +26644,8 @@ impl LowerCtx {
             return (
                 HirExprKind::TryWidthCast {
                     value: Box::new(lowered_receiver),
+                    from_range: lowering.from_range,
+                    to_range: lowering.to_range,
                     from_ty,
                     to_ty,
                     kind: lowering.kind,
@@ -26735,23 +26955,14 @@ impl LowerCtx {
                 );
             }
         }
-        // A checker-selected typed runtime endpoint is already a complete
-        // executable dispatch decision.  It intentionally wins over the
-        // declaration-level resolver verdict that was also recorded while
-        // validating the source method surface: active transport `attach`, for
-        // example, has a source trait implementation solely for type checking,
-        // while its actual call ABI is the runtime family that synthesises
-        // concrete actor protocol IDs.  Trying to project that source stub into
-        // an imported HIR body both loses the runtime ABI and rejects valid
-        // imported handles when the trait declaration has no materialised
-        // body.  Keep this precedence structural (the typed `CallTarget`), not
-        // symbol- or receiver-name based, so every future runtime override has
-        // the same semantics.
+        // Runtime invocation facts already select an executable contract.
+        // They supersede the ordinary source-body resolver verdict recorded
+        // while checking the same declaration's public method signature.
         let rewrite = self.method_call_rewrites.get(&key).cloned();
         let runtime_rewrite_selected = matches!(
             &rewrite,
             Some(MethodCallRewrite::RewriteToFunction {
-                target: CallTarget::Runtime(_),
+                target: CallTarget::Runtime(_) | CallTarget::DeclaredRuntime { .. },
                 ..
             })
         );
@@ -27080,6 +27291,16 @@ impl LowerCtx {
                     .map_or(ResolvedTy::Unit, |ty| {
                         self.qualify_current_module_record_ty(ty)
                     });
+                if matches!(target, CallTarget::DeclaredRuntime { .. }) {
+                    return self.lower_declared_runtime_invocation(
+                        target,
+                        receiver,
+                        args,
+                        consumes_receiver,
+                        ret_ty,
+                        &span,
+                    );
+                }
                 let c_symbol = match &target {
                     CallTarget::ImplMethod(declaration) => {
                         let Some(symbol) = self.registered_impl_method_symbol(declaration) else {
@@ -28958,6 +29179,170 @@ impl LowerCtx {
                 return;
             }
         }
+    }
+
+    /// Consume the checked source contract and concrete callback identities.
+    /// The runtime status is adapted with ordinary value/branch constructs, so
+    /// SIR receives one raw invocation and owns the same cleanup paths as any
+    /// other call and Result construction.
+    fn lower_declared_runtime_invocation(
+        &mut self,
+        target: CallTarget,
+        receiver: &Spanned<Expr>,
+        args: &[hew_parser::ast::CallArg],
+        consumes_receiver: bool,
+        result_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        use hew_types::check::dispatch::ResolvedRuntimeResult;
+        let CallTarget::DeclaredRuntime { family, result, .. } = &target else {
+            unreachable!("declared runtime invocation requires its checked target");
+        };
+        let family = *family;
+        let adaptation = result.clone();
+        let receiver = self.lower_expr(
+            receiver,
+            if consumes_receiver {
+                IntentKind::Consume
+            } else {
+                IntentKind::Read
+            },
+        );
+        let mut lowered_args = vec![receiver];
+        lowered_args.extend(
+            args.iter()
+                .map(|arg| self.lower_expr(arg.expr(), IntentKind::Read)),
+        );
+        let callee = self.make_expr(
+            HirExprKind::BindingRef {
+                name: family.c_symbol().to_string(),
+                resolved: ResolvedRef::Builtin(family),
+            },
+            ResolvedTy::Function {
+                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                params: lowered_args.iter().map(|arg| arg.ty.clone()).collect(),
+                ret: Box::new(ResolvedTy::I32),
+            },
+            IntentKind::Read,
+            span.clone(),
+        );
+        let call = self.make_expr(
+            HirExprKind::Call {
+                target,
+                callee: Box::new(callee),
+                args: lowered_args,
+            },
+            ResolvedTy::I32,
+            IntentKind::Read,
+            span.clone(),
+        );
+        if adaptation == ResolvedRuntimeResult::DiscardStatus {
+            return (
+                HirExprKind::Block(HirBlock {
+                    node: self.ids.node(),
+                    scope: self.ids.scope(),
+                    statements: vec![HirStmt {
+                        node: self.ids.node(),
+                        kind: HirStmtKind::Expr(call),
+                        span: span.clone(),
+                    }],
+                    tail: None,
+                    ty: ResolvedTy::Unit,
+                    span: span.clone(),
+                }),
+                ResolvedTy::Unit,
+            );
+        }
+        let ResolvedRuntimeResult::StatusResult { error } = adaptation else {
+            unreachable!("status discard was handled above");
+        };
+        self.lower_runtime_status_result(call, &error, result_ty, span)
+    }
+
+    /// Map the raw runtime status to the source-selected Result constructors.
+    fn lower_runtime_status_result(
+        &mut self,
+        call: HirExpr,
+        error: &hew_types::VariantMatch,
+        result_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let error_ty = self.qualify_current_module_record_ty(ResolvedTy::Named {
+            name: error.type_name.clone(),
+            args: Vec::new(),
+            builtin: None,
+            is_opaque: false,
+        });
+        let error_key = format!("{}::{}", error.type_name, error.variant_name);
+        // This is the ordinary checked VariantMatch identity. Project its
+        // exact constructor into the HIR layout registry, without resolving a
+        // source spelling or retrying a short variant name.
+        let constructors = self
+            .machine_ctor_registry
+            .get(&error_key)
+            .cloned()
+            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Ok", span))
+            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Err", span));
+        let Some((((error_name, error_index), (_, ok_index)), (_, err_index))) = constructors
+        else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: error_key,
+                    reason: "checked runtime result constructor has no HIR layout".to_string(),
+                },
+                span.clone(),
+                "runtime result constructor facts could not be lowered",
+            ));
+            return (
+                HirExprKind::Unsupported("invalid declared runtime result".to_string()),
+                result_ty,
+            );
+        };
+        let error = self.synthetic_variant_ctor(&error_name, error_index, None, error_ty, span);
+        let unit = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Unit),
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let success = self.synthetic_variant_ctor(
+            "Result",
+            ok_index,
+            Some(vec![("0".to_string(), unit)]),
+            result_ty.clone(),
+            span,
+        );
+        let refusal = self.synthetic_variant_ctor(
+            "Result",
+            err_index,
+            Some(vec![("0".to_string(), error)]),
+            result_ty.clone(),
+            span,
+        );
+        let zero = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Integer(0)),
+            ResolvedTy::I32,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let condition = self.make_expr(
+            HirExprKind::Binary {
+                op: hew_parser::ast::BinaryOp::Equal,
+                left: Box::new(call),
+                right: Box::new(zero),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        (
+            HirExprKind::If {
+                condition: Box::new(condition),
+                then_expr: Box::new(success),
+                else_expr: Some(Box::new(refusal)),
+            },
+            result_ty,
+        )
     }
 
     /// Build the `HirExprKind::MachineVariantCtor` node for a tuple-variant
@@ -35053,16 +35438,16 @@ impl Widget {
                 fn finish(consume self) -> i64 { self.value }
             }
 
-            fn touch_twice<T: Fluent>(value: T) {
+            fn touch_twice<T: Fluent>(consume value: T) {
                 value.touch();
                 value.touch();
             }
 
-            fn transfer<T: Fluent>(value: T) -> T {
+            fn transfer<T: Fluent>(consume value: T) -> T {
                 value.touch()
             }
 
-            fn finish_dyn(value: dyn Finish) -> i64 {
+            fn finish_dyn(consume value: dyn Finish) -> i64 {
                 value.finish()
             }
             ",

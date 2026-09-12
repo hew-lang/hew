@@ -6,21 +6,9 @@ import std.deque;
 
 import std.time.cron;
 
-import std.net.http;
-
-import std.net.quic;
-
 import std.net.url;
 
 import std.encoding.xml;
-
-fn close_request(value: http.Request) {
-    value.close();
-}
-
-fn close_event(value: quic.QUICEvent) {
-    value.close();
-}
 
 fn main() -> i64 {
     let glob = match path.glob("tests/vertical-slice/accept/*.hew") {

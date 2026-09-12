@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_VERIFY"
-line = 0
-column = 0
-message = "SIR verification failed: [SirDiagnostic { function: \"__hew_fn_main\", callable: Some(CallableId(0)), kind: PlaceLifetime { block: BlockId(17), place: PlaceId(3), reason: \"aggregate field is not initialized on every incoming path\" } }]"
+code = "UseAfterMove"
+line = 28
+column = 5
+message = "use of moved value `rx`"

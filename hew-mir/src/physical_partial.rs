@@ -711,7 +711,10 @@ pub(super) fn require_droppable(
     id: StorageId,
     mode: hew_sir::CleanupMode,
 ) -> Result<(), PhysicalError> {
-    if mode == hew_sir::CleanupMode::Trap {
+    if matches!(
+        mode,
+        hew_sir::CleanupMode::Trap | hew_sir::CleanupMode::TerminalReceiver
+    ) {
         return Ok(());
     }
     let live_linear = |id: StorageId| -> Result<bool, PhysicalError> {

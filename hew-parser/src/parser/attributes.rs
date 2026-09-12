@@ -86,6 +86,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         "every" => &[ActorReceiveFn],
         "max_heap" => &[ActorDecl],
         "extern_symbol" => &[ImplMethod, ExternFn],
+        "runtime" => &[ImplMethod],
         // Not gated to `std/` by `RESERVED_SUBSTRATE_ATTRIBUTES` today (it is
         // used by non-stdlib code, e.g.
         // `tests/vertical-slice/accept/returns_receiver_consuming_result.hew`),

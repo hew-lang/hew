@@ -2558,7 +2558,7 @@ impl Checker {
     /// built-in types whose variant resolution failed (which also fails
     /// `bind_pattern`), so callers can treat `None` as "checker already emitted
     /// an error for this arm".
-    fn resolve_variant_match(
+    pub(super) fn resolve_variant_match(
         &self,
         variant_surface_name: &str,
         scrutinee_ty: &Ty,

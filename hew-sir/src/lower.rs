@@ -8,6 +8,8 @@ use std::ops::Range;
 
 #[path = "lower_projection.rs"]
 mod projection;
+#[path = "lower_writable.rs"]
+mod writable;
 
 #[path = "lower_actor.rs"]
 mod actor;
@@ -44,6 +46,9 @@ mod select;
 
 #[path = "lower_match.rs"]
 mod match_lowering;
+
+#[path = "lower_numeric.rs"]
+mod numeric;
 
 #[path = "lower_loops.rs"]
 mod loops;
@@ -585,7 +590,7 @@ fn concrete_record_fields(
 ) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
     if matches!(
         facts.declaration_marker(aggregate_ty)?,
-        hew_types::DeclarationMarker::Resource | hew_types::DeclarationMarker::Linear
+        hew_types::DeclarationMarker::Resource
     ) && crate::resource::record_resource_lifecycle(module, aggregate_ty).is_none()
     {
         return Err(format!(
@@ -3608,6 +3613,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             name: self.callable.symbol.clone(),
             span: self.function.span.clone(),
             source_origin: self.callable.source_origin.clone(),
+            terminal_receiver: self.terminal_linear_receiver(),
             params: self.params,
             return_ty: self.callable.signature.return_ty.clone(),
             entry: BlockId(0),
@@ -3845,6 +3851,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
             }
         }
+        let loan_floor = self.scope_loans.len();
         let source = self.lower_expr_with_binding_use(expr, binding_use)?;
         // A loan of a clone-free value has no owned copy to make: the binding
         // holds the loan and the wall against consuming it is the loan itself.
@@ -3852,12 +3859,19 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             && !movable_owner
             && self.value_own_kind(source) == Some(OwnKind::Guaranteed)
         {
-            self.emit(
+            let copy = self.emit(
                 expr,
                 SemOpKind::CopyValue {
                     source: Operand { value: source },
                 },
-            )
+            )?;
+            // This snapshot owns its contents. Loans created only to evaluate
+            // the read no longer support a live result; keeping them would
+            // falsely tie the snapshot to its collection across branches.
+            // Loans that existed before this expression still belong to their
+            // original binding or enclosing read and remain live.
+            self.end_expression_loans(loan_floor)?;
+            Ok(copy)
         } else {
             Ok(source)
         }
@@ -3977,6 +3991,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .ok_or_else(|| "coercion has no typed source value".to_string())?;
         if crate::call_boundary_types_match(&source, target) {
             return Ok(value);
+        }
+        if source.can_implicitly_numeric_normalize_to(target) {
+            return self.emit_typed(
+                provenance,
+                target,
+                SemOpKind::Cast {
+                    value: Operand { value },
+                    to: target.clone(),
+                },
+            );
         }
         self.service.require_type_facts(target)?;
         crate::verify_callable_coercion(&source, target, self.service.checked_facts.rows())
@@ -4102,6 +4126,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn bind_source_value(&mut self, binding: &HirBinding, value: ValueId) -> Result<(), String> {
+        if binding.mutable && self.value_own_kind(value) == Some(OwnKind::Guaranteed) {
+            // Like an affine borrowed parameter, the incoming loan remains the
+            // readable value; only a replacement initializes this local owner.
+            let ty = self.value_ty(value).ok_or("borrowed binding has no type")?;
+            let place = self.allocate_local(ty)?;
+            self.bind_source_target(binding, BindingTarget::Place(place))?;
+            self.bindings
+                .insert(binding.id, BindingTarget::Value(value));
+            return Ok(());
+        }
         let target = if binding.mutable {
             self.acquire_local_target(value)?
         } else {
@@ -4143,6 +4177,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect::<Vec<_>>();
         bindings.sort_unstable();
         bindings
+    }
+
+    fn terminal_linear_receiver(&self) -> Option<ValueId> {
+        let receiver = self.function.terminal_receiver?;
+        let index = self
+            .function
+            .params
+            .iter()
+            .position(|param| param.id == receiver)?;
+        let param = self.params.get(index)?;
+        (self
+            .service
+            .checked_facts
+            .declaration_marker(&param.ty)
+            .ok()
+            == Some(hew_types::DeclarationMarker::Linear))
+        .then_some(param.value)
     }
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
@@ -4394,6 +4445,25 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let loan_floor = self.scope_loans.len();
         let value = value
             .map(|expr| {
+                if !binding.is_consume {
+                    if let HirExprKind::BindingRef {
+                        resolved: ResolvedRef::Binding(source),
+                        ..
+                    } = &expr.kind
+                    {
+                        if let BindingTarget::Value(source) = self.binding_target(*source)? {
+                            let ty = self.ty(&expr.ty);
+                            self.service.require_type_facts(&ty)?;
+                            if self.value_own_kind(source) == Some(OwnKind::Guaranteed)
+                                && self.service.checked_facts.rows()[&TypeInstanceKey(ty)].clone
+                                    == hew_types::CloneKind::None
+                            {
+                                return self
+                                    .lower_expr_with_binding_use(expr, OwnedBindingUse::Probe);
+                            }
+                        }
+                    }
+                }
                 lower_initial_value_transfer(
                     self,
                     expr,
@@ -4567,9 +4637,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             target.kind,
             HirExprKind::FieldAccess { .. } | HirExprKind::TupleIndex { .. }
         ) {
-            if self.lower_element_field_assignment(target, value)? {
-                return Ok(());
-            }
             return self.lower_field_assignment(target, value);
         }
         let HirExprKind::BindingRef {
@@ -4634,103 +4701,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
-    /// `rows[i].field = v`: a projection chain rooted at a vector element.
-    ///
-    /// The element is not a place - only the vector's slot is - so the write
-    /// goes through the same element set entry `rows[i] = v` uses (D460): read
-    /// the element, replace the selected field in that owner, and move the
-    /// updated element back into its slot. The set entry releases the element
-    /// it replaces, so the replaced field value is released exactly once, and
-    /// the index keeps its bounds trap.
-    ///
-    /// Returns `false` for every other projection root, which the ordinary
-    /// binding-rooted path handles.
-    fn lower_element_field_assignment(
-        &mut self,
-        target: &HirExpr,
-        value: &HirExpr,
-    ) -> Result<bool, String> {
-        let (root, projections) = self.projection_chain(target)?;
-        if !projections.is_empty() {
-            if let HirExprKind::BorrowedIndex { .. } = &root.kind {
-                // The checker read this element as a loan because it has no
-                // semantic copy, and the element set entry needs an owner to
-                // move in. Name the construct rather than the place model.
-                return Err(
-                    "assignment through a field of a collection element requires an element \
-                     with a semantic copy; move it out with `remove`, update it and put it back"
-                        .into(),
-                );
-            }
-        }
-        let HirExprKind::Index { container, index } = &root.kind else {
-            return Ok(false);
-        };
-        if projections.is_empty() {
-            return Ok(false);
-        }
-        let container_ty = self.ty(&container.ty);
-        if !matches!(
-            collection_type_arguments(&container_ty),
-            Some((hew_types::BuiltinType::Vec, _))
-        ) {
-            return Ok(false);
-        }
-        let element_ty = self.ty(&root.ty);
-        let leaf_ty = self.ty(&target.ty);
-        let provenance = Provenance::Site(target.site);
-
-        // Evaluate the replacement before the element it lands in, exactly as
-        // the binding-rooted field assignment does.
-        let replacement = lower_initial_value_transfer(
-            self,
-            value,
-            "element field assignment",
-            OwnedBindingUse::Copy,
-        )?;
-        let replacement = self.coerce_value(replacement, &leaf_ty, Provenance::Site(value.site))?;
-
-        // One evaluation of the index expression feeds both the read and the
-        // write; lowering it twice would run its effects twice.
-        let position = self.lower_expr(index)?;
-        let element = self
-            .lower_runtime_operation_with(
-                root,
-                hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Index),
-                &[container.as_ref(), index.as_ref()],
-                true,
-                &[(1, position)],
-            )?
-            .ok_or_else(|| "element read must produce a semantic copy".to_string())?;
-        if self.value_own_kind(element) != Some(OwnKind::Owned) {
-            return Err(
-                "assignment through a collection element requires an owning element read".into(),
-            );
-        }
-        self.assign_through_owned_value(
-            element,
-            &element_ty,
-            &projections,
-            replacement,
-            provenance,
-        )?;
-
-        let mut operation = target.clone();
-        operation.ty = ResolvedTy::Unit;
-        self.lower_runtime_operation_with(
-            &operation,
-            hew_types::RuntimeCallFamily::Vector(hew_types::runtime_call::VecValueOp::Set),
-            &[container.as_ref(), index.as_ref(), root],
-            false,
-            &[(1, position), (2, element)],
-        )?;
-        Ok(true)
-    }
-
     /// Assignment and runtime receiver mutation resolve and rebuild the same
     /// mutable place. Evaluate the RHS before taking its current root apart.
     fn lower_field_assignment(&mut self, target: &HirExpr, value: &HirExpr) -> Result<(), String> {
-        let place = self.resolve_mutable_place(target)?;
+        let path = self.resolve_writable_path(target)?;
+        if Self::path_is_indexed(&path) {
+            let replacement = lower_initial_value_transfer(
+                self,
+                value,
+                "indexed field assignment",
+                OwnedBindingUse::Copy,
+            )?;
+            let replacement = self.coerce_value(
+                replacement,
+                &self.ty(&target.ty),
+                Provenance::Site(value.site),
+            )?;
+            let provenance = Provenance::Site(target.site);
+            let (root, staged_root) = self.stage_writable_root(&path.base, &provenance)?;
+            let (old, writeback) =
+                self.acquire_indexed_path(path, root, staged_root, false, &provenance)?;
+            if self.owned_live.contains_key(&old) {
+                self.emit_destroy(old)?;
+            }
+            return self.publish_indexed_path(writeback, replacement, &provenance);
+        }
+        let place = path.base;
         let replacement = lower_initial_value_transfer(
             self,
             value,
@@ -5201,6 +5197,32 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.lower_expr_with_binding_use(expr, OwnedBindingUse::Copy)
     }
 
+    /// A value result owns its contents or copies its bits. Only a Guaranteed
+    /// result carries a loan across the expression boundary. This also covers
+    /// projections and aggregate construction over borrowed collection reads.
+    fn lower_expr_with_binding_use(
+        &mut self,
+        expr: &HirExpr,
+        binding_use: OwnedBindingUse,
+    ) -> Result<ValueId, String> {
+        let loan_floor = self.scope_loans.len();
+        let value = self.lower_expr_inner(expr, binding_use)?;
+        if self.is_open()
+            && matches!(
+                self.value_own_kind(value),
+                Some(OwnKind::Owned | OwnKind::None)
+            )
+        {
+            self.end_expression_loans(loan_floor)?;
+        }
+        Ok(value)
+    }
+
+    fn end_expression_loans(&mut self, floor: usize) -> Result<(), String> {
+        let interior = self.scope_loans.split_off(floor);
+        self.end_call_loans(&interior)
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "the closed initial HIR-to-SIR expression mapping remains intentionally local"
@@ -5209,7 +5231,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         deprecated,
         reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
     )]
-    fn lower_expr_with_binding_use(
+    fn lower_expr_inner(
         &mut self,
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
@@ -5554,6 +5576,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.emit(expr, SemOpKind::Binary { op: *op, lhs, rhs })
                 }
             }
+            HirExprKind::SaturatingWidthCast { .. } => self.lower_saturating_cast(expr),
+            HirExprKind::TryWidthCast { .. } => self.lower_try_cast(expr),
             HirExprKind::NumericCast { value, to_ty, .. } => {
                 let value = self.lower_read_operand(value, "cast operand")?;
                 self.emit(
@@ -8082,6 +8106,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             );
         };
         match target {
+            CallTarget::DeclaredRuntime {
+                family,
+                actor_endpoints: Some(endpoints),
+                ..
+            } => {
+                self.lower_actor_attachment_runtime(expr, *family, endpoints, args, value_required)
+            }
             CallTarget::Builtin { endpoint } if endpoint == "assert" => {
                 self.lower_assert(expr, args)?;
                 Ok(None)
@@ -8105,7 +8136,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 };
                 self.lower_supervisor_stop(handle)
             }
-            CallTarget::Runtime(family) => self.lower_runtime_operation(
+            CallTarget::Runtime(family)
+            | CallTarget::DeclaredRuntime {
+                family,
+                actor_endpoints: None,
+                ..
+            } => self.lower_runtime_operation(
                 expr,
                 *family,
                 &args.iter().collect::<Vec<_>>(),
@@ -8134,6 +8170,56 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
     }
 
+    fn lower_actor_attachment_runtime(
+        &mut self,
+        expr: &HirExpr,
+        family: hew_types::RuntimeCallFamily,
+        endpoints: &hew_types::check::dispatch::ResolvedActorEndpoints,
+        args: &[HirExpr],
+        value_required: bool,
+    ) -> Result<Option<ValueId>, String> {
+        let [receiver, handler] = args else {
+            return Err("actor attachment requires its receiver and handler".into());
+        };
+        let handler_ty = self.ty(&handler.ty);
+        if handler_ty
+            .actor_handle_instance()
+            .is_none_or(|instance| instance.nominal.declaration() != &endpoints.actor)
+        {
+            return Err("actor ingress target differs from its resolved declaration".into());
+        }
+        let actor = self.service.require_actor(&handler_ty)?;
+        let pointer_ty = crate::ActorIngressAdapter::pointer_type();
+        let mut adapters = Vec::new();
+        for (index, endpoint) in [&endpoints.data, &endpoints.close].into_iter().enumerate() {
+            let adapter = crate::ActorIngressAdapter {
+                actor,
+                message: endpoint.msg_id,
+            };
+            let selected = adapter.handler(&self.service.actors)?;
+            if selected.declaration != endpoint.handler {
+                return Err("actor ingress endpoint differs from its resolved declaration".into());
+            }
+            if selected.params.is_empty() != (index == 1) {
+                return Err(
+                    "actor ingress data and close endpoints have incompatible payloads".into(),
+                );
+            }
+            adapters.push(self.emit_typed(
+                Provenance::Site(expr.site),
+                &pointer_ty,
+                SemOpKind::ActorIngressAdapter(adapter),
+            )?);
+        }
+        self.lower_runtime_operation_with(
+            expr,
+            family,
+            &[receiver, handler],
+            value_required,
+            &[(2, adapters[0]), (3, adapters[1])],
+        )
+    }
+
     fn lower_runtime_operation(
         &mut self,
         expr: &HirExpr,
@@ -8145,10 +8231,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     /// As [`Self::lower_runtime_operation`], with `prelowered` naming argument
-    /// positions whose owning value this body already produced. The named
+    /// positions whose value this body already produced. The named
     /// argument is transferred as it stands instead of being lowered from its
     /// expression, so an element rebuilt in place reaches the set entry rather
     /// than a second read of the slot it is replacing.
+    /// Positions beyond `args` append synthesized semantic operands such as
+    /// actor ingress adapters, whose existing value carries its exact type.
     #[allow(
         clippy::too_many_lines,
         reason = "runtime contract admission and its explicit success/failure CFG form one semantic boundary"
@@ -8236,14 +8324,41 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let contract = family.semantic_contract().ok_or_else(|| {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
         })?;
-        let source_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
+        let argument_count = args.len().max(
+            prelowered
+                .iter()
+                .map(|(index, _)| index + 1)
+                .max()
+                .unwrap_or(0),
+        );
+        let source_types = (0..argument_count)
+            .map(|index| {
+                if let Some((_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
+                    self.value_ty(*value)
+                        .ok_or_else(|| "runtime operand lacks its semantic value type".to_string())
+                } else {
+                    args.get(index).map(|arg| self.ty(&arg.ty)).ok_or_else(|| {
+                        "runtime operand position has no source or semantic value".to_string()
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let instantiated = contract
             .resolve_types(&source_types, &self.ty(&expr.ty))
             .map_err(|error| format!("runtime operation {family:?}: {error}"))?;
         let parameter_types = &instantiated.arguments;
         for (index, (source, target)) in source_types.iter().zip(parameter_types).enumerate() {
-            self.service.require_type_facts(source)?;
-            self.service.require_type_facts(target)?;
+            if prelowered.iter().any(|(at, _)| *at == index)
+                && *source == crate::ActorIngressAdapter::pointer_type()
+                && source == target
+            {
+                // An adapter address is synthesized at this foreign boundary;
+                // it is not a source-language raw-pointer value or aggregate.
+                require_type_facts(&mut self.service.checked_facts, source)?;
+            } else {
+                self.service.require_type_facts(source)?;
+                self.service.require_type_facts(target)?;
+            }
             if source != target {
                 if contract.arguments[index].effect != RuntimeArgumentEffect::Value {
                     return Err(format!(
@@ -8282,7 +8397,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         let live_before_arguments: std::collections::HashSet<_> =
             self.owned_live.keys().copied().collect();
         let mut transformed_place = None;
-        let mut lowered_args = Vec::with_capacity(args.len());
+        let mut indexed_path = None;
+        let mut indexed_keys = Vec::new();
+        let mut lowered_args = Vec::with_capacity(argument_count);
         let mut loans = Vec::new();
         let effects = contract
             .arguments
@@ -8311,7 +8428,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .iter()
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
         let argument_loan_depth = self.argument_receiver_loans.len();
-        for (index, (&arg, effect)) in args.iter().zip(effects).enumerate() {
+        for (index, effect) in effects.into_iter().enumerate() {
             if let Some(&(_, value)) = prelowered.iter().find(|(at, _)| *at == index) {
                 let decision = match effect {
                     RuntimeArgumentEffect::Move => crate::BoundaryDecision::Move,
@@ -8326,6 +8443,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 });
                 continue;
             }
+            let arg = args[index];
             let loan_floor = loans.len();
             let (value, decision) = if source_types[index] == parameter_types[index] {
                 match effect {
@@ -8362,8 +8480,13 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                                     | RuntimeResultEffect::UpdatedReceiverAndValue(_)
                             ) =>
                     {
-                        let place = self.resolve_mutable_place(arg)?;
-                        if OwnKind::of_ty(&place.leaf_ty, self.service.checked_facts.rows())?
+                        let path = self.resolve_writable_path(arg)?;
+                        let place = path.base.clone();
+                        if Self::path_is_indexed(&path) {
+                            indexed_keys = Self::path_indices(&path);
+                            indexed_path = Some(path);
+                        }
+                        if OwnKind::of_ty(&self.ty(&arg.ty), self.service.checked_facts.rows())?
                             != OwnKind::Owned
                         {
                             return Err("runtime transform receiver must be an owned value".into());
@@ -8418,9 +8541,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         // Preserve arguments borrowing the receiver's owner before its take.
         // Alias identity comes from the same declared place paths as loans.
         if let Some(place) = &transformed_place {
-            let selected = self
-                .owned_projection(place)?
-                .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            let selected = match self.owned_projection(place)? {
+                Some(projected) => projected,
+                None => match self.binding_target(place.binding)? {
+                    BindingTarget::Place(root) => root,
+                    BindingTarget::Value(_) => {
+                        return Err("runtime receiver has no owning seat".into())
+                    }
+                },
+            };
             let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(
                 root,
@@ -8436,6 +8565,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .keys()
             .filter(|value| {
                 !live_before_arguments.contains(value)
+                    && !indexed_keys.contains(value)
                     && !lowered_args.iter().any(|arg| {
                         arg.decision == crate::BoundaryDecision::Move
                             && arg.operand.value == **value
@@ -8444,15 +8574,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .copied()
             .collect();
         let mut transformed_projection = None;
+        let mut transformed_root = None;
+        let mut indexed_writeback = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
-            let projected = self
-                .owned_projection(place)?
-                .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            let (projected, staged_root) = self.stage_writable_root(place, &provenance)?;
             // A transform takes its receiver, which a live element loan of the
             // same owner forbids. Refusing here names the source construct
             // instead of leaving it to the ownership verifier.
-            let root = self.place_borrow_root(projected)?;
+            let loan_place = staged_root.map_or(projected, |(root, _)| root);
+            let root = self.place_borrow_root(loan_place)?;
             self.end_binding_loans_on(root)?;
             for loan in self.scope_loans.clone() {
                 if self.ended_loans.contains(&loan) {
@@ -8476,7 +8607,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } else {
                 SemOpKind::LoadTake { place: projected }
             };
-            let source = self.emit_typed(provenance.clone(), &place.leaf_ty, receiver_kind)?;
+            let receiver_ty = self.ty(&args[0].ty);
+            let source = if let Some(path) = indexed_path.take() {
+                let (source, writeback) =
+                    self.acquire_indexed_path(path, projected, staged_root, true, &provenance)?;
+                indexed_writeback = Some(writeback);
+                source
+            } else {
+                transformed_root = staged_root;
+                self.emit_typed(provenance.clone(), &receiver_ty, receiver_kind)?
+            };
             if matches!(
                 family,
                 hew_types::RuntimeCallFamily::Array(hew_types::runtime_call::ArrayValueOp::Set)
@@ -8484,7 +8624,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         hew_types::runtime_call::VecValueOp::Clear
                             | hew_types::runtime_call::VecValueOp::Set
                     )
-            ) && self.value_needs_close(&place.leaf_ty)
+            ) && self.value_needs_close(&receiver_ty)
             {
                 let index = matches!(
                     family,
@@ -8503,7 +8643,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             self.owned_live.remove(&source);
             let moved = self.emit_typed(
                 provenance,
-                &place.leaf_ty,
+                &receiver_ty,
                 SemOpKind::Move {
                     source: Operand { value: source },
                 },
@@ -8710,21 +8850,40 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     shape,
                     Provenance::Site(expr.site),
                 )?;
-                self.store_projected(
-                    transformed_projection
-                        .ok_or_else(|| "runtime transform has no source place".to_string())?,
-                    results[0].id,
-                    Provenance::Site(expr.site),
-                )?;
+                if let Some(writeback) = indexed_writeback {
+                    self.publish_indexed_path(
+                        writeback,
+                        results[0].id,
+                        &Provenance::Site(expr.site),
+                    )?;
+                } else {
+                    self.publish_writable_root(
+                        transformed_projection.ok_or("runtime transform has no source place")?,
+                        results[0].id,
+                        transformed_root,
+                        &Provenance::Site(expr.site),
+                    )?;
+                }
                 return Ok(Some(results[1].id));
             }
             if matches!(contract.result, RuntimeResultEffect::UpdatedReceiver(_)) {
-                self.store_projected(
-                    transformed_projection
-                        .ok_or_else(|| "runtime transform has no source place".to_string())?,
-                    continuation,
-                    Provenance::Site(expr.site),
-                )?;
+                if let Some(writeback) = indexed_writeback {
+                    self.publish_indexed_path(
+                        writeback,
+                        continuation,
+                        &Provenance::Site(expr.site),
+                    )?;
+                } else if let Some(projected) = transformed_projection {
+                    self.publish_writable_root(
+                        projected,
+                        continuation,
+                        transformed_root,
+                        &Provenance::Site(expr.site),
+                    )?;
+                } else {
+                    // A prelowered receiver belongs to an enclosing writable path.
+                    return Ok(Some(continuation));
+                }
                 return Ok(None);
             }
         }
@@ -8761,6 +8920,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         params: function.param_tys.clone(),
                         consumes: function.param_consume.clone(),
                         result: function.return_ty.clone(),
+                        runtime_capability: function.runtime_capability,
                     }
                 })
             })
@@ -9200,7 +9360,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             }
         }
         let value = self.fresh_value();
-        self.service.require_type_facts(result_ty)?;
+        if matches!(kind, SemOpKind::ActorIngressAdapter(_)) {
+            require_type_facts(&mut self.service.checked_facts, result_ty)?;
+        } else {
+            self.service.require_type_facts(result_ty)?;
+        }
         let own = OwnKind::of_ty(result_ty, self.service.checked_facts.rows())?;
         let own = if let Some(parent) = kind.borrow_parent() {
             self.borrow_parents.insert(value, parent);

@@ -1,0 +1,62 @@
+import std.net;
+
+actor Receiver {
+    var total: i64 = 0,
+    var size: i64 = 0,
+    var ended: bool = false,
+
+    receive fn result() -> (bool, i64, i64) {
+        (ended, total, size)
+    }
+
+    receive fn on_close() {
+        ended = true;
+    }
+
+    receive fn on_data(data: bytes) {
+        for i in 0 .. data.len() {
+            total = total + data[i] as i64;
+        }
+        size = size + data.len();
+    }
+}
+
+fn main() {
+    let listener = match net.listen("127.0.0.1:0") {
+        .Ok(value) => value,
+        .Err(_) => panic("listen failed"),
+    };
+    let client = match net.connect(f"127.0.0.1:{listener.local_port()}") {
+        .Ok(value) => value,
+        .Err(_) => panic("connect failed"),
+    };
+    let server = listener.accept();
+    let receiver = spawn Receiver;
+    match server.attach(receiver) {
+        .Ok(()) => {},
+        .Err(_) => panic("attach refused"),
+    }
+    match client.write_string("A\0é") {
+        .Ok(()) => {},
+        .Err(_) => panic("write failed"),
+    }
+    client.close();
+    listener.close();
+    var finished = false;
+    for attempt in 0 .. 5000 {
+        let state = match receiver.result() {
+            .Ok(value) => value,
+            .Err(_) => panic("receiver failed"),
+        };
+        if state.0 {
+            assert(state.1 == 429);
+            assert(state.2 == 4);
+            finished = true;
+            break;
+        }
+        sleep(1ms);
+    }
+    assert(finished);
+    close(receiver);
+    println("tcp attached bytes and close");
+}

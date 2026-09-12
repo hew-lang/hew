@@ -66,8 +66,8 @@ fn linear() -> SemModule {
         "type Token { payload: string } fn probe(consume owner: Token, flag: bool) {} fn main() {}",
     );
     let ty = probe(&mut module).params[0].ty.clone();
-    // The native producer does not admit marked parameters yet. Construct
-    // their model contract using the existing declared type and exact facts.
+    // Construct the linear contract directly so malformed cleanup paths
+    // reach the verifier independently of source admission.
     let row = module
         .type_facts
         .get_mut(&hew_types::TypeInstanceKey(ty.clone()))
@@ -213,6 +213,7 @@ fn refuses(module: &mut SemModule, expected: &str) {
     let errors = verify_module(module);
     assert!(
         errors.iter().any(|error| match &error.kind {
+            SirDiagnosticKind::UnconsumedLinear { .. } => expected == "UnconsumedLinear",
             SirDiagnosticKind::PlaceLifetime { reason, .. }
             | SirDiagnosticKind::OwnershipLifetime { reason, .. }
             | SirDiagnosticKind::FaultLifetime { reason, .. } => reason.contains(expected),
@@ -438,7 +439,7 @@ fn linear_trap_cleanup_is_derived_from_the_contiguous_suffix() {
     );
     let mut normal = module.clone();
     probe(&mut normal).blocks[0].terminator = done();
-    refuses(&mut normal, "linear contents require an explicit consume");
+    refuses(&mut normal, "UnconsumedLinear");
     // A real observable write after EndLifetime separates it from the suffix.
     // Even a terminal Trap cannot retrospectively forgive that earlier end.
     let mut effect = module.clone();
@@ -450,7 +451,31 @@ fn linear_trap_cleanup_is_derived_from_the_contiguous_suffix() {
     });
     function.blocks[0].ops.insert(0, alloc(1));
     function.blocks[0].ops.extend([init(1, 1), end(1)]);
-    refuses(&mut effect, "linear contents require an explicit consume");
+    refuses(&mut effect, "UnconsumedLinear");
+}
+
+#[test]
+fn terminal_completion_requires_receiver_identity_and_preserves_replacement_obligations() {
+    let mut module = linear();
+    let function = probe(&mut module);
+    function.terminal_receiver = Some(ValueId(0));
+    function.blocks[0]
+        .ops
+        .insert(2, op(SemOpKind::FinishLinearReceiver));
+    valid(&mut module);
+    let function = probe(&mut module).clone();
+    assert_eq!(
+        place_lifetimes(&module, &function)
+            .unwrap()
+            .cleanup(function.blocks[0].ops[3].id),
+        Some(CleanupMode::TerminalReceiver)
+    );
+
+    probe(&mut module).terminal_receiver = None;
+    refuses(&mut module, "checked owned terminal receiver");
+    probe(&mut module).terminal_receiver = Some(ValueId(0));
+    probe(&mut module).blocks[0].ops.insert(3, assign(0, 0));
+    refuses(&mut module, "UnconsumedLinear");
 }
 
 #[test]
@@ -459,7 +484,7 @@ fn linear_assignment_is_never_forgiven_by_a_later_trap() {
     let ty = probe(&mut module).params[0].ty.clone();
     probe(&mut module).blocks[0].ops = vec![alloc(0), init(0, 0), assign(0, 0), end(0)];
     probe(&mut module).blocks[0].terminator = trap();
-    refuses(&mut module, "linear contents require an explicit consume");
+    refuses(&mut module, "UnconsumedLinear");
     // Taking then ending empty storage is valid; destroying the transferred
     // linear SSA value remains subject to the same trap-only boundary.
     probe(&mut module).blocks[0].ops = vec![
@@ -471,7 +496,7 @@ fn linear_assignment_is_never_forgiven_by_a_later_trap() {
     ];
     valid(&mut module);
     probe(&mut module).blocks[0].terminator = done();
-    refuses(&mut module, "linear value requires an explicit consume");
+    refuses(&mut module, "UnconsumedLinear");
 }
 
 #[test]
@@ -760,5 +785,5 @@ fn parked_fault_preserves_trap_only_linear_cleanup() {
         Some(CleanupMode::Trap)
     );
     probe(&mut module).blocks[0].terminator = SemTerminator::Goto(edge(1));
-    refuses(&mut module, "linear contents require an explicit consume");
+    refuses(&mut module, "UnconsumedLinear");
 }

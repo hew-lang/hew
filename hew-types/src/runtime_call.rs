@@ -21,6 +21,11 @@ mod tcp;
 pub use tcp::TcpOp;
 mod file_resources;
 pub use file_resources::{FileReadHandleKind, FileReadOp};
+mod declared;
+pub use declared::{
+    declared_runtime_method, DeclaredRuntimeMethod, DeclaredRuntimeResult,
+    DECLARED_RUNTIME_EXPORTS_TOML,
+};
 
 use crate::{BuiltinType, ResolvedTy};
 use serde::{Deserialize, Serialize};
@@ -114,6 +119,10 @@ pub enum RuntimeValueKind {
     ChannelPair,
     ActorRequestOwner,
     ActorRequestAdmission,
+    /// A concrete actor identity, preserved through semantic lowering.
+    ActorHandle,
+    /// An immutable raw pointer, including compiler-generated ingress adapters.
+    ConstBytePointer,
     Unit,
     Bool,
     I8,
@@ -222,16 +231,14 @@ impl RuntimeValueKind {
             Self::ChannelHalfResult(_) | Self::NodeLookupResult => return None,
             Self::ChannelPair => channel_pair_ty()?,
             Self::ActorRequestOwner => actor_request_owner_ty(),
+            Self::ActorHandle => {
+                let actor = receiver?;
+                actor.actor_handle_instance()?;
+                actor.clone()
+            }
             Self::ActorRequestAdmission => {
                 ResolvedTy::named_opaque("std.builtins.ActorRequestAdmission", Vec::new())
             }
-            Self::Unit => ResolvedTy::Unit,
-            Self::Bool => ResolvedTy::Bool,
-            Self::F64 => ResolvedTy::F64,
-            Self::Char => ResolvedTy::Char,
-            Self::String => ResolvedTy::String,
-            Self::Bytes => ResolvedTy::Bytes,
-            Self::Duration => ResolvedTy::Duration,
             Self::Named(name) => ResolvedTy::named_user(name, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(name, Vec::new()),
             Self::BuiltinNominal(builtin) => {
@@ -290,19 +297,26 @@ impl RuntimeValueKind {
                     .map(|ty| ty.resolve(receiver))
                     .collect::<Option<Vec<_>>>()?,
             ),
-            // Only the ten integer widths reach this catch-all; every other
-            // variant is matched above. See `resolve_integer_width`.
-            kind => resolve_integer_width(kind),
+            // The remaining kinds have fixed types independent of the receiver.
+            kind => resolve_fixed_type(kind),
         })
     }
 }
 
-/// Resolve one of the ten integer-width `RuntimeValueKind` variants to its
-/// `ResolvedTy`. Split out of `resolve` to keep that match under clippy's
-/// line limit; the only caller is `resolve`'s catch-all arm, reached only
-/// after every other variant has already matched.
-fn resolve_integer_width(kind: RuntimeValueKind) -> ResolvedTy {
+/// Resolve primitive value kinds whose types do not depend on a receiver.
+fn resolve_fixed_type(kind: RuntimeValueKind) -> ResolvedTy {
     match kind {
+        RuntimeValueKind::ConstBytePointer => ResolvedTy::Pointer {
+            is_mutable: false,
+            pointee: Box::new(ResolvedTy::U8),
+        },
+        RuntimeValueKind::Unit => ResolvedTy::Unit,
+        RuntimeValueKind::Bool => ResolvedTy::Bool,
+        RuntimeValueKind::F64 => ResolvedTy::F64,
+        RuntimeValueKind::Char => ResolvedTy::Char,
+        RuntimeValueKind::String => ResolvedTy::String,
+        RuntimeValueKind::Bytes => ResolvedTy::Bytes,
+        RuntimeValueKind::Duration => ResolvedTy::Duration,
         RuntimeValueKind::I8 => ResolvedTy::I8,
         RuntimeValueKind::I16 => ResolvedTy::I16,
         RuntimeValueKind::U8 => ResolvedTy::U8,
@@ -313,7 +327,7 @@ fn resolve_integer_width(kind: RuntimeValueKind) -> ResolvedTy {
         RuntimeValueKind::U64 => ResolvedTy::U64,
         RuntimeValueKind::Isize => ResolvedTy::Isize,
         RuntimeValueKind::Usize => ResolvedTy::Usize,
-        _ => unreachable!("resolve_integer_width is only called with an integer-width kind"),
+        _ => unreachable!("resolve_fixed_type requires a primitive value kind"),
     }
 }
 
@@ -557,8 +571,14 @@ impl RuntimeSemanticContract {
         let arguments = self
             .arguments
             .iter()
-            .map(|expected| {
-                expected.ty.resolve(receiver).ok_or_else(|| {
+            .zip(params)
+            .map(|(expected, actual)| {
+                let binding = if expected.ty == RuntimeValueKind::ActorHandle {
+                    Some(actual)
+                } else {
+                    receiver
+                };
+                expected.ty.resolve(binding).ok_or_else(|| {
                     "runtime signature has no matching canonical receiver binding".to_string()
                 })
             })
@@ -9464,30 +9484,9 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::TcpAttachLocal => RuntimeOpRow {
-                symbol: "hew_tcp_attach_local",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::TlsAttachLocal => RuntimeOpRow {
-                symbol: "hew_tls_attach_local",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::WebSocketAttachLocal => RuntimeOpRow {
-                symbol: "hew_ws_attach_local",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
+            Self::TcpAttachLocal => declared::TCPATTACHLOCAL.row,
+            Self::TlsAttachLocal => declared::TLSATTACHLOCAL.row,
+            Self::WebSocketAttachLocal => declared::WEBSOCKETATTACHLOCAL.row,
             Self::TaskAwaitBlocking => RuntimeOpRow {
                 symbol: "hew_task_await_blocking",
                 contract: None,
@@ -11621,13 +11620,11 @@ impl RuntimeCallFamily {
                 })
             );
         }
-        if self == Self::TcpAttachLocal {
-            // The TCP handoff carries a scalar connection token at ABI level,
-            // so this must not be a spelling-only ownership inference. An
-            // absent/wrong/short row is deliberately non-consuming; the
-            // generated contract is the sole positive authority.
-            return crate::ffi_contracts::extern_param_ownership(self.c_symbol(), 0)
-                == Some(crate::ffi_contracts::ExternParamOwnership::Consume);
+        if let Some(method) = declared::DECLARED_RUNTIME_METHODS
+            .iter()
+            .find(|row| row.family == self)
+        {
+            return method.consumes_receiver;
         }
         matches!(
             self,
@@ -11802,6 +11799,8 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ChannelPair
                     | RuntimeValueKind::ActorRequestOwner
                     | RuntimeValueKind::ActorRequestAdmission
+                    | RuntimeValueKind::ActorHandle
+                    | RuntimeValueKind::ConstBytePointer
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::SharedPayload
                     | RuntimeValueKind::NodeLookupResult

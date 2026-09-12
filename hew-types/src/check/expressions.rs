@@ -529,7 +529,7 @@ impl Checker {
                         .iter()
                         .map(|(e, s)| {
                             let ty = self.synthesize(e, s);
-                            self.record_callable_value_transfer(e, s);
+                            self.record_value_transfer(e, s);
                             ty
                         })
                         .collect();
@@ -1387,7 +1387,7 @@ impl Checker {
                             self.check_against(operand, operand_span, &current);
                         }
                     }
-                    self.record_callable_value_transfer(operand, operand_span);
+                    self.record_value_transfer(operand, operand_span);
                 }
                 ArrayElement::Spread(_) => {
                     // A spread operand is a `Vec` of the literal's element
@@ -1513,7 +1513,7 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return;
         };
-        if self.reject_prepared_task_access(&root, &path, span, TypeErrorKind::OwnConsumeBorrowed) {
+        if self.reject_borrowed_consumption(expr, span) {
             return;
         }
         if !path.is_empty() {
@@ -1625,6 +1625,25 @@ impl Checker {
     /// ownership slot to attach a fact to, so nothing is recorded for them
     /// rather than a guess being recorded; element-of-collection places are the
     /// known remaining hole and belong to the MIR half of this family.
+    /// Indexed writes and mutating methods need a copy of every indexed parent.
+    pub(super) fn reject_indexed_writable_borrow(&mut self, target: &Spanned<Expr>) {
+        let mut parent = target;
+        loop {
+            if self
+                .borrowed_element_index_reads
+                .contains(&SpanKey::in_module(&parent.1, self.current_module_idx))
+            {
+                self.report_error(TypeErrorKind::OwnConsumeBorrowed, &parent.1,
+                    "cannot update through a borrowed affine collection element; indexed writeback requires a semantic copy".into());
+                return;
+            }
+            match &parent.0 {
+                Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => parent = object,
+                _ => return,
+            }
+        }
+    }
+
     pub(super) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
             Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),
@@ -2846,6 +2865,13 @@ impl Checker {
                         None => return Ty::Error,
                     }
                 }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Index),
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Set),
+                    ),
+                );
                 if matches!(ctx, IndexContext::AssignTarget) {
                     self.record_resolved_vec_call("set", &args[0], span);
                 }
@@ -2890,6 +2916,13 @@ impl Checker {
                 {
                     return Ty::Error;
                 }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Index),
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Insert),
+                    ),
+                );
                 match ctx {
                     // Trapping bare-`V` read: no `.get` resolved call; MIR's
                     // `Index` node owns the `hew_hashmap_get_clone_layout` trap
@@ -2914,6 +2947,13 @@ impl Checker {
             // at byte offset, O(1), panic on OOB. Index is i64. MIR will
             // route to `hew_bytes_index`.
             Ty::Bytes => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::BytesIndex,
+                        crate::RuntimeCallFamily::BytesSet,
+                    ),
+                );
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 Ty::U8
             }
@@ -2972,6 +3012,13 @@ impl Checker {
                 Ty::Error
             }
             Ty::Array(elem, _) => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Index),
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Set),
+                    ),
+                );
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 if matches!(ctx, IndexContext::Read) {
                     match self.vec_iteration_element_mode(elem, span) {
@@ -3988,7 +4035,7 @@ impl Checker {
                         self.refuse_uncopyable_spread_element(&elem_ty, operand_span);
                     } else {
                         self.check_against(operand, operand_span, &elem_ty);
-                        self.record_callable_value_transfer(operand, operand_span);
+                        self.record_value_transfer(operand, operand_span);
                     }
                 }
                 self.record_type(span, expected);
@@ -4040,7 +4087,7 @@ impl Checker {
                 for element in elems {
                     let (operand, operand_span) = element.expr();
                     self.check_against(operand, operand_span, elem_ty);
-                    self.record_callable_value_transfer(operand, operand_span);
+                    self.record_value_transfer(operand, operand_span);
                 }
                 self.record_type(span, expected);
                 expected.clone()
@@ -4090,7 +4137,7 @@ impl Checker {
             // proven to equal `N` in a fixed-array position and is rejected too.
             (Expr::ArrayRepeat { value, count }, Ty::Array(elem_ty, size)) => {
                 self.check_against(&value.0, &value.1, elem_ty);
-                self.record_callable_value_transfer(&value.0, &value.1);
+                self.record_value_transfer(&value.0, &value.1);
                 if *size > 1
                     && self.vec_iteration_element_mode(elem_ty, span)
                         != Some(super::types::VecIterationMode::Clone)
@@ -4227,7 +4274,7 @@ impl Checker {
                     .zip(expected_tys.iter())
                     .map(|(elem, expected_ty)| {
                         let actual = self.check_against(&elem.0, &elem.1, expected_ty);
-                        self.record_callable_value_transfer(&elem.0, &elem.1);
+                        self.record_value_transfer(&elem.0, &elem.1);
                         actual
                     })
                     .collect();
@@ -4413,7 +4460,7 @@ impl Checker {
                                 let field_expected =
                                     declared_ty.substitute_named_params_parallel(&type_arg_map);
                                 let actual = self.check_against(fexpr, fs, &field_expected);
-                                self.record_callable_value_transfer(fexpr, fs);
+                                self.record_value_transfer(fexpr, fs);
 
                                 // Still infer any remaining unbound type params
                                 for tp in &td.type_params {
@@ -4578,7 +4625,7 @@ impl Checker {
                                         let field_expected = declared_ty
                                             .substitute_named_params_parallel(&type_arg_map);
                                         let actual = self.check_against(fexpr, fs, &field_expected);
-                                        self.record_callable_value_transfer(fexpr, fs);
+                                        self.record_value_transfer(fexpr, fs);
                                         // Bind any remaining unbound type params
                                         for tp in &type_params {
                                             if !type_arg_map.contains_key(tp)
@@ -7756,7 +7803,7 @@ impl Checker {
             } else {
                 self.synthesize(&arm.body.0, &arm.body.1)
             };
-            self.record_callable_value_transfer(&arm.body.0, &arm.body.1);
+            self.record_value_transfer(&arm.body.0, &arm.body.1);
             arm_exits.push(BranchArmExit {
                 ownership: self.env.ownership_snapshot(),
                 diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
@@ -7981,7 +8028,7 @@ impl Checker {
             self.infer_lambda_result(body)
         };
         self.inferred_lambda_returns = previous_inferred_returns;
-        self.record_callable_value_transfer(&body.0, &body.1);
+        self.record_value_transfer(&body.0, &body.1);
 
         self.current_return_type = prev_return_type;
         self.deferred_body = previous_defer;
@@ -8648,7 +8695,7 @@ impl Checker {
                     } else {
                         self.check_against(expr, es, &expected)
                     };
-                    self.record_callable_value_transfer(expr, es);
+                    self.record_value_transfer(expr, es);
 
                     // Infer type params: if field type is a bare type param, bind it
                     for tp in &td.type_params {
@@ -8796,7 +8843,7 @@ impl Checker {
                     } else {
                         self.check_against(expr, es, &expected)
                     };
-                    self.record_callable_value_transfer(expr, es);
+                    self.record_value_transfer(expr, es);
 
                     // Bind bare type params from this field's declared type
                     for tp in &enum_type_params {

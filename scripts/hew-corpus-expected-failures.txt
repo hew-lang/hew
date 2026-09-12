@@ -152,7 +152,6 @@ hew-sandbox-vm/fixtures/29-mixed-scalar-compare-trap/main.hew
 # final-path-limitation: each of these repros documents the E_SIR_UNSUPPORTED
 # refusal named in its own leading comment
 docs/repros/final-core/own-generic-identity-transfer.hew
-docs/repros/final-core/sir-i32-to-i64-coercion.hew E_SIR_UNSUPPORTED
 docs/repros/final-core/sir-identity-compare-unsupported.hew E_SIR_UNSUPPORTED
 
 # ── repros/ ─────────────────────────────────────────────────────────────────────
@@ -173,7 +172,6 @@ repros/ladder/bytes_clone.hew
 repros/ladder/cap_move.hew
 repros/ladder/closure_mut_share.hew
 repros/ladder/cond_init.hew E_SIR_UNSUPPORTED
-repros/ladder/gen_rebind.hew E_SIR_VERIFY
 repros/ladder/lambda_send_twice.hew E_SEND_RESULT_DROPPED
 repros/ladder/let_field_mut.hew
 repros/ladder/linear_actor_field.hew E_SIR_UNSUPPORTED
@@ -184,7 +182,6 @@ repros/ladder/resource_send2.hew
 repros/ladder/state_reinit.hew E_SIR_UNSUPPORTED
 repros/ladder/state_resource_mut.hew E_SIR_VERIFY
 repros/ladder/state_resource_trait.hew E_SIR_VERIFY
-repros/ladder/vec_resource.hew E_SIR_VERIFY
 
 # ── tests/core-acceptance/ ──────────────────────────────────────────────────────
 
@@ -308,8 +305,6 @@ tests/vertical-slice/accept/arena_no_leak_cycle.hew
 tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/coalesce_owned_payload_leak.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/duplex_split_roundtrip.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/for_range_mixed_width_bounds.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/for_range_mixed_width_normalization.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/free_fn_actor_scope_spawn.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/gen_block_explicit_return.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/generic_spawn_unit.hew E_SIR_UNSUPPORTED
@@ -328,7 +323,6 @@ tests/vertical-slice/accept/stream_state_field_for_await_asan.hew E_SIR_UNSUPPOR
 tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/wrapping_saturating_as_cast.hew E_SIR_UNSUPPORTED
 
 # internal-channel (#3401): accept fixtures the checker admits and SIR
 # verification then refuses

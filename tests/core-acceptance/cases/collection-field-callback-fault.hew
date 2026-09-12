@@ -17,6 +17,6 @@ fn main() -> i64 {
     };
     holder.contents.values.insert(Key { label: "stored".to_upper(), divisor: 1 }, ["stored".to_upper()]);
     let copy = holder;
-    holder.contents.values.insert(Key { label: "fault".to_upper(), divisor: 0 }, [copy.label]);
+    holder.contents.values[Key { label: "fault".to_upper(), divisor: 0 }] = [copy.label];
     0
 }

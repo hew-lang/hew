@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-borrow-branch-rebind"
+intent = "Replacing a borrowed binding on every branch creates a transferable local owner while the collection keeps its original resource."
+source = "cases/collection-borrow-branch-rebind.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\nclose 2\nclose 1\n3\nclose 3\nclose 1\n"
+exit = 0

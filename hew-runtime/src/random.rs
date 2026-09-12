@@ -23,11 +23,14 @@ unsafe fn validate_vec_shape(
     }
     // SAFETY: caller guarantees `v` is a live HewVec when non-null.
     let vec = unsafe { &*v };
-    if vec.elem_kind != ElemKind::Plain {
-        crate::set_last_error(format!(
-            "{context}: expected plain elements, got {:?}",
-            vec.elem_kind
-        ));
+    // SAFETY: a descriptor-backed vector owns its live layout storage.
+    let plain = if let Some(layout) = unsafe { vec.layout.as_ref() } {
+        layout.ownership_kind == crate::vec::HewTypeOwnershipKind::Plain
+    } else {
+        vec.elem_kind == ElemKind::Plain
+    };
+    if !plain {
+        crate::set_last_error(format!("{context}: expected plain elements"));
         return None;
     }
     if vec.elem_size != expected_size {
@@ -751,7 +754,12 @@ mod tests {
         unsafe {
             let v = crate::vec::hew_vec_new_str();
             hew_random_shuffle_i64(v);
-            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+            let error = crate::hew_last_error();
+            assert!(
+                !error.is_null(),
+                "invalid vector shape must report an error"
+            );
+            let err = std::ffi::CStr::from_ptr(error)
                 .to_str()
                 .unwrap()
                 .to_string();
@@ -759,6 +767,14 @@ mod tests {
                 err.contains("expected plain elements"),
                 "unexpected error: {err}"
             );
+            crate::hew_clear_error();
+            assert_eq!(hew_random_choices_vec(v, 1.0, 1), 0);
+            let error = crate::hew_last_error();
+            assert!(!error.is_null(), "choices must reject owned elements");
+            assert!(std::ffi::CStr::from_ptr(error)
+                .to_str()
+                .unwrap()
+                .contains("expected plain elements"));
             crate::vec::hew_vec_free(v);
         }
     }
@@ -771,7 +787,12 @@ mod tests {
             let v = crate::vec::hew_vec_new();
             let result = hew_random_choices_vec(v, 1.0, 1);
             assert_eq!(result, 0);
-            let err = std::ffi::CStr::from_ptr(crate::hew_last_error())
+            let error = crate::hew_last_error();
+            assert!(
+                !error.is_null(),
+                "invalid vector shape must report an error"
+            );
+            let err = std::ffi::CStr::from_ptr(error)
                 .to_str()
                 .unwrap()
                 .to_string();

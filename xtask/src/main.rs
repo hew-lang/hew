@@ -66,12 +66,40 @@ fn run() -> Result<()> {
         }
         Some("nextest-ratchet") => nextest_ratchet::run(&args[1..]),
         Some("core-acceptance") => core_acceptance::run(&args[1..]),
+        Some("runtime-declarations") => runtime_declarations(&args[1..]),
         Some("--help" | "-h") => {
             print_usage();
             Ok(())
         }
         Some(command) => Err(format!("unknown xtask command: {command}\n\n{}", usage())),
         None => Err(usage()),
+    }
+}
+
+fn runtime_declarations(args: &[String]) -> Result<()> {
+    let [mode] = args else {
+        return Err("runtime-declarations requires --write or --check".to_string());
+    };
+    let path = workspace_root()?.join("scripts/generated-runtime-declarations.toml");
+    let generated = hew_types::runtime_call::DECLARED_RUNTIME_EXPORTS_TOML;
+    match mode.as_str() {
+        "--write" => {
+            fs::write(&path, generated).map_err(|error| format!("{}: {error}", path.display()))
+        }
+        "--check" => {
+            let actual = fs::read_to_string(&path)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            let actual: toml::Value =
+                toml::from_str(&actual).map_err(|error| format!("{}: {error}", path.display()))?;
+            let expected: toml::Value = toml::from_str(generated)
+                .map_err(|error| format!("invalid generated runtime metadata: {error}"))?;
+            if actual == expected {
+                Ok(())
+            } else {
+                Err("runtime declaration metadata is stale; run make cabi-surface".to_string())
+            }
+        }
+        _ => Err("runtime-declarations requires --write or --check".to_string()),
     }
 }
 
@@ -83,6 +111,7 @@ fn usage() -> String {
         "  sandbox-fixtures  update or validate sandbox bytecode fixtures",
         "  nextest-ratchet   validate nextest JUnit against an exact failure ledger",
         "  core-acceptance   run audited native cases at O0 and O2",
+        "  runtime-declarations  write or check declaration-owned FFI metadata",
     ]
     .join("\n")
 }

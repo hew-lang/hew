@@ -21,6 +21,11 @@ were run on `hew 0.6.0-rc3-dev.142+54e8dde2c` and re-reproduced on that binary
 when they were committed here (`close 1` / `close 1` / `2` / `after` / `close 2`
 and `5` / `alive` respectively).
 
+The [generator rebind](../../tests/core-acceptance/cases/generator-binding-use-after-move.hew)
+and [resource-vector rebind](../../tests/core-acceptance/cases/resource-vector-binding-use-after-move.hew)
+probes now live in core acceptance, which checks their source-level `UseAfterMove`
+diagnostics. Their original source is unchanged; the table retains the historical outcomes.
+
 A probe whose behaviour changes is not automatically a regression: several of
 these record what `main` does **before** a §11 row changes it. Read the citing
 section first.

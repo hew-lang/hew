@@ -14,6 +14,7 @@ mod capability;
 mod defer;
 mod dump;
 mod lifetime;
+mod linear;
 mod lower;
 mod model;
 mod optimize;
@@ -26,8 +27,8 @@ mod verify;
 mod wire;
 
 pub use actor::{
-    ActorCallProtocol, ActorId, ActorOperation, LocalObservationKind, SemActor, SemActorField,
-    SemActorHandler, SemActorOverflow, SemFailureDisplay,
+    ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind,
+    SemActor, SemActorField, SemActorHandler, SemActorOverflow, SemFailureDisplay,
 };
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,

@@ -256,6 +256,8 @@ pub struct SemFunction {
     /// [`Self::source_origin`].
     pub span: Span,
     pub source_origin: FunctionSourceOrigin,
+    /// Exact owned inherent receiver eligible for explicit normal-exit completion.
+    pub terminal_receiver: Option<ValueId>,
     pub params: Vec<BlockArg>,
     pub return_ty: ResolvedTy,
     pub entry: BlockId,
@@ -1132,6 +1134,8 @@ pub enum SemOpKind {
     /// destination-width bit pattern.
     ConstInteger(i128),
     ConstBool(bool),
+    /// Address of a checked one-way runtime ingress adapter.
+    ActorIngressAdapter(crate::ActorIngressAdapter),
     /// Construct a semantic tuple value from its ordered elements.
     ///
     /// This is deliberately an aggregate-value operation: it says nothing
@@ -1295,6 +1299,10 @@ pub enum SemOpKind {
         aggregate: Operand,
     },
 
+    /// Begin the normal return cleanup of the checked consuming receiver.
+    /// Representation cleanup still releases only live contents; transfers
+    /// and other linear owners retain their obligations.
+    FinishLinearReceiver,
     // --- §1.3 place operations
     /// `alloc_place T` - definite initialization is tracked from here (rule 4).
     AllocPlace {
@@ -1345,11 +1353,13 @@ impl SemOpKind {
                     visit(OperandSlot(0), duration);
                 }
             }
-            Self::TaskScopeClose { .. }
+            Self::FinishLinearReceiver
+            | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::StreamPipe { .. }
             | Self::ConstInteger(_)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(_)
             | Self::ConstFloat(_)
             | Self::ConstChar(_)
@@ -1437,11 +1447,13 @@ impl SemOpKind {
                     visit(OperandSlot(0), duration);
                 }
             }
-            Self::TaskScopeClose { .. }
+            Self::FinishLinearReceiver
+            | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::FunctionMake { .. }
             | Self::StreamPipe { .. }
             | Self::ConstInteger(_)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(_)
             | Self::ConstFloat(_)
             | Self::ConstChar(_)
@@ -1529,7 +1541,8 @@ impl SemOpKind {
             | Self::StoreInit { place, .. }
             | Self::StoreAssign { place, .. }
             | Self::EndLifetime { place } => visit(*place),
-            Self::TaskScopeEnter { .. }
+            Self::FinishLinearReceiver
+            | Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
             | Self::GeneratorMake { .. }
@@ -1539,6 +1552,7 @@ impl SemOpKind {
             | Self::CallableCoerce { .. }
             | Self::DynMake { .. }
             | Self::ConstInteger(..)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(..)
             | Self::TupleMake { .. }
             | Self::TupleGet { .. }
@@ -1601,7 +1615,8 @@ impl SemOpKind {
             // values: two `copy_value`s of one value are two retains and must
             // never be common-subexpression-eliminated into one, and a
             // `destroy_value` or a place write is observable.
-            Self::TaskScopeEnter { .. }
+            Self::FinishLinearReceiver
+            | Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
@@ -1635,6 +1650,7 @@ impl SemOpKind {
             | Self::EndLifetime { .. } => EffectSet::IMPURE,
             Self::FunctionMake { .. }
             | Self::ConstInteger(_)
+            | Self::ActorIngressAdapter(_)
             | Self::ConstBool(_)
             | Self::ConstFloat(_)
             | Self::ConstChar(_)
@@ -1661,7 +1677,8 @@ impl SemOpKind {
     pub const fn transfers_obligation(&self) -> bool {
         matches!(
             self,
-            Self::TaskScopeEnter { .. }
+            Self::FinishLinearReceiver
+                | Self::TaskScopeEnter { .. }
                 | Self::TaskScopeClose { .. }
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }

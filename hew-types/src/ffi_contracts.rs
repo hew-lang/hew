@@ -1,9 +1,9 @@
 //! Machine-checked ownership facts for C-ABI extern symbols.
 //!
-//! `scripts/runtime-export-classification.toml` is the single source of truth.
-//! `hew-types/build.rs` projects it here so HIR can validate an extern
-//! resource boundary before MIR lowering, while MIR consumes the exact same
-//! table through its re-export.  An absent row is deliberately not a borrow.
+//! Declaration-owned runtime operations derive their rows from stdlib `.hew`
+//! attributes; remaining extern contracts live in the export classification
+//! TOML. `hew-types/build.rs` merges these disjoint owners into one table for
+//! HIR and MIR. An absent row is deliberately not a borrow.
 
 /// Ownership disposition of one C-ABI parameter.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -274,27 +274,9 @@ fn resource_param_is_audited_borrow_for_contract(
 mod tests {
     use super::*;
 
-    /// Every C symbol a runtime-call-family consumer looks up by literal
-    /// name here must resolve to a row. The consumers with a fixed,
-    /// enumerable symbol set (as opposed to the checker's source-declared
-    /// `extern "rt"` consumer, which is driven by user source and cannot be
-    /// enumerated in a unit test) are:
-    ///
-    ///   - `RuntimeCallFamily::consumes_receiver` (`hew-types/src/runtime_call.rs`)
-    ///     reads `extern_param_ownership("hew_tcp_attach_local", 0)` directly.
-    ///   - `FileReadHandleKind::matches` (`hew-types/src/runtime_call/file_resources.rs`)
-    ///     reads `extern_owned_resource_result(FileReadOp::Open.c_symbol())`.
-    ///
-    /// An absent row here is not fail-closed for these two call sites: they
-    /// treat "no contract" as "not consuming" / "not this resource type"
-    /// rather than refusing, so a silently dropped row would misclassify
-    /// ownership instead of erroring loudly. Pin both rows directly.
+    /// File resource recognition requires an explicit producer ownership row.
     #[test]
-    fn runtime_call_family_symbol_lookups_have_ownership_rows() {
-        assert!(
-            extern_param_ownership("hew_tcp_attach_local", 0).is_some(),
-            "RuntimeCallFamily::consumes_receiver reads this row for TcpAttachLocal"
-        );
+    fn file_resource_symbol_lookup_has_ownership_row() {
         assert!(
             extern_owned_resource_result(crate::runtime_call::FileReadOp::Open.c_symbol())
                 .is_some(),
@@ -525,7 +507,7 @@ mod tests {
         );
 
         assert_eq!(
-            extern_param_ownership("hew_tcp_attach_local", 0),
+            extern_param_ownership("hew_tcp_attach_native", 0),
             Some(ExternParamOwnership::Consume),
             "active-mode attach transfers the connection's sole close authority to the reactor"
         );

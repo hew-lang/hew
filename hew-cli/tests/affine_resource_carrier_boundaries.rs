@@ -362,9 +362,8 @@ fn carrier_helper_locals_do_not_displace_trailing_abi_parameters() {
 fn resource_parameter_reuse_after_collection_transfer_is_rejected() {
     let stderr = compile_rejected("parameter_reuse", PARAMETER_REUSE_BODY);
     assert!(
-        stderr.contains("E_MIR_CHECK")
-            && stderr.contains("binding `value` is used after it was consumed")
-            && stderr.contains("binding consumed here")
+        stderr.contains("use of moved value `value`")
+            && stderr.contains("value was consumed here")
             && stderr.contains("value.close()")
             && stderr.contains("items.push(value)"),
         "a real same-function use after collection transfer must remain rejected:\n{stderr}"

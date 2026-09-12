@@ -738,9 +738,6 @@ impl Checker {
         self.tail_ok_armed = !fd.is_generator && resolved_expected_ret.as_result().is_some();
         let actual = self.check_block(&fd.body, block_expected);
         self.tail_ok_armed = prev_tail_ok_armed;
-        if let Some(tail) = &fd.body.trailing_expr {
-            self.reject_borrowed_return_transfer(tail, resolved_expected_ret);
-        }
         actual
     }
 

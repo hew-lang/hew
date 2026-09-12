@@ -350,6 +350,7 @@ impl Verifier {
                 value,
                 from_ty,
                 to_ty,
+                ..
             }
             | HirExprKind::TryWidthCast {
                 value,
@@ -1184,11 +1185,13 @@ mod tests {
             is_generator: false,
             intrinsic_id: None,
             var_self_receiver: None,
+            terminal_receiver: None,
         })
     }
 
     fn module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,
             items,
             diagnostic_source_modules: HashMap::new(),

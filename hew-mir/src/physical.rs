@@ -6,9 +6,9 @@
 //! exactly once to a physical action and never infers another lifetime.
 
 pub use hew_sir::{
-    ActorId, ActorOperation, LocalObservationKind, SemActor, SemActorField, SemActorHandler,
-    SemActorOverflow, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy, SemSupervisedRole,
-    SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
+    ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind, SemActor, SemActorField,
+    SemActorHandler, SemActorOverflow, SemFailureDisplay, SemRestartPolicy, SemRestartStrategy,
+    SemSupervisedRole, SemSupervisor, SupervisorId, TaskScopeJoinMode, TaskSelectionOrder,
 };
 use hew_types::runtime_call::{sequence_element_type, ArrayValueOp};
 
@@ -396,6 +396,7 @@ pub struct PhysicalCallable {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalConst {
+    ActorIngressAdapter(hew_sir::ActorIngressAdapter),
     /// Exact destination-width two's-complement bit pattern for an integer
     /// constant, derived once here from the SIR value and the destination's
     /// realized layout (D421). Codegen emits these bits unsigned; it decides
@@ -1229,6 +1230,8 @@ pub enum PhysicalTerminator {
     /// declaration pinned; a C call has no fault ABI and no unwind edge.
     ExternCall {
         symbol: String,
+        /// Preserved declaration authority used by process entry setup.
+        runtime_capability: Option<hew_types::ExternRuntimeCapability>,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
         result_abi: PhysicalExternResultAbi,
@@ -2640,6 +2643,10 @@ impl FunctionLowerer<'_> {
                     value: PhysicalConst::IntegerBits(bits),
                 })
             }
+            SemOpKind::ActorIngressAdapter(adapter) => one(PhysicalOp::Const {
+                dest: self.one_result(operation)?,
+                value: PhysicalConst::ActorIngressAdapter(*adapter),
+            }),
             SemOpKind::ConstBool(value) => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Bool(*value),
@@ -2652,6 +2659,7 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Char(*value),
             }),
+            SemOpKind::FinishLinearReceiver => Ok(Vec::new()),
             SemOpKind::ConstUnit => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Unit,
@@ -3168,6 +3176,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::ExternCall {
                 symbol: signature.symbol.clone(),
+                runtime_capability: signature.runtime_capability,
                 args: self.argument_transfers(args)?,
                 result_abi: self.target.extern_result_abi(&signature.result)?,
                 result: match result {
@@ -5762,6 +5771,14 @@ fn verify_constant(
 ) -> Result<(), PhysicalError> {
     let destination = storage(function, dest)?;
     let matches_destination = match value {
+        PhysicalConst::ActorIngressAdapter(adapter) => {
+            adapter
+                .handler(&module.actors)
+                .map_err(PhysicalError::new)?;
+            destination.ty == hew_sir::ActorIngressAdapter::pointer_type()
+                && destination.own == OwnKind::None
+                && destination.layout.repr == PhysicalRepr::Pointer
+        }
         PhysicalConst::IntegerBits(bits) => {
             destination.ty.is_integer()
                 && destination.own == OwnKind::None
@@ -8275,6 +8292,7 @@ fn verify_terminator(
             result,
             result_abi,
             normal,
+            ..
         } => {
             // SIR proved types and ownership against the declaration. Verify
             // the transfer/edge structure and the target's C result carrier.
@@ -9457,6 +9475,7 @@ mod tests {
             name: "main".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::RootUnit,
+            terminal_receiver: None,
             params: vec![],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),

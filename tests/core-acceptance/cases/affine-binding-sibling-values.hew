@@ -1,0 +1,30 @@
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+type Booking {
+    left: Ticket,
+    right: Ticket,
+    label: string,
+}
+
+type Holder {
+    ticket: Ticket,
+}
+
+fn main() {
+    let booking = Booking { left: Ticket { id: 1 }, right: Ticket { id: 2 }, label: "shared".to_upper() };
+    let pair = (booking.left, booking.label);
+    println(booking.label);
+    println(booking.right.id);
+    let holder = Holder { ticket: pair.0 };
+    println(pair.1);
+    println(holder.ticket.id);
+}

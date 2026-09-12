@@ -350,6 +350,19 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
     }
 }
 
+/// Typed runtime producers use the same descriptor and aligned-buffer protocol
+/// as generated vectors. No conversion or element copy is needed on return.
+unsafe fn new_typed_vec<T>(ownership_kind: HewTypeOwnershipKind) -> *mut HewVec {
+    let layout = HewTypeLayout {
+        size: core::mem::size_of::<T>(),
+        align: core::mem::align_of::<T>(),
+        ownership_kind,
+    };
+    // SAFETY: callers select Plain or String for the corresponding concrete T;
+    // the constructor copies this descriptor before returning.
+    unsafe { hew_vec_new_with_layout(&raw const layout) }
+}
+
 /// Create a new `HewVec` for `i32` elements.
 ///
 /// # Safety
@@ -357,14 +370,8 @@ pub unsafe extern "C" fn hew_vec_new_with_elem_size(elem_size: i64) -> *mut HewV
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new() -> *mut HewVec {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "size_of::<i32>() is 4, fits in i64"
-    )]
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe {
-        hew_vec_new_with_elem_size(core::mem::size_of::<i32>() as i64)
-    }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<i32>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `bool` elements.
@@ -374,14 +381,8 @@ pub unsafe extern "C" fn hew_vec_new() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_bool() -> *mut HewVec {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "size_of::<bool>() is 1, fits in i64"
-    )]
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe {
-        hew_vec_new_with_elem_size(core::mem::size_of::<bool>() as i64)
-    }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<bool>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `i8` elements.
@@ -391,8 +392,8 @@ pub unsafe extern "C" fn hew_vec_new_bool() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_i8() -> *mut HewVec {
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe { hew_vec_new_with_elem_size(1) }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<i8>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `u8` elements.
@@ -402,8 +403,8 @@ pub unsafe extern "C" fn hew_vec_new_i8() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_u8() -> *mut HewVec {
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe { hew_vec_new_with_elem_size(1) }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<u8>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `i16` elements.
@@ -413,8 +414,8 @@ pub unsafe extern "C" fn hew_vec_new_u8() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_i16() -> *mut HewVec {
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe { hew_vec_new_with_elem_size(2) }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<i16>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `u16` elements.
@@ -424,8 +425,8 @@ pub unsafe extern "C" fn hew_vec_new_i16() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_u16() -> *mut HewVec {
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe { hew_vec_new_with_elem_size(2) }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<u16>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for managed string handle elements.
@@ -435,15 +436,8 @@ pub unsafe extern "C" fn hew_vec_new_u16() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_str() -> *mut HewVec {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "a managed string handle is 4 or 8 bytes and fits in i64"
-    )]
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with pointer-sized elements.
-    let v = unsafe { hew_vec_new_with_elem_size(core::mem::size_of::<*const HewString>() as i64) };
-    // SAFETY: v is non-null (hew_vec_new_with_elem_size aborts on OOM).
-    unsafe { (*v).elem_kind = ElemKind::String };
-    v
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<*const HewString>(HewTypeOwnershipKind::String) }
 }
 
 /// Create a new `HewVec` for `i64` elements.
@@ -453,14 +447,8 @@ pub unsafe extern "C" fn hew_vec_new_str() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_i64() -> *mut HewVec {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "size_of::<i64>() is 8, fits in i64"
-    )]
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe {
-        hew_vec_new_with_elem_size(core::mem::size_of::<i64>() as i64)
-    }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<i64>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `f64` elements.
@@ -470,14 +458,8 @@ pub unsafe extern "C" fn hew_vec_new_i64() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_f64() -> *mut HewVec {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "size_of::<f64>() is 8, fits in i64"
-    )]
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe {
-        hew_vec_new_with_elem_size(core::mem::size_of::<f64>() as i64)
-    }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<f64>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for `f32` elements.
@@ -487,8 +469,8 @@ pub unsafe extern "C" fn hew_vec_new_f64() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_f32() -> *mut HewVec {
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with a valid element size.
-    unsafe { hew_vec_new_with_elem_size(4) }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<f32>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a new `HewVec` for pointer-sized elements (e.g. actor handles).
@@ -498,14 +480,8 @@ pub unsafe extern "C" fn hew_vec_new_f32() -> *mut HewVec {
 /// The returned pointer must eventually be freed with [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_vec_new_ptr() -> *mut HewVec {
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "size_of::<*mut c_void>() is 4 or 8, fits in i64"
-    )]
-    // SAFETY: forwarding to `hew_vec_new_with_elem_size` with pointer-sized elements.
-    unsafe {
-        hew_vec_new_with_elem_size(core::mem::size_of::<*mut c_void>() as i64)
-    }
+    // SAFETY: this typed ABI fixes the element size, alignment and ownership.
+    unsafe { new_typed_vec::<*mut c_void>(HewTypeOwnershipKind::Plain) }
 }
 
 /// Create a `HewVec` of i32 elements from raw byte data, widening each `u8` to `i32`.
@@ -523,7 +499,7 @@ pub unsafe extern "C" fn hew_vec_from_u8_data(data: *const u8, len: u32) -> *mut
     }
     // Pre-allocate capacity.
     // SAFETY: v is freshly created and valid.
-    unsafe { ensure_cap(v, len as usize) };
+    unsafe { ensure_cap_raw(v, len as usize) };
     // SAFETY: v is valid and has capacity for len i32 elements after ensure_cap.
     let dst = unsafe { (*v).data.cast::<i32>() };
     for i in 0..len as usize {
@@ -718,7 +694,7 @@ macro_rules! vec_push_primitive {
                 let Some(new_len) = len.checked_add(1) else {
                     libc::abort();
                 };
-                ensure_cap(v, new_len);
+                ensure_cap_raw(v, new_len);
                 let slot = (*v).data.cast::<$ty>().add(len);
                 slot.write(val);
                 (*v).len = new_len;
@@ -750,7 +726,7 @@ pub unsafe extern "C" fn hew_vec_push_str(v: *mut HewVec, val: *const HewString)
         let Some(new_len) = len.checked_add(1) else {
             libc::abort();
         };
-        ensure_cap(v, new_len);
+        ensure_cap_raw(v, new_len);
         // Retain one owner for the vec (VWT copy ingress).
         let owned = copy_string_element_in(val);
         let slot = (*v).data.cast::<*mut HewString>().add(len);
@@ -953,7 +929,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_i32(
         if count == 0 {
             return out;
         }
-        ensure_cap(out, count);
+        ensure_cap_raw(out, count);
         let src = (*v).data.cast::<i32>().add(start_u);
         let dst = (*out).data.cast::<i32>();
         core::ptr::copy_nonoverlapping(src, dst, count);
@@ -982,7 +958,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_i64(
         if count == 0 {
             return out;
         }
-        ensure_cap(out, count);
+        ensure_cap_raw(out, count);
         let src = (*v).data.cast::<i64>().add(start_u);
         let dst = (*out).data.cast::<i64>();
         core::ptr::copy_nonoverlapping(src, dst, count);
@@ -1011,7 +987,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_f64(
         if count == 0 {
             return out;
         }
-        ensure_cap(out, count);
+        ensure_cap_raw(out, count);
         let src = (*v).data.cast::<f64>().add(start_u);
         let dst = (*out).data.cast::<f64>();
         core::ptr::copy_nonoverlapping(src, dst, count);
@@ -1036,8 +1012,14 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_bytesize(
 ) -> *mut HewVec {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        if (*v).elem_kind != ElemKind::Plain || !(*v).layout.is_null() {
+        if (*v).elem_kind != ElemKind::Plain {
             abort_layout_aware_operation();
+        }
+        if let Some(layout) = (*v).layout.as_ref() {
+            if layout.ownership_kind != HewTypeOwnershipKind::Plain {
+                abort_layout_aware_operation();
+            }
+            return hew_vec_slice_range_owned(v, start, end);
         }
         let (start_u, end_u) = check_slice_bounds(v, start, end);
         let elem_size = (*v).elem_size;
@@ -1050,7 +1032,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_bytesize(
         if count == 0 {
             return out;
         }
-        ensure_cap(out, count);
+        ensure_cap_raw(out, count);
         let byte_count = count.checked_mul(elem_size).unwrap_or_else(|| {
             let msg = b"PANIC: Vec slice byte count overflow\n\0";
             write_stderr(&msg[..msg.len() - 1]);
@@ -1090,7 +1072,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_ptr(
         if count == 0 {
             return out;
         }
-        ensure_cap(out, count);
+        ensure_cap_raw(out, count);
         let src = (*v).data.cast::<*mut c_void>().add(start_u);
         let dst = (*out).data.cast::<*mut c_void>();
         core::ptr::copy_nonoverlapping(src, dst, count);
@@ -1102,11 +1084,11 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_ptr(
 /// Allocate a new `HewVec` populated from `v[start..end)` for string
 /// elements. Each element is **retained** (VWT `copy`) into the fresh vec; the
 /// result vec owns one reference per element and releases them via the standard
-/// `elem_kind == String` path in [`hew_vec_free`].
+/// descriptor-driven path in [`hew_vec_free`].
 ///
 /// # Safety
 ///
-/// `v` must be a valid string `HewVec` (`elem_kind == String`). The
+/// `v` must be a valid string `HewVec`. The
 /// returned pointer must be freed via [`hew_vec_free`].
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_vec_slice_range_str(
@@ -1122,7 +1104,7 @@ pub unsafe extern "C-unwind" fn hew_vec_slice_range_str(
         if count == 0 {
             return out;
         }
-        ensure_cap(out, count);
+        ensure_cap_raw(out, count);
         // Retain one owner per element into the slice (VWT copy); handles
         // null/static. Shared element-retain path (CLAUDE §6).
         retain_string_elements_into(
@@ -2190,7 +2172,6 @@ macro_rules! vec_remove_at_primitive {
         pub unsafe extern "C-unwind" fn $name(v: *mut HewVec, index: i64) -> $ty {
             // SAFETY: caller guarantees `v` is a valid HewVec for `$ty`.
             unsafe {
-                abort_if_layout_aware(v);
                 let len = (*v).len;
                 let idx = index as usize;
                 if idx >= len {
@@ -2232,7 +2213,6 @@ pub unsafe extern "C-unwind" fn hew_vec_remove_at_str(
 ) -> *const HewString {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
-        abort_if_layout_aware(v);
         let len = (*v).len;
         let idx = index as usize;
         if idx >= len {
@@ -3649,36 +3629,9 @@ mod tests {
         unsafe {
             let v = hew_vec_new();
             assert!(!v.is_null());
-            assert!((*v).layout.is_null());
             assert_eq!(hew_vec_len(v), 0);
             assert!(hew_vec_is_empty(v));
             hew_vec_free(v);
-        }
-    }
-
-    #[test]
-    fn legacy_vec_constructors_keep_layout_null() {
-        // SAFETY: FFI calls use valid vec pointers returned by constructors.
-        unsafe {
-            let vecs = [
-                hew_vec_new(),
-                hew_vec_new_bool(),
-                hew_vec_new_i8(),
-                hew_vec_new_u8(),
-                hew_vec_new_i16(),
-                hew_vec_new_u16(),
-                hew_vec_new_i64(),
-                hew_vec_new_f32(),
-                hew_vec_new_f64(),
-                hew_vec_new_str(),
-                hew_vec_new_ptr(),
-                hew_vec_new_generic(i64::try_from(core::mem::size_of::<u64>()).unwrap(), 0),
-            ];
-            for v in vecs {
-                assert!(!v.is_null());
-                assert!((*v).layout.is_null());
-                hew_vec_free(v);
-            }
         }
     }
 
@@ -4765,7 +4718,6 @@ mod tests {
 
             let sub = hew_vec_slice_range_str(v, 0, 2);
             assert_eq!(hew_vec_len(sub), 2);
-            assert_eq!((*sub).elem_kind, ElemKind::String);
             // Freeing the slice must NOT invalidate strings in the original vec:
             // the slice holds independent *owners* (retained refs); refcounting
             // keeps each shared buffer alive until the original also releases it.
@@ -5209,7 +5161,6 @@ mod tests {
             let cloned = hew_vec_clone_owned(v);
             assert!(!cloned.is_null());
             assert_eq!(hew_vec_len(cloned), 2);
-            assert_eq!((*cloned).elem_kind, ElemKind::String);
 
             let c0 = hew_vec_get_str(cloned, 0);
             assert_eq!(string_as_str(c0), "alpha");
@@ -5990,8 +5941,8 @@ mod vec_owned_tests {
         }
     }
 
-    /// Owned ops fail closed when reached on a vec with no stamped descriptor
-    /// (codegen routed a non-owned vec into the owned path).
+    /// Owned operations reject size-only vectors even when the raw element
+    /// size matches: releasing owned elements requires a descriptor.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
@@ -6029,7 +5980,8 @@ mod vec_owned_tests {
         }
         // SAFETY: the fail-closed abort is the expected outcome.
         unsafe {
-            let v = hew_vec_new();
+            let v =
+                hew_vec_new_with_elem_size(core::mem::size_of::<OwnedElem>().try_into().unwrap());
             let s0 = OwnedElem {
                 payload: core::ptr::null_mut(),
             };

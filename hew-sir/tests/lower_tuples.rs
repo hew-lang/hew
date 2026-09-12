@@ -209,6 +209,7 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
         name: "malformed_tuple".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::default(),
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),

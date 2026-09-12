@@ -527,6 +527,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1657] = {
      "c_void, usize, HewMsgEnvelopeDropFn, i32, ) -> i32\"}",
      "native", "non-declarable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_submit_native_terminal",
+     "{\"native\": \"fn hew_actor_submit_native_terminal( HewLocalPidId, i32, "
+     "*mut c_void, usize, HewMsgEnvelopeDropFn, ) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "length-or-count",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_terminate_set_fault",
      "{\"native\": \"fn hew_actor_terminate_set_fault( *mut HewFault)\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
@@ -6627,15 +6632,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1657] = {
     {"hew_tcp_accept", "{\"native\": \"fn hew_tcp_accept( c_int) -> c_int\"}",
      "native", "stable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_tcp_attach",
-     "{\"native\": \"fn hew_tcp_attach( c_int, *const HewActorRef, i32, i32, ) "
-     "-> c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_tcp_attach_local",
-     "{\"native\": \"fn hew_tcp_attach_local( c_int, *mut HewActor, i32, i32, "
-     ") -> c_int\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
+    {"hew_tcp_attach_native",
+     "{\"native\": \"fn hew_tcp_attach_native( c_int, NativeActorToken, "
+     "AttachCallback, AttachCallback, ) -> c_int\"}",
+     "native", "non-declarable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tcp_broadcast_except",
      "{\"native\": \"fn hew_tcp_broadcast_except( c_int, *const BytesTriple, ) "
@@ -6746,11 +6746,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1657] = {
      "c_int\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_tls_attach",
-     "{\"native\": \"fn hew_tls_attach( *mut HewTlsStream, *mut c_void, i64, "
-     "i64, ) -> i32\"}",
-     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_tls_attach_native",
+     "{\"native\": \"fn hew_tls_attach_native( *mut HewTlsStream, "
+     "NativeActorToken, AttachCallback, AttachCallback, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tls_close", "{\"native\": \"fn hew_tls_close( *mut HewTlsStream)\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
@@ -7951,11 +7951,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1657] = {
      "usize, *mut *mut c_char, ) -> *mut u8\"}",
      "native,wasm32-wasip1", "non-declarable", "nul-terminated",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_ws_attach",
-     "{\"native\": \"fn hew_ws_attach( *mut HewWsConn, *mut c_void, i64, i64, "
-     ") -> i32\"}",
-     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_ws_attach_native",
+     "{\"native\": \"fn hew_ws_attach_native( *mut HewWsConn, "
+     "NativeActorToken, AttachCallback, AttachCallback, ) -> i32\"}",
+     "native", "non-declarable-stdlib", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ws_close", "{\"native\": \"fn hew_ws_close( *mut HewWsConn)\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},

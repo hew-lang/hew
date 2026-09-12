@@ -1,0 +1,29 @@
+import std.metrics;
+import std.observe;
+
+fn record_request() {
+    let requests = metrics.counter("app.requests").expect("register counter");
+    requests.inc();
+    requests.add(4);
+    let same = metrics.counter("app.requests").expect("reuse counter");
+    same.inc();
+
+    let active = metrics.gauge("app.active").expect("register gauge");
+    active.set(3);
+    active.dec();
+
+    let duration = metrics.histogram("app.duration").expect("register histogram");
+    duration.observe(2.5);
+    duration.observe(1.5);
+    assert(metrics.counter("invalid metric name").is_err());
+}
+
+fn main() {
+    record_request();
+    let snapshot = observe.scrape();
+    assert(snapshot.contains("\napp_requests 6\n"));
+    assert(snapshot.contains("\napp_active 2\n"));
+    assert(snapshot.contains("\napp_duration_count 2\n"));
+    assert(snapshot.contains("\napp_duration_sum 4\n"));
+    println("root metrics recorded");
+}

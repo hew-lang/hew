@@ -1,0 +1,9 @@
+[[case]]
+id = "actor-callable-ingress"
+intent = "Ask, mailbox and streaming actor payloads erase concrete closure environments through the ordinary callable contract, preserving capture copies and named argument evaluation order."
+source = "cases/actor-callable-ingress.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "value first\ncallback second\nCAPTURED 0\nCAPTURED 1\ncallable actor payloads\n"
+exit = 0

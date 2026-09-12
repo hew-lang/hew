@@ -15,6 +15,7 @@ fn function(bindings: Vec<Binding>, places: Vec<PlaceDecl>) -> SemFunction {
         name: "model_completion".to_string(),
         span: 0..20,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(7),
             ty: ResolvedTy::I64,

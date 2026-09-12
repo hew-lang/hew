@@ -12,9 +12,8 @@
 //! that Vec. A double-close therefore double-frees the backing store and
 //! aborts the run — so a test that runs to its `assert_true` proves the
 //! close fired no more than once on the exercised path. The leak direction
-//! (close fired at least once on the live path) is pinned structurally by
-//! the MIR drop-plan tests in `hew-mir/tests/vertical.rs` and observed
-//! directly by the `CLOSE fd=...` reproducers.
+//! (close fired at least once on the live path) is checked by
+//! the output assertions in the native core acceptance resource cases.
 
 import std.testing;
 
@@ -37,10 +36,10 @@ fn make(n: i64) -> Buf {
     Buf { data: v }
 }
 
-// A free function that takes the resource BY VALUE: the argument is an
-// ownership move into the callee (#1941). The callee closes it; the caller
-// must NOT also drop it.
-fn sink(b: Buf) {
+// Explicit consumption transfers ownership into the callee (#1941).
+// An unannotated parameter borrows and cannot close its caller's resource.
+// The callee closes it; the caller must not also drop it.
+fn sink(consume b: Buf) {
     b.close();
 }
 

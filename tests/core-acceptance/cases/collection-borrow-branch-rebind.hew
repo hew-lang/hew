@@ -1,0 +1,29 @@
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn replace(left: bool) {
+    var tokens: Vec<Token> = Vec.new();
+    tokens.push(Token { id: 1 });
+    let borrowed = tokens[0];
+    var selected = borrowed;
+    if left {
+        selected = Token { id: 2 };
+    } else {
+        selected = Token { id: 3 };
+    }
+    let owner = selected;
+    println(owner.id);
+}
+
+fn main() {
+    replace(true);
+    replace(false);
+}

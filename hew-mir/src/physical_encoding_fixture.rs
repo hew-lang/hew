@@ -76,6 +76,7 @@ pub fn skeleton(params: Vec<ResolvedTy>, return_ty: ResolvedTy) -> sir::SemModul
         declaration,
         name: callable.symbol.clone(),
         source_origin: callable.source_origin.clone(),
+        terminal_receiver: None,
         span: 0..0,
         params: params
             .into_iter()

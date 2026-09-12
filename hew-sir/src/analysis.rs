@@ -531,6 +531,7 @@ mod tests {
             name: "cfg_index".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: vec![BlockArg {
                 value: ValueId(0),
                 ty: ResolvedTy::Bool,

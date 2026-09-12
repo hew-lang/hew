@@ -1959,9 +1959,12 @@ fn eval(e: Expr) -> i64 {
   restrictions
 
 ```hew
-let data: Rc<string> = Rc.new(expensive_computation());
-let alias = data.clone();  // refcount++, no data copy
-// data and alias share the same string
+fn main() {
+    let data: Rc<string> = Rc.new("shared data".to_upper());
+    let alias = data.clone();
+    assert(data.strong_count() == 2);
+    println(alias.strong_count());
+}
 ```
 
 **`Weak<T>` — non-owning cycle-breaking handle:**
@@ -2617,12 +2620,18 @@ actor Calculator {
     receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) {
         result = op(result, value);
     }
+
+    receive fn value() -> i64 { result }
 }
 
-let calc = spawn Calculator();
-// Lambda types inferred from receive fn signature
-calc.apply_operation(|a, b| a + b, 10);  // a: i64, b: i64 inferred
-calc.apply_operation(|a, b| a * b, 5);   // also inferred
+fn main() {
+    let calc = spawn Calculator;
+    // Lambda parameter types are inferred from the handler signature.
+    calc.apply_operation(|a, b| a + b, 10).expect("add");
+    calc.apply_operation(|a, b| a * b, 5).expect("multiply");
+    assert(calc.value().expect("read result") == 50);
+    close(calc);
+}
 ```
 
 **Generic lambda constraints:**
@@ -3224,10 +3233,14 @@ the wrong type is a type error. This matches `Vec<T>` indexing, where `v[i]`
 takes an `i64` index and returns the bare element `T`.
 
 ```hew
-var m: HashMap<string, i64> = HashMap.new();
-m["answer"] = 42;        // insert/overwrite via index-assignment
-let hit = m["answer"];   // i64 — 42
-let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
+fn main() {
+    var m: HashMap<string, i64> = HashMap.new();
+    m["answer"] = 42;        // insert/overwrite via index-assignment
+    let hit = m["answer"];   // i64 — 42
+    let miss = m.get("absent");  // Option<i64> — None (m["absent"] would trap)
+    assert(hit == 42);
+    assert(miss == None);
+}
 ```
 
 **HashMap value ownership.** Keys must satisfy `Hash` and `Eq` as well as the
@@ -3402,6 +3415,7 @@ second name for any of them. A type renders itself through `Display`
 **Indexing and slicing (normative).** `string`, `bytes` and `Vec<T>` share one
 index and range-slice surface. `s[i]` reads the `i`th codepoint of a string,
 the `i`th byte of a `bytes` value, and the `i`th element of a vector.
+String `len()` counts Unicode scalars; `byte_len()` counts encoded UTF-8 bytes.
 `x[a..b]`, `x[a..]`, `x[..b]` and `x[..]` select a range: a string slice is a
 fresh owned string of codepoints, a bytes slice is an independent handle onto
 the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each
@@ -6164,22 +6178,22 @@ fn main() {
 
 These semantics are guaranteed on all Hew targets (x86_64, aarch64, wasm32). The underlying LLVM lowering uses `llvm.fptosi.sat` / `llvm.fptoui.sat`, which produce defined behaviour for all input values. Plain `fptosi` / `fptoui` (which produce LLVM poison for out-of-range inputs) are never emitted.
 
-> **Known bug (#3367).** Positive overflow and `NaN` both currently produce the target integer's `MIN` instead of `MAX` and `0`; only negative overflow lowers correctly today. The table above states the intended, normative contract.
-
 All numeric types also support exact fallible conversion methods:
 
 ```hew
-let n: i64 = 2147483647;
-let ok: Option<i32> = n.try_to_i32();        // Some(2147483647)
+fn main() {
+    let n: i64 = 2147483647;
+    assert(n.try_to_i32().expect("fits i32") == 2147483647);
 
-let past: i64 = 2147483648;
-let too_large: Option<i32> = past.try_to_i32(); // None
+    let past: i64 = 2147483648;
+    assert(past.try_to_i32().is_none());
 
-let precise: i32 = 16777216;
-let as_float: Option<f32> = precise.try_to_f32(); // Some(16777216.0)
+    let precise: i32 = 16777216;
+    assert(precise.try_to_f32().expect("exact f32") == 16777216.0);
 
-let inexact: i32 = 16777217;
-let not_exact: Option<f32> = inexact.try_to_f32(); // None
+    let inexact: i32 = 16777217;
+    assert(inexact.try_to_f32().is_none());
+}
 ```
 
 The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `.try_to_u8()`, `.try_to_u16()`, `.try_to_u32()`, `.try_to_u64()`, `.try_to_isize()`, `.try_to_usize()`, `.try_to_f32()`, and `.try_to_f64()` return `Option<W>`. The result is `Some(w)` iff the source value round-trips through target type `W` exactly. The result is `None` for out-of-range values, negative values converted to unsigned targets, `NaN`, `+Inf`, `-Inf`, nonzero fractional parts in float-to-integer conversions, and inexact integer-to-float or float-to-float conversions.

@@ -295,7 +295,7 @@ impl Checker {
         Some(joined)
     }
 
-    fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
+    pub(super) fn assignment_root_binding_name<'a>(&self, expr: &'a Expr) -> Option<&'a str> {
         match expr {
             Expr::Identifier(name) => Some(name.as_str()),
             Expr::FieldAccess { object, field } => {
@@ -541,7 +541,7 @@ impl Checker {
             } else {
                 self.synthesize(&expr.0, &expr.1)
             };
-            self.record_callable_value_transfer(&expr.0, &expr.1);
+            self.record_value_transfer(&expr.0, &expr.1);
             ty
         } else {
             Ty::Unit
@@ -641,16 +641,13 @@ impl Checker {
                 .expect("inferred return context")
                 .push(ty);
             if let Some((expr, span)) = value {
-                self.record_callable_value_transfer(expr, span);
+                self.record_value_transfer(expr, span);
             }
             self.recheck_return_edge_defers();
             return;
         }
         if self.checking_actor_init {
             self.require_deferred_fields_initialized("return");
-        }
-        if let (Some(value), Some(expected)) = (value, self.current_return_type.clone()) {
-            self.reject_borrowed_return_transfer(value, &expected);
         }
         if let Some(expected) = self.current_return_type.clone() {
             // Inside a gen{} body, `current_return_type` is shaped as
@@ -702,7 +699,7 @@ impl Checker {
             }
         }
         if let Some((value, span)) = value {
-            self.record_callable_value_transfer(value, span);
+            self.record_value_transfer(value, span);
         }
         self.recheck_return_edge_defers();
         // M-4: a `return CrashAction::…;` inside a `#[on(crash)]` hook is now
@@ -1001,9 +998,9 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
-                if let Some((value, span)) = value {
-                    self.record_callable_value_transfer(value, span);
-                }
+                let collection_borrow = value
+                    .as_ref()
+                    .and_then(|(expr, span)| self.collection_borrow_origin(expr, span));
                 self.pending_let_closure_name = prev_pending;
                 let val_ty = if ty.is_none() {
                     self.infer_integer_literal_binding_type(value.as_ref(), val_ty)
@@ -1112,6 +1109,13 @@ impl Checker {
                     Pattern::Identifier(name) if !identifier_is_unit_variant => Some(name),
                     _ => None,
                 };
+                // Destructuring records selected field transfers in bind_pattern.
+                // Only a plain binding acquires the entire initializer.
+                if plain_identifier.is_some() && collection_borrow.is_none() {
+                    if let Some((value, span)) = value {
+                        self.record_value_transfer(value, span);
+                    }
+                }
                 if let Some(name) = plain_identifier {
                     if val_ty == Ty::Unit && value.is_some() && !name.starts_with('_') {
                         self.warnings.push(TypeError {
@@ -1131,6 +1135,8 @@ impl Checker {
                         false,
                         pattern.1.clone(),
                     );
+                    self.env
+                        .set_collection_borrow(name, collection_borrow.clone());
                     // Register generic lambda binding for call-site inference.
                     // Both guards must hold: the scratch field was populated
                     // AND the let value is itself (not just contains) a generic
@@ -1400,8 +1406,13 @@ impl Checker {
                     let v = TypeVar::fresh();
                     Ty::Var(v)
                 };
-                if let Some((value, span)) = value {
-                    self.record_callable_value_transfer(value, span);
+                let collection_borrow = value
+                    .as_ref()
+                    .and_then(|(expr, span)| self.collection_borrow_origin(expr, span));
+                if collection_borrow.is_none() {
+                    if let Some((value, span)) = value {
+                        self.record_value_transfer(value, span);
+                    }
                 }
                 let generic_sig = self.last_lambda_generic_sig.take();
                 let val_ty = if ty.is_none() {
@@ -1447,6 +1458,7 @@ impl Checker {
                 self.check_shadowing(name, span);
                 self.env
                     .define_with_span(name.clone(), val_ty, true, span.clone());
+                self.env.set_collection_borrow(name, collection_borrow);
                 if value_is_direct_generic_lambda {
                     if let Some(sig) = generic_sig {
                         self.lambda_poly_sig_map
@@ -1601,6 +1613,7 @@ impl Checker {
                     _ => self.synthesize(&target.0, &target.1),
                 };
                 self.place_write_depth -= 1;
+                self.reject_indexed_writable_borrow(target);
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without
@@ -1672,7 +1685,10 @@ impl Checker {
                 let value_ty = self
                     .rebind_inferred_closure_binding(&target.0, value, &target_ty)
                     .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
-                self.record_callable_value_transfer(&value.0, &value.1);
+                let collection_borrow = self.collection_borrow_origin(&value.0, &value.1);
+                if collection_borrow.is_none() || !matches!(target.0, Expr::Identifier(_)) {
+                    self.record_value_transfer(&value.0, &value.1);
+                }
                 // An unannotated literal binding (`var best = 0`) carries a
                 // literal-defaulting `Ty::Var` that `check_against` cannot
                 // promote: it resolves the expected type first, materializing
@@ -1723,6 +1739,9 @@ impl Checker {
                     }
                     if let Some((root, path)) = self.expr_place(&target.0) {
                         self.env.reinit_place(&root, &path);
+                        if path.is_empty() {
+                            self.env.set_collection_borrow(&root, collection_borrow);
+                        }
                     }
                 }
                 if let Some(previous) = outer_mutation {

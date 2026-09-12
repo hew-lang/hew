@@ -335,14 +335,18 @@ fn main() {
 }
 
 #[test]
-fn native_ask_deadline_abandons_reply_and_actor_finishes_owned_cleanup() {
+fn native_ask_deadline_settles_receiver_and_releases_owned_values() {
     run_actor(
         r#"actor Slow {
+    var entered: bool = false,
+    var cleaned: bool = false,
     receive fn echo(message: string) -> string {
-        defer { println("receiver-finished"); }
+        entered = true;
+        defer { cleaned = true; }
         sleep(30ms);
         message.to_upper()
     }
+    receive fn settled() -> bool { entered == cleaned }
 }
 fn main() {
     let slow = spawn Slow();
@@ -356,9 +360,16 @@ fn main() {
     };
     println(outcome);
     println("caller-continues");
+    // The deadline may win before admission or while the receiver runs.
+    // A strict-turn call observes cleanup after any admitted work completes.
+    match slow.settled() {
+        .Ok(cleaned) => assert(cleaned),
+        .Err(_) => panic("receiver failed after deadline"),
+    }
+    println("receiver-settled");
 }
 "#,
-        "timed-out\ncaller-continues\nreceiver-finished\n",
+        "timed-out\ncaller-continues\nreceiver-settled\n",
         0,
         "",
     );

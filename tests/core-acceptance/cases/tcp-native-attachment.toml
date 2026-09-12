@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp-native-attachment"
+intent = "TCP attachment delivers arbitrary bytes before remote close using the concrete actor protocol."
+source = "cases/tcp-native-attachment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "tcp attached bytes and close\n"
+exit = 0

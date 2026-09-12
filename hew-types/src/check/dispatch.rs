@@ -196,6 +196,30 @@ pub struct MethodTarget {
     pub consumes_receiver: bool,
 }
 
+/// One checker-selected actor receive endpoint used by a runtime callback.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResolvedActorEndpoint {
+    pub handler: DefId,
+    pub msg_id: u32,
+}
+
+/// The concrete actor protocol selected before handler-trait coercion erases
+/// the source argument's type. Message IDs come from the actor protocol table;
+/// declaration identities come from the existing resolver identity table.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ResolvedActorEndpoints {
+    pub actor: DefId,
+    pub data: ResolvedActorEndpoint,
+    pub close: ResolvedActorEndpoint,
+}
+
+/// Source result adaptation selected from a trusted declaration contract.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum ResolvedRuntimeResult {
+    DiscardStatus,
+    StatusResult { error: super::types::VariantMatch },
+}
+
 /// Canonical target selected for an admitted call.
 ///
 /// A linker label may be carried beside this value after resolution, but it is
@@ -221,6 +245,15 @@ pub enum CallTarget {
     },
     /// A compiler-known runtime entrypoint.
     Runtime(RuntimeCallFamily),
+    /// A trusted source declaration selects this runtime operation. Concrete
+    /// actor endpoints describe callbacks required by the runtime invocation;
+    /// downstream stages must not rediscover them from handler names or types.
+    DeclaredRuntime {
+        declaration: DefId,
+        family: RuntimeCallFamily,
+        actor_endpoints: Option<ResolvedActorEndpoints>,
+        result: ResolvedRuntimeResult,
+    },
     /// A closed catalog builtin endpoint whose linkage is selected by the
     /// compiler's builtin catalog rather than by a source declaration.  This
     /// is distinct from [`Self::Runtime`]: not every catalog linkage is a C

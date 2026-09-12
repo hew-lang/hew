@@ -1,0 +1,61 @@
+fn source() -> i64 {
+    println("source once");
+    300
+}
+
+fn boundaries(positive: i64, negative: i64, maximum: u64) {
+    assert(positive.try_to_i8().is_none());
+    assert(positive.try_to_u8().is_none());
+    assert(positive.try_to_i16().expect("i16") == 300);
+    assert(positive.try_to_u16().expect("u16") == 300);
+    assert(positive.try_to_i32().expect("i32") == 300);
+    assert(positive.try_to_u32().expect("u32") == 300);
+    assert(positive.try_to_i64().expect("i64") == 300);
+    assert(positive.try_to_u64().expect("u64") == 300);
+    assert(positive.try_to_isize().expect("isize") == 300);
+    assert(positive.try_to_usize().expect("usize") == 300);
+    assert(negative.try_to_u64().is_none());
+    assert(negative.try_to_usize().is_none());
+    assert(maximum.try_to_i64().is_none());
+    assert(maximum.try_to_isize().is_none());
+    assert(maximum.try_to_u64().expect("same width") == maximum);
+    assert(positive.wrapping_as_u8() == 44);
+    assert(negative.wrapping_as_u64() == maximum);
+    assert(positive.saturating_as_i8() == 127);
+    assert(positive.saturating_as_u8() == 255);
+    assert(negative.saturating_as_u64() == 0);
+    assert(maximum.saturating_as_i64() == 9223372036854775807);
+    let bottom: i64 = -32769;
+    assert(bottom.saturating_as_i16() == -32768);
+    assert(bottom.wrapping_as_i16() == 32767);
+    assert(bottom.try_to_i16().is_none());
+    let small: i8 = -128;
+    let byte: u8 = 255;
+    assert(small.try_to_i16().expect("signed widening") == -128);
+    assert(byte.try_to_i16().expect("unsigned widening") == 255);
+    assert(byte.try_to_i8().is_none());
+    assert(byte.saturating_as_i8() == 127);
+    assert(small.saturating_as_i32() == -128);
+    let middle: u32 = 4294967295;
+    assert(middle.try_to_i32().is_none());
+    assert(middle.saturating_as_i32() == 2147483647);
+    assert(middle.try_to_i64().expect("wide signed") == 4294967295);
+    let platform: isize = -1;
+    let platform_unsigned: usize = 300;
+    assert(platform.try_to_usize().is_none());
+    assert(platform_unsigned.try_to_u8().is_none());
+    assert(platform_unsigned.saturating_as_u8() == 255);
+}
+
+fn main() {
+    boundaries(source(), -1, 18446744073709551615);
+    let values = [255, 256, -1, 42];
+    var total: i64 = 0;
+    for value in values {
+        if let .Some(byte) = value.try_to_u8() {
+            total = total + byte as i64;
+        }
+    }
+    assert(total == 297);
+    println("integer conversions");
+}

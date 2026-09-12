@@ -278,6 +278,7 @@ fn synth_fn_with_tail(name: &str, item_id: u32, tail: HirExpr) -> HirItem {
         is_generator: false,
         intrinsic_id: None,
         var_self_receiver: None,
+        terminal_receiver: None,
     })
 }
 
@@ -343,6 +344,7 @@ fn item_callee_referencing_module_fn_does_not_emit_diagnostic() {
         is_generator: false,
         intrinsic_id: None,
         var_self_receiver: None,
+        terminal_receiver: None,
         body: unit_block_with_tail(HirExpr {
             node: HirNodeId(0),
             site: SiteId(0),
@@ -380,6 +382,7 @@ fn emitted_body(declaration: &str, emitted_name: &str, item_id: u32) -> HirItem 
         is_generator: false,
         intrinsic_id: None,
         var_self_receiver: None,
+        terminal_receiver: None,
         body: unit_block_with_tail(HirExpr {
             node: HirNodeId(0),
             site: SiteId(0),
@@ -501,6 +504,7 @@ fn binding_callee_does_not_emit_indirect_call_unsupported() {
         is_generator: false,
         intrinsic_id: None,
         var_self_receiver: None,
+        terminal_receiver: None,
     });
 
     let diagnostics = run_call_shape_gates_for_test(&[main], &[]);
@@ -569,6 +573,7 @@ fn walker_recurses_into_let_stmt_initializer() {
         is_generator: false,
         intrinsic_id: None,
         var_self_receiver: None,
+        terminal_receiver: None,
     });
 
     let diagnostics = run_call_shape_gates_for_test(&[main], &[]);

@@ -2490,6 +2490,7 @@ impl Checker {
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
+            indexed_place_operations: std::mem::take(&mut self.indexed_place_operations),
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
@@ -2503,6 +2504,7 @@ impl Checker {
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
             trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
+            consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
             handle_bearing_structs: {
                 // Flush any pending dirty registration before the set is moved

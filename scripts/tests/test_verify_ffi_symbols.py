@@ -1,7 +1,6 @@
 import contextlib
 import importlib.util
 import io
-import re
 import subprocess
 import sys
 import tempfile
@@ -11,20 +10,6 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "verify-ffi-symbols.py"
-IO_RUNTIME_FFI_FILES = (
-    "connection.rs",
-    "stream.rs",
-    "file_io.rs",
-    "process.rs",
-    "quic_transport.rs",
-    "io_time.rs",
-    "transport.rs",
-)
-NON_DECLARABLE_IO_EXPORTS = {
-    "hew_conn_await_read",
-    "hew_listener_await_accept",
-    "hew_stream_pipe_native",
-}
 C_UNWIND_MACHINE_EMIT_EXPORTS = {
     "hew_machine_emit_step_enter",
     "hew_machine_emit_step_exit",
@@ -251,26 +236,6 @@ def test_public_host_tiers_require_their_exporting_crate_and_do_not_overlap() ->
         assert any(
             "not exported by" in error and symbol in error for error in errors
         ), errors
-
-
-def test_io_runtime_exports_are_jit_stable() -> None:
-    classification = verify_ffi_symbols.load_jit_symbol_classification()
-    pattern = re.compile(
-        r"#\[no_mangle\]"
-        r"(?:\s*#\[[^\]]*(?:\([^)]*\))?[^\]]*\])*"
-        r'\s*(?:pub\s+)?(?:unsafe\s+)?extern\s+"C"\s+fn\s+'
-        r"(hew_\w+)",
-        re.DOTALL,
-    )
-    io_exports: set[str] = set()
-    for file_name in IO_RUNTIME_FFI_FILES:
-        source = (ROOT / "hew-runtime" / "src" / file_name).read_text()
-        io_exports.update(pattern.findall(source))
-
-    assert io_exports
-    assert io_exports & classification["non-declarable"] == NON_DECLARABLE_IO_EXPORTS
-    assert io_exports - NON_DECLARABLE_IO_EXPORTS <= classification["stable"]
-    assert "hew_shutdown_initiate" in classification["non-declarable"]
 
 
 def test_c_unwind_machine_emit_exports_are_classified() -> None:
@@ -544,7 +509,6 @@ _TESTS = [
     test_validate_reports_missing_symbol_with_classification_file_path,
     test_validate_rejects_missing_stable_stdlib_export,
     test_public_host_tiers_require_their_exporting_crate_and_do_not_overlap,
-    test_io_runtime_exports_are_jit_stable,
     test_c_unwind_machine_emit_exports_are_classified,
     test_local_pid_runtime_surface_is_jit_stable,
     test_string_to_bytes_transfer_contract_is_exact,

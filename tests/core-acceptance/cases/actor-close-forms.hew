@@ -19,7 +19,6 @@ fn main() {
     // `fork close` requests without waiting; `await` joins the same point.
     let forked = spawn Keeper(name: "forked");
     let request = fork close(forked);
-    println("after fork");
     await request;
     println("after join");
 

@@ -161,7 +161,7 @@ trait RequestMethods {
     ///     match http.listen(":8080") {
     ///         .Ok(server) => {
     ///             let req = server.accept();
-    ///             let body = req.respond_stream(200, "text/plain");
+    ///             let body = req.respond_stream(200, "text/plain").expect("begin response");
     ///             body.write("chunk 1");
     ///             body.write("chunk 2");
     ///             body.close();

@@ -90,6 +90,8 @@ pub struct Binding {
     /// Parameter places definitely replaced by private values on this path.
     /// An empty path denotes replacement of the whole parameter binding.
     pub parameter_replacements: Vec<PlacePath>,
+    /// A non-copy value loaned by a collection, rather than owned by this binding.
+    pub collection_borrow: Option<Span>,
     /// Whether the value has been moved (e.g., sent to an actor)
     pub is_moved: bool,
     /// Where the move happened, for error reporting
@@ -239,6 +241,8 @@ impl Binding {
 pub struct OwnershipState {
     /// Parameter places definitely replaced by private values on this path.
     pub parameter_replacements: Vec<PlacePath>,
+    /// A non-copy value loaned by a collection, rather than owned by this binding.
+    pub collection_borrow: Option<Span>,
     /// Whether the value has been moved on this path.
     pub is_moved: bool,
     /// Where the move happened, for error reporting.
@@ -505,6 +509,7 @@ impl TypeEnv {
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
                     parameter_replacements: Vec::new(),
+                    collection_borrow: None,
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -558,6 +563,7 @@ impl TypeEnv {
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
                     parameter_replacements: Vec::new(),
+                    collection_borrow: None,
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -638,6 +644,7 @@ impl TypeEnv {
                     is_mutable,
                     parameter_ownership: ParameterOwnership::Borrow,
                     parameter_replacements: Vec::new(),
+                    collection_borrow: None,
                     is_moved: false,
                     moved_at: None,
                     moved_places: Vec::new(),
@@ -766,6 +773,16 @@ impl TypeEnv {
         })
     }
 
+    /// Attach the initializer's collection loan to its lexical binding.
+    pub fn set_collection_borrow(&mut self, name: &str, origin: Option<Span>) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(binding) = scope.get_mut(name) {
+                binding.collection_borrow = origin;
+                return;
+            }
+        }
+    }
+
     /// Whether a selected place still carries an ordinary parameter borrow.
     #[must_use]
     pub fn place_borrows_parameter(&self, name: &str, path: &[String]) -> bool {
@@ -805,6 +822,7 @@ impl TypeEnv {
                     .moved_places
                     .retain(|moved| !path_extends(&moved.path, path));
                 if path.is_empty() {
+                    binding.collection_borrow = None;
                     binding.is_moved = false;
                     binding.moved_at = None;
                 }
@@ -855,6 +873,7 @@ impl TypeEnv {
                     binding.id,
                     OwnershipState {
                         parameter_replacements: binding.parameter_replacements.clone(),
+                        collection_borrow: binding.collection_borrow.clone(),
                         is_moved: binding.is_moved,
                         moved_at: binding.moved_at.clone(),
                         deferred_init: binding.deferred_init(),
@@ -940,6 +959,11 @@ impl TypeEnv {
                     &state.parameter_replacements,
                     &exit_state.parameter_replacements,
                 );
+                if state.collection_borrow.is_none() {
+                    state
+                        .collection_borrow
+                        .clone_from(&exit_state.collection_borrow);
+                }
                 if exit_state.is_moved && !state.is_moved {
                     state.is_moved = true;
                     state.moved_at.clone_from(&exit_state.moved_at);
@@ -975,6 +999,9 @@ impl TypeEnv {
                     binding
                         .parameter_replacements
                         .clone_from(&state.parameter_replacements);
+                    binding
+                        .collection_borrow
+                        .clone_from(&state.collection_borrow);
                     binding.is_moved = state.is_moved;
                     binding.moved_at.clone_from(&state.moved_at);
                     binding.moved_places.clone_from(&state.moved_places);

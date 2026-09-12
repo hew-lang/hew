@@ -35,7 +35,7 @@ impl ClosableResource {
     fn close(consume self) {}
 }
 
-fn observe(here: Location, handle: Handle, id: NodeId, closable: ClosableResource) -> i64 {
+fn observe(here: Location, handle: Handle, id: NodeId, consume closable: ClosableResource) -> i64 {
     let _ = here;
     let _ = handle;
     let _ = id;

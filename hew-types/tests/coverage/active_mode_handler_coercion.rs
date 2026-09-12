@@ -3,11 +3,10 @@
 //! `Actor` narrows to `HandlerTrait` (the `conn.attach(this)`
 //! surface) only when the actor's `receive fn`s structurally satisfy the handler
 //! trait. An explicit `impl HandlerTrait for Actor {}` with no matching
-//! `receive fn`s must NOT admit the coercion: `attach` codegen synthesises the
-//! handler `msg_id`s from the actor's receive-fn protocol descriptor, so a
-//! receive-fn-less actor carries nothing codegen can lower. Admitting it would
-//! defer the failure to a late `E_CODEGEN`; the checker must reject it early
-//! with an honest type error.
+//! `receive fn`s must not admit the coercion: runtime invocation facts select
+//! concrete receive declarations and protocol IDs before lowering constructs
+//! native callbacks. An actor without that protocol must be rejected by the
+//! checker.
 
 use crate::common;
 
@@ -152,4 +151,120 @@ fn user_transport_short_names_keep_user_attach_dispatch() {
             );
         }
     }
+}
+
+/// Protocol selection happens against concrete receive declarations, before
+/// the handler trait can erase the actor identity at a runtime boundary.
+#[test]
+fn declared_transport_methods_carry_concrete_receive_endpoints() {
+    use hew_types::check::dispatch::ResolvedRuntimeResult;
+    use hew_types::{CallTarget, RuntimeCallFamily};
+    for (module, receiver, data_handler, payload, family, consumes) in [
+        (
+            "net",
+            "Connection",
+            "on_data",
+            "bytes",
+            RuntimeCallFamily::TcpAttachLocal,
+            true,
+        ),
+        (
+            "net.tls",
+            "TlsStream",
+            "on_data",
+            "bytes",
+            RuntimeCallFamily::TlsAttachLocal,
+            false,
+        ),
+        (
+            "net.websocket",
+            "Conn",
+            "on_message",
+            "string",
+            RuntimeCallFamily::WebSocketAttachLocal,
+            false,
+        ),
+    ] {
+        let alias = module.rsplit('.').next().unwrap();
+        let parameter = if consumes {
+            "consume connection"
+        } else {
+            "connection"
+        };
+        let source = format!(
+            r"
+            import std.{module};
+            actor Handler {{
+                receive fn unrelated() {{}}
+                receive fn on_close() {{}}
+                receive fn {data_handler}(value: {payload}) {{}}
+            }}
+            fn install({parameter}: {alias}.{receiver}) {{
+                let handler = spawn Handler();
+                connection.attach(handler);
+            }}
+        "
+        );
+        let output = typecheck(&source);
+        assert!(output.errors.is_empty(), "{module}: {:#?}", output.errors);
+        let (selected, endpoints, adaptation, receiver_consumed) = output
+            .method_call_rewrites
+            .values()
+            .find_map(|rewrite| match rewrite {
+                MethodCallRewrite::RewriteToFunction {
+                    target:
+                        CallTarget::DeclaredRuntime {
+                            family,
+                            actor_endpoints: Some(endpoints),
+                            result,
+                            ..
+                        },
+                    consumes_receiver,
+                    ..
+                } => Some((family, endpoints, result, consumes_receiver)),
+                _ => None,
+            })
+            .expect("attach must carry a declaration-owned runtime invocation");
+        assert_eq!(*selected, family);
+        assert_eq!(*receiver_consumed, consumes);
+        assert_eq!(endpoints.actor.full_path(), "Handler");
+        assert_eq!(
+            endpoints.data.handler.full_path(),
+            format!("Handler::{data_handler}")
+        );
+        assert_eq!(endpoints.close.handler.full_path(), "Handler::on_close");
+        let protocol = &output.actor_protocol_descriptors["Handler"];
+        assert_eq!(
+            Some(endpoints.data.msg_id),
+            protocol.msg_id_for(data_handler)
+        );
+        assert_eq!(
+            Some(endpoints.close.msg_id),
+            protocol.msg_id_for("on_close")
+        );
+        assert_eq!(
+            matches!(adaptation, ResolvedRuntimeResult::StatusResult { .. }),
+            consumes
+        );
+    }
+}
+
+#[test]
+fn runtime_handler_must_have_a_concrete_receive_protocol() {
+    let output = typecheck(
+        r"
+        import std.net;
+        fn install(consume connection: net.Connection, handler: net.ConnectionHandler) {
+            connection.attach(handler);
+        }
+    ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("receive protocol")),
+        "{:#?}",
+        output.errors
+    );
 }

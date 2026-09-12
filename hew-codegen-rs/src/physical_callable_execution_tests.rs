@@ -55,6 +55,7 @@ fn function(callable: &sir::SemCallable, blocks: Vec<sir::SemBlock>) -> sir::Sem
         declaration: callable.declaration.clone(),
         name: callable.symbol.clone(),
         source_origin: callable.source_origin.clone(),
+        terminal_receiver: None,
         span: 0..0,
         params: vec![],
         return_ty: callable.signature.return_ty.clone(),

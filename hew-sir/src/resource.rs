@@ -63,6 +63,8 @@ pub struct ExternSignature {
     pub params: Vec<ResolvedTy>,
     pub consumes: Vec<bool>,
     pub result: ResolvedTy,
+    /// Runtime authority declared by the trusted source extern.
+    pub runtime_capability: Option<hew_types::ExternRuntimeCapability>,
 }
 
 impl ExternSignature {
@@ -204,6 +206,7 @@ pub(crate) fn resource_release_from_hir(
                     params: function.param_tys.clone(),
                     consumes: function.param_consume.clone(),
                     result: function.return_ty.clone(),
+                    runtime_capability: function.runtime_capability,
                 })
             })
         };

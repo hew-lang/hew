@@ -27,12 +27,12 @@ fn receiver_identity_trait_dispatch_preserves_only_discarded_owner() {
             }
         }
 
-        fn touch_twice<T: Fluent>(value: T) {
+        fn touch_twice<T: Fluent>(consume value: T) {
             value.touch();
             value.touch();
         }
 
-        fn transfer(value: Builder) -> Builder {
+        fn transfer(consume value: Builder) -> Builder {
             value.touch()
         }
 
@@ -240,7 +240,7 @@ fn receiver_identity_allows_nonreceiver_arguments() {
             }
         }
 
-        fn twice<T: Fluent>(value: T) {
+        fn twice<T: Fluent>(consume value: T) {
             value.with(1);
             value.with(2);
         }

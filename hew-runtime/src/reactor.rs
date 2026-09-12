@@ -49,12 +49,16 @@
 )]
 
 use std::collections::{HashMap, HashSet};
-use std::ffi::{c_int, c_void};
+use std::ffi::c_int;
+#[cfg(test)]
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::thread::JoinHandle;
 
-use crate::actor::{hew_actor_send_guaranteed, hew_actor_try_send, HewActor};
+#[cfg(test)]
+use crate::actor::hew_actor_try_send;
+use crate::actor::HewActor;
 use crate::bytes::{hew_bytes_from_static, BytesTriple};
 use crate::io_time::{
     hew_io_poller_new, hew_io_poller_poll_ready, hew_io_poller_register, hew_io_poller_stop,
@@ -102,7 +106,7 @@ enum Pending {
 /// The readiness ACTION a registration carries — the central design seam (D-3).
 /// One readiness loop, two consumption modes:
 ///
-/// - [`RegMode::AutoSend`] — active mode (LANDED): on `Data` the reactor
+/// - [`RegMode::NativeAttach`] — active mode (LANDED): on `Data` the reactor
 ///   auto-sends an `on_data(bytes)` mailbox message; on close it sends
 ///   `on_close()`. Inverted control flow (`conn.attach(handler)`).
 /// - [`RegMode::Resume`] — await-suspension (NEW-1): on `Data`/EOF/error the
@@ -113,20 +117,13 @@ enum Pending {
 ///
 /// NEW-2 (async HTTP/connection client) instantiates `Resume` without rework.
 enum RegMode {
+    NativeAttach(crate::transport::NativeAttachment),
     /// Owned coroutine I/O with a retained generic readiness target. No actor
     /// or frame address is needed for this one-shot registration.
     AsyncIo {
         operation: crate::async_io::IoProducer,
         action: AsyncIoAction,
     },
-    /// Active-mode auto-send to the actor's `on_data` / `on_close` handlers.
-    AutoSend {
-        /// `msg_type` index for `on_data(bytes)` delivery.
-        on_data_type: i32,
-        /// `msg_type` index for the one-shot `on_close()` delivery.
-        on_close_type: i32,
-    },
-    /// Await-suspension: deposit into the read slot + `enqueue_resume`.
     Resume {
         /// The suspending handler's read slot — the value-routing vehicle held
         /// across the OS-thread suspend. The reactor holds a ref (taken in
@@ -221,7 +218,7 @@ impl Drop for Registration {
     fn drop(&mut self) {
         match &self.mode {
             RegMode::AsyncIo { .. } => {}
-            RegMode::AutoSend { .. } => {
+            RegMode::NativeAttach(_) => {
                 crate::transport::tcp_close_reactor_owned_conn(self.conn);
             }
             RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => {
@@ -322,19 +319,8 @@ impl IncarnationGuard {
     /// [`ActorIncarnation::NONE`] publishes nothing, leaving the guard idle.
     /// The guard's whole job is to stop a LOCAL actor box being reclaimed under
     /// an in-flight phase, and a registration whose actor ref carries no local
-    /// pointer (a REMOTE ref handed to `hew_tcp_attach`) has no such box here;
-    /// `reactor_detach_actor` runs only for a local actor being freed, so it
-    /// can never be waiting on one.
-    ///
-    /// SHORTCUT: such a registration is also un-scrubbable and its active-mode
-    /// delivery would `hew_actor_try_send` through a null actor pointer. WHY it
-    /// stands: no in-tree caller builds one (every `hew_tcp_attach` /
-    /// `hew_conn_await_read` / `hew_conn_await_accept` call site passes
-    /// `hew_actor_ref_local`), and refusing at the boundary is a wider surface
-    /// change than the identity fix this guard belongs to. WHEN OBSOLETE: when
-    /// the reactor's registration entry points refuse a ref with no local
-    /// incarnation. WHAT THE REAL FIX IS: that refusal, plus deleting the
-    /// remote arm of `actor_snapshot_alive` it makes unreachable.
+    /// pointer has no such allocation here. Active attachments always capture a
+    /// local incarnation; non-actor asynchronous I/O does not publish this guard.
     fn publish(&self, actor: ActorIncarnation) {
         self.0.store(actor.spawn_serial(), Ordering::SeqCst);
     }
@@ -435,7 +421,7 @@ pub(crate) fn reset_listener_admission() {
 /// nothing about outstanding ones. Counting it would stall every server that
 /// leaves its accept parked at main-exit into the drain timeout, regressing the
 /// fast-shutdown floor (`await_accept_shutdown_fast_exit`). Accepted
-/// connections (`AutoSend`, `Resume`) still block. The exemption is sound
+/// connections (`NativeAttach`, `Resume`) still block. The exemption is sound
 /// because shutdown closes listener admission before its first drain sample
 /// ([`close_listener_admission`]): no accept completion can begin behind this
 /// probe, so an exempted park stays a park for the remainder of the drain.
@@ -712,14 +698,11 @@ fn unregister_fd(poller: *mut HewIoPoller, fd: c_int) {
 /// resume-mode slot pointer by value so the lock is not held across the
 /// deposit+wake.
 enum ReadyMode {
+    NativeAttach(crate::transport::NativeAttachment),
     AsyncIo {
         operation: crate::async_io::IoProducer,
         action: AsyncIoAction,
         _flight: async_io::Flight,
-    },
-    AutoSend {
-        on_data_type: i32,
-        on_close_type: i32,
     },
     Resume {
         read_slot: *mut crate::read_slot::HewReadSlot,
@@ -792,7 +775,7 @@ impl ShutdownWait {
     fn new(registration: Registration) -> Self {
         let read_slot = match registration.mode {
             RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => read_slot,
-            RegMode::AutoSend { .. } | RegMode::AsyncIo { .. } => {
+            RegMode::NativeAttach(_) | RegMode::AsyncIo { .. } => {
                 unreachable!("shutdown sweep only snapshots parked waits")
             }
         };
@@ -812,7 +795,7 @@ impl ShutdownWait {
     fn read_slot(&self) -> *mut crate::read_slot::HewReadSlot {
         match self.registration.mode {
             RegMode::Resume { read_slot } | RegMode::Accept { read_slot } => read_slot,
-            RegMode::AutoSend { .. } | RegMode::AsyncIo { .. } => {
+            RegMode::NativeAttach(_) | RegMode::AsyncIo { .. } => {
                 unreachable!("shutdown wait must carry a read slot")
             }
         }
@@ -899,17 +882,11 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
             actor_local: actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>(),
             actor: reg.actor,
             mode: match &reg.mode {
+                RegMode::NativeAttach(target) => ReadyMode::NativeAttach(*target),
                 RegMode::AsyncIo { operation, action } => ReadyMode::AsyncIo {
                     operation: operation.clone(),
                     action: action.clone(),
                     _flight: async_io::Flight::new(),
-                },
-                RegMode::AutoSend {
-                    on_data_type,
-                    on_close_type,
-                } => ReadyMode::AutoSend {
-                    on_data_type: *on_data_type,
-                    on_close_type: *on_close_type,
                 },
                 RegMode::Resume { read_slot } => {
                     // P1-A: take an IN-FLIGHT ref on the slot UNDER the registry
@@ -964,7 +941,7 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
         ReadyMode::Resume { read_slot } | ReadyMode::Accept { read_slot } => {
             Some(InflightSlotRef(*read_slot))
         }
-        ReadyMode::AutoSend { .. } | ReadyMode::AsyncIo { .. } => None,
+        ReadyMode::NativeAttach(_) | ReadyMode::AsyncIo { .. } => None,
     };
 
     // Publish the in-flight target BEFORE re-validating + sending (Dekker
@@ -1026,18 +1003,19 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     };
 
     match &snap.mode {
-        ReadyMode::AutoSend {
-            on_data_type,
-            on_close_type,
-        } => handle_ready_auto_send(
-            poller,
-            fd,
-            &snap,
-            outcome,
-            hard_close,
-            *on_data_type,
-            *on_close_type,
-        ),
+        ReadyMode::NativeAttach(target) => {
+            let terminate = match outcome {
+                ActiveReadOutcome::Data(data) => target.deliver(&data) != 0 || hard_close,
+                ActiveReadOutcome::WouldBlock => hard_close,
+                ActiveReadOutcome::Eof | ActiveReadOutcome::Closed => true,
+            };
+            if terminate {
+                if !snap.already_closed {
+                    let _ = target.closed();
+                }
+                unregister_fd(poller, fd);
+            }
+        }
         ReadyMode::Resume { read_slot } => {
             handle_ready_resume(poller, fd, &snap, outcome, hard_close, *read_slot);
         }
@@ -1051,53 +1029,6 @@ fn handle_ready_fd(poller: *mut HewIoPoller, fd: c_int, events: c_int) {
     // Delivery (if any) is complete; release the in-flight guard so a waiting
     // `reactor_detach_actor` may proceed with the free.
     DELIVERING_ACTOR.clear();
-}
-
-/// Active-mode readiness handling: auto-send `on_data(bytes)` for each chunk and
-/// a single `on_close()` on EOF/error. Unchanged from the pre-NEW-1 behaviour.
-fn handle_ready_auto_send(
-    poller: *mut HewIoPoller,
-    fd: c_int,
-    snap: &ReadySnapshot,
-    outcome: ActiveReadOutcome,
-    hard_close: bool,
-    on_data_type: i32,
-    on_close_type: i32,
-) {
-    match outcome {
-        ActiveReadOutcome::Data(data) => {
-            deliver_data(snap.actor_local, on_data_type, &data);
-            if hard_close {
-                deliver_close_once(
-                    poller,
-                    fd,
-                    snap.actor_local,
-                    on_close_type,
-                    snap.already_closed,
-                );
-            }
-        }
-        ActiveReadOutcome::WouldBlock => {
-            if hard_close {
-                deliver_close_once(
-                    poller,
-                    fd,
-                    snap.actor_local,
-                    on_close_type,
-                    snap.already_closed,
-                );
-            }
-        }
-        ActiveReadOutcome::Eof | ActiveReadOutcome::Closed => {
-            deliver_close_once(
-                poller,
-                fd,
-                snap.actor_local,
-                on_close_type,
-                snap.already_closed,
-            );
-        }
-    }
 }
 
 /// An empty `bytes` value (null ptr, len 0). The resume edge binds this for an
@@ -1338,100 +1269,23 @@ struct DepositOutcome {
     slot_done: bool,
 }
 
-/// Deliver an `on_data(bytes)` message. The mailbox deep-copies the
-/// `BytesTriple` struct; the triple's heap buffer (refcount 1, from
-/// `hew_bytes_from_static`) is handed off to the actor, which drops it after
-/// `on_data` returns. Exactly one refcount transferred per send.
-fn deliver_data(actor_local: *mut HewActor, on_data_type: i32, data: &[u8]) {
-    if actor_local.is_null() || data.is_empty() {
-        return;
-    }
-    let Ok(len) = u32::try_from(data.len()) else {
-        crate::set_last_error("hew reactor: on_data chunk exceeds u32 range");
-        return;
-    };
-    // SAFETY: data is valid for data.len() bytes; hew_bytes_from_static copies
-    // them into a fresh refcount-1 buffer and returns an owned triple.
-    let mut triple: BytesTriple = unsafe { hew_bytes_from_static(data.as_ptr(), len) };
-    // SAFETY: actor_local is a live local actor pointer (liveness checked by
-    // the caller); the mailbox deep-copies sizeof(BytesTriple) bytes, taking
-    // ownership of the triple's single refcount.
-    let rc = unsafe {
-        hew_actor_try_send(
-            actor_local,
-            on_data_type,
-            std::ptr::addr_of_mut!(triple).cast::<c_void>(),
-            std::mem::size_of::<BytesTriple>(),
-        )
-    };
-    if rc != 0 {
-        // Delivery rejected (mailbox full / actor stopping). The mailbox did
-        // NOT take the triple, so release the refcount here to avoid a leak.
-        // SAFETY: triple.ptr owns one refcount the mailbox did not consume.
-        unsafe { crate::bytes::hew_bytes_drop(triple.ptr) };
-    }
-}
-
-/// Deliver an `on_close()` once, then unregister the fd. Guards against a
-/// second close if readiness fires again before the remove is applied.
-fn deliver_close_once(
-    poller: *mut HewIoPoller,
-    fd: c_int,
-    actor_local: *mut HewActor,
-    on_close_type: i32,
-    already_closed: bool,
-) {
-    if !already_closed && !actor_local.is_null() {
-        // The terminal close event is GUARANTEED-DELIVERED: it must reach the
-        // actor even when the mailbox is full under data backpressure, or the
-        // actor never runs teardown and the connection leaks forever. A plain
-        // `hew_actor_try_send` drops on a full mailbox; `hew_actor_send_guaranteed`
-        // appends past the bounded-capacity policy (FIFO-after buffered on_data,
-        // never the priority system queue) without ever blocking — so the single
-        // reactor thread is not stalled and cannot deadlock with the synchronous
-        // `reactor_detach_actor` spin-wait on `DELIVERING_ACTOR`. The Dekker
-        // in-flight guard published by `handle_ready_fd` still bounds this send:
-        // it is a bounded enqueue + atomic wake, so the guard clears promptly.
-        // SAFETY: actor_local is a live local actor pointer (liveness checked
-        // by the caller); on_close carries no payload.
-        unsafe {
-            hew_actor_send_guaranteed(actor_local, on_close_type, std::ptr::null_mut(), 0);
-        }
-    }
-    // Mark closed (in case the remove is deferred) then unregister.
-    REACTOR_STATE.access(|state| {
-        if let Some(reg) = state.registry.get_mut(&fd) {
-            reg.closed = true;
-        }
-    });
-    unregister_fd(poller, fd);
-}
-
 /// Deliver a terminal close for a registration that never made it into the
 /// registry (poller register failed). No fd to unregister.
 ///
-/// - `AutoSend`: send the one-shot `on_close()` mailbox message.
+/// - `NativeAttach`: send the one-shot `on_close()` mailbox message.
 /// - `Resume`: deposit an `Error` status into the read slot + `enqueue_resume`
 ///   so the suspending handler resumes with an error rather than hanging
 ///   forever, then release the reactor's slot ref.
 fn deliver_orphan_close(reg: &Registration) {
-    let actor_local = actor_ref_local_ptr(&reg.actor_ref).cast::<HewActor>();
     match reg.mode {
+        RegMode::NativeAttach(target) => {
+            let _ = target.closed();
+        }
         RegMode::AsyncIo { ref operation, .. } => {
             operation.complete(Err(crate::async_io::IoFailure::from_io(
                 "register TCP readiness",
                 &std::io::Error::other("I/O poller rejected registration"),
             )));
-        }
-        RegMode::AutoSend { on_close_type, .. } => {
-            if actor_local.is_null() {
-                return;
-            }
-            // SAFETY: snapshot deref; the actor was alive at attach time. A
-            // try_send to a since-stopped actor returns an error and is harmless.
-            unsafe {
-                hew_actor_try_send(actor_local, on_close_type, std::ptr::null_mut(), 0);
-            }
         }
         RegMode::Resume { read_slot } => {
             resume_with_status(reg.actor, read_slot, crate::read_slot::ReadStatus::Error);
@@ -1632,12 +1486,20 @@ unsafe fn reject_accept_wait_during_shutdown(
 /// `actor_ref` must point to a valid [`HewActorRef`] for the duration of this
 /// call (a by-value snapshot is taken). `conn` must be a valid TCP connection
 /// handle obtained from the stdlib `net` API.
-pub(crate) unsafe fn reactor_attach(
+pub(crate) fn reactor_attach_native(
     conn: c_int,
-    actor_ref: *const HewActorRef,
-    on_data_type: i32,
-    on_close_type: i32,
+    target: crate::transport::NativeAttachment,
 ) -> c_int {
+    crate::lifetime::live_actors::with_live_incarnation(target.incarnation, |pin| {
+        // SAFETY: the registry pins this exact actor until registration is queued.
+        let actor_ref = unsafe { crate::transport::hew_actor_ref_local(pin.as_ptr()) };
+        // SAFETY: this reference is valid throughout the pinned registration call.
+        unsafe { reactor_attach_mode(conn, &raw const actor_ref, RegMode::NativeAttach(target)) }
+    })
+    .unwrap_or(-1)
+}
+
+unsafe fn reactor_attach_mode(conn: c_int, actor_ref: *const HewActorRef, mode: RegMode) -> c_int {
     if actor_ref.is_null() {
         crate::set_last_error("hew_tcp_attach: null actor reference");
         return -1;
@@ -1663,42 +1525,7 @@ pub(crate) unsafe fn reactor_attach(
     // guarantees the actor ref is valid (and its actor live) for this call.
     let actor = unsafe { ActorIncarnation::of(actor_local) };
 
-    // Fail closed on a leak-prone mailbox. Active-mode `on_data` is delivered
-    // as a raw (`envelope == null`) node whose embedded `BytesTriple` refcount
-    // is dropped ONLY by the handler that consumes it. A bounded `DropOld` /
-    // `Coalesce` mailbox can evict (or in-place replace) a queued node before
-    // its handler ever runs, freeing the triple container as plain bytes and
-    // leaking the underlying refcounted buffer. Refuse the attach rather than
-    // ship that leak (or risk a double-free were the node given evict-time
-    // drop glue the happy path would re-run). Unbounded / `DropNew` / `Fail` /
-    // `Block` mailboxes never evict a queued node and are accepted.
-    if !actor_local.is_null() {
-        // SAFETY: liveness is the caller's contract for the duration of attach;
-        // we read the (possibly null) mailbox pointer and classify its policy.
-        let leak_prone = unsafe {
-            let mb = (*actor_local).mailbox.cast::<crate::mailbox::HewMailbox>();
-            crate::mailbox::mailbox_overflow_evicts_queued_payload(mb)
-        };
-        if leak_prone {
-            let _ = tcp_conn_set_nonblocking(conn, false);
-            crate::set_last_error(
-                "hew_tcp_attach: active-mode on_data requires an unbounded, DropNew, Fail, \
-                 or Block mailbox; a DropOld/Coalesce mailbox would leak evicted read \
-                 buffers",
-            );
-            return -1;
-        }
-    }
-
-    let reg = Registration::new(
-        conn,
-        snapshot,
-        actor,
-        RegMode::AutoSend {
-            on_data_type,
-            on_close_type,
-        },
-    );
+    let reg = Registration::new(conn, snapshot, actor, mode);
     REACTOR_STATE.access(|state| {
         state.pending.push(Pending::Add { fd, reg });
     });
@@ -2028,7 +1855,7 @@ pub(crate) fn reactor_detach_read_slot(read_slot: *mut crate::read_slot::HewRead
                 RegMode::Resume { read_slot: slot } | RegMode::Accept { read_slot: slot } => {
                     slot != read_slot
                 }
-                RegMode::AutoSend { .. } | RegMode::AsyncIo { .. } => true,
+                RegMode::NativeAttach(_) | RegMode::AsyncIo { .. } => true,
             },
             _ => true,
         });
@@ -2167,10 +1994,7 @@ pub(crate) fn inject_registration_for_test(
                 conn,
                 actor_ref,
                 actor,
-                RegMode::AutoSend {
-                    on_data_type: 1,
-                    on_close_type: 2,
-                },
+                RegMode::NativeAttach(crate::transport::NativeAttachment::inert_for_test()),
             ),
         );
     });
@@ -2279,22 +2103,6 @@ pub(crate) fn handle_ready_accept_for_test(
     handle_ready_accept(poller, fd, &snap, hard_close, read_slot);
 }
 
-/// Drive `deliver_close_once` against a given poller/fd/actor (test-only) so the
-/// terminal-close delivery can be exercised against a real (live) actor mailbox
-/// without standing up a TCP socket + scheduler. The fd need not be registered;
-/// `deliver_close_once` tolerates a missing registry entry (it only marks
-/// `closed` if present) and still unregisters the fd from the poller.
-#[cfg(test)]
-pub(crate) fn deliver_close_once_for_test(
-    poller: *mut HewIoPoller,
-    fd: c_int,
-    actor_local: *mut HewActor,
-    on_close_type: i32,
-    already_closed: bool,
-) {
-    deliver_close_once(poller, fd, actor_local, on_close_type, already_closed);
-}
-
 /// Publish the in-flight-delivery guard for a given incarnation (test-only),
 /// simulating the window during which the reactor thread is mid-`hew_actor_try_send`
 /// inside `handle_ready_fd`. Lets the Dekker Phase-2 spin-wait in
@@ -2345,10 +2153,7 @@ pub(crate) fn enqueue_pending_add_for_test(
                 conn,
                 actor_ref,
                 actor,
-                RegMode::AutoSend {
-                    on_data_type: 1,
-                    on_close_type: 2,
-                },
+                RegMode::NativeAttach(crate::transport::NativeAttachment::inert_for_test()),
             ),
         });
     });
@@ -4009,10 +3814,7 @@ mod tests {
                     601,
                     dead_actor_ref(),
                     KEY,
-                    RegMode::AutoSend {
-                        on_data_type: 1,
-                        on_close_type: 2,
-                    },
+                    RegMode::NativeAttach(crate::transport::NativeAttachment::inert_for_test()),
                 ),
             );
             // While we still hold the lock, the re-scrub cannot run and the
@@ -4333,9 +4135,10 @@ mod tests {
 
     /// Fill the actor's capacity-1 mailbox with a buffered `on_data`, then prove
     /// a plain `try_send` of the close is rejected (the bug) while
-    /// `deliver_close_once` (now using the guaranteed channel) still delivers it.
+    /// the native terminal envelope still delivers it.
     #[test]
     fn close_delivered_to_full_mailbox_under_backpressure() {
+        unsafe extern "C" fn drop_terminal(_: *mut c_void) {}
         // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
         // live-actor registry; install a runtime so the spawn/track resolves.
         let _rt = crate::runtime_test_guard();
@@ -4376,8 +4179,20 @@ mod tests {
             "try_send must drop the close on a full mailbox (the bug being fixed)"
         );
 
-        // The fix: deliver_close_once admits the terminal event past capacity.
-        deliver_close_once_for_test(poller, 9001, actor, ON_CLOSE_TYPE, false);
+        // The native terminal envelope is admitted past capacity.
+        let payload = crate::actor_native::hew_actor_payload_alloc(1);
+        // SAFETY: the wrapper is new, and the live actor token is test-owned.
+        let status = unsafe {
+            payload.cast::<u8>().write(1);
+            crate::actor_native::hew_actor_submit_native_terminal(
+                (*actor).local_pid_id,
+                ON_CLOSE_TYPE,
+                payload,
+                1,
+                drop_terminal,
+            )
+        };
+        assert_eq!(status, 0, "native terminal envelope bypasses capacity");
 
         // The actor observes the buffered on_data FIRST, then the close — exactly
         // once, FIFO-preserved.
@@ -4405,67 +4220,6 @@ mod tests {
         assert!(
             recv_one(mb).is_null(),
             "exactly one on_data + one on_close; no duplicate close"
-        );
-
-        free_parked_actor(actor);
-        // SAFETY: the reactor never started in this test, so we own the poller;
-        // surrender it.
-        unsafe { hew_io_poller_stop(poller) };
-        reset_reactor();
-    }
-
-    /// Exactly-once still holds under backpressure: a second close (e.g.
-    /// readiness fires again before the unregister applies) with
-    /// `already_closed == true` must NOT enqueue a duplicate, even though the
-    /// guaranteed channel could physically admit one.
-    #[test]
-    fn close_is_exactly_once_even_when_guaranteed_under_backpressure() {
-        // `spawn_full_reject_actor` tracks a real actor in the runtime-owned
-        // live-actor registry; install a runtime so the spawn/track resolves.
-        let _rt = crate::runtime_test_guard();
-        let _guard = REACTOR_TEST_MUTEX
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        reset_reactor();
-
-        // SAFETY: no preconditions for new.
-        let poller = unsafe { hew_io_poller_new() };
-        assert!(!poller.is_null());
-
-        let actor = spawn_full_reject_actor();
-        // SAFETY: `actor` is the live, test-owned actor; its mailbox pointer is
-        // valid for the actor's lifetime.
-        let mb = unsafe { (*actor).mailbox }.cast::<crate::mailbox::HewMailbox>();
-
-        // Fill the slot, then deliver the first close (guaranteed, past capacity).
-        let datum: i32 = 1;
-        // SAFETY: `actor` is live; `datum` is a valid i32 readable for its size.
-        let _ = unsafe {
-            hew_actor_try_send(
-                actor,
-                ON_DATA_TYPE,
-                (&raw const datum).cast_mut().cast(),
-                std::mem::size_of::<i32>(),
-            )
-        };
-        deliver_close_once_for_test(poller, 9002, actor, ON_CLOSE_TYPE, false);
-
-        // A SECOND close attempt with already_closed = true must be suppressed by
-        // the dedupe guard — no duplicate enqueue.
-        deliver_close_once_for_test(poller, 9002, actor, ON_CLOSE_TYPE, true);
-
-        // Drain: on_data, then exactly one on_close.
-        let first = recv_one(mb);
-        assert!(!first.is_null(), "buffered on_data must be present");
-        assert_eq!(drain_msg_type(first), ON_DATA_TYPE);
-
-        let second = recv_one(mb);
-        assert!(!second.is_null(), "the one terminal close must be present");
-        assert_eq!(drain_msg_type(second), ON_CLOSE_TYPE);
-
-        assert!(
-            recv_one(mb).is_null(),
-            "the already_closed guard must suppress the duplicate close"
         );
 
         free_parked_actor(actor);

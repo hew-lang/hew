@@ -3,7 +3,8 @@
 use super::suspend::call_value;
 use super::*;
 use hew_mir::physical::{
-    ActorId, ActorOperation, SemActor, SemActorField, SemActorHandler, SemFailureDisplay,
+    ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
+    SemFailureDisplay,
 };
 use inkwell::types::StructType;
 
@@ -20,6 +21,13 @@ struct SpawnFailure<'ctx> {
 
 #[path = "physical_actor_ask.rs"]
 mod ask;
+
+#[path = "physical_actor_ingress.rs"]
+mod ingress;
+
+pub(super) fn ingress_symbol(adapter: ActorIngressAdapter) -> String {
+    format!("hew.actor.{}.ingress.{}", adapter.actor.0, adapter.message)
+}
 #[path = "physical_actor_lifecycle.rs"]
 mod lifecycle;
 
@@ -334,36 +342,18 @@ pub(super) fn allocate<'ctx>(
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn needs_process_runtime(&self) -> bool {
         !self.module.actors.is_empty()
-            || self
-                .module
-                .functions
-                .iter()
-                .flat_map(|function| &function.blocks)
-                .any(|block| {
-                    matches!(
-                        block.terminator,
-                        PhysicalTerminator::NativeIo { .. }
-                            // A content-backed stream receive or send offloads
-                            // its producer work to the runtime's blocking pool,
-                            // which resolves through the installed process
-                            // runtime. Without one the operation completes with
-                            // "asynchronous file I/O requires an installed
-                            // runtime" and the receive faults. A channel-backed
-                            // stream does not offload, but the terminator alone
-                            // does not say which backing it has.
-                            | PhysicalTerminator::StreamNext { park: true, .. }
-                            | PhysicalTerminator::StreamSend { .. }
-                            | PhysicalTerminator::RuntimeCall {
-                                action: hew_mir::physical::PhysicalRuntimeAction {
-                                    family: hew_types::RuntimeCallFamily::NodeStart
-                                        | hew_types::RuntimeCallFamily::NodeConnect
-                                        | hew_types::RuntimeCallFamily::NodeShutdown,
-                                    ..
-                                },
-                                ..
-                            }
-                    )
-                })
+            || self.module.functions.iter().flat_map(|function| &function.blocks).any(|block| {
+                match &block.terminator {
+                    PhysicalTerminator::NativeIo { .. }
+                    // Content-backed stream operations offload producer work
+                    // through the installed runtime's blocking pool.
+                    | PhysicalTerminator::StreamNext { park: true, .. }
+                    | PhysicalTerminator::StreamSend { .. } => true,
+                    PhysicalTerminator::ExternCall { runtime_capability, .. } => runtime_capability.is_some(),
+                    PhysicalTerminator::RuntimeCall { action, .. } => action.family.runtime_capability().is_some(),
+                    _ => false,
+                }
+            })
     }
 
     /// Name every actor type and handler for the profiler before the root

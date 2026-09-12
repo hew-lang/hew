@@ -467,6 +467,7 @@ impl InstanceService<'_> {
             type_params: Vec::new(),
             params: params.to_vec(),
             var_self_receiver: None,
+            terminal_receiver: None,
             return_ty: return_ty.clone(),
             body: body.clone(),
             span: body.span.clone(),
@@ -566,6 +567,47 @@ pub(super) struct StartedActorCall {
 }
 
 impl Builder<'_, '_> {
+    /// Evaluate payloads in source order, applying the same value coercions as
+    /// ordinary calls, then arrange the resulting owners in protocol order.
+    /// Earlier owners stay live until all later arguments have succeeded.
+    fn lower_actor_payload(
+        &mut self,
+        args: &[HirExpr],
+        parameters: &[ResolvedTy],
+        argument_order: &[usize],
+    ) -> Result<std::ops::ControlFlow<ValueId, Vec<ValueId>>, String> {
+        if parameters.len() != args.len()
+            || argument_order.len() != args.len()
+            || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
+        {
+            return Err("actor payload argument order differs from its protocol".into());
+        }
+        let mut expected_by_source = vec![None; args.len()];
+        for (expected, source_index) in parameters.iter().zip(argument_order) {
+            expected_by_source[*source_index] = Some(expected);
+        }
+        let mut values = Vec::with_capacity(args.len());
+        for (source, expected) in args.iter().zip(expected_by_source) {
+            let value = lower_initial_value_transfer(
+                self,
+                source,
+                "actor payload argument",
+                OwnedBindingUse::Copy,
+            )?;
+            if !self.is_open() {
+                return Ok(std::ops::ControlFlow::Break(value));
+            }
+            values.push(self.coerce_value(
+                value,
+                expected.expect("validated protocol permutation"),
+                crate::Provenance::Site(source.site),
+            )?);
+        }
+        Ok(std::ops::ControlFlow::Continue(
+            argument_order.iter().map(|index| values[*index]).collect(),
+        ))
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "one ask boundary evaluates its request and constructs normal, cancellation and fault cleanup edges"
@@ -614,19 +656,15 @@ impl Builder<'_, '_> {
 
         let output = self.ty(&expression.ty);
         let signature = descriptor.ask_signature(message, &target_ty, output.clone(), false)?;
-        if signature.return_ty != output
-            || signature.params.len() != args.len() + 1
-            || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
-            || argument_order.len() != args.len()
-            || signature
-                .params
-                .iter()
-                .skip(1)
-                .zip(argument_order)
-                .any(|(expected, index)| expected.ty != self.ty(&args[*index].ty))
-        {
+        if signature.return_ty != output || signature.params.len() != args.len() + 1 {
             return Err("ask must return its complete checked Result".into());
         }
+        let parameters = signature
+            .params
+            .iter()
+            .skip(1)
+            .map(|param| param.ty.clone())
+            .collect::<Vec<_>>();
         let mut inputs = Vec::new();
         let (target, _) = self.delivery_target(receiver)?;
         if !self.is_open() {
@@ -640,24 +678,16 @@ impl Builder<'_, '_> {
             operand: Operand { value: target },
             decision: crate::BoundaryDecision::Borrow,
         });
-        for source in args {
-            let value = lower_initial_value_transfer(
-                self,
-                source,
-                "ask request argument",
-                OwnedBindingUse::Copy,
-            )?;
-            if !self.is_open() {
-                return Ok(ActorRequestPreparation::Diverged(value));
+        let values = match self.lower_actor_payload(args, &parameters, argument_order)? {
+            std::ops::ControlFlow::Continue(values) => values,
+            std::ops::ControlFlow::Break(value) => {
+                return Ok(ActorRequestPreparation::Diverged(value))
             }
-            inputs.push(crate::BoundaryOperand {
-                operand: Operand { value },
-                decision: crate::BoundaryDecision::Move,
-            });
-        }
-        inputs = std::iter::once(inputs[0].clone())
-            .chain(argument_order.iter().map(|index| inputs[index + 1].clone()))
-            .collect();
+        };
+        inputs.extend(values.into_iter().map(|value| crate::BoundaryOperand {
+            operand: Operand { value },
+            decision: crate::BoundaryDecision::Move,
+        }));
         // The request arguments transfer; the borrowed target keeps its owner.
         for input in inputs.iter().skip(1) {
             self.owned_live.remove(&input.operand.value);
@@ -1265,6 +1295,9 @@ impl Builder<'_, '_> {
             unreachable!()
         };
         let (target, target_ty) = self.delivery_target(receiver)?;
+        if !self.is_open() {
+            return Ok(target);
+        }
         let actor = self.service.require_actor(&target_ty)?;
         // A lambda actor declares one unnamed handler, so its message
         // selects that member. Every other actor selects by exact identity.
@@ -1282,16 +1315,7 @@ impl Builder<'_, '_> {
                 .ok_or("message description has no exact receive member")?
         }
         .clone();
-        if !handler.owes_no_reply()
-            || handler.params.len() != args.len()
-            || argument_order.len() != args.len()
-            || argument_order.iter().copied().collect::<BTreeSet<_>>() != (0..args.len()).collect()
-            || handler
-                .params
-                .iter()
-                .zip(argument_order)
-                .any(|(expected, index)| *expected != self.ty(&args[*index].ty))
-        {
+        if !handler.owes_no_reply() {
             return Err("message description disagrees with its receive protocol".into());
         }
         let ty = self.ty(&expression.ty);
@@ -1303,21 +1327,14 @@ impl Builder<'_, '_> {
         if ty.to_ty() != expected {
             return Err("message description changes its checked value type".into());
         }
+        let values = match self.lower_actor_payload(args, &handler.params, argument_order)? {
+            std::ops::ControlFlow::Continue(values) => values,
+            std::ops::ControlFlow::Break(value) => return Ok(value),
+        };
         let payload_ty = ResolvedTy::Tuple(handler.params);
-        let mut values = Vec::new();
-        for arg in args {
-            values.push(lower_initial_value_transfer(
-                self,
-                arg,
-                "message argument",
-                OwnedBindingUse::Copy,
-            )?);
-        }
-        let fields = argument_order
+        let fields = values
             .iter()
-            .map(|index| Operand {
-                value: values[*index],
-            })
+            .map(|value| Operand { value: *value })
             .collect();
         let shape = self.service.require_aggregate_shape(&payload_ty)?;
         let payload = self.emit_typed(
@@ -1530,6 +1547,9 @@ impl Builder<'_, '_> {
             unreachable!()
         };
         let (target, target_ty) = self.delivery_target(receiver)?;
+        if !self.is_open() {
+            return Ok(target);
+        }
         let actor = self.service.require_actor(&target_ty)?;
         let handler = self.service.actors[actor.0 as usize]
             .handlers
@@ -1545,26 +1565,15 @@ impl Builder<'_, '_> {
         };
         if crate::pipe_parts(&stream_ty, sink_ty) != handler.stream.as_ref()
             || handler.params.len() != args.len() + 1
-            || handler
-                .params
-                .iter()
-                .zip(args)
-                .any(|(expected, arg)| *expected != self.ty(&arg.ty))
         {
             return Err("stream request disagrees with its producer protocol".into());
         }
-        let mut values = Vec::new();
-        for arg in args {
-            values.push(lower_initial_value_transfer(
-                self,
-                arg,
-                "stream request argument",
-                OwnedBindingUse::Copy,
-            )?);
-            if !self.is_open() {
-                return Err("stream request argument diverged".into());
-            }
-        }
+        let argument_order = (0..args.len()).collect::<Vec<_>>();
+        let mut values =
+            match self.lower_actor_payload(args, &handler.params[..args.len()], &argument_order)? {
+                std::ops::ControlFlow::Continue(values) => values,
+                std::ops::ControlFlow::Break(value) => return Ok(value),
+            };
         let provenance = crate::Provenance::Site(expression.site);
         let (stream, sink) = self.emit_stream_pipe(&stream_ty, sink_ty, provenance.clone())?;
         values.push(sink);

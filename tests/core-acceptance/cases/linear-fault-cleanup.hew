@@ -1,0 +1,19 @@
+#[resource]
+type Audit { label: string }
+impl Audit {
+    fn close(consume self) { println(f"close {self.label}"); }
+}
+#[linear]
+type Tx { label: string, audit: Audit }
+impl Tx {
+    fn commit(consume self) {
+        println(self.label);
+        panic("commit failed");
+    }
+}
+fn main() {
+    let remaining = Tx { label: "remaining".to_upper(), audit: Audit { label: "remaining".to_upper() } };
+    let active = Tx { label: "active".to_upper(), audit: Audit { label: "active".to_upper() } };
+    active.commit();
+    remaining.commit();
+}

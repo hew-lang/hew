@@ -1,0 +1,9 @@
+[[case]]
+id = "nested-indexed-assignment"
+intent = "Nested vector/map writable paths evaluate indices and RHS once, rebuild scalar and owning record fields, and preserve aliases at every level."
+source = "cases/nested-indexed-assignment.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+[case.expected]
+stdout = "outer\nkey\nrhs\nouter\nouter\nrhs\nouter\nkey\nouter\nrhs\nouter\nrhs\nouter\nnested\n"
+exit = 0

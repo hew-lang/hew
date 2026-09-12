@@ -1,0 +1,46 @@
+#[resource] type Token { label: string, id: i64 }
+impl Token { fn close(consume self) {} }
+type Store<T> { values: Vec<T> }
+impl<T> Store<T> {
+    fn replace(var self, value: T, enabled: bool) -> Option<T> {
+        let old = self.values.get(0);
+        if enabled { self.values.set(0, value); }
+        old
+    }
+    fn repeated(var self, value: T) -> Option<T> {
+        let old = self.values.get(0);
+        for index in 0..2 { self.values.set(0, value); }
+        old
+    }
+    fn matched(var self, value: T) -> Option<T> {
+        match self.values.get(0) {
+            .Some(old) => { self.values.set(0, value); .Some(old) },
+            .None => .None,
+        }
+    }
+}
+fn read(store: Store<string>) -> Option<string> { store.values.get(0) }
+fn main() {
+    var store = Store { values: ["old".to_upper()] };
+    let alias = store;
+    assert(store.replace("new".to_upper(), true).expect("old") == "OLD");
+    assert(store.replace("ignored", false).expect("unchanged") == "NEW");
+    assert(store.repeated("loop".to_upper()).expect("before loop") == "NEW");
+    assert(store.matched("match".to_upper()).expect("before match") == "LOOP");
+    assert(read(store).expect("borrowed parameter") == "MATCH");
+    assert(alias.values[0] == "OLD");
+    var tokens: Vec<Token> = [Token { label: "token".to_upper(), id: 1 }];
+    let label = tokens[0].label;
+    let id = tokens[0].id;
+    if id == 1 { tokens.push(Token { label: "second", id: 2 }); }
+    assert(label == "TOKEN");
+    var pairs: Vec<(Token, string)> = [(Token { label: "pair", id: 3 }, "sibling".to_upper())];
+    let sibling = pairs[0].1;
+    if sibling == "SIBLING" { pairs.push((Token { label: "next", id: 4 }, "next")); }
+    assert(sibling == "SIBLING");
+    let borrowed = tokens[0];
+    let copied = borrowed.label;
+    if copied == "TOKEN" { store.values.push("unrelated"); }
+    assert(borrowed.id == 1);
+    println("lookup snapshots survive mutation");
+}

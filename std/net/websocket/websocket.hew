@@ -148,9 +148,8 @@ impl ConnMethods for Conn {
     }
     /// Compiler-lowered active-mode attach.
     ///
-    /// Every call site is rewritten to `hew_ws_attach_local`; codegen resolves
-    /// the concrete actor's `on_message` / `on_close` protocol IDs and emits
-    /// the four-argument runtime ABI. This stub is never lowered.
+    /// The runtime delivers owned messages using the selected actor handlers.
+    #[runtime(family = WebSocketAttachLocal, symbol = hew_ws_attach_native, lowering = actor_ingress, target = native, classification = "non-declarable-stdlib", receiver = opaque, data = on_message, close = on_close, result = discard_status)]
     fn attach(conn: Conn, handler: WebSocketHandler) {}
 }
 

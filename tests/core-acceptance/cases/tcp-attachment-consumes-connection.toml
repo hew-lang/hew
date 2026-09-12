@@ -1,0 +1,13 @@
+[[case]]
+id = "tcp-attachment-consumes-connection"
+intent = "TCP attach transfers the connection even on refusal; the original binding cannot close it again."
+source = "cases/tcp-attachment-consumes-connection.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 11
+column = 5
+message = "use of moved value `conn`"

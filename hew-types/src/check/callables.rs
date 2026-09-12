@@ -80,29 +80,32 @@ impl Checker {
         )
     }
 
-    /// Record invocation-time consumption when an owned value leaves a place.
+    /// Record a value transfer using the shared clone classification.
     /// SIR authors the actual transfer; the checker uses the same class facts
     /// to determine capture capabilities and reject later source uses.
-    pub(super) fn record_callable_value_transfer(&mut self, expr: &Expr, span: &Span) {
-        let Some((root, path)) = self.expr_place(expr) else {
-            return;
-        };
+    pub(super) fn record_value_transfer(&mut self, expr: &Expr, span: &Span) {
         let key = super::SpanKey::in_module(span, self.current_module_idx);
         let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
             return;
         };
-        let is_capture = self.lambda_capture_depth.is_some_and(|capture_depth| {
-            self.env
-                .lookup_ref_with_depth(&root)
-                .is_some_and(|(depth, _)| depth < capture_depth)
-        });
-        if !is_capture && path.is_empty() && !ty.contains_callable() {
-            return;
-        }
         if self.place_read_transfers_ownership(&ty) && !self.reject_borrowed_consumption(expr, span)
         {
             self.mark_expr_moved(expr, span);
         }
+    }
+
+    /// Index reads lend affine elements; aliases preserve the same loan.
+    pub(super) fn collection_borrow_origin(&self, expr: &Expr, span: &Span) -> Option<Span> {
+        let key = super::SpanKey::in_module(span, self.current_module_idx);
+        let ty = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))?;
+        if !self.place_read_transfers_ownership(&ty) {
+            return None;
+        }
+        if self.borrowed_element_index_reads.contains(&key) {
+            return Some(span.clone());
+        }
+        let (root, _) = self.expr_place(expr)?;
+        self.env.lookup_ref(&root)?.collection_borrow.clone()
     }
 
     /// A pattern binder takes one field out of the place it destructures.
@@ -267,24 +270,6 @@ impl Checker {
             suspends: false,
         }
     }
-    /// Match the independent entry copy required for mutable Borrow parameters.
-    /// A function that yields a value with no copy operation transfers it out,
-    /// so the expression it returns consumes what it names. A parameter the
-    /// declaration only borrows cannot be that source: the caller keeps it and
-    /// releases it after the call.
-    pub(super) fn reject_borrowed_return_transfer(&mut self, value: &Spanned<Expr>, declared: &Ty) {
-        // Only a POSITIVE affine classification refuses. A type the classifier
-        // cannot decide - an abstract type parameter, an unresolved variable -
-        // proves nothing about its copy operation, and refusing it would
-        // reject every generic identity function.
-        if self.parameter_clone_kind(&self.subst.resolve(declared))
-            != Some(crate::type_facts::CloneKind::None)
-        {
-            return;
-        }
-        self.reject_borrowed_consumption(&value.0, &value.1);
-    }
-
     pub(super) fn parameter_has_independent_clone(&self, ty: &Ty) -> bool {
         self.parameter_clone_kind(ty)
             .is_some_and(|clone| clone != crate::type_facts::CloneKind::None)
@@ -440,6 +425,15 @@ impl Checker {
     }
 
     pub(super) fn reject_borrowed_consumption(&mut self, expr: &Expr, span: &Span) -> bool {
+        if matches!(expr, Expr::Index { .. }) && self.collection_borrow_origin(expr, span).is_some()
+        {
+            self.report_error(
+                TypeErrorKind::OwnConsumeBorrowed,
+                span,
+                "E_OWN_CONSUME_BORROWED: cannot consume an indexed collection borrow".to_string(),
+            );
+            return true;
+        }
         let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
@@ -456,6 +450,22 @@ impl Checker {
         span: &Span,
     ) -> bool {
         if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnConsumeBorrowed) {
+            return true;
+        }
+        if let Some(origin) = self
+            .env
+            .lookup_ref(root)
+            .and_then(|binding| binding.collection_borrow.clone())
+        {
+            self.report_error_with_note(
+                TypeErrorKind::OwnConsumeBorrowed,
+                span,
+                format!(
+                    "E_OWN_CONSUME_BORROWED: cannot consume borrowed collection element `{root}`"
+                ),
+                &origin,
+                "the collection retains this value's owner".to_string(),
+            );
             return true;
         }
         // A closure environment capture follows its existing acquisition contract.

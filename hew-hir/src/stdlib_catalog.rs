@@ -2658,45 +2658,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::String,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // Active-mode `conn.attach(handler)` dispatch symbol.
-    //
-    // The checker rewrites every `conn.attach(handler)` site on a
-    // `net.Connection` receiver to a direct call to `hew_tcp_attach_local`
-    // (see hew-types::check::methods); HIR's direct-call lowering produces a
-    // `Terminator::Call("hew_tcp_attach_local", [conn, handler])`. Codegen
-    // intercepts that call by name (`emit_tcp_attach_local_call`): it resolves
-    // the concrete actor type from the `handler` arg's recorded actor-handle
-    // type, looks up the actor's `on_data` / `on_close`
-    // handler `msg_id`s in its `ActorLayout`, and emits the real runtime ABI
-    // `hew_tcp_attach_local(conn, actor_ptr, on_data_id, on_close_id)`.
-    //
-    // Linkage is `CalleeNameDispatchOnly`, mirroring `hew_remote_pid_send`:
-    // the real runtime symbol has a 4-arg ABI declared via `intern_runtime_decl`
-    // inside the codegen interceptor, not through the catalog FFI predeclare
-    // path. The catalog entry's params/return shape only needs to satisfy HIR's
-    // fn_registry lookup and MIR's `module_fn_names` membership so the call
-    // lowers to `Terminator::Call`; the params are not consulted by typecheck.
-    direct(
-        "hew_tcp_attach_local",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::I32, BuiltinTy::Pointer],
-        BuiltinTy::Unit,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_tls_attach_local",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::Pointer, BuiltinTy::Pointer],
-        BuiltinTy::Unit,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
-        "hew_ws_attach_local",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::Pointer, BuiltinTy::Pointer],
-        BuiltinTy::Unit,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
     // Typed channel extraction uses the checked source signature. These are
     // dispatch identities; their pointer ABI is owned by the runtime contract.
     direct(

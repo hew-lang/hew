@@ -148,6 +148,10 @@ struct ExpectedDiagnostic {
     code: String,
     line: usize,
     column: usize,
+    /// `error`, `warning`, `note` or `info`, matched when named; an
+    /// unspecified severity matches any.
+    #[serde(default)]
+    severity: Option<String>,
     #[serde(default)]
     message: Option<String>,
     /// The source file the diagnostic must be reported against, matched as a
@@ -600,12 +604,8 @@ fn validate_manifest(manifest: &Manifest, root: &Path) -> Result<()> {
 fn validate_case(case: &Case, root: &Path) -> Result<()> {
     match case.kind {
         CaseKind::Run => {
-            if !case.expected.diagnostics.is_empty() {
-                return Err(format!(
-                    "{} has kind run but declares expected diagnostics (that shape is check-only)",
-                    case.id
-                ));
-            }
+            // A run case may also pin the exact diagnostics (warnings, notes)
+            // its build reports; the runner checks them before it builds.
             if case.expected.stdout.is_none() || case.expected.exit.is_none() {
                 return Err(format!(
                     "{} has kind run and must declare both expected stdout and exit",
@@ -614,11 +614,13 @@ fn validate_case(case: &Case, root: &Path) -> Result<()> {
             }
         }
         CaseKind::Check | CaseKind::Reject => {
-            if case.expected.diagnostics.is_empty() {
+            // A `check` case may list no diagnostics: it is then the exact
+            // negative control, a check that must stay silent. `reject`
+            // proves a refusal, so it must name at least one diagnostic.
+            if case.expected.diagnostics.is_empty() && case.kind == CaseKind::Reject {
                 return Err(format!(
-                    "{} has kind {} but declares no expected diagnostics",
-                    case.id,
-                    case.kind.label()
+                    "{} has kind reject but declares no expected diagnostics",
+                    case.id
                 ));
             }
             if case.suites.iter().any(|suite| suite == "safety") {
@@ -779,6 +781,9 @@ impl Runner<'_> {
     fn run_case(&self, case: &Case, log: &mut String) -> bool {
         match case.kind {
             CaseKind::Run => {
+                if !case.expected.diagnostics.is_empty() && !self.run_check(case, false, log) {
+                    return false;
+                }
                 let mut passed = true;
                 for profile in [Profile::O0, Profile::O2] {
                     if !self.run_profile(case, profile, log) {
@@ -866,19 +871,39 @@ impl Runner<'_> {
     ) -> bool {
         // A clean check exits 0 and a refused one does not: that is
         // the contract the kind verifies, not a per-case expectation.
-        // `check` pins the exact refusal shape and so pins exit 1;
-        // `reject` only proves the compile was refused, and a refusal
+        // `check` pins the exact diagnostic set, warnings and notes included,
+        // and the exit follows from it: 1 when an error is among them, 0
+        // when the program is accepted with only advisory diagnostics or
+        // none. `reject` only proves the compile was refused, and a refusal
         // by a compiler limitation exits 3.
+        let actual: Vec<ActualDiagnostic> = if expect_clean {
+            Vec::new()
+        } else {
+            match serde_json::from_str(stdout) {
+                Ok(diagnostics) => diagnostics,
+                Err(err) => {
+                    let _ = writeln!(
+                        log,
+                        "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
+                        case.id,
+                        case.kind.label(),
+                        summarise(stdout)
+                    );
+                    return false;
+                }
+            }
+        };
+        let reported_error = actual.iter().any(|got| got.severity == "error");
         let wrong_exit = match case.kind {
-            CaseKind::Doc => actual_exit != 0,
             CaseKind::Reject => actual_exit == 0,
-            _ => actual_exit != 1,
+            CaseKind::Check if reported_error => actual_exit != 1,
+            CaseKind::Doc | CaseKind::Check | CaseKind::Run => actual_exit != 0,
         };
         if wrong_exit {
             let expected_exit = match case.kind {
-                CaseKind::Doc => "0",
                 CaseKind::Reject => "non-zero",
-                _ => "1",
+                CaseKind::Check if reported_error => "1",
+                _ => "0",
             };
             let _ = writeln!(
                 log,
@@ -891,20 +916,7 @@ impl Runner<'_> {
             return false;
         }
         if !expect_clean {
-            let actual: Vec<ActualDiagnostic> = match serde_json::from_str(stdout) {
-                Ok(diagnostics) => diagnostics,
-                Err(err) => {
-                    let _ = writeln!(
-                        log,
-                        "FAIL {} profile={} class=environment-failure detail=parse diagnostics json: {err}{}",
-                        case.id,
-                        case.kind.label(),
-                        summarise(stdout)
-                    );
-                    return false;
-                }
-            };
-            let exact = case.kind == CaseKind::Check;
+            let exact = matches!(case.kind, CaseKind::Check | CaseKind::Run);
             if let Err(detail) = diagnostics_match(&case.expected.diagnostics, &actual, exact) {
                 let _ = writeln!(
                     log,
@@ -1295,10 +1307,16 @@ fn read_capture(path: &Path, stream: &str) -> Result<String> {
 #[derive(Debug, Deserialize)]
 struct ActualDiagnostic {
     code: String,
+    #[serde(default = "default_severity")]
+    severity: String,
     span: ActualSpan,
     message: String,
     #[serde(default)]
     file: Option<String>,
+}
+
+fn default_severity() -> String {
+    "error".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1325,6 +1343,10 @@ fn diagnostics_match(
     for want in expected {
         let position = remaining.iter().position(|got| {
             got.code == want.code
+                && want
+                    .severity
+                    .as_deref()
+                    .is_none_or(|severity| got.severity == severity)
                 && got.span.start_line == want.line
                 && got.span.start_col == want.column
                 && match &want.message {
@@ -2137,24 +2159,26 @@ mod tests {
     }
 
     #[test]
-    fn run_case_rejects_declared_expected_diagnostics() {
+    fn run_case_may_pin_build_diagnostics() {
         let directory = manifest_root_with_source("cases/case.hew");
-        let case = make_case(
+        let mut case = make_case(
             CaseKind::Run,
             vec![ExpectedDiagnostic {
                 code: "InvalidOperation".to_string(),
                 line: 1,
                 column: 1,
+                severity: None,
                 message: None,
                 file: None,
             }],
             &["acceptance"],
             "cases/case.hew",
         );
+        case.expected.stdout = Some(String::new());
+        case.expected.exit = Some(0);
         let manifest = Manifest { cases: vec![case] };
-        let error = validate_manifest(&manifest, directory.path())
-            .expect_err("a run case declaring diagnostics is a check-only shape");
-        assert!(error.contains("check-only"));
+        validate_manifest(&manifest, directory.path())
+            .expect("a run case may pin the diagnostics its build reports");
     }
 
     #[test]
@@ -2172,17 +2196,17 @@ mod tests {
     }
 
     #[test]
-    fn check_case_requires_expected_diagnostics() {
+    fn reject_case_requires_expected_diagnostics() {
         let directory = manifest_root_with_source("cases/case.hew");
         let case = make_case(
-            CaseKind::Check,
+            CaseKind::Reject,
             Vec::new(),
             &["acceptance"],
             "cases/case.hew",
         );
         let manifest = Manifest { cases: vec![case] };
         let error = validate_manifest(&manifest, directory.path())
-            .expect_err("a check case with no expected diagnostics must fail validation");
+            .expect_err("a reject case with no expected diagnostics must fail validation");
         assert!(error.contains("declares no expected diagnostics"));
     }
 
@@ -2195,6 +2219,7 @@ mod tests {
                 code: "InvalidOperation".to_string(),
                 line: 1,
                 column: 1,
+                severity: None,
                 message: None,
                 file: None,
             }],
@@ -2211,6 +2236,7 @@ mod tests {
     fn diagnostics_match_accepts_an_exact_set() {
         let actual = vec![ActualDiagnostic {
             code: "InvalidOperation".to_string(),
+            severity: "error".to_string(),
             span: ActualSpan {
                 start_line: 10,
                 start_col: 9,
@@ -2222,6 +2248,7 @@ mod tests {
             code: "InvalidOperation".to_string(),
             line: 10,
             column: 9,
+            severity: None,
             message: Some("needs at least one arm".to_string()),
             file: Some("probe.hew".to_string()),
         }];
@@ -2232,6 +2259,7 @@ mod tests {
     fn diagnostics_match_rejects_wrong_position() {
         let actual = vec![ActualDiagnostic {
             code: "InvalidOperation".to_string(),
+            severity: "error".to_string(),
             span: ActualSpan {
                 start_line: 10,
                 start_col: 9,
@@ -2243,6 +2271,7 @@ mod tests {
             code: "InvalidOperation".to_string(),
             line: 11,
             column: 9,
+            severity: None,
             message: None,
             file: None,
         }];
@@ -2258,6 +2287,7 @@ mod tests {
     fn diagnostics_match_rejects_the_wrong_file() {
         let actual = vec![ActualDiagnostic {
             code: "ResourceBoundaryParamMustConsume".to_string(),
+            severity: "error".to_string(),
             span: ActualSpan {
                 start_line: 13,
                 start_col: 5,
@@ -2269,6 +2299,7 @@ mod tests {
             code: "ResourceBoundaryParamMustConsume".to_string(),
             line: 13,
             column: 5,
+            severity: None,
             message: None,
             file: Some("cases/token.hew".to_string()),
         }];
@@ -2281,6 +2312,7 @@ mod tests {
     fn diagnostics_match_rejects_an_unexpected_extra_diagnostic() {
         let actual = vec![ActualDiagnostic {
             code: "UnusedVariable".to_string(),
+            severity: "error".to_string(),
             span: ActualSpan {
                 start_line: 4,
                 start_col: 13,
@@ -2335,6 +2367,7 @@ mod tests {
                 code: "InvalidOperation".to_string(),
                 line: 10,
                 column: 9,
+                severity: None,
                 message: None,
                 file: None,
             }],
@@ -2352,6 +2385,7 @@ mod tests {
                 code: "InvalidOperation".to_string(),
                 line: 99,
                 column: 9,
+                severity: None,
                 message: None,
                 file: None,
             }],

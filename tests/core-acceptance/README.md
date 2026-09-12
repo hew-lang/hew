@@ -16,9 +16,17 @@ every existing case is unaffected.
   at O0 and O2, and `[case.expected]` holds `stdout`, optional `stderr`
   (default empty) and `exit`.
 - `kind = "check"`: the runner runs `hew check --format json` against the
-  source once — no build, no execution — and asserts it exits 1 with exactly
-  the expected diagnostics, nothing extra and nothing missing. `[[case.expected.diagnostics]]`
-  is a list of tables, each with:
+  source once — no build, no execution — and asserts exactly the expected
+  diagnostics, nothing extra and nothing missing, warnings and notes
+  included. The exit follows from the set: 1 when an `error` is among them,
+  0 when the program is accepted with only advisory diagnostics or with
+  none (an empty list is the silent negative control). A `run` case may
+  carry the same list to pin the diagnostics its build reports before it
+  executes. `[[case.expected.diagnostics]]` is a list of tables, each with:
+  - `severity` (optional) — `error`, `warning`, `note` or `info`, matched
+    against the JSON diagnostic's `severity` when named; unspecified matches
+    any severity. The exit the runner expects follows from what the compiler
+    actually reported: 1 when any reported diagnostic is an error, else 0.
   - `code` — the JSON diagnostic's `code` field, verbatim. This is the
     checker's stable `kind` discriminant (see `hew-cli/src/diagnostic_json.rs`),
     not always an `E_*`/`W_*` token: a diagnostic whose specific check lives

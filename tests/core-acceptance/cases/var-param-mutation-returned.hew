@@ -9,7 +9,4 @@ fn main() {
     let items = [1];
     let grown = grow(items);
     println(f"{grown.len()}");
-    // Same refusal anchor as `var-param-mutation-lost`, so the two cases
-    // differ only in whether the mutated parameter is returned.
-    let _anchor: i64 = "refusal anchor";
 }

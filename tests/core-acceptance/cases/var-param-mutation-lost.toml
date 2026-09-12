@@ -7,12 +7,8 @@ timeout_seconds = 30
 kind = "check"
 
 [[case.expected.diagnostics]]
-code = "Mismatch"
-line = 14
-column = 24
-
-[[case.expected.diagnostics]]
 code = "var_param_mutation_lost"
+severity = "warning"
 line = 3
 column = 20
 message = "mutation of `var` parameter `items` is lost"

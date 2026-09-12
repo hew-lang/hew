@@ -5,8 +5,3 @@ source = "cases/var-param-mutation-returned.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "check"
-
-[[case.expected.diagnostics]]
-code = "Mismatch"
-line = 14
-column = 24

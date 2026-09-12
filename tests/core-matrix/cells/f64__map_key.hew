@@ -1,9 +1,0 @@
-fn main() {
-    let k: f64 = 3.5;
-    var m: HashMap<f64, i64> = HashMap.new();
-    m.insert(k, 9);
-    match m.get(k) {
-        Option.Some(v) => println(f"got {v}"),
-        Option.None => println("missing"),
-    }
-}

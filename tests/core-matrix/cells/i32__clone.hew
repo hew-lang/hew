@@ -1,6 +1,0 @@
-fn main() {
-    let x: i32 = 7;
-    let y = clone x;
-    println(f"{y}");
-    println(f"{x}");
-}

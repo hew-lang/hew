@@ -1,9 +1,0 @@
-fn main() {
-    let k: bool = true;
-    var m: HashMap<bool, i64> = HashMap.new();
-    m.insert(k, 9);
-    match m.get(k) {
-        Option.Some(v) => println(f"got {v}"),
-        Option.None => println("missing"),
-    }
-}

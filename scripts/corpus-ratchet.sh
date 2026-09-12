@@ -752,7 +752,7 @@ stdlib_diagnostic() {
 #
 # Two conventions cover all known reject fixtures in the repo:
 #   1. Path contains /reject/ — files inside reject/ subdirectories, used by
-#      core-acceptance, test-pkg-import and fuzz-oracle. Multi-file reject
+#      core-acceptance and test-pkg-import. Multi-file reject
 #      cases include helper .hew files in the same directory that pass
 #      `hew check` individually; they are still part of the reject fixture.
 #   2. The basename contains "reject" — single-file reject tests use several
@@ -765,15 +765,6 @@ is_separately_gated_or_reject_fixture() {
     base="$(basename "$path")"
     case "$path" in
     *"/reject/"*)
-        return 0
-        ;;
-    tests/core-matrix/cells/*)
-        # The core matrix is a deliberate enumeration of primitive x
-        # operation, so a large minority of its cells are combinations the
-        # compiler does not yet support. Their outcome is recorded per cell
-        # in tests/core-matrix/matrix.tsv and gated by make test-core-matrix,
-        # which fails on drift in either direction. Sweeping them here would
-        # duplicate that verdict as a second, weaker expected-failures list.
         return 0
         ;;
     tests/hew/*)

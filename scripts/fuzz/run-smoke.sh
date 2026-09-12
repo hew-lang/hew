@@ -9,8 +9,7 @@
 # gates. This script runs each target for a fixed wall-clock budget
 # (-max_total_time) and fails the build on any crash artifact libFuzzer
 # writes — it is wired into .github/workflows/nightly-sanitizers.yml, never
-# into the per-PR ci.yml. The differential fuzz-oracle (`make fuzz-oracle`)
-# stays the deterministic per-PR gate.
+# into the per-PR ci.yml. Stable regressions run in core-acceptance.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -23,25 +22,25 @@ cd "${PARSER_DIR}" || exit 1
 
 overall_status=0
 for target in "${TARGETS[@]}"; do
-  echo "── fuzz smoke: ${target} (max_total_time=${MAX_TOTAL_TIME}s) ──"
-  artifact_dir="fuzz/artifacts/${target}"
-  before="$(find "${artifact_dir}" -type f 2>/dev/null | sort)"
+    echo "── fuzz smoke: ${target} (max_total_time=${MAX_TOTAL_TIME}s) ──"
+    artifact_dir="fuzz/artifacts/${target}"
+    before="$(find "${artifact_dir}" -type f 2>/dev/null | sort)"
 
-  cargo +nightly fuzz run "${target}" -- "-max_total_time=${MAX_TOTAL_TIME}"
-  run_status=$?
+    cargo +nightly fuzz run "${target}" -- "-max_total_time=${MAX_TOTAL_TIME}"
+    run_status=$?
 
-  after="$(find "${artifact_dir}" -type f 2>/dev/null | sort)"
-  new_artifacts="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}"))"
+    after="$(find "${artifact_dir}" -type f 2>/dev/null | sort)"
+    new_artifacts="$(comm -13 <(printf '%s\n' "${before}") <(printf '%s\n' "${after}"))"
 
-  if [[ ${run_status} -ne 0 ]]; then
-    echo "fuzz smoke: ${target} exited non-zero (status=${run_status})" >&2
-    overall_status=1
-  fi
-  if [[ -n "${new_artifacts}" ]]; then
-    echo "fuzz smoke: ${target} wrote crash artifact(s):" >&2
-    printf '%s\n' "${new_artifacts}" >&2
-    overall_status=1
-  fi
+    if [[ ${run_status} -ne 0 ]]; then
+        echo "fuzz smoke: ${target} exited non-zero (status=${run_status})" >&2
+        overall_status=1
+    fi
+    if [[ -n "${new_artifacts}" ]]; then
+        echo "fuzz smoke: ${target} wrote crash artifact(s):" >&2
+        printf '%s\n' "${new_artifacts}" >&2
+        overall_status=1
+    fi
 done
 
 exit "${overall_status}"

@@ -17711,19 +17711,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_task_result_publication_checkpoint( *mut HewTask)"
-      },
-      "symbol": "hew_task_result_publication_checkpoint"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_task_scope_cancel( *mut HewTaskScope)"
       },
       "symbol": "hew_task_scope_cancel"
@@ -18286,32 +18273,6 @@
         "native": "fn hew_temp_dir() -> *mut HewString"
       },
       "symbol": "hew_temp_dir"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_test_pause_next_task_result_until_scope_cancel()"
-      },
-      "symbol": "hew_test_pause_next_task_result_until_scope_cancel"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_test_pause_next_task_spawn_until_scope_cancel()"
-      },
-      "symbol": "hew_test_pause_next_task_spawn_until_scope_cancel"
     },
     {
       "availability": [

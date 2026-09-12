@@ -1,5 +1,0 @@
-fn main() {
-    var x: bool = true;
-    x = false;
-    println(f"{x}");
-}

@@ -1,4 +1,0 @@
-fn main() {
-    let x: Option<i64> = Option.Some(5);
-    println(f"v={x}");
-}

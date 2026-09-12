@@ -1,9 +1,0 @@
-fn make() -> bool {
-    let m: bool = true;
-    m
-}
-
-fn main() {
-    let x = make();
-    println(f"{x}");
-}

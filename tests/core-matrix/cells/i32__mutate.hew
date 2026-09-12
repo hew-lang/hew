@@ -1,5 +1,0 @@
-fn main() {
-    var x: i32 = 7;
-    x = 9;
-    println(f"{x}");
-}

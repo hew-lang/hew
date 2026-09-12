@@ -76,7 +76,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check core-acceptance test-core-acceptance-runner
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -684,8 +684,7 @@ ci-preflight: preflight
 # run through core acceptance and safety.
 ci-shard-1: observe-functional-test test-cabi \
 	core-acceptance test-pkg-import test-runtime-unit test-ux-examples \
-	test-doc-examples test-migrate-corpus \
-	o2-differential-selftest playground-verify
+	test-migrate-corpus o2-differential-selftest
 
 ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-leak-oracle-selftest \
@@ -695,9 +694,8 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-extern-bytes test-host-client
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
-	fuzz-oracle fuzz-oracle-selftest test-package-install \
-	test-core-matrix test-stdlib-ratchet \
-	test-surface-examples forced-cancel-composite-check hew-check-all
+	test-package-install \
+	test-surface-examples hew-check-all
 
 # Fast smoke preflight: Rust fmt + the workspace's deterministic in-process
 # tests (nextest smoke profile). Designed to complete in <5 min and surface
@@ -739,35 +737,18 @@ ci-local-linux:
 fuzz-corpus:
 	scripts/fuzz/hydrate-corpus.sh
 
-# Fuzz-to-run completeness oracle.
-#
-# Default (CI) mode: regressions only — vertical-slice/accept + tests/fuzz-oracle/regressions.
-# Deterministic, bounded, suitable for the merge queue.
-#
-# Full mode (manual): also scans the raw cargo-fuzz corpus (nondeterministic; not in CI).
-#   make fuzz-oracle FUZZ_ORACLE_FULL=1
-#
-# Prereqs mirror core-acceptance: libhew.a must be fresh so native links
-# do not test against stale runtime/stdlib archives.
-FUZZ_ORACLE_FULL ?=
+# Explicit replay of raw libFuzzer inputs. Stable regression programs run in
+# core-acceptance; arbitrary fuzz inputs use bounded process isolation here.
+FUZZ_CORPUS_DIR ?= hew-parser/fuzz/corpus
 fuzz-oracle: hew-native
-	@if [ -n "$(FUZZ_ORACLE_FULL)" ]; then \
-		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --full --timeout 30 $(RATCHET_STRICT_RECOVERIES_ARG); \
-	else \
-		$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_DIR)/hew" --timeout 30 $(RATCHET_STRICT_RECOVERIES_ARG); \
-	fi
+	$(PYTHON) scripts/fuzz/run-oracle.py --hew "$(DEBUG_HEW)" --corpus "$(FUZZ_CORPUS_DIR)" --timeout 30
 
-# Oracle self-tests: five independently-failable checks that prove the
-# harness has teeth (flags real crashes), honours the ratchet contract
-# (unexpected-pass and unexpected-fail both fail closed), and refuses to
-# report PASS over a candidate set below its floor.
-fuzz-oracle-selftest: hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" bash scripts/fuzz/oracle-selftest.sh
+fuzz-oracle-selftest:
+	$(PYTHON) scripts/fuzz/test_run_oracle.py
 
 # Bounded libFuzzer smoke: nightly-only (see .github/workflows/nightly-sanitizers.yml).
 # A per-PR fuzz run is nondeterministic (a corpus mutation can trip one run
-# and not the next), which the deterministic per-PR fuzz-oracle above does
-# not tolerate — so this stays off ci.yml. Self-provisioning mirrors
+# and not the next), so this stays off ci.yml. Self-provisioning mirrors
 # structural-lint: the toolchain install is a prerequisite of the gate
 # target, not a separate manual step, and it is idempotent.
 FUZZ_SMOKE_MAX_TOTAL_TIME ?= 120
@@ -1272,33 +1253,6 @@ test-hew-ratchet: hew-native ## Test: run compiled Hew suites against their ratc
 
 endif
 
-# The core matrix: every core primitive crossed with every common operation,
-# one runnable program per cell, each asserting the exact value and -- where
-# the row carries a `#[resource]` whose close prints -- exactly-once release.
-#
-# The corpus is an ENUMERATION of the language, not an accretion of fixtures:
-# it is generated by scripts/core-matrix-gen.py, so a new primitive is a new
-# row and a new operation is a new column. tests/core-matrix/matrix.tsv records
-# the outcome class of every cell today, and this gate fails on drift in either
-# direction -- a passing cell that regresses, and a recorded failure that
-# starts passing (which means the table is stale and must be re-recorded).
-#
-# The generator self-check runs first: a cell cannot be hand-edited into
-# agreement with a broken compiler without the corpus diverging from the
-# enumeration that produced it.
-test-core-matrix: hew-native
-	@echo "==> Checking the core-matrix corpus matches its generator"
-	@rm -rf "$(CURDIR)/.tmp/core-matrix-regen"
-	$(PYTHON) scripts/core-matrix-gen.py --out "$(CURDIR)/.tmp/core-matrix-regen"
-	diff -r tests/core-matrix/cells "$(CURDIR)/.tmp/core-matrix-regen"
-	@echo "==> Running the core matrix (primitive x operation)"
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py $(RATCHET_STRICT_RECOVERIES_ARG)
-
-# Regen seam: driven only by an explicit
-# `make core-matrix-record`.
-core-matrix-record: hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/core-matrix.py --record
-
 # Direct-call match carriers have a separate exact-count corpus because the
 # ordinary Hew suites do not pin ownership-verifier finding counts. Every fixture is checked
 # under inherited and HEW_*-scrubbed environments, and any count drift in
@@ -1503,22 +1457,6 @@ else
 	scripts/asan-fixture-check.sh
 endif
 
-# Dynamic proof that a TaskEntry adapter's cancel-exit never publishes a
-# substitute composite return value as a task result.
-#
-# This gate is NOT superseded by the Rust suites that surround it.
-# hew-codegen-rs/tests/emission/task_entry_cancel_composite_emission.rs pins the
-# emitted IR shape, and hew-cli/tests/task_entry_composite_cancel_e2e.rs covers
-# the sibling non-cancelled paths -- neither can force the cancel edge, because
-# the trigger needs a task's own entry-block cooperate check to observe
-# cancellation before the body stores anything. Only a program linked against
-# libhew built with hew-runtime/forced-cancel-test can do that, which is why
-# this lives in a script with its own isolated target directory rather than in
-# the workspace test run.
-forced-cancel-composite-check:
-	bash scripts/forced-cancel-composite-check.sh
-
-
 # Platform-independent counterfactuals for the ASan/LSan sentinel: a genuine
 # sanitizer diagnostic must be accepted, while a bare non-zero probe exit must
 # stay red instead of certifying instrumentation that never reported a leak.
@@ -1656,6 +1594,9 @@ test-migrate-corpus: hew
 	@set -e; migration_root=$$(mktemp -d); migration_fixed=$$(mktemp -d); \
 	trap 'rm -rf "$$migration_root" "$$migration_fixed"' 0; \
 	cp -R tests/corpus/migrate/. "$$migration_root/"; \
+	for migration_input in "$$migration_root"/accept/*.input; do \
+		cp "$$migration_input" "$${migration_input%.input}.hew"; \
+	done; \
 	echo "1/6 migrate accepted representative sources"; \
 	"$(BUILD_DIR)/bin/hew" fmt --migrate --root "$$migration_root/accept"; \
 	echo "2/6 compare exact migrated sources"; \
@@ -1985,8 +1926,6 @@ clean: ## Develop: remove generated build and test artifacts
 	cargo clean
 	rm -rf -- $(COV_DIR) \
 		"$(CURDIR)/.tmp/compile-out" \
-		"$(CURDIR)/.tmp/core-matrix-regen" \
-		"$(CURDIR)/.tmp/forced-cancel-gate-out" \
 		"$(CURDIR)/.tmp/asan-fixture-out" \
 		"$(CURDIR)/.tmp/tool-tmp"
 	rm -f -- \

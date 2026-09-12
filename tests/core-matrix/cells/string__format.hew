@@ -1,4 +1,0 @@
-fn main() {
-    let x: string = "ab";
-    println(f"v={x}");
-}

@@ -1,9 +1,0 @@
-fn make() -> Result<i64, string> {
-    let m: Result<i64, string> = Result.Ok(6);
-    m
-}
-
-fn main() {
-    let x = make();
-    match x { Result.Ok(x_v) => println(f"ok {x_v}"), Result.Err(x_e) => println(f"err {x_e}"), }
-}

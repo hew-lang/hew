@@ -326,17 +326,13 @@ impl Checker {
         // behaviour differs, so it selects the call's own policy.
         let completion_policy = delivery::policy_view_parts(&receiver_ty)
             .map_or(SendPolicy::Wait, |(_, policy)| policy);
-        let payload = argument_order
-            .iter()
-            .map(|index| {
-                self.expr_types
-                    .get(&SpanKey::in_module(
-                        &args[*index].expr().1,
-                        self.current_module_idx,
-                    ))
-                    .map_or(Ty::Error, |ty| self.subst.resolve(ty))
-            })
-            .collect::<Vec<_>>();
+        // The envelope stores the declared protocol after argument coercion,
+        // not a closure's concrete environment or a literal's narrower type.
+        let protocol_target =
+            delivery::policy_view_parts(target).map_or(target, |(target, _)| target);
+        let Some((payload, _)) = self.request_signature(&method_id, protocol_target) else {
+            return Ty::Error;
+        };
         // A `fails` handler whose success is unit owes the caller no value, so
         // a mailbox view may submit it one way. Its declared failure then has
         // no caller to answer and becomes the actor's own fault; the fault

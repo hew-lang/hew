@@ -1,0 +1,50 @@
+actor Calculator {
+    var result: i64 = 0,
+    receive fn apply_operation(op: fn(i64, i64) -> i64, value: i64) { result = op(result, value); }
+    receive fn value() -> i64 { result }
+}
+actor Worker {
+    var current: string = "initial",
+    receive fn apply(op: fn(string) -> string, value: string) {
+        current = op(value);
+    }
+    receive fn value() -> string { current }
+    receive gen fn labels(op: fn(i64) -> string, count: i64) -> string {
+        for index in 0..count { yield op(index); }
+    }
+}
+actor Transform<T> {
+    var current: T,
+    receive fn apply(op: fn(T) -> T, value: T) { current = op(value); }
+    receive fn get() -> T { current }
+}
+fn argument() -> string { println("value first"); "ask" }
+fn main() {
+    let calc = spawn Calculator;
+    calc.apply_operation(|a, b| a + b, 10).expect("add");
+    calc.apply_operation(|a, b| a * b, 5).expect("multiply");
+    assert(calc.value().expect("read result") == 50);
+    close(calc);
+    let worker = spawn Worker;
+    let prefix = "captured ".to_upper();
+    worker.apply(value: argument(), op: {
+        println("callback second");
+        |text| prefix + text
+    }).expect("ask");
+    assert(worker.value().expect("read ask") == "CAPTURED ask");
+    let callback = |text: string| -> string { prefix + text };
+    mailbox(worker, on_full: .Wait).apply(callback, "mail").expect("submit");
+    assert(worker.value().expect("read message") == "CAPTURED mail");
+    assert(callback("caller") == "CAPTURED caller");
+    for text in worker.labels(|index| f"{prefix}{index}", 2) { println(text); }
+    let numbers = spawn Transform<i64>(current: 0);
+    mailbox(numbers, on_full: .Wait).apply(|value| value + 1, 41).expect("generic number");
+    assert(numbers.get().expect("number") == 42);
+    let words = spawn Transform<string>(current: "initial");
+    mailbox(words, on_full: .Wait).apply(|value| prefix + value, "generic").expect("generic text");
+    assert(words.get().expect("word") == "CAPTURED generic");
+    close(numbers);
+    close(words);
+    close(worker);
+    println("callable actor payloads");
+}

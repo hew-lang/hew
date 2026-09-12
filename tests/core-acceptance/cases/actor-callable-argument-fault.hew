@@ -1,0 +1,12 @@
+actor Worker {
+    receive fn apply(op: fn(i64) -> i64, value: i64) {
+        println(op(value));
+    }
+}
+fn fail() -> i64 { panic("later actor argument"); }
+fn main() {
+    let worker = spawn Worker;
+    let captured = ["captured".to_upper(), "owner".to_upper()];
+    worker.apply(move |value| captured.len() + value, fail()).expect("unreachable");
+    close(worker);
+}

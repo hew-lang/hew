@@ -47,7 +47,13 @@ fn parse_symbol_blocks(source: &'static str, headers: &[&str]) -> HashSet<&'stat
 pub fn stable_symbols() -> &'static HashSet<&'static str> {
     static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
     SET.get_or_init(|| {
-        parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, USER_DECLARABLE_BLOCKS)
+        let mut symbols =
+            parse_symbol_blocks(RUNTIME_EXPORT_CLASSIFICATION_TOML, USER_DECLARABLE_BLOCKS);
+        symbols.extend(parse_symbol_blocks(
+            crate::runtime_call::DECLARED_RUNTIME_EXPORTS_TOML,
+            USER_DECLARABLE_BLOCKS,
+        ));
+        symbols
     })
 }
 
@@ -100,6 +106,8 @@ public-host-stdlib = [
     #[test]
     fn stable_and_non_declarable_tiers_are_distinguished() {
         assert!(stable_symbols().contains("hew_env_get"));
+        assert!(stable_symbols().contains("hew_duration_is_zero"));
+        assert!(is_classified_hew_ffi_symbol("hew_duration_is_zero"));
         assert!(is_classified_hew_ffi_symbol("hew_actor_cooperate"));
         assert!(!stable_symbols().contains("hew_actor_cooperate"));
         assert!(!is_classified_hew_ffi_symbol("hew_testffi_name"));

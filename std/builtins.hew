@@ -894,34 +894,42 @@ impl duration {
 }
 
 impl duration {
+    #[runtime(family = DurationNanos, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_nanos)]
     fn nanos(d: duration) -> i64 {
         0
     }
+    #[runtime(family = DurationMicros, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_micros)]
     fn micros(d: duration) -> i64 {
         0
     }
+    #[runtime(family = DurationMillis, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_millis)]
     fn millis(d: duration) -> i64 {
         0
     }
+    #[runtime(family = DurationSecs, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_secs)]
     fn secs(d: duration) -> i64 {
         0
     }
+    #[runtime(family = DurationMins, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_mins)]
     fn mins(d: duration) -> i64 {
         0
     }
+    #[runtime(family = DurationHours, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_hours)]
     fn hours(d: duration) -> i64 {
         0
     }
+    #[runtime(family = DurationAbs, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_abs)]
     fn abs(d: duration) -> duration {
         d
     }
+    #[runtime(family = DurationIsZero, lowering = direct, target = native, classification = stable, c_return = truth_i32)]
     #[extern_symbol(hew_duration_is_zero)]
     fn is_zero(d: duration) -> bool {
         false
@@ -929,14 +937,17 @@ impl duration {
 }
 
 impl instant {
+    #[runtime(family = InstantNow, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_now)]
     fn now() -> instant {
         instant.now()
     }
+    #[runtime(family = InstantElapsed, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_elapsed)]
     fn elapsed(i: instant) -> duration {
         0ns
     }
+    #[runtime(family = InstantDurationSince, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_instant_duration_since)]
     fn duration_since(i: instant, earlier: instant) -> duration {
         0ns

@@ -7,8 +7,6 @@ macos	failure	hew-cli::actor_resource_opaque_state	package_imported_user_receive
 macos	failure	hew-cli::actor_resource_opaque_state	user_monitor_ref_resource_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
 macos	failure	hew-cli::actor_resource_opaque_state	user_receiver_resource_shadow_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
 macos	failure	hew-cli::actor_resource_opaque_state	wrapped_resource_actor_state_still_closes_once_on_teardown	#3370 gives every type the checker admits a SIR value contract
-linux	failure	hew-cli::actor_state_resource_field_leak_oracle	actor_state_resource_reassign_refused	#3370 gives every type the checker admits a SIR value contract
-linux	failure	hew-cli::actor_state_resource_field_leak_oracle	positive_control_ir_single_close_in_state_drop	#3370 gives every type the checker admits a SIR value contract
 linux,macos	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 fix/collections-final-path: gives Vec<Sender<T>> a copy operation or refuses it in source
 linux,macos	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
 macos	failure	hew-cli::affine_resource_carrier_boundaries	resource_parameter_reuse_after_collection_transfer_is_rejected	#3377 fix/collections-final-path: reports a use-after-consume as a source diagnostic

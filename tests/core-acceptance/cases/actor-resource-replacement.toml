@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-resource-replacement"
+intent = "Replacing a resource in actor state closes each displaced value once, preserves the handler result and closes the final value once at actor termination."
+source = "cases/actor-resource-replacement.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "close 1 OWNED\n1\nclose 2 OWNED\n2\nclose 3 OWNED\nfinished\n"
+exit = 0

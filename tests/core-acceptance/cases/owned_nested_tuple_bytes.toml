@@ -1,6 +1,6 @@
 [[case]]
 id = "owned_nested_tuple_bytes"
-intent = "The fixture runs to completion and prints exactly its recorded output."
+intent = "An owned nested tuple of bytes keeps every element decodable after the tuple is moved."
 source = "../vertical-slice/accept/owned_nested_tuple_bytes.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "2:\u0002:11:true:\u0002:12:false\n"
+stdout = "2:ab:11:true:cd:12:false\n"
 exit = 0

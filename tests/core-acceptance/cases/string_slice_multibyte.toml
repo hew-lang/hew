@@ -1,6 +1,6 @@
 [[case]]
 id = "string_slice_multibyte"
-intent = "W3 collections-sugar S2: codepoint slice over multi-byte UTF-8."
+intent = "A codepoint slice over multi-byte UTF-8 yields one rune, and `len()` reports its two bytes."
 source = "../vertical-slice/accept/string_slice_multibyte.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -10,4 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-exit = 1
+exit = 2

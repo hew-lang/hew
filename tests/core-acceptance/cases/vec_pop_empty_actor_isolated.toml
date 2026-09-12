@@ -1,6 +1,6 @@
 [[case]]
 id = "vec_pop_empty_actor_isolated"
-intent = "The fixture runs to completion and exits 1."
+intent = "`Vec.pop()` on an empty vector traps inside the actor; the runtime names the failure and the actor it fired in, and the sibling actor keeps serving."
 source = "../vertical-slice/accept/vec_pop_empty_actor_isolated.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

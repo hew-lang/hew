@@ -1,6 +1,6 @@
 [[case]]
 id = "bytes_slice_oob_actor_isolated"
-intent = "The fixture runs to completion and exits 1."
+intent = "An out-of-bounds byte-slice range traps inside the actor and the runtime names the failure and the actor it fired in."
 source = "../vertical-slice/accept/bytes_slice_oob_actor_isolated.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

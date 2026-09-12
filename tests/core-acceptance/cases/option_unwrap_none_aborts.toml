@@ -1,6 +1,6 @@
 [[case]]
 id = "option_unwrap_none_aborts"
-intent = "The fixture runs to completion and exits 1."
+intent = "`expect` on a `None` reports Hew's own typed UserPanic and the process exits 1 under the one exit rule."
 source = "../vertical-slice/accept/option_unwrap_none_aborts.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

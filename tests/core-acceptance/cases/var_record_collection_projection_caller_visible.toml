@@ -1,6 +1,6 @@
 [[case]]
 id = "var_record_collection_projection_caller_visible"
-intent = "#2821 reverse direction: the record itself is a by-value copy, but these concrete projections cross into Vec/HashMap storage still shared with the caller."
+intent = "A projection out of a `var` record collection parameter is visible to the caller."
 source = "../vertical-slice/accept/var_record_collection_projection_caller_visible.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,6 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "1\n"
-stderr = "hew: failure: UserPanic (212): expect failed: get succeeds\n"
-exit = 1
+stdout = "9\n7\n"
+exit = 0

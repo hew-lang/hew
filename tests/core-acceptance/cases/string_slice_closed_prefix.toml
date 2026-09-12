@@ -1,6 +1,6 @@
 [[case]]
 id = "string_slice_closed_prefix"
-intent = "The fixture runs to completion and prints exactly its recorded output."
+intent = "A closed string slice `s[0..2]` yields those characters and its byte length is the exit code."
 source = "../vertical-slice/accept/string_slice_closed_prefix.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -10,4 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "hé\n"
-exit = 2
+exit = 3

@@ -1,6 +1,6 @@
 [[case]]
 id = "vec_iter_yield_owned_conditional_move"
-intent = "Accept fixture (conditionally consumed yield binder, exactly-once release): a NON-CoW yield binder (`Vec<i64>` element of a `Vec<Vec<i64>>`) is moved into a collection on one path and left owned on the other before an abandonment point."
+intent = "A conditionally moved owned element yielded from a Vec iterator is observed once per pass."
 source = "../vertical-slice/accept/vec_iter_yield_owned_conditional_move.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "n=3\nconditional-move-ok\n"
+stdout = "n=3\nn=3\nconditional-move-ok\n"
 exit = 0

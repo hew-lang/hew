@@ -1,6 +1,6 @@
 [[case]]
 id = "string_slice_open_right"
-intent = "The fixture runs to completion and prints exactly its recorded output."
+intent = "An open-right string slice yields the trailing characters and its byte length is the exit code."
 source = "../vertical-slice/accept/string_slice_open_right.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -10,4 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "éllo\n"
-exit = 4
+exit = 5

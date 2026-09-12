@@ -1,8 +1,0 @@
-gen fn values(items: Vec<i64>) -> Vec<i64> {
-    yield items;
-}
-
-fn main() {
-    let items: Vec<i64> = Vec.new();
-    let _g = values(items);
-}

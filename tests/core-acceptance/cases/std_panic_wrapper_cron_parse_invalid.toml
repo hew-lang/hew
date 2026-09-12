@@ -1,0 +1,14 @@
+[[case]]
+id = "std_panic_wrapper_cron_parse_invalid"
+intent = "`cron.parse` on an invalid expression reports a typed UserPanic naming the expression, and the process exits 1."
+source = "../vertical-slice/accept/std_panic_wrapper_cron_parse_invalid.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): cron.parse: invalid expression `nope`: cron parse error: nope\n^\nThe 'Seconds' field does not support using names. 'nope' specified.\n"
+exit = 1

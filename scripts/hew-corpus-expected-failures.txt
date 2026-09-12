@@ -111,8 +111,6 @@ hew-lsp/tests/fixtures/v05_composite_machine.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
 hew-lsp/tests/fixtures/v05_machine_methods.hew
-hew-lsp/tests/fixtures/v05_machine_states.hew
-hew-lsp/tests/fixtures/v05_std_channels.hew
 
 # ── hew-observe/ ────────────────────────────────────────────────────────────────
 

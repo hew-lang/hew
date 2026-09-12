@@ -6,6 +6,11 @@ machine Traffic {
         Stopped,
     }
 
+    emits {
+        Started,
+        Stopped,
+    }
+
     state Idle {
         entry {
             emit Stopped {};
@@ -20,12 +25,10 @@ machine Traffic {
         }
     },
 
-    on Start: Idle => Running {
-        emit Started {};
-    }
-    on Stop: Running => Idle {
-        emit Stopped {};
-    }
+    on Start: Idle => Running,
+    on Stop: Running => Idle,
+
+    default { state }
 }
 
 fn machine_states_probe() -> i32 {

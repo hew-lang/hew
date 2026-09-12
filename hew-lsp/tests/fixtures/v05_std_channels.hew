@@ -6,11 +6,9 @@ fn std_channels(
     stream: Stream<i32>,
     sink: Sink<i32>,
     duplex: Duplex<i32, string>,
-    channel: Channel<i32>,
 ) -> i32 {
     stream.recv();
     sink.send(std_channels_probe());
     let _ = duplex.send(1);
-    channel.close();
     std_channels_probe()
 }

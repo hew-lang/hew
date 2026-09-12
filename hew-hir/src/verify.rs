@@ -1190,6 +1190,7 @@ mod tests {
 
     fn module(items: Vec<HirItem>) -> HirModule {
         HirModule {
+            indexed_place_operations: HashMap::new(),
             entry_exit_plan: None,
             items,
             diagnostic_source_modules: HashMap::new(),

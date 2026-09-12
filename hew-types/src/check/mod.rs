@@ -2490,6 +2490,7 @@ impl Checker {
             result_return_coercions: std::mem::take(&mut self.result_return_coercions),
             assign_target_kinds: std::mem::take(&mut self.assign_target_kinds),
             assign_target_shapes: std::mem::take(&mut self.assign_target_shapes),
+            indexed_place_operations: std::mem::take(&mut self.indexed_place_operations),
             errors: std::mem::take(&mut self.errors),
             warnings: std::mem::take(&mut self.warnings),
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),

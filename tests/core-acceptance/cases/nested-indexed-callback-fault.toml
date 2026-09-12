@@ -1,0 +1,11 @@
+[[case]]
+id = "nested-indexed-callback-fault"
+intent = "A callback fault during indexed assignment through a vector element into a nested map field releases retained siblings, the consumed collection and caller-owned copies."
+source = "cases/nested-indexed-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

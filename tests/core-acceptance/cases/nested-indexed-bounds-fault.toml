@@ -1,0 +1,10 @@
+[[case]]
+id = "nested-indexed-bounds-fault"
+intent = "A bounds fault after acquiring a nested vector releases its parent snapshots, RHS and aliases."
+source = "cases/nested-indexed-bounds-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

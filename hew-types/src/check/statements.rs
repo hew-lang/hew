@@ -1613,6 +1613,21 @@ impl Checker {
                     _ => self.synthesize(&target.0, &target.1),
                 };
                 self.place_write_depth -= 1;
+                // Indexed parents are read as values before their updated child is
+                // published. A checker-selected element loan cannot supply that copy.
+                let mut parent = target;
+                while let Expr::FieldAccess { object, .. } | Expr::Index { object, .. } = &parent.0
+                {
+                    if self
+                        .borrowed_element_index_reads
+                        .contains(&SpanKey::in_module(&object.1, self.current_module_idx))
+                    {
+                        self.report_error(TypeErrorKind::OwnConsumeBorrowed, &object.1,
+                            "cannot update through a borrowed affine collection element; indexed writeback requires a semantic copy".into());
+                        break;
+                    }
+                    parent = object;
+                }
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without

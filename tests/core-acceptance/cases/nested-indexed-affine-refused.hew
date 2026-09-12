@@ -1,0 +1,8 @@
+#[resource]
+type Ticket { name: string }
+impl Ticket { fn close(consume self) { println(self.name); } }
+type Row { ticket: Ticket, count: i64 }
+fn main() {
+    var rows = [Row { ticket: Ticket { name: "ticket" }, count: 1 }];
+    rows[0].count = 2;
+}

@@ -2846,6 +2846,13 @@ impl Checker {
                         None => return Ty::Error,
                     }
                 }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Index),
+                        crate::RuntimeCallFamily::Vector(crate::VecValueOp::Set),
+                    ),
+                );
                 if matches!(ctx, IndexContext::AssignTarget) {
                     self.record_resolved_vec_call("set", &args[0], span);
                 }
@@ -2890,6 +2897,13 @@ impl Checker {
                 {
                     return Ty::Error;
                 }
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Index),
+                        crate::RuntimeCallFamily::Map(crate::runtime_call::MapValueOp::Insert),
+                    ),
+                );
                 match ctx {
                     // Trapping bare-`V` read: no `.get` resolved call; MIR's
                     // `Index` node owns the `hew_hashmap_get_clone_layout` trap
@@ -2914,6 +2928,13 @@ impl Checker {
             // at byte offset, O(1), panic on OOB. Index is i64. MIR will
             // route to `hew_bytes_index`.
             Ty::Bytes => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::BytesIndex,
+                        crate::RuntimeCallFamily::BytesSet,
+                    ),
+                );
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 Ty::U8
             }
@@ -2972,6 +2993,13 @@ impl Checker {
                 Ty::Error
             }
             Ty::Array(elem, _) => {
+                self.indexed_place_operations.insert(
+                    SpanKey::in_module(span, self.current_module_idx),
+                    (
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Index),
+                        crate::RuntimeCallFamily::Array(crate::runtime_call::ArrayValueOp::Set),
+                    ),
+                );
                 self.check_against(&index.0, &index.1, &Ty::I64);
                 if matches!(ctx, IndexContext::Read) {
                     match self.vec_iteration_element_mode(elem, span) {

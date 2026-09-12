@@ -1,0 +1,22 @@
+actor Worker {
+    var values: Vec<Vec<string>> = [["initial".to_upper()]],
+    receive fn get() -> string { values[0][0] }
+    receive fn change() { values[0][0] = "changed".to_upper(); }
+    receive fn fail() { values[0][9] = values[0][0] + "!"; }
+    #[on(crash)] fn crashed(info: CrashInfo) -> CrashAction {
+        assert(values[0][0] == "CHANGED");
+        assert(info.code != 0);
+        println(values[0][0]);
+        CrashAction.Restart
+    }
+}
+supervisor Group { intensity: 1 within 60s, child worker: Worker, }
+fn main() {
+    let group = spawn Group;
+    group.worker.change().expect("change");
+    let _ = group.worker.fail();
+    let _ = await_restart group.worker;
+    assert(group.worker.get().expect("fresh") == "INITIAL");
+    close(group);
+    println("recovered");
+}

@@ -544,6 +544,9 @@ pub struct TypeCheckOutput {
     /// determine signedness of compound-assignment arithmetic instead of
     /// re-deriving it from the AST.
     pub assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    /// Read and replacement operations for a writable collection element.
+    pub indexed_place_operations:
+        HashMap<SpanKey, (crate::RuntimeCallFamily, crate::RuntimeCallFamily)>,
     pub errors: Vec<TypeError>,
     pub warnings: Vec<TypeError>,
     /// Canonical record names (unqualified, matching the codegen thunk naming
@@ -1455,6 +1458,7 @@ impl Default for TypeCheckOutput {
             try_width_cast_lowerings: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
+            indexed_place_operations: HashMap::new(),
             errors: Vec::new(),
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
@@ -2945,6 +2949,8 @@ pub struct Checker {
     pub(super) tail_ok_armed: bool,
     pub(super) assign_target_kinds: HashMap<SpanKey, AssignTargetKind>,
     pub(super) assign_target_shapes: HashMap<SpanKey, AssignTargetShape>,
+    pub(super) indexed_place_operations:
+        HashMap<SpanKey, (crate::RuntimeCallFamily, crate::RuntimeCallFamily)>,
     /// Diagnostic-only stack-allocation hints accumulated by `classify_stack_hints`.
     /// Surfaced through `TypeCheckOutput::stack_hints` and consumed by the CLI's
     /// `--show-stack-hints` printer. See [`StackHint`].
@@ -3986,6 +3992,7 @@ impl Checker {
             tail_ok_armed: false,
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
+            indexed_place_operations: HashMap::new(),
             stack_hints: Vec::new(),
             type_defs: HashMap::new(),
             fn_sigs: HashMap::new(),

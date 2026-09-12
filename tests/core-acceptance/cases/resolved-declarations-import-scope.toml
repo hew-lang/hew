@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-declarations-import-scope"
+intent = "Neighbouring files in an imported directory module bind same-named file-imported functions independently, including function values; a root declaration with that name retains its own identity."
+source = "fixtures/resolved-declarations-import-scope/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "root\nleft/left\nright/right\n"
+exit = 0

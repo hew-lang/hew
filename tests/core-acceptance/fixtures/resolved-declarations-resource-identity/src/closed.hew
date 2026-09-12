@@ -1,0 +1,14 @@
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(self.id);
+    }
+}
+
+pub fn run() {
+    let ticket = Ticket { id: 1 };
+}

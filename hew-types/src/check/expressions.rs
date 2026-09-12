@@ -2155,11 +2155,7 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) =
-            Some(self.canonical_fn_identity(self.canonical_fn_owner(), name))
-                .filter(|key| self.fn_sigs.contains_key(key))
-                .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
-        {
+        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(name) {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases

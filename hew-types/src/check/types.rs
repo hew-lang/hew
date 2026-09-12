@@ -593,17 +593,18 @@ pub struct TypeCheckOutput {
     /// adopt the established contract. Also the `unsafe`-gating declaration
     /// index (replaces the former `unsafe_functions` side registry).
     pub extern_contracts: crate::extern_table::ExternTable,
-    /// Function signatures keyed by declaration identity.
+    /// Function signatures keyed by declaration identity. Impl methods retain
+    /// their exact DefId path as well as their receiver/method lookup spelling,
+    /// so trait and inherent declarations sharing a name remain distinct.
     ///
     /// Key shapes: `{module}.{name}` for source free functions — the module
     /// being the identity table's render, so a module reached under two import
     /// spellings keys one namespace — `Type::method` for methods, and bare
     /// names for compiler builtins and `extern "C"` symbols, whose namespace is
     /// the linker's rather than a module's. No source declaration is reachable
-    /// under a bare name: an import publishes a binding into the importing
-    /// file's `{module}.{name}` namespace and records the declaration it names
-    /// in `import_fn_name_aliases`, so a module sees what it declares or
-    /// imports and nothing else.
+    /// under a bare name: explicit imports publish only exact per-file bindings
+    /// in `import_fn_name_aliases`, leaving the canonical declaration signature
+    /// and ambient builtin signatures unchanged.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
@@ -2539,6 +2540,19 @@ pub enum ReceiverUpdate {
     Staged,
 }
 
+/// Declaration provenance retained on an impl method's resolved signature.
+/// Signatures keep return and receiver-ownership facts; this identifies the
+/// declaring method and nominal independently of lexical import spellings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplMethodProvenance {
+    pub declaration: crate::DefId,
+    /// Nominal declaration, absent for primitive receiver types.
+    pub receiver: Option<crate::DefId>,
+    pub name: String,
+    pub is_inherent: bool,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -2548,6 +2562,7 @@ pub enum ReceiverUpdate {
               an enum would force per-flag enum-variant matches at every read site"
 )]
 pub struct FnSig {
+    pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<String>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
     pub param_names: Vec<String>,
@@ -2629,6 +2644,7 @@ pub(super) struct GenericLambdaSig {
 impl Default for FnSig {
     fn default() -> Self {
         Self {
+            impl_method: None,
             type_params: vec![],
             type_param_bounds: HashMap::new(),
             param_names: vec![],

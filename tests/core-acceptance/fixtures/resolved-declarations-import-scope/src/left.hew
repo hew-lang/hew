@@ -1,0 +1,10 @@
+pub fn label(value: i64) -> string {
+    if value == 7 {
+        return "left";
+    }
+    "wrong"
+}
+
+pub fn assert(value: i64) -> string {
+    label(value)
+}

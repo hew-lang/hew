@@ -840,6 +840,33 @@ impl Checker {
         name.to_string()
     }
 
+    /// Select a free-function signature in the current source file. Explicit
+    /// imports publish only lexical bindings; their canonical declarations own
+    /// the signatures, leaving ambient builtin signatures intact.
+    pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
+        let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
+        for key in [&canonical, name] {
+            if self.fn_def_spans.contains_key(key) && self.fn_sigs.contains_key(key) {
+                return Some(key.to_string());
+            }
+        }
+        for binding in [&canonical, name] {
+            if let Some(source) = self.import_fn_name_aliases.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            )) {
+                return self.fn_sigs.contains_key(source).then(|| source.clone());
+            }
+        }
+        for key in [&canonical, name] {
+            if self.fn_sigs.contains_key(key) {
+                return Some(key.to_string());
+            }
+        }
+        None
+    }
+
     /// Record one call edge after canonicalizing both endpoints through the
     /// declaration identity authority.
     pub(super) fn record_call_edge(&mut self, target: &str) {

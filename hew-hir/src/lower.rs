@@ -1205,41 +1205,12 @@ struct RecordEntry {
     fields: Vec<(String, ResolvedTy)>,
 }
 
-/// Pre-collected inherent-impl `close` method signature for a `#[resource]`
-/// type. Populated before the type-decl pre-pass by walking `program.items`
-/// for inherent `impl T { fn close(...) {...} }` blocks (no trait bound,
-/// nominal target). Consulted by `lower_type_decl` to:
-///
-///   1. Broaden the `ResourceMissingClose` presence check beyond inline
-///      `TypeBodyItem::Method` (W3.030 Q-α-B): a `#[resource]` may declare
-///      `close` in a sibling inherent-impl block rather than in the type
-///      body itself.
-///   2. Enforce the `close`-must-return-unit discipline at the HIR
-///      boundary (W3.030 Q-β-C): fallible cleanup composes through
-///      `defer`, not through a non-unit `close` return.
-#[derive(Debug)]
-struct ImplCloseSignature {
-    /// Span of the declaration site (the impl-block method's `decl_span`
-    /// when available, else its `fn_span`). Used as the diagnostic anchor
-    /// for `ResourceCloseMustReturnUnit`.
-    decl_span: Span,
-    /// `true` when the declared return type is unit — either no `->`
-    /// clause or an explicit `()` tuple-of-zero.
-    return_ty_unit: bool,
-    /// User-facing rendering of the offending non-unit return type. Only
-    /// meaningful when `!return_ty_unit`.
-    return_ty_display: String,
-}
-
 /// Per-impl-block context threaded into `lower_impl_block` for imported
-/// modules. Carries the same-module fn-name rewrite map (bare helper name →
-/// mangled qualified symbol, identical to the free-function imported path) and
-/// the set of method names to skip because their bodies or signatures cannot
+/// modules. Carries the set of method names to skip because their bodies or signatures cannot
 /// be resolved safely across the module boundary. `symbol_self_name` is the
 /// exact declaration-keyed owner selected by the pre-lowering body plan,
 /// including any concrete type-argument suffix.
 struct ImportedImplLowering<'a> {
-    rewrites: &'a HashMap<String, String>,
     skip_methods: &'a HashSet<String>,
     symbol_self_name: Option<&'a str>,
 }
@@ -1624,37 +1595,6 @@ fn plan_imported_impl_bodies(
             continue;
         }
         let previous_module = ctx.current_module_name.replace(source_module.clone());
-        let private_fns: HashSet<String> = module
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Function(function) if !function.visibility.is_pub() => {
-                    Some(function.name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        let public_fns: HashSet<String> = module
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Function(function) if function.visibility.is_pub() => {
-                    Some(function.name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        let private_closure = collect_imported_private_fn_closure(module, &private_fns);
-        let rewrites: HashMap<String, String> = public_fns
-            .iter()
-            .chain(private_closure.iter())
-            .map(|name| {
-                (
-                    name.clone(),
-                    crate::mangle_dotted_name(&format!("{source_module}.{name}")),
-                )
-            })
-            .collect();
         let previous_module_idx = ctx.current_module_idx;
         for (item_idx, (item, _)) in module.items.iter().enumerate() {
             ctx.current_module_idx = span_indices
@@ -1669,153 +1609,12 @@ fn plan_imported_impl_bodies(
             let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
                 continue;
             };
-            let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module, &rewrites);
+            let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module);
             let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
         ctx.current_module_idx = previous_module_idx;
         ctx.current_module_name = previous_module;
-    }
-}
-
-/// Walk the program and its module graph collecting inherent-impl `close`
-/// method signatures, keyed by the self-type name. Trait impls (`impl T for U`)
-/// are deliberately skipped — the `close` ritual under the W3.030 contract is
-/// dispatched through `<T>::close` as an inherent method symbol; trait methods
-/// would land at `<T as Trait>::close` and are not the surface W3.030 owns.
-/// Multiple inherent impls declaring `close` on the same nominal would be a
-/// duplicate-symbol error caught downstream; this collector keeps the first
-/// occurrence and ignores any later ones.
-/// The item list of every module a program's imports reach, each list once.
-///
-/// The module graph is the authority when a program has one: it holds a single
-/// node per module however many import paths reach it. A program assembled
-/// without a graph carries its modules only on the import declarations, and
-/// shared imports retain one `Arc` body per module, so the fallback walks those
-/// bodies keyed by identity.
-///
-/// Following the declarations by recursion instead expands a shared descendant
-/// once per import path, which is exponential in the number of paths: a depth-24
-/// diamond of 51 modules never finishes.
-fn imported_module_item_lists(program: &Program) -> Vec<&[(Item, Span)]> {
-    if let Some(graph) = &program.module_graph {
-        return graph
-            .topo_order
-            .iter()
-            .filter(|module_id| **module_id != graph.root)
-            .filter_map(|module_id| graph.modules.get(module_id))
-            .map(|module| module.items.as_slice())
-            .collect();
-    }
-    let mut seen: HashSet<*const Vec<Spanned<Item>>> = HashSet::new();
-    let mut out: Vec<&[(Item, Span)]> = Vec::new();
-    let mut queue: Vec<&[(Item, Span)]> = vec![program.items.as_slice()];
-    while let Some(items) = queue.pop() {
-        for (item, _) in items {
-            let Item::Import(decl) = item else { continue };
-            let Some(resolved) = decl.resolved_items.as_ref() else {
-                continue;
-            };
-            if !seen.insert(std::sync::Arc::as_ptr(resolved)) {
-                continue;
-            }
-            out.push(resolved.as_slice());
-            queue.push(resolved.as_slice());
-        }
-    }
-    out
-}
-
-fn collect_inherent_impl_close_methods(program: &Program) -> HashMap<String, ImplCloseSignature> {
-    let mut out: HashMap<String, ImplCloseSignature> = HashMap::new();
-    collect_inherent_impl_close_methods_from_items(&program.items, &mut out);
-    for items in imported_module_item_lists(program) {
-        collect_inherent_impl_close_methods_from_items(items, &mut out);
-    }
-    out
-}
-
-fn collect_inherent_impl_close_methods_from_items(
-    items: &[(Item, Span)],
-    out: &mut HashMap<String, ImplCloseSignature>,
-) {
-    for (item, _item_span) in items {
-        let Item::Impl(impl_decl) = item else {
-            continue;
-        };
-        if impl_decl.trait_bound.is_some() {
-            continue;
-        }
-        let TypeExpr::Named {
-            name: self_type_name,
-            ..
-        } = &impl_decl.target_type.0
-        else {
-            continue;
-        };
-        for method in &impl_decl.methods {
-            if method.name != "close" {
-                continue;
-            }
-            let (return_ty_unit, return_ty_display) = match &method.return_type {
-                None => (true, String::new()),
-                Some((TypeExpr::Tuple(items), _)) if items.is_empty() => (true, String::new()),
-                Some((ty_expr, _)) => (false, render_type_expr(ty_expr)),
-            };
-            let decl_span = if method.decl_span.start == method.decl_span.end {
-                method.fn_span.clone()
-            } else {
-                method.decl_span.clone()
-            };
-            out.entry(self_type_name.clone())
-                .or_insert(ImplCloseSignature {
-                    decl_span,
-                    return_ty_unit,
-                    return_ty_display,
-                });
-            // Once we found a `close` on this impl, stop scanning its
-            // methods — a single impl-block cannot declare two methods
-            // with the same name.
-            break;
-        }
-    }
-}
-
-/// Walk the program and its module graph collecting the self-type names that
-/// declare at least one `consume self` method in a sibling inherent-impl
-/// block. Trait impls (`impl T for U`) are skipped — the consume surface this
-/// records is the inherent `<T>::method` dispatch, the form that lowers to a
-/// callable symbol.
-fn collect_inherent_impl_consuming_methods(program: &Program) -> HashSet<String> {
-    let mut out: HashSet<String> = HashSet::new();
-    collect_inherent_impl_consuming_methods_from_items(&program.items, &mut out);
-    for items in imported_module_item_lists(program) {
-        collect_inherent_impl_consuming_methods_from_items(items, &mut out);
-    }
-    out
-}
-
-fn collect_inherent_impl_consuming_methods_from_items(
-    items: &[(Item, Span)],
-    out: &mut HashSet<String>,
-) {
-    for (item, _item_span) in items {
-        let Item::Impl(impl_decl) = item else {
-            continue;
-        };
-        if impl_decl.trait_bound.is_some() {
-            continue;
-        }
-        let TypeExpr::Named {
-            name: self_type_name,
-            ..
-        } = &impl_decl.target_type.0
-        else {
-            continue;
-        };
-        if impl_decl.methods.iter().any(|method| method.consumes_self) {
-            out.insert(self_type_name.clone());
-        }
     }
 }
 
@@ -2747,53 +2546,6 @@ fn imported_type_name_collides(
         > 1
 }
 
-/// The bare function bindings a module's own file imports contribute.
-///
-/// `import "helper.hew";` inside a module publishes helper's pub free
-/// functions into that module's scope. Helper keeps its own module identity
-/// (only the ROOT's file-import chain is spliced into `program.items`), so its
-/// bodies are emitted under `{helper}.{name}` and the importing module's
-/// bodies reach them through this rewrite.
-fn module_file_import_fn_rewrites(
-    module: &hew_parser::module::Module,
-    mg: &hew_parser::module::ModuleGraph,
-) -> HashMap<String, String> {
-    let mut rewrites = HashMap::new();
-    for (item, _) in &module.items {
-        let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved_items) = decl.resolved_items.as_ref() else {
-            continue;
-        };
-        let Some(source) = decl.resolved_source_paths.first() else {
-            continue;
-        };
-        let Some(owner) = mg
-            .modules
-            .iter()
-            .find(|(_, candidate)| candidate.source_paths.first() == Some(source))
-            .map(|(id, _)| id.path.join("."))
-        else {
-            continue;
-        };
-        for (resolved_item, _) in resolved_items.iter() {
-            let Item::Function(function) = resolved_item else {
-                continue;
-            };
-            if !function.visibility.is_pub() {
-                continue;
-            }
-            rewrites.insert(
-                function.name.clone(),
-                crate::mangle_dotted_name(&format!("{owner}.{}", function.name)),
-            );
-        }
-    }
-    rewrites
-}
-
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -2963,25 +2715,6 @@ pub fn lower_program_with_mono_cap(
             },
             None => (None, None),
         };
-
-    // Pre-pre-pass: harvest inherent-impl `close` method signatures from
-    // the root program and imported modules so the type-decl pre-pass below
-    // can broaden the `ResourceMissingClose` presence check to consider
-    // inherent-impl surface and enforce the close-must-return-unit discipline.
-    // See [`collect_inherent_impl_close_methods`] for the precise contract
-    // (W3.030 Q-α-B + Q-β-C ratifications).
-    ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
-    if let Some(builtins) = &builtin_declarations {
-        for (name, signature) in collect_inherent_impl_close_methods(builtins) {
-            ctx.impl_close_methods
-                .insert(format!("std.builtins.{name}"), signature);
-        }
-    }
-    // Harvest the self-type names that declare a `consume self` inherent
-    // method so the `#[linear]` validation accepts a sibling-inherent consuming
-    // method as satisfying the must-declare-a-consumer contract — the inherent
-    // form is the surface that lowers to a callable symbol.
-    ctx.impl_consuming_methods = collect_inherent_impl_consuming_methods(program);
 
     // Pre-pre-pass: harvest trait default method bodies so that impl-block
     // lowering can emit them for impls that do not override them.
@@ -4178,8 +3911,7 @@ pub fn lower_program_with_mono_cap(
                     // surface and drop-elaboration would silently elide the
                     // close call.
                     .or_else(|| {
-                        ctx.impl_close_methods
-                            .get(&hir_decl.name)
+                        ctx.inherent_close_signature(&hir_decl.declaration)
                             .map(|_| "close".to_string())
                     })
             } else {
@@ -4393,8 +4125,7 @@ pub fn lower_program_with_mono_cap(
                                     .find(|m| m.as_str() == "close")
                                     .cloned()
                                     .or_else(|| {
-                                        ctx.impl_close_methods
-                                            .get(&hir_decl.name)
+                                        ctx.inherent_close_signature(&hir_decl.declaration)
                                             .map(|_| "close".to_string())
                                     })
                             } else {
@@ -4973,12 +4704,10 @@ pub fn lower_program_with_mono_cap(
                         .get(&(impl_decl as *const _))
                         .cloned()
                 });
-                let rewrites = HashMap::new();
                 let skip_methods = HashSet::new();
                 let imported = imported_symbol_self_name
                     .as_deref()
                     .map(|symbol_self_name| ImportedImplLowering {
-                        rewrites: &rewrites,
                         skip_methods: &skip_methods,
                         symbol_self_name: Some(symbol_self_name),
                     });
@@ -5239,18 +4968,6 @@ pub fn lower_program_with_mono_cap(
                         None
                     })
                     .collect();
-                let same_module_pub_fns: HashSet<String> = module
-                    .items
-                    .iter()
-                    .filter_map(|(it, _)| {
-                        if let Item::Function(f) = it {
-                            if f.visibility.is_pub() {
-                                return Some(f.name.clone());
-                            }
-                        }
-                        None
-                    })
-                    .collect();
                 let imported_private_closure =
                     collect_imported_private_fn_closure(module, &same_module_private_fns);
                 for helper_name in &imported_private_closure {
@@ -5260,22 +4977,6 @@ pub fn lower_program_with_mono_cap(
                         ctx.register_fn_entry(&qualified, helper);
                     }
                 }
-                // A file this module imports publishes its pub free functions
-                // into THIS module's scope under bare names, while its bodies
-                // are emitted under its own module symbol. The module's own
-                // declarations are collected after, so a local name wins.
-                let mut same_module_fn_rewrites = module_file_import_fn_rewrites(module, mg);
-                same_module_fn_rewrites.extend(
-                    same_module_pub_fns
-                        .iter()
-                        .chain(imported_private_closure.iter())
-                        .map(|name| {
-                            (
-                                name.clone(),
-                                crate::mangle_dotted_name(&format!("{source_module}.{name}")),
-                            )
-                        }),
-                );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()
@@ -5345,7 +5046,6 @@ pub fn lower_program_with_mono_cap(
                                 &qualified,
                                 &source_module,
                                 span.clone(),
-                                &same_module_fn_rewrites,
                             ) {
                                 items.push(HirItem::Function(lowered));
                             }
@@ -5371,7 +5071,6 @@ pub fn lower_program_with_mono_cap(
                                 &qualified,
                                 &source_module,
                                 span.clone(),
-                                &same_module_fn_rewrites,
                             ) {
                                 items.push(HirItem::Function(lowered));
                             }
@@ -5572,11 +5271,8 @@ pub fn lower_program_with_mono_cap(
                                 // carrier resolved at monomorphisation time, not a
                                 // The pre-lowering body plan and this emitter
                                 // share one exact eligibility authority.
-                                let skip_methods = ctx.imported_impl_skip_methods(
-                                    impl_decl,
-                                    &source_module,
-                                    &same_module_fn_rewrites,
-                                );
+                                let skip_methods =
+                                    ctx.imported_impl_skip_methods(impl_decl, &source_module);
                                 // Impl method symbols are declaration-owned,
                                 // not collision-owned. Consume the canonical
                                 // owner established by the declaration-keyed
@@ -5607,7 +5303,6 @@ pub fn lower_program_with_mono_cap(
                                     &mut items,
                                     false,
                                     Some(&ImportedImplLowering {
-                                        rewrites: &same_module_fn_rewrites,
                                         skip_methods: &skip_methods,
                                         symbol_self_name: planned_symbol_self_name.as_deref(),
                                     }),
@@ -5648,7 +5343,7 @@ pub fn lower_program_with_mono_cap(
                         // `spawn of unknown actor` / `actor call on unknown actor`,
                         // even though HIR/types resolved the cross-module
                         // reference. Mirrors the `Item::Machine` arm above. The
-                        // receive-fn bodies lower with `same_module_fn_rewrites`
+                        // receive-fn bodies resolve names in their checker file scope
                         // active (see `lower_imported_actor`) so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
@@ -5675,12 +5370,8 @@ pub fn lower_program_with_mono_cap(
                                     ),
                                 ));
                             }
-                            let lowered = ctx.lower_imported_actor(
-                                actor,
-                                span.clone(),
-                                &source_module,
-                                &same_module_fn_rewrites,
-                            );
+                            let lowered =
+                                ctx.lower_imported_actor(actor, span.clone(), &source_module);
                             if let Some(lowered) = lowered {
                                 items.push(HirItem::Actor(lowered));
                             }
@@ -5782,7 +5473,6 @@ pub fn lower_program_with_mono_cap(
             let saved_none = ctx
                 .machine_ctor_registry
                 .insert("None".to_string(), ("Option".to_string(), 1));
-            let empty_rewrites = HashMap::new();
             for (item, span) in &program.items {
                 if let Item::ExternBlock(block) = item {
                     for function in &block.functions {
@@ -5888,7 +5578,6 @@ pub fn lower_program_with_mono_cap(
                             ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
                         } else {
                             let imported = ImportedImplLowering {
-                                rewrites: &empty_rewrites,
                                 skip_methods: &skipped_methods,
                                 symbol_self_name: Some(&symbol_owner),
                             };
@@ -7590,11 +7279,6 @@ struct LowerCtx {
     /// per-symbol/per-parameter ownership contract says so; ordinary Hew
     /// functions that merely share a spelling never inherit that privilege.
     extern_fn_names: HashSet<String>,
-    /// Same-module bare-call rewrites active while lowering an imported module
-    /// free-function body. Keys are source-visible bare identifiers; values are
-    /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
-    /// imported module.
-    imported_fn_rewrites: Option<HashMap<String, String>>,
     /// Same-module actor identity rewrites active while lowering imported
     /// module bodies. Keys are source-visible bare actor names; values are the
     /// fully-qualified actor-layout identities used by MIR.
@@ -7604,7 +7288,7 @@ struct LowerCtx {
     /// by bare name (e.g. `STATUS_OK` inside `tls.hew`), but only the
     /// qualified key `"tls.STATUS_OK"` is in the global `const_registry`.
     /// This scoped map bridges the gap: it is populated before lowering each
-    /// module's bodies and cleared after, mirroring `imported_fn_rewrites`.
+    /// module's bodies and cleared after.
     imported_module_consts: Option<HashMap<String, ConstEntry>>,
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
@@ -7615,31 +7299,6 @@ struct LowerCtx {
     /// Checker-derived closeable-opaque candidates awaiting resolved HIR
     /// close-body admission.
     opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
-    /// Pre-collected inherent-impl `close` method signatures, keyed by the
-    /// self-type name. Populated in `lower_program` before the type-decl
-    /// pre-pass so `lower_type_decl` can:
-    ///
-    ///   * broaden the `ResourceMissingClose` presence check to consider
-    ///     inherent-impl `<T>::close` declarations (W3.030 Q-α-B); and
-    ///   * enforce the close-must-return-unit discipline at the HIR
-    ///     boundary (W3.030 Q-β-C).
-    ///
-    /// Empty when called from non-`lower_program` entry points (the cross-
-    /// module `lower_type_decl` calls under `program.module_graph` reach
-    /// this with the root map already populated; imported enum `TypeDecls`
-    /// carry no `#[resource]` marker so the absence of their inherent
-    /// impls in this map is harmless).
-    impl_close_methods: HashMap<String, ImplCloseSignature>,
-    /// Self-type names that declare at least one `consume self` method in a
-    /// sibling inherent-impl block (`impl T { fn m(consume self) { … } }`).
-    ///
-    /// A `#[linear]` type's required consuming method may live here instead of
-    /// in the type body — the inherent-impl form is the one that actually lowers
-    /// to a callable symbol, so it is the usable consume surface. Populated the
-    /// same way as `impl_close_methods`; consulted by the `#[linear]` validation
-    /// so `LinearNoConsumingMethods` only fires when NEITHER a type-body nor a
-    /// sibling-inherent consuming method exists.
-    impl_consuming_methods: HashSet<String>,
     /// Resource declarations for which `check_resource_close_discipline`
     /// already pushed a user-facing close-discipline diagnostic
     /// (`ResourceMissingClose`, `ResourceCloseMustReturnUnit` or
@@ -8316,7 +7975,7 @@ struct LowerCtx {
         HashMap<(Option<String>, u32, String), std::collections::BTreeSet<String>>,
     /// Exact owner identities for the bare function bindings an import
     /// published, keyed by the file that wrote the import. The companion of
-    /// `published_bare_const_owners`; see `imported_rewrite_symbol`.
+    /// `published_bare_const_owners`; see `resolved_bare_function_symbol`.
     import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
     /// Root-scope value bindings the program itself declares. A root
     /// declaration outranks a name an import published into the root scope.
@@ -8498,13 +8157,10 @@ impl LowerCtx {
             fn_registry: HashMap::new(),
             fn_symbol_overrides: HashMap::new(),
             extern_fn_names: HashSet::new(),
-            imported_fn_rewrites: None,
             imported_actor_rewrites: None,
             imported_module_consts: None,
             type_classes,
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
-            impl_close_methods: HashMap::new(),
-            impl_consuming_methods: HashSet::new(),
             resource_close_discipline_failures: HashSet::new(),
             diagnostics: Vec::new(),
             // Resolution spellings remain a checker lookup index. Declaration
@@ -9283,25 +8939,21 @@ impl LowerCtx {
             .map_or(source_identity, |(_, name)| name)
     }
 
-    /// The emitted symbol a bare function name reaches from the file being
-    /// lowered: the same-module rewrite map while an imported module's bodies
-    /// lower, else the exact owner an import published into this file's scope.
-    ///
-    /// The published fact is keyed by file, so a file the root spliced in
-    /// (`import "sub.hew";`) resolves its own `import lib.{ bump };` here and a
-    /// file that never wrote that import does not see `bump`.
-    fn imported_rewrite_symbol(&self, name: &str) -> Option<String> {
-        if let Some(symbol) = self
-            .imported_fn_rewrites
-            .as_ref()
-            .and_then(|rewrites| rewrites.get(name))
-        {
-            return Some(symbol.clone());
-        }
-        // The root's own value namespace outranks a name an import published
-        // into it, exactly as it does in the checker's use-time gate.
+    /// Resolve a bare function through the checker's declaration namespace and
+    /// exact importer/file binding. Registry membership concerns emission only;
+    /// it must not choose which source declaration an identifier names.
+    fn resolved_bare_function_symbol(&self, name: &str) -> Option<String> {
         if self.current_module_name.is_none() && self.root_value_bindings.contains(name) {
             return None;
+        }
+        if let Some(module) = &self.current_module_name {
+            let declared = format!("{module}.{name}");
+            if self.identity.declaration_kind_by_path(&declared)
+                == Some(hew_types::DeclarationKind::Function)
+                && self.fn_sigs.contains_key(&declared)
+            {
+                return Some(self.published_declaration_symbol(&declared));
+            }
         }
         self.import_fn_name_aliases
             .get(&(
@@ -9309,8 +8961,17 @@ impl LowerCtx {
                 self.current_module_idx,
                 name.to_string(),
             ))
+            .or_else(|| {
+                // File-import binding keys carry the importing module's
+                // namespace; named imports use the bare source binding.
+                let module = self.current_module_name.as_ref()?;
+                self.import_fn_name_aliases.get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    format!("{module}.{name}"),
+                ))
+            })
             .map(|owner| self.published_declaration_symbol(owner))
-            .filter(|symbol| self.fn_registry.contains_key(symbol))
     }
 
     fn record_var_self_direct_monomorphisation(
@@ -9424,7 +9085,7 @@ impl LowerCtx {
             return;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name)
+            self.resolved_bare_function_symbol(name)
                 .unwrap_or_else(|| name.clone())
         } else {
             name.clone()
@@ -9449,7 +9110,7 @@ impl LowerCtx {
             return false;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name)
+            self.resolved_bare_function_symbol(name)
                 .unwrap_or_else(|| name.clone())
         } else {
             name.clone()
@@ -13649,14 +13310,6 @@ impl LowerCtx {
         };
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
-        // For imported impl blocks, apply the same-module fn-name rewrite map
-        // (bare helper name → mangled qualified symbol) to method bodies, just
-        // as `lower_imported_fn_with_name` does for free functions. Methods
-        // whose bodies call a private same-module helper that is NOT in the
-        // rewrite closure are listed in `skip_methods` and dropped here; the
-        // caller has already emitted a fail-closed diagnostic for them.
-        let prior_imported_rewrites =
-            imported.map(|imp| self.imported_fn_rewrites.replace(imp.rewrites.clone()));
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
                 continue;
@@ -13868,9 +13521,6 @@ impl LowerCtx {
             }
         }
 
-        if let Some(prev) = prior_imported_rewrites {
-            self.imported_fn_rewrites = prev;
-        }
         self.current_impl_self_ty = prior_self_ty;
 
         // Lower associated-type bindings to `ResolvedTy`s. Recorded as
@@ -13910,45 +13560,14 @@ impl LowerCtx {
         self.lower_fn_with_name_and_impl_params(func, name, span, &[], None, None)
     }
 
-    fn lower_imported_fn_with_name(
-        &mut self,
-        func: &FnDecl,
-        name: &str,
-        span: std::ops::Range<usize>,
-        rewrites: &HashMap<String, String>,
-    ) -> Option<HirFn> {
-        let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let lowered = self.lower_fn_with_name(func, name, span);
-        self.imported_fn_rewrites = previous_rewrites;
-        lowered
-    }
-
-    /// Lower an actor declared in an imported module.
-    ///
-    /// Identical to [`lower_actor`](Self::lower_actor) except that the actor's
-    /// `init`/`receive fn`/lifecycle-hook bodies lower with the module's
-    /// `same_module_fn_rewrites` active, so a bare call to a sibling pub (or
-    /// reachable private) function inside the actor body resolves to that
-    /// function's qualified, native-symbol-safe name — the same contract the
-    /// imported free-fn and impl-method paths use. State-field defaults and
-    /// types lower the same way as a local actor.
-    ///
-    /// The resulting `HirActorDecl` carries `defining_module =
-    /// Some(module_short)` — the `(defining-module, name)` identity that lets
-    /// MIR layout keys and codegen symbols distinguish two same-named actors
-    /// from different modules. The decl's `name` stays bare and all symbol
-    /// mangling still derives from the bare name; switching keys/symbols to
-    /// `qualified_name()` is the downstream re-key that this carrier enables.
+    /// Lower an imported actor under its checker's current module and file scope.
     fn lower_imported_actor(
         &mut self,
         decl: &ActorDecl,
         span: Span,
         module_full_path: &str,
-        rewrites: &HashMap<String, String>,
     ) -> Option<HirActorDecl> {
-        let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
         let lowered = self.lower_actor(decl, span, Some(module_full_path));
-        self.imported_fn_rewrites = previous_rewrites;
         let mut lowered = lowered?;
         // Owner-qualify each receive handler's return type to the declaring
         // module (`testffi.Result`) ONLY when the returned record's bare name
@@ -14056,11 +13675,10 @@ impl LowerCtx {
         qualified: &str,
         source_module: &str,
         span: std::ops::Range<usize>,
-        rewrites: &HashMap<String, String>,
     ) -> Option<HirFn> {
         let source_key = format!("{source_module}.{}", func.name);
         let Some(intrinsic_key) = self.intrinsic_declarations.get(&source_key).cloned() else {
-            return self.lower_imported_fn_with_name(func, qualified, span, rewrites);
+            return self.lower_fn_with_name(func, qualified, span);
         };
         let Some(entry) = crate::stdlib_catalog::entries()
             .iter()
@@ -14112,8 +13730,7 @@ impl LowerCtx {
         }
         match entry.linkage {
             crate::stdlib_catalog::BuiltinLinkage::CalleeNameDispatchOnly => {
-                let mut lowered =
-                    self.lower_imported_fn_with_name(func, qualified, span, rewrites)?;
+                let mut lowered = self.lower_fn_with_name(func, qualified, span)?;
                 lowered.intrinsic_id = Some(intrinsic_key);
                 Some(lowered)
             }
@@ -14447,6 +14064,20 @@ impl LowerCtx {
         }
     }
 
+    /// Query checker signatures by their canonical receiver identity.
+    fn inherent_close_signature(
+        &self,
+        declaration: &hew_types::DefId,
+    ) -> Option<&hew_types::FnSig> {
+        self.fn_sigs.values().find(|sig| {
+            sig.impl_method.as_ref().is_some_and(|origin| {
+                origin.is_inherent
+                    && origin.receiver.as_ref() == Some(declaration)
+                    && origin.name == "close"
+            })
+        })
+    }
+
     /// W3.030 Stage 1 — three layered checks on `#[resource]` close:
     ///
     ///   1. Inline `TypeBodyItem::Method` named `close` is rejected
@@ -14458,8 +14089,7 @@ impl LowerCtx {
     ///      per `close` slot (review R-4 determinism contract).
     ///
     ///   2. Otherwise look for an inherent-impl `<T>::close`
-    ///      (collected in `impl_close_methods` during the
-    ///      pre-pre-pass). Presence here satisfies the broadened
+    ///      (published on the checker signature). Presence satisfies the broadened
     ///      `ResourceMissingClose` check (Q-α-B); a non-unit return
     ///      type triggers `ResourceCloseMustReturnUnit` (Q-β-C).
     ///
@@ -14491,10 +14121,15 @@ impl LowerCtx {
             ));
             return;
         }
-        if let Some(sig) = self.impl_close_methods.get(&decl.name) {
-            if !sig.return_ty_unit {
-                let display = sig.return_ty_display.clone();
-                let decl_span = sig.decl_span.clone();
+        if let Some(sig) = self.inherent_close_signature(declaration) {
+            if sig.return_type != hew_types::Ty::Unit {
+                let display = sig.return_type.to_string();
+                let decl_span = sig
+                    .impl_method
+                    .as_ref()
+                    .expect("inherent provenance")
+                    .span
+                    .clone();
                 self.resource_close_discipline_failures
                     .insert(declaration.clone());
                 self.diagnostics.push(HirDiagnostic::new(
@@ -14544,9 +14179,14 @@ impl LowerCtx {
     ///      supported surface, mirroring the `#[resource]` inline-`close`
     ///      rejection.
     ///   2. Otherwise the type must carry a sibling-inherent consuming method
-    ///      (`impl_consuming_methods`); absent that, no exit path could exhaust
+    ///      (published on the checker signature); without one no exit path exhausts
     ///      a binding — `LinearNoConsumingMethods`.
-    fn check_linear_consume_discipline(&mut self, decl: &TypeDecl, span: &Span) {
+    fn check_linear_consume_discipline(
+        &mut self,
+        decl: &TypeDecl,
+        span: &Span,
+        declaration: &hew_types::DefId,
+    ) {
         let has_inline_consuming = decl.body.iter().any(|item| {
             matches!(item, TypeBodyItem::Method(m)
                 if decl.consuming_methods.iter().any(|n| n == &m.name))
@@ -14562,7 +14202,12 @@ impl LowerCtx {
                  { ... } }`); the inline `type T { fn commit(consume self) ... }` \
                  surface is not lowered to a callable consume target",
             ));
-        } else if !self.impl_consuming_methods.contains(&decl.name) {
+        } else if !self.fn_sigs.values().any(|sig| {
+            sig.consumes_receiver
+                && sig.impl_method.as_ref().is_some_and(|origin| {
+                    origin.is_inherent && origin.receiver.as_ref() == Some(declaration)
+                })
+        }) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::LinearNoConsumingMethods {
                     name: decl.name.clone(),
@@ -14613,7 +14258,7 @@ impl LowerCtx {
                 self.check_resource_close_discipline(decl, &span, &declaration);
             }
             AstResourceMarker::Linear => {
-                self.check_linear_consume_discipline(decl, &span);
+                self.check_linear_consume_discipline(decl, &span, &declaration);
             }
             AstResourceMarker::None => {}
         }
@@ -22580,7 +22225,7 @@ impl LowerCtx {
                 );
             }
         }
-        if let Some(symbol) = self.imported_rewrite_symbol(name) {
+        if let Some(symbol) = self.resolved_bare_function_symbol(name) {
             if self.fn_registry.contains_key(&symbol) {
                 return self.lower_function_value(&symbol, &span, site);
             }
@@ -22588,11 +22233,11 @@ impl LowerCtx {
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: name.to_string(),
                     reason: format!(
-                        "imported same-module callee `{symbol}` missing from HIR fn registry"
+                        "checker-selected callee `{symbol}` missing from HIR fn registry"
                     ),
                 },
                 span.clone(),
-                "imported free-function body rewrite target was not registered",
+                "checker-selected free-function declaration was not registered",
             ));
         }
         // Bare-name same-module const reference inside an imported module's
@@ -23731,7 +23376,6 @@ impl LowerCtx {
         &self,
         impl_decl: &hew_parser::ast::ImplDecl,
         source_module: &str,
-        same_module_fn_rewrites: &HashMap<String, String>,
     ) -> HashSet<String> {
         let TypeExpr::Named {
             name: self_type_name,
@@ -23762,7 +23406,7 @@ impl LowerCtx {
                     .into_iter()
                     .any(|callee| {
                         !is_builtin_enum_variant_bare_name(&callee)
-                            && !same_module_fn_rewrites.contains_key(&callee)
+                            && self.resolved_bare_function_symbol(&callee).is_none()
                             && !self.fn_registry.contains_key(&callee)
                             && !callable_params.contains(callee.as_str())
                             && !stdlib_catalog::is_overloaded_builtin(&callee)

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-callable-argument-fault"
+intent = "A fault while evaluating a later actor argument releases an already coerced closure and its owning captures before message submission."
+source = "cases/actor-callable-argument-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): later actor argument\n"
+exit = 1

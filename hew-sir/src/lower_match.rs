@@ -16,7 +16,7 @@
 //! Candidate order, guard cleanup, control-state restore and merge, the
 //! fallthrough and the match exits are the same code for every shape.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use super::{
     is_concrete_variant_type, is_initial_value_type, is_unconstructable_variant,
@@ -24,7 +24,7 @@ use super::{
 };
 use crate::ownership::{AggregateFieldRecipe, OwnKind};
 use crate::{
-    AggregateShapeRef, BindingTarget, BlockArg, Operand, Provenance, SemOp, SemOpKind,
+    AggregateShapeRef, BindingTarget, BlockArg, Operand, PlaceId, Provenance, SemOp, SemOpKind,
     SemTerminator, SemVariantShape, ValueDef, ValueId, VariantShapeId,
 };
 use hew_hir::{
@@ -48,6 +48,12 @@ enum MatchShape {
         /// A tuple of scalars is copied whole: there is nothing to release and
         /// nothing to take apart.
         initial_value: bool,
+        /// The scrutinee's own ordered field places, when the body owns the
+        /// aggregate in place and no arm names it whole. A candidate then
+        /// borrows the fields it probes and the selected arm takes only the
+        /// fields it binds, leaving the rest initialized for the code after
+        /// the match. `None` means the match reads the whole value instead.
+        places: Option<Vec<PlaceId>>,
     },
     /// An enum scrutinee. One switch on the tag gives each branch its payloads
     /// and the arms that can still match there, in source order.
@@ -74,12 +80,26 @@ impl MatchShape {
             _ => OwnedBindingUse::Probe,
         }
     }
+
+    /// The scrutinee's ordered field places when the match reads them in
+    /// place rather than reading the whole value.
+    fn field_places(&self) -> Option<&[PlaceId]> {
+        match self {
+            Self::Aggregate {
+                places: Some(places),
+                ..
+            } => Some(places),
+            _ => None,
+        }
+    }
 }
 
 /// What the candidate loop needs that does not change between arms.
 struct MatchPlan {
     shape: MatchShape,
-    scrutinee: ValueId,
+    /// The whole scrutinee value, absent when the match reads its fields in
+    /// place instead of taking the aggregate out of its storage.
+    scrutinee: Option<ValueId>,
     scrutinee_ty: ResolvedTy,
     /// The scrutinee is a loan of a value the match did not take: its payloads
     /// name that region rather than owning it.
@@ -89,6 +109,15 @@ struct MatchPlan {
     outer_bindings: HashSet<BindingId>,
     outer_loans: usize,
     outer_live: BTreeMap<ValueId, ResolvedTy>,
+}
+
+impl MatchPlan {
+    /// The whole scrutinee value. Every shape that asks for it is one the
+    /// match read whole; asking for it in place is malformed lowering.
+    fn scrutinee(&self) -> Result<ValueId, String> {
+        self.scrutinee
+            .ok_or_else(|| "match shape has no whole scrutinee value".to_string())
+    }
 }
 
 /// One ordered run of candidates sharing an entry state: the whole match for a
@@ -123,19 +152,30 @@ impl Builder<'_, '_> {
         source_arms: &[HirMatchArm],
     ) -> Result<Option<ValueId>, String> {
         let scrutinee_ty = self.ty(&scrutinee_expr.ty);
-        let shape = self.resolve_match_shape(&scrutinee_ty, source_arms)?;
+        let shape = self.resolve_match_shape(scrutinee_expr, &scrutinee_ty, source_arms)?;
 
         // A scrutinee that is itself a borrowed read holds a loan on the
         // collection it read. The match is what reads that loan, so it is the
         // match that ends it - not the enclosing scope, which would keep the
         // collection borrowed for the rest of the body.
         let scrutinee_loan_floor = self.scope_loans.len();
-        let scrutinee =
-            lower_initial_value_transfer(self, scrutinee_expr, "match scrutinee", shape.read())?;
+        let scrutinee = if shape.field_places().is_some() {
+            None
+        } else {
+            Some(lower_initial_value_transfer(
+                self,
+                scrutinee_expr,
+                "match scrutinee",
+                shape.read(),
+            )?)
+        };
         let mut outer_live = self.owned_live.clone();
-        outer_live.remove(&scrutinee);
+        if let Some(scrutinee) = scrutinee {
+            outer_live.remove(&scrutinee);
+        }
         let plan = MatchPlan {
-            borrowed: self.value_own_kind(scrutinee) == Some(OwnKind::Guaranteed),
+            borrowed: scrutinee
+                .is_some_and(|value| self.value_own_kind(value) == Some(OwnKind::Guaranteed)),
             shape,
             scrutinee,
             scrutinee_ty,
@@ -187,7 +227,7 @@ impl Builder<'_, '_> {
             }]);
         };
         let inherited = self.control_state();
-        let branches = self.emit_variant_switch(*shape, descriptor, plan.scrutinee)?;
+        let branches = self.emit_variant_switch(*shape, descriptor, plan.scrutinee()?)?;
         branches
             .into_iter()
             .map(|branch| {
@@ -348,9 +388,15 @@ impl Builder<'_, '_> {
                 shape,
                 recipes,
                 initial_value,
+                places,
             } => {
-                *fields =
-                    self.probe_aggregate_fields(plan.scrutinee, *shape, recipes, *initial_value)?;
+                *fields = if let Some(places) = places {
+                    let places = places.clone();
+                    let recipes = recipes.clone();
+                    self.probe_aggregate_field_places(&places, &recipes)?
+                } else {
+                    self.probe_aggregate_fields(plan.scrutinee()?, *shape, recipes, *initial_value)?
+                };
             }
             // The switch already handed this branch its payloads.
             MatchShape::Variant { .. } => {}
@@ -386,10 +432,10 @@ impl Builder<'_, '_> {
         rebuilt: &mut Option<ValueId>,
     ) -> Result<ValueId, String> {
         let MatchShape::Variant { shape, .. } = &plan.shape else {
-            return Ok(plan.scrutinee);
+            return plan.scrutinee();
         };
         if plan.borrowed {
-            return Ok(plan.scrutinee);
+            return plan.scrutinee();
         }
         let variant = variant.ok_or("variant candidate has no switch branch")?;
         let value = self.emit_variant_make(*shape, variant, &plan.scrutinee_ty, fields)?;
@@ -426,16 +472,22 @@ impl Builder<'_, '_> {
             MatchShape::Scalar => Ok(()),
             MatchShape::Aggregate {
                 shape,
+                recipes,
                 initial_value,
-                ..
+                places,
             } => {
                 // A tuple of scalars was copied whole, and a whole-scrutinee
                 // binding names the aggregate itself: neither is taken apart.
                 if *initial_value || matches!(arm.predicate, HirMatchArmPredicate::Binding { .. }) {
                     return Ok(());
                 }
+                if let Some(places) = places {
+                    let places = places.clone();
+                    let recipes = recipes.clone();
+                    return self.select_aggregate_field_places(plan, arm, &places, &recipes);
+                }
                 let transferred = self.emit_destructure_value(
-                    plan.scrutinee,
+                    plan.scrutinee()?,
                     &plan.scrutinee_ty,
                     *shape,
                     plan.provenance.clone(),
@@ -457,10 +509,12 @@ impl Builder<'_, '_> {
                 // the candidate's cleanup set.
                 let owned = transferred
                     .into_iter()
-                    .map(|field| BlockArg {
-                        value: field.id,
-                        ty: field.ty,
-                        own: field.own,
+                    .map(|field| {
+                        Some(BlockArg {
+                            value: field.id,
+                            ty: field.ty,
+                            own: field.own,
+                        })
                     })
                     .collect::<Vec<_>>();
                 self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)
@@ -477,14 +531,69 @@ impl Builder<'_, '_> {
                             .map(|field| field.value),
                     );
                 }
-                self.transfer_selected_payloads(fields, &arm.payload_variant_predicates)
+                let owned = fields.iter().cloned().map(Some).collect::<Vec<_>>();
+                self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)
             }
         }
+    }
+
+    /// Take exactly the fields the arm binds out of the scrutinee's own
+    /// places. A field the arm does not name is left where it is, so the code
+    /// after the match still reads it.
+    fn select_aggregate_field_places(
+        &mut self,
+        plan: &MatchPlan,
+        arm: &HirMatchArm,
+        places: &[PlaceId],
+        recipes: &[AggregateFieldRecipe],
+    ) -> Result<(), String> {
+        let mut selected: BTreeSet<usize> = arm
+            .bindings
+            .iter()
+            .map(|binding| binding.field_idx as usize)
+            .collect();
+        selected.extend(
+            arm.payload_variant_predicates
+                .iter()
+                .map(|predicate| predicate.field_idx as usize),
+        );
+        let mut owned: Vec<Option<BlockArg>> = vec![None; recipes.len()];
+        for index in selected {
+            let (Some(place), Some(recipe)) = (places.get(index), recipes.get(index)) else {
+                return Err(format!("match arm selects missing aggregate field {index}"));
+            };
+            let kind = if recipe.clone == hew_types::CloneKind::None {
+                SemOpKind::LoadTake { place: *place }
+            } else {
+                SemOpKind::LoadCopy { place: *place }
+            };
+            let value = self.emit_typed(plan.provenance.clone(), &recipe.ty, kind)?;
+            owned[index] = Some(BlockArg {
+                value,
+                ty: recipe.ty.clone(),
+                own: recipe.own,
+            });
+        }
+        for binding in &arm.bindings {
+            let field = usize::try_from(binding.field_idx)
+                .ok()
+                .and_then(|index| owned.get(index))
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    format!(
+                        "match binding `{}` selects missing field {}",
+                        binding.name, binding.field_idx
+                    )
+                })?;
+            self.redeclare_binding(binding.binding, BindingTarget::Value(field.value))?;
+        }
+        self.transfer_selected_payloads(&owned, &arm.payload_variant_predicates)
     }
 
     /// Resolve the scrutinee's shape and check every arm against it.
     fn resolve_match_shape(
         &mut self,
+        scrutinee_expr: &HirExpr,
         scrutinee_ty: &ResolvedTy,
         arms: &[HirMatchArm],
     ) -> Result<MatchShape, String> {
@@ -508,10 +617,23 @@ impl Builder<'_, '_> {
             self.service.checked_facts.rows(),
         )?;
         self.check_aggregate_arms(scrutinee_ty, &recipes, arms)?;
+        let initial_value = is_initial_value_type(scrutinee_ty);
+        // An arm that names the whole scrutinee needs the aggregate as one
+        // value, so that match reads it whole. Every other aggregate match
+        // over storage this body owns reads the fields where they live.
+        let names_whole_scrutinee = arms
+            .iter()
+            .any(|arm| matches!(arm.predicate, HirMatchArmPredicate::Binding { .. }));
+        let places = if initial_value || names_whole_scrutinee {
+            None
+        } else {
+            self.aggregate_field_places(scrutinee_expr, shape, &recipes)?
+        };
         Ok(MatchShape::Aggregate {
             shape,
             recipes,
-            initial_value: is_initial_value_type(scrutinee_ty),
+            initial_value,
+            places,
         })
     }
 
@@ -780,6 +902,39 @@ impl Builder<'_, '_> {
         Ok(fields)
     }
 
+    /// Read every field of a candidate's aggregate from the scrutinee's own
+    /// places, without consuming any of them. Owning fields are borrowed until
+    /// the candidate fails or the arm is selected; the rest are copies.
+    fn probe_aggregate_field_places(
+        &mut self,
+        places: &[PlaceId],
+        recipes: &[AggregateFieldRecipe],
+    ) -> Result<Vec<BlockArg>, String> {
+        let mut fields = Vec::with_capacity(recipes.len());
+        for (place, recipe) in places.iter().zip(recipes) {
+            let owning = recipe.own == OwnKind::Owned;
+            let kind = if owning {
+                SemOpKind::LoadBorrow { place: *place }
+            } else {
+                SemOpKind::LoadCopy { place: *place }
+            };
+            let value = self.emit_typed(Provenance::Synthesized, &recipe.ty, kind)?;
+            if owning {
+                self.argument_receiver_loans.push(value);
+            }
+            fields.push(BlockArg {
+                value,
+                ty: recipe.ty.clone(),
+                own: if owning {
+                    OwnKind::Guaranteed
+                } else {
+                    OwnKind::None
+                },
+            });
+        }
+        Ok(fields)
+    }
+
     /// Test the borrowed scrutinee against one compiled regex literal.
     ///
     /// The literal's index selects its slot in the module's handle array, so
@@ -810,7 +965,7 @@ impl Builder<'_, '_> {
                 },
                 crate::BoundaryOperand {
                     operand: Operand {
-                        value: plan.scrutinee,
+                        value: plan.scrutinee()?,
                     },
                     decision: crate::BoundaryDecision::Borrow,
                 },
@@ -851,7 +1006,7 @@ impl Builder<'_, '_> {
             };
         let value = self.emit_typed(plan.provenance.clone(), ty, constant)?;
         if *ty == ResolvedTy::String {
-            let equals = self.lower_string_equals_values(plan.scrutinee, value)?;
+            let equals = self.lower_string_equals_values(plan.scrutinee()?, value)?;
             self.emit_destroy(value)?;
             return Ok(equals);
         }
@@ -861,7 +1016,7 @@ impl Builder<'_, '_> {
             SemOpKind::Binary {
                 op: hew_parser::ast::BinaryOp::Equal,
                 lhs: Operand {
-                    value: plan.scrutinee,
+                    value: plan.scrutinee()?,
                 },
                 rhs: Operand { value },
             },
@@ -1124,11 +1279,20 @@ impl Builder<'_, '_> {
     /// candidate's cleanup set.
     fn transfer_selected_payloads(
         &mut self,
-        parent_fields: &[BlockArg],
+        parent_fields: &[Option<BlockArg>],
         predicates: &[HirPayloadVariantPredicate],
     ) -> Result<(), String> {
         for predicate in predicates {
-            let source = parent_fields[predicate.field_idx as usize].value;
+            let source = parent_fields
+                .get(predicate.field_idx as usize)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| {
+                    format!(
+                        "nested payload predicate selects field {} the arm does not own",
+                        predicate.field_idx
+                    )
+                })?
+                .value;
             let payload_ty = self.ty(&predicate.payload_ty);
             let (shape, desired) = self.nested_variant(&payload_ty, predicate)?;
             let mut fields = Vec::with_capacity(desired.fields.len());
@@ -1158,18 +1322,24 @@ impl Builder<'_, '_> {
                     if field.own == OwnKind::Owned {
                         self.owned_live.insert(field.id, field.ty.clone());
                     }
-                    BlockArg {
+                    Some(BlockArg {
                         value: field.id,
                         ty: field.ty,
                         own: field.own,
-                    }
+                    })
                 })
                 .collect::<Vec<_>>();
             for binding in &predicate.bindings {
-                self.redeclare_binding(
-                    binding.binding,
-                    BindingTarget::Value(fields[binding.field_idx as usize].value),
-                )?;
+                let slot = fields
+                    .get(binding.field_idx as usize)
+                    .and_then(Option::as_ref)
+                    .ok_or_else(|| {
+                        format!(
+                            "nested payload binding `{}` selects missing slot {}",
+                            binding.name, binding.field_idx
+                        )
+                    })?;
+                self.redeclare_binding(binding.binding, BindingTarget::Value(slot.value))?;
             }
             self.transfer_selected_payloads(&fields, &predicate.nested)?;
         }

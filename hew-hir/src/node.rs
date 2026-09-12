@@ -1103,11 +1103,17 @@ pub struct HirStmt {
     pub span: Span,
 }
 
-/// One ordered field bound by an irrefutable aggregate destructure.
+/// One ordered field of an irrefutable aggregate destructure.
+///
+/// `binding` is `None` for a wildcard field (`Booking { ticket: _, .. }`).
+/// A wildcard names nothing and therefore takes nothing out of the source: it
+/// is the fact that lets SIR leave that field in place, and the checker leave
+/// it usable. Every field of the aggregate is listed either way, so the
+/// selector order stays the aggregate's declaration order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirDestructureField {
     pub selector: HirDestructureSelector,
-    pub binding: HirBinding,
+    pub binding: Option<HirBinding>,
 }
 
 /// Typed aggregate field identity selected by an irrefutable pattern.

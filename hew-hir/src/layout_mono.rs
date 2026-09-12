@@ -504,13 +504,8 @@ fn walk_stmt(
         }
         HirStmtKind::Destructure { value, fields } => {
             walk_expr(value, subst, residual_domain, disc);
-            for field in fields {
-                disc.visit_ty(
-                    &field.binding.ty,
-                    &field.binding.span,
-                    subst,
-                    residual_domain,
-                );
+            for binding in fields.iter().filter_map(|field| field.binding.as_ref()) {
+                disc.visit_ty(&binding.ty, &binding.span, subst, residual_domain);
             }
         }
         HirStmtKind::Assign { target, value, .. } => {

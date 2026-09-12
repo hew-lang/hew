@@ -58,7 +58,9 @@ use hew_types::{
     TypeInstanceKey,
 };
 
-use crate::ownership::{Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable};
+use crate::ownership::{
+    AggregateFieldRecipe, Binding, BytesLiteralId, OwnKind, StringLiteralId, TypeFactTable,
+};
 use crate::{
     AggregateShapeId, AggregateShapeRef, BindingTarget, BlockArg, BlockId, CallResult, CallUnwind,
     CallableId, CallableInstance, CheckedFailure, Edge, FunctionSourceOrigin, GenericTemplateId,
@@ -3199,6 +3201,7 @@ struct LoopScope {
 /// One aggregate selection: the container's type, its shape and the field.
 type AggregateSelection = (ResolvedTy, AggregateShapeRef, usize);
 
+#[derive(Clone)]
 struct BindingPlace {
     binding: BindingId,
     root_ty: ResolvedTy,
@@ -6545,7 +6548,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let index = u32::try_from(index)
                 .map_err(|_| "tuple destructure index exceeds u32".to_string())?;
             let expected_selector = HirDestructureSelector::Tuple(index);
-            let binding_ty = self.ty(&field.binding.ty);
+            let Some(binding) = &field.binding else {
+                if field.selector != expected_selector {
+                    return Err(format!(
+                        "tuple destructure field {index} has selector {:?}, expected {expected_selector:?}",
+                        field.selector,
+                    ));
+                }
+                continue;
+            };
+            let binding_ty = self.ty(&binding.ty);
             if field.selector != expected_selector || binding_ty != *expected_ty {
                 return Err(format!(
                     "tuple destructure field {index} has selector {:?} and type `{}`, expected {:?} and `{}`",
@@ -6563,17 +6575,21 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     index,
                 },
             )?;
-            self.bind_source_value(&field.binding, result)?;
+            self.bind_source_value(binding, result)?;
         }
         Ok(())
     }
 
     /// Lower one checker-normalized irrefutable aggregate pattern.
     ///
-    /// Owned source bindings are copied as whole values before the consuming
-    /// operation. The destructure itself then transfers every ordered field
-    /// into a distinct SSA result, including compiler-created wildcard
-    /// bindings, so cleanup remains explicit on every path.
+    /// A destructure names fields, not the whole value. When the source is an
+    /// aggregate this body owns in place, each named field is read from its
+    /// own place, so a field the pattern leaves alone stays initialized and
+    /// readable afterwards - the same partition `let t = booking.ticket`
+    /// already produces. A source with no place of its own (a temporary, a
+    /// capture, an actor state seat) is transferred whole and taken apart,
+    /// with every ordered field becoming a distinct SSA result so cleanup
+    /// stays explicit on every path.
     fn lower_destructure(
         &mut self,
         value: &HirExpr,
@@ -6623,16 +6639,27 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .zip(&expected_selectors)
             .enumerate()
         {
-            let binding_ty = self.ty(&field.binding.ty);
-            if &field.selector != expected_selector || binding_ty != recipe.ty {
+            if &field.selector != expected_selector {
                 return Err(format!(
-                    "aggregate destructure field {index} has selector {:?} and type `{}`, expected {:?} and `{}`",
+                    "aggregate destructure field {index} has selector {:?}, expected {expected_selector:?}",
                     field.selector,
+                ));
+            }
+            let Some(binding) = &field.binding else {
+                continue;
+            };
+            let binding_ty = self.ty(&binding.ty);
+            if binding_ty != recipe.ty {
+                return Err(format!(
+                    "aggregate destructure field {index} has type `{}`, expected `{}`",
                     binding_ty.user_facing(),
-                    expected_selector,
                     recipe.ty.user_facing()
                 ));
             }
+        }
+
+        if self.destructure_in_place(value, shape, &recipes, fields)? {
+            return Ok(());
         }
 
         let aggregate = lower_initial_value_transfer(
@@ -6654,9 +6681,66 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             Provenance::Site(value.site),
         )?;
         for (field, result) in fields.iter().zip(results) {
-            self.bind_source_value(&field.binding, result.id)?;
+            if let Some(binding) = &field.binding {
+                self.bind_source_value(binding, result.id)?;
+            }
         }
         Ok(())
+    }
+
+    /// Read each named field of a destructure straight out of the source's own
+    /// place, leaving the fields the pattern does not name initialized.
+    ///
+    /// Returns `false` when the source has no field places of its own, which
+    /// is when the whole-value transfer above is the correct lowering.
+    fn destructure_in_place(
+        &mut self,
+        value: &HirExpr,
+        shape: AggregateShapeRef,
+        recipes: &[AggregateFieldRecipe],
+        fields: &[HirDestructureField],
+    ) -> Result<bool, String> {
+        let Some(places) = self.aggregate_field_places(value, shape, recipes)? else {
+            return Ok(false);
+        };
+        let provenance = Provenance::Site(value.site);
+        for ((field, recipe), place) in fields.iter().zip(recipes).zip(places) {
+            let Some(binding) = &field.binding else {
+                continue;
+            };
+            let kind = if recipe.clone == hew_types::CloneKind::None {
+                SemOpKind::LoadTake { place }
+            } else {
+                SemOpKind::LoadCopy { place }
+            };
+            let result = self.emit_typed(provenance.clone(), &recipe.ty, kind)?;
+            self.bind_source_value(binding, result)?;
+        }
+        Ok(true)
+    }
+
+    /// The ordered field places of an aggregate expression this body owns in
+    /// place, or `None` when the expression names no such partition.
+    pub(super) fn aggregate_field_places(
+        &mut self,
+        source: &HirExpr,
+        shape: AggregateShapeRef,
+        recipes: &[AggregateFieldRecipe],
+    ) -> Result<Option<Vec<PlaceId>>, String> {
+        let Some(root) = self.resolve_binding_place(source)? else {
+            return Ok(None);
+        };
+        let aggregate_ty = self.ty(&source.ty);
+        let mut places = Vec::with_capacity(recipes.len());
+        for index in 0..recipes.len() {
+            let mut leaf = root.clone();
+            leaf.projections.push((aggregate_ty.clone(), shape, index));
+            let Some(place) = self.owned_projection(&leaf)? else {
+                return Ok(None);
+            };
+            places.push(place);
+        }
+        Ok(Some(places))
     }
 
     fn emit_destructure_value(

@@ -229,8 +229,8 @@ impl Verifier {
         fields: &[crate::node::HirDestructureField],
     ) {
         self.expr(value);
-        for field in fields {
-            self.binding(field.binding.id, field.binding.span.clone());
+        for binding in fields.iter().filter_map(|field| field.binding.as_ref()) {
+            self.binding(binding.id, binding.span.clone());
         }
     }
 

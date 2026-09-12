@@ -20,7 +20,12 @@ fn dump_destructure(
     let pad = " ".repeat(indent);
     let names: Vec<&str> = fields
         .iter()
-        .map(|field| field.binding.name.as_str())
+        .map(|field| {
+            field
+                .binding
+                .as_ref()
+                .map_or("_", |binding| binding.name.as_str())
+        })
         .collect();
     writeln!(out, "{pad}destructure bind=[{}]", names.join(", ")).expect("write to string");
     dump_expr(out, value, indent + 2);

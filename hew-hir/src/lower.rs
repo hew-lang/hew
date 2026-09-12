@@ -106,14 +106,8 @@ fn expand_arm_binding_leaf(
     out: &mut Vec<(String, BindingId, ResolvedTy)>,
 ) {
     if let Some(fields) = by_source.get(&id) {
-        for field in *fields {
-            expand_arm_binding_leaf(
-                field.binding.id,
-                &field.binding.name,
-                &field.binding.ty,
-                by_source,
-                out,
-            );
+        for binding in fields.iter().filter_map(|field| field.binding.as_ref()) {
+            expand_arm_binding_leaf(binding.id, &binding.name, &binding.ty, by_source, out);
         }
     } else {
         out.push((name.to_string(), id, ty.clone()));
@@ -15850,14 +15844,17 @@ impl LowerCtx {
         binding_id
     }
 
+    /// The binding one destructured field introduces, and whether it carries a
+    /// nested subpattern. A wildcard field introduces no binding: it names
+    /// nothing, so nothing is taken out of the source for it.
     fn bind_destructure_field(
         &mut self,
         pattern: &Spanned<Pattern>,
         ty: ResolvedTy,
-    ) -> (HirBinding, bool) {
+    ) -> (Option<HirBinding>, bool) {
         let (name, nested) = match &pattern.0 {
             Pattern::Identifier(name) => (name.clone(), false),
-            Pattern::Wildcard => (format!("_{}", self.ids.binding().0), false),
+            Pattern::Wildcard => return (None, false),
             Pattern::Tuple(_) | Pattern::Struct { .. } | Pattern::RecordShorthand { .. } => {
                 (format!("__destructure_{}", self.ids.binding().0), true)
             }
@@ -15879,7 +15876,7 @@ impl LowerCtx {
                 (format!("__unsupported_{}", self.ids.binding().0), false)
             }
         };
-        (self.bind(name, ty, false, pattern.1.clone()), nested)
+        (Some(self.bind(name, ty, false, pattern.1.clone())), nested)
     }
 
     fn lower_tuple_pattern_value_into_stmts(
@@ -15916,8 +15913,8 @@ impl LowerCtx {
         let mut nested = Vec::new();
         for (idx, (elem_pat, elem_ty)) in elements.iter().zip(element_tys).enumerate() {
             let (binding, is_nested) = self.bind_destructure_field(elem_pat, elem_ty.clone());
-            if is_nested {
-                nested.push((elem_pat.clone(), binding.clone()));
+            if let (true, Some(carrier)) = (is_nested, binding.clone()) {
+                nested.push((elem_pat.clone(), carrier));
             }
             fields.push(HirDestructureField {
                 selector: HirDestructureSelector::Tuple(
@@ -16054,8 +16051,8 @@ impl LowerCtx {
         for (field_name, field_ty, field_pattern) in planned_fields {
             let (binding, is_nested) =
                 self.bind_destructure_field(&field_pattern, field_ty.clone());
-            if is_nested {
-                nested.push((field_pattern, binding.clone()));
+            if let (true, Some(carrier)) = (is_nested, binding.clone()) {
+                nested.push((field_pattern, carrier));
             }
             fields.push(HirDestructureField {
                 selector: HirDestructureSelector::Record(field_name),
@@ -17121,7 +17118,7 @@ impl LowerCtx {
                         selector: HirDestructureSelector::Tuple(
                             u32::try_from(idx).expect("let-else binding count exceeds u32::MAX"),
                         ),
-                        binding: self.bind(name, ty, false, pattern_span.clone()),
+                        binding: Some(self.bind(name, ty, false, pattern_span.clone())),
                     })
                     .collect();
                 HirStmtKind::Destructure {
@@ -30703,7 +30700,12 @@ fn collect_captures_walk_block(
             }
             HirStmtKind::Destructure { value, fields } => {
                 collect_captures_walk(value, &locally_bound, seen, captures, self_id);
-                locally_bound.extend(fields.iter().map(|field| field.binding.id));
+                locally_bound.extend(
+                    fields
+                        .iter()
+                        .filter_map(|field| field.binding.as_ref())
+                        .map(|binding| binding.id),
+                );
             }
             HirStmtKind::Let(binding, None) => {
                 locally_bound.insert(binding.id);
@@ -33567,11 +33569,11 @@ mod tests {
             [
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(0),
-                    binding: HirBinding { name: label, ty: ResolvedTy::String, .. },
+                    binding: Some(HirBinding { name: label, ty: ResolvedTy::String, .. }),
                 },
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(1),
-                    binding: HirBinding { name: bytes, ty: ResolvedTy::Bytes, .. },
+                    binding: Some(HirBinding { name: bytes, ty: ResolvedTy::Bytes, .. }),
                 },
             ] if label == "label" && bytes == "bytes"
         ));
@@ -33580,11 +33582,11 @@ mod tests {
             [
                 HirDestructureField {
                     selector: HirDestructureSelector::Record(x),
-                    binding: HirBinding { name: x_binding, ty: ResolvedTy::String, .. },
+                    binding: Some(HirBinding { name: x_binding, ty: ResolvedTy::String, .. }),
                 },
                 HirDestructureField {
                     selector: HirDestructureSelector::Record(payload),
-                    binding: HirBinding { name: payload_binding, ty: ResolvedTy::Bytes, .. },
+                    binding: Some(HirBinding { name: payload_binding, ty: ResolvedTy::Bytes, .. }),
                 },
             ] if x == "x" && x_binding == "x" && payload == "payload" && payload_binding == "payload"
         ));
@@ -33593,17 +33595,17 @@ mod tests {
             [
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(0),
-                    binding: HirBinding {
+                    binding: Some(HirBinding {
                         ty: ResolvedTy::Tuple(_),
                         ..
-                    },
+                    }),
                 },
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(1),
-                    binding: HirBinding {
+                    binding: Some(HirBinding {
                         ty: ResolvedTy::I64,
                         ..
-                    },
+                    }),
                 },
             ]
         ));
@@ -33612,11 +33614,11 @@ mod tests {
             [
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(0),
-                    binding: HirBinding { name: label, ty: ResolvedTy::String, .. },
+                    binding: Some(HirBinding { name: label, ty: ResolvedTy::String, .. }),
                 },
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(1),
-                    binding: HirBinding { name: payload, ty: ResolvedTy::Bytes, .. },
+                    binding: Some(HirBinding { name: payload, ty: ResolvedTy::Bytes, .. }),
                 },
             ] if label == "nested_label" && payload == "nested_payload"
         ));

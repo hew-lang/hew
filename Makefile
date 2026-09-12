@@ -686,7 +686,8 @@ ci-shard-2: hew-profile-check libhew-link-race-test test \
 	test-leak-oracle-selftest test-opaque-resource-lifecycle-matrix-external \
 	test-ownership-balance-corpus compile-determinism-verify compile-determinism-selftest \
 	test-ownership-balance-runner-selftest stdlib-user-build-clean \
-	test-asan-fixture-selftest hew-fmt-property stdlib-lint
+	test-asan-fixture-selftest hew-fmt-property stdlib-lint \
+	test-extern-bytes test-host-client
 
 ci-shard-3: grammar-parity mqtt-broker-e2e sandbox-parity \
 	fuzz-oracle fuzz-oracle-selftest test-package-install \

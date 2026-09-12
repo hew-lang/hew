@@ -183,7 +183,6 @@ macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_do
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_continue_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_for_await_bytes_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::resource_marker_applicability_reject	ownership_markers_on_nominal_types_still_check_clean	#3370 gives every type the checker admits a SIR value contract
-linux	failure	hew-cli::run_e2e	blocking_remote_ask_in_main_keeps_blocking_terminator	#3373 lowers a remote actor ask
 linux	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
 linux	failure	hew-cli::run_e2e	check_carrier_conditional_consume_shared_exit_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::run_e2e	check_closure_borrowed_element_store_fails_closed	#3377 fix/collections-final-path: renders a borrowed Vec-element closure store's ownership refusal as a source diagnostic
@@ -201,7 +200,6 @@ macos,windows	failure	hew-cli::run_e2e	run_record_resource_fields_both_closed_cl
 macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_field_read_closes_once	#3070 closes a composite's resource leaf exactly once
 macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_untouched_binder_closes_once	#3070 closes a composite's resource leaf exactly once
 macos,windows	failure	hew-cli::run_e2e	run_result_resource_payload_wildcard_arm_closes_once	#3070 closes a composite's resource leaf exactly once
-linux	failure	hew-cli::run_e2e	suspending_remote_ask_flip_in_execution_context	#3373 lowers a remote actor ask
 linux	failure	hew-cli::shutdown_drain_e2e	tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero	#3397 delivers an in-budget handler's response before the drained socket closes
 linux	failure	hew-cli::sort_complexity_e2e	sort_merge_authority_runs_under_wasmtime	#3368 implements sandbox emission on the physical path
 macos	failure	hew-cli::string_result_retention_leak_oracle	ordinary_helper_snapshot_raw_trap_has_zero_leak_slope	#3079 derives cleanup from exact owner states

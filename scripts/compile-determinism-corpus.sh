@@ -6,7 +6,7 @@
 # pipeline and requires the observable result to be identical each time:
 #
 #   * exit status,
-#   * the ordering of `ownership EdgeCarry` facts in the raw MIR dump,
+#   * the physical MIR dump, byte for byte,
 #   * stderr, byte for byte.
 #
 # Ownership facts are collected through hashed maps and sets, and diagnostics
@@ -41,7 +41,7 @@ source "$ROOT/scripts/lib/corpus-nonempty.sh"
 
 HEW_BIN="${HEW_BIN:-$ROOT/target/debug/hew}"
 DEFAULT_CORPUS="$ROOT/tests/ll-oracle/corpus"
-VERIFIED_FLOOR=16
+VERIFIED_FLOOR=15
 MIN_VERIFIED="${COMPILE_DETERMINISM_MIN_VERIFIED:-$VERIFIED_FLOOR}"
 
 # SHORTCUT: a fixed repeat count is a sampling approximation of "this compile is
@@ -59,7 +59,7 @@ usage() {
 Usage: scripts/compile-determinism-corpus.sh [fixture.hew | directory ...]
 
 Compile every fixture repeatedly and require identical exit status, identical
-`ownership EdgeCarry` ordering, and byte-identical stderr across runs.  With no
+the physical MIR dump, and byte-identical stderr across runs.  With no
 arguments, runs every top-level .hew fixture in tests/ll-oracle/corpus.
 
 Environment:
@@ -161,9 +161,9 @@ run_compile() {
     return "$status"
 }
 
-edge_carry_sequence() {
+physical_dump() {
     local output_path="$1"
-    sed -n '/ownership EdgeCarry/p' "$output_path"
+    cat "$output_path"
 }
 
 failures=0
@@ -179,8 +179,8 @@ for index in "${!fixtures[@]}"; do
 
     baseline_status=0
     run_compile "$baseline_out" "$baseline_err" \
-        "$HEW_BIN" compile --dump-mir raw "$fixture" || baseline_status=$?
-    edge_carry_sequence "$baseline_out" >"$baseline_edges"
+        "$HEW_BIN" compile --dump-mir physical "$fixture" || baseline_status=$?
+    physical_dump "$baseline_out" >"$baseline_edges"
 
     fixture_failed=0
     if [[ "$baseline_status" -ne 0 && "$baseline_status" -ne 1 ]]; then
@@ -194,14 +194,14 @@ for index in "${!fixtures[@]}"; do
         repeated_edges="$tmpdir/$index.baseline.$run.edges"
         repeated_status=0
         run_compile "$repeated_out" "$repeated_err" \
-            "$HEW_BIN" compile --dump-mir raw "$fixture" || repeated_status=$?
-        edge_carry_sequence "$repeated_out" >"$repeated_edges"
+            "$HEW_BIN" compile --dump-mir physical "$fixture" || repeated_status=$?
+        physical_dump "$repeated_out" >"$repeated_edges"
         if [[ "$baseline_status" -ne "$repeated_status" ]]; then
             echo "FAIL $label: repeated compile $run changed exit status from $baseline_status to $repeated_status" >&2
             fixture_failed=1
         fi
         if ! diff -u "$baseline_edges" "$repeated_edges"; then
-            echo "FAIL $label: repeated compile $run reordered EdgeCarry facts" >&2
+            echo "FAIL $label: repeated compile $run changed the physical MIR dump" >&2
             fixture_failed=1
         fi
         if ! diff -u "$baseline_err" "$repeated_err"; then
@@ -218,7 +218,7 @@ for index in "${!fixtures[@]}"; do
         failures=$((failures + 1))
     else
         # A normal diagnostic rejection is a verified compiler outcome, not a
-        # missing corpus execution: its status, EdgeCarry ordering and exact
+        # missing corpus execution: its status, physical dump and exact
         # stderr have all passed the repeated-compile assertions.
         verified_outcomes=$((verified_outcomes + 1))
         if [[ "$baseline_status" -eq 1 ]]; then

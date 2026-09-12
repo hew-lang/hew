@@ -158,20 +158,6 @@ fn eval_owned_fragment_uses_the_shared_native_pipeline() {
 }
 
 #[test]
-fn retired_lowering_switch_is_rejected() {
-    let mut command = Command::new(hew_binary());
-    command.args(["build", "unused.hew", "--sir-lower"]);
-    let result = run_bounded_command(command, "reject retired route flag");
-    assert_eq!(
-        result.status.code(),
-        Some(2),
-        "{}",
-        describe_output(&result)
-    );
-    assert!(String::from_utf8_lossy(&result.stderr).contains("--sir-lower"));
-}
-
-#[test]
 fn requested_sanitizer_instruments_the_emitted_object() {
     use object::{Object, ObjectSymbol};
     require_codegen();

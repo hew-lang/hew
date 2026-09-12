@@ -405,7 +405,7 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
     format!(
         "import std.channel;\n\
          indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
-         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor ProbeSink {{ \n\
          \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
          \x20       ready.send(1), \n\
@@ -448,17 +448,17 @@ fn actor_request_carrier_source(frames: usize) -> String {
     let expected_total = 3 * frames * frames + 75 * frames;
     format!(
         "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
-         fn sum(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => sum(l) + sum(r), }} }}\n\
+         fn sum(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor Scorer {{\n\
          \x20   receive fn score(tag: i64, tree: Tree) -> i64 {{ tag + sum(tree) }}\n\
          }}\n\
          actor Coordinator {{\n\
          \x20   let scorer: Scorer,\n\
          \x20   receive fn ask_score(tag: i64, tree: Tree) -> i64 {{\n\
-         \x20       match await scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
+         \x20       match scorer.score(tag, tree) {{ .Ok(value) => value, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, tree: Tree) -> i64 {{\n\
-         \x20       select {{ reply = await scorer.score(tag, tree) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
+         \x20       select {{ reply from scorer.score(tag, tree) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\

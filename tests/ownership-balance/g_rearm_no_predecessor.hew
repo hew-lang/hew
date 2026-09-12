@@ -43,7 +43,7 @@ pub fn replay(events: Vec<string>) -> Model {
 }
 
 pub fn main() {
-    let ev: Vec<string> = Vec.new();
+    var ev: Vec<string> = Vec.new();
     ev.push("a");
     println(replay(ev).source_seq);
 }

@@ -3,7 +3,7 @@ import std.string;
 type Row { path: string, branch: string, }
 
 pub fn rows(listing: string) -> Vec<Row> {
-    let out: Vec<Row> = Vec.new();
+    var out: Vec<Row> = Vec.new();
     let worktree_prefix = "worktree ";
     let branch_prefix = "branch refs/heads/";
     var path = "";

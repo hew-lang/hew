@@ -7,7 +7,7 @@ fn make_item(number: i64) -> Item {
 }
 
 fn inspect(number: i64) -> i64 {
-    let items: Vec<Item> = Vec.new();
+    var items: Vec<Item> = Vec.new();
     items.push(make_item(number));
     items.push(make_item(number + 1));
 

@@ -7,11 +7,11 @@
 // caller-borrowed, so the MOVE ingress emits `hew_string_clone` before the
 // insert. The reassigned variant crosses the generation boundary — the fresh
 // frame-owned generation is consumed, with no clone.
-fn add_member(members: HashSet<string>, name: string) {
+fn add_member(var members: HashSet<string>, name: string) {
     members.insert(name);
 }
 
-fn add_renamed(members: HashSet<string>, var name: string) {
+fn add_renamed(var members: HashSet<string>, var name: string) {
     name = name.to_upper();
     members.insert(name);
 }
@@ -24,7 +24,7 @@ fn main() {
     println(members.len());
 
     // Vec runtime family
-    let v: Vec<i64> = Vec.new();
+    var v: Vec<i64> = Vec.new();
     v.push(1);
     v.push(2);
     v.push(3);
@@ -35,7 +35,7 @@ fn main() {
     println(last);
 
     // HashMap runtime family
-    let m: HashMap<string, i64> = HashMap.new();
+    var m: HashMap<string, i64> = HashMap.new();
     m.insert("a", 10);
     m.insert("b", 20);
     println(m.len());
@@ -47,7 +47,7 @@ fn main() {
     println(had);
 
     // HashSet runtime family
-    let s: HashSet<i64> = HashSet.new();
+    var s: HashSet<i64> = HashSet.new();
     s.insert(42);
     s.insert(7);
     println(s.len());

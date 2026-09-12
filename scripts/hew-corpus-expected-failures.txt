@@ -6,20 +6,27 @@
 #
 #   <path> [E_DIAGNOSTIC_CODE]  # classification and issue
 #
+# A path carries a code only when the check emits exactly one stable `E_*`. A
+# refusal that emits none, or two, stays unpinned rather than asserting a set
+# the compiler does not produce.
+#
 # The gate exits 1 on any UNEXPECTED failure (not in this list), changed
 # diagnostic for an entry that records one, or inventory/outcome drift. A
 # listed entry that now compiles is reported in PR gates and fails scheduled
 # strict accounting until removed. Pin codes, not diagnostic prose.
 #
 # Classification categories:
-#   deferred-nyi    — Feature not yet implemented in the compiler (select/channel,
-#                     link_monitor MIR, hashmap/hashset for-in, lambdas with await,
-#                     await_restart syntax, clone on generic types, etc.). The
-#                     fixture is correctly written Hew; the compiler just hasn't
-#                     landed the feature yet.
-#   stale-syntax    — File uses pre-v0.5 syntax that was removed (e.g.
-#                     `struct` → `type`, `event` → `events { }` block,
-#                     `let x = channel()` → new channel API). Needs migrating
+#   deferred-nyi    — Feature not yet implemented in the compiler. The fixture
+#                     is correctly written Hew; the compiler has not landed
+#                     the feature yet.
+#   final-path-limitation — The checker admits the program and the final path
+#                     refuses it through the limitation channel (exit 3,
+#                     `compiler limitation:`).
+#   internal-channel — The checker admits the program and a later stage refuses
+#                     it through the internal channel (exit 4, `internal
+#                     compiler error:`). Always a compiler defect, never the
+#                     program's: every row here names its issue.
+#   stale-syntax    — File uses syntax that was removed. Needs migrating
 #                     forward rather than bending the compiler back.
 #   sandbox-intentional-error — Sandbox fixture explicitly demonstrates a
 #                     compile error to the sandbox VM; intentionally invalid.
@@ -28,13 +35,15 @@
 #                     exit code. Removing the refusal must fail that gate, not
 #                     this one.
 #   fmt-corpus-incomplete — Formatter roundtrip corpus file that tests AST
-#                     round-trip but references undefined helpers (e.g. `empty()`)
-#                     because it is not intended to compile standalone.
+#                     round-trip but names undefined traits and helpers because
+#                     it is not intended to compile standalone.
 #   requires-package-resolver — File imports a `hew::` package that must be
-#                     resolved by `hew install` first; `hew check` alone
-#                     cannot resolve the dependency. Covered by test-pkg-import.
-#   repro-wip       — Reproduction case tracking a specific open bug; compiles
-#                     partially but fails on a known issue being fixed.
+#                     resolved by `hew install` first; `hew check` alone cannot
+#                     resolve the dependency. Covered by test-pkg-import.
+#   requires-file-import-program — File is one member of a multi-file program
+#                     and resolves only when the program's root is compiled.
+#                     Covered by its own core-acceptance case.
+#   repro-wip       — Reproduction case tracking a specific open bug.
 #   downstream-wip  — Downstream / tools fixture not yet updated to current
 #                     associated-type requirements.
 #
@@ -44,207 +53,218 @@
 #
 # Gate: make hew-check-all (scripts/corpus-ratchet.sh hew-corpus)
 
-# ── examples/ ────────────────────────────────────────────────────────────────
+# ── examples/ ───────────────────────────────────────────────────────────────────
 
-# deferred-nyi: distributed / net NYI features
-
-# deferred-nyi: lambda actor syntax not yet supported
-
-# deferred-nyi: multifile compilation NYI (requires multi-file resolve)
+# deferred-nyi: multifile compilation is not implemented (requires multi-file resolve)
 examples/multifile/02_geometry/geo/area.hew
 examples/multifile/02_geometry/geo/distance.hew
 
-# deferred-nyi: observe-related NYI
+# internal-channel (#3401): a `dyn Drawable` parameter reaches SIR verification
+# with no published dispatch table
+examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 
-# deferred-nyi: profiler NYI
+# final-path-limitation: ordinary machine evaluation does not admit const
+# parameters or composite states yet
+examples/machine/connection_lifecycle.hew
+examples/machine/run_connection_lifecycle.hew E_CONTEXT_VARIANT_NO_TYPE
 
-# deferred-nyi: QUIC / advanced net NYI
-examples/quic_mesh/selector_smoke.hew
+# final-path-limitation: the distributed Node and QUIC surfaces have no
+# ownership-SIR operation contract on the final path yet
+examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
+examples/distributed_hello.hew E_SIR_UNSUPPORTED
 
-# deferred-nyi: advanced actor patterns NYI
+# final-path-limitation: QUIC / advanced net
+examples/quic_mesh/client.hew E_SIR_UNSUPPORTED
+examples/quic_mesh/selector_smoke.hew E_SIR_UNSUPPORTED
 
-# deferred-nyi: v05 examples using NYI features
+# final-path-limitation: cancellation observation and the linear accept corpus
+# reach unlowered semantic operations
+examples/v05/cancellation_is_cancelled_observation.hew E_SIR_UNSUPPORTED
+examples/v05/linear/accept/linear_consumed_both_branches.hew E_SIR_UNSUPPORTED
+examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew E_SIR_UNSUPPORTED
+
+# corpus-intentional-refusal: `*_fails.hew` programs demonstrate the refusal
+# their name states
 examples/v05/channel_vec_element_fails.hew
-
-# deferred-nyi: checked-mir v05 examples using NYI features
-examples/v05/checked-mir/actor_link_monitor.hew
-
-# repro-wip (#3095): Vec owned-move index assignment emits a duplicate ownership
-# handoff across its bounds-check CFG, then checked MIR rejects the second event
-
-# deferred-nyi: f64 hashmap expected-fail test fixture (is_empty NYI)
-examples/v05/hashmap_f64_key_is_empty_fails.hew
-
-# deferred-nyi: channel/stream surfaces NYI
-
-# deferred-nyi: vec layout and method NYI
 examples/v05/vec_unsupported_method_fails.hew
 
-# ── hew-lsp/ ─────────────────────────────────────────────────────────────────
+# ── hew-cli/ ────────────────────────────────────────────────────────────────────
 
-# deferred-nyi: LSP test fixtures covering NYI language features
-hew-lsp/tests/fixtures/v05_async_await.hew
-hew-lsp/tests/fixtures/v05_await_deadline.hew
+# final-path-limitation: the distributed node fixture
+hew-cli/tests/fixtures/distributed/dist_node.hew E_SIR_UNSUPPORTED
+
+# corpus-intentional-refusal: hew-cli's `result_error_type_must_implement_error`
+# test asserts this exact refusal and its exit status
+hew-cli/tests/fixtures/main_entry_exit/non_error.hew
+
+# ── hew-lsp/ ────────────────────────────────────────────────────────────────────
+
+# internal-channel (#3401): the checker admits a record tuple literal that HIR
+# lowering then refuses
+hew-lsp/tests/fixtures/v05_record_tuple_literal.hew E_HIR
+
+# deferred-nyi / stale-syntax: LSP fixtures covering surfaces the checker no
+# longer admits or has not built; the LSP tests parse them, they are not compiled
+hew-lsp/tests/fixtures/v05_async_await.hew E_NO_ASYNC_FN
+hew-lsp/tests/fixtures/v05_composite_machine.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
-hew-lsp/tests/fixtures/v05_machine_generics.hew
-hew-lsp/tests/fixtures/v05_machine_methods.hew
+hew-lsp/tests/fixtures/v05_machine_methods.hew E_CONTEXT_VARIANT_NO_TYPE
 hew-lsp/tests/fixtures/v05_machine_states.hew
-hew-lsp/tests/fixtures/v05_machine_substrate.hew
-hew-lsp/tests/fixtures/v05_record_tuple_literal.hew
-hew-lsp/tests/fixtures/v05_scope_fork.hew
 hew-lsp/tests/fixtures/v05_std_channels.hew
 
-# ── hew-mir/ ─────────────────────────────────────────────────────────────────
+# ── hew-observe/ ────────────────────────────────────────────────────────────────
 
-# deferred-nyi: MIR test fixture for link_monitor spawn binding (NYI)
-hew-mir/tests/fixtures/link_monitor_spawn_binding.hew
+# stale-syntax: observe workload fixture uses retired type and send spellings
+hew-observe/test-harness/observe_workload.hew E_SEND_RESULT_DROPPED
 
-# ── hew-observe/ ─────────────────────────────────────────────────────────────
+# ── hew-parser/ ─────────────────────────────────────────────────────────────────
 
-# deferred-nyi: observe workload fixture uses NYI actor/channel features
-hew-observe/test-harness/observe_workload.hew
+# internal-channel (#3401): the checker admits the seed's record form and HIR
+# lowering then refuses it
+hew-parser/fuzz/corpus/fuzz_record_types/seed.hew E_HIR
 
-# ── hew-parser/ ──────────────────────────────────────────────────────────────
-
-# stale-syntax: fuzz machine seed uses pre-v0.5 interleaved event declarations;
-# paired generator emits the same parse-rejected form
+# stale-syntax: fuzz seeds hold parse-rejected forms on purpose; the paired
+# generators emit the same shapes
 hew-parser/fuzz/corpus/fuzz_machine_decls/seed.hew
-
-# stale-syntax: fuzz record seed uses tuple-style record declarations; paired
-# generator emits the same parse-rejected form
-hew-parser/fuzz/corpus/fuzz_record_types/seed.hew
-
-# deferred-nyi: scope/fork caller context routing (W4.010-followup-caller-ctx-routing)
 hew-parser/fuzz/corpus/fuzz_supervisor_decls/seed.hew
 
-# fmt-corpus-incomplete: formatter roundtrip corpus files reference undefined
-# helpers (e.g. `empty()`) — these test AST round-trip only, not compilation
+# fmt-corpus-incomplete: formatter roundtrip corpus files name undefined traits
+# and helpers — they test AST round-trip only, not compilation
+hew-parser/tests/fmt_roundtrip_corpus/assoc_types/dyn_assoc_bindings.hew
 hew-parser/tests/fmt_roundtrip_corpus/assoc_types/generic_projection_where.hew
-hew-parser/tests/fmt_roundtrip_corpus/assoc_types/impl_assoc_ordering.hew
-hew-parser/tests/fmt_roundtrip_corpus/assoc_types/self_projection_signatures.hew
 
-# ── hew-sandbox-vm/ ──────────────────────────────────────────────────────────
+# ── hew-sandbox-vm/ ─────────────────────────────────────────────────────────────
 
-# sandbox-intentional-error: fixture 09 is explicitly a "compile type error"
-# demonstration for the sandbox VM — it is designed to fail hew check
+# sandbox-intentional-error: fixture 09 is a compile-error demonstration for the
+# sandbox VM — it is designed to fail hew check
 hew-sandbox-vm/fixtures/09-compile-type-error/main.hew
 
-# deferred-nyi: sandbox fixtures using NYI features (actor ask/reply, channel
-# select, supervisor, machine events, stdin, random)
+# deferred-nyi / stale-syntax: sandbox fixtures using surfaces the compiler has
+# not built or no longer spells this way
 hew-sandbox-vm/fixtures/15-actor-counter/main.hew
 hew-sandbox-vm/fixtures/16-actor-ask-reply/main.hew
-hew-sandbox-vm/fixtures/17-channel-select/main.hew
 hew-sandbox-vm/fixtures/18-task-await/main.hew
 hew-sandbox-vm/fixtures/19-supervisor-restart/main.hew
 hew-sandbox-vm/fixtures/21-replay-stdin/main.hew
 hew-sandbox-vm/fixtures/22-deterministic-random/main.hew
-hew-sandbox-vm/fixtures/24-actor-pipeline/main.hew
 hew-sandbox-vm/fixtures/25-actor-crash/main.hew
 hew-sandbox-vm/fixtures/26-i64-bigint/main.hew
-hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew
+hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew E_OPERATOR_REMOVED
 hew-sandbox-vm/fixtures/28-actor-state-arity-trap/main.hew
 hew-sandbox-vm/fixtures/29-mixed-scalar-compare-trap/main.hew
 
-# ── repros/ ───────────────────────────────────────────────────────────────────
+# ── docs/repros/final-core/ ─────────────────────────────────────────────────────
 
-# repro-wip: open bug reproduction cases (Option<T> Display, method value)
+# final-path-limitation: each of these repros documents the E_SIR_UNSUPPORTED
+# refusal named in its own leading comment
+docs/repros/final-core/own-generic-identity-transfer.hew
+docs/repros/final-core/sir-i32-to-i64-coercion.hew E_SIR_UNSUPPORTED
+docs/repros/final-core/sir-identity-compare-unsupported.hew E_SIR_UNSUPPORTED
+
+# ── repros/ ─────────────────────────────────────────────────────────────────────
+
+# repro-wip: open bug reproduction cases
 repros/03_hashmap_string_vec_value.hew
+repros/3094_consume_param_transfer_builder.hew
 repros/p0a_hashmap_string_vec_value.hew
 repros/p0c_method_value_failclosed.hew
 
-# repro-wip (#3094): fluent consumed-resource transfer ends the child's owner
-# generation before the carried handoff
+# ── repros/ladder/ ──────────────────────────────────────────────────────────────
 
-# repro-wip (#3104): receive-generator suspension cleanup retains a stale drop
-# after transferring an owned record/enum yield
-
-# ── repros/ladder/ ────────────────────────────────────────────────────────────
-
-# corpus-intentional-refusal: docs/internal/ir-ladder.md's probe corpus
-# (repros/ladder/README.md, outcome column). Each of these programs is
-# deliberately illegal under the current lowerer — the refusal is the
-# behaviour the ladder document quotes, not a bug. A path carries a pinned
-# code only when the check emits exactly one stable `E_*` code; several of
-# these checker-level (not MIR-level) refusals carry no stable code at all,
-# and cond_init.hew and fork_unawaited.hew each now raise two, so those stay
-# unpinned rather than asserting a set the checker output doesn't produce.
-repros/ladder/bind_copy.hew E_MIR_CHECK
+# docs/internal/ir-ladder.md's probe corpus (repros/ladder/README.md, outcome
+# column). A `reject` probe is deliberately illegal and its refusal is what the
+# citing section quotes. A `limit` or `ice` probe is a compiler defect: the
+# checker admitted the program and a later stage refused it (#3401).
 repros/ladder/bytes_clone.hew
 repros/ladder/cap_move.hew
-repros/ladder/closure_mut_share.hew E_MIR
-repros/ladder/closure_rebind.hew E_MIR_CHECK
-repros/ladder/cond_init.hew
-repros/ladder/fork_unawaited.hew
-repros/ladder/gen_rebind.hew E_MIR_CHECK
-repros/ladder/lambda_send_twice.hew
+repros/ladder/closure_mut_share.hew
+repros/ladder/cond_init.hew E_SIR_UNSUPPORTED
+repros/ladder/gen_rebind.hew E_SIR_VERIFY
+repros/ladder/lambda_send_twice.hew E_SEND_RESULT_DROPPED
 repros/ladder/let_field_mut.hew
-repros/ladder/let_index_assign.hew
+repros/ladder/linear_actor_field.hew E_SIR_UNSUPPORTED
+repros/ladder/res_param_consume.hew
 repros/ladder/resource_early_close.hew
+repros/ladder/resource_keep.hew E_SIR_UNSUPPORTED
 repros/ladder/resource_send2.hew
-repros/ladder/state_resource_mut.hew
-repros/ladder/state_resource_trait.hew E_MIR
-repros/ladder/vec_resource.hew E_MIR_CHECK
+repros/ladder/state_reinit.hew E_SIR_UNSUPPORTED
+repros/ladder/state_resource_mut.hew E_SIR_VERIFY
+repros/ladder/state_resource_trait.hew E_SIR_VERIFY
+repros/ladder/vec_resource.hew E_SIR_VERIFY
 
-# ── tests/ownership-balance/ ───────────────────────────────────────────────
+# ── tests/core-acceptance/ ──────────────────────────────────────────────────────
 
-# corpus-intentional-refusal: the ownership corpus's refusal row. It reads a
-# consumed binding on purpose so the obligation gate can assert a blocking MIR
-# finding and a non-zero exit; tests/ownership-balance/baseline.tsv pins both,
-# and run.py refuses to run at all if the corpus loses its refusal.
-tests/ownership-balance/retained_hard_refusal.hew
+# corpus-intentional-refusal: `kind = "check"` acceptance cases. Each one's
+# .toml pins the exact diagnostics and `make core-acceptance` is the oracle;
+# this row only keeps the repo-wide sweep from reading the refusal as a
+# regression.
+tests/core-acceptance/cases/actor-handle-legacy-types-refused.hew E_ACTOR_HANDLE_TYPE
+tests/core-acceptance/cases/check-actor-field-deferred-spawn-arg.hew E_ACTOR_FIELD_DEFERRED
+tests/core-acceptance/cases/check-actor-field-uninitialized-read.hew E_ACTOR_FIELD_UNINITIALIZED
+tests/core-acceptance/cases/check-rc-not-send.hew
+tests/core-acceptance/cases/check-select-no-arms.hew
+tests/core-acceptance/cases/listener-accept-loop-return.hew E_OWN_CONSUME_BORROWED
+tests/core-acceptance/cases/loan-ends-at-last-use.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/loaned-payload-projection.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/machine-legacy-forms-refused.hew
+tests/core-acceptance/cases/resource-missing-close.hew E_HIR
+tests/core-acceptance/cases/spread-parse-refusals.hew
+tests/core-acceptance/cases/spread-refusals.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/var-param-mutation-lost.hew
+tests/core-acceptance/cases/var-param-mutation-returned.hew
+tests/core-acceptance/cases/vec-element-refusals.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/vec-get-affine-element.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/vector-get-borrowed.hew E_ELEMENT_NO_COPY
 
-# ── tests/corpus/ ────────────────────────────────────────────────────────────
+# requires-file-import-program: members of a multi-file program. Standalone
+# `hew check` cannot resolve the sibling modules; the owning core-acceptance
+# case compiles the program's root.
+tests/core-acceptance/fixtures/channel-endpoint-element-through-alias/main.hew
+tests/core-acceptance/fixtures/channel-endpoint-user-sender-refused/main.hew
+tests/core-acceptance/fixtures/file-import-hir-diagnostic-provenance/main.hew E_HIR
+tests/core-acceptance/fixtures/file-import-hir-diagnostic-provenance/token.hew E_HIR
+tests/core-acceptance/fixtures/file-import-lowered-once/handle.hew E_HIR
+tests/core-acceptance/fixtures/file-import-lowered-once/main.hew E_HIR
+tests/core-acceptance/fixtures/file-import-not-transitive-types/main.hew
+tests/core-acceptance/fixtures/file-import-not-transitive/main.hew
+tests/core-acceptance/fixtures/module-identity-dual-spelling/src/mid.hew
 
-# stale-syntax: record update spread must be the final field
-tests/corpus/v05-value-model/03_cowvalue_mutation_after_share.hew
+# requires-file-import-program: a directory module's leaf source
+tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
 
-# deferred-nyi: planned shareable persistent-map stdlib surface is not built yet
+# ── tests/corpus/ ───────────────────────────────────────────────────────────────
+
+# stale-syntax / deferred-nyi: the v05 value-model corpus is written against
+# pre-v0.5 spellings and speculative stdlib surfaces
 tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
-
-# stale-syntax: pre-v0.5 bare resource attribute and consuming receiver modifier
 tests/corpus/v05-value-model/05_affine_resource_consume.hew
-
-# deferred-nyi: Vec.first and speculative Map/PersistentMap surfaces are not built yet
 tests/corpus/v05-value-model/07_view_field_slice_alias.hew
-
-# stale-syntax: pre-v0.5 bare resource attribute plus open receive-fn attribute support
 tests/corpus/v05-value-model/08_actor_send_transfer.hew
-
-# deferred-nyi: actor CowValue share-send mode is not implemented; the sender's
-# string is currently moved by the second broadcast
-tests/corpus/v05-value-model/09_actor_send_share.hew
-
-# stale-syntax: pre-v0.5 bare linear attribute and missing copy builtin surface
 tests/corpus/v05-value-model/10_actor_send_materialize.hew
-
-# stale-syntax: pre-v0.5 fn(...) closure literal syntax
 tests/corpus/v05-value-model/12_closure_capture_let_read.hew
 tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
-
-# stale-syntax: pre-v0.5 consuming parameter modifier
 tests/corpus/v05-value-model/14_closure_capture_var_consume.hew
-
-# stale-syntax: pre-v0.5 generator return-type syntax
-tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew
-
-# deferred-nyi: Display/Formatter stringification API surface is not built yet
+tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew E_GEN_BLOCK_SYNTAX
 tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
-
-# stale-syntax: record update spread must be the final field
-tests/corpus/v05-value-model/18_record_update_syntax.hew
-
-# deferred-nyi: actor_scope is forward syntax that has not landed yet
 tests/corpus/v05-value-model/19_actor_scope.hew
 
-# ── tests/pkg-import/ ────────────────────────────────────────────────────────
-#
-# All files in tests/pkg-import/ (non-reject) fail standalone `hew check`
-# because they import `hew::` packages that require `hew install` to resolve
-# into .hew/packages/ first. These are covered by make test-pkg-import which
-# runs the full package-import oracle with the resolver active.
+# ── tests/ll-oracle/ ────────────────────────────────────────────────────────────
 
-# requires-package-resolver: import alias tests
+# final-path-limitation: the FFI borrow-boundary fixture
+tests/ll-oracle/corpus/ffi_borrow_boundary.hew E_SIR_UNSUPPORTED
+
+# ── tests/pkg-import/ ───────────────────────────────────────────────────────────
+
+# corpus-intentional-refusal: `impl Sub for W` inline-provides the supermethod
+# but `require_supertrait_impls` still wants a separate `impl Super for W`, so
+# this accept fixture states the opposite of what the checker decides. Its
+# claim, not its spelling, is what has to move.
+tests/pkg-import/subtrait_inline_supermethod_accept.hew
+
+# requires-package-resolver: these import `hew::` packages that `hew install`
+# must resolve into .hew/packages/ first. make test-pkg-import runs the full
+# package-import oracle with the resolver active.
 tests/pkg-import/alias_import_does_not_conflate_with_same_named_export.hew
 tests/pkg-import/alias_import_resolves_bare_binding_to_source_identity.hew
 tests/pkg-import/aliased_import_enum_payload_member.hew
@@ -281,59 +301,20 @@ tests/pkg-import/imported_trait_method.hew
 tests/pkg-import/imported_trait_resource_param_consume_ok.hew
 tests/pkg-import/local_actor_ask_guard.hew
 tests/pkg-import/local_trait_shadows_imported_collision_accept.hew
-tests/pkg-import/local_type_shadows_import_alias_member.hew
 tests/pkg-import/local_type_shadows_import_alias.hew
+tests/pkg-import/local_type_shadows_import_alias_member.hew
 tests/pkg-import/missing_assoc_type_collision_accept.hew
 tests/pkg-import/mixed_collision_reply.hew
 tests/pkg-import/mixed_import_impl_collision.hew
 tests/pkg-import/nested_qualified_payload.hew
 tests/pkg-import/package_module_type_alias.hew
+tests/pkg-import/postmono_qualified_layout.hew
 tests/pkg-import/private_generic_record_option_element.hew
 tests/pkg-import/private_generic_record_vec_element.hew
-
-# requires-package-resolver: positive package-machine fixture. Standalone
-# `hew check` cannot resolve `hew.qmach`; test-pkg-import installs that package
-# and executes both qualified machine and synthesized event identities.
-tests/pkg-import/qualified_machine_event_access.hew
-
-# requires-package-resolver: sub-packages (each depends on sibling packages)
-tests/pkg-import/pkgs/aliasmember/aliasmember.hew
-tests/pkg-import/pkgs/assocemptyuse/assocemptyuse.hew
-tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew
-tests/pkg-import/pkgs/assocreqimplok/assocreqimplok.hew
-tests/pkg-import/pkgs/deepalias/deepalias.hew
-tests/pkg-import/pkgs/nestrelay/nestrelay.hew
-tests/pkg-import/pkgs/reexchaina/reexchaina.hew
-tests/pkg-import/pkgs/reexmid/reexmid.hew
-tests/pkg-import/pkgs/reexsub/reexsub.hew
-tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
-
-# corpus-intentional-refusal: qmachbad deliberately names undeclared state
-# `.Nope`; test-pkg-import owns the negative oracle and requires the
-# owner-qualified `hew.qmachbad.Gate` diagnostic.
-tests/pkg-import/pkgs/qmachbad/qmachbad.hew
-
-# requires-package-resolver: self-qualified package source. selfqualtype.hew
-# references its own type both bare (`Meter`) and through its own module
-# (`selfqualtype.Meter`); standalone `hew check` cannot establish the module's
-# own identity without the package harness, so the self-qualified spelling reads
-# as a foreign owner and the two spellings fail to unify. Under the package
-# resolver (make test-pkg-import) the module identity is set and it checks clean.
-tests/pkg-import/pkgs/selfqualtype/selfqualtype.hew
-
-# requires-package-resolver: resource-boundary reject-fixture package source.
-# sinkres deliberately leaves a trait method's #[resource] param unannotated,
-# which the consume-boundary discipline correctly rejects under standalone
-# `hew check` too; it is covered by make test-pkg-import via the
-# imported_trait_resource_param_missing_consume reject oracle. The consume-pinned
-# positive (pkgs/sinkok) checks clean standalone and is intentionally not listed.
-tests/pkg-import/pkgs/sinkres/sinkres.hew
-
-# requires-package-resolver: more accept/trait tests
-tests/pkg-import/postmono_qualified_layout.hew
 tests/pkg-import/published_bare_no_poison.hew
 tests/pkg-import/published_bare_two_optin_ambiguous.hew
 tests/pkg-import/qualified_construct_layout.hew
+tests/pkg-import/qualified_machine_event_access.hew
 tests/pkg-import/qualified_trait_sig.hew
 tests/pkg-import/record_destructure_selective_import.hew
 tests/pkg-import/reexport_aliased_super_inline_supermethod_accept.hew
@@ -351,42 +332,67 @@ tests/pkg-import/samename_type_layout.hew
 tests/pkg-import/self_qualified_type_identity.hew
 tests/pkg-import/two_module_same_generic_valueclass_accept.hew
 
-# ── tests/vertical-slice/accept/ ─────────────────────────────────────────────
-#
-# These are accept/ fixtures (should compile) that currently fail because the
-# relevant compiler feature is deferred or a NYI MIR path is hit.
+# requires-package-resolver: sub-package sources, each depending on siblings
+tests/pkg-import/pkgs/aliasmember/aliasmember.hew
+tests/pkg-import/pkgs/assocemptyuse/assocemptyuse.hew
+tests/pkg-import/pkgs/assocreqimplbad/assocreqimplbad.hew
+tests/pkg-import/pkgs/assocreqimplok/assocreqimplok.hew
+tests/pkg-import/pkgs/deepalias/deepalias.hew
+tests/pkg-import/pkgs/nestrelay/nestrelay.hew
+tests/pkg-import/pkgs/qmachbad/qmachbad.hew
+tests/pkg-import/pkgs/reexchaina/reexchaina.hew
+tests/pkg-import/pkgs/reexmid/reexmid.hew
+tests/pkg-import/pkgs/reexsub/reexsub.hew
+tests/pkg-import/pkgs/reexsubalias/reexsubalias.hew
+tests/pkg-import/pkgs/selfqualtype/selfqualtype.hew
+tests/pkg-import/pkgs/sinkres/sinkres.hew
 
-# deferred-nyi: actor ask race / select / supervisor features
+# ── tests/vertical-slice/accept/ ────────────────────────────────────────────────
 
-# deferred-nyi: await deadline NYI
+# final-path-limitation: accept fixtures whose programs the final path cannot
+# lower yet
+tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/arena_generation_reuse.hew
+tests/vertical-slice/accept/arena_nested_vec_reuse.hew
+tests/vertical-slice/accept/arena_no_leak_cycle.hew
+tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/coalesce_owned_payload_leak.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/duplex_split_roundtrip.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/for_range_mixed_width_bounds.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/for_range_mixed_width_normalization.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/free_fn_actor_scope_spawn.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/gen_block_explicit_return.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/generic_spawn_unit.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/hashmap_for_in_call.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/hashset_for_in_call.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/imported_actor_msg_discriminants.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/imported_supervisor_child_identity.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/linear_inherent_consume.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/linear_inherent_owned_string.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/match_float_literal_arm.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/resource_marker_nominal_type.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/stream_state_field_for_await_asan.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED
+tests/vertical-slice/accept/wrapping_saturating_as_cast.hew E_SIR_UNSUPPORTED
 
-# deferred-nyi: actor crash context diagnostic NYI
+# internal-channel (#3401): accept fixtures the checker admits and SIR
+# verification then refuses
+tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
+tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
+tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew E_SIR_VERIFY
 
-# deferred-nyi: MIR lowering for named function used as a value (only
-# non-generic named functions are currently supported) is not implemented
-# yet; generic named functions as values are not yet implemented in the
-# current spine
-tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew
+# deferred-nyi: accept fixtures for features the compiler has not built
+tests/vertical-slice/accept/bytes_pop_empty_actor_isolated.hew
+tests/vertical-slice/accept/bytes_pop_empty_traps.hew
+tests/vertical-slice/accept/identity_aggregates.hew
+tests/vertical-slice/accept/lambda_self_recursion.hew E_RECURSIVE_LAMBDA_ACTOR
 
-# deferred-nyi: hashmap/hashset for-in NYI
-
-# deferred-nyi: lambda capture NYI
-
-# deferred-nyi: link_monitor MIR NYI
-
-# deferred-nyi: local fn msg actor method
-tests/vertical-slice/accept/local_fn_msg_actor_method_allowed.hew
-
-# deferred-nyi: select recv guard NYI
-
-# deferred-nyi: supervisor NYI features
-
-# deferred-nyi: vec into_iter typeck NYI
-tests/vertical-slice/accept/vec_into_iter_typeck.hew
-
-# deferred-nyi: wire JSON/YAML NYI
-
-# ── tools/ ───────────────────────────────────────────────────────────────────
+# ── tools/ ──────────────────────────────────────────────────────────────────────
 
 # downstream-wip: downstream syntax fixture not yet updated to associated-type
 # requirements (impl must define Canvas)

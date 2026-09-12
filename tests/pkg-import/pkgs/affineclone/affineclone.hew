@@ -4,7 +4,7 @@ pub type ResourceToken {
 }
 
 impl ResourceToken {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 #[linear]

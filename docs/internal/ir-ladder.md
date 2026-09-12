@@ -2630,7 +2630,6 @@ reaches 100 %.
 | Item | Location | Phase |
 | --- | --- | --- |
 | `docs/internal/v05-ir-ladder.md`; links in `docs/observe.md:10`, `docs/diagrams.md:17`; skills `hew-ecosystem-map`, `hew-ir-lowering-map`, `hew-supervision/reference.md:62` repointed | docs / `~/.claude/skills` mirror | P0 |
-| `tests/corpus/v05-value-model/*.ownership-plan.txt` (19, no consumer) and the old doc's §4 "Ownership Plan Report" | tests | P0 |
 | `SirMode`, `--sir-lower`, `SirModeArgs`, `WatchSirModeArgs`, `report_sir_lane`, `report_strict_sir_missing_body` (name-keyed zip, `main.rs:336-344`) | `hew-cli/src/{compile.rs:34, args.rs:48-65,759-773, main.rs:282-387,1596}` | P1 |
 | SIR→MIR bridge: `lower_entry_component`, `RawLowerer`, `VirtualRawLowerer`, `zero_drop_elaboration`, `verify_strict_sir_*`, symbol rejoin at sir.rs:804-817 | `hew-mir/src/sir.rs` (3674 lines) | P1 (replaced by `lower_from_sir`) |
 | three private scalar-domain predicates | `hew-sir/src/lower.rs:797-815`, `verify.rs:905-923`, `hew-mir/src/sir.rs:1252-1258` | P1 |

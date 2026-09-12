@@ -815,13 +815,18 @@ fn tcp_busy_and_invalid_handle_errors_do_not_replace_the_pending_owner() {
     let signal = Arc::new(ReadySignal::default());
     // SAFETY: the connection is live; the first operation remains pending.
     let first = unsafe { hew_async_tcp_read(handle, &descriptor(&signal)) };
-    // SAFETY: the negative probes own separate operations and use no callbacks.
+    let duplicate_ready = Arc::new(ReadySignal::default());
+    let invalid_ready = Arc::new(ReadySignal::default());
+    // SAFETY: each probe owns its operation and retains its readiness signal.
+    // Admission can report EBUSY when the reactor promotes a queued request.
     unsafe {
-        let duplicate = hew_async_tcp_read(handle, ptr::null());
+        let duplicate = hew_async_tcp_read(handle, &descriptor(&duplicate_ready));
+        await_ready(&duplicate_ready);
         assert_eq!(hew_async_io_status(duplicate), AsyncIoStatus::Error as i32);
         assert_eq!(hew_async_io_errno(duplicate), libc::EBUSY);
         hew_async_io_free(duplicate);
-        let invalid = hew_async_tcp_accept(-1, ptr::null());
+        let invalid = hew_async_tcp_accept(-1, &descriptor(&invalid_ready));
+        await_ready(&invalid_ready);
         assert_eq!(hew_async_io_status(invalid), AsyncIoStatus::Error as i32);
         assert_eq!(hew_async_io_errno(invalid), libc::EBADF);
         hew_async_io_free(invalid);

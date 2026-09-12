@@ -1,6 +1,6 @@
 [[case]]
 id = "std_net_dns_execution"
-intent = "The fixture runs to completion and exits 1."
+intent = "`std.net` resolves localhost and reports the lookup succeeded."
 source = "../vertical-slice/accept/std_net_dns_execution.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,6 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = ""
-stderr = "hew: failure: UserPanic (212): localhost resolution failed\n"
-exit = 1
+stdout = "dns:ok\n"
+exit = 0

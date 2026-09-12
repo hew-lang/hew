@@ -1,6 +1,0 @@
-fn main() -> i64 {
-    var values: Vec<string> = Vec.new();
-    values.push("alpha");
-    let _items = [values];
-    values.len()
-}

@@ -1,6 +1,6 @@
 [[case]]
 id = "string_slice_full"
-intent = "The fixture runs to completion and prints exactly its recorded output."
+intent = "A full string slice yields the whole string and its byte length is the exit code."
 source = "../vertical-slice/accept/string_slice_full.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -10,4 +10,4 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = "hié\n"
-exit = 3
+exit = 4

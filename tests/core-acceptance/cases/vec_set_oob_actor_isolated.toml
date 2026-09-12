@@ -1,6 +1,6 @@
 [[case]]
 id = "vec_set_oob_actor_isolated"
-intent = "The fixture runs to completion and exits 0."
+intent = "An out-of-bounds `Vec.set()` traps inside a supervised actor; the supervisor restarts the child and the restarted child answers."
 source = "../vertical-slice/accept/vec_set_oob_actor_isolated.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

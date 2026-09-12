@@ -1,6 +1,6 @@
 [[case]]
 id = "bytes_slice_closed"
-intent = "The fixture runs to completion and exits 1."
+intent = "A closed byte-slice `b[1..3]` yields those bytes and its length is the exit code."
 source = "../vertical-slice/accept/bytes_slice_closed.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,6 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = ""
-stderr = "hew: failure: IndexOutOfBounds (205)\n"
-exit = 1
+stdout = "bc\n"
+exit = 2

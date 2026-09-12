@@ -1,8 +1,0 @@
-type Holder { values: Vec<string>, }
-
-fn main() -> i64 {
-    var values: Vec<string> = Vec.new();
-    values.push("alpha");
-    let _holder = Holder { values: values };
-    values.len()
-}

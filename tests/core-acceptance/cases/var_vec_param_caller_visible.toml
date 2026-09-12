@@ -1,6 +1,6 @@
 [[case]]
 id = "var_vec_param_caller_visible"
-intent = "The reverse direction of #2810: `var` on a by-value `Vec` parameter IS caller-visible."
+intent = "A `var` Vec parameter mutated by the callee is visible to the caller."
 source = "../vertical-slice/accept/var_vec_param_caller_visible.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "1\n2\n"
+stdout = "9\n3\n"
 exit = 0

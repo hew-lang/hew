@@ -1,6 +1,6 @@
 [[case]]
 id = "gen_drop_before_first_next"
-intent = "Proving-gate fixture (leak fix): CONSTRUCT-AND-DROP BEFORE FIRST `.next()`."
+intent = "A generator dropped before its first `.next()` never runs its body, and the drop releases the environment without leaking."
 source = "../vertical-slice/accept/gen_drop_before_first_next.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

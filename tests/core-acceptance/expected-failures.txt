@@ -21,3 +21,44 @@ spec-3936244856  # IMPL-GAP: an actor `receive fn` parameter typed `fn(...) -> .
 std-arena-3714386937  # SPEC-BUG: error: collection method `set` requires a mutable binding receiver declared with `var`
 std-net-http-http-223475752  # SPEC-BUG: error: cannot consume `self.handle` separately: enclosing type `std.net.http.Request` must remain whole
 std-net-net-3182362208  # IMPL-GAP: compiler limitation: E_SIR_UNSUPPORTED: semantic lowering of `__hew_fn_main` is not implemented: runtime family `TcpAttachLocal` has no owner
+
+# ── Migrated from tests/vertical-slice/run.sh ───────────────────────────
+#
+# run.sh recorded these outcomes as red rows and no ratchet held them, so
+# retiring it would have lost them. Each case asserts the behaviour run.sh
+# pinned (its `.expected` file, its expected exit, or both); the row records
+# that the current compiler does not produce it. Delete the row when the
+# case passes.
+
+# bytes slicing traps IndexOutOfBounds on an in-range slice
+bytes_slice_closed  # DEFECT: `b[1..3]` over four bytes traps IndexOutOfBounds (205)
+bytes_slice_full  # DEFECT: `b[..]` traps IndexOutOfBounds (205)
+bytes_slice_open_left  # DEFECT: `b[..3]` traps IndexOutOfBounds (205)
+bytes_slice_open_right  # DEFECT: `b[2..]` traps IndexOutOfBounds (205)
+bytes_slice_open_right_loop  # DEFECT: repeated open-right slices trap IndexOutOfBounds (205)
+owned_nested_tuple_bytes  # DEFECT: bytes elements of an owned nested tuple decode to a single control byte
+
+# `string.len()` counts codepoints; HEW-SPEC-2026 line 878 and the guide's
+# `runes=3 bytes=4` example both say bytes. Every string-slice exit is short
+# by the multi-byte difference.
+string_slice_closed_prefix  # DEFECT: exits 2, spec byte length is 3
+string_slice_full  # DEFECT: exits 3, spec byte length is 4
+string_slice_multibyte  # DEFECT: exits 1, `é` is two bytes
+string_slice_open_right  # DEFECT: exits 4, spec byte length is 5
+
+# HashMap ingress and projection
+hashmap_borrowed_string_key_ingress  # DEFECT: every borrowed-string key insert is lost (keys=0, every lookup -1)
+hashmap_generic_ops  # DEFECT: scalar/string projection returns the failure exit
+var_record_collection_projection_caller_visible  # DEFECT: `get` on a `var` record collection parameter fails
+
+# Ownership and cleanup
+branch_join_diverging_arm  # DEFECT: a detached handle is closed anyway on the diverging-arm path
+var_vec_param_caller_visible  # DEFECT: a `var` Vec parameter's mutation is not visible to the caller
+vec_iter_yield_owned_conditional_move  # DEFECT: a conditionally moved yielded element is observed once instead of twice
+
+# Mailbox bounds
+mailbox_bounded_drop_new  # DEFECT: the bounded-mailbox probe reports failure
+mailbox_bounded_drop_new_supervised  # DEFECT: the supervised bounded-mailbox probe reports failure
+
+# std.net
+std_net_dns_execution  # DEFECT: localhost resolution panics (UserPanic 212)

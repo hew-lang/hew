@@ -1,13 +1,31 @@
 [[case]]
 id = "affine_record_clone"
-intent = "Structural record clone is a non-consuming read that creates a second owner."
+intent = "Resource and linear records reject both method and prefix clone syntax."
 source = "../vertical-slice/reject/affine_record_clone.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_RESOURCE_CLOSE_MUST_CONSUME"
-line = 10
-column = 8
-message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"
+code = "InvalidOperation"
+line = 26
+column = 20
+message = "type `ResourceToken` is `#[resource]` and cannot be cloned: member `value` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 28
+column = 20
+message = "type `ResourceToken` is `#[resource]` and cannot be cloned: member `value` contains `ResourceToken`, which has an affine close contract and no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 31
+column = 20
+message = "type `LinearTicket` is `#[linear]` and cannot be cloned: member `value` contains `LinearTicket`, which must be consumed exactly once and has no semantic clone"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 34
+column = 20
+message = "type `LinearTicket` is `#[linear]` and cannot be cloned: member `value` contains `LinearTicket`, which must be consumed exactly once and has no semantic clone"

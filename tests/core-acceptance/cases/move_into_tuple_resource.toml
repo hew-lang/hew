@@ -1,13 +1,13 @@
 [[case]]
 id = "move_into_tuple_resource"
-intent = "The fixture is refused, and the refusal names E_RESOURCE_CLOSE_MUST_CONSUME."
+intent = "Reading a resource after moving it into an aggregate reports a source use-after-move error."
 source = "../vertical-slice/reject/move_into_tuple_resource.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
-code = "E_RESOURCE_CLOSE_MUST_CONSUME"
-line = 5
-column = 8
-message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"
+code = "UseAfterMove"
+severity = "error"
+line = 11
+column = 5

@@ -1,0 +1,21 @@
+// Taken and untaken destructuring paths converge with valid cleanup.
+type Packet {
+    tag: string,
+    body: string,
+}
+
+fn measure(p: Packet, skip: bool) -> i64 {
+    var total: i64 = 0;
+    if !skip {
+        total = match p {
+            Packet { tag, body } => tag.len() + body.len(),
+        };
+    }
+    total
+}
+
+fn main() -> i64 {
+    let kept = measure(Packet { tag: "t" + "g", body: "b" + "d" }, true);
+    let drained = measure(Packet { tag: "t" + "g", body: "b" + "d" }, false);
+    kept + drained - 4
+}

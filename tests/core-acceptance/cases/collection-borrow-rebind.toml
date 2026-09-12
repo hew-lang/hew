@@ -1,0 +1,10 @@
+[[case]]
+id = "collection-borrow-rebind"
+intent = "Replacing a borrowed collection element binding preserves the collection owner and closes the replacement once."
+source = "cases/collection-borrow-rebind.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "got 2\nclose 2\nclose 1\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "carrier-conditional-consume"
+intent = "Conditional record destructuring and an untouched carrier converge at a shared return with valid cleanup."
+source = "cases/carrier-conditional-consume.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

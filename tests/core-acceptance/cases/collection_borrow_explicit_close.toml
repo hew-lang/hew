@@ -4,10 +4,10 @@ intent = "Explicitly closing a borrowed collection element mints a second close 
 source = "../vertical-slice/reject/collection_borrow_explicit_close.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
-code = "E_RESOURCE_CLOSE_MUST_CONSUME"
-line = 9
-column = 8
-message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 18
+column = 5

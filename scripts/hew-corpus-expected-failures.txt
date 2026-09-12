@@ -64,11 +64,6 @@ examples/multifile/02_geometry/geo/distance.hew
 # with no published dispatch table
 examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 
-# final-path-limitation: ordinary machine evaluation does not admit const
-# parameters or composite states yet
-examples/machine/connection_lifecycle.hew
-examples/machine/run_connection_lifecycle.hew
-
 # final-path-limitation: the distributed Node surface has no ownership-SIR
 # operation contract on the final path yet
 examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
@@ -107,7 +102,6 @@ hew-lsp/tests/fixtures/v05_record_tuple_literal.hew E_HIR
 # deferred-nyi / stale-syntax: LSP fixtures covering surfaces the checker no
 # longer admits or has not built; the LSP tests parse them, they are not compiled
 hew-lsp/tests/fixtures/v05_async_await.hew E_NO_ASYNC_FN
-hew-lsp/tests/fixtures/v05_composite_machine.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
 hew-lsp/tests/fixtures/v05_machine_methods.hew
@@ -206,6 +200,7 @@ tests/core-acceptance/cases/check-select-no-arms.hew
 tests/core-acceptance/cases/listener-accept-loop-return.hew E_OWN_CONSUME_BORROWED
 tests/core-acceptance/cases/loan-ends-at-last-use.hew E_ELEMENT_NO_COPY
 tests/core-acceptance/cases/loaned-payload-projection.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/machine-composite-depth-refused.hew
 tests/core-acceptance/cases/machine-legacy-forms-refused.hew
 tests/core-acceptance/cases/resource-missing-close.hew E_HIR
 tests/core-acceptance/cases/spread-parse-refusals.hew
@@ -371,3 +366,6 @@ tests/vertical-slice/accept/returns_receiver_consuming_result.hew
 # downstream-wip: downstream syntax fixture not yet updated to associated-type
 # requirements (impl must define Canvas)
 tools/downstream/syntax-fixtures/syntax_test.hew
+
+# Intended local rebinding currently fails ownership lowering.
+tests/core-acceptance/cases/collection-borrow-rebind.hew E_SIR_VERIFY

@@ -10,7 +10,7 @@ type Conn {
 }
 
 impl Conn {
-    fn close(c: Conn) -> i64 { 0 }
+    fn close(consume self) -> i64 { 0 }
 }
 
 fn main() -> i64 {

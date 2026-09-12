@@ -1,18 +1,11 @@
 import std.net.tls;
-
-extern "C" {
-    fn hew_bytes_from_str(s: string) -> bytes;
-}
-
 // Exercises the record-returning `hew_tls_write_result` extern AT RUNTIME:
 // the connect fails fast offline (port 1 refused) and the Rust side still
 // constructs the `TlsWriteFfiResult { i32, i32 }` return, so the classified
 // coerced-int carrier is proven on a real call, not dead code.
 fn try_write_probe() -> i64 {
     let stream = tls.connect("127.0.0.1", 1);
-    match tls.write(stream, unsafe {
-        hew_bytes_from_str("ping")
-    }) {
+    match tls.write(stream, "ping".to_bytes()) {
         .Ok(n) => n,
         .Err(_) => -2,
     }
@@ -33,9 +26,7 @@ fn read_probe() -> i64 {
 
 fn main() {
     let stream = tls.connect("127.0.0.1", 1);
-    let n = match tls.write(stream, unsafe {
-        hew_bytes_from_str("ping")
-    }) {
+    let n = match tls.write(stream, "ping".to_bytes()) {
         .Ok(n) => n,
         .Err(_) => -1,
     };

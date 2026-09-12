@@ -1,17 +1,9 @@
 import std.encoding.utf8;
 
-extern "C" {
-    fn hew_bytes_from_str(s: string) -> bytes;
-}
-
 fn main() {
     var xs: Vec<((bytes, i64), bool)> = Vec.new();
-    let a: bytes = unsafe {
-        hew_bytes_from_str("ab")
-    };
-    let b: bytes = unsafe {
-        hew_bytes_from_str("cd")
-    };
+    let a: bytes = "ab".to_bytes();
+    let b: bytes = "cd".to_bytes();
     xs.push(((a, 11), true));
     xs.push(((b, 12), false));
     let ys = xs.clone();

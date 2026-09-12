@@ -148,7 +148,6 @@ linux	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_a
 linux	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
 linux	failure	hew-cli::json_diagnostics_e2e	check_not_yet_implemented_json_has_no_debug_payload	#3384 renders every compiler limitation with a source span
 linux	failure	hew-cli::json_diagnostics_e2e	compile_mir_gate_failure_json_has_no_debug_payload	#3384 renders every compiler limitation with a source span
-linux	failure	hew-cli::machine_e2e	machine_commands_succeed_on_every_compiling_machine_example	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_reenter_carrying_resource_is_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_state_resource_release_paths_are_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine

@@ -3002,6 +3002,117 @@ fn machine_substate_rule_after_the_block_beats_the_parent_rule() {
     );
 }
 
+/// A guarded substate rule does not establish coverage, so the composite's
+/// parent rule stays behind it as the unconditional fallback.
+#[test]
+fn machine_guarded_substate_rule_keeps_the_parent_rule_as_its_fallback() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing { hostile: bool },
+                state Draining { hostile: bool },
+
+                on Close: _ => Closed,
+            },
+
+            on Close: Draining => Kicked when state.hostile,
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a guarded substate rule should fall back to the parent rule, got: {:?}",
+        output.errors
+    );
+}
+
+/// Negative control for the fallback above: with no parent rule to fall back
+/// to, the same guarded substate rule leaves the pair uncovered.
+#[test]
+fn machine_guarded_substate_rule_alone_is_not_coverage() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing { hostile: bool },
+                state Draining { hostile: bool },
+            },
+
+            on Close: Draining => Kicked when state.hostile,
+            on Close: Authing => Closed,
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("needs an unconditional fallback")),
+        "a guarded substate rule with no parent rule must leave the pair \
+         uncovered, got: {:?}",
+        output.errors
+    );
+}
+
+/// A rule written inside the composite block with a concrete member source is
+/// that member's own rule, not a parent rule to expand onto every member.
+#[test]
+fn machine_concrete_source_rule_inside_the_block_belongs_to_that_substate() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing,
+                state Draining,
+
+                on Close: Draining => Kicked,
+                on Close: _ => Closed,
+            },
+
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+
+        fn main() {
+            var session: Session = .Closed;
+            let _ = session.step(.Close);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a concrete-source rule inside the block should belong to that \
+         substate alone, got: {:?}",
+        output.errors
+    );
+}
+
 /// A composite state nests one level. The parser refuses a substate that
 /// declares substates of its own, so the machine never reaches the checker.
 #[test]

@@ -12,7 +12,6 @@
 
 # ── Documentation fences ────────────────────────────────────────────────
 guide-144626557  # IMPL-GAP: linear Tx has no semantic value contract for explicit consuming methods
-std-arena-3905187364  # IMPL-GAP: Arena.remove retains an element loan while mutating its backing vector
 
 # ── Remaining migrated execution defects ──────────────────────────────
 # These programs assert the documented behaviour; current native execution

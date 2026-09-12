@@ -1,0 +1,10 @@
+[[case]]
+id = "owned-lookup-mutation-fault"
+intent = "A bounds failure after a generic lookup snapshot releases the independent snapshot, replacement and retained collection aliases."
+source = "cases/owned-lookup-mutation-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

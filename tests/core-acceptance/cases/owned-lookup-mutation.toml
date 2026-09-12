@@ -1,0 +1,9 @@
+[[case]]
+id = "owned-lookup-mutation"
+intent = "A concrete owning copy of a generic collection lookup outlives mutation in branches, loops and match arms without retaining the temporary element loan."
+source = "cases/owned-lookup-mutation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "lookup snapshots survive mutation\n"
+exit = 0

@@ -1,0 +1,11 @@
+[[case]]
+id = "nested-indexed-state-capture"
+intent = "Nested indexed mutation stages actor and closure aggregate seats, preserves siblings and aliases, and leaves actor state intact on fault."
+source = "cases/nested-indexed-state-capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "state preserved\nstate and capture\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Worker.fail (actor 1): IndexOutOfBounds\n"
+exit = 0

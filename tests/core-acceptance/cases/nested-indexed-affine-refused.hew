@@ -1,8 +1,9 @@
 #[resource]
 type Ticket { name: string }
 impl Ticket { fn close(consume self) { println(self.name); } }
-type Row { ticket: Ticket, count: i64 }
+type Row { ticket: Ticket, count: i64, values: Vec<string> }
 fn main() {
-    var rows = [Row { ticket: Ticket { name: "ticket" }, count: 1 }];
+    var rows = [Row { ticket: Ticket { name: "ticket" }, count: 1, values: [] }];
     rows[0].count = 2;
+    rows[0].values.push("borrowed");
 }

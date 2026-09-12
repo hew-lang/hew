@@ -1,6 +1,6 @@
 //! Indexed writable paths materialize semantic values and publish them from
 //! the leaf outwards. Runtime calls retain ownership of COW and failure rules.
-use super::{AggregateSelection, BindingPlace, Builder};
+use super::{AggregateSelection, BindingPlace, BindingTarget, Builder};
 use crate::{Operand, OwnKind, PlaceId, Provenance, SemOpKind, ValueId};
 use hew_hir::{HirExpr, HirExprKind};
 use hew_types::{ResolvedTy, RuntimeCallFamily};
@@ -20,6 +20,7 @@ pub(super) struct WritablePath {
 
 pub(super) struct Writeback {
     root: PlaceId,
+    staged_root: Option<(PlaceId, ValueId)>,
     frames: Vec<(IndexedStep, ValueId, ValueId)>,
 }
 
@@ -64,10 +65,47 @@ impl Builder<'_, '_> {
         path.steps.iter().map(|step| step.index).collect()
     }
 
+    /// State and capture fields are published through their whole owning seat.
+    /// Only the staged copy exposes field places to the indexed transaction.
+    pub(super) fn stage_writable_root(
+        &mut self,
+        base: &BindingPlace,
+        provenance: &Provenance,
+    ) -> Result<(PlaceId, Option<(PlaceId, ValueId)>), String> {
+        if let Some(root) = self.owned_projection(base)? {
+            return Ok((root, None));
+        }
+        let BindingTarget::Place(root) = self.binding_target(base.binding)? else {
+            return Err("indexed writable root has no owning seat".into());
+        };
+        let staged = self.emit_typed(
+            provenance.clone(),
+            &base.root_ty,
+            SemOpKind::LoadCopy { place: root },
+        )?;
+        let leaf = self.value_projection_place(staged, &base.root_ty, &base.projections)?;
+        Ok((leaf, Some((root, staged))))
+    }
+
+    pub(super) fn publish_writable_root(
+        &mut self,
+        root: PlaceId,
+        replacement: ValueId,
+        staged_root: Option<(PlaceId, ValueId)>,
+        provenance: &Provenance,
+    ) -> Result<(), String> {
+        self.store_projected(root, replacement, provenance.clone())?;
+        if let Some((root, staged)) = staged_root {
+            self.store_projected(root, staged, provenance.clone())?;
+        }
+        Ok(())
+    }
+
     pub(super) fn acquire_indexed_path(
         &mut self,
         path: WritablePath,
         root: PlaceId,
+        staged_root: Option<(PlaceId, ValueId)>,
         take: bool,
         provenance: &Provenance,
     ) -> Result<(ValueId, Writeback), String> {
@@ -100,7 +138,14 @@ impl Builder<'_, '_> {
             frames.push((step, container, element));
             container = leaf;
         }
-        Ok((container, Writeback { root, frames }))
+        Ok((
+            container,
+            Writeback {
+                root,
+                staged_root,
+                frames,
+            },
+        ))
     }
 
     fn read_writable_element(
@@ -179,7 +224,12 @@ impl Builder<'_, '_> {
                 )?
                 .ok_or("indexed replacement did not return its updated receiver")?;
         }
-        self.store_projected(writeback.root, replacement, provenance.clone())
+        self.publish_writable_root(
+            writeback.root,
+            replacement,
+            writeback.staged_root,
+            provenance,
+        )
     }
 
     fn replace_scalar_value_leaf(

@@ -4691,11 +4691,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 &self.ty(&target.ty),
                 Provenance::Site(value.site),
             )?;
-            let root = self
-                .owned_projection(&path.base)?
-                .ok_or("indexed writable root has no owning place")?;
             let provenance = Provenance::Site(target.site);
-            let (old, writeback) = self.acquire_indexed_path(path, root, false, &provenance)?;
+            let (root, staged_root) = self.stage_writable_root(&path.base, &provenance)?;
+            let (old, writeback) =
+                self.acquire_indexed_path(path, root, staged_root, false, &provenance)?;
             if self.owned_live.contains_key(&old) {
                 self.emit_destroy(old)?;
             }
@@ -8490,9 +8489,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         // Preserve arguments borrowing the receiver's owner before its take.
         // Alias identity comes from the same declared place paths as loans.
         if let Some(place) = &transformed_place {
-            let selected = self
-                .owned_projection(place)?
-                .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            let selected = match self.owned_projection(place)? {
+                Some(projected) => projected,
+                None => match self.binding_target(place.binding)? {
+                    BindingTarget::Place(root) => root,
+                    BindingTarget::Value(_) => {
+                        return Err("runtime receiver has no owning seat".into())
+                    }
+                },
+            };
             let root = self.place_borrow_root(selected)?;
             self.snapshot_arguments_rooted_at(
                 root,
@@ -8517,16 +8522,16 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .copied()
             .collect();
         let mut transformed_projection = None;
+        let mut transformed_root = None;
         let mut indexed_writeback = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
-            let projected = self
-                .owned_projection(place)?
-                .ok_or_else(|| "runtime receiver has no owning place".to_string())?;
+            let (projected, staged_root) = self.stage_writable_root(place, &provenance)?;
             // A transform takes its receiver, which a live element loan of the
             // same owner forbids. Refusing here names the source construct
             // instead of leaving it to the ownership verifier.
-            let root = self.place_borrow_root(projected)?;
+            let loan_place = staged_root.map_or(projected, |(root, _)| root);
+            let root = self.place_borrow_root(loan_place)?;
             self.end_binding_loans_on(root)?;
             for loan in self.scope_loans.clone() {
                 if self.ended_loans.contains(&loan) {
@@ -8553,10 +8558,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let receiver_ty = self.ty(&args[0].ty);
             let source = if let Some(path) = indexed_path.take() {
                 let (source, writeback) =
-                    self.acquire_indexed_path(path, projected, true, &provenance)?;
+                    self.acquire_indexed_path(path, projected, staged_root, true, &provenance)?;
                 indexed_writeback = Some(writeback);
                 source
             } else {
+                transformed_root = staged_root;
                 self.emit_typed(provenance.clone(), &receiver_ty, receiver_kind)?
             };
             if matches!(
@@ -8799,10 +8805,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         &Provenance::Site(expr.site),
                     )?;
                 } else {
-                    self.store_projected(
+                    self.publish_writable_root(
                         transformed_projection.ok_or("runtime transform has no source place")?,
                         results[0].id,
-                        Provenance::Site(expr.site),
+                        transformed_root,
+                        &Provenance::Site(expr.site),
                     )?;
                 }
                 return Ok(Some(results[1].id));
@@ -8815,7 +8822,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         &Provenance::Site(expr.site),
                     )?;
                 } else if let Some(projected) = transformed_projection {
-                    self.store_projected(projected, continuation, Provenance::Site(expr.site))?;
+                    self.publish_writable_root(
+                        projected,
+                        continuation,
+                        transformed_root,
+                        &Provenance::Site(expr.site),
+                    )?;
                 } else {
                     // A prelowered receiver belongs to an enclosing writable path.
                     return Ok(Some(continuation));

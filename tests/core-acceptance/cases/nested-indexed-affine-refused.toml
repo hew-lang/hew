@@ -10,3 +10,9 @@ code = "E_OWN_CONSUME_BORROWED"
 severity = "error"
 line = 7
 column = 5
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 8
+column = 5

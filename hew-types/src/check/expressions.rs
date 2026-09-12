@@ -1625,6 +1625,25 @@ impl Checker {
     /// ownership slot to attach a fact to, so nothing is recorded for them
     /// rather than a guess being recorded; element-of-collection places are the
     /// known remaining hole and belong to the MIR half of this family.
+    /// Indexed writes and mutating methods need a copy of every indexed parent.
+    pub(super) fn reject_indexed_writable_borrow(&mut self, target: &Spanned<Expr>) {
+        let mut parent = target;
+        loop {
+            if self
+                .borrowed_element_index_reads
+                .contains(&SpanKey::in_module(&parent.1, self.current_module_idx))
+            {
+                self.report_error(TypeErrorKind::OwnConsumeBorrowed, &parent.1,
+                    "cannot update through a borrowed affine collection element; indexed writeback requires a semantic copy".into());
+                return;
+            }
+            match &parent.0 {
+                Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => parent = object,
+                _ => return,
+            }
+        }
+    }
+
     pub(super) fn expr_place(&self, expr: &Expr) -> Option<(String, PlacePath)> {
         match expr {
             Expr::Identifier(name) => Some((name.clone(), PlacePath::new())),

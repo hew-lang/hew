@@ -29171,14 +29171,14 @@ impl LowerCtx {
         let ResolvedRuntimeResult::StatusResult { error } = adaptation else {
             unreachable!("status discard was handled above");
         };
-        self.lower_runtime_status_result(call, error, result_ty, span)
+        self.lower_runtime_status_result(call, &error, result_ty, span)
     }
 
     /// Map the raw runtime status to the source-selected Result constructors.
     fn lower_runtime_status_result(
         &mut self,
         call: HirExpr,
-        error: hew_types::VariantMatch,
+        error: &hew_types::VariantMatch,
         result_ty: ResolvedTy,
         span: &Span,
     ) -> (HirExprKind, ResolvedTy) {

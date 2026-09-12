@@ -1779,9 +1779,7 @@ impl<'a> Formatter<'a> {
                             let tokens = hew_lexer::lex(value);
                             let bare = match tokens.as_slice() {
                                 [(hew_lexer::Token::Identifier(name), _)] => *name == value,
-                                [(hew_lexer::Token::Integer(integer), _)] => {
-                                    integer.to_string() == *value
-                                }
+                                [(hew_lexer::Token::Integer(integer), _)] => *integer == value,
                                 _ => false,
                             };
                             if bare {

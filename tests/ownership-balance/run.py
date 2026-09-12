@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import platform
@@ -24,6 +25,7 @@ RUNTIME_CHECK = "check"
 RUNTIME_CLEAN = "clean"
 RUNTIME_REFUSE = "refuse"
 RUNTIME_MODES = {RUNTIME_CHECK, RUNTIME_CLEAN, RUNTIME_REFUSE}
+BLOCKING_SEVERITY = "error"
 ZERO_LEAKS = re.compile(r"0 leaks for 0 total leaked bytes\.")
 SANITIZER_FINDING = re.compile(
     r"ERROR: (?:AddressSanitizer|LeakSanitizer)"
@@ -59,22 +61,17 @@ def bounded_runtime_report(name: str, headline: str, report: str) -> str:
     )
 
 
-def read_baseline() -> dict[str, tuple[int, int, int, str]]:
-    rows: dict[str, tuple[int, int, int, str]] = {}
+def read_baseline() -> dict[str, tuple[int, int, str]]:
+    rows: dict[str, tuple[int, int, str]] = {}
     with BASELINE.open(encoding="utf-8") as stream:
         for line in stream:
             line = line.rstrip("\n")
             if not line or line.startswith("#"):
                 continue
-            name, under_release, other_blocking, exit_code, runtime = line.split("\t")
+            name, blocking, exit_code, runtime = line.split("\t")
             if runtime not in RUNTIME_MODES:
                 raise ValueError(f"{name}: unknown runtime mode {runtime!r}")
-            rows[name] = (
-                int(under_release),
-                int(other_blocking),
-                int(exit_code),
-                runtime,
-            )
+            rows[name] = (int(blocking), int(exit_code), runtime)
     return rows
 
 
@@ -88,9 +85,16 @@ def corpus_entries() -> set[str]:
 
 def run_fixture(
     compiler: Path, name: str, environment: dict[str, str]
-) -> tuple[int, int, int]:
+) -> tuple[int, int]:
+    """Count the fixture's blocking diagnostics and its `hew check` exit code.
+
+    The JSON sink is the oracle: it reports each diagnostic's `severity`
+    directly, so the count does not depend on how the text renderer spells a
+    finding. Anything other than a diagnostics array on stdout means the
+    compiler crashed instead of checking, which is a corpus failure.
+    """
     result = subprocess.run(
-        [str(compiler), "check", str(CORPUS / name)],
+        [str(compiler), "check", "--format", "json", str(CORPUS / name)],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -98,9 +102,17 @@ def run_fixture(
         timeout=60,
         check=False,
     )
-    under = result.stderr.count("MIR kind: ObligationUnderReleased")
-    all_mir = result.stderr.count("MIR kind:")
-    return under, all_mir - under, result.returncode
+    try:
+        diagnostics = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"{name}: `hew check --format json` printed no diagnostics array\n"
+            f"{result.stdout}{result.stderr}"
+        ) from None
+    blocking = sum(
+        1 for entry in diagnostics if entry.get("severity") == BLOCKING_SEVERITY
+    )
+    return blocking, result.returncode
 
 
 def runtime_oracle_available() -> tuple[str, str | None]:
@@ -237,19 +249,19 @@ def main() -> int:
         )
         return 1
     clean_fixtures = sorted(
-        name for name, row in expected.items() if row[3] == RUNTIME_CLEAN
+        name for name, row in expected.items() if row[2] == RUNTIME_CLEAN
     )
     refused_fixtures = sorted(
-        name for name, row in expected.items() if row[3] == RUNTIME_REFUSE
+        name for name, row in expected.items() if row[2] == RUNTIME_REFUSE
     )
     if not clean_fixtures:
         print("error: corpus has no executable leak-oracle fixture", file=sys.stderr)
         return 1
     if not refused_fixtures or any(
-        expected[name][1] == 0 or expected[name][2] == 0 for name in refused_fixtures
+        expected[name][0] == 0 or expected[name][1] == 0 for name in refused_fixtures
     ):
         print(
-            "error: corpus must retain a blocking MIR refusal with non-zero exit",
+            "error: corpus must retain a blocking refusal with non-zero exit",
             file=sys.stderr,
         )
         return 1
@@ -263,15 +275,18 @@ def main() -> int:
         key: value for key, value in inherited.items() if not key.startswith("HEW_")
     }
     failures: list[str] = []
-    totals = [0, 0]
+    blocking_total = 0
     environments = (("inherited", inherited), ("no-HEW-env", scrubbed))
     for build_profile, compiler in compilers:
         for environment_profile, environment in environments:
             for name in sorted(expected):
-                observed = run_fixture(compiler, name, environment)
-                wanted = expected[name][:3]
-                totals[0] += observed[0]
-                totals[1] += observed[1]
+                try:
+                    observed = run_fixture(compiler, name, environment)
+                except RuntimeError as error:
+                    failures.append(f"{build_profile}/{environment_profile} {error}")
+                    continue
+                wanted = expected[name][:2]
+                blocking_total += observed[0]
                 if observed != wanted:
                     failures.append(
                         f"{build_profile}/{environment_profile} {name}: "
@@ -298,9 +313,8 @@ def main() -> int:
         return 1
     print(
         "ownership-balance: "
-        f"fixtures={len(expected)} profiles=4 under_release={totals[0]} "
-        f"other_blocking_mir={totals[1]} clean={len(clean_fixtures)} "
-        f"refusals={len(refused_fixtures)} "
+        f"fixtures={len(expected)} profiles=4 blocking={blocking_total} "
+        f"clean={len(clean_fixtures)} refusals={len(refused_fixtures)} "
         f"oracle={host}"
     )
     return 0

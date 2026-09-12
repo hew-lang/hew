@@ -495,6 +495,55 @@ fn partial_move_borrowed_parameters_and_capture_acquisitions_are_rejected() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
+/// A moved record field is gone from that place and from nowhere else.
+///
+/// The refused reads name the moved place so the programmer sees which field
+/// left, and the sibling read is the negative control: partial ownership is a
+/// fact about a place, so `booking.label` is still the record's to hand out.
+#[test]
+fn reading_a_moved_record_field_is_refused_and_its_sibling_stays_readable() {
+    const BOOKING: &str = r#"
+#[resource]
+type Ticket { id: i64 }
+
+impl Ticket { fn close(consume self) {} }
+
+type Booking { ticket: Ticket, label: string }
+
+fn redeem(consume ticket: Ticket) -> i64 { ticket.id }
+
+fn book() -> Booking { Booking { ticket: Ticket { id: 7 }, label: "seat-1" } }
+"#;
+    for (reuse, expected) in [
+        (
+            "let again = redeem(booking.ticket);",
+            "use of moved place `booking.ticket`",
+        ),
+        (
+            "let whole = booking;",
+            "use of `booking` after its field `booking.ticket` was moved out",
+        ),
+    ] {
+        let output = check_source(&format!(
+            "{BOOKING} fn main() {{ let booking = book(); \
+             let first = redeem(booking.ticket); {reuse} }}"
+        ));
+        let messages: Vec<&str> = output
+            .errors
+            .iter()
+            .filter(|error| error.kind == TypeErrorKind::UseAfterMove)
+            .map(|error| error.message.as_str())
+            .collect();
+        assert_eq!(messages, vec![expected], "{reuse}: {:?}", output.errors);
+    }
+
+    let output = check_source(&format!(
+        "{BOOKING} fn main() {{ let booking = book(); \
+         let first = redeem(booking.ticket); println(booking.label); }}"
+    ));
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
 #[test]
 fn partial_move_custom_cleanup_ancestors_must_remain_whole() {
     for prefix in ["#[resource]", "#[linear]"] {

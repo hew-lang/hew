@@ -65,16 +65,20 @@ class BaselineRuntimeModeTests(unittest.TestCase):
 
     def test_leaking_runtime_mode_is_refused(self) -> None:
         with self.assertRaises(ValueError) as raised:
-            self.read("silent.hew\t0\t0\t0\tleaks\n")
+            self.read("silent.hew\t0\t0\tleaks\n")
         self.assertIn("unknown runtime mode", str(raised.exception))
 
     def test_clean_row_round_trips(self) -> None:
-        rows = self.read("clean.hew\t0\t0\t0\tclean\n")
-        self.assertEqual(rows["clean.hew"], (0, 0, 0, RUN.RUNTIME_CLEAN))
+        rows = self.read("clean.hew\t0\t0\tclean\n")
+        self.assertEqual(rows["clean.hew"], (0, 0, RUN.RUNTIME_CLEAN))
+
+    def test_refuse_row_round_trips(self) -> None:
+        rows = self.read("refused.hew\t1\t1\trefuse\n")
+        self.assertEqual(rows["refused.hew"], (1, 1, RUN.RUNTIME_REFUSE))
 
     def test_unknown_runtime_mode_is_refused(self) -> None:
         with self.assertRaises(ValueError):
-            self.read("odd.hew\t1\t0\t0\tmaybe\n")
+            self.read("odd.hew\t1\t0\tmaybe\n")
 
 
 if __name__ == "__main__":

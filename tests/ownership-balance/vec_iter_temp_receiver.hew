@@ -24,7 +24,7 @@ fn adapter_on_temporary(k: i64) -> i64 {
     iter.count(evens)
 }
 
-fn terminal_on_let_bound(k: i64) -> i64 {
+fn terminal_on_named_binding(k: i64) -> i64 {
     var xs: Vec<i64> = Vec.new();
     xs.push(k);
     xs.push(k + 1);
@@ -40,7 +40,7 @@ fn main() {
     while k < 200000 {
         total = total + terminal_on_temporary(k);
         total = total + adapter_on_temporary(k);
-        total = total + terminal_on_let_bound(k);
+        total = total + terminal_on_named_binding(k);
         k = k + 1;
     }
     println(total);

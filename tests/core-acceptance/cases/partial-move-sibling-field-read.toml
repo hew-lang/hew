@@ -1,0 +1,10 @@
+[[case]]
+id = "partial-move-sibling-field-read"
+intent = "The negative control for `check-partial-move-field-read-refused`: moving one owned field out leaves the sibling field readable, so the same program shape compiles, runs and closes the ticket exactly once."
+source = "cases/partial-move-sibling-field-read.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "closing ticket 7\nredeemed 7\nseat-1\n"
+exit = 0

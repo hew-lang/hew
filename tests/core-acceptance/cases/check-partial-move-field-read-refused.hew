@@ -1,9 +1,9 @@
-// The corpus's deliberate hard refusal: a record hands one owned field away
-// and then reads that same field back.
+// A record hands one owned field away and then reads that same field back.
+// The storage behind `booking.ticket` has a new owner, so the second read
+// would give the ticket two release paths; the checker refuses it and names
+// the moved field.
 //
-// Reading the sibling `label` is legal — the move took `booking.ticket` and
-// nothing else — so the refusal below is the only blocking diagnostic this
-// fixture produces.
+// Harness verb: hew check (must fail)
 #[resource]
 type Ticket {
     id: i64,
@@ -24,12 +24,10 @@ fn redeem(consume ticket: Ticket) -> i64 {
     ticket.id
 }
 
-fn main() -> i64 {
+fn main() {
     let booking = Booking { ticket: Ticket { id: 7 }, label: "seat-1" };
     let redeemed = redeem(booking.ticket);
     println(f"redeemed {redeemed}");
-    println(booking.label);
     let again = redeem(booking.ticket);
     println(f"redeemed {again}");
-    0
 }

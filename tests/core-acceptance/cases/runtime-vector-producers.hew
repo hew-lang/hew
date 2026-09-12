@@ -1,0 +1,50 @@
+import std.os;
+import std.process;
+
+fn main() {
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        assert(arguments[1] == "child");
+        assert(arguments[2] == "hello world");
+        assert(arguments[3] == "");
+        println("child arguments");
+        return;
+    }
+
+    // Runtime-produced vectors compose with ordinary value copies, updates,
+    // growth, removal and descriptor-driven equality.
+    var pieces = "é,日,".split(",");
+    let saved = pieces;
+    pieces[0] = "updated".to_upper();
+    pieces.push("🙂");
+    pieces.push("last");
+    assert(saved[0] == "é");
+    assert(saved.contains(""));
+    assert(pieces.contains("🙂"));
+    assert(pieces.remove(1) == "日");
+    assert(pieces[0] == "UPDATED");
+
+    var lines = "first\r\nsecond\n".lines();
+    assert(lines.len() == 3);
+    lines[1] = "changed";
+    assert(lines.contains("changed"));
+    assert(lines[2] == "");
+
+    var characters = "Aé🙂".chars();
+    let original = characters;
+    characters.push('雪');
+    characters.push('\0');
+    assert(characters.contains('雪'));
+    assert(characters.remove(1) == 'é');
+    assert(original.len() == 3);
+    assert(original[1] == 'é');
+
+    // Pass a runtime-produced vector back through a stdlib C boundary. Empty
+    // and spaced arguments must remain individual strings on every platform.
+    let child_arguments = "child|hello world|".split("|");
+    let output = process.run_argv(arguments[0], child_arguments).expect("run this executable");
+    assert(output.exit_code == 0);
+    assert(output.stdout == "child arguments\n");
+    assert(child_arguments[1] == "hello world");
+    println("runtime vector producers compose");
+}

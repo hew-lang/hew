@@ -8897,6 +8897,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         params: function.param_tys.clone(),
                         consumes: function.param_consume.clone(),
                         result: function.return_ty.clone(),
+                        runtime_capability: function.runtime_capability,
                     }
                 })
             })

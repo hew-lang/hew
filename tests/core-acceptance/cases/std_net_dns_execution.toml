@@ -2,7 +2,7 @@
 id = "std_net_dns_execution"
 intent = "`std.net` resolves localhost and reports the lookup succeeded."
 source = "../vertical-slice/accept/std_net_dns_execution.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

@@ -1230,6 +1230,8 @@ pub enum PhysicalTerminator {
     /// declaration pinned; a C call has no fault ABI and no unwind edge.
     ExternCall {
         symbol: String,
+        /// Preserved declaration authority used by process entry setup.
+        runtime_capability: Option<hew_types::ExternRuntimeCapability>,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
         result_abi: PhysicalExternResultAbi,
@@ -3173,6 +3175,7 @@ impl FunctionLowerer<'_> {
                 ..
             } => Ok(PhysicalTerminator::ExternCall {
                 symbol: signature.symbol.clone(),
+                runtime_capability: signature.runtime_capability,
                 args: self.argument_transfers(args)?,
                 result_abi: self.target.extern_result_abi(&signature.result)?,
                 result: match result {
@@ -8288,6 +8291,7 @@ fn verify_terminator(
             result,
             result_abi,
             normal,
+            ..
         } => {
             // SIR proved types and ownership against the declaration. Verify
             // the transfer/edge structure and the target's C result carrier.

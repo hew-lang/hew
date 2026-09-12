@@ -1,0 +1,13 @@
+[[case]]
+id = "metrics-root-runtime"
+intent = "Plain functions register and update metrics in the installed process runtime, then observe their exact values."
+source = "cases/metrics-root-runtime.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "2"
+
+[case.expected]
+stdout = "root metrics recorded\n"
+exit = 0

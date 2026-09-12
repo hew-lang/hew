@@ -42,8 +42,8 @@ pub enum ElemKind {
     /// and pop transfers the removed owner to the caller. The caller releases
     /// either result with `string_release`; free/truncate release stored owners.
     /// Null is the canonical empty string and remains a valid element.
-    /// Built only through the typed `hew_vec_new_str` family; the untyped
-    /// `hew_vec_new_generic` rejects this kind.
+    /// Legacy descriptor-less string storage. Typed string constructors now
+    /// publish a `HewValueLayout`; `hew_vec_new_generic` rejects this kind.
     String = 1,
 }
 
@@ -61,7 +61,7 @@ pub struct HewVec {
     pub elem_size: usize,
     /// Element ownership semantics.
     pub elem_kind: ElemKind,
-    /// Optional runtime element descriptor. Null preserves the legacy typed path.
+    /// Runtime element descriptor. Only untyped size-only vectors omit it.
     ///
     /// When non-null, always points into `layout_storage` (same allocation).
     /// Callers must not assume this pointer outlives the `HewVec`.

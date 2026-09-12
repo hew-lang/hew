@@ -3715,6 +3715,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 result,
                 result_abi,
                 normal,
+                ..
             } => self.emit_extern_call(symbol, args, *result, result_abi, normal),
             PhysicalTerminator::Panic { message, cleanup } => self.emit_panic(*message, cleanup),
             PhysicalTerminator::Trap(kind) => {

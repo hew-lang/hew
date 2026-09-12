@@ -8370,13 +8370,16 @@ impl Checker {
                 {
                     self.resolve_module_variant(module_short, surface_type, variant)
                         .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
-                        .map(|(type_def, _)| {
+                        .map(|_| {
                             self.used_modules.borrow_mut().insert(ImportKey::in_file(
                                 self.current_module.clone(),
                                 self.current_module_idx,
                                 (*module_short).to_string(),
                             ));
-                            format!("{}::{variant}", type_def.name)
+                            format!(
+                                "{}.{surface_type}::{variant}",
+                                self.canonical_module_import_owner(module_short)
+                            )
                         })
                 }
                 _ => None,

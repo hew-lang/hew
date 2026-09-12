@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-constructors"
+intent = "Deep imported aliases retain exact enum and machine named-field constructor identities across same-name declarations, owned payload copies and ordinary record construction."
+source = "fixtures/resolved-constructors/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "WEST\n9:EAST\nWEST\n9:EAST\nLEFT GATE\n10:RIGHT GATE\n11:RECORD\nRECORD\n7\n8\n"
+exit = 0

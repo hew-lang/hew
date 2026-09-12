@@ -1,0 +1,56 @@
+import constructors.left.shapes as west;
+
+import constructors.right.shapes as east;
+
+enum Parcel {
+    Full { local: i64 },
+}
+
+type Gate {
+    local: i64,
+}
+
+fn show_west(value: west.Parcel) {
+    match value {
+        west.Parcel.Full { label } => println(label),
+        west.Parcel.Empty => println("empty west"),
+    }
+}
+
+fn show_east(value: east.Parcel) {
+    match value {
+        east.Parcel.Full { count, label } => println(f"{count}:{label}"),
+        east.Parcel.Empty => println("empty east"),
+    }
+}
+
+fn main() {
+    let local_parcel = Parcel.Full { local: 7 };
+    let local_gate = Gate { local: 8 };
+    let west_parcel = west.Parcel.Full { label: "west".to_upper() };
+    let east_parcel = east.Parcel.Full { count: 9, label: "east".to_upper() };
+    show_west(west_parcel);
+    show_east(east_parcel);
+    show_west(west_parcel);
+    show_east(east_parcel);
+    var west_gate = west.Gate.Closed { label: "left gate".to_upper() };
+    var east_gate = east.Gate.Closed { count: 10, label: "right gate".to_upper() };
+    west_gate.step(.Open);
+    east_gate.step(.Open);
+    match west_gate {
+        west.Gate.Closed { label } => println("unexpected:" + label),
+        west.Gate.Opened { label } => println(label),
+    }
+    match east_gate {
+        east.Gate.Closed { count, label } => println(f"unexpected:{count}:{label}"),
+        east.Gate.Opened { count, label } => println(f"{count}:{label}"),
+    }
+    let west_record = west.Record { label: "record".to_upper() };
+    let east_record = east.Record { count: 11, label: west_record.label };
+    println(f"{east_record.count}:{east_record.label}");
+    println(west_record.label);
+    match local_parcel {
+        Parcel.Full { local } => println(local),
+    }
+    println(local_gate.local);
+}

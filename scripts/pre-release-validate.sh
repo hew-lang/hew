@@ -329,7 +329,7 @@ validate_linux() {
         echo "==> Step 4b: Run foundational compiled-Hew gates"
         run_with_timeout "${TEST_TIMEOUT}" make test-compiler-pipeline
         run_with_timeout "${TEST_TIMEOUT}" make test-opaque-resource-lifecycle-matrix-external
-        run_with_timeout "${TEST_TIMEOUT}" make test-vertical-slice
+        run_with_timeout "${TEST_TIMEOUT}" make core-acceptance
         run_with_timeout "${TEST_TIMEOUT}" make test-hew-ratchet
         run_with_timeout "${TEST_TIMEOUT}" make test-stdlib-ratchet
 

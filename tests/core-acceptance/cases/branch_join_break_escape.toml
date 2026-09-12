@@ -1,13 +1,35 @@
 [[case]]
 id = "branch_join_break_escape"
-intent = "A `break` arm leaves the LOOP, not the function, so its consume reaches the code below the loop."
+intent = "A `break` that escapes a branch consume reports the moved value on every path that reaches it."
 source = "../vertical-slice/reject/branch_join_break_escape.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
+severity = "error"
 code = "UseAfterMove"
 line = 66
 column = 5
 message = "use of moved value `w`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 79
+column = 5
+message = "use of moved value `s`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 92
+column = 5
+message = "use of moved value `s`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 104
+column = 5
+message = "use of moved value `held`"

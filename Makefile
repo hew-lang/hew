@@ -62,7 +62,6 @@
 #   make test-leak-oracle-selftest — fail-closed leak runner/harness counterfactuals
 #   make test-cabi         — C-ABI crate tests (narrow; excluded from the workspace run)
 #   make test-compiler-pipeline — compiler ladder + CLI pipeline tests (narrow)
-#   make test-vertical-slice — end-to-end Hew compiler oracle
 #   make test-package-install — hew install -> Hew import consumer proof
 #   make test-runtime-unit — hew-runtime tests without heavy QUIC/TLS/profiler stack (~3× faster)
 #   make test-ux-examples  — run examples/ux + examples/progressive tutorials against .expected files
@@ -77,7 +76,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-vertical-slice test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check core-acceptance test-core-acceptance-runner
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-core-matrix core-matrix-record test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness forced-cancel-composite-check core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -684,7 +683,7 @@ ci-preflight: preflight
 # lifecycle tests already run in the workspace suite; source ownership cases
 # run through core acceptance and safety.
 ci-shard-1: observe-functional-test test-cabi \
-	test-vertical-slice test-pkg-import test-runtime-unit test-ux-examples \
+	core-acceptance test-pkg-import test-runtime-unit test-ux-examples \
 	test-doc-examples test-migrate-corpus \
 	o2-differential-selftest playground-verify
 
@@ -724,9 +723,9 @@ ci-preflight-smoke:
 # and the parity principle in docs/internal/engineering-invariants.md.
 #
 #   make ci-local-linux CI_LINUX_HOST=user@host                   # full Linux job
-#   make ci-local-linux CI_LINUX_HOST=user@host STEP=test-vertical-slice
+#   make ci-local-linux CI_LINUX_HOST=user@host STEP=core-acceptance
 #   STEP ∈ { all preflight lint ci-shard-1 ci-shard-2 ci-shard-3
-#            test-vertical-slice test-pkg-import test-hew-ratchet test-stdlib-ratchet sandbox-parity }
+#            core-acceptance test-pkg-import test-hew-ratchet test-stdlib-ratchet sandbox-parity }
 #
 # The host must provide CI's toolchain (LLVM via LLVM_SYS_221_PREFIX, the pinned
 # Rust toolchain, cargo-nextest, wasmtime). Override the remote LLVM prefix with
@@ -748,7 +747,7 @@ fuzz-corpus:
 # Full mode (manual): also scans the raw cargo-fuzz corpus (nondeterministic; not in CI).
 #   make fuzz-oracle FUZZ_ORACLE_FULL=1
 #
-# Prereqs mirror test-vertical-slice: libhew.a must be fresh so native links
+# Prereqs mirror core-acceptance: libhew.a must be fresh so native links
 # do not test against stale runtime/stdlib archives.
 FUZZ_ORACLE_FULL ?=
 fuzz-oracle: hew-native
@@ -1126,16 +1125,6 @@ test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first so native fixture links use the current product.
 #
-# Most fixtures are now acceptance cases named for the fixture itself, run
-# here through the one runner. run.sh still holds what a case cannot express
-# — assertions over an LLVM dump, fixtures that own state at a fixed path,
-# and the fixtures that fail today, whose assertions could not be observed to
-# migrate them. It shrinks as those are fixed; the next lane retires it.
-test-vertical-slice: hew-native ## Test: run the end-to-end compiler oracle
-	bash tests/vertical-slice/test-compile-accept.sh
-	cargo run -p xtask -- core-acceptance --suite acceptance --kind run,check,reject --hew-bin "$(DEBUG_HEW)" $(CORE_ACCEPTANCE_ARGS)
-	HEW_BIN="$(DEBUG_DIR)/hew" bash tests/vertical-slice/run.sh
-
 # Audited native value-semantics cases.  hew-native is the sole compiler build
 # edge; xtask only drives that already-built binary for its O0 and O2 outcomes.
 CORE_ACCEPTANCE_ARGS ?=
@@ -2001,11 +1990,6 @@ clean: ## Develop: remove generated build and test artifacts
 		"$(CURDIR)/.tmp/asan-fixture-out" \
 		"$(CURDIR)/.tmp/tool-tmp"
 	rm -f -- \
-		"$(CURDIR)/.tmp/vertical-slice-accept-output.txt" \
-		"$(CURDIR)/.tmp/vertical-slice-reject-output.txt" \
-		"$(CURDIR)/.tmp/vertical-slice.stdout" \
-		"$(CURDIR)/.tmp/vertical-slice.stderr" \
-		"$(CURDIR)/.tmp/vertical-slice-remote-pid-old-verb.hew" \
 		"$(CURDIR)/.tmp/pkg-import-actual.txt" \
 		"$(CURDIR)/.tmp/scanner-test-input.txt" \
 		"$(CURDIR)/.tmp/stdlib-io-scanner-oracle-input.txt"

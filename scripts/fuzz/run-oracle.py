@@ -900,7 +900,7 @@ def main() -> int:
         # non-zero codes (42, 7, 134, etc.) as their correctness signal; the
         # oracle only fails them on structural failures (signal/PANIC/NYI/ICE/
         # timeout/output-cap).  Exit-code correctness is already pinned by
-        # tests/vertical-slice/run.sh — we only add the build+run dimension here.
+        # the core-acceptance cases — we only add the build+run dimension here.
         _process_group(
             vertical_slice,
             "vertical-slice/accept",

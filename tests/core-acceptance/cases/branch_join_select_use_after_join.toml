@@ -1,13 +1,21 @@
 [[case]]
 id = "branch_join_select_use_after_join"
-intent = "`select` scoping, both directions in one file."
+intent = "A `select` arm that consumes the resource makes the rejoined use a single reported move."
 source = "../vertical-slice/reject/branch_join_select_use_after_join.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
+severity = "error"
 code = "UseAfterMove"
 line = 47
 column = 5
 message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 47
+column = 5
+message = "cannot consume released resource `held`; its close obligation was already discharged"

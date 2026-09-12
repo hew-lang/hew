@@ -752,7 +752,7 @@ stdlib_diagnostic() {
 #
 # Two conventions cover all known reject fixtures in the repo:
 #   1. Path contains /reject/ — files inside reject/ subdirectories, used by
-#      test-vertical-slice, test-pkg-import and fuzz-oracle. Multi-file reject
+#      core-acceptance, test-pkg-import and fuzz-oracle. Multi-file reject
 #      cases include helper .hew files in the same directory that pass
 #      `hew check` individually; they are still part of the reject fixture.
 #   2. The basename contains "reject" — single-file reject tests use several

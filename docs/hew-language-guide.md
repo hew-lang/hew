@@ -2278,6 +2278,101 @@ field is not one, so `r.d.step(.Open)` is rejected with `` `.step()` requires a
 mutable binding receiver; this expression is not declared with `var` ``. Copy
 the field into a local `var`, step it, and write it back.
 
+### Grouping states: composite states
+
+A `state` block that declares substates is a composite state. It groups them
+under one name, holds the rules and hooks they share, and nests exactly one
+level. Exactly one substate is marked `initial`: that is where a transition
+targeting the group by name lands.
+
+```hew
+machine Session {
+    events { Open, Authed, Close }
+
+    emits { Trace { text: string } }
+
+    state Closed,
+    state Kicked,
+
+    state Live {
+        entry {
+            emit Trace { text: "live" };
+        }
+        exit {
+            emit Trace { text: "done" };
+        }
+
+        initial state Authing,
+        state Active,
+
+        on Close: _ => Closed,
+    },
+
+    on Open: Closed => Live,
+    on Authed: Authing => Active,
+    on Close: Active => Kicked,
+
+    default { state }
+}
+
+fn main() {
+    var session: Session = .Closed;
+    let _ = session.step(.Open);
+    println(session.state_name());    // Authing
+    let _ = session.step(.Authed);
+    println(session.state_name());    // Active
+    let _ = session.step(.Close);
+    println(session.state_name());    // Kicked
+}
+```
+
+`on Close: _ => Closed` inside the block is the group's rule: it applies from
+every substate, so adding a fourth substate inherits it. `on Close: Active =>
+Kicked` outside the block is `Active`'s own rule and beats the group's — the
+position in the file does not matter, only which state the rule names.
+
+The composite's hooks bracket the substates' own. Entering the group runs
+`Live.entry` before the substate's `entry`; leaving it runs the substate's
+`exit` before `Live.exit`. Moving between two substates of the same group runs
+neither, because the group was never left.
+
+The composite is a grouping, not a live state: `state_name()` always reports a
+substate, and the machine flattens before it is checked. `hew machine diagram`
+draws the flat machine; its `--format json` output keeps the grouping in a
+`composites` array.
+
+### Fixed numbers in a machine: const parameters
+
+A machine can declare `usize` const parameters. They name a fixed value of the
+declaration, readable in guards, transition bodies and hooks.
+
+```hew
+machine Retry<const MAX: usize = 3> {
+    events { Fail, Reset }
+
+    state Trying { attempts: usize },
+    state Exhausted,
+
+    on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+    on Fail: Trying => Exhausted,
+    on Reset: Trying => Trying { attempts: 0 }
+    on Reset: Exhausted => Trying { attempts: 0 }
+    on Fail: Exhausted => Exhausted reenter,
+}
+
+fn main() {
+    var retry: Retry = .Trying { attempts: 0 };
+    for _ in 0..3 {
+        let _ = retry.step(.Fail);
+    }
+    println(retry.state_name());      // Exhausted
+}
+```
+
+The default is the value. A machine type annotation has no place to write a
+const argument yet, so a const parameter without a default is refused where it
+is declared, and rebinding the name inside a machine body is refused too.
+
 ## Generics
 
 ### Generic function with a trait bound

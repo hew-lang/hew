@@ -156,9 +156,11 @@ guarded fallback, source wildcards, dynamic targets, hooks and typed outputs.
 A generic machine is admitted: its purity proof is deferred to each concrete
 instantiation, so a machine instantiated with a type that carries external
 identity is refused where that argument is chosen, and one no argument could
-purify is refused at its declaration. Const parameters, composite state
-evaluation and additional source forms are not yet admitted by this path.
-Parser or diagram support for a form is not evidence of executable support.
+purify is refused at its declaration. `usize` const parameters and depth-1
+composite states are admitted: a const parameter's declared default is its
+value, and a composite flattens to its substates before checking. Additional
+source forms are not yet admitted by this path. Parser or diagram support for
+a form is not evidence of executable support.
 
 Machine normalization precedes body checking and HIR. Generated state and
 report declarations use the same checked type, call, ownership SIR, physical

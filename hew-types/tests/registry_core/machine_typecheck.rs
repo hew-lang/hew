@@ -2773,39 +2773,262 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 { 0 }
     );
 }
 
-// ── Const parameters are outside the evaluator's admitted surface ───────
+// ── Const parameters and depth-1 composite states ───────────────────────
 
-/// MACHINE-SPEC, "Implementation scope": const parameters and composite state
-/// evaluation are not yet admitted. The parser accepts the form; the checker
-/// refuses it rather than lowering an unevaluable machine.
+/// HEW-SPEC-2026 §3.11.2: a const parameter's declared default is its value,
+/// named in guards like an ordinary immutable binding.
 #[test]
-fn machine_const_param_decl_is_refused() {
-    let src = r"machine FixedBuffer<const N: usize = 16> {
+fn machine_const_param_is_named_in_a_guard() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize = 3> {
+            events {
+                Fail,
+            }
+
+            state Trying { attempts: usize },
+            state Exhausted,
+
+            on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+            on Fail: Trying => Exhausted,
+            on Fail: Exhausted => Exhausted reenter,
+        }
+
+        fn main() {
+            var retry: Retry = .Trying { attempts: 0 };
+            let _ = retry.step(.Fail);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a const parameter named in a guard should check cleanly, got: {:?}",
+        output.errors
+    );
+}
+
+/// A const parameter is a fixed machine-wide value, so a body binding of the
+/// same name is refused rather than silently shading it.
+#[test]
+fn machine_const_param_shadowing_is_refused() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize = 3> {
+            events {
+                Fail,
+            }
+
+            state Trying { attempts: usize },
+
+            on Fail: Trying => Trying reenter {
+                let MAX = 9;
+                Trying { attempts: state.attempts + MAX }
+            }
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("`MAX` is a const parameter")),
+        "expected the const-parameter shadowing refusal, got: {:?}",
+        output.errors
+    );
+}
+
+/// Negative control for the refusal above: a body binding whose name is not a
+/// const parameter is ordinary and checks cleanly.
+#[test]
+fn machine_body_binding_beside_a_const_param_is_admitted() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize = 3> {
+            events {
+                Fail,
+            }
+
+            state Trying { attempts: usize },
+
+            on Fail: Trying => Trying reenter {
+                let step = MAX - 2;
+                Trying { attempts: state.attempts + step }
+            }
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a body binding that is not a const parameter should check cleanly, got: {:?}",
+        output.errors
+    );
+}
+
+/// No type annotation spells a const argument, so a parameter without a
+/// default has no value and is refused at the declaration.
+#[test]
+fn machine_const_param_without_a_default_is_refused() {
+    let output = typecheck_isolated(
+        r"
+        machine Retry<const MAX: usize> {
+            events {
+                Fail,
+            }
+
+            state Trying,
+
+            on Fail: Trying => Trying reenter,
+        }
+        ",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("needs a default value")),
+        "expected the missing-default refusal, got: {:?}",
+        output.errors
+    );
+}
+
+/// A transition targeting a composite by name enters its `initial` substate.
+/// Without that resolution the target names no declared state and the machine
+/// is refused.
+#[test]
+fn machine_composite_target_enters_the_initial_substate() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Open,
+                Authed,
+            }
+
+            state Closed,
+
+            state Live {
+                initial state Authing,
+                state Active,
+            },
+
+            on Open: Closed => Live,
+            on Authed: Authing => Active,
+
+            default { state }
+        }
+
+        fn main() {
+            var session: Session = .Closed;
+            let _ = session.step(.Open);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "targeting a composite by name should enter its initial substate, got: {:?}",
+        output.errors
+    );
+}
+
+/// A composite's parent rule applies from every substate. Without the D1
+/// expansion, `Active` and `Draining` have no rule for `Close` and the
+/// coverage check refuses the machine.
+#[test]
+fn machine_composite_parent_rule_covers_every_substate() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+
+            state Live {
+                initial state Authing,
+                state Active,
+                state Draining,
+
+                on Close: _ => Closed,
+            },
+
+            on Close: Closed => Closed reenter,
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a composite parent rule should cover every substate, got: {:?}",
+        output.errors
+    );
+}
+
+/// A substate's own rule beats the composite's for the same event, including
+/// when it is written after the composite block. Expanding the parent rule
+/// onto that substate too would leave two unconditional rules for one
+/// state/event pair and the machine would be refused as unreachable.
+#[test]
+fn machine_substate_rule_after_the_block_beats_the_parent_rule() {
+    let output = typecheck_isolated(
+        r"
+        machine Session {
+            events {
+                Close,
+            }
+
+            state Closed,
+            state Kicked,
+
+            state Live {
+                initial state Authing,
+                state Draining,
+
+                on Close: _ => Closed,
+            },
+
+            on Close: Draining => Kicked,
+            on Close: Closed => Closed reenter,
+            on Close: Kicked => Kicked reenter,
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "a substate rule written after the composite block should beat the \
+         parent rule, got: {:?}",
+        output.errors
+    );
+}
+
+/// A composite state nests one level. The parser refuses a substate that
+/// declares substates of its own, so the machine never reaches the checker.
+#[test]
+fn machine_composite_depth_two_is_refused() {
+    let parsed = hew_parser::parse(
+        r"machine Deep {
     events {
-        Write,
-        Drain,
+        Go,
     }
 
-    state Empty,
-    state Full,
-    on Write: Empty => .Full,
-    on Drain: Full => .Empty,
-    default { state }
+    state Outer {
+        initial state Inner {
+            initial state TooDeep,
+        }
+    },
+
+    on Go: _ => _ {
+        state
+    }
 }
-";
-    let parsed = hew_parser::parse(src);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
+",
     );
-    let out = check_items(parsed.program.items);
     assert!(
-        out.errors.iter().any(|error| error
-            .message
-            .contains("does not yet admit const parameters")),
-        "expected the documented const-parameter refusal, got: {:?}",
-        out.errors
+        parsed
+            .errors
+            .iter()
+            .any(|error| format!("{error:?}").contains("a composite state nests one level")),
+        "expected the depth-two refusal, got: {:?}",
+        parsed.errors
     );
 }
 

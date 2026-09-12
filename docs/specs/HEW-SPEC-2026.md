@@ -3584,7 +3584,7 @@ fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
 normative grammar — see §12):
 
 ```ebnf
-MachineDecl    = "machine" Ident TypeParams? WhereClause? "{"
+MachineDecl    = "machine" Ident MachineParams? WhereClause? "{"
                    EventsHeader
                    [ EmitsHeader ]
                    { StateDecl }
@@ -3592,16 +3592,26 @@ MachineDecl    = "machine" Ident TypeParams? WhereClause? "{"
                    [ DefaultArm ]
                  "}" ;
 
+MachineParams  = "<" [ TypeParam { "," TypeParam } ]
+                     { "," "const" Ident ":" "usize" [ "=" ConstExpr ] } ">" ;
+
 EventsHeader   = "events" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
 EventDecl      = Ident [ "{" FieldList "}" ] ;
 FieldList      = [ Ident ":" Type { "," Ident ":" Type } [ "," ] ] ;
 EmitsHeader    = "emits" "{" [ EventDecl { "," EventDecl } [ "," ] ] "}" ;
 
-StateDecl      = "state" Ident [ "{"
+StateDecl      = LeafState | CompositeState ;
+LeafState      = "state" Ident [ "{"
                    { Ident ":" Type "," }          (* field declarations *)
                    [ "entry" Block ]                (* entry hook *)
                    [ "exit"  Block ]                (* exit hook  *)
                  "}" ] "," ;
+CompositeState = "state" Ident "{"
+                   { Ident ":" Type "," }          (* shared fields *)
+                   [ "entry" Block ] [ "exit" Block ]
+                   { [ "initial" ] LeafState }     (* exactly one initial *)
+                   { TransitionDecl }               (* parent-level rules *)
+                 "}" "," ;
 
 TransitionDecl = "on" Ident [ "(" Ident { "," Ident } ")" ] ":"
                  StatePattern "=>" StatePattern
@@ -3643,10 +3653,10 @@ retain external resource identity. An unknown or indirect call has no purity
 proof and is rejected. Checked computation faults remain possible. Inputs,
 states and outputs must support independent value copies.
 
-The native evaluator admits ordinary concrete machines. Const parameters,
-depth-1 composite state blocks and unclassified generic payloads parse but are
-not admitted by this execution path; parser or diagram support for a form is
-not evidence of executable support.
+The native evaluator admits ordinary concrete machines, const parameters and
+depth-1 composite state blocks (§3.11.9). An unclassified generic payload
+parses but is not admitted by this execution path; parser or diagram support
+for a form is not evidence of executable support.
 
 ### 3.11.3 Transition Bodies
 
@@ -3951,6 +3961,89 @@ move the surrounding actor's effects into `step`.
 - Machines can be used as type parameters wherever the bound permits.
 - A machine declaration may itself be generic (`machine Lifecycle<T> { ... }`);
   see §3.11.2 for the type arguments the evaluator admits.
+
+### 3.11.9 Const Parameters and Composite States
+
+**Const parameters.** A machine may declare `usize` const parameters after its
+type parameters. A const parameter names a fixed value of the declaration,
+visible in guards, transition bodies and hooks like an immutable binding. Its
+value is its declared default; a type annotation cannot spell const arguments,
+so a const parameter without a default is refused where it is declared. A body
+binding that reuses a const parameter's name is refused rather than shading it.
+
+```hew
+machine Retry<const MAX: usize = 3> {
+    events {
+        Fail,
+    }
+
+    state Trying { attempts: usize },
+    state Exhausted,
+
+    on Fail: Trying => Trying when state.attempts + 1 < MAX { attempts: state.attempts + 1 }
+    on Fail: Trying => Exhausted,
+    on Fail: Exhausted => Exhausted reenter,
+}
+```
+
+**Composite states.** A `state` block that declares substates is a composite
+state: a grouping name, not a live state. It nests exactly one level; a
+substate that declares substates of its own is refused. Exactly one substate
+is marked `initial`.
+
+A composite flattens before checking. Every substate becomes a state of the
+machine, and the composite's own fields are stamped onto each of them.
+
+- A transition targeting the composite by name enters its `initial` substate.
+- A parent-level rule written inside the block applies from every substate. A
+  substate's own unguarded rule for the same event replaces it, wherever in
+  the machine that rule is written; a guarded one keeps the parent rule as its
+  fallback.
+- Entering the composite runs the composite's `entry` hook before the
+  substate's; leaving it runs the substate's `exit` hook before the
+  composite's. A move between two substates of the same composite runs neither
+  composite hook.
+
+```hew
+machine Session {
+    events {
+        Open,
+        Authed,
+        Close,
+    }
+
+    emits {
+        Trace { text: string },
+    }
+
+    state Closed,
+    state Kicked,
+
+    state Live {
+        entry {
+            emit Trace { text: "Live.entry" };
+        }
+        exit {
+            emit Trace { text: "Live.exit" };
+        }
+
+        initial state Authing,
+        state Active,
+
+        on Close: _ => Closed,
+    },
+
+    on Open: Closed => Live,          // enters Authing
+    on Authed: Authing => Active,     // no composite hook
+    on Close: Active => Kicked,       // beats the parent Close rule
+
+    default { state }
+}
+```
+
+`hew machine diagram` draws the flattened machine; its JSON form keeps the
+grouping in a `composites` array naming each composite, its members and its
+initial substate.
 
 ---
 

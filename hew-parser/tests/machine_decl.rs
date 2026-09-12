@@ -690,8 +690,8 @@ fn composite_block_round_trips_through_formatter() {
 
 #[test]
 fn reject_depth_two_composite_nesting() {
-    // Depth-1 composites are accepted; a `state` inside a substate body
-    // (depth > 1) is rejected with a v0.6 diagnostic.
+    // Depth-1 composites are accepted; a `state` inside a substate body nests
+    // deeper than one level and is rejected.
     let source = r"
 machine Deep {
     events {
@@ -712,8 +712,8 @@ machine Deep {
         result
             .errors
             .iter()
-            .any(|e| format!("{e:?}").contains("depth > 1")),
-        "expected depth>1 v0.6 diagnostic, errors: {:?}",
+            .any(|e| format!("{e:?}").contains("a composite state nests one level")),
+        "expected the depth-two refusal, errors: {:?}",
         result.errors
     );
 }

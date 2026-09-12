@@ -626,6 +626,18 @@ impl Checker {
         );
     }
 
+    /// One field of the place a pattern destructures.
+    fn place_field(
+        place: Option<&(String, crate::env::PlacePath)>,
+        field: &str,
+    ) -> Option<(String, crate::env::PlacePath)> {
+        place.map(|(root, path)| {
+            let mut path = path.clone();
+            path.push(field.to_string());
+            (root.clone(), path)
+        })
+    }
+
     fn bind_record_pattern_plan(
         &mut self,
         pattern: &Pattern,
@@ -633,6 +645,7 @@ impl Checker {
         is_mutable: bool,
         span: &Span,
     ) {
+        let scrutinee_place = self.pattern_place.take();
         let source_fields = match pattern {
             Pattern::Struct { fields, .. }
             | Pattern::RecordShorthand { fields, .. }
@@ -649,6 +662,11 @@ impl Checker {
         for field in &plan.fields {
             match &field.sub {
                 PlanSub::Binding(name) => {
+                    if let Some((root, path)) =
+                        Self::place_field(scrutinee_place.as_ref(), &field.name)
+                    {
+                        self.record_pattern_place_transfer(&root, path, &field.ty, &field.span);
+                    }
                     self.check_shadowing(name, &field.span);
                     self.env.define_with_span(
                         name.clone(),
@@ -657,6 +675,8 @@ impl Checker {
                         field.span.clone(),
                     );
                 }
+                // A wildcard field names nothing, so it takes nothing: the
+                // field stays owned by the place the pattern destructures.
                 PlanSub::Wildcard => {}
                 PlanSub::Literal(literal) => {
                     self.bind_pattern(
@@ -672,7 +692,10 @@ impl Checker {
                         .find(|source| source.name == field.name)
                         .and_then(|source| source.pattern.as_ref())
                     {
+                        self.pattern_place =
+                            Self::place_field(scrutinee_place.as_ref(), &field.name);
                         self.bind_pattern(subpattern, &field.ty, is_mutable, sub_span);
+                        self.pattern_place = None;
                     } else {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,
@@ -755,6 +778,10 @@ impl Checker {
         let resolved_ty = self.subst.resolve(ty);
         let projected_ty = self.project_assoc_types(&resolved_ty);
         let ty = &projected_ty;
+        // The place this pattern node destructures, if any. Taking it here is
+        // what stops it leaking into a shape that is not a field of it: only
+        // the aggregate arms below hand it on to their own subpatterns.
+        let scrutinee_place = self.pattern_place.take();
 
         if let Pattern::NominalPath { path, payload } = pattern {
             if self.reject_machine_event_pattern_outside_transition(ty, span) {
@@ -820,6 +847,7 @@ impl Checker {
                     if self.invalid_pattern_plan_spans.contains(&key) {
                         self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     } else if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                        self.pattern_place.clone_from(&scrutinee_place);
                         self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     } else {
                         self.report_error(
@@ -890,6 +918,7 @@ impl Checker {
                     if self.invalid_pattern_plan_spans.contains(&key) {
                         self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     } else if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                        self.pattern_place.clone_from(&scrutinee_place);
                         self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     } else {
                         self.report_error(
@@ -1010,6 +1039,9 @@ impl Checker {
                     self.reject_machine_event_pattern_outside_transition(ty, span);
                     return;
                 }
+                if let Some((root, path)) = scrutinee_place {
+                    self.record_pattern_place_transfer(&root, path, ty, span);
+                }
                 self.check_shadowing(name, span);
                 self.env
                     .define_with_span(name.clone(), ty.clone(), is_mutable, span.clone());
@@ -1113,6 +1145,7 @@ impl Checker {
                     return;
                 }
                 if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                    self.pattern_place.clone_from(&scrutinee_place);
                     self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     return;
                 }
@@ -1239,6 +1272,7 @@ impl Checker {
                     return;
                 }
                 if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
+                    self.pattern_place.clone_from(&scrutinee_place);
                     self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     return;
                 }
@@ -1326,9 +1360,12 @@ impl Checker {
                             ),
                         );
                     }
-                    for (p, t) in pats.iter().zip(tys.iter()) {
+                    for (index, (p, t)) in pats.iter().zip(tys.iter()).enumerate() {
+                        self.pattern_place =
+                            Self::place_field(scrutinee_place.as_ref(), &index.to_string());
                         self.bind_pattern(&p.0, t, is_mutable, &p.1);
                     }
+                    self.pattern_place = None;
                 }
                 Ty::Var(_) | Ty::Error => {
                     for p in pats {
@@ -1599,7 +1636,9 @@ impl Checker {
             match item {
                 ConditionItem::Let { pattern, expr } => {
                     let scrutinee_ty = self.synthesize(&expr.0, &expr.1);
+                    self.pattern_place = self.expr_place(&expr.0);
                     self.bind_pattern(&pattern.0, &scrutinee_ty, false, &pattern.1);
+                    self.pattern_place = None;
                     // Record the pattern resolution so HIR lowering consumes the
                     // same `pattern_resolutions` side-table that powers `match`.
                     self.record_arm_resolution(&pattern.0, &pattern.1, &scrutinee_ty);

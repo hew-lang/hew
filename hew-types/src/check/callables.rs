@@ -65,6 +65,21 @@ impl Checker {
         }
     }
 
+    /// Whether a value of this type has exactly one owner, so reading it out
+    /// of a place is a transfer rather than a copy. The single class-fact
+    /// authority SIR's own take/copy decision reads.
+    pub(super) fn place_read_transfers_ownership(&self, ty: &Ty) -> bool {
+        let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+            return false;
+        };
+        let declarations = self.class_declarations();
+        let context = crate::value_class::ClassContext::new(&declarations);
+        matches!(
+            crate::value_class::classify_ty(&resolved, &context),
+            Ok((_, crate::type_facts::CloneKind::None))
+        )
+    }
+
     /// Record invocation-time consumption when an owned value leaves a place.
     /// SIR authors the actual transfer; the checker uses the same class facts
     /// to determine capture capabilities and reject later source uses.
@@ -84,18 +99,30 @@ impl Checker {
         if !is_capture && path.is_empty() && !ty.contains_callable() {
             return;
         }
-        let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
-            return;
-        };
-        let declarations = self.class_declarations();
-        let context = crate::value_class::ClassContext::new(&declarations);
-        if matches!(
-            crate::value_class::classify_ty(&resolved, &context),
-            Ok((_, crate::type_facts::CloneKind::None))
-        ) && !self.reject_borrowed_consumption(expr, span)
+        if self.place_read_transfers_ownership(&ty) && !self.reject_borrowed_consumption(expr, span)
         {
             self.mark_expr_moved(expr, span);
         }
+    }
+
+    /// A pattern binder takes one field out of the place it destructures.
+    /// Same class facts and same refusals as the projected `let` that spells
+    /// the transfer out (`let t = booking.ticket`), so the two agree on what
+    /// is still owned after the pattern binds.
+    pub(super) fn record_pattern_place_transfer(
+        &mut self,
+        root: &str,
+        path: crate::env::PlacePath,
+        ty: &Ty,
+        span: &Span,
+    ) {
+        if !self.place_read_transfers_ownership(ty)
+            || self.reject_borrowed_place_consumption(root, &path, span)
+            || self.reject_partial_place_consumption(root, &path, span)
+        {
+            return;
+        }
+        self.env.mark_place_moved(root, path, span.clone());
     }
 
     pub(super) fn infer_lambda_result(&mut self, body: &Spanned<Expr>) -> Ty {
@@ -416,12 +443,23 @@ impl Checker {
         let Some((root, path)) = self.expr_place(expr) else {
             return false;
         };
-        if self.reject_prepared_task_access(&root, &path, span, TypeErrorKind::OwnConsumeBorrowed) {
+        self.reject_borrowed_place_consumption(&root, &path, span)
+    }
+
+    /// The same refusal keyed by the place itself, for consuming uses that
+    /// have no expression to name them - a pattern binder taking one field
+    /// out of the place it destructures.
+    pub(super) fn reject_borrowed_place_consumption(
+        &mut self,
+        root: &str,
+        path: &[String],
+        span: &Span,
+    ) -> bool {
+        if self.reject_prepared_task_access(root, path, span, TypeErrorKind::OwnConsumeBorrowed) {
             return true;
         }
         // A closure environment capture follows its existing acquisition contract.
-        if self.is_current_closure_capture(&root) || !self.env.place_borrows_parameter(&root, &path)
-        {
+        if self.is_current_closure_capture(root) || !self.env.place_borrows_parameter(root, path) {
             return false;
         }
         let suggestion = if self.lambda_capture_depth.is_some() {

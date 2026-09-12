@@ -3591,6 +3591,16 @@ pub struct Checker {
     /// it identifies the OUTERMOST target place, which is exactly the place a
     /// plain `=` re-initialises.
     pub(super) place_write_depth: usize,
+    /// The place the pattern about to be bound destructures, when the source
+    /// is a place at all (`match booking { … }`, `let Booking { … } = booking`).
+    ///
+    /// A pattern binder takes its field out of that place exactly as
+    /// `let t = booking.ticket` does, so the same partial-move bookkeeping has
+    /// to see it. Set immediately before [`bind_pattern`] and consumed by the
+    /// pattern node it describes: an aggregate subpattern re-sets it for its
+    /// own fields, and every other pattern shape drops it, because a variant
+    /// payload or a temporary scrutinee is not a field of a caller's place.
+    pub(super) pattern_place: Option<(String, crate::env::PlacePath)>,
     /// Actor protocol descriptors (`receive fn` → stable hash-derived `msg_id`),
     /// built once before body checking so the active-mode
     /// `Actor`'s own actor-handle type → `ConnectionHandler`'s coercion can confirm an
@@ -4102,6 +4112,7 @@ impl Checker {
             current_actor_fields: Vec::new(),
             place_base_depth: 0,
             place_write_depth: 0,
+            pattern_place: None,
             actor_protocol_descriptors: HashMap::new(),
             lambda_actor_declarations: HashMap::new(),
             impl_alias_scopes: Vec::new(),

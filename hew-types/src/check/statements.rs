@@ -788,7 +788,8 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_expr(&scr_ty, arms, span, expected)
+                let place = self.expr_place(&scrutinee.0);
+                self.check_match_expr(&scr_ty, place, arms, span, expected)
             }
             Stmt::Expression((expr, es)) => self.synthesize_discarded_expression(expr, es),
             Stmt::Return(value) => {
@@ -1373,7 +1374,10 @@ impl Checker {
                     // not introduce a phantom binding (which would otherwise warn
                     // "unused variable `None`" and shadow the variant constructor).
                     if !identifier_is_unit_variant {
+                        self.pattern_place =
+                            value.as_ref().and_then(|(expr, _)| self.expr_place(expr));
                         self.bind_pattern(&pattern.0, &val_ty, false, &pattern.1);
+                        self.pattern_place = None;
                     }
                 }
             }
@@ -2244,7 +2248,8 @@ impl Checker {
             }
             Stmt::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_stmt(&scr_ty, arms, span);
+                let place = self.expr_place(&scrutinee.0);
+                self.check_match_stmt(&scr_ty, place, arms, span);
             }
             Stmt::Defer(expr) => {
                 let ownership = self.env.ownership_snapshot();
@@ -2270,10 +2275,18 @@ impl Checker {
         }
     }
 
-    pub(super) fn check_match_stmt(&mut self, scrutinee_ty: &Ty, arms: &[MatchArm], span: &Span) {
+    pub(super) fn check_match_stmt(
+        &mut self,
+        scrutinee_ty: &Ty,
+        scrutinee_place: Option<(String, crate::env::PlacePath)>,
+        arms: &[MatchArm],
+        span: &Span,
+    ) {
         for arm in arms {
             self.env.push_scope();
+            self.pattern_place.clone_from(&scrutinee_place);
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.pattern_place = None;
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             if let Some((guard, gs)) = &arm.guard {

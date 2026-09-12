@@ -516,7 +516,8 @@ impl Checker {
             // Match
             Expr::Match { scrutinee, arms } => {
                 let scr_ty = self.synthesize(&scrutinee.0, &scrutinee.1);
-                self.check_match_expr(&scr_ty, arms, span, None)
+                let place = self.expr_place(&scrutinee.0);
+                self.check_match_expr(&scr_ty, place, arms, span, None)
             }
 
             // Tuple
@@ -1548,7 +1549,7 @@ impl Checker {
     /// A selected field may move only when every enclosing value supports
     /// independent field ownership. The selected value's own cleanup contract
     /// does not prevent moving that entire value out of its plain parent.
-    fn reject_partial_place_consumption(
+    pub(super) fn reject_partial_place_consumption(
         &mut self,
         root: &str,
         path: &[String],
@@ -3789,7 +3790,8 @@ impl Checker {
                 // re-arm before checking them; the scrutinee (synthesized above)
                 // does not. `check_match_expr` threads the flag to each arm body.
                 self.tail_ok_armed = tail_ok_armed;
-                let actual = self.check_match_expr(&scr_ty, arms, span, Some(expected));
+                let place = self.expr_place(&scrutinee.0);
+                let actual = self.check_match_expr(&scr_ty, place, arms, span, Some(expected));
                 if matches!(actual, Ty::Never | Ty::Error) {
                     actual
                 } else {
@@ -7650,6 +7652,7 @@ impl Checker {
     pub(super) fn check_match_expr(
         &mut self,
         scrutinee_ty: &Ty,
+        scrutinee_place: Option<(String, crate::env::PlacePath)>,
         arms: &[MatchArm],
         span: &Span,
         expected: Option<&Ty>,
@@ -7715,7 +7718,9 @@ impl Checker {
         for arm in arms {
             self.env.push_scope();
             self.env.restore_ownership(&fall_through);
+            self.pattern_place.clone_from(&scrutinee_place);
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
+            self.pattern_place = None;
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
             let mut guard_diverges = false;

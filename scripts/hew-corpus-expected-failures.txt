@@ -69,8 +69,8 @@ examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 examples/machine/connection_lifecycle.hew
 examples/machine/run_connection_lifecycle.hew
 
-# final-path-limitation: the distributed Node and QUIC surfaces have no
-# ownership-SIR operation contract on the final path yet
+# final-path-limitation: the distributed Node surface has no ownership-SIR
+# operation contract on the final path yet
 examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
 examples/distributed_hello.hew E_SIR_UNSUPPORTED
 

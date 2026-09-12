@@ -797,18 +797,15 @@ is_separately_gated_or_reject_fixture() {
 
 HEW_CORPUS_DIAGNOSTIC_DRIFT=""
 HEW_CORPUS_DIAGNOSTIC_DRIFT_COUNT=0
-HEW_CORPUS_TMPDIR=""
 
 run_hew_corpus() {
     local swept=() excluded=0 total f
-    local check_log status expected_code actual_codes check_index=0
+    local check_log status expected_code actual_codes
 
     require_hew_bin
     require_expected_failures_file
     read_expected_failures
     HEW_CORPUS_DIAGNOSTIC_DRIFT=""
-    HEW_CORPUS_TMPDIR="$(mktemp -d)"
-    trap '[[ -z "${HEW_CORPUS_TMPDIR:-}" ]] || rm -rf "$HEW_CORPUS_TMPDIR"' EXIT
 
     # Enumerate the corpus first so the floor can reject an empty or shrunken
     # sweep before spending minutes type-checking it.
@@ -828,10 +825,8 @@ run_hew_corpus() {
 
     for f in "${swept[@]}"; do
         RATCHET_INVENTORY_STR="${RATCHET_INVENTORY_STR}${f}"$'\n'
-        check_index=$((check_index + 1))
-        check_log="$HEW_CORPUS_TMPDIR/check-$check_index.log"
         status=0
-        "$HEW_BIN" check "$REPO_ROOT/$f" >"$check_log" 2>&1 || status=$?
+        check_log="$("$HEW_BIN" check "$REPO_ROOT/$f" 2>&1)" || status=$?
         if ((status != 0)); then
             ACTUAL_STR="${ACTUAL_STR}${f}"$'\n'
             if record_expected_refusal_status "$f" "$status" "$check_log" &&

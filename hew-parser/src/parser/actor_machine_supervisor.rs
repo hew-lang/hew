@@ -424,15 +424,7 @@ impl Parser<'_> {
 
         self.expect(&Token::RightBrace)?;
 
-        // Expand composite parent rules, then splice composite entry/exit
-        // hooks into every boundary-crossing transition (top-level + expanded)
-        // now that the full flat list is assembled. Both run as post-passes so
-        // rules authored after the composite block are seen: a substate
-        // override written below the block still beats the parent rule, and a
-        // top-level `Outside => Sk` enter or `Sk => Outside` leave still gets
-        // its hooks.
-        Self::expand_all_composite_parent_rules(&mut transitions, &composite_groups);
-        Self::splice_all_composite_hooks(&mut transitions, &composite_groups);
+        Self::desugar_composites(&mut transitions, &composite_groups);
 
         Some(MachineDecl {
             visibility,
@@ -449,6 +441,20 @@ impl Parser<'_> {
         })
     }
 
+    /// Finish the composite desugar once the whole machine body is parsed:
+    /// expand each group's parent rules onto its members, then splice the
+    /// group's hooks into every transition that crosses its boundary. Both run
+    /// here, not while the block is parsed, so rules written after the block
+    /// are seen — a substate override below the block still beats the parent
+    /// rule, and a top-level enter or leave still gets its hooks.
+    fn desugar_composites(
+        transitions: &mut Vec<MachineTransition>,
+        composite_groups: &[CompositeGroup],
+    ) {
+        Self::expand_all_composite_parent_rules(transitions, composite_groups);
+        Self::splice_all_composite_hooks(transitions, composite_groups);
+    }
+
     /// Post-pass: expand each composite's wildcard-source parent rules (D1) to
     /// one concrete-source transition per member. Concrete sources are required
     /// because the checker refuses `state.field` under a literal `_` source.
@@ -456,7 +462,7 @@ impl Parser<'_> {
     /// A substate's own unguarded rule for the same event wins outright and the
     /// parent rule is not expanded onto it. A guarded substate rule keeps the
     /// parent rule, appended after it as the unconditional fallback.
-    pub(crate) fn expand_all_composite_parent_rules(
+    fn expand_all_composite_parent_rules(
         transitions: &mut Vec<MachineTransition>,
         composite_groups: &[CompositeGroup],
     ) {
@@ -488,7 +494,7 @@ impl Parser<'_> {
     /// one leaving C (source ∈ C, target ∉ C) gets `C.exit` prepended. With the
     /// MIR firing the source substate's own `exit` before the body and the
     /// target substate's own `entry` after, this yields Harel ordering.
-    pub(crate) fn splice_all_composite_hooks(
+    fn splice_all_composite_hooks(
         transitions: &mut [MachineTransition],
         composite_groups: &[CompositeGroup],
     ) {

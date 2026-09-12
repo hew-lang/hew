@@ -1,17 +1,8 @@
-// A branch arm that never reaches the join — it returns — must not leave its
-// consume behind for the fall-through path. `if flag { return held.detach(); }`
-// followed by `held.detach()` is the ordinary cleanup-then-return shape: only
-// one of the two consumes runs.
-//
-// Covers the same divergence exclusion for a `return` match arm, a `let`-else
-// (whose else block diverges by construction), and a mixed match where one arm
-// moves, one arm closes and one arm returns.
-//
-// The close body prints, so stdout is the drop oracle: each call closes its
-// handle exactly once, and a `detach`ed handle is never closed.
+// Every branch transfers or explicitly closes its resource exactly once.
+// A consuming method owns self until method exit, where normal cleanup runs.
 #[resource]
 type Conn {
-    fd: i64
+    fd: i64,
 }
 
 impl Conn {
@@ -19,17 +10,17 @@ impl Conn {
         print(self.fd);
         println(" closed");
     }
-    fn detach(consume self) -> i64 {
+    fn finish(consume self) -> i64 {
         self.fd
     }
 }
 
-fn detach_on_either_path(flag: bool) -> i64 {
+fn finish_on_either_path(flag: bool) -> i64 {
     let held = Conn { fd: 10 };
     if flag {
-        return held.detach();
+        return held.finish();
     }
-    held.detach()
+    held.finish()
 }
 
 fn close_then_return(flag: bool) -> i64 {
@@ -55,16 +46,23 @@ fn let_else_cleanup(o: Option<i64>) -> i64 {
 fn mixed_arms(n: i64) -> i64 {
     let held = Conn { fd: 13 };
     match n {
-        0 => { held.detach() },
-        1 => { held.close(); 100 },
-        _ => { return held.detach(); },
+        0 => {
+            held.finish()
+        },
+        1 => {
+            held.close();
+            100
+        },
+        _ => {
+            return held.finish();
+        },
     }
 }
 
 fn main() {
-    print(detach_on_either_path(true));
+    print(finish_on_either_path(true));
     println("");
-    print(detach_on_either_path(false));
+    print(finish_on_either_path(false));
     println("");
     print(close_then_return(true));
     println("");

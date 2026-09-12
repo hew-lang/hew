@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+code = "ResourceCloseMustReturnUnit"
 line = 13
 column = 8
-message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"
+message = "E_HIR: `#[resource]` type `Conn` declares `close` returning `i64`; the implicit drop contract dispatches `close` on every scope-exit path and only unit return is admitted in v0.5 \u2014 compose fallible cleanup via `defer` instead"

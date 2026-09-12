@@ -23,7 +23,7 @@ type Handle {
 }
 
 impl Handle {
-    fn close(self) {
+    fn close(consume self) {
         unsafe {
             hew_handle_free(self);
         }

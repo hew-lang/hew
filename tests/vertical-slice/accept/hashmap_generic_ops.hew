@@ -1,7 +1,7 @@
 // Accept fixture: HashMap<K, V> methods inside a generic function honor K bounds.
-
-fn put<K: Hash + Eq, V>(var m: HashMap<K, V>, k: K, v: V) {
+fn put<K: Hash + Eq, V>(var m: HashMap<K, V>, k: K, v: V) -> HashMap<K, V> {
     m.insert(k, v);
+    m
 }
 
 fn get_or<K: Hash + Eq, V>(m: HashMap<K, V>, k: K, fallback: V) -> V {
@@ -15,8 +15,9 @@ fn has_key<K: Hash + Eq, V>(m: HashMap<K, V>, k: K) -> bool {
     m.contains_key(k)
 }
 
-fn drop_key<K: Hash + Eq, V>(var m: HashMap<K, V>, k: K) -> bool {
-    m.remove(k).is_some()
+fn drop_key<K: Hash + Eq, V>(var m: HashMap<K, V>, k: K) -> HashMap<K, V> {
+    assert(m.remove(k).is_some());
+    m
 }
 
 fn count<K: Hash + Eq, V>(m: HashMap<K, V>) -> i64 {
@@ -25,27 +26,41 @@ fn count<K: Hash + Eq, V>(m: HashMap<K, V>) -> i64 {
 
 fn check_i64_value() -> i64 {
     var m: HashMap<string, i64> = HashMap.new();
-    put(m, "hello", 42);
-    if !has_key(m, "hello") { return 1; }
-    if get_or(m, "hello", 0) != 42 { return 2; }
-    if count(m) != 1 { return 3; }
-    if !drop_key(m, "hello") { return 4; }
-    if has_key(m, "hello") { return 5; }
-    if count(m) != 0 { return 6; }
+    m = put(m, "hello", 42);
+    if !has_key(m, "hello") {
+        return 1;
+    }
+    if get_or(m, "hello", 0) != 42 {
+        return 2;
+    }
+    if count(m) != 1 {
+        return 3;
+    }
+    m = drop_key(m, "hello");
+    if has_key(m, "hello") {
+        return 5;
+    }
+    if count(m) != 0 {
+        return 6;
+    }
     0
 }
 
 fn check_string_value() -> i64 {
     var m: HashMap<i64, string> = HashMap.new();
-    put(m, 7, "seven");
+    m = put(m, 7, "seven");
     let got = get_or(m, 7, "missing");
-    if got != "seven" { return 11; }
-    if !drop_key(m, 7) { return 12; }
+    if got != "seven" {
+        return 11;
+    }
+    m = drop_key(m, 7);
     0
 }
 
 fn main() -> i64 {
     let a = check_i64_value();
-    if a != 0 { return a; }
+    if a != 0 {
+        return a;
+    }
     check_string_value()
 }

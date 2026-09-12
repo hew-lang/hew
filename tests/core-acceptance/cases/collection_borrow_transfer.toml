@@ -4,10 +4,10 @@ intent = "Pushing a borrowed collection element into a second collection transfe
 source = "../vertical-slice/reject/collection_borrow_transfer.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
-code = "E_RESOURCE_CLOSE_MUST_CONSUME"
-line = 9
-column = 8
-message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"
+code = "E_OWN_CONSUME_BORROWED"
+severity = "error"
+line = 19
+column = 12

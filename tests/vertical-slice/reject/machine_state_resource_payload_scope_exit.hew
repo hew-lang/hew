@@ -1,17 +1,11 @@
-// A machine value whose scope would end in a state holding a `#[resource]`
-// is rejected at declaration: the machine drop class has no wired release for
-// state-payload resources, so every exit path — held live, stepped back to a
-// payload-free state, early return — would leak the `close` silently.
-//
-// Expected diagnostic:
-//   machine `ConnSession` state `Active` holds `#[resource]`/`#[linear]` value `Handle`
+// Machines are pure value evaluators and cannot carry resource identity.
 #[resource]
 type Handle {
     fd: i64,
 }
 
 impl Handle {
-    fn close(self) {
+    fn close(consume self) {
         println(f"CLOSE fd={self.fd}");
     }
 }
@@ -33,6 +27,6 @@ machine ConnSession {
 
 fn main() {
     var s = ConnSession.Idle;
-    s.step(ConnSessionEvent.Connect { fd: 1 });
-    s.step(ConnSessionEvent.Disconnect);
+    let _ = s.step(ConnSessionEvent.Connect { fd: 1 });
+    let _ = s.step(ConnSessionEvent.Disconnect);
 }

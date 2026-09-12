@@ -1,0 +1,13 @@
+[[case]]
+id = "record-collection-value-parameter"
+intent = "Mutating collection projections of a record value parameter returns an independent updated record."
+source = "cases/record-collection-value-parameter.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "9\n7\n"
+exit = 0

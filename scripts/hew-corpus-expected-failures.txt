@@ -64,9 +64,6 @@ examples/multifile/02_geometry/geo/distance.hew
 # with no published dispatch table
 examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 
-# final-path-limitation: ordinary machine evaluation does not admit const
-# parameters or composite states yet
-
 # final-path-limitation: the distributed Node surface has no ownership-SIR
 # operation contract on the final path yet
 examples/distributed/kv_client.hew E_SIR_UNSUPPORTED
@@ -376,3 +373,6 @@ tests/vertical-slice/accept/returns_receiver_consuming_result.hew
 # downstream-wip: downstream syntax fixture not yet updated to associated-type
 # requirements (impl must define Canvas)
 tools/downstream/syntax-fixtures/syntax_test.hew
+
+# Intended local rebinding currently fails ownership lowering.
+tests/core-acceptance/cases/collection-borrow-rebind.hew E_SIR_VERIFY

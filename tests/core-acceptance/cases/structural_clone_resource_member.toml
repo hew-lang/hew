@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_RESOURCE_CLOSE_MUST_CONSUME"
-line = 7
-column = 8
-message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"
+code = "InvalidOperation"
+line = 16
+column = 17
+message = "type `Holder` contains `#[resource]` value `Token` and cannot be cloned: member `item.Some.1` contains `Token`, which has an affine close contract and no semantic clone"

@@ -5941,8 +5941,8 @@ mod vec_owned_tests {
         }
     }
 
-    /// Owned ops fail closed when reached on a vec with no stamped descriptor
-    /// (codegen routed a non-owned vec into the owned path).
+    /// Owned operations reject size-only vectors even when the raw element
+    /// size matches: releasing owned elements requires a descriptor.
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     #[cfg_attr(
@@ -5980,7 +5980,8 @@ mod vec_owned_tests {
         }
         // SAFETY: the fail-closed abort is the expected outcome.
         unsafe {
-            let v = hew_vec_new();
+            let v =
+                hew_vec_new_with_elem_size(core::mem::size_of::<OwnedElem>().try_into().unwrap());
             let s0 = OwnedElem {
                 payload: core::ptr::null_mut(),
             };

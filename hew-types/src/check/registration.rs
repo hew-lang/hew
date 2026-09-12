@@ -2475,7 +2475,7 @@ impl Checker {
                                 .insert(name);
                         }
                     }
-                    for (item_idx, (item, _item_span)) in module.items.iter().enumerate() {
+                    for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                         self.current_module_idx = span_indices
                             .item_index(mod_id, item_idx)
                             .unwrap_or_default();
@@ -2484,7 +2484,7 @@ impl Checker {
                                 self.pre_register_type_decl(td);
                             }
                             Item::TypeAlias(decl) => {
-                                self.register_type_alias_decl(decl, _item_span);
+                                self.register_type_alias_decl(decl, item_span);
                             }
                             // Function-signature registration runs over
                             // module-graph bodies before the root import
@@ -2783,7 +2783,7 @@ impl Checker {
         let aliases = self.type_aliases.values().cloned().collect::<Vec<_>>();
         let mut resolved = HashMap::new();
         for mut alias in aliases {
-            self.current_module = alias.source_module.clone();
+            self.current_module.clone_from(&alias.source_module);
             self.current_module_idx = alias.file_index;
             alias.target = self
                 .normalize_for_type_params(&alias.target, &alias.type_params)

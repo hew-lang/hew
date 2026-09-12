@@ -23411,7 +23411,10 @@ impl LowerCtx {
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
                     .unwrap_or_default();
                 if args.is_empty() && self.current_fn_type_params.contains(name) {
-                    return ResolvedTy::TypeParam { name: name.clone() };
+                    // Checker expression facts retain abstract binders as named
+                    // types until monomorphisation. Annotations must use the same
+                    // representation while keeping lexical binders ahead of aliases.
+                    return ResolvedTy::named_user(name.clone(), Vec::new());
                 }
                 if let Some(alias) = self.type_alias_for_name(name).cloned() {
                     return self.instantiate_type_alias(&alias, &args, &ty.1);

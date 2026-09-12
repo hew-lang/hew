@@ -596,7 +596,7 @@ pub struct TypeCheckOutput {
     /// index (replaces the former `unsafe_functions` side registry).
     pub extern_contracts: crate::extern_table::ExternTable,
     /// Function signatures keyed by declaration identity. Impl methods retain
-    /// their exact DefId path as well as their receiver/method lookup spelling,
+    /// their exact `DefId` path as well as their receiver/method lookup spelling,
     /// so trait and inherent declarations sharing a name remain distinct.
     ///
     /// Key shapes: `{module}.{name}` for source free functions — the module

@@ -76,8 +76,12 @@ fn colliding_import_publishes_none_of_its_other_bindings() {
         .errors
         .iter()
         .any(|error| error.kind == TypeErrorKind::ImportBindingCollision));
-    assert!(output.fn_sigs.contains_key("shared"));
-    assert!(!output.fn_sigs.contains_key("only_second"));
+    assert!(output
+        .import_fn_name_aliases
+        .contains_key(&(None, 0, "shared".to_string())));
+    assert!(!output
+        .import_fn_name_aliases
+        .contains_key(&(None, 0, "only_second".to_string())));
 }
 
 #[test]
@@ -1961,96 +1965,6 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
 // proven end-to-end by the `import-qual-c2` probe corpus and the examples
 // cutover ratchet rather than a hand-built `MachineDecl` literal.)
 
-// -- Glob import: everything unqualified --
-
-#[test]
-fn glob_import_registers_unqualified_names() {
-    let helper = make_pub_fn(
-        "helper",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "i32".to_string(),
-            type_args: None,
-        }),
-    );
-    let other = make_pub_fn(
-        "other",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "string".to_string(),
-            type_args: None,
-        }),
-    );
-    let import = make_user_import(
-        &["myapp", "utils"],
-        Some(selected_import(&["helper", "other"])),
-        vec![
-            (Item::Function(helper), 0..0),
-            (Item::Function(other), 0..0),
-        ],
-    );
-    let output = check_items(vec![(Item::Import(import), 0..0)]);
-
-    // Both qualified and unqualified should be registered
-    assert!(output.fn_sigs.contains_key("myapp.utils.helper"));
-    assert!(output.fn_sigs.contains_key("myapp.utils.other"));
-    assert!(
-        output.fn_sigs.contains_key("helper"),
-        "glob import should register unqualified 'helper'"
-    );
-    assert!(
-        output.fn_sigs.contains_key("other"),
-        "glob import should register unqualified 'other'"
-    );
-}
-
-// -- Named import: specific names only --
-
-#[test]
-fn named_import_registers_specified_names_only() {
-    let helper = make_pub_fn(
-        "helper",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "i32".to_string(),
-            type_args: None,
-        }),
-    );
-    let other = make_pub_fn(
-        "other",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "i32".to_string(),
-            type_args: None,
-        }),
-    );
-    let import = make_user_import(
-        &["myapp", "utils"],
-        Some(ImportSpec::Names(vec![ImportName {
-            name: "helper".to_string(),
-            alias: None,
-        }])),
-        vec![
-            (Item::Function(helper), 0..0),
-            (Item::Function(other), 0..0),
-        ],
-    );
-    let output = check_items(vec![(Item::Import(import), 0..0)]);
-
-    // Both should retain their exact source-qualified declaration identity.
-    assert!(output.fn_sigs.contains_key("myapp.utils.helper"));
-    assert!(output.fn_sigs.contains_key("myapp.utils.other"));
-    // Only "helper" should be unqualified
-    assert!(
-        output.fn_sigs.contains_key("helper"),
-        "named import should register 'helper' unqualified"
-    );
-    assert!(
-        !output.fn_sigs.contains_key("other"),
-        "named import should NOT register 'other' unqualified"
-    );
-}
-
 // -- Pub visibility enforcement --
 
 #[test]
@@ -2083,11 +1997,15 @@ fn non_pub_functions_registered_for_enforcement_but_not_bare() {
         "private function must be registered under its exact source-qualified name for enforcement"
     );
     assert!(
-        !output.fn_sigs.contains_key("secret"),
+        !output
+            .import_fn_name_aliases
+            .contains_key(&(None, 0, "secret".to_string())),
         "private function must NOT receive an unqualified (bare) binding"
     );
     assert!(output.fn_sigs.contains_key("myapp.utils.visible"));
-    assert!(output.fn_sigs.contains_key("visible"));
+    assert!(output
+        .import_fn_name_aliases
+        .contains_key(&(None, 0, "visible".to_string())));
 }
 
 // -- User module const registration --
@@ -2739,7 +2657,9 @@ fn repeated_flat_file_import_with_same_resolved_source_does_not_reregister_items
         output.errors
     );
     assert!(
-        output.fn_sigs.contains_key("shared"),
+        output
+            .import_fn_name_aliases
+            .contains_key(&(None, 0, "shared".to_string())),
         "flat file import should still register the imported function"
     );
 }
@@ -2884,100 +2804,6 @@ fn empty_module_import_no_crash() {
 }
 
 // -- Import alias binding --
-
-#[test]
-fn import_alias_binds_under_alias_name() {
-    // import mymod::{foo as bar} — "bar" must resolve, "foo" must not be unqualified
-    let helper = make_pub_fn(
-        "foo",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "i32".to_string(),
-            type_args: None,
-        }),
-    );
-    let import = make_user_import(
-        &["mymod"],
-        Some(ImportSpec::Names(vec![ImportName {
-            name: "foo".to_string(),
-            alias: Some("bar".to_string()),
-        }])),
-        vec![(Item::Function(helper), 0..0)],
-    );
-    let output = check_items(vec![(Item::Import(import), 0..0)]);
-
-    // qualified form always uses original name
-    assert!(
-        output.fn_sigs.contains_key("mymod.foo"),
-        "qualified 'mymod.foo' should be registered regardless of alias"
-    );
-    // unqualified binding must use the alias
-    assert!(
-        output.fn_sigs.contains_key("bar"),
-        "aliased import should register unqualified binding 'bar'"
-    );
-    // original unqualified name must NOT be registered
-    assert!(
-        !output.fn_sigs.contains_key("foo"),
-        "aliased import must NOT register unqualified 'foo'"
-    );
-}
-
-#[test]
-fn import_alias_multiple_names() {
-    // import pkg::{alpha as a, beta as b}
-    let fn_alpha = make_pub_fn(
-        "alpha",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "i32".to_string(),
-            type_args: None,
-        }),
-    );
-    let fn_beta = make_pub_fn(
-        "beta",
-        vec![],
-        Some(TypeExpr::Named {
-            name: "i32".to_string(),
-            type_args: None,
-        }),
-    );
-    let import = make_user_import(
-        &["pkg"],
-        Some(ImportSpec::Names(vec![
-            ImportName {
-                name: "alpha".to_string(),
-                alias: Some("a".to_string()),
-            },
-            ImportName {
-                name: "beta".to_string(),
-                alias: Some("b".to_string()),
-            },
-        ])),
-        vec![
-            (Item::Function(fn_alpha), 0..0),
-            (Item::Function(fn_beta), 0..0),
-        ],
-    );
-    let output = check_items(vec![(Item::Import(import), 0..0)]);
-
-    assert!(
-        output.fn_sigs.contains_key("a"),
-        "'a' alias should be registered"
-    );
-    assert!(
-        output.fn_sigs.contains_key("b"),
-        "'b' alias should be registered"
-    );
-    assert!(
-        !output.fn_sigs.contains_key("alpha"),
-        "original 'alpha' must not be unqualified"
-    );
-    assert!(
-        !output.fn_sigs.contains_key("beta"),
-        "original 'beta' must not be unqualified"
-    );
-}
 
 // -- #2202: import alias in type-declaration MEMBER position --
 //

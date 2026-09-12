@@ -2140,29 +2140,13 @@ impl Checker {
             }
         }
 
-        // Look up function signature first, preferring the current module's
-        // private helper/extern over another module's same-named item.
-        // rc1-F1 stage A: canonical-first — a root caller resolves its own
-        // free fns under the canonical `{root_module}.{name}` key the mint
-        // produces; the contains_key filter keeps bare registrations
-        // (builtins, externs) resolving unchanged (the bare rung is the
-        // builtin/extern floor, not a root fallback).
-        let canonical_fn_name = self.canonical_fn_identity(self.canonical_fn_owner(), &func_name);
-        let resolved_fn_name = if self.fn_sigs.contains_key(&canonical_fn_name) {
-            canonical_fn_name
-        } else if self.fn_sigs.contains_key(&func_name) {
-            func_name.clone()
-        } else {
-            // An actor-body plain `fn` is filed under `{actor}::{name}`, a key
-            // no bare spelling reconstructs, so `helper()` inside a handler used
-            // to fall off the ladder as `undefined function` (#3285). Probe the
-            // enclosing actor LAST — after both free-function keys and before
-            // the value-binding rung below — so a module function and a local
-            // closure of the same name both keep priority and nothing already
-            // resolving changes shape.
-            self.enclosing_actor_method_key(&func_name)
-                .unwrap_or_else(|| func_name.clone())
-        };
+        // Prefer a declaration or an exact file import, then an enclosing
+        // actor helper. A signature published by another file is not a binding.
+        let visible_fn_key = self
+            .visible_fn_signature_key(&func_name)
+            .or_else(|| self.enclosing_actor_method_key(&func_name));
+        let has_visible_fn_signature = visible_fn_key.is_some();
+        let resolved_fn_name = visible_fn_key.unwrap_or_else(|| func_name.clone());
         // An actor method reads and writes the actor's own state, so it is
         // entered with the caller's execution context and state pointer. Only
         // the actor's own handlers, hooks, `init`, and sibling methods hold
@@ -2192,7 +2176,12 @@ impl Checker {
                 self.require_deferred_fields_initialized_for_call(&resolved_fn_name, span);
             }
         }
-        if let Some(sig) = self.fn_sigs.get(&resolved_fn_name).cloned() {
+        if let Some(sig) = self
+            .fn_sigs
+            .get(&resolved_fn_name)
+            .cloned()
+            .filter(|_| has_visible_fn_signature)
+        {
             // Visibility enforcement: check that the caller's module is allowed
             // to reference this function.  We only check when the resolved key
             // is module-qualified (contains '.') because bare calls have no
@@ -2580,8 +2569,8 @@ impl Checker {
     /// produce, so a hit means the programmer declared the name and the
     /// builtin of that spelling does not apply.
     fn declares_function(&self, name: &str) -> bool {
-        self.fn_def_spans
-            .contains_key(&Self::declared_fn_identity(self.canonical_fn_owner(), name))
+        self.visible_fn_signature_key(name)
+            .is_some_and(|key| self.fn_def_spans.contains_key(&key))
     }
 
     /// Reject a bare function binding published by more than one imported

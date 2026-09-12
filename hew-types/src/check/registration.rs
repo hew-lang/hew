@@ -7377,6 +7377,24 @@ impl Checker {
         let extern_symbol = registered.extern_symbol.clone();
 
         let mut sig = FnSig {
+            impl_method: Some(super::types::ImplMethodProvenance {
+                declaration: declaration_id.clone(),
+                receiver: self
+                    .identity
+                    .declaration_by_path(
+                        &self
+                            .canonical_nominal_name(type_name)
+                            .unwrap_or_else(|| self.trait_impl_type_identity(type_name)),
+                    )
+                    .cloned(),
+                name: method.name.clone(),
+                is_inherent: trait_bound.is_none(),
+                span: if method.decl_span.is_empty() {
+                    method.fn_span.clone()
+                } else {
+                    method.decl_span.clone()
+                },
+            }),
             param_ownership: registered.param_ownership.clone(),
             type_params: all_type_params,
             type_param_bounds,
@@ -7425,6 +7443,10 @@ impl Checker {
             self.extern_method_origins.insert(registered_key, origin);
         }
         self.publish_impl_method_sig(type_name, &method.name, &sig);
+        // Preserve every exact declaration even when a trait method or concrete
+        // specialisation shares the ordinary receiver/method lookup spelling.
+        self.fn_sigs
+            .insert(declaration_id.full_path().to_string(), sig.clone());
         // D442: a `#[resource]` / `#[opaque]` type's inherent `close` must
         // consume its receiver. A borrowing `close(self)` runs the implicit
         // scope-exit release a second time when a caller invokes `close()`
@@ -11427,9 +11449,8 @@ impl Checker {
     /// Publish a selected stdlib free function into one importer's bare scope.
     ///
     /// Declarations remain globally registered under their canonical full
-    /// owner; this copies the already-resolved signature only into the opted-in
-    /// surface binding and preserves the declaration identity for HIR,
-    /// intrinsic, and target-policy consumers.
+    /// owner; explicit imports publish only an exact lexical binding. The
+    /// implicit language floor may additionally expose an ambient signature.
     fn publish_stdlib_hew_function_binding(
         &mut self,
         binding: String,
@@ -11441,15 +11462,6 @@ impl Checker {
             // must not manufacture an ambient bare function binding.
             return;
         };
-        if let Some(assoc_bindings) = self
-            .fn_type_param_assoc_bindings
-            .get(source_identity)
-            .cloned()
-        {
-            self.fn_type_param_assoc_bindings
-                .insert(binding.clone(), assoc_bindings);
-        }
-        self.fn_sigs.insert(binding.clone(), sig);
         if publication.records_import_identity() {
             self.import_fn_name_aliases.insert(
                 (
@@ -11459,6 +11471,18 @@ impl Checker {
                 ),
                 source_identity.to_string(),
             );
+        } else {
+            // Implicit language-floor bindings are ambient; explicit imports
+            // only publish a lexical binding to the canonical signature.
+            if let Some(assoc_bindings) = self
+                .fn_type_param_assoc_bindings
+                .get(source_identity)
+                .cloned()
+            {
+                self.fn_type_param_assoc_bindings
+                    .insert(binding.clone(), assoc_bindings);
+            }
+            self.fn_sigs.insert(binding.clone(), sig);
         }
         self.record_published_bare_function(&binding, source_identity);
         let source_owner = source_identity
@@ -11542,12 +11566,8 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    let (sig, assoc_bindings) = self.build_fn_sig_from_decl_with_assoc(fd);
                     let binding = Self::declared_fn_identity(self.canonical_fn_owner(), &fd.name);
                     let declaration = Self::declared_fn_identity(Some(owner), &fd.name);
-                    self.fn_type_param_assoc_bindings
-                        .insert(binding.clone(), assoc_bindings);
-                    self.fn_sigs.insert(binding.clone(), sig);
                     self.import_fn_name_aliases.insert(
                         (
                             self.current_module.clone(),
@@ -12081,15 +12101,11 @@ impl Checker {
                         self.current_module_idx = importer_file_idx;
                     }
 
-                    // If named import or glob, also register unqualified (using alias if present).
-                    // Only pub functions are eligible for unqualified import bindings — private
-                    // functions cannot be imported bare even if they appear in a glob import spec.
+                    // Publish selected names as lexical bindings to this declaration.
+                    // Private functions cannot be imported bare.
                     if fd.visibility.is_pub() && Self::should_import_name(&fd.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &fd.name)
                             .unwrap_or_else(|| fd.name.clone());
-                        self.fn_type_param_assoc_bindings
-                            .insert(binding_name.clone(), assoc_bindings);
-                        self.fn_sigs.insert(binding_name.clone(), sig);
                         // Preserve the resolver-selected source declaration
                         // identity; the binding itself may be an alias.
                         self.import_fn_name_aliases.insert(

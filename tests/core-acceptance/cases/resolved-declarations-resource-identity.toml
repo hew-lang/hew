@@ -1,8 +1,9 @@
 [[case]]
 id = "resolved-declarations-resource-identity"
-intent = "An inherent close method belongs to its canonical resource declaration and cannot satisfy a same-named resource in another module."
+intent = "An inherent close method belongs to its canonical resource declaration and cannot satisfy a same-named resource in another module; a trait close method also does not satisfy the inherent close contract."
 source = "fixtures/resolved-declarations-resource-identity/main.hew"
 suites = ["acceptance"]
+timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]

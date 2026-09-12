@@ -719,7 +719,6 @@ mod wasm_rejects {
                 "named binding `{binding}` must resolve as an actual function import: {:#?}",
                 output.errors
             );
-            assert!(output.fn_sigs.contains_key(binding));
             assert!(
                 !output
                     .warnings

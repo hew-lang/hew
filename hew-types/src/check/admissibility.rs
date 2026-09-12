@@ -2289,6 +2289,7 @@ mod tests {
         let mut fn_sigs = HashMap::from([(
             "display".to_string(),
             FnSig {
+                impl_method: None,
                 type_params: vec!["T".to_string()],
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],

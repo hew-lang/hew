@@ -1,0 +1,5 @@
+import probe.unbound;
+
+fn main() {
+    println(unbound.entry());
+}

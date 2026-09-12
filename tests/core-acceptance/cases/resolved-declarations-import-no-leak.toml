@@ -1,0 +1,14 @@
+[[case]]
+id = "resolved-declarations-import-no-leak"
+intent = "A file import in one directory-module source file does not publish its function into a neighbour's source scope."
+source = "fixtures/resolved-declarations-import-scope/no-leak.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "UndefinedFunction"
+file = "resolved-declarations-import-scope/src/unbound/peer.hew"
+line = 2
+column = 5
+message = "undefined function `label`"

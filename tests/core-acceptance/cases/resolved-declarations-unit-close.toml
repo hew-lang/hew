@@ -3,6 +3,7 @@ id = "resolved-declarations-unit-close"
 intent = "A resource close method returning a unit alias uses its checker-resolved return type and runs once at scope exit."
 source = "fixtures/resolved-declarations-unit-close/main.hew"
 suites = ["acceptance", "safety"]
+timeout_seconds = 30
 
 [case.expected]
 stdout = "using ticket\nCLOSED THROUGH ALIAS\nfinished\n"

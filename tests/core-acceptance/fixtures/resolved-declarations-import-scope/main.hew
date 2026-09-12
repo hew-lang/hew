@@ -1,0 +1,12 @@
+import probe.lib;
+
+fn label() -> string {
+    "root"
+}
+
+fn main() {
+    assert(true);
+    println(label());
+    println(lib.first());
+    println(lib.second());
+}

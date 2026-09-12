@@ -1,0 +1,7 @@
+import "../right.hew";
+
+pub fn second() -> string {
+    assert(true);
+    let f = label;
+    label("right") + "/" + f("right")
+}

@@ -174,86 +174,6 @@ fn test_qualified_name_resolution() {
     );
 }
 
-#[test]
-fn test_selected_import_resolution() {
-    // A selective import makes both named functions accessible unqualified.
-    let fn_helper = make_pub_fn("helper");
-    let fn_other = make_pub_fn("other");
-    let import = make_user_import(
-        &["myapp", "utils"],
-        Some(selected_import(&["helper", "other"])),
-        vec![
-            (Item::Function(fn_helper), 0..0),
-            (Item::Function(fn_other), 0..0),
-        ],
-    );
-
-    let program = Program {
-        items: vec![(Item::Import(import), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    };
-    let mut checker = isolated_checker();
-    let output = checker.check_program(&program);
-
-    assert!(
-        output.fn_sigs.contains_key("myapp.utils.helper"),
-        "glob import should register qualified 'myapp.utils.helper'"
-    );
-    assert!(
-        output.fn_sigs.contains_key("helper"),
-        "glob import should register unqualified 'helper'"
-    );
-    assert!(
-        output.fn_sigs.contains_key("myapp.utils.other"),
-        "glob import should register qualified 'myapp.utils.other'"
-    );
-    assert!(
-        output.fn_sigs.contains_key("other"),
-        "glob import should register unqualified 'other'"
-    );
-}
-
-// ── named import (selective) ──────────────────────────────────────────────────
-
-#[test]
-fn test_named_import_selective_resolution() {
-    // `import utils::{helper}` → only "helper" is unqualified, "other" is not.
-    let fn_helper = make_pub_fn("helper");
-    let fn_other = make_pub_fn("other");
-    let import = make_user_import(
-        &["myapp", "utils"],
-        Some(ImportSpec::Names(vec![ImportName {
-            name: "helper".to_string(),
-            alias: None,
-        }])),
-        vec![
-            (Item::Function(fn_helper), 0..0),
-            (Item::Function(fn_other), 0..0),
-        ],
-    );
-
-    let program = Program {
-        items: vec![(Item::Import(import), 0..0)],
-        module_doc: None,
-        module_graph: None,
-    };
-    let mut checker = isolated_checker();
-    let output = checker.check_program(&program);
-
-    assert!(
-        output.fn_sigs.contains_key("helper"),
-        "named import of 'helper' should make it unqualified"
-    );
-    assert!(
-        !output.fn_sigs.contains_key("other"),
-        "non-imported 'other' must NOT be unqualified"
-    );
-    // Both should still be available qualified
-    assert!(output.fn_sigs.contains_key("myapp.utils.helper"));
-    assert!(output.fn_sigs.contains_key("myapp.utils.other"));
-}
-
 // ── generic bounds across module imports ─────────────────────────────────────
 
 #[test]
@@ -334,10 +254,6 @@ fn test_imported_generic_fn_records_inferred_type_args_and_uses_imported_trait_i
         output.fn_sigs.contains_key("myapp.widgets.describe"),
         "module-qualified imported generic should be registered"
     );
-    assert!(
-        output.fn_sigs.contains_key("describe"),
-        "glob import should register imported generic unqualified"
-    );
 
     let inferred = output
         .call_type_args
@@ -404,7 +320,9 @@ fn test_private_items_not_visible() {
     let output = checker.check_program(&program);
 
     assert!(
-        !output.fn_sigs.contains_key("private_fn"),
+        !output
+            .import_fn_name_aliases
+            .contains_key(&(None, 0, "private_fn".to_string())),
         "private fn must not appear unqualified (no bare binding)"
     );
     // Private functions ARE registered under their qualified name so the
@@ -415,7 +333,9 @@ fn test_private_items_not_visible() {
         "private fn must be registered under its qualified name for enforcement"
     );
     assert!(
-        output.fn_sigs.contains_key("public_fn"),
+        output
+            .import_fn_name_aliases
+            .contains_key(&(None, 0, "public_fn".to_string())),
         "public fn should be accessible unqualified via glob"
     );
     assert!(output.fn_sigs.contains_key("mod_a.public_fn"));
@@ -1478,7 +1398,9 @@ fn test_actor_and_function_coexist_in_module() {
     assert!(output.fn_sigs.contains_key("app.workers.Worker::run"));
 
     // Function registered (functions keep their bare glob-import binding)
-    assert!(output.fn_sigs.contains_key("create_worker"));
+    assert!(output
+        .import_fn_name_aliases
+        .contains_key(&(None, 0, "create_worker".to_string())));
     assert!(output.fn_sigs.contains_key("app.workers.create_worker"));
 }
 

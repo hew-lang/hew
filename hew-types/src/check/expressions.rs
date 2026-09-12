@@ -7725,6 +7725,12 @@ impl Checker {
 
             let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
+                // Pattern bindings borrow during candidate testing. Their
+                // field transfers happen only after the guard selects this
+                // arm, so a declined candidate cannot move the source.
+                let pattern_entry = fall_through.clone();
+                let selected_pattern = self.env.ownership_snapshot();
+                self.env.restore_ownership(&fall_through);
                 let guard_ty = self.check_against(guard, gs, &Ty::Bool);
                 if Self::arm_skips_join(&guard_ty) {
                     guard_diverges = true;
@@ -7734,6 +7740,8 @@ impl Checker {
                 } else {
                     // The guard ran and returned false; later arms see its state.
                     fall_through = self.env.ownership_snapshot();
+                    self.env
+                        .apply_pattern_moves(&pattern_entry, &selected_pattern);
                 }
             }
 

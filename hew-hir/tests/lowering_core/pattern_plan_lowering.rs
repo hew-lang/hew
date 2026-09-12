@@ -53,22 +53,29 @@ fn destructure_fields(
         .expect("resolved source must feed a typed destructure")
 }
 
+/// The binding one destructure field introduces.
+fn bound(field: &HirDestructureField) -> &hew_hir::HirBinding {
+    field
+        .binding
+        .as_ref()
+        .expect("destructure field must bind a name")
+}
+
 fn assert_pair_rest_fields(fields: &[HirDestructureField]) {
     assert_eq!(fields.len(), 2, "rest must preserve both declared fields");
     assert_eq!(
         fields[0].selector,
         HirDestructureSelector::Record("a".into())
     );
-    assert_eq!(fields[0].binding.name, "a");
+    assert_eq!(bound(&fields[0]).name, "a");
+    assert_eq!(bound(&fields[0]).ty, ResolvedTy::I64);
     assert_eq!(
         fields[1].selector,
         HirDestructureSelector::Record("b".into())
     );
-    assert_eq!(fields[0].binding.ty, ResolvedTy::I64);
-    assert_eq!(fields[1].binding.ty, ResolvedTy::I64);
-    assert_ne!(
-        fields[0].binding.id, fields[1].binding.id,
-        "the omitted field must have its own binding"
+    assert!(
+        fields[1].binding.is_none(),
+        "a field `..` omits names nothing, so it takes nothing out of the source"
     );
 }
 
@@ -161,7 +168,7 @@ fn main() -> i64 {
         .expect("retained field tail");
     assert!(matches!(&tail.kind, HirExprKind::BindingRef {
         resolved: ResolvedRef::Binding(id), ..
-    } if *id == fields[0].binding.id));
+    } if *id == bound(&fields[0]).id));
 }
 
 #[test]
@@ -317,8 +324,8 @@ fn main() -> i64 {
         outer[1].selector,
         HirDestructureSelector::Record("tag".into())
     );
-    assert_eq!(outer[1].binding.name, "tag");
-    assert_pair_rest_fields(destructure_fields(statements, outer[0].binding.id));
+    assert_eq!(bound(&outer[1]).name, "tag");
+    assert_pair_rest_fields(destructure_fields(statements, bound(&outer[0]).id));
 }
 
 #[test]

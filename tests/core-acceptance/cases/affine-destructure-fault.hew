@@ -1,0 +1,18 @@
+#[resource]
+type Ticket { name: string }
+impl Ticket {
+    fn close(consume self) { println(f"close {self.name}"); }
+}
+type Booking { ticket: Ticket, spare: Ticket, label: string }
+fn fail(divisor: i64) -> i64 { 12 / divisor }
+fn main() -> i64 {
+    let booking = Booking {
+        ticket: Ticket { name: "taken".to_upper() },
+        spare: Ticket { name: "retained".to_upper() },
+        label: "sibling".to_upper(),
+    };
+    let Booking { ticket: t, .. } = booking;
+    t.close();
+    println(booking.label);
+    fail(0)
+}

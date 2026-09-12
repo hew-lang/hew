@@ -63,20 +63,22 @@ fn tuple_let_preserves_the_resolved_call_and_field_types() {
         target: hew_types::CallTarget::User(declaration), args, ..
     } if declaration == &function(&output, "pair").declaration && args.is_empty()));
     assert_eq!(fields.len(), 2);
+    let number = bound(&fields[0]);
+    let text = bound(&fields[1]);
     assert_eq!(fields[0].selector, HirDestructureSelector::Tuple(0));
-    assert_eq!(fields[0].binding.name, "number");
-    assert_eq!(fields[0].binding.ty, ResolvedTy::I64);
+    assert_eq!(number.name, "number");
+    assert_eq!(number.ty, ResolvedTy::I64);
     assert_eq!(fields[1].selector, HirDestructureSelector::Tuple(1));
-    assert_eq!(fields[1].binding.name, "text");
-    assert_eq!(fields[1].binding.ty, ResolvedTy::String);
+    assert_eq!(text.name, "text");
+    assert_eq!(text.ty, ResolvedTy::String);
     let tail = main.body.tail.as_ref().expect("number tail");
     assert!(matches!(&tail.kind, HirExprKind::BindingRef {
         resolved: ResolvedRef::Binding(id), ..
-    } if *id == fields[0].binding.id));
+    } if *id == number.id));
 }
 
 #[test]
-fn tuple_let_wildcard_preserves_an_independent_owned_field_binding() {
+fn tuple_let_wildcard_keeps_its_field_and_binds_nothing() {
     let output = lower_with_typecheck(
         r#"
         fn main() -> i64 {
@@ -110,9 +112,20 @@ fn tuple_let_wildcard_preserves_an_independent_owned_field_binding() {
     } if *id == original));
     assert_eq!(fields.len(), 2, "the wildcard must not erase its field");
     assert_eq!(fields[0].selector, HirDestructureSelector::Tuple(0));
-    assert_eq!(fields[0].binding.name, "number");
-    assert_eq!(fields[0].binding.ty, ResolvedTy::I64);
+    let number = bound(&fields[0]);
+    assert_eq!(number.name, "number");
+    assert_eq!(number.ty, ResolvedTy::I64);
     assert_eq!(fields[1].selector, HirDestructureSelector::Tuple(1));
-    assert_eq!(fields[1].binding.ty, ResolvedTy::String);
-    assert_ne!(fields[0].binding.id, fields[1].binding.id);
+    assert!(
+        fields[1].binding.is_none(),
+        "a wildcard field names nothing, so it takes nothing out of the source"
+    );
+}
+
+/// The binding one destructure field introduces.
+fn bound(field: &hew_hir::HirDestructureField) -> &hew_hir::HirBinding {
+    field
+        .binding
+        .as_ref()
+        .expect("destructure field must bind a name")
 }

@@ -378,6 +378,123 @@ const PARTIAL_JOB: &str = "type Job { done: fn[once]() -> i64, label: string }
     fn inspect(job: Job) { println(job.label); }";
 
 #[test]
+fn affine_pattern_fields_preserve_siblings_and_reject_reuse() {
+    let declarations = r#"
+        #[resource]
+        type Ticket { id: i64 }
+        impl Ticket { fn close(consume self) {} }
+        type Booking { ticket: Ticket, label: string }
+        fn inspect(booking: Booking) {}
+    "#;
+    for pattern in [
+        "let Booking { ticket: t, label: _ } = booking;",
+        "let Booking { ticket: t, .. } = booking;",
+        "let t = match booking { Booking { ticket: t, .. } => t };",
+    ] {
+        for (use_after, rejected) in [
+            ("println(booking.label);", false),
+            ("println(booking.ticket.id);", true),
+            ("inspect(booking);", true),
+        ] {
+            let output = check_source(&format!(
+                "{declarations} fn main() {{
+                    let booking = Booking {{ ticket: Ticket {{ id: 7 }}, label: \"seat\" }};
+                    {pattern} t.close(); {use_after}
+                }}"
+            ));
+            if rejected {
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+                    "{pattern} {use_after}: {:?}",
+                    output.errors
+                );
+            } else {
+                assert!(output.errors.is_empty(), "{pattern}: {:?}", output.errors);
+            }
+        }
+    }
+}
+
+#[test]
+fn declined_affine_pattern_guard_keeps_the_field_for_the_next_arm() {
+    for matched in [
+        "let label = match booking { Booking { ticket: t, .. } if false => { t.close(); \"taken\" } Booking { ticket: _, .. } => { println(booking.ticket.id); \"kept\" } }; println(label);",
+        "match booking { Booking { ticket: t, .. } if false => { t.close(); } Booking { ticket: _, .. } => { println(booking.ticket.id); } }",
+    ] {
+        let output = check_source(&format!(
+            "#[resource] type Ticket {{ id: i64 }}
+             impl Ticket {{ fn close(consume self) {{}} }}
+             type Booking {{ ticket: Ticket, label: string }}
+             fn main() {{ let booking = Booking {{ ticket: Ticket {{ id: 7 }}, label: \"seat\" }}; {matched} }}"
+        ));
+        assert!(output.errors.is_empty(), "{matched}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn affine_pattern_selection_preserves_guard_reinitialization() {
+    let output = check_source(
+        "#[resource] type Ticket { id: i64 }
+         impl Ticket { fn close(consume self) {} }
+         type Booking { ticket: Ticket, label: string }
+         fn take(consume ticket: Ticket) {}
+         fn main() {
+             var other = Ticket { id: 1 };
+             take(other);
+             let booking = Booking { ticket: Ticket { id: 7 }, label: \"seat\" };
+             match booking {
+                 Booking { ticket: t, .. } if { other = Ticket { id: 2 }; true } => {
+                     t.close(); println(other.id);
+                 }
+                 _ => {}
+             }
+         }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn affine_tuple_patterns_track_only_named_fields() {
+    for pattern in [
+        "let (t, _) = pair; t.close(); println(pair.1);",
+        "let t = match pair { (t, _) => t }; t.close(); println(pair.1);",
+        "let (_, label) = pair; pair.0.close(); println(label);",
+    ] {
+        let output = check_source(&format!(
+            "#[resource] type Ticket {{ id: i64 }}
+             impl Ticket {{ fn close(consume self) {{}} }}
+             fn main() {{ let pair = (Ticket {{ id: 7 }}, \"seat\"); {pattern} }}"
+        ));
+        assert!(output.errors.is_empty(), "{pattern}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn affine_tuple_pattern_refuses_a_second_field_read() {
+    let output = check_source(
+        "#[resource] type Ticket { id: i64 }
+         impl Ticket { fn close(consume self) {} }
+         fn main() {
+             let pair = (Ticket { id: 7 }, \"seat\");
+             let (t, _) = pair;
+             t.close();
+             pair.0.close();
+         }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn partial_move_complete_job_keeps_siblings_usable() {
     let output = check_source(&format!(
         "{PARTIAL_JOB}

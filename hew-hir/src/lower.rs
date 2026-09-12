@@ -33600,12 +33600,10 @@ mod tests {
                         ..
                     }),
                 },
+                // `_` names nothing, so the field carries no binding.
                 HirDestructureField {
                     selector: HirDestructureSelector::Tuple(1),
-                    binding: Some(HirBinding {
-                        ty: ResolvedTy::I64,
-                        ..
-                    }),
+                    binding: None,
                 },
             ]
         ));

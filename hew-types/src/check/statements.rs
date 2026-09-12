@@ -2282,20 +2282,41 @@ impl Checker {
         arms: &[MatchArm],
         span: &Span,
     ) {
+        let ownership_entry = self.env.ownership_snapshot();
+        let mut fall_through = ownership_entry.clone();
+        let mut arm_exits = Vec::with_capacity(arms.len());
         for arm in arms {
             self.env.push_scope();
+            self.env.restore_ownership(&fall_through);
             self.pattern_place.clone_from(&scrutinee_place);
             self.bind_pattern(&arm.pattern.0, scrutinee_ty, false, &arm.pattern.1);
             self.pattern_place = None;
             self.record_arm_resolution(&arm.pattern.0, &arm.pattern.1, scrutinee_ty);
 
+            let mut guard_diverges = false;
             if let Some((guard, gs)) = &arm.guard {
-                self.check_against(guard, gs, &Ty::Bool);
+                let pattern_entry = fall_through.clone();
+                let selected_pattern = self.env.ownership_snapshot();
+                self.env.restore_ownership(&fall_through);
+                let guard_ty = self.check_against(guard, gs, &Ty::Bool);
+                guard_diverges = Self::arm_skips_join(&guard_ty);
+                if guard_diverges {
+                    self.env.restore_ownership(&fall_through);
+                } else {
+                    fall_through = self.env.ownership_snapshot();
+                    self.env
+                        .apply_pattern_moves(&pattern_entry, &selected_pattern);
+                }
             }
 
-            self.synthesize(&arm.body.0, &arm.body.1);
+            let arm_ty = self.synthesize(&arm.body.0, &arm.body.1);
+            arm_exits.push(BranchArmExit {
+                ownership: self.env.ownership_snapshot(),
+                diverges: guard_diverges || Self::arm_skips_join(&arm_ty),
+            });
             self.env.pop_scope();
         }
+        self.join_branch_ownership(&ownership_entry, &arm_exits);
 
         self.check_exhaustiveness(scrutinee_ty, arms, span);
     }

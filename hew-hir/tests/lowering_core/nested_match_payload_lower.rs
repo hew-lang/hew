@@ -283,8 +283,12 @@ fn assert_tuple_payload_destructure(
             field.selector,
             hew_hir::HirDestructureSelector::Tuple(u32::try_from(index).unwrap())
         );
-        assert_eq!(field.binding.name, *name);
-        assert_eq!(field.binding.ty, ResolvedTy::I64);
+        let binding = field
+            .binding
+            .as_ref()
+            .expect("payload destructure field must bind a name");
+        assert_eq!(binding.name, *name);
+        assert_eq!(binding.ty, ResolvedTy::I64);
     }
 }
 

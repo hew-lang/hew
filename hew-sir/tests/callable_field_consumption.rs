@@ -309,15 +309,33 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
             .iter()
             .find(|function| function.declaration.full_path() == "main")
             .unwrap();
-        let fields = main
+        // A destructure of a place names fields, not the whole value: each
+        // field is read out of its own storage, and the aggregate is never
+        // taken apart as one value.
+        assert!(
+            !main
+                .blocks
+                .iter()
+                .flat_map(|block| &block.ops)
+                .any(|op| matches!(op.kind, SemOpKind::Destructure { .. })),
+            "{}",
+            hew_sir::dump_sir(&lowered.module)
+        );
+        let fields: Vec<_> = main
             .blocks
             .iter()
             .flat_map(|block| &block.ops)
-            .find(|op| matches!(op.kind, SemOpKind::Destructure { .. }))
-            .unwrap();
-        assert_eq!(fields.results.len(), 2);
+            .filter(|op| match op.kind {
+                SemOpKind::LoadTake { place } | SemOpKind::LoadCopy { place } => matches!(
+                    main.places[place.0 as usize].origin,
+                    hew_sir::PlaceOrigin::Aggregate { .. }
+                ),
+                _ => false,
+            })
+            .flat_map(|op| &op.results)
+            .collect();
+        assert_eq!(fields.len(), 2);
         assert!(fields
-            .results
             .iter()
             .all(|field| field.own == hew_sir::OwnKind::Owned));
         for (index, decision) in [BoundaryDecision::Move, BoundaryDecision::Borrow]
@@ -329,9 +347,7 @@ fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
                 .iter()
                 .flat_map(|block| &block.ops)
                 .find_map(|op| match &op.kind {
-                    SemOpKind::StoreInit { place, value }
-                        if value.value == fields.results[index].id =>
-                    {
+                    SemOpKind::StoreInit { place, value } if value.value == fields[index].id => {
                         Some(*place)
                     }
                     _ => None,

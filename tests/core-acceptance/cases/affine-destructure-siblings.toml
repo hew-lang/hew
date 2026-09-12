@@ -1,0 +1,10 @@
+[[case]]
+id = "affine-destructure-siblings"
+intent = "Record match and record/tuple let patterns move named affine fields while siblings stay readable; wildcards retain the source field and temporary wildcard resources close exactly once."
+source = "cases/affine-destructure-siblings.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close LET\nLET\nclose MATCH\nMATCH\nclose TUPLE\nSIBLING\nWILDCARD\nclose WILDCARD\nTEMPORARY\nGUARDED\nclose TEMPORARY\nclose GUARDED\n"
+exit = 0

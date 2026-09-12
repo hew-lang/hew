@@ -876,6 +876,37 @@ impl TypeEnv {
         Self::apply_ownership(&mut self.scopes, &snap.states);
     }
 
+    /// Apply only the moves introduced by a selected pattern. Guards run
+    /// before those transfers and may change unrelated ownership state, so
+    /// restoring or joining the entire post-pattern snapshot would undo
+    /// valid guard reinitializations.
+    pub(crate) fn apply_pattern_moves(
+        &mut self,
+        before: &OwnershipSnapshot,
+        selected: &OwnershipSnapshot,
+    ) {
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            let (Some(before), Some(selected)) = (before.get(binding.id), selected.get(binding.id))
+            else {
+                continue;
+            };
+            if selected.is_moved && !before.is_moved {
+                binding.is_moved = true;
+                binding.moved_at.clone_from(&selected.moved_at);
+            }
+            for place in &selected.moved_places {
+                if !before.moved_places.iter().any(|old| old.path == place.path)
+                    && !binding
+                        .moved_places
+                        .iter()
+                        .any(|old| old.path == place.path)
+                {
+                    binding.moved_places.push(place.clone());
+                }
+            }
+        }
+    }
+
     /// Join alternative execution paths: for every binding that existed at
     /// `entry`, take the union of its state across `exits`.
     ///

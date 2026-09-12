@@ -847,7 +847,6 @@ impl Checker {
                     if self.invalid_pattern_plan_spans.contains(&key) {
                         self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     } else if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
-                        self.pattern_place.clone_from(&scrutinee_place);
                         self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     } else {
                         self.report_error(
@@ -918,7 +917,6 @@ impl Checker {
                     if self.invalid_pattern_plan_spans.contains(&key) {
                         self.bind_struct_field_placeholders(fields, &Ty::Error, is_mutable, span);
                     } else if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
-                        self.pattern_place.clone_from(&scrutinee_place);
                         self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     } else {
                         self.report_error(
@@ -1145,7 +1143,11 @@ impl Checker {
                     return;
                 }
                 if let Some(plan) = self.pending_pattern_plans.get(&key).cloned() {
-                    self.pattern_place.clone_from(&scrutinee_place);
+                    // Variant payloads belong to the selected enum value;
+                    // they are not independently movable fields of its place.
+                    if !self.names_struct_variant_of(name, ty) {
+                        self.pattern_place.clone_from(&scrutinee_place);
+                    }
                     self.bind_record_pattern_plan(pattern, &plan, is_mutable, span);
                     return;
                 }

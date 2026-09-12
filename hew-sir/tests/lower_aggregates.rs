@@ -339,7 +339,7 @@ fn aggregate_call_borrows_caller_and_returns_an_independent_owner() {
 }
 
 #[test]
-fn aggregate_patterns_consume_copies_and_bind_every_owned_field() {
+fn aggregate_patterns_read_named_fields_and_preserve_siblings() {
     let lowered = lower_source(
         r#"
         type Packet { label: string, payload: bytes }
@@ -379,38 +379,28 @@ fn aggregate_patterns_consume_copies_and_bind_every_owned_field() {
         .iter()
         .find(|function| function.declaration.full_path() == "main")
         .expect("main must have a body");
-    let destructures = main
+    let field_reads = main
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
-        .filter(|operation| matches!(operation.kind, SemOpKind::Destructure { .. }))
+        .filter(|operation| match operation.kind {
+            SemOpKind::LoadCopy { place } => matches!(
+                main.places[place.0 as usize].origin,
+                hew_sir::PlaceOrigin::Aggregate { .. }
+            ),
+            _ => false,
+        })
         .collect::<Vec<_>>();
-    assert_eq!(
-        destructures.len(),
-        4,
-        "record, outer tuple, nested tuple and wildcard tuple must each remain one operation"
-    );
     assert!(
-        destructures
-            .iter()
-            .all(|operation| operation.results.len() == 2),
-        "each destructure must account for every field, including wildcard fields"
+        !field_reads.is_empty(),
+        "named fields must be copied from their places"
     );
     assert!(
         main.blocks
             .iter()
             .flat_map(|block| &block.ops)
-            .any(|operation| {
-                matches!(operation.kind, SemOpKind::LoadCopy { .. })
-                    && operation.results.first().is_some_and(|result| {
-                        lowered
-                            .module
-                            .aggregate_shapes
-                            .iter()
-                            .any(|shape| shape.aggregate_ty == result.ty)
-                    })
-            }),
-        "destructuring an ordinary record binding must first copy the whole owner"
+            .all(|operation| !matches!(operation.kind, SemOpKind::Destructure { .. })),
+        "a place destructure must preserve independently readable fields"
     );
 }
 
@@ -420,8 +410,7 @@ fn aggregate_destructure_refuses_a_result_outside_the_exact_shape() {
         r#"
         type Packet { label: string, payload: bytes }
         fn main() {
-            let packet = Packet { label: "label", payload: b"payload" };
-            let { label, payload } = packet;
+            let { label, payload } = Packet { label: "label", payload: b"payload" };
         }
         "#,
     );

@@ -1,0 +1,14 @@
+[[case]]
+id = "affine-destructure-moved-field"
+intent = "A let pattern moving a resource field prevents a second read of that field."
+source = "cases/affine-destructure-moved-field.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+severity = "error"
+line = 10
+column = 13
+message = "use of moved place `booking.ticket`"

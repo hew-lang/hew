@@ -162,6 +162,16 @@ fn lower_program_to_semantics(
             );
             compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
         }
+        hew_compile::SessionError::Ownership(diagnostics) => {
+            let diagnostics = hew_compile::ownership_diagnostics_to_frontend(
+                program,
+                source,
+                label,
+                diagnostics,
+                &hew_compile::DocumentSet::new(),
+            );
+            compile::render_frontend_diagnostics(&diagnostics).unwrap_or(DiagChannel::User)
+        }
         error @ hew_compile::SessionError::Semantic(_) => {
             emit_semantic_error("E_SIR_VERIFY", &error.to_string(), DiagChannel::Internal)
         }

@@ -76,6 +76,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         name: callable.symbol.clone(),
         span: 0..0,
         source_origin: callable.source_origin.clone(),
+        terminal_receiver: None,
         params,
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),

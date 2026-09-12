@@ -1040,6 +1040,9 @@ pub struct HirFn {
     /// and returned in the second field of its `(result, Self)` result.
     /// This internal transfer is independent of source `consume` spelling.
     pub var_self_receiver: Option<BindingId>,
+    /// Checker-selected consuming inherent receiver. Its surviving linear
+    /// obligation is finished at normal return; returning it transfers it.
+    pub terminal_receiver: Option<BindingId>,
     /// For ordinary functions this is the declared return type. For generator
     /// functions (`is_generator`) this remains the declared `-> T` yield element
     /// type; the body itself lowers with unit expectation and produces a

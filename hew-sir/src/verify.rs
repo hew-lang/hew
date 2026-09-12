@@ -13,6 +13,12 @@ use hew_types::ResolvedTy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SirDiagnosticKind {
+    /// A source linear owner remains at a normal scope exit or replacement.
+    UnconsumedLinear {
+        binding: Option<String>,
+        span: std::ops::Range<usize>,
+        source_origin: crate::FunctionSourceOrigin,
+    },
     DuplicateFunctionName(String),
     DuplicateFunctionDeclaration(String),
     DuplicateCallableId(CallableId),
@@ -1433,8 +1439,38 @@ fn check_function_with_context(
     }
     let mut lifetimes = None;
     if let Ok(projections) = projections {
-        let analysis = crate::lifetime::verify(function, &projections, facts);
+        let analysis = crate::lifetime::verify(function, &projections, facts, aggregate_shapes);
         diagnostics.extend(analysis.violations.into_iter().map(|violation| {
+            if violation.linear_obligation {
+                let binding = violation
+                    .value
+                    .and_then(|value| function.binding_naming(value))
+                    .or_else(|| {
+                        violation.place.and_then(|place| {
+                            let root = projections
+                                .projection(place)
+                                .map(|projection| projection.root);
+                            match root {
+                                Some(crate::OwnerRoot::Value(value)) => {
+                                    function.binding_naming(value)
+                                }
+                                Some(crate::OwnerRoot::Local(root)) => {
+                                    function.binding_rooting(root)
+                                }
+                                None => function.binding_rooting(place),
+                            }
+                        })
+                    });
+                return diag(
+                    function,
+                    SirDiagnosticKind::UnconsumedLinear {
+                        binding: binding.map(|binding| binding.name.clone()),
+                        span: binding
+                            .map_or_else(|| function.span.clone(), |binding| binding.span.clone()),
+                        source_origin: function.source_origin.clone(),
+                    },
+                );
+            }
             diag(
                 function,
                 match (violation.value, violation.place) {
@@ -2839,6 +2875,29 @@ fn verify_operation_shape(
         }
         return;
     }
+    if matches!(operation.kind, SemOpKind::FinishLinearReceiver) {
+        let valid = operation.results.is_empty()
+            && function.terminal_receiver.is_some_and(|receiver| {
+                function.params.first().is_some_and(|param| {
+                    param.value == receiver
+                        && param.own == OwnKind::Owned
+                        && aggregate_shapes.iter().any(|shape| {
+                            shape.aggregate_ty == param.ty
+                                && shape.marker == hew_types::DeclarationMarker::Linear
+                        })
+                })
+            });
+        if !valid {
+            invalid_operation(
+                function,
+                operation.id,
+                "linear completion requires the checked owned terminal receiver and no results"
+                    .into(),
+                diagnostics,
+            );
+        }
+        return;
+    }
     let expected_results = usize::from(!matches!(
         operation.kind,
         SemOpKind::TaskScopeEnter { .. }
@@ -3653,7 +3712,8 @@ fn verify_operation_shape(
         | SemOpKind::DynMake { .. } => {}
         // Dormant operations remain fail-closed until their producer and
         // complete semantic validation land together.
-        SemOpKind::LoadBorrow { .. }
+        SemOpKind::FinishLinearReceiver
+        | SemOpKind::LoadBorrow { .. }
         | SemOpKind::StrEq { .. }
         | SemOpKind::BytesEq { .. }
         | SemOpKind::EndBorrow { .. }
@@ -5600,6 +5660,7 @@ mod cfg_discard_safety_tests {
             name: "discarded_drop_obligation".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: vec![param(0, ResolvedTy::Bool), param(1, ResolvedTy::I64)],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -5674,6 +5735,7 @@ mod cfg_discard_safety_tests {
             name: "discarded_pure_block".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: vec![param(0, ResolvedTy::Bool), param(1, ResolvedTy::I64)],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
@@ -5760,6 +5822,7 @@ mod parameter_own_kind_tests {
             name: "takes_one_parameter".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: vec![BlockArg {
                 value: ValueId(0),
                 ty,
@@ -5903,6 +5966,7 @@ mod binding_table_tests {
             name: "named".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: Vec::new(),
             return_ty: ResolvedTy::Unit,
             entry: BlockId(0),

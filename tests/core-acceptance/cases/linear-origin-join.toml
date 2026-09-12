@@ -1,0 +1,12 @@
+[[case]]
+id = "linear-origin-join"
+intent = "A returned aggregate joined with a receiver-containing aggregate retains its distinct linear owner after projection."
+source = "cases/linear-origin-join.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_MUST_CONSUME"
+line = 8
+column = 14

@@ -48,6 +48,9 @@ impl Builder<'_, '_> {
             })
             .into_iter()
             .collect();
+        if self.terminal_linear_receiver().is_some() {
+            self.emit_place_operation(SemOpKind::FinishLinearReceiver, Provenance::Synthesized)?;
+        }
         self.finish_recovery_scopes(0, &preserved)?;
         self.finish_task_scopes(0, false)?;
         self.end_call_loans(&self.argument_receiver_loans.clone())?;

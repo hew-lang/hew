@@ -7,7 +7,6 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 0
-column = 0
-message = "semantic lowering of `__hew_fn_main` is not implemented: nested type `Tx` has no semantic value contract"
+code = "E_MUST_CONSUME"
+line = 11
+column = 9

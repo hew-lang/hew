@@ -11,7 +11,6 @@
 # text changes arrives as a new case.
 
 # ── Documentation fences ────────────────────────────────────────────────
-guide-144626557  # IMPL-GAP: linear Tx has no semantic value contract for explicit consuming methods
 
 # ── Remaining migrated execution defects ──────────────────────────────
 # These programs assert the documented behaviour; current native execution

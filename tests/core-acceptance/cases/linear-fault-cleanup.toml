@@ -1,0 +1,11 @@
+[[case]]
+id = "linear-fault-cleanup"
+intent = "A terminal method fault reclaims heap fields and resource siblings in both the transferred receiver and caller's remaining linear owner without invoking a terminal method for cleanup."
+source = "cases/linear-fault-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ACTIVE\nclose ACTIVE\nclose REMAINING\n"
+stderr = "hew: failure: UserPanic (212): commit failed\n"
+exit = 1

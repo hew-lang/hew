@@ -445,6 +445,7 @@ mod tests {
             declaration: callable.declaration.clone(),
             name: callable.symbol.clone(),
             source_origin: callable.source_origin.clone(),
+            terminal_receiver: None,
             span: 0..0,
             params: vec![BlockArg {
                 value: ValueId(0),
@@ -552,6 +553,7 @@ mod tests {
             name: "counter".into(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: vec![],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),

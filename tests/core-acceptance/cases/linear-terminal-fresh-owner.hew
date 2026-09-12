@@ -1,0 +1,9 @@
+#[linear]
+type Tx { label: string }
+impl Tx {
+    fn commit(consume self) {
+        let pair = (self, Tx { label: "unrelated".to_upper() });
+        println(pair.0.label);
+    }
+}
+fn main() { Tx { label: "receiver".to_upper() }.commit(); }

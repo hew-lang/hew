@@ -590,7 +590,7 @@ fn concrete_record_fields(
 ) -> Result<(hew_types::NominalInstance, Vec<SemAggregateField>), String> {
     if matches!(
         facts.declaration_marker(aggregate_ty)?,
-        hew_types::DeclarationMarker::Resource | hew_types::DeclarationMarker::Linear
+        hew_types::DeclarationMarker::Resource
     ) && crate::resource::record_resource_lifecycle(module, aggregate_ty).is_none()
     {
         return Err(format!(
@@ -3613,6 +3613,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             name: self.callable.symbol.clone(),
             span: self.function.span.clone(),
             source_origin: self.callable.source_origin.clone(),
+            terminal_receiver: self.terminal_linear_receiver(),
             params: self.params,
             return_ty: self.callable.signature.return_ty.clone(),
             entry: BlockId(0),
@@ -4176,6 +4177,23 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect::<Vec<_>>();
         bindings.sort_unstable();
         bindings
+    }
+
+    fn terminal_linear_receiver(&self) -> Option<ValueId> {
+        let receiver = self.function.terminal_receiver?;
+        let index = self
+            .function
+            .params
+            .iter()
+            .position(|param| param.id == receiver)?;
+        let param = self.params.get(index)?;
+        (self
+            .service
+            .checked_facts
+            .declaration_marker(&param.ty)
+            .ok()
+            == Some(hew_types::DeclarationMarker::Linear))
+        .then_some(param.value)
     }
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {

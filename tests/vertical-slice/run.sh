@@ -2251,10 +2251,11 @@ run_accept_expect_status "bytes_append" 0
 # exits 0 only when every assertion holds.
 run_accept_expect_status "bytes_unitop_match_value" 0
 
-# Fail-closed negatives: pop on an empty buffer and set past the end route via
-# the bytes runtime bounds trap. In main context the trap helper aborts:
-# exit 134 = SIGABRT+128, the same fail-closed termination as bytes_index_oob_traps.
-run_accept_expect_status "bytes_pop_empty_traps" 1
+# `bytes.pop()` carries the empty case in its `Option` return, so an empty pop
+# is `.None` and exits 0. Setting past the end has no such return and still
+# routes through the bytes runtime bounds trap: in main context the trap helper
+# aborts, the same fail-closed termination as bytes_index_oob_traps.
+run_accept_expect_status "bytes_pop_empty_none" 0
 run_accept_expect_status "bytes_set_oob_traps" 1
 
 # Main-context Vec method bounds ratchets: runtime FFI checks route through the
@@ -2360,11 +2361,6 @@ run_actor_bounds_trap_fixture \
     "bytes_slice_oob_actor_isolated" \
     "PANIC: bytes slice range 0..99 out of bounds (len 2)" \
     "BytesSliceCrasher" \
-    1
-run_actor_bounds_trap_fixture \
-    "bytes_pop_empty_actor_isolated" \
-    "PANIC: bytes.pop() on an empty buffer" \
-    "BytesPopCrasher" \
     1
 run_actor_bounds_trap_fixture \
     "bytes_set_oob_actor_isolated" \

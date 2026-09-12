@@ -1,5 +1,4 @@
 // String retain-on-share coverage for every remaining co-owner mint.
-
 type Holder {
     payload: string,
 }
@@ -16,7 +15,7 @@ fn field_load_share() -> i64 {
 }
 
 fn container_element_read() -> i64 {
-    let values: Vec<string> = Vec.new();
+    var values: Vec<string> = Vec.new();
     let source = "container-" + "read";
     values.push(source);
     let item = values[0];
@@ -118,24 +117,7 @@ fn main() -> i64 {
         let stored_return = stored_then_returned();
         let duplicated_local = duplicate_local_last_use();
         let (local_left, local_right) = duplicated_local;
-        total = total
-            + field_load_share()
-            + container_element_read()
-            + live_local_coown()
-            + duplicating_return()
-            + local_share()
-            + local_handoff()
-            + sequential_local_shares()
-            + chained_local_handoff()
-            + conditional_local_handoff(true)
-            + conditional_local_handoff(false)
-            + hew_borrow(prefixed)
-            + param_coown_share(borrowed)
-            + escaped.len()
-            + returned_holder.payload.len()
-            + stored_return.len()
-            + local_left.len()
-            + local_right.len();
+        total = total + field_load_share() + container_element_read() + live_local_coown() + duplicating_return() + local_share() + local_handoff() + sequential_local_shares() + chained_local_handoff() + conditional_local_handoff(true) + conditional_local_handoff(false) + hew_borrow(prefixed) + param_coown_share(borrowed) + escaped.len() + returned_holder.payload.len() + stored_return.len() + local_left.len() + local_right.len();
         i = i + 1;
     }
     if total > 0 {

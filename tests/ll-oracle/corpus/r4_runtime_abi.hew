@@ -6,21 +6,24 @@
 // Borrowed-parameter collection ingress: the by-value string parameter is
 // caller-borrowed, so the MOVE ingress emits `hew_string_clone` before the
 // insert. The reassigned variant crosses the generation boundary — the fresh
-// frame-owned generation is consumed, with no clone.
-fn add_member(var members: HashSet<string>, name: string) {
+// frame-owned generation is consumed, with no clone. A set is a value, so each
+// helper returns the set it grew and `main` rebinds.
+fn add_member(var members: HashSet<string>, name: string) -> HashSet<string> {
     members.insert(name);
+    members
 }
 
-fn add_renamed(var members: HashSet<string>, var name: string) {
+fn add_renamed(var members: HashSet<string>, var name: string) -> HashSet<string> {
     name = name.to_upper();
     members.insert(name);
+    members
 }
 
 fn main() {
     // Borrowed-parameter and reassigned-parameter ingress
-    let members: HashSet<string> = HashSet.new();
-    add_member(members, "col" + "our");
-    add_renamed(members, "flav" + "our");
+    var members: HashSet<string> = HashSet.new();
+    members = add_member(members, "col" + "our");
+    members = add_renamed(members, "flav" + "our");
     println(members.len());
 
     // Vec runtime family

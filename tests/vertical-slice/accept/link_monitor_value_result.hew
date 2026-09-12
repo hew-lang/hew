@@ -3,7 +3,7 @@
 // Proving gate for the hew_actor_link / hew_actor_monitor composite-return path:
 //   link(child)    -> Result<(), LinkError>  (Ok(()) because hew_actor_link is
 //                     void/infallible at the runtime today)
-//   monitor(child) -> Result<MonitorRef, MonitorError> (constructs Ok with the
+//   monitor(child) -> Result<MonitorRef, LinkError> (constructs Ok with the
 //                     ref_id returned by hew_actor_monitor)
 //
 // The actor-context gate ("only valid in actor context") is wired in a later
@@ -27,23 +27,23 @@ fn main() -> i64 {
     let r = link(child);
     // Name the LinkError variants explicitly (not a bare `Err(_)`): this
     // exercises variant resolution against the LinkError builtin-enum catalog
-    // (hew_actor_link is void/infallible today, so neither Err arm fires, but
+    // (hew_actor_link is void/infallible today, so no Err arm fires, but
     // they must RESOLVE). A missing LinkError entry in the HIR
     // `builtin_enum_specs()` catalog would surface here as
-    // "variant `LinkError::AlreadyLinked` is not a member of `LinkError`".
+    // "variant `LinkError::Dead` is not a member of `LinkError`".
     match r {
         .Ok(()) => {},
-        .Err(LinkError.AlreadyLinked) => {
+        .Err(LinkError.Dead) => {
             exit(2);
         },
-        .Err(LinkError.TargetDead) => {
+        .Err(LinkError.Partition) => {
             exit(3);
         },
-        .Err(_) => {
+        .Err(LinkError.NoContext) => {
             exit(4);
         },
     }
-    // monitor() in value position constructs Result<MonitorRef, MonitorError>.
+    // monitor() in value position constructs Result<MonitorRef, LinkError>.
     // Letting the aggregate drop proves the Ok payload was assembled correctly
     // and runs MonitorRef.close() (hew_actor_demonitor) at scope exit.
     let _m = monitor(child);

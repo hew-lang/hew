@@ -10,7 +10,9 @@
 // owning everything it started with. Exits 0, clean.
 import std.string;
 
-type Inner { v: Vec<i64>, }
+type Inner {
+    v: Vec<i64>,
+}
 
 type OuterRecord {
     other: Vec<i64>,
@@ -22,10 +24,13 @@ type OuterTuple {
     value: Option<(Vec<i64>, i64)>,
 }
 
-type Carrier { pair: (Vec<string>, i64), tag: string }
+type Carrier {
+    pair: (Vec<string>, i64),
+    tag: string,
+}
 
 fn mk_carrier() -> Carrier {
-    let v: Vec<string> = Vec.new();
+    var v: Vec<string> = Vec.new();
     v.push(string.repeat("k", 48));
     Carrier { pair: (v, 7), tag: string.repeat("y", 48) }
 }
@@ -36,13 +41,11 @@ fn main() {
         .Some(inner) => println(inner.v[0] + inner.v[1]),
         .None => println("none"),
     }
-
     let t = OuterTuple { other: [9], value: Some(([3, 4], 5)) };
     match t.value {
         .Some(pair) => println(pair.0[0] + pair.0[1] + pair.1),
         .None => println("none"),
     }
-
     // Tuple element moved out of a record field: `items` owns the Vec and
     // `tag` is still released once when the carrier goes out of scope.
     let carrier = mk_carrier();

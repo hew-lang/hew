@@ -3,7 +3,7 @@
 #[resource]
 type ResourceToken { id: i64 }
 impl ResourceToken {
-    fn close(self) {}
+    fn close(consume self) {}
 }
 
 #[linear]

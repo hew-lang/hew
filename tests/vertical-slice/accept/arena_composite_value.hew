@@ -1,6 +1,6 @@
 // Arena<T> over a composite element: Vec<Slot<Point>> nests a record inside a
 // slot inside the backing Vec. Round-trip a record and read its fields back.
-import std.arena.{ Arena, Key };
+import std.arena.{Arena, Key};
 
 type Point {
     x: i64,
@@ -8,7 +8,7 @@ type Point {
 }
 
 fn main() {
-    let store: Arena<Point> = arena.new();
+    var store: Arena<Point> = arena.new();
     let key = store.insert(Point { x: 3, y: 7 });
     match store.get(key) {
         .Some(p) => println(f"{p.x},{p.y}"),

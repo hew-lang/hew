@@ -1,17 +1,15 @@
 // HashMap::get and HashMap::remove lower through Option<V> payload slots. The
 // imported Key type is bare in the map argument and module-qualified in the
 // destination; both operations must resolve that pair to one nominal layout.
-import std.arena.{ Arena, Key };
+import std.arena.{Arena, Key};
 
 fn main() {
-    let store: Arena<string> = arena.new();
+    var store: Arena<string> = arena.new();
     let key = store.insert("through-map");
     var keys: HashMap<string, Key<string>> = HashMap.new();
     keys.insert("key", key);
-
     let cloned = keys.get("key").expect("get succeeds");
     println(store.get(cloned).expect("get succeeds"));
-
     let removed = keys.remove("key").expect("remove succeeds");
     println(store.get(removed).expect("get succeeds"));
 }

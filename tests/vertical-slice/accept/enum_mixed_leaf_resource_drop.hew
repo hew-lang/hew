@@ -7,14 +7,13 @@
 // Companion shapes: the resource-ONLY payload (`Full(Handle)` with no heap
 // sibling) is the exact divergence that leaked when admission keyed on heap
 // alone (`Result<Tok, string>` closed while `Result<Tok, i64>` leaked).
-
 #[resource]
 type Handle {
-    id: i64
+    id: i64,
 }
 
 impl Handle {
-    fn close(self) {
+    fn close(consume self) {
         println(f"close {self.id}");
     }
 }

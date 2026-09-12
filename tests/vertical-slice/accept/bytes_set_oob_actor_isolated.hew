@@ -1,7 +1,7 @@
 // EXIT: 1
 actor BytesSetCrasher {
     receive fn boom() {
-        let b: bytes = bytes.new();
+        var b: bytes = bytes.new();
         b.push(1);
         b.set(99, 7);
     }

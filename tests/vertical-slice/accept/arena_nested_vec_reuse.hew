@@ -3,7 +3,7 @@
 import std.arena.{ Arena };
 
 fn main() {
-    let store: Arena<Vec<i64>> = arena.new();
+    var store: Arena<Vec<i64>> = arena.new();
     let first = store.insert([1, 2]);
     let removed = store.remove(first).expect("remove succeeds");
     let second = store.insert([3, 4, 5]);

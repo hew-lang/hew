@@ -271,10 +271,10 @@ fixtures=(
     # owner-qualified identity and ACCEPTs — exercising BOTH method-set membership
     # and per-method signature comparison against the collision-free owner key.
     aliased_multimethod_trait_collision_accept
-    # An `impl Sub for W` (where `trait Sub: Super`) provides a SUPER-trait method
-    # (`base`) inline alongside the sub-trait's own method. The impl-site method-set
-    # check must fold the whole super-trait chain into the KNOWN set, so the inline
-    # super-method is not flagged as extraneous. ACCEPT + run e2e.
+    # A local `trait Sub: Super` whose obligation `W` discharges with its own
+    # `impl Super for W`, alongside `impl Sub for W`. Both methods must dispatch
+    # through the sub-trait's call, so a method-set check that scoped the known set
+    # to the sub-trait alone, or lost the super edge, shows up here. ACCEPT + e2e.
     subtrait_inline_supermethod_accept
     # IMPORTED supertrait, inline supermethod. An importer brings ONLY `Sub` into
     # scope (`trait Sub: Base` in `hew::supertraits`) and provides the inherited

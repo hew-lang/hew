@@ -12,7 +12,7 @@
 import std.encoding.utf8;
 
 fn main() -> i64 {
-    let b: bytes = bytes.new();
+    var b: bytes = bytes.new();
     b.push(72); // 'H'
     b.push(105); // 'i'
     let decoded_b = utf8.decode(b) handle error {

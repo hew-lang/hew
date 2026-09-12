@@ -44,9 +44,15 @@ extern "C" {
 }
 
 fn try_build() -> Result<Value, string> {
-    let value = Value { handle: unsafe { hew_json_array_new() } };
-    if unsafe { hew_json_type(value.handle) } >= 0 {
-        let child = Value { handle: unsafe { hew_json_array_new() } };
+    let value = Value { handle: unsafe {
+        hew_json_array_new()
+    } };
+    if unsafe {
+        hew_json_type(value.handle)
+    } >= 0 {
+        let child = Value { handle: unsafe {
+            hew_json_array_new()
+        } };
         Ok(value.push(child))
     } else {
         value.close();

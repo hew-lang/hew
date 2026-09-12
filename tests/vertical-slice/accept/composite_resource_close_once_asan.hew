@@ -42,7 +42,7 @@ type Slot {
 }
 
 impl Slot {
-    fn close(self) {
+    fn close(consume self) {
         unsafe {
             free(self.addr);
         };
@@ -60,11 +60,9 @@ type Two {
 }
 
 fn acquire() -> Slot {
-    Slot {
-        addr: unsafe {
-            malloc(64)
-        },
-    }
+    Slot { addr: unsafe {
+        malloc(64)
+    } }
 }
 
 fn acquire_result(ok: bool) -> Result<Slot, string> {
@@ -141,7 +139,7 @@ fn enum_payload_declined() -> i64 {
 
 fn main() -> i64 {
     var declined: i64 = 0;
-    for _i in 0..64 {
+    for _i in 0 .. 64 {
         record_field_close();
         record_scope_exit_close();
         two_fields_both_closed();

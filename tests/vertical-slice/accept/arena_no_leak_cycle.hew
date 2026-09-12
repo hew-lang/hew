@@ -6,7 +6,7 @@
 import std.arena.{ Arena, Key };
 
 fn main() {
-    let store: Arena<string> = arena.new();
+    var store: Arena<string> = arena.new();
     for i in 0..100 {
         let key = store.insert(f"item-{i}");
         store.remove(key);

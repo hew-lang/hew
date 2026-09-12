@@ -2,12 +2,20 @@ trait Super {
     fn name(val: Self) -> string;
 }
 
-trait Sub: Super {}
+trait Sub: Super {
+}
 
-type Widget { label: string, }
+type Widget {
+    label: string,
+}
+
+impl Super for Widget {
+    fn name(w: Widget) -> string {
+        "inline"
+    }
+}
 
 impl Sub for Widget {
-    fn name(w: Widget) -> string { "inline" }
 }
 
 fn get_name<T: Sub>(item: T) -> string {

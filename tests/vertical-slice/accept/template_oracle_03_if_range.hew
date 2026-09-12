@@ -1,13 +1,12 @@
 import std.text.template;
 
 fn main() {
-    let ctx = template.new_ctx();
-    template.ctx_set_bool(ctx, "show", true);
+    var ctx = template.new_ctx();
+    ctx.set_bool("show", true);
     var colours: Vec<string> = Vec.new();
     colours.push("red");
     colours.push("blue");
-    template.ctx_set_list(ctx, "colours", colours);
-
+    ctx.set_list("colours", colours);
     let t = match template.parse("{{if .show}}{{range .colours}}[{{.}}]{{end}}{{else}}hidden{{end}}") {
         .Ok(template) => template,
         .Err(_) => panic("valid template failed to parse"),

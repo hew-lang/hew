@@ -28,7 +28,7 @@ type R {
 }
 
 impl R {
-    fn close(self) {
+    fn close(consume self) {
         println(self.id);
     }
 

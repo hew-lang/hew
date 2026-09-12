@@ -6,9 +6,10 @@
 #
 #   <path> [E_DIAGNOSTIC_CODE]  # classification and issue
 #
-# A path carries a code only when the check emits exactly one stable `E_*`. A
-# refusal that emits none, or two, stays unpinned rather than asserting a set
-# the compiler does not produce.
+# A path carries a code only when the check emits exactly one stable `E_*` and
+# the refusal itself carries it. A refusal that emits none, emits two, or whose
+# only code comes from a later diagnostic stays unpinned rather than asserting a
+# set the compiler does not produce.
 #
 # The gate exits 1 on any UNEXPECTED failure (not in this list), changed
 # diagnostic for an entry that records one, or inventory/outcome drift. A
@@ -66,7 +67,7 @@ examples/multifile/01_shapes/shapes/shapes.hew E_SIR_VERIFY
 # final-path-limitation: ordinary machine evaluation does not admit const
 # parameters or composite states yet
 examples/machine/connection_lifecycle.hew
-examples/machine/run_connection_lifecycle.hew E_CONTEXT_VARIANT_NO_TYPE
+examples/machine/run_connection_lifecycle.hew
 
 # final-path-limitation: the distributed Node and QUIC surfaces have no
 # ownership-SIR operation contract on the final path yet
@@ -109,14 +110,14 @@ hew-lsp/tests/fixtures/v05_async_await.hew E_NO_ASYNC_FN
 hew-lsp/tests/fixtures/v05_composite_machine.hew
 hew-lsp/tests/fixtures/v05_cross_module_machine_main.hew
 hew-lsp/tests/fixtures/v05_index_trait.hew
-hew-lsp/tests/fixtures/v05_machine_methods.hew E_CONTEXT_VARIANT_NO_TYPE
+hew-lsp/tests/fixtures/v05_machine_methods.hew
 hew-lsp/tests/fixtures/v05_machine_states.hew
 hew-lsp/tests/fixtures/v05_std_channels.hew
 
 # ── hew-observe/ ────────────────────────────────────────────────────────────────
 
 # stale-syntax: observe workload fixture uses retired type and send spellings
-hew-observe/test-harness/observe_workload.hew E_SEND_RESULT_DROPPED
+hew-observe/test-harness/observe_workload.hew
 
 # ── hew-parser/ ─────────────────────────────────────────────────────────────────
 
@@ -150,7 +151,7 @@ hew-sandbox-vm/fixtures/21-replay-stdin/main.hew
 hew-sandbox-vm/fixtures/22-deterministic-random/main.hew
 hew-sandbox-vm/fixtures/25-actor-crash/main.hew
 hew-sandbox-vm/fixtures/26-i64-bigint/main.hew
-hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew E_OPERATOR_REMOVED
+hew-sandbox-vm/fixtures/27-actor-crash-restart-ignored/main.hew
 hew-sandbox-vm/fixtures/28-actor-state-arity-trap/main.hew
 hew-sandbox-vm/fixtures/29-mixed-scalar-compare-trap/main.hew
 
@@ -210,7 +211,7 @@ tests/core-acceptance/cases/loaned-payload-projection.hew E_ELEMENT_NO_COPY
 tests/core-acceptance/cases/machine-legacy-forms-refused.hew
 tests/core-acceptance/cases/resource-missing-close.hew E_HIR
 tests/core-acceptance/cases/spread-parse-refusals.hew
-tests/core-acceptance/cases/spread-refusals.hew E_ELEMENT_NO_COPY
+tests/core-acceptance/cases/spread-refusals.hew
 tests/core-acceptance/cases/var-param-mutation-lost.hew
 tests/core-acceptance/cases/var-param-mutation-returned.hew
 tests/core-acceptance/cases/vec-element-refusals.hew E_ELEMENT_NO_COPY
@@ -233,34 +234,12 @@ tests/core-acceptance/fixtures/module-identity-dual-spelling/src/mid.hew
 # requires-file-import-program: a directory module's leaf source
 tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
 
-# ── tests/corpus/ ───────────────────────────────────────────────────────────────
-
-# stale-syntax / deferred-nyi: the v05 value-model corpus is written against
-# pre-v0.5 spellings and speculative stdlib surfaces
-tests/corpus/v05-value-model/04_persistent_share_placeholder.hew
-tests/corpus/v05-value-model/05_affine_resource_consume.hew
-tests/corpus/v05-value-model/07_view_field_slice_alias.hew
-tests/corpus/v05-value-model/08_actor_send_transfer.hew
-tests/corpus/v05-value-model/10_actor_send_materialize.hew
-tests/corpus/v05-value-model/12_closure_capture_let_read.hew
-tests/corpus/v05-value-model/13_closure_capture_var_mutate.hew
-tests/corpus/v05-value-model/14_closure_capture_var_consume.hew
-tests/corpus/v05-value-model/15_generator_yield_immutable_read.hew E_GEN_BLOCK_SYNTAX
-tests/corpus/v05-value-model/17_to_string_display_read_receiver.hew
-tests/corpus/v05-value-model/19_actor_scope.hew
-
 # ── tests/ll-oracle/ ────────────────────────────────────────────────────────────
 
 # final-path-limitation: the FFI borrow-boundary fixture
 tests/ll-oracle/corpus/ffi_borrow_boundary.hew E_SIR_UNSUPPORTED
 
 # ── tests/pkg-import/ ───────────────────────────────────────────────────────────
-
-# corpus-intentional-refusal: `impl Sub for W` inline-provides the supermethod
-# but `require_supertrait_impls` still wants a separate `impl Super for W`, so
-# this accept fixture states the opposite of what the checker decides. Its
-# claim, not its spelling, is what has to move.
-tests/pkg-import/subtrait_inline_supermethod_accept.hew
 
 # requires-package-resolver: these import `hew::` packages that `hew install`
 # must resolve into .hew/packages/ first. make test-pkg-import runs the full
@@ -386,11 +365,15 @@ tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERI
 tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
 tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew E_SIR_VERIFY
 
-# deferred-nyi: accept fixtures for features the compiler has not built
-tests/vertical-slice/accept/bytes_pop_empty_actor_isolated.hew
-tests/vertical-slice/accept/bytes_pop_empty_traps.hew
+# known defect (#3404): `Node.id()` returns the builtin `NodeId` and
+# `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them
+# reads as `expected NodeId, found NodeId`
 tests/vertical-slice/accept/identity_aggregates.hew
-tests/vertical-slice/accept/lambda_self_recursion.hew E_RECURSIVE_LAMBDA_ACTOR
+
+# known defect (#3094): a `#[resource]` disposer cannot consume its own handle
+# field. Routing around the refusal compiles and then segfaults, so the refusal
+# is fail-closed protection, not stale pedantry.
+tests/vertical-slice/accept/returns_receiver_consuming_result.hew
 
 # ── tools/ ──────────────────────────────────────────────────────────────────────
 

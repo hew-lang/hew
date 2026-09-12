@@ -3,7 +3,7 @@
 import std.arena.{ Arena, Key };
 
 fn main() {
-    let store: Arena<string> = arena.new();
+    var store: Arena<string> = arena.new();
     let ka = store.insert("A");
     store.remove(ka);
     let kb = store.insert("B");

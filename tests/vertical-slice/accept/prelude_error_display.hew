@@ -1,5 +1,5 @@
 // #3224: the five prelude error enums declared in `std/builtins.hew`
-// (SendError, LookupError, AskError, TimeoutError, LinkError) carry
+// (SendError, LookupError, ActorError, TimeoutError, LinkError) carry
 // `impl Display for <X>` and print via `f"{e}"` like any other public
 // `std/` error enum.
 fn main() {
@@ -7,10 +7,10 @@ fn main() {
     println(f"{send_err}");
     let lookup_err = LookupError.NotFound;
     println(f"{lookup_err}");
-    let ask_err = AskError.NodeNotRunning;
+    let ask_err: ActorError<Never, Never> = ActorError.NodeNotRunning;
     println(f"{ask_err}");
     let timeout_err = TimeoutError.Timeout;
     println(f"{timeout_err}");
-    let link_err = LinkError.TargetDead;
+    let link_err = LinkError.Dead;
     println(f"{link_err}");
 }

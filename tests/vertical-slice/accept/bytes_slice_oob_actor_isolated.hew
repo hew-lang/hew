@@ -1,7 +1,7 @@
 // EXIT: 1
 actor BytesSliceCrasher {
     receive fn boom() {
-        let b: bytes = bytes.new();
+        var b: bytes = bytes.new();
         b.push(1);
         b.push(2);
         let _slice: bytes = b[0..99];

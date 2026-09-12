@@ -1,0 +1,14 @@
+[[case]]
+id = "vec_set_oob_actor_isolated"
+intent = "The fixture runs to completion and exits 0."
+source = "../vertical-slice/accept/vec_set_oob_actor_isolated.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in VecSetCrasher.boom (actor 1): IndexOutOfBounds\n"
+exit = 0

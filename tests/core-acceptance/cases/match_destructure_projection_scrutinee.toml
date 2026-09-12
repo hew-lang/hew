@@ -1,0 +1,13 @@
+[[case]]
+id = "match_destructure_projection_scrutinee"
+intent = "Accept: a record match destructure on a projection scrutinee."
+source = "../vertical-slice/accept/match_destructure_projection_scrutinee.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "a-payload\nb-payload\n"
+exit = 0

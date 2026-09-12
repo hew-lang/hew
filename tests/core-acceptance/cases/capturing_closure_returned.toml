@@ -1,0 +1,13 @@
+[[case]]
+id = "capturing_closure_returned"
+intent = "Returned capturing closure: `base` is a function parameter (typed, no const_values entry)."
+source = "../vertical-slice/accept/capturing_closure_returned.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "8\n"
+exit = 0

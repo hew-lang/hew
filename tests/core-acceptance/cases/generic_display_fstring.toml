@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_display_fstring"
+intent = "#1565 / #1929 Stage 3: f-string interpolation `f\"{x}\"` of a `T: Display` type parameter, plus generic `println` over a `Vec<T>` (combining Stage 2 `for-in` over a generic vector with Stage 3 Display dispatch)."
+source = "../vertical-slice/accept/generic_display_fstring.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "[99]\n[ok]\n[pt]\n3\n4\n"
+exit = 0

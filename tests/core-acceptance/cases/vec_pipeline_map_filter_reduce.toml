@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_pipeline_map_filter_reduce"
+intent = "Spec §3.8.6 Vec pipeline: map / filter / reduce expand to counted loops over the receiver; the closure argument is bound once and borrowed per element, so capture-carrying closures ride the standard env discipline."
+source = "../vertical-slice/accept/vec_pipeline_map_filter_reduce.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "10\n2\n15\n120\n9\n"
+exit = 0

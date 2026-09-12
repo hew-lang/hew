@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_missing_close"
+intent = "W3.030 V10 — `#[resource]` declared without any `close` body (neither inline nor sibling inherent-impl) must fail at HIR with `ResourceMissingClose`."
+source = "../vertical-slice/reject/user_resource_missing_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ResourceMissingClose"
+line = 5
+column = 1
+message = "E_HIR: `#[resource]` type must declare `fn close(consume self) { ... }` in a sibling inherent-impl block (`impl T { fn close(consume self) { ... } }`); the implicit drop contract dispatches to this method on every scope-exit path"

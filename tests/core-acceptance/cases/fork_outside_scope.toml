@@ -1,0 +1,13 @@
+[[case]]
+id = "fork_outside_scope"
+intent = "Reject fixture: fork_outside_scope — `fork name = expr` outside a scope{} body."
+source = "../vertical-slice/reject/fork_outside_scope.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 13
+column = 10
+message = "`fork name = expression` has been removed"

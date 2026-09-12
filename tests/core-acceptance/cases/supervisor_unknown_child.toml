@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor_unknown_child"
+intent = "Reject fixture: accessing a non-existent child name on a supervisor LHS."
+source = "../vertical-slice/reject/supervisor_unknown_child.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedField"
+line = 21
+column = 14
+message = "supervisor `App` has no child named `w2`"

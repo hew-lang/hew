@@ -1,0 +1,14 @@
+[[case]]
+id = "deque_pop_back_empty_actor_isolated"
+intent = "The fixture runs to completion and exits 1."
+source = "../vertical-slice/accept/deque_pop_back_empty_actor_isolated.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "PANIC: Deque.pop_back() on an empty deque\nhew: actor crash in DequePopBackCrasher.boom (actor 1): IndexOutOfBounds\n"
+exit = 1

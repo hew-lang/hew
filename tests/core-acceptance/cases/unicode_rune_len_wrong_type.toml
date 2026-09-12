@@ -1,0 +1,13 @@
+[[case]]
+id = "unicode_rune_len_wrong_type"
+intent = "The fixture is refused, and the refusal names Mismatch."
+source = "../vertical-slice/reject/unicode_rune_len_wrong_type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 4
+column = 22
+message = "type mismatch: expected `i64`, found `string`"

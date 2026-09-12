@@ -1,0 +1,13 @@
+[[case]]
+id = "record_fn_field_dispatch"
+intent = "`h.cb(args)` where `cb` is a fn-typed record field dispatches as a field-load + closure call."
+source = "../vertical-slice/accept/record_fn_field_dispatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\n123\n101\n"
+exit = 0

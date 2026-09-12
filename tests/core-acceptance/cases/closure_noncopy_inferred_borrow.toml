@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_noncopy_inferred_borrow"
+intent = "Substrate gain: a closure that captures a non-Copy `string` binding WITHOUT the `move` keyword is ACCEPTED."
+source = "../vertical-slice/accept/closure_noncopy_inferred_borrow.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hew\nhew\n"
+exit = 0

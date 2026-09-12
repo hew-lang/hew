@@ -1,0 +1,13 @@
+[[case]]
+id = "unknown_named_array_type"
+intent = "Reject: an array that contains a named user type that is declared nowhere."
+source = "../vertical-slice/reject/unknown_named_array_type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 5
+column = 10
+message = "unknown type `Foo`"

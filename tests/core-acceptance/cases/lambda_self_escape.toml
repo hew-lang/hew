@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_self_escape"
+intent = "Reject fixture: E_LAMBDA_SELF_ESCAPE An actor lambda body must not return an actor handle (actor handle escape)."
+source = "../vertical-slice/reject/lambda_self_escape.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ClosureExplicitMoveRequired"
+line = 14
+column = 9
+message = "capture `inner` has no independent snapshot operation; use `move` to transfer it into the closure"

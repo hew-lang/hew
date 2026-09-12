@@ -1,0 +1,14 @@
+[[case]]
+id = "bytes_slice_open_left"
+intent = "The fixture runs to completion and exits 1."
+source = "../vertical-slice/accept/bytes_slice_open_left.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

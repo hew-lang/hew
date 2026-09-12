@@ -1,0 +1,14 @@
+[[case]]
+id = "bytes_set_oob_traps"
+intent = "`bytes.set(i, b)` with an out-of-range index fails closed: the runtime routes through the bytes index-OOB trap rather than writing past the buffer."
+source = "../vertical-slice/accept/bytes_set_oob_traps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

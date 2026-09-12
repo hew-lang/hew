@@ -1,0 +1,13 @@
+[[case]]
+id = "destructure_payload_no_double_free"
+intent = "W5-011 P3 destructure-binder safety proof — an enum payload that is `match`-destructured into a fresh `string` binder aliases the parent's refcount-1 buffer with NO retain (the M-COW spine emits none on share)."
+source = "../vertical-slice/accept/destructure_payload_no_double_free.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

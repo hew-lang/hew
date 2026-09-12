@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_generic_elem_push_get"
+intent = "#1929 Stage 1: element-typed Vec method dispatch under a type parameter."
+source = "../vertical-slice/accept/vec_generic_elem_push_get.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\n3.5\n1\nhello\n99\n"
+exit = 0

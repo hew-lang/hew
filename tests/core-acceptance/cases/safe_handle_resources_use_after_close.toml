@@ -1,0 +1,13 @@
+[[case]]
+id = "safe_handle_resources_use_after_close"
+intent = "The fixture is refused, and the refusal names UseAfterMove."
+source = "../vertical-slice/reject/safe_handle_resources_use_after_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 25
+column = 13
+message = "use of moved value `value`"

@@ -1,0 +1,14 @@
+[[case]]
+id = "panic_main_unwind_runs_resource_close"
+intent = "Hew-lang/hew#3074: `panic()` in main context unwinds with cleanup, exactly as it already does inside an actor."
+source = "../vertical-slice/accept/panic_main_unwind_runs_resource_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "work\n7\n"
+stderr = "hew: failure: UserPanic (212): boom\n"
+exit = 1

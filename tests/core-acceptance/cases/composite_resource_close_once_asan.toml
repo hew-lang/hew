@@ -1,0 +1,13 @@
+[[case]]
+id = "composite_resource_close_once_asan"
+intent = "ASan fixture gate: a composite closes its resource leaf exactly once (#3070)."
+source = "../vertical-slice/accept/composite_resource_close_once_asan.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "on_down_hook_missing_import"
+intent = "Reject: source-owned lifecycle types require a published import binding."
+source = "../vertical-slice/reject/on_down_hook_missing_import.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 5
+column = 22
+message = "unknown type `DownNotification`"

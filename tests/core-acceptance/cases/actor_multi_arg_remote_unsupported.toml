@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_multi_arg_remote_unsupported"
+intent = "Reject fixture: remote ask resolving to a multi-parameter receive handler (E_REMOTE_PAYLOAD_UNSUPPORTED)."
+source = "../vertical-slice/reject/actor_multi_arg_remote_unsupported.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 26
+column = 28
+message = "unknown type `AskError`"

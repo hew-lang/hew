@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_send_result_ok"
+intent = "Accept: value-context `.send` on a lambda-actor handle materializes `Result<(), ActorError<Never, Never>>` AND still delivers the message."
+source = "../vertical-slice/accept/lambda_send_result_ok.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "99\n"
+exit = 7

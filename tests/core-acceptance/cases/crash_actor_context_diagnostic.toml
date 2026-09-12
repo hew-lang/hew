@@ -1,0 +1,14 @@
+[[case]]
+id = "crash_actor_context_diagnostic"
+intent = "F4.3 proving fixture: an actor crash must name the function/context in the diagnostic, not emit an opaque msg_type integer."
+source = "../vertical-slice/accept/crash_actor_context_diagnostic.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Crasher.on_trigger (actor 1): IndexOutOfBounds\n"
+exit = 1

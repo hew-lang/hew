@@ -1,0 +1,13 @@
+[[case]]
+id = "sort_strings_merge_asan"
+intent = "Iterative string-merge ownership authority for the Linux ASan/LSan gate."
+source = "../vertical-slice/accept/sort_strings_merge_asan.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "regex_invalid_pattern"
+intent = "Reject fixture: malformed regex literal in match-arm position."
+source = "../vertical-slice/reject/regex_invalid_pattern.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidRegexLiteral"
+line = 6
+column = 9
+message = "invalid regex pattern `re\"[unclosed\"`: regex parse error:\n    [unclosed\n    ^\nerror: unclosed character class"

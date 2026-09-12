@@ -1,0 +1,13 @@
+[[case]]
+id = "named_fn_value_reused"
+intent = "Regression: the same named function used as a value at multiple call sites must not produce duplicate/undefined shim symbols in the LLVM module."
+source = "../vertical-slice/accept/named_fn_value_reused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\n20\n30\n100\n"
+exit = 0

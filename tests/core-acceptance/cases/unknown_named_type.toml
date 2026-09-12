@@ -1,0 +1,13 @@
+[[case]]
+id = "unknown_named_type"
+intent = "Reject: a function that uses a named user type that is declared nowhere."
+source = "../vertical-slice/reject/unknown_named_type.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 5
+column = 9
+message = "unknown type `Foo`"

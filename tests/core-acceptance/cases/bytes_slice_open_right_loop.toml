@@ -1,0 +1,14 @@
+[[case]]
+id = "bytes_slice_open_right_loop"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/bytes_slice_open_right_loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "\u0004\n\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

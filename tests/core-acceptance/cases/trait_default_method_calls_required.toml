@@ -1,0 +1,13 @@
+[[case]]
+id = "trait_default_method_calls_required"
+intent = "Accept fixture: trait default method body calling a required (non-default) method."
+source = "../vertical-slice/accept/trait_default_method_calls_required.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Hi Alice\n"
+exit = 0

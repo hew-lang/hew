@@ -1,0 +1,13 @@
+[[case]]
+id = "cascade_error_index_object"
+intent = "The fixture is refused, and the refusal names UndefinedVariable."
+source = "../vertical-slice/reject/cascade_error_index_object.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedVariable"
+line = 2
+column = 14
+message = "undefined variable `undefined_var`"

@@ -1,0 +1,13 @@
+[[case]]
+id = "ask_error_no_error_removed"
+intent = "Reject: AskError.NoError was a runtime-only success sentinel and is not a public Hew error variant."
+source = "../vertical-slice/reject/ask_error_no_error_removed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 4
+column = 31
+message = "unknown type `AskError`"

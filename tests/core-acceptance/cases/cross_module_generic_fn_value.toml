@@ -1,0 +1,13 @@
+[[case]]
+id = "cross_module_generic_fn_value"
+intent = "Context-determined generic cross-module function as a value."
+source = "../vertical-slice/accept/cross_module_generic_fn_value/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "10\n99\n"
+exit = 0

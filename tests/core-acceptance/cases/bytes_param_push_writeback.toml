@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_param_push_writeback"
+intent = "Behavioural proof that a `bytes` parameter is a value: a callee's `push` grows the callee's own buffer, so the grown buffer is what the callee returns and the caller rebinds."
+source = "../vertical-slice/accept/bytes_param_push_writeback.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Hi! len=3\n"
+exit = 0

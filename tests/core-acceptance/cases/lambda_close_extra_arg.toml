@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_close_extra_arg"
+intent = "Reject: an anonymous actor's `close` takes no arguments."
+source = "../vertical-slice/reject/lambda_close_extra_arg.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "ArityMismatch"
+line = 8
+column = 5
+message = "`close` on an actor handle expects no arguments, but 1 were supplied"

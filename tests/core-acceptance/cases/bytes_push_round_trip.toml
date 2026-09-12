@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_push_round_trip"
+intent = "Behavioural proof that `bytes.push(...)` mutation propagates back to the caller's `BytesTriple` local and a subsequent value-position `utf8.decode()` validates and reads the updated buffer."
+source = "../vertical-slice/accept/bytes_push_round_trip.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Hi\n"
+exit = 0

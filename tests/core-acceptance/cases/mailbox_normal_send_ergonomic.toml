@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_normal_send_ergonomic"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/mailbox_normal_send_ergonomic.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "NORMAL_SEND_DELIVERED\n"
+exit = 42

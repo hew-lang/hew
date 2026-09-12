@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_generic_elem_get_trait_dispatch"
+intent = "#1929 Stage 1: read-only generic algorithm over `Vec<T>` where `T: Show`, instantiated with a Copy value-record element."
+source = "../vertical-slice/accept/vec_generic_elem_get_trait_dispatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "Color\n"
+exit = 0

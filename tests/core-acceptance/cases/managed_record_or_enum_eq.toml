@@ -1,0 +1,13 @@
+[[case]]
+id = "managed_record_or_enum_eq"
+intent = "The fixture is refused, and the refusal names InvalidOperation."
+source = "../vertical-slice/reject/managed_record_or_enum_eq.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 8
+column = 13
+message = "`HoldsMap` has no selected Eq implementation for equality comparison"

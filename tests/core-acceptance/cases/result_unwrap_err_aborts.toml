@@ -1,0 +1,14 @@
+[[case]]
+id = "result_unwrap_err_aborts"
+intent = "The fixture runs to completion and exits 1."
+source = "../vertical-slice/accept/result_unwrap_err_aborts.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): expect failed: r is present\n"
+exit = 1

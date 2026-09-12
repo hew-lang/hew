@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_param_embed_copy_in_temp_no_leak"
+intent = "Retain-backed string parameter embeds in anonymous owned-Vec COPY-IN source temps."
+source = "../vertical-slice/accept/vec_param_embed_copy_in_temp_no_leak.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

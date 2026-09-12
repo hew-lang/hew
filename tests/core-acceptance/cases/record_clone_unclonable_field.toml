@@ -1,0 +1,13 @@
+[[case]]
+id = "record_clone_unclonable_field"
+intent = "Reject fixture: record_clone_unclonable_field — a record containing an `#[opaque]` runtime handle must fail closed when `.clone()` is called."
+source = "../vertical-slice/reject/record_clone_unclonable_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+line = 28
+column = 13
+message = "type `Wrapper` cannot be cloned because member `inner` contains opaque value `Handle`"

@@ -1,0 +1,13 @@
+[[case]]
+id = "static_trait_dispatch_ambiguous"
+intent = "Reject fixture: Static trait dispatch — ambiguous method from distinct traits Two unrelated traits each declare `run` — calling it on T: Engine + Athlete is ambiguous."
+source = "../vertical-slice/reject/static_trait_dispatch_ambiguous.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "AmbiguousTraitMethod"
+line = 23
+column = 5
+message = "ambiguous trait method `run` on `T`: method is declared by multiple traits (Athlete, Engine); qualify the call to disambiguate"

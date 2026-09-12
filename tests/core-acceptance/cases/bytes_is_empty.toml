@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_is_empty"
+intent = "`bytes.is_empty()` reports the active length truthfully across the lifecycle: true on a fresh buffer, false after a push, true again after clear."
+source = "../vertical-slice/accept/bytes_is_empty.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

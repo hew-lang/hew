@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_nested_handle_tuple_use_after_send"
+intent = "Reject: `rx` is transferred inside a tuple `(rx, 42)` to an actor message boundary."
+source = "../vertical-slice/reject/actor_nested_handle_tuple_use_after_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 28
+column = 5
+message = "use of moved value `rx`"

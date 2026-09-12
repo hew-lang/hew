@@ -1,0 +1,13 @@
+[[case]]
+id = "derived_ord_unordered_field"
+intent = "The fixture is refused, and the refusal names InvalidOperation."
+source = "../vertical-slice/reject/derived_ord_unordered_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 6
+column = 13
+message = "`<` is not available for `Bag` because the type does not derive `PartialOrd`; provide a user `impl Ord` or `impl PartialOrd`"

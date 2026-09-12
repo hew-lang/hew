@@ -1,0 +1,13 @@
+[[case]]
+id = "scope_deadline_body"
+intent = "Reject fixture: scope_deadline_body — non-empty `after(duration) { ..."
+source = "../vertical-slice/reject/scope_deadline_body.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 23
+column = 9
+message = "deadline clauses have been replaced by a deadline on the scope"

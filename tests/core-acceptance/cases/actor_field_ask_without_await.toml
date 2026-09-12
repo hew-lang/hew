@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_field_ask_without_await"
+intent = "Reject fixture: an ask-shaped receive method invoked on a struct-field actor receiver must be `await`ed, exactly like an ask on a local `spawn` handle."
+source = "../vertical-slice/reject/actor_field_ask_without_await.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 19
+column = 9
+message = "type mismatch: expected `i64`, found `Result<i64, ActorError<Never, Never>>`"

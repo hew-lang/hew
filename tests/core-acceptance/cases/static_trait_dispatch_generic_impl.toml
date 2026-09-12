@@ -1,0 +1,13 @@
+[[case]]
+id = "static_trait_dispatch_generic_impl"
+intent = "Accept fixture: Static trait dispatch — generic-over-generic impl `impl<U> Show for Wrapper<U>` is a generic impl whose method MUST carry the impl-level type param `U` into its lowered HirFn::type_params so monomorphization can specialize `Wrapper::show` per concrete `U`."
+source = "../vertical-slice/accept/static_trait_dispatch_generic_impl.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

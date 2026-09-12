@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_fn_return_type_yield_spelling"
+intent = "Accept fixture: negative control for E_GEN_RETURN_SPELLING."
+source = "../vertical-slice/accept/gen_fn_return_type_yield_spelling.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

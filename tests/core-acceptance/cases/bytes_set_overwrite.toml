@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_set_overwrite"
+intent = "`bytes.set(i, b)` overwrites the byte at `i` and leaves neighbours intact."
+source = "../vertical-slice/accept/bytes_set_overwrite.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

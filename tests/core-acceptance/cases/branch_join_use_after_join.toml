@@ -1,0 +1,13 @@
+[[case]]
+id = "branch_join_use_after_join"
+intent = "Union teeth for the branch join."
+source = "../vertical-slice/reject/branch_join_use_after_join.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 24
+column = 5
+message = "use of moved value `held`"

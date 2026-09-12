@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_of_fn_drop_discipline"
+intent = "Drop discipline: a Vec of capture-carrying closures releases each element's env box and pair box exactly once at scope exit."
+source = "../vertical-slice/accept/vec_of_fn_drop_discipline.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "25\n3\n"
+exit = 0

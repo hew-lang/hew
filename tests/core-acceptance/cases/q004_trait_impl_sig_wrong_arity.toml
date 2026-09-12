@@ -1,0 +1,13 @@
+[[case]]
+id = "q004_trait_impl_sig_wrong_arity"
+intent = "Reject fixture: q004_trait_impl_sig_wrong_arity."
+source = "../vertical-slice/reject/q004_trait_impl_sig_wrong_arity.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "TraitImplSignatureMismatch"
+line = 23
+column = 8
+message = "impl method `Holder.unwrap` has 1 parameter(s) but trait `Container` declares 0 (after substituting `Self` and projecting associated types)"

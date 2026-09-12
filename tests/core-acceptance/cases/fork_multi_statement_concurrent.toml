@@ -1,0 +1,13 @@
+[[case]]
+id = "fork_multi_statement_concurrent"
+intent = "Two anonymous children each execute a multi-statement body."
+source = "../vertical-slice/accept/fork_multi_statement_concurrent.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "first-start\nsecond-start\nfirst-end\nsecond-end\ncomplete\n"
+exit = 0

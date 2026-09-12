@@ -1,0 +1,13 @@
+[[case]]
+id = "result_try_payload_abi"
+intent = "Regression for F17: the `?` desugar must preserve the checker-selected payload representation."
+source = "../vertical-slice/accept/result_try_payload_abi.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

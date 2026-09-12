@@ -1,0 +1,13 @@
+[[case]]
+id = "task_entry_composite_cancel_happy_path"
+intent = "#2437 Validation candidate #2: happy-path non-regression for the TaskEntry adapter's composite-return cancel-exit fix (emit_cancel_trap_or_return, hew-codegen-rs/src/llvm.rs)."
+source = "../vertical-slice/accept/task_entry_composite_cancel_happy_path.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "x=11 y=22\n"
+exit = 0

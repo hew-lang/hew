@@ -1,0 +1,13 @@
+[[case]]
+id = "opaque_handle_construct"
+intent = "Reject fixture: opaque_handle_construct — a cross-module consumer cannot construct an `#[opaque]` handle directly; only the declaring module (the producer) may do so."
+source = "../vertical-slice/reject/opaque_handle_construct/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "OpaqueDirectConstruct"
+line = 14
+column = 22
+message = "cannot construct opaque type `handles.Handle` directly; opaque handles are produced by their stdlib constructors [E_OPAQUE_CONSTRUCT]"

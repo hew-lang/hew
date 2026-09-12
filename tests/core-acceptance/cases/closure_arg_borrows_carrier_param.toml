@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_arg_borrows_carrier_param"
+intent = "An indirect call borrows its arguments exactly like a direct one."
+source = "../vertical-slice/accept/closure_arg_borrows_carrier_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "kept=3\ndirect=3\n"
+exit = 0

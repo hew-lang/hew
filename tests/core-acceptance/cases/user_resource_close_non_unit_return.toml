@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_close_non_unit_return"
+intent = "W3.030 V12 — `#[resource]` whose inherent-impl `close` returns a non-unit type must be rejected at HIR with `ResourceCloseMustReturnUnit`."
+source = "../vertical-slice/reject/user_resource_close_non_unit_return.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 13
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

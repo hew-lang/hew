@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_state_resource_payload_scope_exit"
+intent = "A machine value whose scope would end in a state holding a `#[resource]` is rejected at declaration: the machine drop class has no wired release for state-payload resources, so every exit path — held live, stepped back to a payload-free state, early return — would leak the `close` silently."
+source = "../vertical-slice/reject/machine_state_resource_payload_scope_exit.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 14
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_type_param_capture"
+intent = "Type-parameterized closure capture (#6)."
+source = "../vertical-slice/accept/closure_type_param_capture.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "42\nclosure\n"
+exit = 0

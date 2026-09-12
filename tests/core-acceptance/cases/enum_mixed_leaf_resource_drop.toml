@@ -1,0 +1,13 @@
+[[case]]
+id = "enum_mixed_leaf_resource_drop"
+intent = "Mixed-leaf enum payload: one variant carries BOTH a heap leaf (`string`) and a `#[resource]`."
+source = "../vertical-slice/accept/enum_mixed_leaf_resource_drop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "body\nclose 2\nclose 1\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "hashmap_borrowed_string_key_ingress"
+intent = "Accept fixture (borrowed-string collection ingress, exactly-once release): `HashMap`/`HashSet` ingress is a MOVE, but a by-value `string` parameter is BORROWED — the caller keeps the count and drops it at its own scope exit."
+source = "../vertical-slice/accept/hashmap_borrowed_string_key_ingress.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "tally keys=0 coffee=-1 rent=-1 missing=-1\n"
+exit = 40

@@ -1,0 +1,13 @@
+[[case]]
+id = "let_bound_iterator_next"
+intent = "S1-V4: caller binds the receiver with `let` (immutable) and calls a method whose trait declares `var self` (mutable receiver)."
+source = "../vertical-slice/reject/let_bound_iterator_next.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 23
+column = 5
+message = "method `bump` on `Box` requires a mutable binding receiver; `b` is not declared with `var`"

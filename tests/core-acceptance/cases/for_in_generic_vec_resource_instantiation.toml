@@ -1,0 +1,13 @@
+[[case]]
+id = "for_in_generic_vec_resource_instantiation"
+intent = "The fixture is refused, and the refusal names E_SIR_UNSUPPORTED."
+source = "../vertical-slice/reject/for_in_generic_vec_resource_instantiation.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_UNSUPPORTED"
+line = 0
+column = 0
+message = "semantic lowering of `__hew_fn__take_first$$Handle` is not implemented: E_OWN_CONSUME_BORROWED: `item` is borrowed here; a value with no copy operation transfers only from an owning binding"

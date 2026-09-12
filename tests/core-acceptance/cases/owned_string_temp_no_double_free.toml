@@ -1,0 +1,13 @@
+[[case]]
+id = "owned_string_temp_no_double_free"
+intent = "W5.011 P3 — owned-`string` temporary/drop substrate safety proof."
+source = "../vertical-slice/accept/owned_string_temp_no_double_free.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

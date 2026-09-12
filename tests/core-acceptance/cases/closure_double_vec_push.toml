@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_double_vec_push"
+intent = "Pushing the same closure binding into two Vec slots would store two owning byte-copies of one pair; `hew_vec_free_closure_pairs` would free the environment twice at scope exit."
+source = "../vertical-slice/reject/closure_double_vec_push.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 12
+column = 14
+message = "use of moved value `f`"

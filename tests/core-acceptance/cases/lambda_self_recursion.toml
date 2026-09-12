@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda_self_recursion"
+intent = "Accept fixture: a recursive actor names itself."
+source = "../vertical-slice/accept/lambda_self_recursion.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "liftoff\n"
+exit = 0

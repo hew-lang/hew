@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_of_fn_storage"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/vec_of_fn_storage.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\n6\n101\n105\n2\n"
+exit = 0

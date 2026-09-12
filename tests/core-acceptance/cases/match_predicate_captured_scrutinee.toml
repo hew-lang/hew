@@ -1,0 +1,13 @@
+[[case]]
+id = "match_predicate_captured_scrutinee"
+intent = "Accept: a closure captures the scrutinee of a literal-predicate record match."
+source = "../vertical-slice/accept/match_predicate_captured_scrutinee.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\n"
+exit = 0

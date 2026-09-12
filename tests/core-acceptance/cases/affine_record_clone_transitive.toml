@@ -1,0 +1,13 @@
+[[case]]
+id = "affine_record_clone_transitive"
+intent = "An unmarked record cannot hide an affine field from structural clone."
+source = "../vertical-slice/reject/affine_record_clone_transitive.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 9
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

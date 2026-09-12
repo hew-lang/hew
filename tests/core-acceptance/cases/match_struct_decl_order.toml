@@ -1,0 +1,13 @@
+[[case]]
+id = "match_struct_decl_order"
+intent = "T-1: field declaration order differs from pattern binding order."
+source = "../vertical-slice/accept/match_struct_decl_order.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 10

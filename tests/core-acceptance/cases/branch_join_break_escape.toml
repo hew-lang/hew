@@ -1,0 +1,13 @@
+[[case]]
+id = "branch_join_break_escape"
+intent = "A `break` arm leaves the LOOP, not the function, so its consume reaches the code below the loop."
+source = "../vertical-slice/reject/branch_join_break_escape.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 66
+column = 5
+message = "use of moved value `w`"

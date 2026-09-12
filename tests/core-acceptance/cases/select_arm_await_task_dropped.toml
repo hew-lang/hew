@@ -1,0 +1,13 @@
+[[case]]
+id = "select_arm_await_task_dropped"
+intent = "Reject fixture (SELECT ship-3): the task-await arm `<id> from await <expr>` is NOT one of the three sealed `select` forms in edition 2026 (HEW-SPEC-2026 §4.11.1: actor ask, channel `rx.recv()`, `after <duration>`)."
+source = "../vertical-slice/reject/select_arm_await_task_dropped.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 23
+column = 23
+message = "a select arm source is a task, an actor call, or a channel receive: `name from source => body`"

@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_nested_handle_bound_tuple_rx_use_after_send"
+intent = "Reject: `rx` is placed into a bound tuple `pair = (rx, 42)`, then `pair` is sent to an actor."
+source = "../vertical-slice/reject/actor_nested_handle_bound_tuple_rx_use_after_send.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_VERIFY"
+line = 0
+column = 0
+message = "SIR verification failed: [SirDiagnostic { function: \"__hew_fn_main\", callable: Some(CallableId(0)), kind: PlaceLifetime { block: BlockId(17), place: PlaceId(3), reason: \"aggregate field is not initialized on every incoming path\" } }]"

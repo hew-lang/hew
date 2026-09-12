@@ -1,0 +1,13 @@
+[[case]]
+id = "task_entry_composite_cancel_loop_back_edge"
+intent = "#2437 Validation candidate #5: the composite-arm fix in emit_cancel_trap_or_return is arm-level, not cooperate-site-level — it must apply uniformly whether the FunctionEntry or LoopBackEdge cooperate site is what reaches the cancel_exit branch."
+source = "../vertical-slice/accept/task_entry_composite_cancel_loop_back_edge.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "total=10 count=5\n"
+exit = 0

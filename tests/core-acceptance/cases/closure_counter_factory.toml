@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_counter_factory"
+intent = "Mutable capture write-back through an ESCAPING (heap-boxed) env: the classic stateful counter-factory idiom."
+source = "../vertical-slice/accept/closure_counter_factory.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "1\n2\n3\n"
+exit = 0

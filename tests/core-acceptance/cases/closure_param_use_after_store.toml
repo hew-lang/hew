@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_param_use_after_store"
+intent = "Storing a `consume` fn-typed parameter into an owning record field is the parameter's single consumption: the record becomes the sole owner of the closure env."
+source = "../vertical-slice/reject/closure_param_use_after_store.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 19
+column = 20
+message = "use of moved value `f`"

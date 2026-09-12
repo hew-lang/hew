@@ -1,0 +1,13 @@
+[[case]]
+id = "structural_equality_function_member"
+intent = "The fixture is refused, and the refusal names InvalidOperation."
+source = "../vertical-slice/reject/structural_equality_function_member.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 12
+column = 8
+message = "`Holder` has no selected Eq implementation for equality comparison"

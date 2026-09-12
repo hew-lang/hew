@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_param_append_nonempty"
+intent = "A `bytes` value grown past its initial length inside a callee, with drop-safety."
+source = "../vertical-slice/accept/bytes_param_append_nonempty.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "hello world\n"
+exit = 0

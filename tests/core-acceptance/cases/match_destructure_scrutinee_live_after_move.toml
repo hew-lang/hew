@@ -1,0 +1,13 @@
+[[case]]
+id = "match_destructure_scrutinee_live_after_move"
+intent = "Accept: a record scrutinee stays live after an arm moves a field out."
+source = "../vertical-slice/accept/match_destructure_scrutinee_live_after_move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "a-payload\nb-payload\n"
+exit = 0

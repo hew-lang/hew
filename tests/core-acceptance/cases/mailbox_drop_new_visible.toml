@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_drop_new_visible"
+intent = "A `.DropNewest` mailbox view reports the discard to its sender as the submission's own outcome: the policy chose to lose the message, so it is a described delivery, not a failure."
+source = "../vertical-slice/accept/mailbox_drop_new_visible.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "LOSS_VISIBLE\n"
+exit = 42

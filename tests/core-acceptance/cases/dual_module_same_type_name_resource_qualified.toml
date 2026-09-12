@@ -1,0 +1,13 @@
+[[case]]
+id = "dual_module_same_type_name_resource_qualified"
+intent = "Accept (#2400 resource-wrapper collision, now qualified): two imported modules each define a DISTINCT type named `Server` with an `impl ServerMethods for Server` block."
+source = "../vertical-slice/accept/dual_module_same_type_name_resource_qualified.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 0

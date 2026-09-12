@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_state_closure_field"
+intent = "Closure-valued actor state is rejected at compile time: supervisor restart needs the clone direction, and a closure environment has a sole owner with no clone path."
+source = "../vertical-slice/reject/actor_state_closure_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "CheckerBoundaryViolation"
+line = 5
+column = 30
+message = "E_HIR: closure literal reached HIR without valid checker-owned facts"

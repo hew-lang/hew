@@ -1,0 +1,13 @@
+[[case]]
+id = "real_binary_type_error_preserved"
+intent = "The fixture is refused, and the refusal names InvalidOperation."
+source = "../vertical-slice/reject/real_binary_type_error_preserved.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 4
+column = 14
+message = "cannot apply `+` to `string` and `i64`"

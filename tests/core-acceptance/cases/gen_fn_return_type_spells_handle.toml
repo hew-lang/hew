@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_fn_return_type_spells_handle"
+intent = "Reject fixture: a `gen fn` return type that spells the generator handle `Generator<Y, R>` instead of the yield type `Y` — HEW-SPEC-2026 §4.12."
+source = "../vertical-slice/reject/gen_fn_return_type_spells_handle.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_GEN_RETURN_SPELLING"
+line = 6
+column = 21
+message = "E_GEN_RETURN_SPELLING: `gen fn` return type names the yield type, not the generator handle it produces; write `-> i64` instead of the `Generator<Y, R>` handle spelling"

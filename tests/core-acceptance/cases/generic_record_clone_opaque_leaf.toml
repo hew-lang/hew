@@ -1,0 +1,13 @@
+[[case]]
+id = "generic_record_clone_opaque_leaf"
+intent = "Reject fixture: generic_record_clone_opaque_leaf — a GENERIC record whose type parameter is instantiated with an `#[opaque]` runtime handle must fail closed when cloned, exactly like the monomorphic case (`record_clone_unclonable_field.hew`)."
+source = "../vertical-slice/reject/generic_record_clone_opaque_leaf.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedMethod"
+line = 31
+column = 14
+message = "type `Box` cannot be cloned because member `item` contains opaque value `Handle`"

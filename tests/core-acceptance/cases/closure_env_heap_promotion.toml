@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_env_heap_promotion"
+intent = "Returned capturing closure survives the producing frame being clobbered."
+source = "../vertical-slice/accept/closure_env_heap_promotion.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "15\n"
+exit = 0

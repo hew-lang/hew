@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_fn_forwarded_fn_param"
+intent = "Reject (CAP-11): forwarding a fn-typed parameter into a generator constructor cannot prove that the function value has a null environment."
+source = "../vertical-slice/reject/gen_fn_forwarded_fn_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_VERIFY"
+line = 0
+column = 0
+message = "SIR verification failed: [SirDiagnostic { function: \"__hew_fn_mapped\", callable: Some(CallableId(3)), kind: InvalidOperation { op: OpId(1), reason: \"`fn(i64) -> i64` has no copy operation\" } }]"

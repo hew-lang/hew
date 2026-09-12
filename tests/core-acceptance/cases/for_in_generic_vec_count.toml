@@ -1,0 +1,13 @@
+[[case]]
+id = "for_in_generic_vec_count"
+intent = "#1929 Stage 2: pure-iteration proof for `for x in items` over a `Vec<T>` where `T` is a type parameter."
+source = "../vertical-slice/accept/for_in_generic_vec_count.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n4\n2\n1\n"
+exit = 0

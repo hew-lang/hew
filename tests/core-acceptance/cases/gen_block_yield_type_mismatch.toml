@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_block_yield_type_mismatch"
+intent = "Reject fixture: yield expressions with incompatible types."
+source = "../vertical-slice/reject/gen_block_yield_type_mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 5
+column = 35
+message = "type mismatch: expected `i64`, found `string`"

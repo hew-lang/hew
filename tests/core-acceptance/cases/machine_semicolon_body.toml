@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_semicolon_body"
+intent = "A machine member is separated by `,` like every other structural member, so the legacy `;` body-less transition is a parse error with the fix-it that names the separator, and the default arm has one spelling (D480)."
+source = "../vertical-slice/reject/machine_semicolon_body.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Other"
+line = 10
+column = 23
+message = "expected `,` between structural members"

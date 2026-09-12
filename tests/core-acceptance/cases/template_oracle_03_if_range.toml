@@ -1,0 +1,13 @@
+[[case]]
+id = "template_oracle_03_if_range"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/template_oracle_03_if_range.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "[red][blue]\n"
+exit = 0

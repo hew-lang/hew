@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_sent_string_not_double_freed"
+intent = "Actor-send ownership proof — a heap-owning `string` moved into an actor mailbox must not be reclaimed by the sender after a successful enqueue."
+source = "../vertical-slice/accept/actor_sent_string_not_double_freed.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "done\n"
+exit = 0

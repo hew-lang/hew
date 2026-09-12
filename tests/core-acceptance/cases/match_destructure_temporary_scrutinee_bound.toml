@@ -1,0 +1,13 @@
+[[case]]
+id = "match_destructure_temporary_scrutinee_bound"
+intent = "Accept: a partial extraction from a temporary record scrutinee."
+source = "../vertical-slice/accept/match_destructure_temporary_scrutinee_bound.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "a-payload\n"
+exit = 0

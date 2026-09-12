@@ -1,0 +1,14 @@
+[[case]]
+id = "bytes_index_oob_traps"
+intent = "Indexed-accessor trap negative: `b[i]` on an out-of-bounds index must trap (IndexOutOfBounds) rather than read past the buffer or return garbage."
+source = "../vertical-slice/accept/bytes_index_oob_traps.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

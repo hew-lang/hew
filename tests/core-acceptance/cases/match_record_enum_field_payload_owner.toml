@@ -1,0 +1,13 @@
+[[case]]
+id = "match_record_enum_field_payload_owner"
+intent = "A payload bound out of an inline enum FIELD of a live record is the sole owner of that field's heap."
+source = "../vertical-slice/accept/match_record_enum_field_payload_owner.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n3\n0\n3\n15\n"
+exit = 0

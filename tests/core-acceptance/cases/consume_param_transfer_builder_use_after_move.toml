@@ -1,0 +1,13 @@
+[[case]]
+id = "consume_param_transfer_builder_use_after_move"
+intent = "A child passed to a consume parameter moves from the caller into the native sink."
+source = "../vertical-slice/reject/consume_param_transfer_builder_use_after_move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_PARTIAL_CONSUME"
+line = 37
+column = 27
+message = "cannot consume `self.handle` separately: enclosing type `Value` must remain whole"

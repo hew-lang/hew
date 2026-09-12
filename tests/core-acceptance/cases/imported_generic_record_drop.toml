@@ -1,0 +1,13 @@
+[[case]]
+id = "imported_generic_record_drop"
+intent = "P1-2 fixture: a generic owned record (`Box<T>`) is DEFINED in the `generic_record_box` module and INSTANTIATED + DROPPED here, in a different module."
+source = "../vertical-slice/accept/imported_generic_record_drop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "owned-value\n"
+exit = 0

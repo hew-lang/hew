@@ -1,0 +1,13 @@
+[[case]]
+id = "vec_of_record_with_fn_field"
+intent = "A Vec element type that CONTAINS a function value is rejected: the layout/owned element ABIs byte-copy the element, which would shallow-copy the closure pair and alias its sole-owner environment."
+source = "../vertical-slice/reject/vec_of_record_with_fn_field.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 11
+column = 13
+message = "`Vec<Holder>` is not supported: the element type contains a function value, and each closure environment has a sole owner — store the functions directly in a Vec<fn(...)> instead"

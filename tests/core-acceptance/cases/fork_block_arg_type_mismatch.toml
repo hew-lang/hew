@@ -1,0 +1,13 @@
+[[case]]
+id = "fork_block_arg_type_mismatch"
+intent = "Reject fixture: fork-block body with a type-mismatched argument."
+source = "../vertical-slice/reject/fork_block_arg_type_mismatch.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+line = 25
+column = 22
+message = "type mismatch: expected `bool`, found `i64`"

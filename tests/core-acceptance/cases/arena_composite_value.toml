@@ -1,0 +1,13 @@
+[[case]]
+id = "arena_composite_value"
+intent = "Arena<T> over a composite element: Vec<Slot<Point>> nests a record inside a slot inside the backing Vec."
+source = "../vertical-slice/accept/arena_composite_value.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3,7\n"
+exit = 0

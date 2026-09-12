@@ -1,0 +1,13 @@
+[[case]]
+id = "match_nested_aggregate_payload_owner"
+intent = "A payload bound out of an inline enum FIELD is the sole owner of that field's heap whatever the payload's SHAPE."
+source = "../vertical-slice/accept/match_nested_aggregate_payload_owner.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "3\n7\n12\n15\n40\n9\nnone\n3\n"
+exit = 0

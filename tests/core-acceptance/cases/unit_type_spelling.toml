@@ -1,0 +1,13 @@
+[[case]]
+id = "unit_type_spelling"
+intent = "Reject fixture: unit_type_spelling — `Unit` is not a writable type name in Hew; the unit type is spelled `()`."
+source = "../vertical-slice/reject/unit_type_spelling.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UndefinedType"
+line = 10
+column = 14
+message = "unknown type `Unit`"

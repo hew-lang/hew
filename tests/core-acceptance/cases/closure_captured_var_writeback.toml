@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_captured_var_writeback"
+intent = "BorrowMut write-back (#1′): a closure REASSIGNS a captured scalar `var`."
+source = "../vertical-slice/accept/closure_captured_var_writeback.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "5\n8\n0\n"
+exit = 0

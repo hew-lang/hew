@@ -1,0 +1,13 @@
+[[case]]
+id = "mailbox_bounded_drop_new_supervised"
+intent = "The SAME bound must hold for a SUPERVISED actor — the second codegen zero-hardcode site."
+source = "../vertical-slice/accept/mailbox_bounded_drop_new_supervised.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 1

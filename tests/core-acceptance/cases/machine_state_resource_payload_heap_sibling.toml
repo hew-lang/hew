@@ -1,0 +1,13 @@
+[[case]]
+id = "machine_state_resource_payload_heap_sibling"
+intent = "The machine-state resource rejection fires per offending state, and a `#[resource]` beside a heap-owning sibling in the same payload is still a rejection — the marker veto does not depend on the payload being resource-only."
+source = "../vertical-slice/reject/machine_state_resource_payload_heap_sibling.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 15
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

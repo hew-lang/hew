@@ -1,0 +1,13 @@
+[[case]]
+id = "owned_nested_tuple_bytes"
+intent = "The fixture runs to completion and prints exactly its recorded output."
+source = "../vertical-slice/accept/owned_nested_tuple_bytes.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2:\u0002:11:true:\u0002:12:false\n"
+exit = 0

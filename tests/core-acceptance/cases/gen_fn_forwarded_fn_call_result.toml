@@ -1,0 +1,13 @@
+[[case]]
+id = "gen_fn_forwarded_fn_call_result"
+intent = "Reject (CAP-11): a fn-valued call result can hide a capturing closure environment before the value reaches a generator constructor."
+source = "../vertical-slice/reject/gen_fn_forwarded_fn_call_result.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 12
+column = 5
+message = "E_OWN_CONSUME_BORROWED: cannot consume a value through borrowed parameter `f`"

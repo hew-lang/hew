@@ -1,0 +1,13 @@
+[[case]]
+id = "bytes_param_matches_vec"
+intent = "`bytes` parameter passing matches `Vec` parameter passing: both are values, so a callee's mutation reaches the caller through the returned value and through nothing else."
+source = "../vertical-slice/accept/bytes_param_matches_vec.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "vec_len=1 bytes_len=1\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "branch_join_move_in_loop"
+intent = "Cross-iteration double consume."
+source = "../vertical-slice/reject/branch_join_move_in_loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_SIR_VERIFY"
+line = 0
+column = 0
+message = "SIR verification failed: [SirDiagnostic { function: \"__hew_fn_move_in_loop\", callable: Some(CallableId(1)), kind: PlaceLifetime { block: BlockId(9), place: PlaceId(0), reason: \"aggregate field is not initialized on every incoming path\" } }]"

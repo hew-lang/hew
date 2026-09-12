@@ -1,0 +1,13 @@
+[[case]]
+id = "closure_type_param_multi"
+intent = "Type-parameterized closure capture (#6) with TWO type parameters captured by the same closure."
+source = "../vertical-slice/accept/closure_type_param_multi.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "99\n"
+exit = 0

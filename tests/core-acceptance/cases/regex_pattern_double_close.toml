@@ -1,0 +1,13 @@
+[[case]]
+id = "regex_pattern_double_close"
+intent = "Reject: closing a `regex.Pattern` twice is a compile-time use-after-consume error."
+source = "../vertical-slice/reject/regex_pattern_double_close.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 11
+column = 5
+message = "use of moved value `pat`"

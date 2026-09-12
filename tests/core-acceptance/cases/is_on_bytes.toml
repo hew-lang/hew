@@ -1,0 +1,13 @@
+[[case]]
+id = "is_on_bytes"
+intent = "`is` on `bytes` is rejected: D340 narrows the admission set to actor handles only, and `bytes` is a copy-on-write value with structural `==` (HEW-SPEC-2026 §3.4.3's value row)."
+source = "../vertical-slice/reject/is_on_bytes.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 9
+column = 22
+message = "`is` compares identity, and `bytes` is a value type (E_IS_VALUE_TYPE) — use `==` to compare it by value; `is` applies to handles: actor references"

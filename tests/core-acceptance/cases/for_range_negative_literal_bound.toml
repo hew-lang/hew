@@ -1,0 +1,13 @@
+[[case]]
+id = "for_range_negative_literal_bound"
+intent = "Regression: negative integer literal range bounds (`-5..5`) must lower correctly when the loop variable is narrowed to a concrete integer type."
+source = "../vertical-slice/accept/for_range_negative_literal_bound.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = ""
+exit = 251

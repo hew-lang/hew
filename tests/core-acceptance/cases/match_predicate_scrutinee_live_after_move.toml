@@ -1,0 +1,13 @@
+[[case]]
+id = "match_predicate_scrutinee_live_after_move"
+intent = "Accept: the scrutinee of a literal-predicate record match stays live."
+source = "../vertical-slice/accept/match_predicate_scrutinee_live_after_move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "2\nby\n"
+exit = 0

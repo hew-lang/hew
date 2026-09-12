@@ -1,0 +1,13 @@
+[[case]]
+id = "move_into_tuple_resource"
+intent = "The fixture is refused, and the refusal names E_RESOURCE_CLOSE_MUST_CONSUME."
+source = "../vertical-slice/reject/move_into_tuple_resource.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_RESOURCE_CLOSE_MUST_CONSUME"
+line = 5
+column = 8
+message = "`close` on a resource type must consume its receiver; write `fn close(consume self)`"

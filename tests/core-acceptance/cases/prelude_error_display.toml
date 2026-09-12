@@ -1,0 +1,13 @@
+[[case]]
+id = "prelude_error_display"
+intent = "#3224: the five prelude error enums declared in `std/builtins.hew` (SendError, LookupError, ActorError, TimeoutError, LinkError) carry `impl Display for <X>` and print via `f\"{e}\"` like any other public `std/` error enum."
+source = "../vertical-slice/accept/prelude_error_display.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "the destination is closed or no longer alive\nno actor is registered under the requested name\nthe local node is not running\nthe deadline fired before the recv completed\nthe target actor has already exited\n"
+exit = 0

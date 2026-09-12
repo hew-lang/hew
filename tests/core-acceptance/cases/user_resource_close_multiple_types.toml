@@ -1,0 +1,13 @@
+[[case]]
+id = "user_resource_close_multiple_types"
+intent = "W3.030 V8 — Multiple distinct user-resource types in one scope close in LIFO declaration order."
+source = "../vertical-slice/accept/user_resource_close_multiple_types.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "lock\nconn\n"
+exit = 0

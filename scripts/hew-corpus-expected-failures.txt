@@ -212,8 +212,6 @@ tests/core-acceptance/cases/machine-legacy-forms-refused.hew
 tests/core-acceptance/cases/resource-missing-close.hew E_HIR
 tests/core-acceptance/cases/spread-parse-refusals.hew
 tests/core-acceptance/cases/spread-refusals.hew
-tests/core-acceptance/cases/var-param-mutation-lost.hew
-tests/core-acceptance/cases/var-param-mutation-returned.hew
 tests/core-acceptance/cases/vec-element-refusals.hew E_ELEMENT_NO_COPY
 tests/core-acceptance/cases/vec-get-affine-element.hew E_ELEMENT_NO_COPY
 tests/core-acceptance/cases/vector-get-borrowed.hew E_ELEMENT_NO_COPY
@@ -233,11 +231,6 @@ tests/core-acceptance/fixtures/module-identity-dual-spelling/src/mid.hew
 
 # requires-file-import-program: a directory module's leaf source
 tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
-
-# ── tests/ll-oracle/ ────────────────────────────────────────────────────────────
-
-# final-path-limitation: the FFI borrow-boundary fixture
-tests/ll-oracle/corpus/ffi_borrow_boundary.hew E_SIR_UNSUPPORTED
 
 # ── tests/pkg-import/ ───────────────────────────────────────────────────────────
 

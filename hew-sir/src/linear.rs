@@ -249,7 +249,7 @@ impl Origins {
                 self.replace_place(plan, *place, before.value(value.value), linear_places);
             }
             SemOpKind::EndLifetime { place } => {
-                self.replace_place(plan, *place, Tree::new(), linear_places)
+                self.replace_place(plan, *place, Tree::new(), linear_places);
             }
             _ => {}
         }

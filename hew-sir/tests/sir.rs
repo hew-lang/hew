@@ -150,7 +150,6 @@ fn unit_function(
     declaration: &str,
     name: &str,
     source_origin: FunctionSourceOrigin,
-    terminal_receiver: None,
     params: Vec<BlockArg>,
 ) -> SemFunction {
     SemFunction {
@@ -160,6 +159,7 @@ fn unit_function(
         name: name.to_string(),
         span: 0..0,
         source_origin,
+        terminal_receiver: None,
         params,
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),

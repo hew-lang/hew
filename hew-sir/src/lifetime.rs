@@ -2014,6 +2014,7 @@ mod tests {
             function,
             &crate::place_plan(function, &[], &std::collections::BTreeMap::default()).unwrap(),
             &crate::ownership::TypeFactTable::new(),
+            &[],
         )
         .violations
     }
@@ -2173,7 +2174,7 @@ mod tests {
         f.blocks[0].ops = entry;
         let rows = facts.into_rows();
         let plan = crate::place_plan(&f, &[], &rows).unwrap();
-        super::verify(&f, &plan, &rows)
+        super::verify(&f, &plan, &rows, &[])
     }
 
     fn local_end() -> SemOp {

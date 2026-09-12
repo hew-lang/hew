@@ -5,7 +5,9 @@ type Txn {
 }
 
 impl Txn {
-    fn rollback(consume self) -> i64 { 0 }
+    fn rollback(consume self) -> i64 {
+        0
+    }
     fn commit(consume self) -> i64 {
         0
     }

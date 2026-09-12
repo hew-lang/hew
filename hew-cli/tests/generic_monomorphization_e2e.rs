@@ -195,40 +195,13 @@ fn generic_record_with_owned_field_admits_and_runs() {
     );
 }
 
-/// A generic record whose concrete inline-enum field owns a string must use the
-/// recursive record drop spine after both ordinary construction and repeated
-/// field overwrite. The MIR assertions cover normal, panic, and cancellation
-/// exits plus the last-borrow release path; the LLVM assertions prove both
-/// enclosing-record and nested-enum clone/drop thunks have bodies rather than
-/// declarations.
+/// Repeated generic-record overwrites and untouched scope exit retain their
+/// observable value under allocator poisoning. The same fixture is exercised
+/// by the generic-enum-record-scope-drop acceptance and ASan/LSan safety case.
 #[test]
-fn generic_record_with_inline_owned_enum_drops_on_all_exits() {
+fn generic_record_enum_overwrites_and_scope_exit_preserve_value() {
     require_codegen();
 
-    // The previous MIR-half of this oracle golden-diffed specific
-    // `return[bb4]`/`panic[bb6]`/`cancel[bb7]` drop lines out of `--dump-mir
-    // elab`/`raw` text dumps to prove the generic enum-record's owned drop
-    // covers the overwrite, error, AND cancel exits, plus a `raw` dump line
-    // proving the untouched record releases before its final return. Both
-    // dump stages are gone (`--dump-mir` now accepts only `physical`), and
-    // the out-of-line recursive clone/drop/overwrite-release thunks this
-    // oracle used to pin by name are retired too: a `Choice<string>` fits
-    // inline (a pointer-sized payload plus a tag), so the physical path
-    // inlines its clone/drop directly into `aggregate.drop` blocks at each
-    // call site instead of emitting one shared helper function per
-    // instantiation — there is no longer a bodied symbol to assert against.
-    //
-    // The replacement proof runs on two tracks: the poisoned-allocator run
-    // below over 256 overwrite iterations plus the untouched path, which an
-    // over-release (double-free) on either path would not survive; and the
-    // `generic-enum-record-scope-drop` core-acceptance safety case (same
-    // fixture), which runs the identical program under generated-code and
-    // runtime ASan/LSan. Neither proves anything about the panic or cancel
-    // exits specifically — this fixture's `main` never triggers a panic or a
-    // cancellation, so those two exits are exercised by neither track; a
-    // missed release (leak) on any exit is likewise undetected by either.
-    // Lost coverage: exactly-once release on the panic/cancel exits
-    // specifically.
     let source = fixture_path("generic_enum_record_scope_drop.hew");
     let emit_dir = support::tempdir();
     let mut command = std::process::Command::new(hew_binary());

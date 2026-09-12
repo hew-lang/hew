@@ -446,19 +446,10 @@ fn select_after_genuine_expiry_takes_after_arm() {
     );
 }
 
-/// The resume-edge gate's emitted shape, pinned in the `.ll` dump: a -1
-/// scan consults the deadline arbiter, and each status routes to its
-/// proven-safe continuation. Behavioural coverage exists for the
-/// `TimedOut` arm (`select_after_genuine_expiry_takes_after_arm`) and the
-/// no-stale-timeout direction (`cross_actor_record_transition_watch_runs_clean`);
-/// the Pending-respark and Completed-rescan edges fire only on wake/scan
-/// races that cannot be forced end to end, so their CFG is pinned here:
-/// - `suspending_select_respark` loops back to the suspend point
-///   (Pending: re-park, never fabricate a timeout);
-/// - `suspending_select_rescan` loops back to the scan (Completed: the
-///   racing winner's readiness is visible, the re-scan finds it);
-/// - the fail-closed trap is reachable ONLY from the Completed check
-///   (i.e. only for Cancelled, the no-live-source state).
+/// A resumed select checks cancellation before polling readiness. Pending
+/// selections suspend again; only a valid channel/timer index can complete.
+/// The runtime-cycle and invalid-index paths release the selection and fault.
+/// These race-dependent edges complement the behavioural timeout tests.
 #[test]
 fn suspending_select_wake_gate_ir_shape_holds() {
     require_codegen();
@@ -512,41 +503,60 @@ fn suspending_select_wake_gate_ir_shape_holds() {
     );
 
     let ll = std::fs::read_to_string(emit_dir.join("gate_shape.ll"))
-        .expect("--emit-dir must produce gate_shape.ll");
+        .expect("--emit-dir must produce gate_shape.ll")
+        .replace("\r\n", "\n");
 
-    assert!(
-        ll.contains("%suspending_select_wake_status = call i32 @hew_await_cancel_status"),
-        "the -1 edge must consult the arbiter status"
-    );
-    let suspend_label = ll
-        .lines()
-        .find(|l| l.starts_with("suspending_select_suspend:"))
-        .expect("suspend block label present");
-    assert!(
-        suspend_label.contains("%suspending_select_respark"),
-        "Pending must re-suspend: respark is a predecessor of the suspend \
-         point; got: {suspend_label}"
-    );
-    let scan_label = ll
-        .lines()
-        .find(|l| l.starts_with("suspending_select_scan:"))
-        .expect("scan block label present");
-    assert!(
-        scan_label.contains("%suspending_select_rescan"),
-        "Completed must re-scan: rescan is a predecessor of the scan; \
-         got: {scan_label}"
-    );
-    let trap_label = ll
-        .lines()
-        .find(|l| l.starts_with("suspending_select_stale_trap:"))
-        .expect("stale-trap block label present");
-    assert!(
-        trap_label.contains("%suspending_select_completed_check")
-            && !trap_label.contains("%suspending_select_no_ready")
-            && !trap_label.contains("%suspending_select_pending_check"),
-        "the fail-closed trap must be reachable only from the Completed \
-         check (Cancelled); got: {trap_label}"
-    );
+    let bodies: Vec<_> = ll
+        .split("\ndefine ")
+        .filter_map(|function| function.split_once("\n}").map(|(body, _)| body))
+        .filter(|body| body.contains("call i64 @hew_checked_task_select_poll("))
+        .collect();
+    assert!(!bodies.is_empty(), "the fixture must reach select lowering");
+    for body in bodies {
+        let block = |name: &str| {
+            let label = format!("\n{name}:");
+            let (_, tail) = body.split_once(&label).expect("select block exists");
+            tail.split("\n\n").next().unwrap()
+        };
+        let gate = body
+            .split("\n\n")
+            .find(|block| block.contains("%select.cancel.requested ="))
+            .expect("select cancellation gate");
+        assert!(gate.contains("call i32 @hew_coro_state_is_cancelled("));
+        assert!(gate.contains(
+            "br i1 %select.cancel.requested, label %select.cancelled, label %select.inspect"
+        ));
+        assert!(!gate.contains("@hew_checked_task_select_poll("));
+        let inspect = block("select.inspect");
+        assert!(inspect.contains("call i64 @hew_checked_task_select_poll("));
+        assert!(inspect.contains("i64 -1, label %"), "pending must suspend");
+        assert!(inspect.contains("i64 -3, label %select.cycle"));
+        let outcome = block("select.outcome");
+        assert!(outcome.contains("icmp ult i64 %select.index, 2"));
+        assert!(outcome
+            .contains("br i1 %select.valid.index, label %select.completed, label %select.failed"));
+        for exit in [
+            "select.completed",
+            "select.cancelled",
+            "select.failed",
+            "select.cycle",
+        ] {
+            assert_eq!(
+                block(exit)
+                    .matches("call void @hew_checked_task_select_free(")
+                    .count(),
+                1,
+                "{exit} must release its selection exactly once"
+            );
+        }
+        assert!(block("select.cancelled").contains("@hew_coro_state_cancel_code("));
+        assert!(block("select.failed").contains("@hew_fault_new("));
+        assert!(block("select.cycle").contains("@hew_checked_task_select_fault("));
+        assert!(
+            !inspect.contains("@hew_fault_new("),
+            "pending cannot fabricate a fault"
+        );
+    }
 }
 
 /// A heap-payload machine held in actor state: step into the
@@ -605,59 +615,46 @@ fn heap_payload_machine_actor_field_steps_clean() {
     );
 }
 
-/// Machine-state actors as SUPERVISOR children stay fail-closed: the
-/// child-init slice admits only integer/bool/float literal field
-/// defaults, and a machine field's default is a state constructor. The
-/// restart-clone surface for machine state opens when that slice widens —
-/// this pin fails first.
+/// A supervised child resets its machine state after a fault and restart.
 #[test]
-fn supervisor_child_with_machine_state_fails_closed() {
-    require_codegen();
-
-    let dir = support::tempdir();
-    let source = dir.path().join("machine_child.hew");
-    std::fs::write(
-        &source,
-        "machine Light {\n\
-         \x20   events {\n\
-         \x20       Flip,\n\
-         \x20   }\n\
-         \x20   state Off,\n\
-         \x20   state On,\n\
-         \x20   on Flip: Off => On,\n\
-         \x20   on Flip: On => Off,\n\
-         }\n\
-         \n\
-         actor Worker {\n\
-         \x20   var l: Light = Light.Off,\n\
-         \x20   receive fn ping() {}\n\
-         }\n\
-         \n\
-         supervisor Pool {\n\
-         \x20   strategy: one_for_one,\n\
-         \x20   intensity: 3 within 60s,\n\
-         \n\
-         \x20   child w: Worker(),\n\
-         }\n\
-         \n\
-         fn main() {\n\
-         \x20   let sup = spawn Pool;\n\
-         \x20   sleep(20ms);\n\
-         }\n",
-    )
-    .unwrap();
-
-    let output = support::run_hew_in(dir.path(), &["compile", source.to_str().unwrap()]);
-
-    assert!(
-        !output.status.success(),
-        "machine-state supervisor child must fail closed today; it compiled:\n{}",
-        support::describe_output(&output),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("E_NOT_YET_IMPLEMENTED") && stderr.contains("supported child init values"),
-        "expected the named child-init refusal; got:\n{stderr}",
+fn supervisor_child_machine_state_resets_after_restart() {
+    run_inline_scribbled(
+        "machine_child_restart",
+        r#"
+machine Light {
+    events { Flip, }
+    state Off,
+    state On,
+    on Flip: Off => On,
+    on Flip: On => Off,
+}
+actor Worker {
+    var light: Light = Light.Off,
+    receive fn flip() { let _ = light.step(.Flip); }
+    receive fn is_on() -> bool { match light { .On => true, .Off => false, } }
+    receive fn fail() { panic("restart machine child"); }
+}
+supervisor Pool {
+    strategy: one_for_one,
+    intensity: 1 within 60s,
+    child worker: Worker(),
+}
+fn main() {
+    let pool = spawn Pool;
+    let role = pool.worker;
+    assert(!role.is_on().expect("initial state"));
+    role.flip().expect("flip state");
+    assert(role.is_on().expect("changed state"));
+    let _ = role.fail();
+    let _ = await_restart pool.worker;
+    assert(!role.is_on().expect("restarted state"));
+    role.flip().expect("flip restarted child");
+    assert(role.is_on().expect("live restarted child"));
+    close(pool);
+    println("machine state resets after restart");
+}
+"#,
+        "machine state resets after restart\n",
     );
 }
 

@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-hybrid-text-borrow"
+intent = "Repeated text-arm reads of an enum with an opaque sibling preserve the caller and release each borrowed copy."
+source = "cases/enum-hybrid-text-borrow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

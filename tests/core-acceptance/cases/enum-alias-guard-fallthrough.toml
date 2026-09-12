@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-alias-guard-fallthrough"
+intent = "A failed match guard may overwrite its scrutinee and continue to the fallback arm."
+source = "cases/enum-alias-guard-fallthrough.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "0\n"
+exit = 0

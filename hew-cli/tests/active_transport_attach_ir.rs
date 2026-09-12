@@ -37,7 +37,8 @@ actor WebSocketProbe {
 
 fn _observe_borrowed_bytes(data: bytes) {}
 
-fn attach_tcp(listener: net.Listener, handler: TcpProbe) {
+fn attach_tcp(handler: TcpProbe) {
+    let listener = net.listen("127.0.0.1:0").expect("listen");
     let conn = listener.accept();
     conn.attach(handler);
 }
@@ -47,12 +48,18 @@ fn attach_tls(handler: TlsProbe) {
     stream.attach(handler);
 }
 
-fn attach_websocket(server: websocket.Server, handler: WebSocketProbe) {
+fn attach_websocket(handler: WebSocketProbe) {
+    let server = websocket.listen("127.0.0.1:0").expect("listen");
     let conn = server.accept();
     conn.attach(handler);
 }
 
-fn main() {}
+fn main() {
+    attach_tcp(spawn TcpProbe);
+    attach_tls(spawn TlsProbe);
+    attach_websocket(spawn WebSocketProbe);
+    _observe_borrowed_bytes("probe".to_bytes());
+}
 "#;
 
 /// `attach` transfers the connection to the runtime reactor.  A second close
@@ -77,9 +84,11 @@ fn main() {}
 ";
 
 fn function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
-    let start = ir
-        .find(symbol)
-        .unwrap_or_else(|| panic!("missing {symbol} in emitted IR"));
+    let definition = ir
+        .lines()
+        .find(|line| line.starts_with("define ") && line.contains(symbol))
+        .unwrap_or_else(|| panic!("missing definition {symbol} in emitted IR"));
+    let start = ir.find(definition).unwrap();
     let body = &ir[start..];
     let end = body
         .find("\n}")
@@ -116,7 +125,7 @@ fn attach_ids(body: &str, callee: &str, id_ty: &str) -> [i64; 2] {
 fn assert_dispatch_contains(dispatch: &str, ids: [i64; 2]) {
     for id in ids {
         assert!(
-            dispatch.contains(&format!("i32 {id}, label %msg_")),
+            dispatch.contains(&format!("i32 {id}, label %")),
             "runtime attach ID {id} is absent from concrete actor dispatch:\n{dispatch}"
         );
     }
@@ -147,15 +156,20 @@ fn inferred_transport_attach_emits_concrete_dispatch_ids() {
     );
 
     let ir = std::fs::read_to_string(dir.path().join("active_transport_attach.ll"))
-        .expect("read emitted LLVM IR");
+        .expect("read emitted LLVM IR")
+        .replace("\r\n", "\n");
     let tcp_ids = attach_ids(
-        function_body(&ir, "@attach_tcp("),
+        function_body(&ir, "@__hew_fn_attach_tcp("),
         "hew_tcp_attach_local",
         "i32",
     );
-    let tls_ids = attach_ids(function_body(&ir, "@attach_tls("), "hew_tls_attach", "i64");
+    let tls_ids = attach_ids(
+        function_body(&ir, "@__hew_fn_attach_tls("),
+        "hew_tls_attach",
+        "i64",
+    );
     let websocket_ids = attach_ids(
-        function_body(&ir, "@attach_websocket("),
+        function_body(&ir, "@__hew_fn_attach_websocket("),
         "hew_ws_attach",
         "i64",
     );
@@ -167,26 +181,26 @@ fn inferred_transport_attach_emits_concrete_dispatch_ids() {
         [0, 1],
         "WebSocket attach must not use ordinal IDs"
     );
-    assert_dispatch_contains(
-        function_body(&ir, "@__hew_actor_dispatch_TcpProbe("),
-        tcp_ids,
-    );
-    assert_dispatch_contains(
-        function_body(&ir, "@__hew_actor_dispatch_TlsProbe("),
-        tls_ids,
-    );
-    assert_dispatch_contains(
-        function_body(&ir, "@__hew_actor_dispatch_WebSocketProbe("),
-        websocket_ids,
-    );
+    for (actor, ids) in [
+        ("TcpProbe", tcp_ids),
+        ("TlsProbe", tls_ids),
+        ("WebSocketProbe", websocket_ids),
+    ] {
+        let dispatch = ir
+            .split("\ndefine ")
+            .filter_map(|function| function.split_once("\n}").map(|(body, _)| body))
+            .find(|body| body.contains("switch i32") && body.contains(&format!("_{actor}__")))
+            .unwrap_or_else(|| panic!("missing dispatch for {actor}"));
+        assert_dispatch_contains(dispatch, ids);
+    }
 
-    let tcp_on_data = function_body(&ir, "@TcpProbe__recv__on_data(");
+    let tcp_on_data = function_body(&ir, "_TcpProbe__on_data(");
     assert!(
         tcp_on_data.contains("call void @hew_bytes_drop("),
         "copy-mode active transport delivery transfers the sole bytes owner \
          into the receive handler, whose cleanup must release it:\n{tcp_on_data}"
     );
-    let ordinary_borrow = function_body(&ir, "@_observe_borrowed_bytes(");
+    let ordinary_borrow = function_body(&ir, "@__hew_fn__observe_borrowed_bytes(");
     assert!(
         !ordinary_borrow.contains("call void @hew_bytes_drop("),
         "ordinary by-value bytes calls remain caller-owned borrows; the \

@@ -1,0 +1,10 @@
+[[case]]
+id = "enum-alias-nested-enum-payload"
+intent = "An outer enum overwrite preserves a nested enum payload bound by the match."
+source = "cases/enum-alias-nested-enum-payload.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "nested\n"
+exit = 0

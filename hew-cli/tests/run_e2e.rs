@@ -2402,43 +2402,8 @@ fn run_match_record_wildcard_scrutinee_reusable() {
     assert_eq!(actual, expected, "stdout mismatch for {}", source.display());
 }
 
-/// Fail-closed: an owned call-carrier consumed by a project match on one
-/// path to a `return` another path reaches with the carrier still whole.
-/// The shared exit is reachable both through the match (a terminal
-/// snapshot drop would double-free the discharged fields) and around it
-/// (skipping the drop leaks the whole carrier), so no per-path release
-/// plan covers it. MIR refuses with `E_NOT_YET_IMPLEMENTED: owned
-/// call-carrier ... conditionally consumed before a shared exit` instead
-/// of shipping either memory bug.
-#[test]
-fn check_carrier_conditional_consume_shared_exit_fails_closed() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/carrier_conditional_consume_shared_exit.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("conditionally consumed before a shared exit"),
-        "expected conditional-consume fail-closed diagnostic; got: {combined}"
-    );
-}
+// The conditional carrier-consumption paths run in the carrier-conditional-consume
+// acceptance and safety case. The former checker refusal no longer applies.
 
 /// A last-use string sent to an actor moves into the prepared outbound carrier
 /// and neutralizes the sender slot. The fixture's handler consumes that string

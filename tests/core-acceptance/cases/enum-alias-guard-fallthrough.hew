@@ -1,0 +1,16 @@
+enum Box {
+    Full(string),
+    Empty,
+}
+
+fn main() {
+    var opt = Box.Full(f"guard");
+    let n = match opt {
+        .Full(s) if {
+            opt = Box.Empty;
+            false
+        } => s.len(),
+        _ => 0,
+    };
+    println(n);
+}

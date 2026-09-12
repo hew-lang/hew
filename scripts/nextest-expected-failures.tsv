@@ -1,5 +1,5 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
-linux	failure	hew-cli::active_transport_attach_ir	inferred_transport_attach_emits_concrete_dispatch_ids	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::active_transport_attach_ir	inferred_transport_attach_emits_concrete_dispatch_ids	#3394 reachable TCP attachment exposes missing TcpAttachLocal ownership-SIR contract
 linux	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
 linux	failure	hew-cli::actor_fault_isolation_e2e	pipeline_actor_crash_fails_process_after_settling_pending_work	#3370 feat/generators-adaptors: lowers a direct call to std.pipeline.run
 macos	failure	hew-cli::actor_handler_unused_owned_param_leak_oracle	mutable_direct_record_transfer_then_overwrite_uses_only_overwrite_flag	#3079 derives cleanup from exact owner states
@@ -120,10 +120,6 @@ linux	failure	hew-cli::eval_e2e	eval_wasm_json_runtime_failure_captures_stderr_w
 linux	failure	hew-cli::eval_e2e	eval_wasm_timeout_is_reported	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::explain_cow_e2e	explain_cow_no_sends_produces_no_send_lines	#3383 makes hew check --explain-cow report what it explains
 linux	failure	hew-cli::explain_cow_e2e	explain_cow_renders_mir_authored_send_modes	#3383 makes hew check --explain-cow report what it explains
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_let_bound_domestic_record_still_releases_once_per_frame	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_match_over_a_domestic_enum_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	a_record_literal_of_a_domestic_field_keeps_working	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::extern_ownership_double_release_e2e	extern_returned_string_interpolation_releases_exactly_once	#3394 ports the ownership oracles whose observation mechanism was retired
 freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
 linux	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
 macos	failure	hew-cli::for_in_vec_iter_leak_oracle	vec_iter_cursor_transfer_and_reassign_has_zero_leak_endpoints	#3120 makes Vec iterator cleanup path-sensitive
@@ -132,7 +128,6 @@ macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_actor_record_pa
 macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_and_closure_env_clone_are_malloc_scribble_clean	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_closure_env_clone_has_zero_leaks	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 fix/collections-final-path: refuses a HashMap affine clone in source, not in the verifier
-linux	failure	hew-cli::generic_monomorphization_e2e	generic_record_with_inline_owned_enum_drops_on_all_exits	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_is_not_released_twice	#3105 releases imported machine records on every exit
 macos	failure	hew-cli::imported_machine_ownership_leak_oracle	imported_machine_payload_release_slope_stays_flat	#3105 releases imported machine records on every exit
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_deep_tree_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
@@ -152,17 +147,13 @@ linux	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_
 linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_reenter_carrying_resource_is_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_state_resource_leak_oracle	machine_state_resource_release_paths_are_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux	failure	hew-cli::machine_transition_watch_e2e	select_on_transition_example_runs_clean	#3392 waits out a select's after arm inside an actor handler
-linux	failure	hew-cli::machine_transition_watch_e2e	supervisor_child_with_machine_state_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::machine_transition_watch_e2e	suspending_select_wake_gate_ir_shape_holds	#3398 rewrites the select IR-shape pin onto the current checked-task-select lowering
 macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 macos,freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
 macos	failure	hew-cli::match_payload_reassign_uaf_oracle	captured_binding_borrow_only_is_valid	#2523 preserves captured borrow-only payload authority
 macos	failure	hew-cli::match_payload_reassign_uaf_oracle	field_place_borrow_only_keeps_scrutinee_live	#2523 preserves field-place borrow-only payload authority
 macos	failure	hew-cli::match_payload_reassign_uaf_oracle	nested_enum_borrow_only_is_valid	#2523 preserves nested borrow-only payload authority
-linux	failure	hew-cli::measured_os_io_string_retention_canary	shipped_os_io_wrappers_emit_all_measured_calls_and_caller_releases	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	low_and_high_closed_alias_overwrites_are_exactly_leak_clean	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	overwrite_ownership_controls_do_not_double_free_or_read_poison	#3079 derives cleanup from exact owner states
-linux	failure	hew-cli::nested_lexical_enum_payload_overwrite_leak_oracle	unsupported_live_alias_shapes_reject_instead_of_leaking	#3394 ports the ownership oracles whose observation mechanism was retired
 macos	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_record_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
 macos	failure	hew-cli::nested_projection_chain_leak_oracle	escaped_return_tuple_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
 macos	failure	hew-cli::nested_projection_chain_leak_oracle	match_intermediate_return_leaf_no_double_free_under_malloc_scribble	#3124 transfers nested projections without parent double-drop
@@ -183,7 +174,6 @@ macos	failure	hew-cli::recv_loop_leak_oracle	carry_continue_payload_escape_no_ua
 macos	failure	hew-cli::recv_loop_leak_oracle	carry_for_await_bytes_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::resource_marker_applicability_reject	ownership_markers_on_nominal_types_still_check_clean	#3370 gives every type the checker admits a SIR value contract
 linux	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
-linux	failure	hew-cli::run_e2e	check_carrier_conditional_consume_shared_exit_fails_closed	#3394 ports the ownership oracles whose observation mechanism was retired
 linux	failure	hew-cli::run_e2e	check_closure_borrowed_element_store_fails_closed	#3377 fix/collections-final-path: renders a borrowed Vec-element closure store's ownership refusal as a source diagnostic
 linux	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
@@ -209,8 +199,7 @@ macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consum
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_consumed_bound_local_no_per_frame_leak_slope	#3095 emits one Vec index ownership handoff
 macos	failure	hew-cli::vec_iter_method_escape_leak_oracle	iter_source_freed_under_cursor_no_uaf_under_malloc_scribble	#3120 makes Vec iterator cleanup path-sensitive
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
-linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	hybrid_enum_text_transfer_drops_once_on_native_and_wasm	#3394 ports the ownership oracles whose observation mechanism was retired
-linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	owned_carrier_cancel_exit_drops_once_on_native_and_wasm	#3394 ports the ownership oracles whose observation mechanism was retired
+linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	enum_text_borrows_balance_on_native_and_wasm	#3368 sandbox emission is not implemented; native borrowed-copy balance passes
 linux	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	reusable_callable_parameter_invocation_compiles_native_and_wasm	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::wasi_run_e2e	actor_panic_is_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::wasi_run_e2e	actor_start_panic_remains_module_fatal_on_production_wasi	#3368 implements sandbox emission on the physical path

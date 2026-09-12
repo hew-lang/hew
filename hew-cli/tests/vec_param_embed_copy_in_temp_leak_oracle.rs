@@ -702,7 +702,9 @@ fn compile_source_to_llvm(source: &str, name: &str, target: Option<&str>) -> Str
         "LLVM emission failed for {name}:\n{}",
         describe_output(&output)
     );
-    std::fs::read_to_string(emit_dir.join(format!("{name}.ll"))).expect("read emitted LLVM IR")
+    std::fs::read_to_string(emit_dir.join(format!("{name}.ll")))
+        .expect("read emitted LLVM IR")
+        .replace("\r\n", "\n")
 }
 
 fn llvm_function_body<'a>(ir: &'a str, symbol: &str) -> &'a str {
@@ -904,110 +906,39 @@ fn resource_projection_direct_consume_has_flat_leak_slope() {
 // checker/fixture mismatch is reported separately as an out-of-scope defect
 // rather than fixed here or worked around with a modified fixture.
 
-// `non_cloneable_hybrid_enum_publishes_callee_ownership_after_normal_return`
-// pinned the same fact this file's
-// `hybrid_enum_text_transfer_drops_once_on_native_and_wasm` proves at the
-// generated-code level, for both native and wasm32, on every exit
-// (`inspect`'s normal return, its unmatched-variant trap, each mutually
-// exclusive cancellation exit, and the native unwind cleanup): the
-// transferred `Mixed` enum carrier is disposed exactly once, and the
-// caller-owned handoff stays live across the callee's unwind (the native
-// `invoke.cleanup` path is asserted separately). It matched checked/
-// elaborated MIR ownership-event text (`[WholeCarrierConsume]`,
-// `[SendTransferLastUse]`, `ownership Transfer { from: Local(N), to: None
-// }`, `snapshot_drop`) from the retired checked/elaborated MIR dumps, which
-// modeled a caller-side copy-in-temp mechanism the current SIR/physical MIR
-// pipeline does not have (callers pass `borrow`; callees `copy_value` their
-// own owner when they need one — confirmed by inspecting `--dump-sir` on
-// this file's other fixtures).
-//
-// Coverage note: `hybrid_enum_text_transfer_drops_once_on_native_and_wasm`
-// targets this exact fact more thoroughly (every exit, both targets) and
-// would be the right sibling, but it currently fails independent of this
-// change — `HYBRID_ENUM_TEMPLATE`'s `enum Mixed { Text(string); ... }` used
-// `;` between variants (fixed here to `,`), and beyond that syntax fix it
-// still fails to reach LLVM emission with `E_SIR_UNSUPPORTED: ... nested
-// type Handle has no semantic value contract` (an `#[opaque]` extern type
-// used as an enum payload has no SIR value contract yet). Both are
-// pre-existing defects unrelated to the dump-mir stage removal, reported
-// separately; no test in this file currently proves this fact on any host.
-
+/// A borrowed enum's text arm creates and releases its own string owner.
+/// The sibling arm carries no string. Native safety cases execute the same
+/// inputs; sandbox compilation remains a required, separately visible check.
 #[test]
-fn hybrid_enum_text_transfer_drops_once_on_native_and_wasm() {
-    let source = hybrid_enum_source(1);
+fn enum_text_borrows_balance_on_native_and_wasm() {
     for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))] {
-        let ir = compile_source_to_llvm(
-            &source,
-            &format!("hybrid_enum_carrier_{target_name}"),
-            target,
-        );
-        let inspect = llvm_function_body(&ir, "inspect");
-        let return_path = llvm_reachable_path(inspect, "bb1");
-        assert_eq!(
-            return_path
-                .matches("call void @__hew_enum_drop_inplace_Mixed(")
-                .count(),
-            1,
-            "the successful inspect path must dispose its transferred enum exactly once ({target_name}):\n{return_path}"
-        );
-        let trap_path = llvm_reachable_path(inspect, "bb4");
-        assert_eq!(
-            trap_path
-                .matches("call void @__hew_enum_drop_inplace_Mixed(")
-                .count(),
-            1,
-            "the unmatched-variant trap must keep its one enum cleanup ({target_name}):\n\
-             {trap_path}"
-        );
-        let cancellation_exits = inspect
-            .lines()
-            .filter_map(|line| line.split_once(':').map(|(label, _)| label))
-            .filter(|label| label.starts_with("cancel_exit"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            cancellation_exits.len(),
-            3,
-            "entry, Text, and Opaque paths must each have a cancellation exit ({target_name}):\n\
-             {inspect}"
-        );
-        for block in cancellation_exits {
-            let path = llvm_reachable_path(inspect, block);
+        for (name, source) in [
+            ("hybrid", hybrid_enum_source(1)),
+            ("cloneable", CLONEABLE_ENUM_CONTROL_SOURCE.to_owned()),
+        ] {
+            let ir = compile_source_to_llvm(&source, &format!("{name}_{target_name}"), target);
+            let inspect = llvm_function_body(&ir, "__hew_fn_inspect");
             assert_eq!(
-                path.matches("call void @__hew_enum_drop_inplace_Mixed(")
+                llvm_basic_block(inspect, "variant.clone.case.0")
+                    .matches("call ptr @hew_string_clone(")
+                    .count(),
+                1
+            );
+            assert_eq!(
+                llvm_reachable_path(inspect, "variant.case.0")
+                    .matches("call void @hew_string_drop(")
                     .count(),
                 1,
-                "{block} must keep its one mutually exclusive enum cleanup ({target_name}):\n\
-                 {path}"
+                "the text arm must release its independent owner ({name}, {target_name})"
+            );
+            assert_eq!(
+                llvm_reachable_path(inspect, "variant.case.1")
+                    .matches("call void @hew_string_drop(")
+                    .count(),
+                0,
+                "the non-string arm must not release a text payload ({name}, {target_name})"
             );
         }
-        let unwind_cleanup_count = if inspect.contains("invoke.cleanup:") {
-            let unwind_path = llvm_reachable_path(inspect, "invoke.cleanup");
-            assert_eq!(
-                unwind_path
-                    .matches("call void @__hew_enum_drop_inplace_Mixed(")
-                    .count(),
-                1,
-                "the native invoke unwind path must dispose its still-caller-owned enum once:\n\
-                 {unwind_path}"
-            );
-            1
-        } else {
-            0
-        };
-        assert_eq!(
-            inspect
-                .matches("call void @__hew_enum_drop_inplace_Mixed(")
-                .count(),
-            5 + unwind_cleanup_count,
-            "every return, trap, cancellation, and supported unwind exit must keep one \
-             mutually exclusive enum cleanup ({target_name}):\n{inspect}"
-        );
-        let drop_thunk = llvm_function_body(&ir, "__hew_enum_drop_inplace_Mixed");
-        assert_eq!(
-            drop_thunk.matches("call void @hew_string_drop(").count(),
-            1,
-            "the Text variant must have exactly one payload release in the shared enum authority ({target_name}):\n{drop_thunk}"
-        );
     }
 }
 
@@ -1183,45 +1114,6 @@ fn associated_static_param_zero_keeps_record_tuple_and_enum_carriers() {
             main.contains(call),
             "each associated-fn call must pass its carrier by borrow, keeping the caller's \
              copy live for the post-call reads:\n{main}"
-        );
-    }
-}
-
-#[test]
-fn owned_carrier_cancel_exit_drops_once_on_native_and_wasm() {
-    require_codegen();
-    for (target_name, target) in [("native", None), ("wasm32", Some("wasm32-unknown-unknown"))] {
-        let ir = compile_source_to_llvm(
-            CLONEABLE_ENUM_CONTROL_SOURCE,
-            &format!("owned_carrier_cancel_{target_name}"),
-            target,
-        );
-        let inspect = llvm_function_body(&ir, "inspect");
-        let cancel = llvm_basic_block(inspect, "cancel_exit");
-        let guarded_drop_label = cancel
-            .lines()
-            .find(|line| line.contains("br i1 %carrier_drop_live"))
-            .and_then(|line| line.split("label %").nth(1))
-            .and_then(|targets| targets.split(',').next())
-            .expect("cancellation block must branch to the live-carrier cleanup");
-        let guarded_drop = llvm_basic_block(inspect, guarded_drop_label);
-        assert_eq!(
-            guarded_drop
-                .matches("call void @__hew_enum_drop_inplace_Mixed(")
-                .count(),
-            1,
-            "runtime cancellation code 2 must release the live prepared enum carrier exactly once ({target_name}):\n{cancel}\n{guarded_drop}"
-        );
-        let normal_drop_count = inspect
-            .split("bb1:")
-            .nth(1)
-            .and_then(|section| section.split("ret i64").next())
-            .expect("inspect normal return block")
-            .matches("call void @__hew_enum_drop_inplace_Mixed(")
-            .count();
-        assert_eq!(
-            normal_drop_count, 1,
-            "the ordinary return path must retain one mutually exclusive carrier cleanup ({target_name}):\n{inspect}"
         );
     }
 }

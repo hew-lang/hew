@@ -1,0 +1,28 @@
+#[opaque]
+type Handle {
+}
+
+extern "C" {
+    fn hew_handle_create() -> Handle;
+}
+
+enum Mixed {
+    Text(string),
+    Opaque(Handle),
+}
+
+fn inspect(x: Mixed) -> i64 {
+    match x {
+        Mixed.Text(s) => s.len(),
+        Mixed.Opaque(_) => 0,
+    }
+}
+
+fn main() -> i64 {
+    for i in 0 .. 64 {
+        if inspect(Mixed.Text(f"payload-{i}".to_upper())) < 9 {
+            return 61;
+        }
+    }
+    0
+}

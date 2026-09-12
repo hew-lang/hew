@@ -20,13 +20,11 @@
 
 mod support;
 
-use std::process::Command;
-
 use support::leak_slope::{
     compile_to_native, measure_leaks_exact, run_probe_witness, run_under_malloc_scribble,
     HIGH_FRAMES, LOW_FRAMES,
 };
-use support::{describe_output, hew_binary, repo_root, require_codegen};
+use support::{describe_output, require_codegen};
 
 const SOURCE_TEMPLATE: &str = r#"
 enum Box {
@@ -305,84 +303,6 @@ fn main() {
 }
 "#;
 
-const UNSUPPORTED_LIVE_ALIAS_CASES: &[(&str, &str, &str)] = &[
-    (
-        "mixed_string_vec",
-        r#"
-enum Mixed { Full(string, Vec<i64>), Empty }
-fn main() {
-    let values: Vec<i64> = Vec.new();
-    var opt = Mixed.Full(f"mixed", values);
-    match opt {
-        .Full(s, xs) => {
-            opt = Mixed.Empty;
-            s.len() + xs.len();
-        },
-        .Empty => {},
-    }
-}
-"#,
-        "enum overwrite with a live non-string payload alias",
-    ),
-    (
-        "record_payload",
-        r#"
-type Row { text: string }
-enum Box { Full(Row), Empty }
-fn main() {
-    var opt = Box.Full(Row { text: f"record" });
-    match opt {
-        .Full(row) => {
-            opt = Box.Empty;
-            row.text.len();
-        },
-        .Empty => {},
-    }
-}
-"#,
-        "enum overwrite with a live non-string payload alias",
-    ),
-    (
-        "nested_enum_payload",
-        r#"
-enum Inner { Text(string), Empty }
-enum Outer { Full(Inner), Empty }
-fn main() {
-    var opt = Outer.Full(Inner.Text(f"nested"));
-    match opt {
-        .Full(inner) => {
-            opt = Outer.Empty;
-            match inner {
-                .Text(s) => { s.len(); },
-                .Empty => {},
-            }
-        },
-        .Empty => {},
-    }
-}
-"#,
-        "enum overwrite with a live non-string payload alias",
-    ),
-    (
-        "guard_fallthrough",
-        r#"
-enum Box { Full(string), Empty }
-fn main() {
-    var opt = Box.Full(f"guard");
-    let n = match opt {
-        .Full(s) if {
-            opt = Box.Empty;
-            false
-        } => s.len(),
-        _ => 0,
-    };
-    println(n);
-}
-"#,
-        "enum overwrite in a fallthrough match guard",
-    ),
-];
-
 fn source(frames: usize) -> String {
     SOURCE_TEMPLATE.replace("__FRAMES__", &frames.to_string())
 }
@@ -411,34 +331,8 @@ fn conditional_consume_source(frames: usize) -> String {
 // live-alias, conditional-consume, closed-alias overwrite) is still proven
 // end to end below by the leak-slope and malloc-scribble oracles in this
 // file.
-#[test]
-fn unsupported_live_alias_shapes_reject_instead_of_leaking() {
-    require_codegen();
-    let dir = tempfile::Builder::new()
-        .prefix("unsupported-live-enum-alias-overwrite-")
-        .tempdir()
-        .expect("tempdir");
-    for (name, source, marker) in UNSUPPORTED_LIVE_ALIAS_CASES {
-        let path = dir.path().join(format!("{name}.hew"));
-        std::fs::write(&path, source).expect("write Hew source");
-        let output = Command::new(hew_binary())
-            .args(["compile", path.to_str().expect("Hew source path is UTF-8")])
-            .current_dir(repo_root())
-            .output()
-            .unwrap_or_else(|error| panic!("invoke hew compile for {name}: {error}"));
-        assert!(
-            !output.status.success(),
-            "{name} has no represented delayed-release protocol and must reject rather than \
-             compile a known leak:\n{}",
-            describe_output(&output)
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains(marker),
-            "{name} must reject at the live-alias overwrite authority:\n{}",
-            describe_output(&output)
-        );
-    }
-}
+// The four formerly refused overwrite shapes run as enum-alias-* acceptance
+// and safety cases, observing their payloads after the overwrite under ASan.
 
 #[cfg_attr(
     not(target_os = "macos"),

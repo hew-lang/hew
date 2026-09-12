@@ -23,6 +23,30 @@ pub struct DeclaredRuntimeMethod {
     pub row: RuntimeOpRow,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclaredRuntimeTarget {
+    Native,
+}
+
+/// Logical declaration and native physical contract generated together.
+#[derive(Debug, Clone, Copy)]
+pub struct DeclaredDirectRuntimeMethod {
+    pub signature: super::CanonicalStdlibExternSignature,
+    /// Full source parameter sequence, including an explicit receiver.
+    pub params: &'static [super::CanonicalExternTy],
+    pub target: DeclaredRuntimeTarget,
+    pub row: RuntimeOpRow,
+}
+
+#[must_use]
+pub fn declared_direct_runtime_method(
+    family: RuntimeCallFamily,
+) -> Option<&'static DeclaredDirectRuntimeMethod> {
+    DECLARED_DIRECT_RUNTIME_METHODS
+        .iter()
+        .find(|method| method.signature.family == Some(family))
+}
+
 include!(concat!(env!("OUT_DIR"), "/declared_runtime_methods.rs"));
 
 #[must_use]

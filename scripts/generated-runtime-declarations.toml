@@ -3,6 +3,20 @@ non-declarable = ["hew_tcp_attach_native"]
 
 non-declarable-stdlib = ["hew_tls_attach_native", "hew_ws_attach_native"]
 
+stable = [
+  "hew_duration_abs",
+  "hew_duration_hours",
+  "hew_duration_is_zero",
+  "hew_duration_micros",
+  "hew_duration_millis",
+  "hew_duration_mins",
+  "hew_duration_nanos",
+  "hew_duration_secs",
+  "hew_instant_duration_since",
+  "hew_instant_elapsed",
+  "hew_instant_now",
+]
+
 [[ownership.contracts]]
 symbol = "hew_tcp_attach_native"
 result = "none"

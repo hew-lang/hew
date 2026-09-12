@@ -211,7 +211,7 @@
     "id": "concurrency/async_await",
     "category": "concurrency",
     "name": "Async/Await",
-    "description": "Actor call-and-await",
+    "description": "Actor completion-call",
     "source_path": "concurrency/async_await.hew",
     "expected_path": "concurrency/async_await.expected",
     "capabilities": {
@@ -510,7 +510,7 @@
     "id": "types/vec_f64_nonfinite_contains",
     "category": "types",
     "name": "Vec<f64> Non-Finite Contains",
-    "description": "Vec<f64>.contains follows native fcmp-OEQ semantics for NaN and +-Infinity",
+    "description": "Vec<f64>.contains uses total, bitwise float equality: NaN finds itself and the signed infinities stay distinct",
     "source_path": "types/vec_f64_nonfinite_contains.hew",
     "expected_path": "types/vec_f64_nonfinite_contains.expected",
     "capabilities": {

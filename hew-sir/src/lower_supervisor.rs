@@ -229,6 +229,7 @@ impl InstanceService<'_> {
             type_params: Vec::new(),
             params: source.params.clone(),
             var_self_receiver: None,
+            terminal_receiver: None,
             return_ty: handle.clone(),
             body: HirBlock {
                 node: source.node,

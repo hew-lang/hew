@@ -2659,6 +2659,7 @@ impl FunctionLowerer<'_> {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Char(*value),
             }),
+            SemOpKind::FinishLinearReceiver => Ok(Vec::new()),
             SemOpKind::ConstUnit => one(PhysicalOp::Const {
                 dest: self.one_result(operation)?,
                 value: PhysicalConst::Unit,
@@ -9474,6 +9475,7 @@ mod tests {
             name: "main".to_string(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::RootUnit,
+            terminal_receiver: None,
             params: vec![],
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),

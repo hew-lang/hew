@@ -620,6 +620,8 @@ pub struct TypeCheckOutput {
     /// linker presentation.  The key is a compatibility projection only;
     /// HIR uses the stored ID directly and never constructs one from it.
     pub impl_method_declaration_ids: HashMap<String, crate::DefId>,
+    /// Exact inherent methods whose first receiver transfers into a terminal body.
+    pub consuming_inherent_methods: HashSet<crate::DefId>,
     /// Root-scope value bindings declared by the program itself.
     ///
     /// Populated at the same checker registration sites that publish root
@@ -1469,6 +1471,7 @@ impl Default for TypeCheckOutput {
             trait_method_ids: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
+            consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
             handle_bearing_structs: HashSet::default(),
             cycle_capable_actors: HashSet::default(),
@@ -2993,6 +2996,7 @@ pub struct Checker {
     /// and selected at the call site; receiver monomorphisations must not mint
     /// new declaration identities.
     pub(super) impl_method_declaration_ids: HashMap<String, crate::DefId>,
+    pub(super) consuming_inherent_methods: HashSet<crate::DefId>,
     pub(super) root_value_bindings: HashSet<String>,
     pub(super) fn_type_param_assoc_bindings: HashMap<String, HashMap<(String, String, String), Ty>>,
     pub(super) handle_bearing_structs: HashSet<String>,
@@ -4000,6 +4004,7 @@ impl Checker {
             trait_method_ids: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
+            consuming_inherent_methods: HashSet::new(),
             root_value_bindings: HashSet::new(),
             fn_type_param_assoc_bindings: HashMap::new(),
             handle_bearing_structs: HashSet::new(),

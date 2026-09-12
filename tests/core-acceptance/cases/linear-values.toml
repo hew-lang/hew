@@ -1,0 +1,10 @@
+[[case]]
+id = "linear-values"
+intent = "Linear owners move through calls, returned Option values, record and tuple patterns; terminal receiver aliases finish without discarding siblings or returned owners."
+source = "cases/linear-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "commit 1 HEAP\nTUPLE\nSIBLING\nclose ENVELOPE\nrollback 1 HEAP\nTUPLE\nSIBLING\nclose ENVELOPE\nRETAINED SIBLING\nrollback 6 HEAP\nREPLACEMENT\ncommit 8 HEAP\ncommit 5 HEAP\nGENERIC\ncommit 3 HEAP\nfinished 4\n"
+exit = 0

@@ -109,6 +109,7 @@ fn function(
         name: name.to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params,
         return_ty,
         entry: BlockId(0),

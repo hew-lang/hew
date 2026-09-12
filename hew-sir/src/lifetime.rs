@@ -17,6 +17,7 @@ pub(crate) struct Violation {
     pub block: BlockId,
     pub value: Option<ValueId>,
     pub place: Option<crate::PlaceId>,
+    pub linear_obligation: bool,
     pub reason: &'static str,
 }
 
@@ -34,6 +35,8 @@ struct State {
     locals: Vec<u8>,
     exit: u8,
     defers: crate::defer::Schedule,
+    receiver_return: bool,
+    linear_origins: super::linear::Origins,
 }
 
 const ORDINARY: u8 = 1;
@@ -45,6 +48,8 @@ const CANCEL: u8 = 4;
 pub enum CleanupMode {
     /// Normal scope exit or replacement; a linear consume is still required.
     Ordinary,
+    /// Explicit normal-exit completion of the exact checked receiver owner.
+    TerminalReceiver,
     /// Fault or cancellation cleanup reclaims representation without a linear consume.
     /// Resource close behaviour remains part of the type's drop contract.
     Trap,
@@ -132,8 +137,9 @@ pub(crate) fn verify(
     function: &SemFunction,
     projections: &crate::PlacePlan,
     facts: &crate::ownership::TypeFactTable,
+    shapes: &[crate::SemAggregateShape],
 ) -> Analysis {
-    let flow = Flow::new(function, projections, facts);
+    let flow = Flow::new(function, projections, facts, shapes);
     let mut lifetimes = PlaceLifetimes::new();
     if !flow.blocks.contains_key(&function.entry) {
         return Analysis {
@@ -146,6 +152,8 @@ pub(crate) fn verify(
         fault: DEAD,
         exit: ORDINARY,
         defers: crate::defer::Schedule::default(),
+        receiver_return: false,
+        linear_origins: super::linear::Origins::default(),
         locals: vec![DEAD; flow.local_indices.len()],
         places: flow
             .places
@@ -169,6 +177,7 @@ pub(crate) fn verify(
             }
         }
     }
+    initial.linear_origins = super::linear::Origins::parameters(function, &flow.linear_values);
     // Availability is joined only within one active/parked fault alternative.
     // Otherwise an absent saved return on the body-fault path would poison the
     // no-fault continuation, or a refinement could incorrectly invent a value.
@@ -199,11 +208,13 @@ pub(crate) fn verify(
                     }
                 }
                 if let Some(previous) = alternatives.iter_mut().find(|old| {
-                    old.fault == state.fault
+                    old.receiver_return == state.receiver_return
+                        && old.fault == state.fault
                         && old.exit == state.exit
                         && old.defers.same_faults(&state.defers)
                 }) {
                     changed |= previous.defers.join(&state.defers);
+                    changed |= previous.linear_origins.join(&state.linear_origins);
                     for (before, after) in previous
                         .locals
                         .iter_mut()
@@ -363,6 +374,8 @@ pub(crate) fn cleanup_suffixes(function: &SemFunction) -> BTreeMap<BlockId, usiz
 
 struct Flow<'a> {
     defers: crate::defer::Plan,
+    terminal_receiver: Option<ValueId>,
+    linear_records: BTreeSet<crate::AggregateShapeId>,
     blocks: BTreeMap<BlockId, &'a crate::SemBlock>,
     indices: BTreeMap<ValueId, usize>,
     values: Vec<ValueId>,
@@ -397,6 +410,7 @@ impl<'a> Flow<'a> {
         function: &'a SemFunction,
         projections: &'a crate::PlacePlan,
         facts: &crate::ownership::TypeFactTable,
+        shapes: &[crate::SemAggregateShape],
     ) -> Self {
         let mut values = BTreeSet::new();
         let mut guaranteed = BTreeSet::new();
@@ -580,6 +594,12 @@ impl<'a> Flow<'a> {
             .collect();
         Self {
             defers: crate::defer::plan(function).unwrap_or_default(),
+            terminal_receiver: function.terminal_receiver,
+            linear_records: shapes
+                .iter()
+                .filter(|shape| shape.marker == hew_types::DeclarationMarker::Linear)
+                .map(|shape| shape.id)
+                .collect(),
             blocks: function
                 .blocks
                 .iter()
@@ -630,6 +650,7 @@ impl<'a> Flow<'a> {
     ) {
         if consume && self.guaranteed.contains(&value) {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(value),
@@ -642,6 +663,7 @@ impl<'a> Flow<'a> {
         };
         if state.values[index] != LIVE {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(value),
@@ -656,6 +678,7 @@ impl<'a> Flow<'a> {
             self.require_unreserved(block, PlaceBase::Value(value), state, emit);
             self.require_no_live_borrows(block, PlaceBase::Value(value), state, emit);
             state.values[index] = DEAD;
+            state.linear_origins.remove_value(value);
             for &index in self.owned_places(value) {
                 state.places[index] = DEAD;
             }
@@ -746,6 +769,7 @@ impl<'a> Flow<'a> {
         }
         if borrowed {
             emit(Violation {
+                linear_obligation: false,
                 place: match base {
                     PlaceBase::Place(place) => Some(place),
                     PlaceBase::Value(_) => None,
@@ -769,6 +793,7 @@ impl<'a> Flow<'a> {
     ) {
         if !self.local_borrows.contains(&value) {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(value),
@@ -793,6 +818,7 @@ impl<'a> Flow<'a> {
         };
         if state.values[index] != DEAD {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(value),
@@ -804,6 +830,9 @@ impl<'a> Flow<'a> {
             });
         }
         state.values[index] = LIVE;
+        state
+            .linear_origins
+            .define(value, self.linear_values.contains(&value));
         for &index in self.owned_places(value) {
             if self.projections.projection(self.places[index].0).is_some() {
                 state.places[index] = LIVE;
@@ -820,6 +849,7 @@ impl<'a> Flow<'a> {
     ) -> Option<(BlockId, State)> {
         let target = self.blocks.get(&edge.target)?;
         let before = state.places.clone();
+        let origins = state.linear_origins.clone();
         // Consume all sources and define all destinations before installing
         // leaf states. Loop edges may rename, reuse or permute root arguments.
         for argument in &edge.args {
@@ -839,6 +869,9 @@ impl<'a> Flow<'a> {
             self.define(edge.target, argument.value, &mut state, emit);
         }
         for (source, destination) in edge.args.iter().zip(&target.args) {
+            state
+                .linear_origins
+                .transfer_value(&origins, source.value, destination.value);
             let transfers = self
                 .projections
                 .transfer(source.value, destination.value)
@@ -1170,6 +1203,7 @@ impl<'a> Flow<'a> {
         for (&place, &index) in &self.local_indices {
             if state.locals[index] & LIVE != 0 {
                 emit(Violation {
+                    linear_obligation: false,
                     block: id,
                     value: None,
                     place: Some(place),
@@ -1184,6 +1218,7 @@ impl<'a> Flow<'a> {
             )
         {
             emit(Violation {
+                linear_obligation: false,
                 block: id,
                 value: None,
                 place: None,
@@ -1216,6 +1251,7 @@ impl<'a> Flow<'a> {
             for place in &self.deferred_places {
                 if state.places[self.place_indices[place]] != required {
                     emit(Violation {
+                        linear_obligation: false,
                         block: id,
                         value: None,
                         place: Some(*place),
@@ -1227,6 +1263,7 @@ impl<'a> Flow<'a> {
         for (index, &value) in self.values.iter().enumerate() {
             if state.values[index] & LIVE != 0 {
                 emit(Violation {
+                    linear_obligation: false,
                     place: None,
                     block: id,
                     value: Some(value),
@@ -1250,6 +1287,10 @@ impl<'a> Flow<'a> {
         lifetimes: &mut PlaceLifetimes,
     ) {
         for (index, op) in operations.iter().enumerate() {
+            if matches!(op.kind, SemOpKind::FinishLinearReceiver) {
+                state.receiver_return = self.terminal_receiver.is_some();
+            }
+            let origins = state.linear_origins.clone();
             if let SemOpKind::RegisterDefer {
                 defer,
                 scope,
@@ -1267,18 +1308,7 @@ impl<'a> Flow<'a> {
             if let SemOpKind::LoadTake { place } | SemOpKind::EndLifetime { place } = &op.kind {
                 self.require_unreserved(id, PlaceBase::Place(*place), state, emit);
             }
-            let cleanup = if self
-                .cleanup_suffixes
-                .get(&id)
-                .is_some_and(|&start| index >= start)
-                && ((cleanup_exit != 0 && cleanup_exit & ORDINARY == 0)
-                    || (cleanup_exit == ORDINARY
-                        && matches!(self.blocks[&id].terminator, SemTerminator::Trap { .. })))
-            {
-                CleanupMode::Trap
-            } else {
-                CleanupMode::Ordinary
-            };
+            let cleanup = self.cleanup_mode(id, index, &op.kind, state, cleanup_exit);
             if matches!(
                 op.kind,
                 SemOpKind::EndLifetime { .. }
@@ -1325,11 +1355,48 @@ impl<'a> Flow<'a> {
             for result in &op.results {
                 self.define(id, result.id, state, emit);
             }
+            state.linear_origins.operation(
+                &origins,
+                op,
+                self.projections,
+                &self.linear_records,
+                &self.linear_values,
+                &self.linear_places,
+            );
+        }
+    }
+
+    fn cleanup_mode(
+        &self,
+        id: BlockId,
+        index: usize,
+        kind: &SemOpKind,
+        state: &State,
+        cleanup_exit: u8,
+    ) -> CleanupMode {
+        if self
+            .cleanup_suffixes
+            .get(&id)
+            .is_some_and(|&start| index >= start)
+            && ((cleanup_exit != 0 && cleanup_exit & ORDINARY == 0)
+                || (cleanup_exit == ORDINARY
+                    && matches!(self.blocks[&id].terminator, SemTerminator::Trap { .. })))
+        {
+            CleanupMode::Trap
+        } else if state.receiver_return
+            && state
+                .linear_origins
+                .finishes_receiver(kind, self.projections)
+        {
+            CleanupMode::TerminalReceiver
+        } else {
+            CleanupMode::Ordinary
         }
     }
 
     fn defer_error(block: BlockId, reason: &'static str, emit: &mut impl FnMut(Violation)) {
         emit(Violation {
+            linear_obligation: false,
             block,
             value: None,
             place: None,
@@ -1438,6 +1505,7 @@ impl<'a> Flow<'a> {
             .any(|&index| state.places[index] != LIVE)
         {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(value),
@@ -1459,6 +1527,7 @@ impl<'a> Flow<'a> {
     ) {
         if state.locals[self.local_indices[&place]] != LIVE {
             emit(Violation {
+                linear_obligation: false,
                 block,
                 value: None,
                 place: Some(place),
@@ -1502,6 +1571,7 @@ impl<'a> Flow<'a> {
             })
         {
             emit(Violation {
+                linear_obligation: true,
                 block,
                 value: None,
                 place: Some(place),
@@ -1529,6 +1599,7 @@ impl<'a> Flow<'a> {
         };
         if mode == CleanupMode::Ordinary && live_linear {
             emit(Violation {
+                linear_obligation: true,
                 block,
                 value: Some(value),
                 place: None,
@@ -1554,6 +1625,7 @@ impl<'a> Flow<'a> {
             let index = self.place_indices[&place];
             if state.places[index] != LIVE {
                 emit(Violation {
+                    linear_obligation: false,
                     block,
                     value: None,
                     place: Some(place),
@@ -1574,6 +1646,7 @@ impl<'a> Flow<'a> {
         if matches!(kind, SemOpKind::AllocPlace { .. }) {
             if state.locals[index] != DEAD {
                 emit(Violation {
+                    linear_obligation: false,
                     block,
                     value: None,
                     place: Some(place),
@@ -1645,6 +1718,7 @@ impl<'a> Flow<'a> {
                 };
                 if expected.is_some_and(|expected| state.places[index] != expected) {
                     emit(Violation {
+                        linear_obligation: false,
                         place: root_value.is_none().then_some(place),
                         block,
                         value: root_value,
@@ -1679,6 +1753,7 @@ impl<'a> Flow<'a> {
         let expected = if initializing { DEAD } else { LIVE };
         if state.places[index] != expected {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(owner),
@@ -1726,6 +1801,7 @@ impl<'a> Flow<'a> {
             borrow != value && !self.depends_on(value, PlaceBase::Value(borrow))
         }) {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: Some(value),
@@ -1742,6 +1818,7 @@ impl<'a> Flow<'a> {
     ) {
         if state.fault != expected {
             emit(Violation {
+                linear_obligation: false,
                 place: None,
                 block,
                 value: None,
@@ -1839,6 +1916,7 @@ impl<'a> Flow<'a> {
                 .is_some_and(|previous| *previous || exclusive)
             {
                 emit(Violation {
+                    linear_obligation: false,
                     place: None,
                     block: id,
                     value: Some(value),
@@ -1887,6 +1965,7 @@ impl<'a> Flow<'a> {
                 );
                 if !scoped_borrow {
                     emit(Violation {
+                        linear_obligation: false,
                         place: None,
                         block: id,
                         value: Some(value),
@@ -2008,6 +2087,7 @@ mod tests {
             name: "lifetime".into(),
             span: 0..0,
             source_origin: FunctionSourceOrigin::Unknown,
+            terminal_receiver: None,
             params: vec![
                 BlockArg {
                     value: ValueId(0),

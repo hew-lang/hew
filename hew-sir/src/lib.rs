@@ -14,6 +14,7 @@ mod capability;
 mod defer;
 mod dump;
 mod lifetime;
+mod linear;
 mod lower;
 mod model;
 mod optimize;

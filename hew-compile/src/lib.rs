@@ -336,6 +336,14 @@ impl Session {
         })?;
         let diagnostics = hew_sir::verify_module(&sir.module);
         if !diagnostics.is_empty() {
+            if diagnostics.iter().all(|diagnostic| {
+                matches!(
+                    diagnostic.kind,
+                    hew_sir::SirDiagnosticKind::UnconsumedLinear { .. }
+                )
+            }) {
+                return Err(SessionError::Ownership(diagnostics));
+            }
             return Err(SessionError::Semantic(diagnostics));
         }
         require_complete_semantics(&sir, module.entry_exit_plan.is_some())?;
@@ -421,6 +429,8 @@ impl SessionOutput {
 pub enum SessionError {
     Hir(Vec<hew_hir::HirDiagnostic>),
     Semantic(Vec<hew_sir::SirDiagnostic>),
+    /// Source ownership obligations diagnosed by the semantic lifetime flow.
+    Ownership(Vec<hew_sir::SirDiagnostic>),
     Unsupported {
         callable: Option<hew_sir::CallableId>,
         message: String,
@@ -431,6 +441,9 @@ impl std::fmt::Display for SessionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Hir(diagnostics) => write!(formatter, "HIR verification failed: {diagnostics:?}"),
+            Self::Ownership(diagnostics) => {
+                write!(formatter, "unconsumed linear values: {diagnostics:?}")
+            }
             Self::Semantic(diagnostics) => {
                 write!(formatter, "SIR verification failed: {diagnostics:?}")
             }
@@ -1535,6 +1548,56 @@ pub fn hir_diagnostics_to_frontend(
         .into_iter()
         .map(|diagnostic| {
             hir_diagnostic_to_frontend(root_source, root_filename, diagnostic, &module_source_map)
+        })
+        .collect()
+}
+
+/// Attribute source ownership findings from SIR using the ordinary module source map.
+#[must_use]
+pub fn ownership_diagnostics_to_frontend(
+    program: &Program,
+    root_source: &str,
+    root_filename: &str,
+    diagnostics: Vec<hew_sir::SirDiagnostic>,
+    documents: &DocumentSet,
+) -> Vec<FrontendDiagnostic> {
+    let sources = build_module_source_map(program, documents);
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| {
+            let hew_sir::SirDiagnosticKind::UnconsumedLinear {
+                binding,
+                span,
+                source_origin,
+            } = diagnostic.kind
+            else {
+                unreachable!("SessionError::Ownership contains source ownership findings");
+            };
+            let message = binding.map_or_else(
+                || "linear value must be consumed before this normal exit".to_string(),
+                |binding| {
+                    format!("linear value `{binding}` must be consumed before this normal exit")
+                },
+            );
+            let source = match &source_origin {
+                hew_sir::FunctionSourceOrigin::RootUnit => Some((root_source, root_filename)),
+                hew_sir::FunctionSourceOrigin::Foreign(module) => sources
+                    .get(module)
+                    .map(|(source, filename)| (source.as_str(), filename.as_str())),
+                hew_sir::FunctionSourceOrigin::Unknown => None,
+            };
+            source.map_or_else(
+                || FrontendDiagnostic::coded_message("E_MUST_CONSUME", message.clone()),
+                |(source, filename)| {
+                    FrontendDiagnostic::coded_message_at(
+                        "E_MUST_CONSUME",
+                        message.clone(),
+                        span,
+                        source,
+                        filename,
+                    )
+                },
+            )
         })
         .collect()
 }

@@ -2503,6 +2503,7 @@ impl Checker {
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
             trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
+            consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),
             root_value_bindings: std::mem::take(&mut self.root_value_bindings),
             handle_bearing_structs: {
                 // Flush any pending dirty registration before the set is moved

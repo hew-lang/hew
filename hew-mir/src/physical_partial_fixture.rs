@@ -218,6 +218,7 @@ pub fn module(case: Case) -> sir::SemModule {
         declaration,
         name: callable.symbol.clone(),
         source_origin: callable.source_origin.clone(),
+        terminal_receiver: None,
         span: 0..0,
         params,
         return_ty: ResolvedTy::I64,

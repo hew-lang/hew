@@ -150,6 +150,7 @@ fn unit_function(
     declaration: &str,
     name: &str,
     source_origin: FunctionSourceOrigin,
+    terminal_receiver: None,
     params: Vec<BlockArg>,
 ) -> SemFunction {
     SemFunction {
@@ -244,6 +245,7 @@ fn exhaustive_choice_switch() -> SemModule {
         name: "choose".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::RootUnit,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: choice.clone(),
@@ -474,6 +476,7 @@ fn block_arguments_are_ssa_join_values() {
         name: "f".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![
             BlockArg {
                 value: ValueId(0),
@@ -711,6 +714,7 @@ fn verifier_rejects_entry_block_arguments() {
         name: "bad_entry_args".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -748,6 +752,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
         name: "unit_helper".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
@@ -767,6 +772,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
         name: "caller".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
@@ -821,6 +827,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
         name: "non_contiguous".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -867,6 +874,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
         name: "out_of_order".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -940,6 +948,7 @@ fn verifier_checks_resolved_direct_call_signature() {
         name: "target".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::I64,
@@ -965,6 +974,7 @@ fn verifier_checks_resolved_direct_call_signature() {
         name: "caller".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
@@ -1028,6 +1038,7 @@ fn verifier_rejects_unknown_direct_callable() {
         name: "caller".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -1067,6 +1078,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
         name: "scalar_callee".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -1093,6 +1105,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
         name: "unit_caller".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
@@ -1135,6 +1148,7 @@ fn verifier_rejects_eager_logical_ops() {
         name: "bad_logical".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
@@ -1184,6 +1198,7 @@ fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
         name: "duplicate".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
@@ -1303,6 +1318,7 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
         name: "main".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::RootUnit,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
@@ -1367,6 +1383,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
         name: "returns_unit".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
@@ -1405,6 +1422,7 @@ fn rewrite_fixture() -> SemFunction {
         name: "rewrite_fixture".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![
             BlockArg {
                 value: ValueId(0),
@@ -1734,6 +1752,7 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
         name: "parks".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::I64,
@@ -1797,6 +1816,7 @@ fn verifier_admits_a_typed_trap_endpoint() {
         name: "traps".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: Vec::new(),
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
@@ -1829,6 +1849,7 @@ fn verifier_still_admits_the_terminators_it_states_rules_for() {
         name: "branches".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bool,
@@ -1953,6 +1974,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
         name: "kinds".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::I64,
@@ -2015,6 +2037,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
         name: "owns".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::Unknown,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::String,

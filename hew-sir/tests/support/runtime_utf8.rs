@@ -65,6 +65,7 @@ pub(super) fn decode_module() -> SemModule {
         name: "decode".to_string(),
         span: 0..0,
         source_origin: FunctionSourceOrigin::RootUnit,
+        terminal_receiver: None,
         params: vec![BlockArg {
             value: ValueId(0),
             ty: ResolvedTy::Bytes,

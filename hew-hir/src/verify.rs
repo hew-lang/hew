@@ -1185,6 +1185,7 @@ mod tests {
             is_generator: false,
             intrinsic_id: None,
             var_self_receiver: None,
+            terminal_receiver: None,
         })
     }
 

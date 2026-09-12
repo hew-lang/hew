@@ -1,0 +1,7 @@
+#[linear]
+type Tx { label: string }
+impl Tx {
+    fn commit(consume self) { println(self.label); }
+}
+fn forget(consume tx: Tx) { println(tx.label); }
+fn main() { forget(Tx { label: "must finish".to_upper() }); }

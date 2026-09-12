@@ -7670,6 +7670,7 @@ struct LowerCtx {
     /// presentation strings retained only to locate the already-allocated ID;
     /// HIR never constructs an ID from a method spelling.
     impl_method_declaration_ids: HashMap<String, hew_types::DefId>,
+    consuming_inherent_methods: HashSet<hew_types::DefId>,
     /// Exact declaration-ID → emitted-body-symbol projection, populated only
     /// after HIR emits an impl body.  This is deliberately separate from
     /// `impl_method_declaration_ids`: the checker table retains compatibility
@@ -8509,6 +8510,7 @@ impl LowerCtx {
             trait_method_ids: tc_output.trait_method_ids.clone(),
             trait_method_ids_by_binding: tc_output.trait_method_ids_by_binding.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
+            consuming_inherent_methods: tc_output.consuming_inherent_methods.clone(),
             impl_method_body_symbols: HashMap::new(),
             impl_body_plan: ImplBodyPlan::default(),
             method_call_rewrites: tc_output.method_call_rewrites.clone(),
@@ -14193,6 +14195,7 @@ impl LowerCtx {
                 type_params: Self::concat_type_params(impl_type_params, func),
                 params,
                 var_self_receiver: None,
+                terminal_receiver: None,
                 return_ty: generator_ty,
                 body,
                 span,
@@ -14233,6 +14236,10 @@ impl LowerCtx {
         self.pop_scope();
         self.current_fn_type_params = prior_fn_type_params;
 
+        let terminal_receiver = params
+            .first()
+            .filter(|_| self.consuming_inherent_methods.contains(&declaration))
+            .map(|parameter| parameter.id);
         Some(HirFn {
             id,
             node: self.ids.node(),
@@ -14241,6 +14248,7 @@ impl LowerCtx {
             type_params: Self::concat_type_params(impl_type_params, func),
             params,
             var_self_receiver: var_self_receiver.map(|receiver| receiver.id),
+            terminal_receiver,
             return_ty,
             body,
             span,

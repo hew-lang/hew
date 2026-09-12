@@ -467,6 +467,7 @@ impl InstanceService<'_> {
             type_params: Vec::new(),
             params: params.to_vec(),
             var_self_receiver: None,
+            terminal_receiver: None,
             return_ty: return_ty.clone(),
             body: body.clone(),
             span: body.span.clone(),

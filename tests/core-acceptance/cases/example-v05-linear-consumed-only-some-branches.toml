@@ -1,12 +1,12 @@
 [[case]]
 id = "example-v05-linear-consumed-only-some-branches"
-intent = "A `#[linear]` value consumed on only one branch is refused; today the refusal is the SIR limitation on the nominal, not the MustConsume check the fixture is written for."
+intent = "A linear owner consumed on only one branch is rejected at normal return."
 source = "../../examples/v05/linear/reject/linear_consumed_only_some_branches.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "E_SIR_UNSUPPORTED"
-line = 0
-column = 0
+code = "E_MUST_CONSUME"
+line = 14
+column = 9

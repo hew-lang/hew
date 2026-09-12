@@ -142,6 +142,9 @@ fn dump_op(out: &mut String, op: &crate::SemOp) {
         }
     }
     match &op.kind {
+        SemOpKind::FinishLinearReceiver => {
+            writeln!(out, "linear.finish_receiver").expect("write to String");
+        }
         SemOpKind::TaskScopeEnter {
             scope,
             parent,

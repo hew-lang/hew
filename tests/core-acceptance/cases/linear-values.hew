@@ -1,0 +1,58 @@
+#[linear]
+type Tx { id: i64, label: string }
+#[resource]
+type Audit { label: string }
+impl Audit {
+    fn close(consume self) { println(f"close {self.label}"); }
+}
+type Envelope { tx: Tx, audit: Audit, label: string }
+type Parcel<T> { payload: T, label: string }
+fn relay<T>(consume value: T) -> T { value }
+impl Tx {
+    fn commit(consume self) { println(f"commit {self.id} {self.label}"); }
+    fn rollback(consume self) { println(f"rollback {self.id} {self.label}"); }
+    fn forward(consume self) -> Tx { self }
+    fn maybe(consume self, finish: bool) {
+        if finish { self.commit(); }
+    }
+    fn replace(consume self) {
+        var pair = fresh_pair();
+        pair.0.rollback();
+        pair.0 = self;
+        println(pair.1);
+    }
+    fn alias(consume self) {
+        let pair = (self, "retained sibling".to_upper());
+        println(pair.1);
+    }
+    fn choose(consume self, forward: bool) -> Option<Tx> {
+        if forward { return Some(self); }
+        println(f"finished {self.id}");
+        None
+    }
+}
+fn fresh_pair() -> (Tx, string) { (transaction(6), "replacement".to_upper()) }
+fn pass(consume tx: Tx) -> Tx { tx }
+fn transaction(id: i64) -> Tx { Tx { id: id, label: "heap".to_upper() } }
+fn branches(commit: bool) {
+    let envelope = Envelope { tx: transaction(1), audit: Audit { label: "envelope".to_upper() }, label: "sibling".to_upper() };
+    let Envelope { tx, .. } = envelope;
+    let pair = (pass(tx.forward()), "tuple".to_upper());
+    let (selected, _) = pair;
+    if commit { selected.commit(); } else { selected.rollback(); }
+    println(pair.1);
+    println(envelope.label);
+}
+fn main() {
+    branches(true);
+    branches(false);
+    transaction(2).alias();
+    transaction(7).replace();
+    transaction(8).maybe(true);
+    transaction(9).maybe(false);
+    let parcel = Parcel { payload: relay(transaction(5)), label: "generic".to_upper() };
+    parcel.payload.commit();
+    println(parcel.label);
+    if let .Some(tx) = transaction(3).choose(true) { tx.commit(); }
+    if let .Some(tx) = transaction(4).choose(false) { tx.rollback(); }
+}

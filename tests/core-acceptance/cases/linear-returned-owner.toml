@@ -1,0 +1,12 @@
+[[case]]
+id = "linear-returned-owner"
+intent = "Normal exit must finish every live linear owner; receiver permission never grants unrelated or returned values implicit drop."
+source = "cases/linear-returned-owner.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_MUST_CONSUME"
+line = 8
+column = 9

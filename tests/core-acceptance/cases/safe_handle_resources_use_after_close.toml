@@ -1,13 +1,161 @@
 [[case]]
 id = "safe_handle_resources_use_after_close"
-intent = "The fixture is refused, and the refusal names UseAfterMove."
+intent = "Every use of a safe handle after its close is reported, one diagnostic per use and nothing beyond them."
 source = "../vertical-slice/reject/safe_handle_resources_use_after_close.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
+severity = "error"
 code = "UseAfterMove"
 line = 25
 column = 13
 message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 30
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 35
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 40
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 45
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 50
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 55
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 60
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 65
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 70
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 75
+column = 13
+message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 23
+column = 1
+message = "function `use_glob` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 28
+column = 1
+message = "function `use_semaphore` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 33
+column = 1
+message = "function `use_deque` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 38
+column = 1
+message = "function `use_cron` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 43
+column = 1
+message = "function `use_request` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 48
+column = 1
+message = "function `use_response` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 53
+column = 1
+message = "function `use_event` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 58
+column = 1
+message = "function `use_url` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 63
+column = 1
+message = "function `use_message` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 68
+column = 1
+message = "function `use_protobuf` is never called"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 73
+column = 1
+message = "function `use_xml` is never called"

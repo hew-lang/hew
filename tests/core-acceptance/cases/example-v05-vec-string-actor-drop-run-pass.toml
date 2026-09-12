@@ -1,0 +1,13 @@
+[[case]]
+id = "example-v05-vec-string-actor-drop-run-pass"
+intent = "An actor holding a Vec of strings releases it at shutdown and the program runs to completion."
+source = "../../examples/v05/vec_string_actor_drop_run_pass.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "ok\n"
+exit = 0

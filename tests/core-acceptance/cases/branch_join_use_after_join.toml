@@ -1,13 +1,49 @@
 [[case]]
 id = "branch_join_use_after_join"
-intent = "Union teeth for the branch join."
+intent = "Every path that rejoins after a branch consume reports its own use of the moved resource, and a released resource cannot be consumed again."
 source = "../vertical-slice/reject/branch_join_use_after_join.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
+severity = "error"
 code = "UseAfterMove"
 line = 24
+column = 5
+message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 24
+column = 5
+message = "cannot consume released resource `held`; its close obligation was already discharged"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 34
+column = 5
+message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterConsume"
+line = 34
+column = 5
+message = "cannot consume released resource `held`; its close obligation was already discharged"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 42
+column = 5
+message = "use of moved value `held`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 51
 column = 5
 message = "use of moved value `held`"

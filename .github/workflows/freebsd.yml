@@ -129,7 +129,7 @@ jobs:
             # The authenticated exact checkout must also prove compiled Hew,
             # including loopback network and resource surfaces. Workspace
             # nextest alone does not execute these language-level gates.
-            gmake test-vertical-slice
+            gmake core-acceptance
             gmake test-hew-ratchet
 
             # The source-level DWARF debugger proof must execute on FreeBSD,

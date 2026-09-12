@@ -1,0 +1,14 @@
+[[case]]
+id = "qualified_call_reachability"
+intent = "A package-qualified call reaches its imported declaration and the private helper below it; only the genuinely uncalled function is reported dead."
+source = "../vertical-slice/accept/qualified_call_reachability/ops/native-loop.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 5
+column = 1
+message = "function `genuinely_uncalled` is never called"

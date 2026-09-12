@@ -10,7 +10,7 @@
 #
 # Usage:
 #   make ci-local-linux CI_LINUX_HOST=<user@host>             # full Linux job
-#   make ci-local-linux CI_LINUX_HOST=<host> STEP=test-vertical-slice
+#   make ci-local-linux CI_LINUX_HOST=<host> STEP=core-acceptance
 #   CI_LINUX_HOST=<host> scripts/ci-local-linux.sh [step]
 #
 # Config (env):
@@ -39,7 +39,7 @@ fi
 
 case "$STEP" in
 all) TARGET=preflight ;;
-preflight | lint | ci-shard-1 | ci-shard-2 | ci-shard-3 | test-vertical-slice | test-pkg-import | test-hew-ratchet | test-stdlib-ratchet | sandbox-parity)
+preflight | lint | ci-shard-1 | ci-shard-2 | ci-shard-3 | core-acceptance | test-pkg-import | test-hew-ratchet | test-stdlib-ratchet | sandbox-parity)
     TARGET="$STEP"
     ;;
 *)

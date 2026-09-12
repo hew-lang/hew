@@ -1,13 +1,21 @@
 [[case]]
 id = "value_tree_resources_use_after_close"
-intent = "TOML retains an independent resource API; released values cannot be used."
+intent = "A use of a value-tree resource after its close is reported exactly once."
 source = "../vertical-slice/reject/value_tree_resources_use_after_close.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
-kind = "reject"
+kind = "check"
 
 [[case.expected.diagnostics]]
+severity = "error"
 code = "UseAfterMove"
 line = 7
 column = 13
 message = "use of moved value `value`"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "dead_code"
+line = 4
+column = 1
+message = "function `use_toml` is never called"

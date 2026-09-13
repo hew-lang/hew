@@ -133,7 +133,11 @@ mod tests {
     #[test]
     fn linked_worktree_watches_loose_and_packed_branch_updates() {
         let dir = tempfile::tempdir().expect("temporary repository");
-        let repo = dir.path();
+        let canonical_dir = dir
+            .path()
+            .canonicalize()
+            .expect("canonical repository path");
+        let repo = canonical_dir.as_path();
         let git = |args: &[&str]| git_stdout(repo, args).expect("git fixture command");
         git(&["init", "--initial-branch=main"]);
         git(&[
@@ -155,16 +159,20 @@ mod tests {
             "nested/topic",
             worktree.to_str().unwrap(),
         ]);
+        let canonical_watches = || {
+            git_watch_paths(&worktree)
+                .into_iter()
+                .map(|path| path.canonicalize().expect("existing watch target"))
+                .collect::<Vec<_>>()
+        };
         let reference = repo.join(".git/refs/heads/nested/topic");
-        let watches = git_watch_paths(&worktree);
-        assert!(watches.iter().all(|path| path.exists()));
+        let watches = canonical_watches();
         assert!(watches.contains(&reference));
         assert!(watches.contains(&repo.join(".git/worktrees/linked/HEAD")));
 
         git(&["pack-refs", "--all", "--prune"]);
         assert!(!reference.exists());
-        let watches = git_watch_paths(&worktree);
-        assert!(watches.iter().all(|path| path.exists()));
+        let watches = canonical_watches();
         assert!(watches.contains(&repo.join(".git/packed-refs")));
         assert!(watches
             .iter()
@@ -185,10 +193,10 @@ mod tests {
         )
         .unwrap();
         assert!(reference.exists());
-        assert!(git_watch_paths(&worktree).contains(&reference));
+        assert!(canonical_watches().contains(&reference));
 
         git_stdout(&worktree, &["checkout", "--detach"]).unwrap();
-        let watches = git_watch_paths(&worktree);
+        let watches = canonical_watches();
         assert_eq!(watches.len(), 1);
         assert!(watches[0].ends_with("HEAD"));
     }

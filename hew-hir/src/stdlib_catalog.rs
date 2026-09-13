@@ -910,22 +910,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::Unit,
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
-    // `bytes.is_empty() -> bool`.
-    direct(
-        "hew_bytes_is_empty",
-        BuiltinClass::ClassA,
-        BYTES,
-        BuiltinTy::Bool,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    // `bytes.contains(byte) -> bool` — linear scan.
-    direct(
-        "hew_bytes_contains",
-        BuiltinClass::ClassA,
-        BYTES_U8,
-        BuiltinTy::Bool,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
     // `bytes.clear()` — releases the receiver's buffer ref and resets to empty.
     direct(
         "hew_bytes_clear",
@@ -2648,6 +2632,8 @@ pub static CATALOG: std::sync::LazyLock<Vec<BuiltinEntry>> = std::sync::LazyLock
                 BuiltinTy::I64
             }
             CanonicalExternTy::Bool => BuiltinTy::Bool,
+            CanonicalExternTy::Bytes => BuiltinTy::Bytes,
+            CanonicalExternTy::U8 => BuiltinTy::U8,
             _ => unreachable!("generated direct runtime descriptor contains unsupported scalar"),
         }
     }

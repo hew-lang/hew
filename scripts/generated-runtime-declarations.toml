@@ -4,6 +4,9 @@ non-declarable = ["hew_tcp_attach_native"]
 non-declarable-stdlib = ["hew_tls_attach_native", "hew_ws_attach_native"]
 
 stable = [
+  "hew_bytes_contains",
+  "hew_bytes_is_empty",
+  "hew_bytes_len",
   "hew_duration_abs",
   "hew_duration_hours",
   "hew_duration_is_zero",
@@ -16,6 +19,27 @@ stable = [
   "hew_instant_elapsed",
   "hew_instant_now",
 ]
+
+[[ownership.contracts]]
+symbol = "hew_bytes_contains"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_is_empty"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_bytes_len"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_tcp_attach_native"

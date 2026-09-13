@@ -2516,7 +2516,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_super = Checker::trait_info_from_decl(&assoc_super);
+    let info_super = Checker::trait_info_from_decl(&assoc_super, None, 0);
     checker
         .trait_defs
         .insert("AssocSuper".to_string(), info_super);
@@ -2558,7 +2558,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_child = Checker::trait_info_from_decl(&child);
+    let info_child = Checker::trait_info_from_decl(&child, None, 0);
     checker
         .trait_defs
         .insert("ChildTrait".to_string(), info_child);
@@ -2614,7 +2614,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_super = Checker::trait_info_from_decl(&generic_super);
+    let info_super = Checker::trait_info_from_decl(&generic_super, None, 0);
     checker
         .trait_defs
         .insert("GenericSuper".to_string(), info_super);
@@ -2655,7 +2655,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         doc_comment: None,
         lang_item: None,
     };
-    let info_child = Checker::trait_info_from_decl(&child);
+    let info_child = Checker::trait_info_from_decl(&child, None, 0);
     checker
         .trait_defs
         .insert("ChildTrait".to_string(), info_child);

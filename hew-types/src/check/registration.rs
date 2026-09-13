@@ -804,12 +804,19 @@ fn derive_opaque_resource_candidate_graph(
 }
 
 impl Checker {
-    fn mark_import_module_used_for_owner(&self, owner: Option<String>, imported_module: &str) {
-        self.used_modules.borrow_mut().insert(ImportKey::in_file(
-            owner,
-            self.current_module_idx,
-            imported_module.to_string(),
-        ));
+    fn mark_import_module_used_for_owner(&self, owner: Option<&str>, imported_module: &str) {
+        for ((scope, file, binding), source) in &self.module_import_bindings {
+            if scope.as_deref() == owner
+                && *file == self.current_module_idx
+                && (binding == imported_module || source == imported_module)
+            {
+                self.used_modules.borrow_mut().insert(ImportKey::in_file(
+                    owner.map(str::to_string),
+                    *file,
+                    binding.clone(),
+                ));
+            }
+        }
     }
 
     fn mark_loaded_trait_owner_import_used(&self, module: Option<&str>, trait_name: &str) {
@@ -836,10 +843,10 @@ impl Checker {
     fn mark_imported_trait_used(&self, module: Option<&str>, trait_name: &str) {
         if let Some((imported_module, _)) = trait_name.split_once('.') {
             if self.modules.contains(imported_module) {
-                self.mark_import_module_used_for_owner(module.map(str::to_string), imported_module);
+                self.mark_import_module_used_for_owner(module, imported_module);
                 if self.current_module.as_deref() != module {
                     self.mark_import_module_used_for_owner(
-                        self.current_module.clone(),
+                        self.current_module.as_deref(),
                         imported_module,
                     );
                 }
@@ -851,14 +858,14 @@ impl Checker {
             module.unwrap_or_default().to_string(),
             trait_name.to_string(),
         )) {
-            if let Some((imported_module, _)) = source_key.split_once('.') {
+            if let Some((imported_module, _)) = source_key.rsplit_once('.') {
                 if Some(imported_module) == module {
                     return;
                 }
-                self.mark_import_module_used_for_owner(module.map(str::to_string), imported_module);
+                self.mark_import_module_used_for_owner(module, imported_module);
                 if self.current_module.as_deref() != module {
                     self.mark_import_module_used_for_owner(
-                        self.current_module.clone(),
+                        self.current_module.as_deref(),
                         imported_module,
                     );
                 }
@@ -868,13 +875,10 @@ impl Checker {
             self.current_module_idx,
             trait_name.to_string(),
         )) {
-            self.mark_import_module_used_for_owner(
-                module.map(str::to_string),
-                imported_module.as_str(),
-            );
+            self.mark_import_module_used_for_owner(module, imported_module.as_str());
             if self.current_module.as_deref() != module {
                 self.mark_import_module_used_for_owner(
-                    self.current_module.clone(),
+                    self.current_module.as_deref(),
                     imported_module.as_str(),
                 );
             }
@@ -1644,7 +1648,11 @@ impl Checker {
     /// file under check) must re-register cleanly rather than collide with the
     /// seed.
     fn pre_register_builtin_trait(&mut self, tr: &TraitDecl, span: &Span) {
-        let info = Self::trait_info_from_decl(tr);
+        let info = Self::trait_info_from_decl(
+            tr,
+            Some("std.builtins".to_string()),
+            self.current_module_idx,
+        );
         self.trait_defs
             .entry(tr.name.clone())
             .or_insert_with(|| info.clone());
@@ -2498,9 +2506,13 @@ impl Checker {
                             // identity only.
                             Item::Trait(td) => {
                                 let qualified = format!("{module_name}.{}", td.name);
-                                self.trait_defs
-                                    .entry(qualified)
-                                    .or_insert_with(|| Self::trait_info_from_decl(td));
+                                self.trait_defs.entry(qualified).or_insert_with(|| {
+                                    Self::trait_info_from_decl(
+                                        td,
+                                        Some(module_name.clone()),
+                                        self.current_module_idx,
+                                    )
+                                });
                             }
                             // Register machine state/event binding tables for the
                             // non-root module path, mirroring the root-loop arm at
@@ -2576,7 +2588,12 @@ impl Checker {
                         continue;
                     }
                     let mut trait_errors = Vec::new();
-                    let info = Self::trait_info_from_decl_with_diagnostics(td, &mut trait_errors);
+                    let info = Self::trait_info_from_decl_with_diagnostics(
+                        td,
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                        &mut trait_errors,
+                    );
                     self.errors.extend(trait_errors);
                     self.trait_defs.insert(td.name.clone(), info);
                     self.local_trait_defs.insert(td.name.clone());
@@ -4939,8 +4956,12 @@ impl Checker {
         self.record_type_def_inference_holes(identity, hole_vars);
     }
 
-    pub(super) fn trait_info_from_decl(tr: &TraitDecl) -> TraitInfo {
-        Self::trait_info_from_decl_with_diagnostics(tr, &mut Vec::new())
+    pub(super) fn trait_info_from_decl(
+        tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
+    ) -> TraitInfo {
+        Self::trait_info_from_decl_with_diagnostics(tr, source_module, file_index, &mut Vec::new())
     }
 
     /// Idempotently seed `#[lang_item("…")]` bindings from a compiled-in
@@ -5065,6 +5086,8 @@ impl Checker {
     /// duplicate-detection is handled separately in `build_impl_alias_entries`).
     pub(super) fn trait_info_from_decl_with_diagnostics(
         tr: &TraitDecl,
+        source_module: Option<String>,
+        file_index: u32,
         errors: &mut Vec<TypeError>,
     ) -> TraitInfo {
         let mut methods = Vec::new();
@@ -5102,6 +5125,8 @@ impl Checker {
             .map(|params| params.iter().map(|p| p.name.clone()).collect())
             .unwrap_or_default();
         TraitInfo {
+            source_module,
+            file_index,
             methods,
             associated_types,
             type_params,
@@ -8093,6 +8118,90 @@ impl Checker {
         self.trait_defs_key_for_identity(&identity)
     }
 
+    pub(super) fn resolved_trait_defaults(
+        &mut self,
+    ) -> HashMap<crate::DefId, Vec<super::types::ResolvedTraitDefault>> {
+        let saved_module = self.current_module.clone();
+        let saved_file = self.current_module_idx;
+        let mut declarations: Vec<_> = self
+            .trait_defs
+            .iter()
+            .filter_map(|(key, info)| {
+                self.identity
+                    .declaration_by_path(key)
+                    .cloned()
+                    .map(|id| (key.clone(), id, info.clone()))
+            })
+            .collect();
+        declarations.sort_by_key(|(key, id, _)| (key != id.full_path(), key.clone()));
+        let mut defaults = HashMap::new();
+        let mut visited = HashSet::new();
+        for (key, trait_id, info) in declarations {
+            if !visited.insert(trait_id.clone()) {
+                continue;
+            }
+            self.current_module.clone_from(&info.source_module);
+            self.current_module_idx = info.file_index;
+            let identity = self.identity_from_trait_defs_key(&key);
+            let mut names: HashSet<String> = info.methods.iter().map(|m| m.name.clone()).collect();
+            self.collect_super_trait_method_names(&key, &mut names, &mut HashSet::new());
+            for name in names {
+                let Some(owner) = self.resolve_declaring_trait_identity(&identity, &key, &name)
+                else {
+                    continue;
+                };
+                let owner_key = self.trait_defs_key_for_identity(&owner);
+                let Some(owner_id) = self.identity.declaration_by_path(&owner_key) else {
+                    continue;
+                };
+                let method_key = format!("{}::{name}", owner_id.full_path());
+                let Some(ids) = self.trait_method_ids.get(&method_key).cloned() else {
+                    continue;
+                };
+                self.trait_method_ids
+                    .insert(format!("{}::{name}", trait_id.full_path()), ids);
+            }
+            let bodies = info
+                .methods
+                .into_iter()
+                .filter(|method| method.body.is_some())
+                .filter_map(|method| {
+                    let (_, method_id) = self
+                        .trait_method_ids
+                        .get(&format!("{}::{}", trait_id.full_path(), method.name))?
+                        .clone();
+                    Some(super::types::ResolvedTraitDefault {
+                        trait_id: trait_id.clone(),
+                        method_id,
+                        method,
+                        source_module: info.source_module.clone(),
+                        file_index: info.file_index,
+                    })
+                })
+                .collect();
+            defaults.insert(trait_id, bodies);
+        }
+        for (binding, trait_id) in &self.trait_bindings {
+            let prefix = format!("{}::", trait_id.full_path());
+            for (key, ids) in &self.trait_method_ids {
+                if let Some(method) = key.strip_prefix(&prefix) {
+                    self.trait_method_ids_by_binding.insert(
+                        (
+                            binding.0.clone(),
+                            binding.1,
+                            binding.2.clone(),
+                            method.to_string(),
+                        ),
+                        ids.clone(),
+                    );
+                }
+            }
+        }
+        self.current_module = saved_module;
+        self.current_module_idx = saved_file;
+        defaults
+    }
+
     /// The set of method names a trait requires an impl to provide, resolved
     /// through the trait's OWNER-QUALIFIED identity so a same-name collision
     /// cannot leak a neighbouring trait's method set. A method with a default
@@ -8333,6 +8442,18 @@ impl Checker {
     ) {
         let trait_name = &trait_bound.name;
         let identity = self.resolve_trait_conformance_identity(trait_name);
+        let trait_key = self.trait_defs_key_for_identity(&identity);
+        self.mark_imported_trait_used(self.current_module.as_deref(), trait_name);
+        if let Some(declaration) = self.identity.declaration_by_path(&trait_key).cloned() {
+            self.trait_bindings.insert(
+                (
+                    self.current_module.clone(),
+                    self.current_module_idx,
+                    trait_name.clone(),
+                ),
+                declaration,
+            );
+        }
         let Some((required, known)) = self.trait_required_and_known_methods(&identity) else {
             // D429: no declaration in scope defines this trait, so there is no
             // method set to check the impl against. Accepting it would register
@@ -11150,7 +11271,11 @@ impl Checker {
                     if !self.register_type_namespace_name(Some(module_full_path), &tr.name, span) {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(tr);
+                    let info = Self::trait_info_from_decl(
+                        tr,
+                        Some(module_full_path.to_string()),
+                        self.current_module_idx,
+                    );
                     self.trait_defs.insert(tr.name.clone(), info.clone());
                     let qualified = format!("{module_full_path}.{}", tr.name);
                     self.trait_defs.insert(qualified, info.clone());
@@ -11448,6 +11573,10 @@ impl Checker {
     /// Republish selected public names from an already-registered Hew source
     /// into one importing scope. This deliberately performs no declaration
     /// registration and therefore cannot create duplicate defs.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one import publication dispatcher handles every namespace without re-registering declarations"
+    )]
     fn publish_imported_hew_bindings(
         &mut self,
         module_short: &str,
@@ -11464,6 +11593,71 @@ impl Checker {
                             &format!("{module_full_path}.{}", fd.name),
                             publication,
                         );
+                    }
+                }
+                Item::Trait(decl) if decl.visibility.is_pub() => {
+                    let canonical = format!("{module_full_path}.{}", decl.name);
+                    let Some(trait_id) = self.identity.declaration_by_path(&canonical).cloned()
+                    else {
+                        continue;
+                    };
+                    let mut bindings = vec![format!("{module_short}.{}", decl.name)];
+                    if let Some(binding) = publication.bare_binding(&decl.name) {
+                        self.published_bare_trait_owners
+                            .entry((
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding.clone(),
+                            ))
+                            .or_default()
+                            .insert(canonical.clone());
+                        if let Some(info) = self.trait_defs.get(&canonical).cloned() {
+                            self.trait_defs.insert(binding.clone(), info);
+                        }
+                        self.unqualified_to_module.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding.clone(),
+                            ),
+                            module_full_path.to_string(),
+                        );
+                        bindings.push(binding);
+                    }
+                    for binding in bindings {
+                        self.trait_bindings.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding.clone(),
+                            ),
+                            trait_id.clone(),
+                        );
+                        for method in &decl.items {
+                            let TraitItem::Method(method) = method else {
+                                continue;
+                            };
+                            let Some(method_id) = self
+                                .identity
+                                .declaration_by_path(&format!(
+                                    "{}::{}",
+                                    trait_id.full_path(),
+                                    method.name
+                                ))
+                                .cloned()
+                            else {
+                                continue;
+                            };
+                            self.trait_method_ids_by_binding.insert(
+                                (
+                                    self.current_module.clone(),
+                                    self.current_module_idx,
+                                    binding.clone(),
+                                    method.name.clone(),
+                                ),
+                                (trait_id.clone(), method_id),
+                            );
+                        }
                     }
                 }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
@@ -11731,7 +11925,11 @@ impl Checker {
                     // validation) — `x.default_method()` failed with
                     // "no method". Register the declaration for every imported
                     // trait; `pub` still governs the namespace claim below.
-                    let info = Self::trait_info_from_decl(tr);
+                    let info = Self::trait_info_from_decl(
+                        tr,
+                        self.current_module.clone(),
+                        self.current_module_idx,
+                    );
                     if tr.visibility.is_pub()
                         && !self.register_flat_file_import_type_name(
                             &mut current_import_pub_spans,
@@ -12479,7 +12677,11 @@ impl Checker {
                     if !tr.visibility.is_pub() {
                         continue;
                     }
-                    let info = Self::trait_info_from_decl(tr);
+                    let info = Self::trait_info_from_decl(
+                        tr,
+                        Some(module_full_path.to_string()),
+                        declaring_file_idx,
+                    );
                     let import_binding = if Self::should_import_name(&tr.name, spec) {
                         let binding_name = Self::resolve_import_name(spec, &tr.name)
                             .unwrap_or_else(|| tr.name.clone());

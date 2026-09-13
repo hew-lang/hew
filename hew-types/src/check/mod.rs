@@ -74,11 +74,11 @@ pub use self::types::{
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
-    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind, SpanKey,
-    StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef, TypeCheckOutput, TypeDef,
-    TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
-    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
-    WireLayoutTable, WireTextFormat,
+    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
+    ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
+    TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
+    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
@@ -2253,6 +2253,7 @@ impl Checker {
             .collect();
 
         let resolved_type_aliases = self.resolved_type_aliases();
+        let trait_defaults = self.resolved_trait_defaults();
 
         let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
@@ -2535,6 +2536,8 @@ impl Checker {
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
+            trait_bindings: std::mem::take(&mut self.trait_bindings),
+            trait_defaults,
             trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),

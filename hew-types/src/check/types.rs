@@ -616,6 +616,10 @@ pub struct TypeCheckOutput {
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    /// Trait declarations selected by exact lexical bindings.
+    pub trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
+    /// Default bodies retain declaration identity and their checked source scope.
+    pub trait_defaults: HashMap<crate::DefId, Vec<ResolvedTraitDefault>>,
     /// Canonical trait/method identities published through each exact source
     /// binding. The key is `(module, binding spelling, method)`; HIR uses it
     /// when an impl names an imported trait bare or through an alias, rather
@@ -1477,6 +1481,8 @@ impl Default for TypeCheckOutput {
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
+            trait_bindings: HashMap::new(),
+            trait_defaults: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
@@ -2478,7 +2484,18 @@ pub struct TypeAliasDef {
 }
 
 #[derive(Debug, Clone)]
+pub struct ResolvedTraitDefault {
+    pub trait_id: crate::DefId,
+    pub method_id: crate::DefId,
+    pub method: TraitMethod,
+    pub source_module: Option<String>,
+    pub file_index: u32,
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct TraitInfo {
+    pub(super) source_module: Option<String>,
+    pub(super) file_index: u32,
     pub(super) methods: Vec<TraitMethod>,
     pub(super) associated_types: Vec<TraitAssociatedTypeInfo>,
     pub(super) type_params: Vec<String>,
@@ -3013,6 +3030,7 @@ pub struct Checker {
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    pub(super) trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
     /// Source-owned trait method IDs as exposed through an exact source
     /// binding. Lookup registries may retain short compatibility keys, but
     /// call targets use this full-path table and never mint identities from
@@ -4031,6 +4049,7 @@ impl Checker {
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
+            trait_bindings: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),

@@ -1504,10 +1504,10 @@ fn materialized_default_body_plan(
     let Some(trait_bound) = &impl_decl.trait_bound else {
         return Vec::new();
     };
-    let Some(owner_key) = ctx.trait_default_owner_key(&trait_bound.name) else {
+    let Some(owner_key) = ctx.trait_declaration(&trait_bound.name) else {
         return Vec::new();
     };
-    let Some(defaults) = ctx.trait_default_methods.get(&owner_key).cloned() else {
+    let Some(defaults) = ctx.trait_defaults.get(&owner_key).cloned() else {
         return Vec::new();
     };
     let overridden: HashSet<&str> = impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
@@ -1519,24 +1519,20 @@ fn materialized_default_body_plan(
     ctx.diagnostics.truncate(diagnostics_before);
     let mut out = Vec::new();
     for default_method in &defaults {
-        if overridden.contains(default_method.name.as_str()) {
+        if overridden.contains(default_method.method.name.as_str()) {
             continue;
         }
-        let Some((declaring_trait, _)) =
-            ctx.trait_method_identity(&trait_bound.name, &default_method.name)
-        else {
-            continue;
-        };
+        let declaring_trait = &default_method.trait_id;
         let Some(declaration) = LowerCtx::synthetic_default_impl_body_declaration(
-            &declaring_trait,
+            declaring_trait,
             Some(&self_ty),
-            &default_method.name,
+            &default_method.method.name,
         ) else {
             continue;
         };
         out.push((
             declaration,
-            crate::node::HirImplBlock::method_symbol(symbol_self_name, &default_method.name),
+            crate::node::HirImplBlock::method_symbol(symbol_self_name, &default_method.method.name),
         ));
     }
     out
@@ -1615,206 +1611,6 @@ fn plan_imported_impl_bodies(
         ctx.current_module_idx = previous_module_idx;
         ctx.current_module_name = previous_module;
     }
-}
-
-/// Collect trait default method bodies from the complete module graph.  Root
-/// traits retain their root spelling; imported traits are keyed by their full
-/// declaration owner so same-final-module traits cannot overwrite one another.
-/// Also returns the `module_idx` the checker stamped each declaring trait's
-/// `SpanKey` facts with.
-///
-/// A default body materialised onto an impl keeps the SPANS of the trait
-/// declaration it was copied from, but is lowered at the impl's site. When the
-/// trait lives in another module the impl's `current_module_idx` does not match
-/// the index the checker recorded those spans under, so every `mk_key` lookup
-/// inside the body misses and the fail-closed contract fires
-/// (`MethodCallNoRewrite` for a `self.other()` call in a default body). The
-/// index numbering mirrors `Checker::check_program` exactly: skip the root,
-/// bump a 1-based counter for every module present in `modules`, in topo order.
-fn collect_trait_default_methods(
-    program: &Program,
-    file_import_module_idx: &HashMap<usize, u32>,
-    trait_method_ids_by_binding: &HashMap<
-        TraitMethodBindingKey,
-        (hew_types::DefId, hew_types::DefId),
-    >,
-) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
-    fn checker_binding_owner(
-        scope: Option<&str>,
-        module_idx: u32,
-        trait_name: &str,
-        defaults: &[TraitMethod],
-        trait_method_ids_by_binding: &HashMap<
-            TraitMethodBindingKey,
-            (hew_types::DefId, hew_types::DefId),
-        >,
-    ) -> Option<String> {
-        let scope = scope.map(str::to_string);
-        let mut owners = defaults
-            .iter()
-            .map(|method| {
-                trait_method_ids_by_binding
-                    .get(&(
-                        scope.clone(),
-                        module_idx,
-                        trait_name.to_string(),
-                        method.name.clone(),
-                    ))
-                    .map(|(trait_id, _)| trait_id.full_path().to_string())
-            })
-            .collect::<Option<Vec<_>>>()?;
-        owners.sort_unstable();
-        owners.dedup();
-        (owners.len() == 1).then(|| owners.pop().expect("checked length"))
-    }
-
-    let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
-    let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect = |items: &[(Item, Span)],
-                       owner: Option<&str>,
-                       flat_file_items: Option<&HashMap<usize, u32>>,
-                       idx_for: &dyn Fn(usize) -> u32| {
-        for (item_idx, (item, _)) in items.iter().enumerate() {
-            let Item::Trait(trait_decl) = item else {
-                continue;
-            };
-            let defaults: Vec<TraitMethod> = trait_decl
-                .items
-                .iter()
-                .filter_map(|ti| match ti {
-                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
-                    _ => None,
-                })
-                .collect();
-            if !defaults.is_empty() {
-                let key = if flat_file_items.is_some_and(|items| items.contains_key(&item_idx)) {
-                    let Some(owner) = checker_binding_owner(
-                        None,
-                        idx_for(item_idx),
-                        &trait_decl.name,
-                        &defaults,
-                        trait_method_ids_by_binding,
-                    ) else {
-                        continue;
-                    };
-                    owner
-                } else {
-                    owner.map_or_else(
-                        || trait_decl.name.clone(),
-                        |owner| format!("{owner}.{}", trait_decl.name),
-                    )
-                };
-                // A trait spliced into the ROOT items by a file import keeps
-                // its root binding spelling, but its declaration identity is
-                // the exact canonical owner published by the checker. A trait
-                // in a directory module's peer file likewise owns that PEER's
-                // index, not the assembled module's base — recover both per
-                // item.
-                owner_module_idx.insert(key.clone(), idx_for(item_idx));
-                out.insert(key, defaults);
-            }
-        }
-    };
-    collect(
-        &program.items,
-        None,
-        Some(file_import_module_idx),
-        &|item_idx| file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
-    );
-    if let Some(graph) = &program.module_graph {
-        let span_indices = graph.file_span_indices();
-        for module_id in &graph.topo_order {
-            if *module_id == graph.root {
-                continue;
-            }
-            let Some(module) = graph.modules.get(module_id) else {
-                continue;
-            };
-            let owner = module_id.path.join(".");
-            collect(&module.items, Some(&owner), None, &|item_idx| {
-                span_indices.item_index(module_id, item_idx).unwrap_or(0)
-            });
-        }
-    }
-    (out, owner_module_idx)
-}
-
-fn collect_trait_declaring_surfaces(
-    program: &Program,
-) -> (
-    HashMap<String, Vec<String>>,
-    HashMap<String, HashSet<String>>,
-) {
-    fn visit_items(
-        items: &[(Item, Span)],
-        module_owner: Option<&str>,
-        supers: &mut HashMap<String, Vec<String>>,
-        methods: &mut HashMap<String, HashSet<String>>,
-    ) {
-        for (item, _) in items {
-            let Item::Trait(trait_decl) = item else {
-                continue;
-            };
-            let key = module_owner.map_or_else(
-                || trait_decl.name.clone(),
-                |module| format!("{module}.{}", trait_decl.name),
-            );
-            methods.insert(
-                key.clone(),
-                trait_decl
-                    .items
-                    .iter()
-                    .filter_map(|item| match item {
-                        TraitItem::Method(method) => Some(method.name.clone()),
-                        TraitItem::AssociatedType { .. } => None,
-                    })
-                    .collect(),
-            );
-            let super_names: Vec<String> = trait_decl
-                .super_traits
-                .as_ref()
-                .map(|bounds| {
-                    bounds
-                        .iter()
-                        .map(|bound| {
-                            module_owner.map_or_else(
-                                || bound.name.clone(),
-                                |module| {
-                                    if bound.name.contains('.') {
-                                        bound.name.clone()
-                                    } else {
-                                        format!("{module}.{}", bound.name)
-                                    }
-                                },
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            supers.insert(key, super_names);
-        }
-    }
-
-    let mut supers = HashMap::new();
-    let mut methods = HashMap::new();
-    visit_items(&program.items, None, &mut supers, &mut methods);
-    if let Some(ref mg) = program.module_graph {
-        for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
-                continue;
-            }
-            if let Some(module) = mg.modules.get(mod_id) {
-                let module_owner = mod_id.path.join(".");
-                visit_items(
-                    &module.items,
-                    Some(&module_owner),
-                    &mut supers,
-                    &mut methods,
-                );
-            }
-        }
-    }
-    (supers, methods)
 }
 
 /// Synthesize a `FnDecl` from a `TraitMethod` for HIR lowering purposes.
@@ -2635,19 +2431,6 @@ pub fn lower_program_with_mono_cap(
             None => (None, None),
         };
 
-    // Pre-pre-pass: harvest trait default method bodies so that impl-block
-    // lowering can emit them for impls that do not override them.
-    let (trait_defaults, trait_default_module_idx) = collect_trait_default_methods(
-        program,
-        &file_import_module_idx,
-        &ctx.trait_method_ids_by_binding,
-    );
-    ctx.trait_default_methods = trait_defaults;
-    ctx.trait_default_module_idx = trait_default_module_idx;
-    let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
-    ctx.trait_super = trait_super;
-    ctx.trait_declared_methods = trait_declared_methods;
-
     // Root-authored declarations only: items spliced into `program.items` by
     // `flatten_file_import_items` keep their defining file's module identity
     // (`file_import_module_idx`), so they must not claim the root bare
@@ -2866,16 +2649,16 @@ pub fn lower_program_with_mono_cap(
                         if let Some(tb) = &impl_decl.trait_bound {
                             let overridden: HashSet<&str> =
                                 impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
-                            if let Some(default_owner) = ctx.trait_default_owner_key(&tb.name) {
+                            if let Some(default_owner) = ctx.trait_declaration(&tb.name) {
                                 if let Some(defaults) =
-                                    ctx.trait_default_methods.get(&default_owner).cloned()
+                                    ctx.trait_defaults.get(&default_owner).cloned()
                                 {
                                     for default_method in &defaults {
-                                        if !overridden.contains(default_method.name.as_str()) {
-                                            let fn_decl = trait_method_to_fn_decl(default_method);
-                                            ctx.register_impl_method_fn_entry(
+                                        if !overridden.contains(default_method.method.name.as_str())
+                                        {
+                                            ctx.register_trait_default_fn_entry(
                                                 &symbol_name,
-                                                &fn_decl,
+                                                default_method,
                                                 &impl_type_params,
                                             );
                                         }
@@ -2978,12 +2761,35 @@ pub fn lower_program_with_mono_cap(
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
                 let saved_module_idx = ctx.current_module_idx;
+                let private_fns = module
+                    .items
+                    .iter()
+                    .filter_map(|(item, _)| match item {
+                        Item::Function(function) if !function.visibility.is_pub() => {
+                            Some(function.name.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let private_closure = collect_imported_private_fn_closure(
+                    module,
+                    &private_fns,
+                    ctx.trait_defaults
+                        .values()
+                        .flatten()
+                        .filter(|default| {
+                            default.source_module.as_deref() == Some(module_full_path.as_str())
+                        })
+                        .filter_map(|default| default.method.body.as_ref()),
+                );
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     ctx.current_module_idx = span_indices
                         .item_index(mod_id, item_idx)
                         .unwrap_or_default();
                     match item {
-                        Item::Function(func) if func.visibility.is_pub() => {
+                        Item::Function(func)
+                            if func.visibility.is_pub() || private_closure.contains(&func.name) =>
+                        {
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -3141,20 +2947,18 @@ pub fn lower_program_with_mono_cap(
                                             .iter()
                                             .map(|m| m.name.as_str())
                                             .collect();
-                                        if let Some(default_owner) =
-                                            ctx.trait_default_owner_key(&tb.name)
+                                        if let Some(default_owner) = ctx.trait_declaration(&tb.name)
                                         {
-                                            if let Some(defaults) = ctx
-                                                .trait_default_methods
-                                                .get(&default_owner)
-                                                .cloned()
+                                            if let Some(defaults) =
+                                                ctx.trait_defaults.get(&default_owner).cloned()
                                             {
                                                 for default_method in &defaults {
-                                                    if !overridden
-                                                        .contains(default_method.name.as_str())
-                                                    {
-                                                        let fn_decl =
-                                                            trait_method_to_fn_decl(default_method);
+                                                    if !overridden.contains(
+                                                        default_method.method.name.as_str(),
+                                                    ) {
+                                                        let fn_decl = trait_method_to_fn_decl(
+                                                            &default_method.method,
+                                                        );
                                                         ctx.register_impl_method_fn_entry(
                                                             &symbol_self_name,
                                                             &fn_decl,
@@ -4845,27 +4649,17 @@ pub fn lower_program_with_mono_cap(
                         None
                     })
                     .collect();
-                let same_module_private_fn_decls: HashMap<String, &FnDecl> = module
-                    .items
-                    .iter()
-                    .filter_map(|(it, _)| {
-                        if let Item::Function(f) = it {
-                            if !f.visibility.is_pub() {
-                                return Some((f.name.clone(), f));
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                let imported_private_closure =
-                    collect_imported_private_fn_closure(module, &same_module_private_fns);
-                for helper_name in &imported_private_closure {
-                    if let Some(helper) = same_module_private_fn_decls.get(helper_name) {
-                        let qualified =
-                            crate::mangle_dotted_name(&format!("{source_module}.{}", helper.name));
-                        ctx.register_fn_entry(&qualified, helper);
-                    }
-                }
+                let imported_private_closure = collect_imported_private_fn_closure(
+                    module,
+                    &same_module_private_fns,
+                    ctx.trait_defaults
+                        .values()
+                        .flatten()
+                        .filter(|default| {
+                            default.source_module.as_deref() == Some(source_module.as_str())
+                        })
+                        .filter_map(|default| default.method.body.as_ref()),
+                );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
                     .iter()
@@ -7719,20 +7513,9 @@ struct LowerCtx {
     /// `Display` dispatch can defer to monomorphisation. Empty outside a
     /// function body.
     current_fn_type_params: HashSet<String>,
-    /// Default method bodies harvested from every `Item::Trait` in the root
-    /// program. Keyed by trait name; values are the `TraitMethod` entries
-    /// that carry a `body`. Populated once before the first lowering pass
-    /// so that `lower_impl_block` can lower default methods that are not
-    /// overridden in the concrete impl.
-    trait_default_methods: HashMap<String, Vec<TraitMethod>>,
-    /// The checker `module_idx` each entry of `trait_default_methods` was
-    /// recorded under, keyed identically. A default body materialised onto an
-    /// impl in another module must be lowered under its DECLARING module's
-    /// index or every `mk_key` lookup inside the copied body misses the
-    /// checker fact recorded against the trait's own source.
-    trait_default_module_idx: HashMap<String, u32>,
-    trait_super: HashMap<String, Vec<String>>,
-    trait_declared_methods: HashMap<String, HashSet<String>>,
+    /// Checker-selected trait bindings and default source bodies.
+    trait_bindings: HashMap<(Option<String>, u32, String), hew_types::DefId>,
+    trait_defaults: HashMap<hew_types::DefId, Vec<hew_types::ResolvedTraitDefault>>,
     /// Source-declared type names visible in the root namespace, including
     /// declarations flattened from file imports. These identities must be
     /// considered before the compiler-only `Task`, `Unit`, and
@@ -8088,10 +7871,8 @@ impl LowerCtx {
             target_arch,
             current_impl_self_ty: None,
             current_fn_type_params: HashSet::new(),
-            trait_default_methods: HashMap::new(),
-            trait_default_module_idx: HashMap::new(),
-            trait_super: HashMap::new(),
-            trait_declared_methods: HashMap::new(),
+            trait_bindings: tc_output.trait_bindings.clone(),
+            trait_defaults: tc_output.trait_defaults.clone(),
             root_visible_source_type_short_names: HashSet::new(),
             file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
@@ -9590,9 +9371,10 @@ fn imported_impl_signature_type_is_safe(
     }
 }
 
-fn collect_imported_private_fn_closure(
+fn collect_imported_private_fn_closure<'a>(
     module: &hew_parser::module::Module,
     private_fns: &HashSet<String>,
+    default_bodies: impl Iterator<Item = &'a Block>,
 ) -> HashSet<String> {
     let private_fn_bodies: HashMap<String, &Block> = module
         .items
@@ -9655,6 +9437,9 @@ fn collect_imported_private_fn_closure(
             }
             _ => {}
         }
+    }
+    for body in default_bodies {
+        seed_from(body, &mut reachable, &mut worklist);
     }
     while let Some(helper) = worklist.pop() {
         if let Some(body) = private_fn_bodies.get(&helper) {
@@ -12494,43 +12279,6 @@ impl LowerCtx {
         self.lower_fn_with_name(func, &func.name, span)
     }
 
-    fn resolve_method_declaring_trait(
-        &self,
-        trait_name: &str,
-        method_name: &str,
-    ) -> Option<String> {
-        if self
-            .trait_declared_methods
-            .get(trait_name)
-            .is_some_and(|methods| methods.contains(method_name))
-        {
-            return Some(trait_name.to_string());
-        }
-
-        let mut stack = self
-            .trait_super
-            .get(trait_name)
-            .cloned()
-            .unwrap_or_default();
-        let mut visited = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !visited.insert(current.clone()) {
-                continue;
-            }
-            if self
-                .trait_declared_methods
-                .get(&current)
-                .is_some_and(|methods| methods.contains(method_name))
-            {
-                return Some(current);
-            }
-            if let Some(supers) = self.trait_super.get(&current) {
-                stack.extend(supers.iter().cloned());
-            }
-        }
-        None
-    }
-
     /// Return the checker-authored declaration identities for a trait method.
     /// An absent entry is intentionally propagated as `None`: static-dispatch
     /// indexing must fail closed instead of constructing an id from HIR text.
@@ -12593,67 +12341,29 @@ impl LowerCtx {
             })
     }
 
-    /// Resolve a trait bound written on an impl to the exact key used by the
-    /// default-method harvest.  Import aliases are resolved solely through the
-    /// checker-published binding table; local and already-qualified traits are
-    /// accepted only when an existing checker declaration ID proves that exact
-    /// owner.  There is intentionally no leaf-name/suffix fallback.
-    fn trait_default_owner_key(&self, trait_bound: &str) -> Option<String> {
-        let mut binding_owners: Vec<String> = self
-            .trait_method_ids_by_binding
-            .iter()
-            .filter(|((scope, file, binding, _), _)| {
-                scope == &self.current_module_name
-                    && *file == self.current_module_idx
-                    && binding == trait_bound
-            })
-            .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
-            .collect();
-        binding_owners.sort_unstable();
-        binding_owners.dedup();
-        if let [owner] = binding_owners.as_slice() {
-            return Some(owner.clone());
-        }
-        if !binding_owners.is_empty() {
-            return None;
-        }
+    fn register_trait_default_fn_entry(
+        &mut self,
+        self_name: &str,
+        default: &hew_types::ResolvedTraitDefault,
+        impl_type_params: &[String],
+    ) {
+        let previous_module =
+            std::mem::replace(&mut self.current_module_name, default.source_module.clone());
+        let previous_file = std::mem::replace(&mut self.current_module_idx, default.file_index);
+        let function = trait_method_to_fn_decl(&default.method);
+        self.register_impl_method_fn_entry(self_name, &function, impl_type_params);
+        self.current_module_name = previous_module;
+        self.current_module_idx = previous_file;
+    }
 
-        // A file import splices declarations into the root scope, but the
-        // checker publishes each trait binding under its declaring file index.
-        // If the root has no exact file-local binding, accept only one
-        // unambiguous checker-published owner across those flat-import files.
-        if self.current_module_name.is_none() {
-            let mut flat_file_owners: Vec<String> = self
-                .trait_method_ids_by_binding
-                .iter()
-                .filter(|((scope, _, binding, _), _)| scope.is_none() && binding == trait_bound)
-                .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
-                .collect();
-            flat_file_owners.sort_unstable();
-            flat_file_owners.dedup();
-            if let [owner] = flat_file_owners.as_slice() {
-                return Some(owner.clone());
-            }
-            if !flat_file_owners.is_empty() {
-                return None;
-            }
-        }
-
-        let local_owner = self.current_module_name.as_ref().map_or_else(
-            || trait_bound.to_string(),
-            |module| format!("{module}.{trait_bound}"),
-        );
-        let mut exact_owners: Vec<String> = self
-            .trait_method_ids
-            .values()
-            .filter_map(|(trait_id, _)| {
-                let owner = trait_id.full_path();
-                (owner == trait_bound || owner == local_owner).then(|| owner.to_string())
-            })
-            .collect();
-        exact_owners.sort_unstable();
-        exact_owners.dedup();
-        (exact_owners.len() == 1).then(|| exact_owners.pop().expect("checked length"))
+    fn trait_declaration(&self, binding: &str) -> Option<hew_types::DefId> {
+        self.trait_bindings
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            ))
+            .cloned()
     }
 
     fn ordinary_call_target(&self, span: &Span) -> Option<CallTarget> {
@@ -13193,12 +12903,7 @@ impl LowerCtx {
             let declaring_trait = decl
                 .trait_bound
                 .as_ref()
-                .and_then(|tb| self.resolve_method_declaring_trait(&tb.name, &method.name))
-                .unwrap_or_else(|| {
-                    decl.trait_bound
-                        .as_ref()
-                        .map_or(String::new(), |tb| tb.name.clone())
-                });
+                .map_or(String::new(), |tb| tb.name.clone());
             let ids = self.trait_method_identity(&declaring_trait, &method.name);
             let declaring_trait = ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
                 trait_id.full_path().to_string()
@@ -13216,34 +12921,27 @@ impl LowerCtx {
         // so `Self` inside the default body lowers to the correct concrete type.
         if let Some(tb) = &decl.trait_bound {
             let overridden: HashSet<&str> = decl.methods.iter().map(|m| m.name.as_str()).collect();
-            if let Some(default_owner_key) = self.trait_default_owner_key(&tb.name) {
-                if let Some(defaults) = self.trait_default_methods.get(&default_owner_key).cloned()
-                {
-                    // The bodies below were copied from the trait declaration,
-                    // so their spans index the DECLARING module's source. The
-                    // checker recorded their facts under that module's index
-                    // (it checks each trait's default bodies once, during the
-                    // module walk). Lower them under the same index or every
-                    // `mk_key` lookup inside a copied body misses — a
-                    // `self.other()` call in a default body then fails closed
-                    // with `MethodCallNoRewrite`. Restored below.
+            if let Some(default_owner_key) = self.trait_declaration(&tb.name) {
+                if let Some(defaults) = self.trait_defaults.get(&default_owner_key).cloned() {
                     let saved_module_idx = self.current_module_idx;
-                    self.current_module_idx = self
-                        .trait_default_module_idx
-                        .get(&default_owner_key)
-                        .copied()
-                        .unwrap_or(saved_module_idx);
+                    let saved_module = self.current_module_name.clone();
                     for default_method in &defaults {
-                        if overridden.contains(default_method.name.as_str()) {
+                        if overridden.contains(default_method.method.name.as_str()) {
                             continue;
                         }
-                        let fn_decl = trait_method_to_fn_decl(default_method);
+                        self.current_module_idx = default_method.file_index;
+                        self.current_module_name
+                            .clone_from(&default_method.source_module);
+                        let fn_decl = trait_method_to_fn_decl(&default_method.method);
                         let symbol = crate::node::HirImplBlock::method_symbol(
                             &symbol_self_name,
                             &fn_decl.name,
                         );
-                        let declaring_trait = tb.name.clone();
-                        let ids = self.trait_method_identity(&declaring_trait, &fn_decl.name);
+                        let declaring_trait = default_method.trait_id.full_path().to_string();
+                        let ids = Some((
+                            default_method.trait_id.clone(),
+                            default_method.method_id.clone(),
+                        ));
                         // Trait declaration IDs own static lookup; this
                         // materialised default body needs a distinct concrete
                         // implementation identity for body lookup and
@@ -13329,6 +13027,7 @@ impl LowerCtx {
                         method_declaring_traits.push(declaring_trait);
                     }
                     self.current_module_idx = saved_module_idx;
+                    self.current_module_name = saved_module;
                 }
             }
         }
@@ -33564,79 +33263,6 @@ impl Sample for Broken {
         assert!(
             diagnostic.note.contains(&reason),
             "the displayed diagnostic must include its cause"
-        );
-    }
-
-    #[test]
-    fn flat_file_trait_defaults_use_checker_published_owner() {
-        let parsed = hew_parser::parse(
-            r#"
-    trait Greet {
-        fn simple(self) -> i64 { 42 }
-        fn greeting(self) -> string { "hello" }
-    }
-    "#,
-        );
-        assert!(
-            parsed.errors.is_empty(),
-            "parse errors: {:#?}",
-            parsed.errors
-        );
-        let owner = hew_types::DefId::for_test("support.greeting.Greet");
-        let bindings = ["simple", "greeting"]
-            .into_iter()
-            .map(|method| {
-                (
-                    (None, 7, "Greet".to_string(), method.to_string()),
-                    (
-                        owner.clone(),
-                        hew_types::DefId::for_test(format!("{}::{method}", owner.full_path())),
-                    ),
-                )
-            })
-            .collect();
-        let file_import_module_idx = HashMap::from([(0, 7)]);
-
-        let (defaults, module_indices) =
-            collect_trait_default_methods(&parsed.program, &file_import_module_idx, &bindings);
-
-        assert!(defaults.contains_key("support.greeting.Greet"));
-        assert!(!defaults.contains_key("Greet"));
-        assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
-    }
-
-    #[test]
-    fn root_trait_default_owner_uses_unambiguous_flat_file_binding() {
-        let mut ctx = LowerCtx::new(
-            &TypeCheckOutput::default(),
-            MONOMORPHISATION_REGISTRY_CAP,
-            TargetArch::host(),
-        );
-        let owner = hew_types::DefId::for_test("support.greeting.Greet");
-        ctx.trait_method_ids_by_binding.insert(
-            (None, 7, "Greet".to_string(), "greeting".to_string()),
-            (
-                owner.clone(),
-                hew_types::DefId::for_test("support.greeting.Greet::greeting"),
-            ),
-        );
-
-        assert_eq!(
-            ctx.trait_default_owner_key("Greet"),
-            Some(owner.full_path().to_string())
-        );
-
-        ctx.trait_method_ids_by_binding.insert(
-            (None, 8, "Greet".to_string(), "greeting".to_string()),
-            (
-                hew_types::DefId::for_test("other.greeting.Greet"),
-                hew_types::DefId::for_test("other.greeting.Greet::greeting"),
-            ),
-        );
-        assert_eq!(
-            ctx.trait_default_owner_key("Greet"),
-            None,
-            "same-leaf flat-file traits must remain ambiguous"
         );
     }
 

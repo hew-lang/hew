@@ -2226,6 +2226,8 @@ mod tests {
         checker.trait_defs.insert(
             "Greeter".to_string(),
             TraitInfo {
+                source_module: None,
+                file_index: 0,
                 methods: vec![],
                 associated_types: vec![],
                 type_params: vec![],

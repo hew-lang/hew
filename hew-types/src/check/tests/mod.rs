@@ -340,7 +340,7 @@ pub(super) fn make_checker_with_trait(
         lang_item: None,
     };
 
-    let info = Checker::trait_info_from_decl(&td);
+    let info = Checker::trait_info_from_decl(&td, None, 0);
     checker.trait_defs.insert(trait_name.to_string(), info);
     checker
 }

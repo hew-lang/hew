@@ -8,6 +8,8 @@ type Value = bool;
 
 type T = bool;
 
+type Cargo(i64);
+
 type Message {
     names: words.Names,
     number: Number,
@@ -38,30 +40,27 @@ fn main() {
     println(first);
     println(second);
     println(message.number);
-
-    let envelope = words.Envelope<string> {
-        value: "bundle".to_upper(),
-        names: message.names,
-        order: message.number,
-    };
-    let delivery: words.Delivery<string> = words.Delivery.Bundle {
-        value: envelope.value,
-        names: envelope.names,
-        order: envelope.order,
-    };
+    let envelope = words.Envelope<string> { value: "bundle".to_upper(), names: message.names, order: message.number };
+    let delivery: words.Delivery<string> = words.Delivery.Bundle { value: envelope.value, names: envelope.names, order: envelope.order };
     show(delivery);
     show(words.Delivery.Label("label".to_upper()));
     show(words.Delivery.Empty);
     show(delivery);
     println(envelope.value);
-
     let numeric = numbers.Envelope<bool> { value: true, order: answer() };
     println(f"{numeric.order}:{numeric.value}");
-
     var cargo: Vec<words.Cargo<string>> = Vec.new();
     cargo.push(words.Cargo("first".to_upper(), message.names));
     cargo.push(words.Cargo("second".to_upper(), envelope.names));
     println(count(cargo));
     println(count(cargo));
     println(envelope.names.0);
+    let bound = words.Bound<i64> { value: 71 };
+    println(bound.value);
+    println(words.private_count());
+    var local: Vec<Cargo> = Vec.new();
+    local.push(Cargo(9));
+    var different: Vec<numbers.Cargo> = Vec.new();
+    different.push(numbers.Cargo(false, 2));
+    println(local.len() + different.len());
 }

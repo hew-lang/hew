@@ -8,3 +8,5 @@ pub type Envelope<T> {
 pub fn answer() -> Value {
     42
 }
+
+pub type Cargo(bool, i64);

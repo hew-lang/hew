@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "MODULE\nALIAS\n42\n42:BUNDLE:MODULE:ALIAS\nLABEL\nempty\n42:BUNDLE:MODULE:ALIAS\nBUNDLE\n42:true\n2\n2\nMODULE\n"
+stdout = "MODULE\nALIAS\n42\n42:BUNDLE:MODULE:ALIAS\nLABEL\nempty\n42:BUNDLE:MODULE:ALIAS\nBUNDLE\n42:true\n2\n2\nMODULE\n71\n2\n2\n"
 exit = 0

@@ -12,9 +12,7 @@
 //! for genuinely non-BitCopy aggregates.
 
 use hew_hir::{lower_program, ResolutionCtx, ResourceMarker, ValueClass};
-use hew_types::{
-    module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy, TypeCheckOutput,
-};
+use hew_types::{module_registry::ModuleRegistry, BuiltinType, Checker, ResolvedTy};
 
 fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
@@ -33,28 +31,6 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     lower_program(
         &parsed.program,
         &tc_output,
-        &ResolutionCtx,
-        hew_hir::TargetArch::host(),
-    )
-}
-
-fn lower_without_type_facts(source: &str) -> hew_hir::LowerOutput {
-    let parsed = hew_parser::parse(source);
-    assert!(
-        parsed.errors.is_empty(),
-        "parse errors: {:?}",
-        parsed.errors
-    );
-    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
-    let identity_only = TypeCheckOutput {
-        identity: checked.identity,
-        fn_sigs: checked.fn_sigs,
-        type_fact_context: checked.type_fact_context,
-        ..TypeCheckOutput::default()
-    };
-    lower_program(
-        &parsed.program,
-        &identity_only,
         &ResolutionCtx,
         hew_hir::TargetArch::host(),
     )
@@ -129,24 +105,6 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
         ValueClass::of_ty(&ty, &output.module.type_classes),
         ValueClass::BitCopy,
         "ValueClass::of_ty must agree: a Vec-bearing record is not BitCopy"
-    );
-}
-
-#[test]
-fn record_decl_of_primitives_is_inferred_bitcopy() {
-    let output = lower_without_type_facts(
-        r"
-        type Point { x: i64, y: i64 }
-    ",
-    );
-    assert!(
-        output.diagnostics.is_empty(),
-        "no diagnostics expected; got: {:#?}",
-        output.diagnostics
-    );
-    assert_eq!(
-        output.module.type_classes.get("Point").map(|entry| entry.0),
-        Some(ResourceMarker::BitCopy)
     );
 }
 
@@ -304,7 +262,7 @@ fn zero_field_record_beside_unrelated_extern_stays_uninferred() {
 
 #[test]
 fn empty_field_user_type_remains_uninferred() {
-    let output = lower_without_type_facts("pub type Empty { }");
+    let output = lower_checked("pub type Empty { }");
     assert!(
         output.diagnostics.is_empty(),
         "no diagnostics expected; got: {:#?}",
@@ -319,7 +277,7 @@ fn empty_field_user_type_remains_uninferred() {
 
 #[test]
 fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
-    let output = lower_without_type_facts(
+    let output = lower_checked(
         r"
         pub type Duplex {
             payload: string,

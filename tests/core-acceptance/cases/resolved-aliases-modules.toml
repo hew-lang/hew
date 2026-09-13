@@ -1,10 +1,10 @@
 [[case]]
 id = "resolved-aliases-modules"
-intent = "Qualified and selectively renamed imported aliases retain their canonical module identities, including a nested generic alias in a record field."
+intent = "Imported aliases and generic binders retain their declaration scope across named and positional records, mixed enum payloads, same-name module types and owned collection copies."
 source = "fixtures/resolved-aliases-modules/main.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "MODULE\nALIAS\n42\n"
+stdout = "MODULE\nALIAS\n42\n42:BUNDLE:MODULE:ALIAS\nLABEL\nempty\n42:BUNDLE:MODULE:ALIAS\nBUNDLE\n42:true\n2\n2\nMODULE\n71\n2\n2\n"
 exit = 0

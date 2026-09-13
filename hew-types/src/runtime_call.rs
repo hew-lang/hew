@@ -2036,35 +2036,11 @@ const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = 
     },
     CanonicalStdlibExternSignature {
         module: "std.io",
-        signature_key: "bytes::contains",
-        symbol: "hew_bytes_contains",
-        family: Some(RuntimeCallFamily::BytesContains),
-        params: U8,
-        result: CanonicalExternTy::Bool,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.io",
         signature_key: "bytes::get",
         symbol: "hew_bytes_get",
         family: Some(RuntimeCallFamily::BytesGet),
         params: I64,
         result: CanonicalExternTy::OptionU8,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.io",
-        signature_key: "bytes::is_empty",
-        symbol: "hew_bytes_is_empty",
-        family: Some(RuntimeCallFamily::BytesIsEmpty),
-        params: EMPTY,
-        result: CanonicalExternTy::Bool,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.io",
-        signature_key: "bytes::len",
-        symbol: "hew_bytes_len",
-        family: Some(RuntimeCallFamily::BytesLen),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
     },
     CanonicalStdlibExternSignature {
         module: "std.io",
@@ -2779,27 +2755,7 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::BytesContains => RuntimeOpRow {
-                symbol: "hew_bytes_contains",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[
-                        A {
-                            ty: K::Bytes,
-                            effect: E::Borrow,
-                        },
-                        A {
-                            ty: K::U8,
-                            effect: E::Copy,
-                        },
-                    ],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
+            Self::BytesContains => declared::BYTESCONTAINS.row,
             Self::BytesDecodeUtf8 => RuntimeOpRow {
                 symbol: "hew_bytes_decode_utf8",
                 contract: Some(RuntimeSemanticContract {
@@ -2872,36 +2828,8 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::BytesIsEmpty => RuntimeOpRow {
-                symbol: "hew_bytes_is_empty",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Bytes,
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::BytesLen => RuntimeOpRow {
-                symbol: "hew_bytes_len",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Bytes,
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
+            Self::BytesIsEmpty => declared::BYTESISEMPTY.row,
+            Self::BytesLen => declared::BYTESLEN.row,
             Self::BytesPop => RuntimeOpRow {
                 symbol: "hew_bytes_pop",
                 contract: Some(RuntimeSemanticContract {

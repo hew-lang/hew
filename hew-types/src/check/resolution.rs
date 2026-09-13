@@ -3437,6 +3437,25 @@ impl Checker {
                         })
                         .collect()
                 });
+                // Declaration binders shadow nominal and alias spellings before
+                // module qualification changes their source name.
+                for scope in self.generic_ctx.iter().rev() {
+                    if let Some(ty) = scope.get(name) {
+                        return ty.clone();
+                    }
+                }
+                if self
+                    .current_type_param_bounds
+                    .iter()
+                    .rev()
+                    .any(|scope| scope.bounds.contains_key(name))
+                {
+                    return Ty::Named {
+                        builtin: None,
+                        name: name.clone(),
+                        args,
+                    };
+                }
                 // Whole-module imports are lexical bindings, not declaration
                 // identities.  Canonicalise `lmonobox.Box` through the exact
                 // binding owner (`hew.lmonobox.Box`) before it participates in

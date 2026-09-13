@@ -3135,11 +3135,18 @@ impl Checker {
     /// import-alias maps; on a member upgrade, patch `type_defs` and re-run every
     /// member-derived fact. Mirrors `register_type_decl`'s member resolution and
     /// derivation tail. No-op when no member changed.
+    fn reresolve_type_decl_members(&mut self, td: &TypeDecl) {
+        let scope =
+            self.enter_primary_sig_scope(&[(td.type_params.as_ref(), td.where_clause.as_ref())]);
+        self.reresolve_type_decl_members_in_scope(td);
+        self.exit_primary_sig_scope(scope);
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "mirrors register_type_decl's member resolution and derivation tail"
     )]
-    fn reresolve_type_decl_members(&mut self, td: &TypeDecl) {
+    fn reresolve_type_decl_members_in_scope(&mut self, td: &TypeDecl) {
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
             TypeDeclKind::Enum => TypeDefKind::Enum,
@@ -3258,8 +3265,15 @@ impl Checker {
 
     /// Re-resolve a `record` declaration's member types. Mirrors
     /// `register_record_decl`'s named/tuple split and derivation tail. No-op when
-    /// no member changed. Records are root-only, so there is no qualified key.
+    /// no member changed. Positional constructors use the same canonical declaration key.
     fn reresolve_record_members(&mut self, rd: &RecordDecl) {
+        let scope =
+            self.enter_primary_sig_scope(&[(rd.type_params.as_ref(), rd.where_clause.as_ref())]);
+        self.reresolve_record_members_in_scope(rd);
+        self.exit_primary_sig_scope(scope);
+    }
+
+    fn reresolve_record_members_in_scope(&mut self, rd: &RecordDecl) {
         let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
@@ -3298,9 +3312,9 @@ impl Checker {
                 let field_types: Vec<Ty> = type_def.fields.values().cloned().collect();
                 let field_types = self.expand_for_marker_registration(&field_types);
                 self.registry
-                    .register_type(rd.name.clone(), field_types.clone());
+                    .register_type(stored_key.clone(), field_types.clone());
                 self.registry
-                    .register_serializable_type(rd.name.clone(), field_types);
+                    .register_serializable_type(stored_key, field_types);
                 self.commit_reresolved_type_def(&rd.name, type_def);
             }
             RecordKind::Tuple(positional_types) => {
@@ -3310,25 +3324,22 @@ impl Checker {
                     .collect();
                 // Tuple records store no fields (`.0`/`.1` access is forbidden);
                 // the positional types live only in the constructor `fn_sig`.
-                let unchanged = self
-                    .fn_sigs
-                    .get(&rd.name)
-                    .is_some_and(|sig| sig.params == param_tys);
-                if unchanged {
-                    return;
+                let canonical = self.authoritative_type_def_key(&rd.name);
+                let mut changed = false;
+                if let Some(sig) = self.fn_sigs.get_mut(&canonical) {
+                    if sig.params != param_tys {
+                        sig.params.clone_from(&param_tys);
+                        changed = true;
+                    }
                 }
-                if let Some(sig) = self.fn_sigs.get_mut(&rd.name) {
-                    sig.params.clone_from(&param_tys);
+                if !changed {
+                    return;
                 }
                 let expanded_param_tys = self.expand_for_marker_registration(&param_tys);
                 self.registry
-                    .register_type(rd.name.clone(), expanded_param_tys.clone());
+                    .register_type(canonical.clone(), expanded_param_tys.clone());
                 self.registry
-                    .register_serializable_type(rd.name.clone(), expanded_param_tys);
-                if let Some(module_short) = self.current_module_identity().map(str::to_string) {
-                    self.registry
-                        .alias_type_markers(&rd.name, &format!("{module_short}.{}", rd.name));
-                }
+                    .register_serializable_type(canonical, expanded_param_tys);
                 self.handle_bearing_dirty = true;
             }
         }
@@ -3338,6 +3349,13 @@ impl Checker {
     /// `register_machine_decl`'s state-variant / event-companion resolution and
     /// marker derivation. State and event companions are patched independently.
     fn reresolve_machine_members(&mut self, md: &MachineDecl) {
+        let scope =
+            self.enter_primary_sig_scope(&[(Some(&md.type_params), md.where_clause.as_ref())]);
+        self.reresolve_machine_members_in_scope(md);
+        self.exit_primary_sig_scope(scope);
+    }
+
+    fn reresolve_machine_members_in_scope(&mut self, md: &MachineDecl) {
         // --- State fields → machine `type_def` variants ---
         let mut variants = HashMap::new();
         let mut machine_hole_vars = Vec::new();
@@ -3459,8 +3477,15 @@ impl Checker {
     /// checking can construct local values. The import path's later
     /// `register_type_decl` call overwrites those signatures for `pub` types
     /// with the fully side-effected version.
-    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     fn pre_register_type_decl(&mut self, td: &TypeDecl) {
+        let scope =
+            self.enter_primary_sig_scope(&[(td.type_params.as_ref(), td.where_clause.as_ref())]);
+        self.pre_register_type_decl_in_scope(td);
+        self.exit_primary_sig_scope(scope);
+    }
+
+    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
+    fn pre_register_type_decl_in_scope(&mut self, td: &TypeDecl) {
         // Idempotency guard, keyed per-module. Two non-root modules that each
         // declare a type of the same bare name (`badpkg.Reply` and
         // `goodpkg.Reply`) must BOTH register: the bare `type_defs` entry is
@@ -3753,8 +3778,15 @@ impl Checker {
         true
     }
 
-    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
     pub(super) fn register_type_decl(&mut self, td: &TypeDecl) {
+        let scope =
+            self.enter_primary_sig_scope(&[(td.type_params.as_ref(), td.where_clause.as_ref())]);
+        self.register_type_decl_in_scope(td);
+        self.exit_primary_sig_scope(scope);
+    }
+
+    #[expect(clippy::too_many_lines, reason = "type resolution requires many cases")]
+    fn register_type_decl_in_scope(&mut self, td: &TypeDecl) {
         if td.origin == hew_parser::ast::DeclarationOrigin::MachineReport {
             let qualified = self
                 .current_declaration_module()
@@ -4005,6 +4037,13 @@ impl Checker {
     /// `kind = TypeDefKind::Record` so the field-write rejection in
     /// `statements.rs` can identify record types.
     pub(super) fn register_record_decl(&mut self, rd: &RecordDecl) {
+        let scope =
+            self.enter_primary_sig_scope(&[(rd.type_params.as_ref(), rd.where_clause.as_ref())]);
+        self.register_record_decl_in_scope(rd);
+        self.exit_primary_sig_scope(scope);
+    }
+
+    fn register_record_decl_in_scope(&mut self, rd: &RecordDecl) {
         let type_param_names: Vec<String> = rd.type_params.as_ref().map_or(vec![], |params| {
             params.iter().map(|p| p.name.clone()).collect()
         });
@@ -4066,13 +4105,7 @@ impl Checker {
                     return_type: return_type.clone(),
                     ..FnSig::default()
                 };
-                // The bare key remains the lexical constructor spelling for
-                // the defining module. The exact declaration key is the
-                // semantic signature authority for imported/collision paths.
-                self.fn_sigs.insert(rd.name.clone(), signature.clone());
-                if declaration_name != rd.name {
-                    self.fn_sigs.insert(declaration_name, signature);
-                }
+                self.fn_sigs.insert(declaration_name.clone(), signature);
             }
         }
 
@@ -4100,17 +4133,17 @@ impl Checker {
         };
         let field_types = self.expand_for_marker_registration(&field_types);
         self.registry
-            .register_type(rd.name.clone(), field_types.clone());
+            .register_type(declaration_name.clone(), field_types.clone());
         self.registry
-            .register_type_params(rd.name.clone(), type_param_names.clone());
+            .register_type_params(declaration_name.clone(), type_param_names.clone());
         // Mark this as a record type so implements_marker applies the correct
         // value-type semantics (Resource always false; all other markers field-driven).
-        self.registry.register_record_type(rd.name.clone());
+        self.registry.register_record_type(declaration_name.clone());
         self.registry
-            .register_serializable_type(rd.name.clone(), field_types);
+            .register_serializable_type(declaration_name.clone(), field_types);
 
-        self.type_defs.insert(rd.name.clone(), type_def);
-        self.record_type_def_inference_holes(&rd.name, hole_vars);
+        self.type_defs.insert(declaration_name.clone(), type_def);
+        self.record_type_def_inference_holes(&declaration_name, hole_vars);
         self.handle_bearing_dirty = true;
     }
 
@@ -11660,6 +11693,34 @@ impl Checker {
                         }
                     }
                 }
+                Item::TypeAlias(decl) if decl.visibility.is_pub() => {
+                    if let Some(binding) = publication.bare_binding(&decl.name) {
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding,
+                            format!("{module_full_path}.{}", decl.name),
+                            publication,
+                        );
+                    }
+                }
+                Item::Record(decl) if decl.visibility.is_pub() => {
+                    let canonical = format!("{module_full_path}.{}", decl.name);
+                    if let Some(binding) = publication.bare_binding(&decl.name) {
+                        self.publish_stdlib_hew_type_binding(
+                            module_short,
+                            binding.clone(),
+                            canonical.clone(),
+                            publication,
+                        );
+                        if matches!(decl.kind, RecordKind::Tuple(_)) {
+                            self.publish_stdlib_hew_function_binding(
+                                binding,
+                                &canonical,
+                                publication,
+                            );
+                        }
+                    }
+                }
                 Item::TypeDecl(td) if td.visibility.is_pub() => {
                     if let Some(binding) = publication.bare_binding(&td.name) {
                         self.publish_stdlib_hew_type_binding(
@@ -12395,6 +12456,54 @@ impl Checker {
                             ),
                             module_full_path.to_string(),
                         );
+                    }
+                }
+                Item::Record(decl) => {
+                    let canonical = format!("{module_full_path}.{}", decl.name);
+                    let saved_module = self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
+                    self.register_record_decl(decl);
+                    if let Some(definition) = self.type_defs.get(&canonical).cloned() {
+                        self.register_canonical_type_def(module_full_path, &decl.name, &definition);
+                    }
+                    self.current_module = saved_module;
+                    self.current_module_idx = importer_file_idx;
+                    self.type_visibility.insert(
+                        canonical.clone(),
+                        (decl.visibility, Some(module_full_path.to_string())),
+                    );
+                    self.type_def_spans
+                        .entry(canonical.clone())
+                        .or_insert_with(|| span.clone());
+                    if matches!(decl.kind, RecordKind::Tuple(_)) {
+                        self.fn_visibility
+                            .insert(canonical.clone(), decl.visibility);
+                        self.fn_def_spans
+                            .entry(canonical.clone())
+                            .or_insert_with(|| (span.clone(), Some(module_full_path.to_string())));
+                        if decl.visibility == hew_parser::ast::Visibility::Pub {
+                            self.module_fn_exports.insert(canonical.clone());
+                        }
+                    }
+                    if decl.visibility.is_pub() {
+                        self.record_module_type_export(module_full_path, &decl.name);
+                        if let Some(binding) =
+                            StdlibBarePublication::Import(spec).bare_binding(&decl.name)
+                        {
+                            self.publish_stdlib_hew_type_binding(
+                                module_short,
+                                binding.clone(),
+                                canonical.clone(),
+                                StdlibBarePublication::Import(spec),
+                            );
+                            if matches!(decl.kind, RecordKind::Tuple(_)) {
+                                self.publish_stdlib_hew_function_binding(
+                                    binding,
+                                    &canonical,
+                                    StdlibBarePublication::Import(spec),
+                                );
+                            }
+                        }
                     }
                 }
                 Item::TypeAlias(decl) => {
@@ -13372,7 +13481,7 @@ impl Checker {
             .map(|(field, ty)| {
                 (
                     field.clone(),
-                    self.qualify_source_member_ty(module_full_path, ty),
+                    self.qualify_source_member_ty(module_full_path, ty, &source_def.type_params),
                 )
             })
             .collect();
@@ -13382,7 +13491,11 @@ impl Checker {
             .map(|(variant, definition)| {
                 (
                     variant.clone(),
-                    self.qualify_source_variant_def(module_full_path, definition),
+                    self.qualify_source_variant_def(
+                        module_full_path,
+                        definition,
+                        &source_def.type_params,
+                    ),
                 )
             })
             .collect();
@@ -13407,6 +13520,10 @@ impl Checker {
         // the structural rows directly from this source definition instead.
         let members = if published.kind == TypeDefKind::Enum {
             Self::structural_member_types_for_type(&published)
+        } else if published.kind == TypeDefKind::Record && published.fields.is_empty() {
+            self.fn_sigs
+                .get(&qualified)
+                .map_or_else(Vec::new, |signature| signature.params.clone())
         } else {
             published.fields.values().cloned().collect()
         };
@@ -13421,9 +13538,15 @@ impl Checker {
     /// bare sibling names. Preserve that owner when publishing the declaration
     /// for an importer. Later checker phases run in the importer's scope, where
     /// a bare sibling can instead denote a builtin or an unimported export.
-    fn qualify_source_member_ty(&self, module_full_path: &str, ty: &Ty) -> Ty {
-        let qualified_children =
-            ty.map_children_pub(&|child| self.qualify_source_member_ty(module_full_path, child));
+    fn qualify_source_member_ty(
+        &self,
+        module_full_path: &str,
+        ty: &Ty,
+        parameters: &[String],
+    ) -> Ty {
+        let qualified_children = ty.map_children_pub(&|child| {
+            self.qualify_source_member_ty(module_full_path, child, parameters)
+        });
         let Ty::Named {
             name,
             args,
@@ -13432,7 +13555,7 @@ impl Checker {
         else {
             return qualified_children;
         };
-        if name.contains('.') {
+        if name.contains('.') || parameters.contains(&name) {
             return Ty::Named {
                 name,
                 args,
@@ -13455,13 +13578,14 @@ impl Checker {
         &self,
         module_full_path: &str,
         definition: &VariantDef,
+        parameters: &[String],
     ) -> VariantDef {
         match definition {
             VariantDef::Unit => VariantDef::Unit,
             VariantDef::Tuple(fields) => VariantDef::Tuple(
                 fields
                     .iter()
-                    .map(|field| self.qualify_source_member_ty(module_full_path, field))
+                    .map(|field| self.qualify_source_member_ty(module_full_path, field, parameters))
                     .collect(),
             ),
             VariantDef::Struct(fields) => VariantDef::Struct(
@@ -13470,7 +13594,7 @@ impl Checker {
                     .map(|(field, ty)| {
                         (
                             field.clone(),
-                            self.qualify_source_member_ty(module_full_path, ty),
+                            self.qualify_source_member_ty(module_full_path, ty, parameters),
                         )
                     })
                     .collect(),

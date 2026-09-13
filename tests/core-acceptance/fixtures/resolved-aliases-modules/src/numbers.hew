@@ -1,5 +1,12 @@
 pub type Value = i64;
 
+pub type Envelope<T> {
+    value: T,
+    order: Value,
+}
+
 pub fn answer() -> Value {
     42
 }
+
+pub type Cargo(bool, i64);

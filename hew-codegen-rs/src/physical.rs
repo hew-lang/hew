@@ -5083,41 +5083,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     "print.value",
                 )?;
             }
-            RuntimeCallFamily::BytesLen => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_bytes_len",
-                    self.ctx.i64_type().fn_type(&[ptr.into()], false),
-                )?;
-                let value = self.runtime_call_value(
-                    function,
-                    &[self.slots[source(0)?.0 as usize].into()],
-                    "bytes.len",
-                )?;
-                self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::BytesIsEmpty => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_bytes_is_empty",
-                    self.ctx.bool_type().fn_type(&[ptr.into()], false),
-                )?;
-                let value = self
-                    .runtime_call_value(
-                        function,
-                        &[self.slots[source(0)?.0 as usize].into()],
-                        "bytes.is_empty",
-                    )?
-                    .into_int_value();
-                let result = required_result()?;
-                let bool_ty =
-                    llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_int_type();
-                let value = self
-                    .builder
-                    .build_int_z_extend(value, bool_ty, "bytes.is_empty.bool")
-                    .llvm_ctx("widen bytes is_empty result")?;
-                self.store(result, value.into())?;
-            }
             RuntimeCallFamily::BytesClear => {
                 let function = get_or_declare_external(
                     self.llvm,
@@ -5131,33 +5096,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 )?;
                 let value = self.load(source(0)?, "bytes.clear.result")?;
                 self.store(required_result()?, value)?;
-            }
-            RuntimeCallFamily::BytesContains => {
-                let function = get_or_declare_external(
-                    self.llvm,
-                    "hew_bytes_contains",
-                    self.ctx
-                        .bool_type()
-                        .fn_type(&[ptr.into(), self.ctx.i8_type().into()], false),
-                )?;
-                let value = self
-                    .runtime_call_value(
-                        function,
-                        &[
-                            self.slots[source(0)?.0 as usize].into(),
-                            self.load(source(1)?, "bytes.contains.byte")?.into(),
-                        ],
-                        "bytes.contains",
-                    )?
-                    .into_int_value();
-                let result = required_result()?;
-                let bool_ty =
-                    llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_int_type();
-                let value = self
-                    .builder
-                    .build_int_z_extend(value, bool_ty, "bytes.contains.bool")
-                    .llvm_ctx("widen bytes contains result")?;
-                self.store(result, value.into())?;
             }
             RuntimeCallFamily::BytesSet => {
                 return self.emit_bytes_set(

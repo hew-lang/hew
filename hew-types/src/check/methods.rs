@@ -1679,7 +1679,7 @@ impl Checker {
                     || CallTarget::Builtin {
                         endpoint: c_symbol.clone(),
                     },
-                    CallTarget::User,
+                    |declaration| self.source_call_target(declaration),
                 )
         };
         self.record_method_call_rewrite(

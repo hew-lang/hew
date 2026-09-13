@@ -12035,10 +12035,6 @@ impl LowerCtx {
         )
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "regular call lowering reconciles checker targets and module identities atomically"
-    )]
     fn lower_positional_record_constructor(
         &mut self,
         declaration: &hew_types::DefId,
@@ -12067,6 +12063,10 @@ impl LowerCtx {
         )
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "regular call lowering reconciles checker targets and module identities atomically"
+    )]
     fn lower_regular_call(
         &mut self,
         function: &Spanned<Expr>,

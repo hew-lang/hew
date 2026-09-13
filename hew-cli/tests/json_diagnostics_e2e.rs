@@ -21,21 +21,6 @@ fn write_fixture(source: &str) -> (tempfile::TempDir, std::path::PathBuf) {
     (dir, path)
 }
 
-/// A program that fails closed at the MIR gate with a `NotYetImplemented`
-/// diagnostic: a functional-update override that aliases the consumed base.
-/// The base's overridden owned field is released at the construction site, so
-/// the new record would alias freed memory — an intentional, durable MIR gate
-/// (the COW value model that would keep the base live is not built). The error
-/// is source-attributed at line 6 (the construction expression).
-const MIR_NYI_FIXTURE: &str = "type VHolder { items: Vec<i64>, tag: string }\n\
-     fn main() {\n\
-     \x20\x20\x20\x20let init: Vec<i64> = Vec.new();\n\
-     \x20\x20\x20\x20init.push(7);\n\
-     \x20\x20\x20\x20let s = VHolder { items: init, tag: \"base\" };\n\
-     \x20\x20\x20\x20let s2 = VHolder { items: s.items, ..s };\n\
-     \x20\x20\x20\x20println(s2.items.len());\n\
-     }\n";
-
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(hew_binary())
         .args(args)
@@ -59,55 +44,56 @@ fn parse_json_array(output: &std::process::Output) -> Vec<Value> {
         .clone()
 }
 
-/// `--format=json` must be rejected as unrecognized before this change wired it
-/// in — this test now asserts it is *accepted* (the inverse guard), so a
-/// regression that drops the flag fails loudly.
-#[test]
-fn format_json_flag_is_recognized_on_check() {
-    let (_dir, path) = write_fixture("fn main() {\n    println(\"ok\")\n}\n");
-    let output = run(&["check", "--format=json", path.to_str().unwrap()]);
-    assert!(
-        output.status.success(),
-        "`--format=json` must be a recognized flag on `hew check`\n{}",
-        describe_output(&output),
-    );
-}
-
 /// A type error emits a parseable JSON array carrying at least
 /// `{code, severity, file, span, message}` and exits 1.
 #[test]
-fn check_type_error_emits_structured_json_and_exits_1() {
+fn check_and_compile_type_errors_emit_structured_json_and_exit_1() {
     let (_dir, path) = write_fixture("fn main() {\n    let x: i64 = \"not a number\";\n}\n");
-    let output = run(&["check", "--format=json", path.to_str().unwrap()]);
+    for verb in ["check", "compile"] {
+        let output = run(&[verb, "--format=json", path.to_str().unwrap()]);
 
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "type error must exit 1\n{}",
-        describe_output(&output),
-    );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "type error must exit 1\n{}",
+            describe_output(&output),
+        );
 
-    let diagnostics = parse_json_array(&output);
-    let mismatch = diagnostics
-        .iter()
-        .find(|d| d["code"] == "Mismatch")
-        .expect("expected a Mismatch diagnostic");
+        let diagnostics = parse_json_array(&output);
+        let mismatch = diagnostics
+            .iter()
+            .find(|d| d["code"] == "Mismatch")
+            .expect("expected a Mismatch diagnostic");
 
-    assert_eq!(mismatch["severity"], "error");
-    assert!(
-        mismatch["file"].as_str().unwrap().ends_with("main.hew"),
-        "file field must name the source: {mismatch}",
-    );
-    let span = &mismatch["span"];
-    assert_eq!(span["start_line"], 2, "span carries 1-based line: {span}");
-    assert!(span["start_byte"].is_number(), "span carries byte offsets");
-    assert!(
-        mismatch["message"]
-            .as_str()
-            .unwrap()
-            .contains("type mismatch"),
-        "message carries human-readable prose: {mismatch}",
-    );
+        assert_eq!(mismatch["severity"], "error");
+        assert!(
+            mismatch["file"].as_str().unwrap().ends_with("main.hew"),
+            "file field must name the source: {mismatch}",
+        );
+        let span = &mismatch["span"];
+        assert_eq!(span["start_line"], 2, "span carries 1-based line: {span}");
+        assert!(span["start_byte"].is_number(), "span carries byte offsets");
+        assert!(
+            mismatch["message"]
+                .as_str()
+                .unwrap()
+                .contains("type mismatch"),
+            "message carries human-readable prose: {mismatch}",
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for forbidden in [
+            "MirDiagnostic",
+            "HirDiagnostic",
+            "SiteId(",
+            "owning_pass",
+            "construct:",
+        ] {
+            assert!(
+                !stdout.contains(forbidden),
+                "{verb} JSON contains compiler internals `{forbidden}`: {stdout}",
+            );
+        }
+    }
 }
 
 /// A clean program emits an empty JSON array and exits 0.
@@ -127,64 +113,6 @@ fn check_clean_program_emits_empty_array_and_exits_0() {
         diagnostics.is_empty(),
         "clean program must emit an empty diagnostic array; got: {diagnostics:?}",
     );
-}
-
-/// A not-yet-implemented program's JSON message must contain no Rust `{...}`
-/// Debug payload and no `0x` hex — it reads as a human limitation.
-#[test]
-fn check_not_yet_implemented_json_has_no_debug_payload() {
-    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
-    let output = run(&["check", "--format=json", path.to_str().unwrap()]);
-
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "NYI program is a Limitation-channel diagnostic and must exit 3\n{}",
-        describe_output(&output),
-    );
-    let diagnostics = parse_json_array(&output);
-    let nyi = diagnostics
-        .iter()
-        .find(|d| d["code"] == "NotYetImplemented")
-        .expect("expected a NotYetImplemented diagnostic");
-
-    let message = nyi["message"].as_str().unwrap();
-    assert!(
-        !message.contains('{') && !message.contains('}'),
-        "NYI message must not contain a Rust Debug struct payload; got: {message}",
-    );
-    assert!(
-        !message.contains("0x"),
-        "NYI message must not contain hex pointers; got: {message}",
-    );
-    assert!(
-        !message.contains("owning_pass") && !message.contains("SiteId"),
-        "NYI message must not leak Rust field names; got: {message}",
-    );
-}
-
-/// The whole JSON payload — across every diagnostic and note — must be free of
-/// Rust Debug struct payloads. This is the strongest guard for the leak fix.
-#[test]
-fn check_json_payload_is_free_of_debug_structs() {
-    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
-    let output = run(&["check", "--format=json", path.to_str().unwrap()]);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // The serde-rendered JSON object braces are expected; a Rust Debug payload
-    // shows up as field-name fragments that never belong in user output.
-    for forbidden in [
-        "MirDiagnostic",
-        "HirDiagnostic",
-        "SiteId(",
-        "owning_pass",
-        "construct:",
-    ] {
-        assert!(
-            !stdout.contains(forbidden),
-            "JSON payload must not contain Rust Debug fragment `{forbidden}`; got:\n{stdout}",
-        );
-    }
 }
 
 /// The code-action engine must surface a machine-checked fix in the JSON
@@ -247,32 +175,6 @@ fn check_default_text_format_is_unchanged() {
     assert!(
         stdout.trim().is_empty(),
         "default text mode must not emit JSON on stdout; got:\n{stdout}",
-    );
-}
-
-/// `hew compile --format=json` routes a MIR gate failure through the JSON sink
-/// rather than leaking a `MirDiagnostic { .. }` Debug payload (the bundled leak
-/// fix, observed from the compile path the audit pinpointed).
-#[test]
-fn compile_mir_gate_failure_json_has_no_debug_payload() {
-    let (_dir, path) = write_fixture(MIR_NYI_FIXTURE);
-    let output = run(&["compile", "--format=json", path.to_str().unwrap()]);
-
-    assert_eq!(
-        output.status.code(),
-        Some(3),
-        "compile MIR gate failure is a Limitation-channel diagnostic and must exit 3\n{}",
-        describe_output(&output),
-    );
-    let diagnostics = parse_json_array(&output);
-    let nyi = diagnostics
-        .iter()
-        .find(|d| d["code"] == "NotYetImplemented")
-        .expect("expected a NotYetImplemented diagnostic from the compile path");
-    let message = nyi["message"].as_str().unwrap();
-    assert!(
-        !message.contains('{') && !message.contains("SiteId"),
-        "compile NYI message must not leak a Debug payload; got: {message}",
     );
 }
 

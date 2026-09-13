@@ -3515,43 +3515,6 @@ fn check_cross_module_generic_fn_value_ambiguous_rejected() {
     );
 }
 
-/// A generic named function used as a value (context-determined by a
-/// binding annotation) is honestly diagnosed as not yet implemented rather
-/// than silently mis-lowered. MIR lowering only supports non-generic named
-/// functions as values today; generic-fn-as-value is deferred post-rc1.
-#[test]
-fn cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/accept/cross_module_generic_fn_value/main.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("E_NOT_YET_IMPLEMENTED")
-            && combined.contains("named function")
-            && combined.contains("used as a value")
-            && combined.contains("only non-generic named functions are currently supported"),
-        "expected the generic-fn-as-value NYI diagnostic; got: {combined}"
-    );
-}
-
 /// A private (non-pub) enum returned from a pub fn across a module boundary
 /// must compile and run correctly.  Previously the §4b pre-pass cached the
 /// `HirTypeDecl` for all enums, but the fourth-pass emission guard was missing

@@ -152,13 +152,9 @@ mod tests {
             "initial",
         ]);
         let worktree = repo.join("linked");
-        git(&[
-            "worktree",
-            "add",
-            "-b",
-            "nested/topic",
-            worktree.to_str().unwrap(),
-        ]);
+        // Git for Windows rejects the verbatim prefix on canonical paths.
+        // Resolve this relative destination through the fixture's Git CWD.
+        git(&["worktree", "add", "-b", "nested/topic", "linked"]);
         let canonical_watches = || {
             git_watch_paths(&worktree)
                 .into_iter()

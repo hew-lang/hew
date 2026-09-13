@@ -748,7 +748,7 @@ stdlib_diagnostic() {
 # under crates, tests/ or examples/ keep the old call site, each a latent
 # undefined-symbol or type error invisible to every narrower gate.
 
-# is_reject_fixture — true when the path is an intentional-reject fixture.
+# Return true for intentional rejects or sources owned by another execution gate.
 #
 # Two conventions cover all known reject fixtures in the repo:
 #   1. Path contains /reject/ — files inside reject/ subdirectories, used by
@@ -765,6 +765,11 @@ is_separately_gated_or_reject_fixture() {
     base="$(basename "$path")"
     case "$path" in
     *"/reject/"*)
+        return 0
+        ;;
+    tests/core-acceptance/fixtures/*)
+        # Manifests exercise these multi-file programs and support modules in
+        # their owning context, including deliberate diagnostic cases.
         return 0
         ;;
     tests/core-acceptance/cases/*)

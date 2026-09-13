@@ -76,8 +76,6 @@ examples/quic_mesh/selector_smoke.hew E_SIR_UNSUPPORTED
 # final-path-limitation: cancellation observation and the linear accept corpus
 # reach unlowered semantic operations
 examples/v05/cancellation_is_cancelled_observation.hew E_SIR_UNSUPPORTED
-examples/v05/linear/accept/linear_consumed_both_branches.hew E_SIR_UNSUPPORTED
-examples/v05/linear/accept/linear_consumed_via_rollback_on_err.hew E_SIR_UNSUPPORTED
 
 # corpus-intentional-refusal: `*_fails.hew` programs demonstrate the refusal
 # their name states
@@ -174,7 +172,6 @@ repros/ladder/closure_mut_share.hew
 repros/ladder/cond_init.hew E_SIR_UNSUPPORTED
 repros/ladder/lambda_send_twice.hew E_SEND_RESULT_DROPPED
 repros/ladder/let_field_mut.hew
-repros/ladder/linear_actor_field.hew E_SIR_UNSUPPORTED
 repros/ladder/res_param_consume.hew
 repros/ladder/resource_early_close.hew
 repros/ladder/resource_keep.hew E_SIR_UNSUPPORTED
@@ -188,15 +185,6 @@ repros/ladder/state_resource_trait.hew E_SIR_VERIFY
 # requires-file-import-program: members of a multi-file program. Standalone
 # `hew check` cannot resolve the sibling modules; the owning core-acceptance
 # case compiles the program's root.
-tests/core-acceptance/fixtures/channel-endpoint-element-through-alias/main.hew
-tests/core-acceptance/fixtures/channel-endpoint-user-sender-refused/main.hew
-tests/core-acceptance/fixtures/file-import-hir-diagnostic-provenance/main.hew E_HIR
-tests/core-acceptance/fixtures/file-import-hir-diagnostic-provenance/token.hew E_HIR
-tests/core-acceptance/fixtures/file-import-lowered-once/handle.hew E_HIR
-tests/core-acceptance/fixtures/file-import-lowered-once/main.hew E_HIR
-tests/core-acceptance/fixtures/file-import-not-transitive-types/main.hew
-tests/core-acceptance/fixtures/file-import-not-transitive/main.hew
-tests/core-acceptance/fixtures/module-identity-dual-spelling/src/mid.hew
 
 # requires-file-import-program: a directory module's leaf source
 tests/core-acceptance/cases/directory-module-one-identity/src/lib/lib.hew
@@ -299,9 +287,6 @@ tests/pkg-import/pkgs/sinkres/sinkres.hew
 # final-path-limitation: accept fixtures whose programs the final path cannot
 # lower yet
 tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/arena_generation_reuse.hew
-tests/vertical-slice/accept/arena_nested_vec_reuse.hew
-tests/vertical-slice/accept/arena_no_leak_cycle.hew
 tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/coalesce_owned_payload_leak.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/duplex_split_roundtrip.hew E_SIR_UNSUPPORTED
@@ -312,13 +297,10 @@ tests/vertical-slice/accept/hashmap_for_in_call.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/hashset_for_in_call.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/imported_actor_msg_discriminants.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/imported_supervisor_child_identity.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/linear_inherent_consume.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/linear_inherent_owned_string.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/match_float_literal_arm.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/resource_marker_nominal_type.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/stream_state_field_for_await_asan.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED

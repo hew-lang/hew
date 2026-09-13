@@ -354,12 +354,14 @@ impl TypeFactService {
             self.context.declarations.get(name).ok_or_else(|| {
                 format!("aggregate `{}` has no declaration facts", ty.user_facing())
             })?;
+        let positional =
+            definition.kind == crate::check::TypeDefKind::Record && definition.fields.is_empty();
         if !matches!(
             definition.kind,
             crate::check::TypeDefKind::Struct | crate::check::TypeDefKind::Record
         ) || declaration.is_opaque
             || definition.field_order.len() != definition.fields.len()
-            || definition.field_order.len() != declaration.members.len()
+            || (!positional && definition.field_order.len() != declaration.members.len())
         {
             return Err(format!(
                 "`{}` has no transparent named-field record contract",
@@ -372,13 +374,19 @@ impl TypeFactService {
                 ty.user_facing()
             ));
         }
-        let fields = definition
-            .field_order
-            .iter()
+        let field_names: Vec<String> = if positional {
+            (0..declaration.members.len())
+                .map(|index| index.to_string())
+                .collect()
+        } else {
+            definition.field_order.clone()
+        };
+        let fields = field_names
+            .into_iter()
             .zip(&declaration.members)
             .map(|(name, field)| {
                 (
-                    name.clone(),
+                    name,
                     crate::value_class::substitute(field, &definition.type_params, &instance.args),
                 )
             })

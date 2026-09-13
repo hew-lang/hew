@@ -19,6 +19,7 @@ pub fn generate(repo: &Path, out: &Path) -> String {
     let mut rows = BTreeMap::new();
     for (module, path) in [
         ("std.builtins", "std/builtins.hew"),
+        ("std.io", "std/io.hew"),
         ("std.net", "std/net/net.hew"),
         ("std.net.tls", "std/net/tls/tls.hew"),
         ("std.net.websocket", "std/net/websocket/websocket.hew"),
@@ -196,11 +197,58 @@ fn scalar(ty: &TypeExpr) -> &'static str {
     );
     match name.as_str() {
         "i64" => "I64",
+        "u8" => "U8",
+        "bytes" => "Bytes",
         "duration" => "Duration",
         "instant" => "Instant",
         "bool" => "Bool",
         other => panic!("unsupported direct runtime scalar {other}"),
     }
+}
+
+/// Admit only the existing borrowed `BytesTriple` query ABI. Mutating methods
+/// require their own out-parameter, bounds or variant result contracts.
+fn validate_borrowed_bytes(
+    receiver: &str,
+    params: &[&str],
+    result: &str,
+    receiver_effect: Option<&str>,
+) -> bool {
+    let has_bytes = params.contains(&"Bytes");
+    if has_bytes {
+        assert_eq!(
+            receiver, "bytes",
+            "borrowed bytes must be an inherent receiver"
+        );
+        assert_eq!(
+            receiver_effect,
+            Some("borrow"),
+            "bytes receiver requires an explicit borrow contract"
+        );
+        assert_eq!(
+            params.first(),
+            Some(&"Bytes"),
+            "bytes receiver must be argument zero"
+        );
+        assert!(
+            !params[1..].contains(&"Bytes"),
+            "additional bytes arguments need an explicit ABI contract"
+        );
+        assert_ne!(
+            result, "Bytes",
+            "a borrowed query cannot return an owned bytes value"
+        );
+    } else {
+        assert!(
+            receiver_effect.is_none(),
+            "scalar runtime declaration cannot carry receiver ownership"
+        );
+        assert_ne!(
+            result, "Bytes",
+            "direct bytes result requires an owned result ABI contract"
+        );
+    }
+    has_bytes
 }
 
 fn render_direct(
@@ -218,6 +266,7 @@ fn render_direct(
     let target = take(&mut fields, "target");
     assert_eq!(target, "native", "unsupported direct runtime target");
     let c_return = take(&mut fields, "c_return");
+    let receiver_effect = fields.remove("receiver");
     assert!(fields.is_empty(), "unknown runtime fields: {fields:?}");
     let mut symbols = method
         .attributes
@@ -252,10 +301,12 @@ fn render_direct(
             .expect("direct runtime declaration requires result")
             .0,
     );
+    let has_bytes = validate_borrowed_bytes(receiver, &params, result, receiver_effect);
     let c_return = match (c_return, result) {
         ("storage", "Bool") => panic!("direct bool result requires explicit truth conversion"),
         ("storage", _) => "Storage",
         ("truth_i32", "Bool") => "TruthI32",
+        ("truth_bool", "Bool") => "TruthBool",
         _ => panic!("invalid direct runtime C return conversion"),
     };
     let receiver_param = method
@@ -278,12 +329,21 @@ fn render_direct(
         .iter()
         .map(|p| {
             format!(
-                "A {{ ty: K::{}, effect: E::Copy }}",
-                if *p == "Instant" { "I64" } else { p }
+                "A {{ ty: K::{}, effect: E::{} }}",
+                if *p == "Instant" { "I64" } else { p },
+                if *p == "Bytes" { "Borrow" } else { "Copy" }
             )
         })
         .collect::<Vec<_>>()
         .join(",");
+    let ownership = if has_bytes {
+        // The C ownership projection describes access to pointer arguments;
+        // scalar Copy effects do not transfer ownership either.
+        let params = vec!["\"borrow\""; params.len()].join(", ");
+        format!("[[ownership.contracts]]\nsymbol = {symbol:?}\nresult = \"none\"\nparams = [{params}]\nrelease-symbol = \"\"\ndischarge-depth = \"none\"\n\n")
+    } else {
+        String::new()
+    };
     let result_kind = if result == "Instant" { "I64" } else { result };
     let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
     (
@@ -293,7 +353,7 @@ fn render_direct(
             direct: true,
             symbol: symbol.clone(),
             classification: classification.to_owned(),
-            ownership: String::new(),
+            ownership,
         },
     )
 }
@@ -308,7 +368,10 @@ mod tests {
         let Item::Impl(decl) = &parsed.program.items[0].0 else {
             panic!("impl");
         };
-        render_method("std.builtins", "duration", &decl.methods[0])
+        let TypeExpr::Named { name, .. } = &decl.target_type.0 else {
+            panic!("named receiver");
+        };
+        render_method("std.builtins", name, &decl.methods[0])
             .unwrap()
             .1
     }
@@ -357,6 +420,30 @@ mod tests {
             #[extern_symbol(hew_duration_is_zero)]
             fn is_zero(d: string) -> bool { false }
         }"#,
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "bytes receiver requires an explicit borrow contract")]
+    fn bytes_query_requires_receiver_ownership() {
+        direct(
+            r"impl bytes {
+            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage)]
+            #[extern_symbol(hew_bytes_len)]
+            fn len(buf: bytes) -> i64 { 0 }
+        }",
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a borrowed query cannot return an owned bytes value")]
+    fn bytes_query_cannot_mint_an_owner_from_borrow() {
+        direct(
+            r"impl bytes {
+            #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
+            #[extern_symbol(hew_bytes_len)]
+            fn len(buf: bytes) -> bytes { buf }
+        }",
         );
     }
 }

@@ -61,6 +61,7 @@ impl bytes {
     fn pop(buf: bytes) -> Option<u8> {
         None
     }
+    #[runtime(family = BytesLen, lowering = direct, target = native, classification = stable, c_return = storage, receiver = borrow)]
     #[extern_symbol(hew_bytes_len)]
     fn len(buf: bytes) -> i64 {
         0
@@ -71,12 +72,14 @@ impl bytes {
     }
     #[extern_symbol(hew_bytes_set)]
     fn set(buf: bytes, index: i64, byte: u8) {}
+    #[runtime(family = BytesIsEmpty, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_is_empty)]
     fn is_empty(buf: bytes) -> bool {
         false
     }
     #[extern_symbol(hew_bytes_clear)]
     fn clear(buf: bytes) {}
+    #[runtime(family = BytesContains, lowering = direct, target = native, classification = stable, c_return = truth_bool, receiver = borrow)]
     #[extern_symbol(hew_bytes_contains)]
     fn contains(buf: bytes, byte: u8) -> bool {
         false

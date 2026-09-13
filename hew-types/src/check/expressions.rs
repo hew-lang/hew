@@ -7541,7 +7541,7 @@ impl Checker {
                 self.report_place_use_after_move(&root, &path, span);
             }
         }
-        let resolved = self.subst.resolve(&obj_ty);
+        let resolved = self.normalize_for_use(&obj_ty);
         if self.reject_sealed_delivery_access(&resolved, span) {
             return Ty::Error;
         }

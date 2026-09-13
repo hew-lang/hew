@@ -22,7 +22,7 @@ use hew_parser::ast::{
     MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
     SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
     SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
+    TypeDeclKind, TypeExpr, UnaryOp,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -2783,6 +2783,7 @@ pub fn lower_program_with_mono_cap(
                         .filter_map(|default| default.method.body.as_ref()),
                 );
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
+                    ctx.current_item_ordinal = item_idx;
                     ctx.current_module_idx = span_indices
                         .item_index(mod_id, item_idx)
                         .unwrap_or_default();
@@ -2827,16 +2828,24 @@ pub fn lower_program_with_mono_cap(
                                     && decl.type_params.is_none()) =>
                         {
                             let id = ctx.ids.item();
-                            let type_params: Vec<String> = decl
-                                .type_params
-                                .as_ref()
-                                .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-                            let mut fields: Vec<(String, ResolvedTy)> = Vec::new();
-                            for body_item in &decl.body {
-                                if let TypeBodyItem::Field { name, ty, .. } = body_item {
-                                    fields.push((name.clone(), ctx.lower_type(ty)));
-                                }
-                            }
+                            let kind = if decl.origin
+                                == hew_parser::ast::DeclarationOrigin::MachineState
+                            {
+                                hew_types::DeclarationKind::Machine
+                            } else {
+                                hew_types::DeclarationKind::Type
+                            };
+                            let Some(declaration) = ctx.source_declaration(item_span, kind, 0)
+                            else {
+                                continue;
+                            };
+                            let Some(definition) =
+                                ctx.checked_member_definition(&declaration, item_span)
+                            else {
+                                continue;
+                            };
+                            let fields = ctx.checked_record_fields(&definition, item_span);
+                            let type_params = definition.type_params;
                             ctx.record_registry.insert(
                                 format!("{module_full_path}.{}", decl.name),
                                 RecordEntry {
@@ -2857,19 +2866,22 @@ pub fn lower_program_with_mono_cap(
                                     fields,
                                 });
                         }
-                        Item::Record(decl) if decl.visibility.is_pub() => {
+                        Item::Record(decl) => {
                             let id = ctx.ids.item();
-                            let type_params: Vec<String> = decl
-                                .type_params
-                                .as_ref()
-                                .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-                            let fields: Vec<(String, ResolvedTy)> = match &decl.kind {
-                                RecordKind::Named(rfs) => rfs
-                                    .iter()
-                                    .map(|rf| (rf.name.clone(), ctx.lower_type(&rf.ty)))
-                                    .collect(),
-                                RecordKind::Tuple(_) => Vec::new(),
+                            let Some(declaration) = ctx.source_declaration(
+                                item_span,
+                                hew_types::DeclarationKind::Record,
+                                0,
+                            ) else {
+                                continue;
                             };
+                            let Some(definition) =
+                                ctx.checked_member_definition(&declaration, item_span)
+                            else {
+                                continue;
+                            };
+                            let fields = ctx.checked_record_fields(&definition, item_span);
+                            let type_params = definition.type_params;
                             ctx.record_registry.insert(
                                 format!("{module_full_path}.{}", decl.name),
                                 RecordEntry {
@@ -2993,7 +3005,6 @@ pub fn lower_program_with_mono_cap(
                         | Item::TypeAlias(_)
                         | Item::Trait(_)
                         | Item::Machine(_)
-                        | Item::Record(_)
                         | Item::Actor(_)
                         | Item::Supervisor(_) => {}
                     }
@@ -3009,7 +3020,7 @@ pub fn lower_program_with_mono_cap(
     // user record?" regardless of declaration order relative to the
     // function that uses it. This mirrors the fn pre-pass above and is
     // the producer half of the record-layout registry.
-    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+    for (item_idx, (item, item_span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx
             .get(&item_idx)
@@ -3021,16 +3032,20 @@ pub fn lower_program_with_mono_cap(
         match item {
             Item::TypeDecl(decl) => {
                 let id = ctx.ids.item();
-                let type_params: Vec<String> = decl
-                    .type_params
-                    .as_ref()
-                    .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-                let mut fields: Vec<(String, ResolvedTy)> = Vec::new();
-                for body_item in &decl.body {
-                    if let TypeBodyItem::Field { name, ty, .. } = body_item {
-                        fields.push((name.clone(), ctx.lower_type(ty)));
-                    }
-                }
+                let kind = if decl.origin == hew_parser::ast::DeclarationOrigin::MachineState {
+                    hew_types::DeclarationKind::Machine
+                } else {
+                    hew_types::DeclarationKind::Type
+                };
+                let Some(declaration) = ctx.source_declaration(item_span, kind, 0) else {
+                    continue;
+                };
+                let Some(definition) = ctx.checked_member_definition(&declaration, item_span)
+                else {
+                    continue;
+                };
+                let fields = ctx.checked_record_fields(&definition, item_span);
+                let type_params = definition.type_params;
                 ctx.record_registry.insert(
                     decl.name.clone(),
                     RecordEntry {
@@ -3044,21 +3059,17 @@ pub fn lower_program_with_mono_cap(
             }
             Item::Record(decl) => {
                 let id = ctx.ids.item();
-                let type_params: Vec<String> = decl
-                    .type_params
-                    .as_ref()
-                    .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-                let fields: Vec<(String, ResolvedTy)> = match &decl.kind {
-                    RecordKind::Named(rfs) => rfs
-                        .iter()
-                        .map(|rf| (rf.name.clone(), ctx.lower_type(&rf.ty)))
-                        .collect(),
-                    // Tuple-form records are reached via Expr::Call, not
-                    // Expr::StructInit, so their record-layout registry
-                    // entry would never be exercised. Record an empty
-                    // field list for shape uniformity.
-                    RecordKind::Tuple(_) => Vec::new(),
+                let Some(declaration) =
+                    ctx.source_declaration(item_span, hew_types::DeclarationKind::Record, 0)
+                else {
+                    continue;
                 };
+                let Some(definition) = ctx.checked_member_definition(&declaration, item_span)
+                else {
+                    continue;
+                };
+                let fields = ctx.checked_record_fields(&definition, item_span);
+                let type_params = definition.type_params;
                 ctx.record_registry.insert(
                     decl.name.clone(),
                     RecordEntry {
@@ -3669,7 +3680,7 @@ pub fn lower_program_with_mono_cap(
     }
     ctx.current_module_idx = 0;
     ctx.current_module_name = None;
-    for (item_idx, (item, _)) in program.items.iter().enumerate() {
+    for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         ctx.current_module_idx = file_import_module_idx
             .get(&item_idx)
@@ -3679,7 +3690,7 @@ pub fn lower_program_with_mono_cap(
             .module_name(ctx.current_module_idx)
             .map(str::to_string);
         if let Item::Machine(machine) = item {
-            ctx.register_machine_ctor_variant_metadata(None, machine);
+            ctx.register_machine_ctor_variant_metadata(None, machine, span);
         }
     }
     ctx.current_module_idx = 0;
@@ -3724,6 +3735,7 @@ pub fn lower_program_with_mono_cap(
                             ctx.register_machine_ctor_variant_metadata(
                                 Some(&source_module),
                                 machine,
+                                span,
                             );
                         }
                         // No enum-variant metadata for these items in imported
@@ -3874,70 +3886,10 @@ pub fn lower_program_with_mono_cap(
                             type_decl_cache.insert(decl as *const _, hir_decl);
                         }
                         Item::Machine(md) => {
-                            // Synthesise state variants. Unit when stateless,
-                            // Struct otherwise — mirrors how `lookup_variant_ctor`
-                            // dispatches on `HirVariantKind` at struct-init /
-                            // identifier resolution sites.  Matches pub and
-                            // private machines: the checker's register_machine_decl
-                            // (registration.rs:1371) uses an idempotency guard, not
-                            // a pub guard, so private machines are registered globally
-                            // by the checker too.
-                            let state_variants: Vec<HirVariant> = md
-                                .states
-                                .iter()
-                                .map(|state| {
-                                    let kind = if state.fields.is_empty() {
-                                        HirVariantKind::Unit
-                                    } else {
-                                        HirVariantKind::Struct(
-                                            state
-                                                .fields
-                                                .iter()
-                                                .map(|(name, ty)| {
-                                                    (name.clone(), ctx.lower_type(ty))
-                                                })
-                                                .collect(),
-                                        )
-                                    };
-                                    HirVariant {
-                                        name: state.name.clone(),
-                                        kind,
-                                    }
-                                })
-                                .collect();
-                            ctx.enum_variants_by_name
-                                .insert(format!("{source_module}.{}", md.name), state_variants);
-
-                            // Synthesise event companion variants under the
-                            // `{Name}Event` key, matching the checker's
-                            // generated event-type TypeDef.
-                            let event_type_name = format!("{}Event", md.name);
-                            let event_variants: Vec<HirVariant> = md
-                                .events
-                                .iter()
-                                .map(|event| {
-                                    let kind = if event.fields.is_empty() {
-                                        HirVariantKind::Unit
-                                    } else {
-                                        HirVariantKind::Struct(
-                                            event
-                                                .fields
-                                                .iter()
-                                                .map(|(name, ty)| {
-                                                    (name.clone(), ctx.lower_type(ty))
-                                                })
-                                                .collect(),
-                                        )
-                                    };
-                                    HirVariant {
-                                        name: event.name.clone(),
-                                        kind,
-                                    }
-                                })
-                                .collect();
-                            ctx.enum_variants_by_name.insert(
-                                format!("{source_module}.{event_type_name}"),
-                                event_variants,
+                            ctx.register_machine_ctor_variant_metadata(
+                                Some(&source_module),
+                                md,
+                                span,
                             );
                         }
                         // #2755: a type-decl the emission guard above excluded
@@ -3985,34 +3937,6 @@ pub fn lower_program_with_mono_cap(
                         }
                         // A module-private record excluded from emission (the
                         // emission arm admits only pub records) — same rationale.
-                        Item::Record(decl) if !decl.visibility.is_pub() => {
-                            let Some(mut hir_record) = ctx.lower_record_decl(decl, span.clone())
-                            else {
-                                continue;
-                            };
-                            hir_record.defining_module = Some(source_module.clone());
-                            let entry_fields: Vec<(String, ResolvedTy)> = hir_record
-                                .fields
-                                .iter()
-                                .map(|f| (f.name.clone(), f.ty.clone()))
-                                .collect();
-                            ctx.record_registry.insert(
-                                format!("{source_module}.{}", hir_record.name),
-                                RecordEntry {
-                                    id: hir_record.id,
-                                    type_params: hir_record.type_params.clone(),
-                                    fields: entry_fields.clone(),
-                                },
-                            );
-                            ctx.record_registry
-                                .entry(hir_record.name.clone())
-                                .or_insert_with(|| RecordEntry {
-                                    id: hir_record.id,
-                                    type_params: hir_record.type_params.clone(),
-                                    fields: entry_fields,
-                                });
-                            layout_universe_decls.push(HirItem::Record(hir_record));
-                        }
                         // No enum-variant/machine descriptors to cache for
                         // these items in imported modules (§4b pre-pass). If
                         // a new Item variant is added, the compiler will force
@@ -4229,7 +4153,7 @@ pub fn lower_program_with_mono_cap(
         };
         let mut source = source.clone();
         source.name = canonical_name.to_string();
-        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+        let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)?;
         ctx.type_classes
             .insert(canonical_name.to_string(), (decl.marker, None));
         ctx.type_member_tys.insert(
@@ -4274,7 +4198,10 @@ pub fn lower_program_with_mono_cap(
             };
             let mut source = source.clone();
             source.name.clone_from(&canonical_name);
-            let decl = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration);
+            let Some(decl) = ctx.lower_type_decl_with_identity(&source, span.clone(), declaration)
+            else {
+                continue;
+            };
             ctx.type_classes
                 .insert(canonical_name.clone(), (decl.marker, None));
             ctx.type_member_tys.insert(
@@ -5087,21 +5014,18 @@ pub fn lower_program_with_mono_cap(
                                 }
                             }
                         }
-                        // Item::Record, Item::Supervisor and non-pub Item::Actor
-                        // from imported modules are intentionally not emitted in
-                        // this slice; their cross-module lowering semantics are
-                        // tracked as separate follow-ups.
-                        //
-                        // Non-pub Function/TypeDecl/Actor fall here (not
-                        // visible to importers). If a new Item variant is
-                        // added, the compiler will force a conscious decision.
+                        Item::Record(decl) => {
+                            if let Some(mut record) = ctx.lower_record_decl(decl, span.clone()) {
+                                record.defining_module = Some(source_module.clone());
+                                items.push(HirItem::Record(record));
+                            }
+                        }
                         // Machines are normalized into ordinary declarations
                         // by the checker before HIR.
                         Item::Import(_)
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
-                        | Item::Record(_)
                         | Item::Machine(_)
                         | Item::Supervisor(_) => {}
                     }
@@ -7541,7 +7465,7 @@ struct LowerCtx {
     /// Exact nominal identities accepted by the checker. This proves that a
     /// self-qualified spelling really belongs to the full current owner;
     /// downstream lowering never recovers that proof from a short name.
-    checker_type_identities: HashSet<String>,
+    checked_type_defs: HashMap<String, hew_types::check::TypeDef>,
     /// Mirrors `Checker::current_module_idx`: 0 for root items, N for the N-th
     /// non-root module's items (1-based, matching topo order).  Used by
     /// `mk_key` to produce module-scoped `SpanKey` lookups that agree with
@@ -7891,7 +7815,7 @@ impl LowerCtx {
                     })
                 })
                 .collect(),
-            checker_type_identities: tc_output.type_defs.keys().cloned().collect(),
+            checked_type_defs: tc_output.type_defs.clone(),
             current_module_idx: 0,
             current_item_ordinal: 0,
             root_item_ids: HashSet::new(),
@@ -12006,6 +11930,10 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        if let CallTarget::RecordConstructor(declaration) = &target {
+            return self.lower_positional_record_constructor(declaration, lowered_args, span);
+        }
+
         if !matches!(
             target,
             CallTarget::User(_)
@@ -12107,6 +12035,34 @@ impl LowerCtx {
         )
     }
 
+    fn lower_positional_record_constructor(
+        &mut self,
+        declaration: &hew_types::DefId,
+        args: Vec<HirExpr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let ty = self
+            .checker_expr_ty(span, declaration.full_path())
+            .unwrap_or(ResolvedTy::Unit);
+        let type_args = match &ty {
+            ResolvedTy::Named { args, .. } => args.clone(),
+            _ => vec![],
+        };
+        (
+            HirExprKind::StructInit {
+                name: declaration.full_path().to_string(),
+                type_args,
+                fields: args
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, arg)| (index.to_string(), arg))
+                    .collect(),
+                base: None,
+            },
+            ty,
+        )
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "regular call lowering reconciles checker targets and module identities atomically"
@@ -12118,6 +12074,10 @@ impl LowerCtx {
         span: &Span,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        if let Some(CallTarget::RecordConstructor(declaration)) = self.ordinary_call_target(span) {
+            return self.lower_positional_record_constructor(&declaration, args, span);
+        }
+
         // Module-qualified call `module.fn(args)`: the callee is a
         // `FieldAccess` on a module identifier, not a value. The checker
         // recorded a `RewriteModuleQualifiedToFunction` on this call span (the
@@ -12403,6 +12363,7 @@ impl LowerCtx {
     fn call_target_presentation_name(target: &CallTarget) -> String {
         match target {
             CallTarget::User(declaration)
+            | CallTarget::RecordConstructor(declaration)
             | CallTarget::ImplMethod(declaration)
             | CallTarget::Extern { declaration, .. }
             | CallTarget::DeclaredRuntime { declaration, .. } => {
@@ -13731,6 +13692,121 @@ impl LowerCtx {
         }
     }
 
+    fn checked_member_definition(
+        &mut self,
+        declaration: &hew_types::DefId,
+        span: &Span,
+    ) -> Option<hew_types::check::TypeDef> {
+        if let Some(definition) = self.checked_type_defs.get(declaration.full_path()) {
+            return Some(definition.clone());
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: declaration.full_path().to_string(),
+                reason: "missing resolved declaration members".to_string(),
+            },
+            span.clone(),
+            "declaration reached HIR without checker member facts",
+        ));
+        None
+    }
+
+    fn checked_member_ty(&mut self, ty: &Ty, parameters: &[String], span: &Span) -> ResolvedTy {
+        let binders = parameters.iter().cloned().collect();
+        match ResolvedTy::from_ty_with_type_params(ty, &binders) {
+            Ok(resolved) => {
+                let qualified = self.qualify_current_module_record_ty(resolved);
+                let named = parameters
+                    .iter()
+                    .map(|name| ResolvedTy::named_user(name.clone(), vec![]))
+                    .collect::<Vec<_>>();
+                substitute_type_params(&qualified, parameters, &named)
+            }
+            Err(error) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "declaration member".to_string(),
+                        reason: format!("unresolved checker member type: {error:?}"),
+                    },
+                    span.clone(),
+                    "declaration member has no resolved checker type",
+                ));
+                ResolvedTy::Unit
+            }
+        }
+    }
+
+    fn checked_field_ty(
+        &mut self,
+        definition: &hew_types::check::TypeDef,
+        name: &str,
+        span: &Span,
+    ) -> ResolvedTy {
+        if let Some(ty) = definition.fields.get(name) {
+            return self.checked_member_ty(ty, &definition.type_params, span);
+        }
+        self.diagnostics.push(HirDiagnostic::new(
+            HirDiagnosticKind::CheckerBoundaryViolation {
+                name: format!("{}.{name}", definition.name),
+                reason: "missing resolved field type".to_string(),
+            },
+            span.clone(),
+            "field reached HIR without checker member facts",
+        ));
+        ResolvedTy::Unit
+    }
+
+    fn checked_record_fields(
+        &mut self,
+        definition: &hew_types::check::TypeDef,
+        span: &Span,
+    ) -> Vec<(String, ResolvedTy)> {
+        definition
+            .field_order
+            .iter()
+            .map(|name| (name.clone(), self.checked_field_ty(definition, name, span)))
+            .collect()
+    }
+
+    fn checked_variant_kind(
+        &mut self,
+        definition: &hew_types::check::TypeDef,
+        name: &str,
+        span: &Span,
+    ) -> Option<HirVariantKind> {
+        match definition.variants.get(name) {
+            Some(hew_types::VariantDef::Unit) => Some(HirVariantKind::Unit),
+            Some(hew_types::VariantDef::Tuple(fields)) => Some(HirVariantKind::Tuple(
+                fields
+                    .iter()
+                    .map(|ty| self.checked_member_ty(ty, &definition.type_params, span))
+                    .collect(),
+            )),
+            Some(hew_types::VariantDef::Struct(fields)) => Some(HirVariantKind::Struct(
+                fields
+                    .iter()
+                    .map(|(name, ty)| {
+                        (
+                            name.clone(),
+                            self.checked_member_ty(ty, &definition.type_params, span),
+                        )
+                    })
+                    .collect(),
+            )),
+            None => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("{}::{name}", definition.name),
+                        reason: "missing resolved variant members".to_string(),
+                    },
+                    span.clone(),
+                    "variant reached HIR without checker member facts",
+                ));
+                None
+            }
+        }
+    }
+
     fn lower_type_decl(&mut self, decl: &TypeDecl, span: Span) -> Option<HirTypeDecl> {
         let declaration = self.source_declaration(
             &span,
@@ -13741,7 +13817,7 @@ impl LowerCtx {
             },
             0,
         )?;
-        Some(self.lower_type_decl_with_identity(decl, span, declaration))
+        self.lower_type_decl_with_identity(decl, span, declaration)
     }
 
     #[expect(
@@ -13753,7 +13829,8 @@ impl LowerCtx {
         decl: &TypeDecl,
         span: Span,
         declaration: hew_types::DefId,
-    ) -> HirTypeDecl {
+    ) -> Option<HirTypeDecl> {
+        let definition = self.checked_member_definition(&declaration, &span)?;
         let facts = self
             .type_declarations
             .get(declaration.full_path())
@@ -13777,10 +13854,7 @@ impl LowerCtx {
             }
             hew_types::value_class::DeclarationMarker::None => ResourceMarker::None,
         };
-        // Generic resource/linear types are rejected — the type→class map is
-        // keyed by name, not by instantiation. This rule belongs at the
-        // checker boundary (LESSONS `checker-output-boundary`); HIR is the
-        // first place the marker is durable, so the check lands here.
+        // The ownership map currently keys resource/linear declarations by nominal identity.
         if matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
             && !facts.type_params.is_empty()
         {
@@ -13803,69 +13877,41 @@ impl LowerCtx {
             ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
 
-        let previous_type_params = std::mem::replace(
-            &mut self.current_fn_type_params,
-            facts.type_params.iter().cloned().collect(),
-        );
-
-        // Carry the field set so dump-hir and future analysis have something
-        // to reason about; methods are out of scope for v0.5 MIR lowering
-        // and stay on the parser-side `TypeBodyItem::Method`.
-        let mut fields = Vec::new();
-        for item in &decl.body {
-            if let TypeBodyItem::Field {
-                name,
-                ty,
-                span: field_span,
-                ..
-            } = item
-            {
-                fields.push(HirField {
+        let fields = decl
+            .body
+            .iter()
+            .filter_map(|item| {
+                let TypeBodyItem::Field {
+                    name,
+                    span: field_span,
+                    ..
+                } = item
+                else {
+                    return None;
+                };
+                Some(HirField {
                     name: name.clone(),
-                    ty: self.lower_type(ty),
+                    ty: self.checked_field_ty(&definition, name, field_span),
                     default: None,
                     is_mutable: false,
                     deferred: false,
                     span: field_span.clone(),
-                });
-            }
-            // `TypeBodyItem::Method` is not lowered into HIR in v0.5 — the
-            // method-call expression form has no HIR/MIR lowering yet, so
-            // method bodies cannot be exercised. Their *declared names* are
-            // captured upstream as `TypeDecl.consuming_methods` and travel
-            // on `HirTypeDecl.consuming_methods`.
-        }
-
-        // For enum-kind type decls, lower every variant (unit, tuple, struct)
-        // into `HirVariant` carrying fully resolved payload types. MIR
-        // consumes the resulting `variants` vec to populate `EnumLayout`
-        // including per-variant `field_tys`. The index assigned here matches
-        // the order the ctor pre-pass walks `TypeBodyItem::Variant` entries,
-        // so the HIR registry key and MIR layout index agree (see design notes
-        // D2 — variant-index ordering is HIR-pre-pass authoritative).
-        let mut variants: Vec<HirVariant> = Vec::new();
-        if decl.kind == TypeDeclKind::Enum {
-            for body_item in &decl.body {
-                if let TypeBodyItem::Variant(v) = body_item {
-                    let kind = match &v.kind {
-                        VariantKind::Unit => HirVariantKind::Unit,
-                        VariantKind::Tuple(tys) => HirVariantKind::Tuple(
-                            tys.iter().map(|ty| self.lower_type(ty)).collect(),
-                        ),
-                        VariantKind::Struct(fields) => HirVariantKind::Struct(
-                            fields
-                                .iter()
-                                .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
-                                .collect(),
-                        ),
-                    };
-                    variants.push(HirVariant {
-                        name: v.name.clone(),
-                        kind,
-                    });
-                }
-            }
-        }
+                })
+            })
+            .collect::<Vec<_>>();
+        let variants = decl
+            .body
+            .iter()
+            .filter_map(|item| {
+                let TypeBodyItem::Variant(variant) = item else {
+                    return None;
+                };
+                Some(HirVariant {
+                    name: variant.name.clone(),
+                    kind: self.checked_variant_kind(&definition, &variant.name, &span)?,
+                })
+            })
+            .collect();
 
         // Register concrete generic-enum layouts from stored field types even
         // when no expression constructs the enclosing value. Codegen emits a
@@ -13881,14 +13927,10 @@ impl LowerCtx {
         // the path safe if the pre-pass ever skips a decl.
         let id = self
             .record_registry
-            .get(&decl.name)
+            .get(declaration.full_path())
             .map_or_else(|| self.ids.item(), |entry| entry.id);
-        let type_params: Vec<String> = decl
-            .type_params
-            .as_ref()
-            .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-        self.current_fn_type_params = previous_type_params;
-        HirTypeDecl {
+        let type_params = definition.type_params;
+        Some(HirTypeDecl {
             kind: match decl.kind {
                 TypeDeclKind::Struct => HirTypeDeclKind::Struct,
                 TypeDeclKind::Enum => HirTypeDeclKind::Enum,
@@ -13909,7 +13951,7 @@ impl LowerCtx {
             fields,
             variants,
             span,
-        }
+        })
     }
 
     /// Lower a `record` declaration into `HirRecordDecl`.
@@ -13924,39 +13966,45 @@ impl LowerCtx {
         decl: &RecordDecl,
         span: std::ops::Range<usize>,
     ) -> Option<HirRecordDecl> {
-        let type_params: Vec<String> = decl.type_params.as_ref().map_or(vec![], |params| {
-            params.iter().map(|p| p.name.clone()).collect()
-        });
-
-        let previous_type_params = std::mem::replace(
-            &mut self.current_fn_type_params,
-            type_params.iter().cloned().collect(),
-        );
-        let (fields, positional_field_tys): (Vec<HirField>, Vec<ResolvedTy>) = match &decl.kind {
+        let declaration = self.source_declaration(&span, hew_types::DeclarationKind::Record, 0)?;
+        let definition = self.checked_member_definition(&declaration, &span)?;
+        let type_params = definition.type_params.clone();
+        let (fields, positional_field_tys) = match &decl.kind {
             RecordKind::Named(record_fields) => (
                 record_fields
                     .iter()
-                    .map(|rf| HirField {
-                        name: rf.name.clone(),
-                        ty: self.lower_type(&rf.ty),
+                    .map(|field| HirField {
+                        name: field.name.clone(),
+                        ty: self.checked_field_ty(&definition, &field.name, &field.span),
                         default: None,
                         is_mutable: false,
                         deferred: false,
-                        span: rf.span.clone(),
+                        span: field.span.clone(),
                     })
                     .collect(),
                 Vec::new(),
             ),
-            // Tuple records have no named fields; retain their payload types
-            // separately so layout consumers can classify the stored value
-            // without exposing `.0`/`.1` field access.
-            RecordKind::Tuple(positional_types) => (
-                Vec::new(),
-                positional_types
-                    .iter()
-                    .map(|ty| self.lower_type(ty))
-                    .collect(),
-            ),
+            RecordKind::Tuple(_) => {
+                let Some(signature) = self.fn_sigs.get(declaration.full_path()).cloned() else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: declaration.full_path().to_string(),
+                            reason: "missing checked positional constructor signature".to_string(),
+                        },
+                        span.clone(),
+                        "tuple record reached HIR without positional member facts",
+                    ));
+                    return None;
+                };
+                (
+                    Vec::new(),
+                    signature
+                        .params
+                        .iter()
+                        .map(|ty| self.checked_member_ty(ty, &definition.type_params, &span))
+                        .collect(),
+                )
+            }
         };
 
         // Reuse the stable ItemId pre-allocated during the record/
@@ -13964,18 +14012,14 @@ impl LowerCtx {
         // the path safe if the pre-pass ever skips a decl.
         let id = self
             .record_registry
-            .get(&decl.name)
+            .get(declaration.full_path())
             .map_or_else(|| self.ids.item(), |entry| entry.id);
-        self.current_fn_type_params = previous_type_params;
         Some(HirRecordDecl {
             id,
             node: self.ids.node(),
-            declaration: self.source_declaration(&span, hew_types::DeclarationKind::Record, 0)?,
+            declaration,
             name: decl.name.clone(),
-            // Root/local identity by default; an imported-record carrier would
-            // stamp `Some(module_short)`. Imported records are not yet emitted
-            // as `HirItem::Record` (the imported `Item::Record` arm is a skip),
-            // so today every lowered record is root-identity.
+            // Imported emission stamps the declaration's source module.
             defining_module: None,
             type_params,
             positional_field_tys,
@@ -14149,64 +14193,51 @@ impl LowerCtx {
 
     fn register_machine_ctor_variant_metadata(
         &mut self,
-        module_short: Option<&str>,
+        module: Option<&str>,
         decl: &MachineDecl,
+        span: &Span,
     ) {
-        let state_variants: Vec<HirVariant> = decl
+        let state_names: Vec<&str> = decl
             .states
             .iter()
-            .map(|state| {
-                let kind = if state.fields.is_empty() {
-                    HirVariantKind::Unit
-                } else {
-                    HirVariantKind::Struct(
-                        state
-                            .fields
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
-                            .collect(),
-                    )
-                };
-                HirVariant {
-                    name: state.name.clone(),
-                    kind,
-                }
-            })
+            .map(|state| state.name.as_str())
             .collect();
-        let state_type_name = module_short.map_or_else(
-            || decl.name.clone(),
-            |module| format!("{module}.{}", decl.name),
-        );
-        self.enum_variants_by_name
-            .insert(state_type_name, state_variants);
-
-        let event_type_name = format!("{}Event", decl.name);
-        let event_variants: Vec<HirVariant> = decl
+        let event_names: Vec<&str> = decl
             .events
             .iter()
-            .map(|event| {
-                let kind = if event.fields.is_empty() {
-                    HirVariantKind::Unit
-                } else {
-                    HirVariantKind::Struct(
-                        event
-                            .fields
-                            .iter()
-                            .map(|(name, ty)| (name.clone(), self.lower_type(ty)))
-                            .collect(),
-                    )
-                };
-                HirVariant {
-                    name: event.name.clone(),
-                    kind,
-                }
-            })
+            .map(|event| event.name.as_str())
             .collect();
-        let event_type_name = module_short.map_or(event_type_name.clone(), |module| {
-            format!("{module}.{event_type_name}")
-        });
-        self.enum_variants_by_name
-            .insert(event_type_name, event_variants);
+        for (name, variants) in [
+            (decl.name.clone(), state_names),
+            (format!("{}Event", decl.name), event_names),
+        ] {
+            let canonical =
+                module.map_or_else(|| name.clone(), |module| format!("{module}.{name}"));
+            let Some(declaration) = self.identity.declaration_by_path(&canonical).cloned() else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: canonical,
+                        reason: "missing machine member declaration identity".to_string(),
+                    },
+                    span.clone(),
+                    "machine members require a checker declaration identity",
+                ));
+                continue;
+            };
+            let Some(definition) = self.checked_member_definition(&declaration, span) else {
+                continue;
+            };
+            let variants = variants
+                .into_iter()
+                .filter_map(|name| {
+                    Some(HirVariant {
+                        name: name.to_string(),
+                        kind: self.checked_variant_kind(&definition, name, span)?,
+                    })
+                })
+                .collect();
+            self.enum_variants_by_name.insert(canonical, variants);
+        }
     }
 
     /// Lower a parser `TraitBound` (used in a machine's type-param
@@ -22670,7 +22701,7 @@ impl LowerCtx {
                 self.current_module_name.as_deref(),
                 name,
             ) {
-                if self.checker_type_identities.contains(&canonical) {
+                if self.checked_type_defs.contains_key(&canonical) {
                     return canonical;
                 }
             }

@@ -1307,6 +1307,18 @@ impl Checker {
         Some(owner.to_string())
     }
 
+    pub(super) fn source_call_target(&self, declaration: crate::DefId) -> CallTarget {
+        if self
+            .identity
+            .declaration_kind_by_path(declaration.full_path())
+            == Some(crate::DeclarationKind::Record)
+        {
+            CallTarget::RecordConstructor(declaration)
+        } else {
+            CallTarget::User(declaration)
+        }
+    }
+
     fn user_call_target_for_declared_fn(&self, signature_key: &str) -> Option<CallTarget> {
         let (_, declaring_module) = self.fn_def_spans.get(signature_key)?;
         let declaration = declaring_module.as_ref().map_or_else(
@@ -1319,7 +1331,7 @@ impl Checker {
         self.identity
             .declaration_by_path(&declaration)
             .cloned()
-            .map(CallTarget::User)
+            .map(|declaration| self.source_call_target(declaration))
     }
 
     #[expect(
@@ -1338,6 +1350,13 @@ impl Checker {
         // `pkg.file.f`), and the extern table is keyed by the identity, not by
         // a spelling. Resolve the key first, then read the extern row.
         let resolved = self.identity.declaration_by_path(signature_key).cloned();
+        if self.identity.declaration_kind_by_path(signature_key)
+            == Some(crate::DeclarationKind::Record)
+        {
+            if let Some(declaration) = resolved {
+                return CallTarget::RecordConstructor(declaration);
+            }
+        }
         if let Some(extern_decl) = resolved
             .as_ref()
             .and_then(|declaration| self.extern_table.declaration(declaration.full_path()))
@@ -1456,7 +1475,7 @@ impl Checker {
                 // populated by an earlier graph-registration pass that did
                 // not retain a second `fn_def_spans` compatibility entry.
                 if let Some(declaration) = self.identity.declaration_by_path(&declaration) {
-                    return CallTarget::User(declaration.clone());
+                    return self.source_call_target(declaration.clone());
                 }
                 return CallTarget::Unsupported {
                     reason: format!(
@@ -1490,7 +1509,7 @@ impl Checker {
                             "checker identity table has no imported declaration `{source_key}`"
                         ),
                     },
-                    CallTarget::User,
+                    |declaration| self.source_call_target(declaration),
                 );
         }
         // Compiler-registered builtins have no source declaration span. Their

@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -73,18 +73,45 @@ fn normalize_tag(tag: &str) -> &str {
 }
 
 fn emit_git_watch_paths(repo_dir: &Path) {
-    let Ok(git_dir) = git_stdout(repo_dir, &["rev-parse", "--git-dir"]) else {
-        return;
-    };
-    let git_dir = repo_dir.join(git_dir);
-    println!("cargo:rerun-if-changed={}", git_dir.join("HEAD").display());
-
-    if let Ok(ref_name) = git_stdout(repo_dir, &["symbolic-ref", "--quiet", "HEAD"]) {
-        println!(
-            "cargo:rerun-if-changed={}",
-            git_dir.join(ref_name).display()
-        );
+    for path in git_watch_paths(repo_dir) {
+        println!("cargo:rerun-if-changed={}", path.display());
     }
+}
+
+fn git_watch_paths(repo_dir: &Path) -> Vec<PathBuf> {
+    let git_path = |name| {
+        git_stdout(repo_dir, &["rev-parse", "--git-path", name])
+            .ok()
+            .map(|path| repo_dir.join(path))
+    };
+    let mut paths = Vec::new();
+    if let Some(head) = git_path("HEAD").filter(|path| path.exists()) {
+        paths.push(head);
+    }
+    if let Ok(ref_name) = git_stdout(repo_dir, &["symbolic-ref", "--quiet", "HEAD"]) {
+        if let Some(reference) = git_path(&ref_name) {
+            if reference.exists() {
+                paths.push(reference);
+            } else {
+                // A packed branch becomes loose on its next update. Watch the
+                // nearest existing ref directory to observe that creation;
+                // nonexistent Cargo watch paths would force every build dirty.
+                if let Some(parent) = git_path("refs").and_then(|refs| {
+                    reference
+                        .ancestors()
+                        .skip(1)
+                        .take_while(|path| path.starts_with(&refs))
+                        .find(|path| path.exists())
+                }) {
+                    paths.push(parent.to_path_buf());
+                }
+                if let Some(packed) = git_path("packed-refs").filter(|path| path.exists()) {
+                    paths.push(packed);
+                }
+            }
+        }
+    }
+    paths
 }
 
 fn git_stdout(repo_dir: &Path, args: &[&str]) -> Result<String, String> {
@@ -101,7 +128,78 @@ fn git_stdout(repo_dir: &Path, args: &[&str]) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dev_version, normalize_tag};
+    use super::{dev_version, git_stdout, git_watch_paths, normalize_tag};
+
+    #[test]
+    fn linked_worktree_watches_loose_and_packed_branch_updates() {
+        let dir = tempfile::tempdir().expect("temporary repository");
+        let canonical_dir = dir
+            .path()
+            .canonicalize()
+            .expect("canonical repository path");
+        let repo = canonical_dir.as_path();
+        let git = |args: &[&str]| git_stdout(repo, args).expect("git fixture command");
+        git(&["init", "--initial-branch=main"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "--no-gpg-sign",
+            "--allow-empty",
+            "-m",
+            "initial",
+        ]);
+        let worktree = repo.join("linked");
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "nested/topic",
+            worktree.to_str().unwrap(),
+        ]);
+        let canonical_watches = || {
+            git_watch_paths(&worktree)
+                .into_iter()
+                .map(|path| path.canonicalize().expect("existing watch target"))
+                .collect::<Vec<_>>()
+        };
+        let reference = repo.join(".git/refs/heads/nested/topic");
+        let watches = canonical_watches();
+        assert!(watches.contains(&reference));
+        assert!(watches.contains(&repo.join(".git/worktrees/linked/HEAD")));
+
+        git(&["pack-refs", "--all", "--prune"]);
+        assert!(!reference.exists());
+        let watches = canonical_watches();
+        assert!(watches.contains(&repo.join(".git/packed-refs")));
+        assert!(watches
+            .iter()
+            .any(|path| path.is_dir() && reference.starts_with(path)));
+        git_stdout(
+            &worktree,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.invalid",
+                "commit",
+                "--no-gpg-sign",
+                "--allow-empty",
+                "-m",
+                "advance",
+            ],
+        )
+        .unwrap();
+        assert!(reference.exists());
+        assert!(canonical_watches().contains(&reference));
+
+        git_stdout(&worktree, &["checkout", "--detach"]).unwrap();
+        let watches = canonical_watches();
+        assert_eq!(watches.len(), 1);
+        assert!(watches[0].ends_with("HEAD"));
+    }
 
     #[test]
     fn normalizes_release_tag_prefix() {

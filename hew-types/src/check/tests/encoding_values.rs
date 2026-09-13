@@ -3,6 +3,7 @@
     reason = "checker tests share private helpers"
 )]
 use super::*;
+use crate::traits::TraitRegistry;
 use crate::{CloneKind, SendFact, ValueCapability, ValueClass, ValueMethodPlan};
 
 const VALUE_SOURCE: &str = "#[opaque] pub type Value {}";

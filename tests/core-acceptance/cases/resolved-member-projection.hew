@@ -1,0 +1,28 @@
+trait Source {
+    type Item;
+}
+
+type Text {}
+
+impl Source for Text {
+    type Item = string;
+}
+
+type Message {
+    body: <Text as Source>.Item,
+}
+
+enum Delivery {
+    Empty,
+    Ready { body: <Text as Source>.Item },
+}
+
+fn main() {
+    let message = Message { body: "projected".to_upper() };
+    let delivery = Delivery.Ready { body: message.body };
+    match delivery {
+        Delivery.Empty => println("empty"),
+        Delivery.Ready { body } => println(body),
+    }
+    println(message.body);
+}

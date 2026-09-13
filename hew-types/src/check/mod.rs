@@ -4,7 +4,7 @@ use crate::builtin_names::{builtin_named_type, builtin_named_types, BuiltinMetho
 use crate::error::{SupervisorErrorKind, TypeError, TypeErrorKind};
 use crate::module_registry::ModuleError;
 use crate::resolved_ty::{BoundaryError, ResolvedTy};
-use crate::traits::{MarkerTrait, TraitRegistry};
+use crate::traits::MarkerTrait;
 use crate::ty::{Ty, TypeVar};
 use crate::type_facts::{TypeFactContext, TypeFactService, TypeFacts, TypeInstanceKey};
 use crate::unify::unify;
@@ -213,22 +213,13 @@ fn patch_builtin_result_output_type(_ty: Ty, ok_ty: &Ty, err_ty: &Ty) -> Ty {
 /// Both live in this crate, so the class authority reads them directly rather
 /// than through a second table.
 pub(crate) struct CheckerClassDeclarations<'a> {
-    registry: &'a TraitRegistry,
-    type_defs: &'a HashMap<String, crate::check::types::TypeDef>,
-    /// `#[opaque]` declarations written in this program.
-    user_opaque_type_names: &'a HashSet<String>,
-    /// Resolves an imported `#[opaque]` handle spelling, which the set above
-    /// does not carry.
-    module_registry: &'a crate::module_registry::ModuleRegistry,
-    /// Supervisor declarations. A supervisor is a nominal with no value
-    /// members: only its own actor-handle type is ever a value, so the
-    /// declaration classes `BitCopy` from an empty member list.
-    supervisors: &'a HashMap<String, crate::check::types::SupervisorChildren>,
+    checker: &'a Checker,
 }
 
 impl CheckerClassDeclarations<'_> {
     fn is_opaque_type(&self, name: &str) -> bool {
-        self.user_opaque_type_names.contains(name) || self.module_registry.is_handle_type(name)
+        self.checker.user_opaque_type_names.contains(name)
+            || self.checker.module_registry.is_handle_type(name)
     }
 }
 
@@ -240,16 +231,16 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         // program's own declarations by the checker's set and for an imported
         // handle by the module registry.
         let is_opaque = self.is_opaque_type(name);
-        let marker = if self.registry.is_resource(name) {
+        let marker = if self.checker.registry.is_resource(name) {
             DeclarationMarker::Resource
-        } else if self.registry.is_linear(name) {
+        } else if self.checker.registry.is_linear(name) {
             DeclarationMarker::Linear
         } else {
             DeclarationMarker::None
         };
-        let definition = crate::check::types::type_def_for_spelling(self.type_defs, name);
+        let definition = crate::check::types::type_def_for_spelling(&self.checker.type_defs, name);
         let Some(definition) = definition else {
-            if self.supervisors.contains_key(name) {
+            if self.checker.supervisor_children.contains_key(name) {
                 return Some(DeclaredType::default());
             }
             // A marker with no field table still decides the class outright.
@@ -262,6 +253,12 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
             });
         };
         let mut member_tys: Vec<Ty> = Vec::new();
+        if definition.kind == TypeDefKind::Record && definition.fields.is_empty() {
+            if let Some(signature) = self.checker.fn_sigs.get(name) {
+                member_tys.extend(signature.params.iter().cloned());
+            }
+        }
+
         if definition.field_order.is_empty() {
             let mut names: Vec<&String> = definition.fields.keys().collect();
             names.sort();
@@ -308,12 +305,19 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         let module_prefix = name.rsplit_once('.').map(|(prefix, _)| prefix);
         let mut members = Vec::with_capacity(member_tys.len());
         for ty in member_tys {
+            let ty = self
+                .checker
+                .normalize_for_type_params(&ty, &definition.type_params);
             // A member the boundary cannot render leaves the whole declaration
             // unclassifiable: an aggregate over the members that happened to
             // convert would be a guess. A marked declaration's class comes
             // from its marker, not its members, so it keeps its row with no
             // members instead - consumers that need the fields refuse there.
-            let Ok(resolved) = ResolvedTy::from_ty(&ty.materialize_literal_defaults()) else {
+            let parameters = definition.type_params.iter().cloned().collect();
+            let Ok(resolved) = ResolvedTy::from_ty_with_type_params(
+                &ty.materialize_literal_defaults(),
+                &parameters,
+            ) else {
                 if marker == DeclarationMarker::None {
                     return None;
                 }
@@ -325,9 +329,10 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
                     members: Vec::new(),
                 });
             };
-            let resolved = resolve_member_ty(resolved, module_prefix, self.type_defs, &|name| {
-                self.is_opaque_type(name)
-            });
+            let resolved =
+                resolve_member_ty(resolved, module_prefix, &self.checker.type_defs, &|name| {
+                    self.is_opaque_type(name)
+                });
             members.push(resolved);
         }
         // A declaration with no fields and no variants is still a declaration:
@@ -758,13 +763,7 @@ impl Checker {
 
     /// The §1.1 declaration lookup backed by this checker's tables.
     pub(crate) fn class_declarations(&self) -> CheckerClassDeclarations<'_> {
-        CheckerClassDeclarations {
-            registry: &self.registry,
-            type_defs: &self.type_defs,
-            user_opaque_type_names: &self.user_opaque_type_names,
-            module_registry: &self.module_registry,
-            supervisors: &self.supervisor_children,
-        }
+        CheckerClassDeclarations { checker: self }
     }
 
     /// Whether a checker-internal type carries no ownership obligation, per
@@ -2312,6 +2311,7 @@ impl Checker {
         }
         // Admission consumes the complete post-substitution declarations.
         self.type_defs = resolved_type_defs.clone();
+        self.fn_sigs.clone_from(&resolved_fn_sigs);
         self.finalize_builtin_clone_admission();
         let mut resolved_lowering_facts = self.finalize_lowering_facts();
         admissibility::validate_lowering_facts_output_contract(

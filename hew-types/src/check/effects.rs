@@ -625,7 +625,8 @@ impl Checker {
                 family.is_async_suspending().is_some()
             }
             Some(
-                CallTarget::Extern { .. }
+                CallTarget::RecordConstructor(_)
+                | CallTarget::Extern { .. }
                 | CallTarget::Builtin { .. }
                 | CallTarget::RuntimeCollection(_),
             ) => false,

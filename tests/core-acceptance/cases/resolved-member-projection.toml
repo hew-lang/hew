@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-member-projection"
+intent = "Concrete associated types determine record fields and enum payloads, including owned value copies and cleanup."
+source = "cases/resolved-member-projection.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "PROJECTED\nPROJECTED\n"
+exit = 0

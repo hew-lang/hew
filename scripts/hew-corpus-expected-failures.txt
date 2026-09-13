@@ -93,10 +93,6 @@ hew-cli/tests/fixtures/main_entry_exit/non_error.hew
 
 # ── hew-lsp/ ────────────────────────────────────────────────────────────────────
 
-# internal-channel (#3401): the checker admits a record tuple literal that HIR
-# lowering then refuses
-hew-lsp/tests/fixtures/v05_record_tuple_literal.hew E_HIR
-
 # deferred-nyi / stale-syntax: LSP fixtures covering surfaces the checker no
 # longer admits or has not built; the LSP tests parse them, they are not compiled
 hew-lsp/tests/fixtures/v05_async_await.hew E_NO_ASYNC_FN
@@ -110,10 +106,6 @@ hew-lsp/tests/fixtures/v05_machine_methods.hew
 hew-observe/test-harness/observe_workload.hew
 
 # ── hew-parser/ ─────────────────────────────────────────────────────────────────
-
-# internal-channel (#3401): the checker admits the seed's record form and HIR
-# lowering then refuses it
-hew-parser/fuzz/corpus/fuzz_record_types/seed.hew E_HIR
 
 # stale-syntax: fuzz seeds hold parse-rejected forms on purpose; the paired
 # generators emit the same shapes

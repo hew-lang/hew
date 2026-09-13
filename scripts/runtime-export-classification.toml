@@ -222,15 +222,12 @@ stable = [
   "hew_bytes_clear",
   "hew_bytes_clone_ref",
   "hew_bytes_concat",
-  "hew_bytes_contains",
   "hew_bytes_drop",
   "hew_bytes_eq",
   "hew_bytes_from_static",
   "hew_bytes_from_str",
   "hew_bytes_index",
   "hew_bytes_slice_owned",
-  "hew_bytes_is_empty",
-  "hew_bytes_len",
   "hew_bytes_new",
   "hew_bytes_pop",
   "hew_bytes_push",
@@ -2251,27 +2248,6 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_bytes_clear"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_bytes_contains"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_bytes_is_empty"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_bytes_len"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

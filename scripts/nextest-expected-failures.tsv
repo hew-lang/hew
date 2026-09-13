@@ -39,7 +39,6 @@ macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_env_of_env_no_per_fr
 macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_flat_owned_capture_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
 linux	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
-linux	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_retain_and_release_are_balanced_in_ir	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
 macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_fresh_call_result_into_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
 macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
@@ -128,8 +127,6 @@ macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_var_overwrit
 macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_var_overwrite_loop_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
 linux,macos,windows	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
 linux,macos,windows	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
-linux,macos,windows	failure	hew-cli::json_diagnostics_e2e	check_not_yet_implemented_json_has_no_debug_payload	#3384 renders every compiler limitation with a source span
-linux,macos,windows	failure	hew-cli::json_diagnostics_e2e	compile_mir_gate_failure_json_has_no_debug_payload	#3384 renders every compiler limitation with a source span
 linux,macos,windows	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux,windows	failure	hew-cli::machine_state_resource_leak_oracle	machine_reenter_carrying_resource_is_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
 linux,windows	failure	hew-cli::machine_state_resource_leak_oracle	machine_state_resource_release_paths_are_rejected_in_checker	#3379 evaluates const parameters and generic fallbacks in a pure machine
@@ -164,7 +161,6 @@ linux,macos,windows	failure	hew-cli::run_e2e	check_closure_borrowed_element_stor
 linux,macos,windows	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux,macos,windows	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
 linux,macos,windows	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
-linux,macos,windows	failure	hew-cli::run_e2e	cross_module_generic_fn_value_context_determined_rejected_not_yet_implemented	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux,macos,windows	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_runs	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
 linux,macos,windows	failure	hew-cli::run_e2e	run_file_imported_actor_spawns_and_calls	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
 linux,macos,windows	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity

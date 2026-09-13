@@ -228,6 +228,8 @@ pub enum ResolvedRuntimeResult {
 pub enum CallTarget {
     /// A direct user function declaration.
     User(DefId),
+    /// A positional record constructor, lowered to aggregate initialization.
+    RecordConstructor(DefId),
     /// A user or trait-impl method declaration.
     ImplMethod(DefId),
     /// A checked open-set FFI endpoint selected by `#[extern_symbol]` on a

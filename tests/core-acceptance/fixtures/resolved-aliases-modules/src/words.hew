@@ -1,3 +1,5 @@
+import aliases.numbers.{Value as Number};
+
 pub type Value = string;
 
 pub type Pair<T> = (T, T);
@@ -6,6 +8,40 @@ pub type Names = Pair<Value>;
 
 type Hidden = bool;
 
+type T = i64;
+
+pub type Envelope<T> {
+    value: T,
+    names: Names,
+    order: Number,
+}
+
+pub enum Delivery<T> {
+    Empty,
+    Label(Value),
+    Bundle { value: T, names: Names, order: Number },
+}
+
+pub type Cargo<T>(T, Names);
+
 pub fn names() -> Names {
     ("module".to_upper(), "alias".to_upper())
+}
+
+// A nominal with the binder's spelling must not change stored generic members.
+type U {
+    tag: string,
+}
+
+pub type Bound<U> {
+    value: U,
+}
+
+type Cache(string, Names);
+
+pub fn private_count() -> i64 {
+    var entries: Vec<Cache> = Vec.new();
+    entries.push(Cache("private".to_upper(), names()));
+    let copy = entries;
+    copy.len() + entries.len()
 }

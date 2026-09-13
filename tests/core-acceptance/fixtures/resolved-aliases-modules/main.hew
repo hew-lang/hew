@@ -2,9 +2,34 @@ import aliases.words as words;
 
 import aliases.numbers.{Value as Number, answer};
 
+import aliases.numbers as numbers;
+
+type Value = bool;
+
+type T = bool;
+
 type Message {
     names: words.Names,
     number: Number,
+}
+
+fn show(delivery: words.Delivery<string>) {
+    match delivery {
+        words.Delivery.Empty => println("empty"),
+        words.Delivery.Label(label) => println(label),
+        words.Delivery.Bundle { value, names, order } => {
+            let (first, second) = names;
+            println(f"{order}:{value}:{first}:{second}");
+        },
+    }
+}
+
+fn count<T>(items: Vec<T>) -> i64 {
+    var total = 0;
+    for _item in items {
+        total += 1;
+    }
+    total
 }
 
 fn main() {
@@ -13,4 +38,30 @@ fn main() {
     println(first);
     println(second);
     println(message.number);
+
+    let envelope = words.Envelope<string> {
+        value: "bundle".to_upper(),
+        names: message.names,
+        order: message.number,
+    };
+    let delivery: words.Delivery<string> = words.Delivery.Bundle {
+        value: envelope.value,
+        names: envelope.names,
+        order: envelope.order,
+    };
+    show(delivery);
+    show(words.Delivery.Label("label".to_upper()));
+    show(words.Delivery.Empty);
+    show(delivery);
+    println(envelope.value);
+
+    let numeric = numbers.Envelope<bool> { value: true, order: answer() };
+    println(f"{numeric.order}:{numeric.value}");
+
+    var cargo: Vec<words.Cargo<string>> = Vec.new();
+    cargo.push(words.Cargo("first".to_upper(), message.names));
+    cargo.push(words.Cargo("second".to_upper(), envelope.names));
+    println(count(cargo));
+    println(count(cargo));
+    println(envelope.names.0);
 }

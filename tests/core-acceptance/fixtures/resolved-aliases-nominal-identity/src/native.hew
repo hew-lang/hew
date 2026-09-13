@@ -1,0 +1,28 @@
+#[resource]
+#[opaque]
+pub type Handle {
+}
+
+impl Handle {
+    fn close(consume self) {
+        unsafe {
+            hew_deque_free(self)
+        };
+        println("closed opaque");
+    }
+}
+
+extern "C" {
+    fn hew_deque_new() -> Handle;
+    fn hew_deque_free(consume handle: Handle);
+}
+
+pub fn open() -> Handle {
+    unsafe {
+        hew_deque_new()
+    }
+}
+
+pub fn forward(consume handle: Handle) -> Handle {
+    handle
+}

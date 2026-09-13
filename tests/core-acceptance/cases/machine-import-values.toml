@@ -1,10 +1,10 @@
 [[case]]
 id = "machine-import-values"
-intent = "Same-leaf file and package machines retain distinct staged methods, helper calls and owning output types."
+intent = "Same-leaf file and package machines retain distinct constructors, qualified state patterns, staged methods and owning output types."
 source = "cases/machine-import-values.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "file:left\npackage:right\nOpened\nOpened\n"
+stdout = "qualified\nfile:left\npackage:right\nOpened\nOpened\n"
 exit = 0

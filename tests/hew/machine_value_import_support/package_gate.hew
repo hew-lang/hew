@@ -1,15 +1,40 @@
-fn decorate(value: string) -> string { "package:" + value }
+fn decorate(value: string) -> string {
+    "package:" + value
+}
 
 pub machine Gate {
-    events { Open, }
-    emits { Changed { label: string }, }
-    state Closed { label: string },
-    state Opened { label: string },
+    events {
+        Open,
+    }
+
+    emits {
+        Changed { label: string, },
+    }
+
+    state Closed { label: string, },
+    state Opened { label: string, },
+
     on Open: Closed => Opened {
         emit Changed { label: decorate(state.label) };
         Opened { label: state.label }
     }
+
     default { state }
 }
 
-pub fn package_gate() -> Gate { .Closed { label: "right" } }
+pub fn package_gate() -> Gate {
+    .Closed { label: "right" }
+}
+
+pub machine Marker {
+    events {
+        Advance,
+    }
+
+    state Waiting,
+    state Complete,
+
+    on Advance: Waiting => Complete,
+
+    default { state }
+}

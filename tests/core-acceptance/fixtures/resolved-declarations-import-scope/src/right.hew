@@ -1,0 +1,3 @@
+pub fn label(value: string) -> string {
+    value
+}

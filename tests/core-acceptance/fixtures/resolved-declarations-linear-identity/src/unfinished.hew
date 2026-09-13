@@ -1,0 +1,8 @@
+#[linear]
+type Transaction {
+    id: i64,
+}
+
+pub fn run() {
+    let transaction = Transaction { id: 2 };
+}

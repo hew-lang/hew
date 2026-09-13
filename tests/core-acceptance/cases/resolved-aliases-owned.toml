@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-aliases-owned"
+intent = "Nested generic aliases retain owned strings across record fields, enum payloads and callable values; a resource alias closes exactly once after the values are used."
+source = "fixtures/resolved-aliases-owned/main.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ADA\nGRACE\nclosed TICKET\nfinished\n"
+exit = 0

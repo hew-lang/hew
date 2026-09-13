@@ -1,0 +1,18 @@
+import trait_authority.good.{decorate};
+
+type Badge {
+    tag: string,
+}
+
+fn make_tag(value: Badge) -> string {
+    decorate(value.tag)
+}
+
+pub trait Describe {
+    fn base(self) -> string;
+
+    fn describe(self) -> string {
+        let badge = Badge { tag: self.base() };
+        make_tag(badge)
+    }
+}

@@ -23,8 +23,9 @@ mod file_resources;
 pub use file_resources::{FileReadHandleKind, FileReadOp};
 mod declared;
 pub use declared::{
-    declared_runtime_method, DeclaredRuntimeMethod, DeclaredRuntimeResult,
-    DECLARED_RUNTIME_EXPORTS_TOML,
+    declared_direct_runtime_method, declared_runtime_method, DeclaredDirectRuntimeMethod,
+    DeclaredRuntimeMethod, DeclaredRuntimeResult, DeclaredRuntimeTarget,
+    DECLARED_DIRECT_RUNTIME_METHODS, DECLARED_RUNTIME_EXPORTS_TOML,
 };
 
 use crate::{BuiltinType, ResolvedTy};
@@ -2013,95 +2014,10 @@ const I64: &[CanonicalExternTy] = &[CanonicalExternTy::I64];
 const I64_U8: &[CanonicalExternTy] = &[CanonicalExternTy::I64, CanonicalExternTy::U8];
 const BYTES: &[CanonicalExternTy] = &[CanonicalExternTy::Bytes];
 const STRING: &[CanonicalExternTy] = &[CanonicalExternTy::String];
-const INSTANT: &[CanonicalExternTy] = &[CanonicalExternTy::Instant];
 
-/// Complete source-declaration authority for compiler-lowered stdlib extern
-/// bridges. A new method fails closed until it is added here with an exact Hew
-/// signature, trusted source module, and admitted runtime family.
-const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
-    // The `impl duration` / `impl instant` methods in `std/builtins.hew`. Both
-    // receivers are i64-backed scalars, so every one of these is a bit-copied
-    // scalar operation with no ownership consequence.
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::nanos",
-        symbol: "hew_duration_nanos",
-        family: Some(RuntimeCallFamily::DurationNanos),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::micros",
-        symbol: "hew_duration_micros",
-        family: Some(RuntimeCallFamily::DurationMicros),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::millis",
-        symbol: "hew_duration_millis",
-        family: Some(RuntimeCallFamily::DurationMillis),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::secs",
-        symbol: "hew_duration_secs",
-        family: Some(RuntimeCallFamily::DurationSecs),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::mins",
-        symbol: "hew_duration_mins",
-        family: Some(RuntimeCallFamily::DurationMins),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::hours",
-        symbol: "hew_duration_hours",
-        family: Some(RuntimeCallFamily::DurationHours),
-        params: EMPTY,
-        result: CanonicalExternTy::I64,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::abs",
-        symbol: "hew_duration_abs",
-        family: Some(RuntimeCallFamily::DurationAbs),
-        params: EMPTY,
-        result: CanonicalExternTy::Duration,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "duration::is_zero",
-        symbol: "hew_duration_is_zero",
-        family: Some(RuntimeCallFamily::DurationIsZero),
-        params: EMPTY,
-        result: CanonicalExternTy::Bool,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "instant::elapsed",
-        symbol: "hew_instant_elapsed",
-        family: Some(RuntimeCallFamily::InstantElapsed),
-        params: EMPTY,
-        result: CanonicalExternTy::Duration,
-    },
-    CanonicalStdlibExternSignature {
-        module: "std.builtins",
-        signature_key: "instant::duration_since",
-        symbol: "hew_instant_duration_since",
-        family: Some(RuntimeCallFamily::InstantDurationSince),
-        params: INSTANT,
-        result: CanonicalExternTy::Duration,
-    },
+/// Extern bridges awaiting migration to declaration-generated contracts.
+/// Admission still requires exact source signatures and trusted modules.
+const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     CanonicalStdlibExternSignature {
         module: "std.io",
         signature_key: "bytes::append",
@@ -2368,6 +2284,18 @@ const CANONICAL_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = &[
     },
 ];
 
+static CANONICAL_STD_IO_EXTERN_SIGNATURES: std::sync::LazyLock<
+    Vec<CanonicalStdlibExternSignature>,
+> = std::sync::LazyLock::new(|| {
+    let mut entries = HANDWRITTEN_STD_IO_EXTERN_SIGNATURES.to_vec();
+    entries.extend(
+        declared::DECLARED_DIRECT_RUNTIME_METHODS
+            .iter()
+            .map(|method| method.signature),
+    );
+    entries
+});
+
 /// Return a canonical stdlib extern declaration when its source identity,
 /// endpoint, parameter sequence, and result type all agree.
 #[must_use]
@@ -2413,8 +2341,8 @@ pub fn canonical_std_io_extern_signature(
 }
 
 #[must_use]
-pub const fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibExternSignature] {
-    CANONICAL_STD_IO_EXTERN_SIGNATURES
+pub fn canonical_std_io_extern_signatures() -> &'static [CanonicalStdlibExternSignature] {
+    &CANONICAL_STD_IO_EXTERN_SIGNATURES
 }
 
 impl RuntimeCallFamily {
@@ -3397,126 +3325,14 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::DurationAbs => RuntimeOpRow {
-                symbol: "hew_duration_abs",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::Duration),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationHours => RuntimeOpRow {
-                symbol: "hew_duration_hours",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationIsZero => RuntimeOpRow {
-                symbol: "hew_duration_is_zero",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationMicros => RuntimeOpRow {
-                symbol: "hew_duration_micros",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationMillis => RuntimeOpRow {
-                symbol: "hew_duration_millis",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationMins => RuntimeOpRow {
-                symbol: "hew_duration_mins",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationNanos => RuntimeOpRow {
-                symbol: "hew_duration_nanos",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DurationSecs => RuntimeOpRow {
-                symbol: "hew_duration_secs",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Duration,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
+            Self::DurationAbs => declared::DURATIONABS.row,
+            Self::DurationHours => declared::DURATIONHOURS.row,
+            Self::DurationIsZero => declared::DURATIONISZERO.row,
+            Self::DurationMicros => declared::DURATIONMICROS.row,
+            Self::DurationMillis => declared::DURATIONMILLIS.row,
+            Self::DurationMins => declared::DURATIONMINS.row,
+            Self::DurationNanos => declared::DURATIONNANOS.row,
+            Self::DurationSecs => declared::DURATIONSECS.row,
             Self::DynBoxAlloc => RuntimeOpRow {
                 symbol: "hew_dyn_box_alloc",
                 contract: None,
@@ -3725,54 +3541,9 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::InstantDurationSince => RuntimeOpRow {
-                symbol: "hew_instant_duration_since",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[
-                        A {
-                            ty: K::I64,
-                            effect: E::Copy,
-                        },
-                        A {
-                            ty: K::I64,
-                            effect: E::Copy,
-                        },
-                    ],
-                    result: R::BitCopy(K::Duration),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::InstantElapsed => RuntimeOpRow {
-                symbol: "hew_instant_elapsed",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::I64,
-                        effect: E::Copy,
-                    }],
-                    result: R::BitCopy(K::Duration),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::InstantNow => RuntimeOpRow {
-                symbol: "hew_instant_now",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[],
-                    result: R::BitCopy(K::I64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
+            Self::InstantDurationSince => declared::INSTANTDURATIONSINCE.row,
+            Self::InstantElapsed => declared::INSTANTELAPSED.row,
+            Self::InstantNow => declared::INSTANTNOW.row,
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
                 symbol: "sqrt",
                 contract: Some(RuntimeSemanticContract {

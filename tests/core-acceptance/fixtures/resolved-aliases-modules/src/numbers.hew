@@ -1,0 +1,5 @@
+pub type Value = i64;
+
+pub fn answer() -> Value {
+    42
+}

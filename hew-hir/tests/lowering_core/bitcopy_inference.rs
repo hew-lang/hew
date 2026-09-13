@@ -38,7 +38,7 @@ fn lower_checked(source: &str) -> hew_hir::LowerOutput {
     )
 }
 
-fn lower_no_tc(source: &str) -> hew_hir::LowerOutput {
+fn lower_without_type_facts(source: &str) -> hew_hir::LowerOutput {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -48,6 +48,8 @@ fn lower_no_tc(source: &str) -> hew_hir::LowerOutput {
     let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     let identity_only = TypeCheckOutput {
         identity: checked.identity,
+        fn_sigs: checked.fn_sigs,
+        type_fact_context: checked.type_fact_context,
         ..TypeCheckOutput::default()
     };
     lower_program(
@@ -132,7 +134,7 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
 
 #[test]
 fn record_decl_of_primitives_is_inferred_bitcopy() {
-    let output = lower_no_tc(
+    let output = lower_without_type_facts(
         r"
         type Point { x: i64, y: i64 }
     ",
@@ -302,7 +304,7 @@ fn zero_field_record_beside_unrelated_extern_stays_uninferred() {
 
 #[test]
 fn empty_field_user_type_remains_uninferred() {
-    let output = lower_no_tc("pub type Empty { }");
+    let output = lower_without_type_facts("pub type Empty { }");
     assert!(
         output.diagnostics.is_empty(),
         "no diagnostics expected; got: {:#?}",
@@ -317,7 +319,7 @@ fn empty_field_user_type_remains_uninferred() {
 
 #[test]
 fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
-    let output = lower_no_tc(
+    let output = lower_without_type_facts(
         r"
         pub type Duplex {
             payload: string,

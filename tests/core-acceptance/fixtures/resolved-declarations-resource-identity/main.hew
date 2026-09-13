@@ -1,0 +1,8 @@
+import declarations.closed;
+
+import declarations.unclosed;
+
+fn main() {
+    closed.run();
+    unclosed.run();
+}

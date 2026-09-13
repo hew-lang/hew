@@ -1,0 +1,10 @@
+[[case]]
+id = "resolved-trait-authority-default-origin"
+intent = "A directory peer's default method retains its private helper, local type and imported function when implemented in a module with conflicting names."
+source = "fixtures/resolved-trait-authority/defaults.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "4\nROOT:5\nCONFLICT:root\nORIGIN:sentinel\nORIGIN:sentinel\nsentinel\n"
+exit = 0

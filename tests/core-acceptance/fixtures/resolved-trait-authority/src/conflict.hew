@@ -1,0 +1,11 @@
+pub trait Base {
+    fn base(self) -> bool;
+}
+
+pub type Badge {
+    code: i64,
+}
+
+pub fn decorate(value: string) -> string {
+    "CONFLICT:" + value
+}

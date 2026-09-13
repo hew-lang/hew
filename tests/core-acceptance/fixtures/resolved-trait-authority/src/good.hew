@@ -1,0 +1,3 @@
+pub fn decorate(value: string) -> string {
+    "ORIGIN:" + value
+}

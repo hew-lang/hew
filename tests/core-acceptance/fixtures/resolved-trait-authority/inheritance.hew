@@ -1,0 +1,43 @@
+import trait_authority.child.{Child};
+
+import trait_authority.conflict.{Base};
+
+import trait_authority.parent.{Base as RequiredBase};
+
+type Item {
+    text: string,
+}
+
+type Other {
+    value: bool,
+}
+
+impl Base for Other {
+    fn base(self) -> bool {
+        self.value
+    }
+}
+
+impl RequiredBase for Item {
+    fn base(self) -> string {
+        self.text
+    }
+}
+
+impl Child for Item {
+    fn tag(self) -> i64 {
+        7
+    }
+}
+
+fn inherited<T: Child>(value: T) -> string {
+    value.base()
+}
+
+fn main() {
+    let item = Item { text: "inherited" };
+    println(inherited(item));
+    println(item.tag());
+    let other = Other { value: true };
+    println(other.base());
+}

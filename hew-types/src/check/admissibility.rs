@@ -2226,6 +2226,8 @@ mod tests {
         checker.trait_defs.insert(
             "Greeter".to_string(),
             TraitInfo {
+                source_module: None,
+                file_index: 0,
                 methods: vec![],
                 associated_types: vec![],
                 type_params: vec![],
@@ -2289,6 +2291,7 @@ mod tests {
         let mut fn_sigs = HashMap::from([(
             "display".to_string(),
             FnSig {
+                impl_method: None,
                 type_params: vec!["T".to_string()],
                 type_param_bounds: HashMap::new(),
                 param_names: vec!["item".to_string()],

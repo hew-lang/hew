@@ -1,0 +1,29 @@
+#[resource]
+type Buffer {
+    id: i64,
+    label: string,
+}
+
+impl Buffer {
+    fn close(consume self) {
+        println(f"close {self.id} {self.label}");
+    }
+}
+
+actor Keeper {
+    var buffer: Buffer,
+
+    receive fn replace(next: i64) -> i64 {
+        let previous = buffer.id;
+        buffer = Buffer { id: next, label: "owned".to_upper() };
+        previous
+    }
+}
+
+fn main() {
+    let keeper = spawn Keeper(buffer: Buffer { id: 1, label: "owned".to_upper() });
+    println(keeper.replace(2).expect("first replacement"));
+    println(keeper.replace(3).expect("second replacement"));
+    close(keeper);
+    println("finished");
+}

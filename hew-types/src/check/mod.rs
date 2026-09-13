@@ -74,18 +74,18 @@ pub use self::types::{
     OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
     OpaqueResourceLifecycleConflictKind, OptionResultMethod, PatternKind, PatternPlan,
     PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
-    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResultReturnKind, SpanKey,
-    StackHint, TryConversionKind, TryWidthCastLowering, TypeCheckOutput, TypeDef, TypeDefKind,
-    UserComparisonDispatch, VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind,
-    WidthCastLowering, WireCodecDirection, WireFieldLayout, WireFieldPresence, WireLayoutEntry,
-    WireLayoutTable, WireTextFormat,
+    PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, RecoveryKind, ResolvedTraitDefault,
+    ResultReturnKind, SpanKey, StackHint, TryConversionKind, TryWidthCastLowering, TypeAliasDef,
+    TypeCheckOutput, TypeDef, TypeDefKind, UserComparisonDispatch, VariantDef, VariantMatch,
+    VecHigherOrderOp, WidthCastKind, WidthCastLowering, WireCodecDirection, WireFieldLayout,
+    WireFieldPresence, WireLayoutEntry, WireLayoutTable, WireTextFormat,
 };
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
     DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
     DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
     ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeAliasDef, TypeParamScope,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -840,6 +840,33 @@ impl Checker {
         name.to_string()
     }
 
+    /// Select a free-function signature in the current source file. Explicit
+    /// imports publish only lexical bindings; their canonical declarations own
+    /// the signatures, leaving ambient builtin signatures intact.
+    pub(super) fn visible_fn_signature_key(&self, name: &str) -> Option<String> {
+        let canonical = Self::declared_fn_identity(self.canonical_fn_owner(), name);
+        for key in [&canonical, name] {
+            if self.fn_def_spans.contains_key(key) && self.fn_sigs.contains_key(key) {
+                return Some(key.to_string());
+            }
+        }
+        for binding in [&canonical, name] {
+            if let Some(source) = self.import_fn_name_aliases.get(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            )) {
+                return self.fn_sigs.contains_key(source).then(|| source.clone());
+            }
+        }
+        for key in [&canonical, name] {
+            if self.fn_sigs.contains_key(key) {
+                return Some(key.to_string());
+            }
+        }
+        None
+    }
+
     /// Record one call edge after canonicalizing both endpoints through the
     /// declaration identity authority.
     pub(super) fn record_call_edge(&mut self, target: &str) {
@@ -1569,8 +1596,10 @@ impl Checker {
             }
             Item::TypeAlias(decl) => {
                 declare(Kind::TypeAlias, 0, owner_path(&decl.name));
-                if let Some(alias) = nominal_alias(&decl.name) {
-                    declare(Kind::TypeAlias, 0, alias);
+                if matches!(namespace, NominalNamespace::RootBare) {
+                    if let Some(alias) = nominal_alias(&decl.name) {
+                        declare(Kind::TypeAlias, 0, alias);
+                    }
                 }
             }
             Item::Record(decl) => {
@@ -1810,6 +1839,7 @@ impl Checker {
         // forward-declared sibling type that is not yet registered.
         self.type_decls_registered = true;
         self.collect_functions(program);
+        self.resolve_alias_declarations(program);
 
         // Pass 1.5 (#2202): re-resolve type-declaration MEMBER types now that
         // import-alias maps are live. `collect_types` resolves record/struct
@@ -2222,6 +2252,9 @@ impl Checker {
             .map(|(name, type_def)| (name.clone(), self.resolve_type_def(type_def)))
             .collect();
 
+        let resolved_type_aliases = self.resolved_type_aliases();
+        let trait_defaults = self.resolved_trait_defaults();
+
         let mut resolved_fn_sigs: HashMap<String, FnSig> = std::mem::take(&mut self.fn_sigs)
             .into_iter()
             .map(|(name, sig)| {
@@ -2495,6 +2528,7 @@ impl Checker {
             warnings: std::mem::take(&mut self.warnings),
             user_clone_record_seeds: std::mem::take(&mut self.user_clone_record_seeds),
             type_defs: resolved_type_defs,
+            resolved_type_aliases,
             internal_builtin_enum_names,
             identity: std::mem::take(&mut self.identity).freeze(),
             entry_exit_plan,
@@ -2502,6 +2536,8 @@ impl Checker {
             fn_sigs: resolved_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
             trait_method_ids: std::mem::take(&mut self.trait_method_ids),
+            trait_bindings: std::mem::take(&mut self.trait_bindings),
+            trait_defaults,
             trait_method_ids_by_binding: std::mem::take(&mut self.trait_method_ids_by_binding),
             impl_method_declaration_ids: std::mem::take(&mut self.impl_method_declaration_ids),
             consuming_inherent_methods: std::mem::take(&mut self.consuming_inherent_methods),

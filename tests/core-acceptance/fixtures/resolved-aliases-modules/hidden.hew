@@ -1,0 +1,6 @@
+import aliases.words as words;
+
+fn main() {
+    let hidden: words.Hidden = true;
+    println(hidden);
+}

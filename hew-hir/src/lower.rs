@@ -19,11 +19,10 @@ use std::{
 use hew_parser::ast::{
     condition_exprs, ActorDecl, ArrayElement, AttributeArg, BinaryOp, Block, CallArg,
     CompoundAssignOp, ConditionItem, ConstDecl, Expr, FnDecl, Item, LambdaParam, Literal,
-    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind,
-    ResourceMarker as AstResourceMarker, RestartPolicy, SelectArm, ShutdownDirective, Span,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitItem,
-    TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, UnaryOp,
-    VariantKind,
+    MachineDecl, Param, Pattern, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
+    SelectArm, ShutdownDirective, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitItem, TraitMethod, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, UnaryOp, VariantKind,
 };
 use hew_types::builtin_enums::BuiltinMonomorphicEnumVariant;
 use hew_types::BuiltinType;
@@ -1205,41 +1204,12 @@ struct RecordEntry {
     fields: Vec<(String, ResolvedTy)>,
 }
 
-/// Pre-collected inherent-impl `close` method signature for a `#[resource]`
-/// type. Populated before the type-decl pre-pass by walking `program.items`
-/// for inherent `impl T { fn close(...) {...} }` blocks (no trait bound,
-/// nominal target). Consulted by `lower_type_decl` to:
-///
-///   1. Broaden the `ResourceMissingClose` presence check beyond inline
-///      `TypeBodyItem::Method` (W3.030 Q-α-B): a `#[resource]` may declare
-///      `close` in a sibling inherent-impl block rather than in the type
-///      body itself.
-///   2. Enforce the `close`-must-return-unit discipline at the HIR
-///      boundary (W3.030 Q-β-C): fallible cleanup composes through
-///      `defer`, not through a non-unit `close` return.
-#[derive(Debug)]
-struct ImplCloseSignature {
-    /// Span of the declaration site (the impl-block method's `decl_span`
-    /// when available, else its `fn_span`). Used as the diagnostic anchor
-    /// for `ResourceCloseMustReturnUnit`.
-    decl_span: Span,
-    /// `true` when the declared return type is unit — either no `->`
-    /// clause or an explicit `()` tuple-of-zero.
-    return_ty_unit: bool,
-    /// User-facing rendering of the offending non-unit return type. Only
-    /// meaningful when `!return_ty_unit`.
-    return_ty_display: String,
-}
-
 /// Per-impl-block context threaded into `lower_impl_block` for imported
-/// modules. Carries the same-module fn-name rewrite map (bare helper name →
-/// mangled qualified symbol, identical to the free-function imported path) and
-/// the set of method names to skip because their bodies or signatures cannot
+/// modules. Carries the set of method names to skip because their bodies or signatures cannot
 /// be resolved safely across the module boundary. `symbol_self_name` is the
 /// exact declaration-keyed owner selected by the pre-lowering body plan,
 /// including any concrete type-argument suffix.
 struct ImportedImplLowering<'a> {
-    rewrites: &'a HashMap<String, String>,
     skip_methods: &'a HashSet<String>,
     symbol_self_name: Option<&'a str>,
 }
@@ -1534,10 +1504,10 @@ fn materialized_default_body_plan(
     let Some(trait_bound) = &impl_decl.trait_bound else {
         return Vec::new();
     };
-    let Some(owner_key) = ctx.trait_default_owner_key(&trait_bound.name) else {
+    let Some(owner_key) = ctx.trait_declaration(&trait_bound.name) else {
         return Vec::new();
     };
-    let Some(defaults) = ctx.trait_default_methods.get(&owner_key).cloned() else {
+    let Some(defaults) = ctx.trait_defaults.get(&owner_key).cloned() else {
         return Vec::new();
     };
     let overridden: HashSet<&str> = impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
@@ -1549,24 +1519,20 @@ fn materialized_default_body_plan(
     ctx.diagnostics.truncate(diagnostics_before);
     let mut out = Vec::new();
     for default_method in &defaults {
-        if overridden.contains(default_method.name.as_str()) {
+        if overridden.contains(default_method.method.name.as_str()) {
             continue;
         }
-        let Some((declaring_trait, _)) =
-            ctx.trait_method_identity(&trait_bound.name, &default_method.name)
-        else {
-            continue;
-        };
+        let declaring_trait = &default_method.trait_id;
         let Some(declaration) = LowerCtx::synthetic_default_impl_body_declaration(
-            &declaring_trait,
+            declaring_trait,
             Some(&self_ty),
-            &default_method.name,
+            &default_method.method.name,
         ) else {
             continue;
         };
         out.push((
             declaration,
-            crate::node::HirImplBlock::method_symbol(symbol_self_name, &default_method.name),
+            crate::node::HirImplBlock::method_symbol(symbol_self_name, &default_method.method.name),
         ));
     }
     out
@@ -1624,37 +1590,6 @@ fn plan_imported_impl_bodies(
             continue;
         }
         let previous_module = ctx.current_module_name.replace(source_module.clone());
-        let private_fns: HashSet<String> = module
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Function(function) if !function.visibility.is_pub() => {
-                    Some(function.name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        let public_fns: HashSet<String> = module
-            .items
-            .iter()
-            .filter_map(|(item, _)| match item {
-                Item::Function(function) if function.visibility.is_pub() => {
-                    Some(function.name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        let private_closure = collect_imported_private_fn_closure(module, &private_fns);
-        let rewrites: HashMap<String, String> = public_fns
-            .iter()
-            .chain(private_closure.iter())
-            .map(|name| {
-                (
-                    name.clone(),
-                    crate::mangle_dotted_name(&format!("{source_module}.{name}")),
-                )
-            })
-            .collect();
         let previous_module_idx = ctx.current_module_idx;
         for (item_idx, (item, _)) in module.items.iter().enumerate() {
             ctx.current_module_idx = span_indices
@@ -1669,432 +1604,12 @@ fn plan_imported_impl_bodies(
             let TypeExpr::Named { name, .. } = &impl_decl.target_type.0 else {
                 continue;
             };
-            let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module, &rewrites);
+            let skip_methods = ctx.imported_impl_skip_methods(impl_decl, &source_module);
             let base_symbol_self_name = imported_impl_symbol_self_name(&source_module, name);
             plan_impl_block_symbols(ctx, impl_decl, &base_symbol_self_name, &skip_methods);
         }
         ctx.current_module_idx = previous_module_idx;
         ctx.current_module_name = previous_module;
-    }
-}
-
-/// Walk the program and its module graph collecting inherent-impl `close`
-/// method signatures, keyed by the self-type name. Trait impls (`impl T for U`)
-/// are deliberately skipped — the `close` ritual under the W3.030 contract is
-/// dispatched through `<T>::close` as an inherent method symbol; trait methods
-/// would land at `<T as Trait>::close` and are not the surface W3.030 owns.
-/// Multiple inherent impls declaring `close` on the same nominal would be a
-/// duplicate-symbol error caught downstream; this collector keeps the first
-/// occurrence and ignores any later ones.
-/// The item list of every module a program's imports reach, each list once.
-///
-/// The module graph is the authority when a program has one: it holds a single
-/// node per module however many import paths reach it. A program assembled
-/// without a graph carries its modules only on the import declarations, and
-/// shared imports retain one `Arc` body per module, so the fallback walks those
-/// bodies keyed by identity.
-///
-/// Following the declarations by recursion instead expands a shared descendant
-/// once per import path, which is exponential in the number of paths: a depth-24
-/// diamond of 51 modules never finishes.
-fn imported_module_item_lists(program: &Program) -> Vec<&[(Item, Span)]> {
-    if let Some(graph) = &program.module_graph {
-        return graph
-            .topo_order
-            .iter()
-            .filter(|module_id| **module_id != graph.root)
-            .filter_map(|module_id| graph.modules.get(module_id))
-            .map(|module| module.items.as_slice())
-            .collect();
-    }
-    let mut seen: HashSet<*const Vec<Spanned<Item>>> = HashSet::new();
-    let mut out: Vec<&[(Item, Span)]> = Vec::new();
-    let mut queue: Vec<&[(Item, Span)]> = vec![program.items.as_slice()];
-    while let Some(items) = queue.pop() {
-        for (item, _) in items {
-            let Item::Import(decl) = item else { continue };
-            let Some(resolved) = decl.resolved_items.as_ref() else {
-                continue;
-            };
-            if !seen.insert(std::sync::Arc::as_ptr(resolved)) {
-                continue;
-            }
-            out.push(resolved.as_slice());
-            queue.push(resolved.as_slice());
-        }
-    }
-    out
-}
-
-fn collect_inherent_impl_close_methods(program: &Program) -> HashMap<String, ImplCloseSignature> {
-    let mut out: HashMap<String, ImplCloseSignature> = HashMap::new();
-    collect_inherent_impl_close_methods_from_items(&program.items, &mut out);
-    for items in imported_module_item_lists(program) {
-        collect_inherent_impl_close_methods_from_items(items, &mut out);
-    }
-    out
-}
-
-fn collect_inherent_impl_close_methods_from_items(
-    items: &[(Item, Span)],
-    out: &mut HashMap<String, ImplCloseSignature>,
-) {
-    for (item, _item_span) in items {
-        let Item::Impl(impl_decl) = item else {
-            continue;
-        };
-        if impl_decl.trait_bound.is_some() {
-            continue;
-        }
-        let TypeExpr::Named {
-            name: self_type_name,
-            ..
-        } = &impl_decl.target_type.0
-        else {
-            continue;
-        };
-        for method in &impl_decl.methods {
-            if method.name != "close" {
-                continue;
-            }
-            let (return_ty_unit, return_ty_display) = match &method.return_type {
-                None => (true, String::new()),
-                Some((TypeExpr::Tuple(items), _)) if items.is_empty() => (true, String::new()),
-                Some((ty_expr, _)) => (false, render_type_expr(ty_expr)),
-            };
-            let decl_span = if method.decl_span.start == method.decl_span.end {
-                method.fn_span.clone()
-            } else {
-                method.decl_span.clone()
-            };
-            out.entry(self_type_name.clone())
-                .or_insert(ImplCloseSignature {
-                    decl_span,
-                    return_ty_unit,
-                    return_ty_display,
-                });
-            // Once we found a `close` on this impl, stop scanning its
-            // methods — a single impl-block cannot declare two methods
-            // with the same name.
-            break;
-        }
-    }
-}
-
-/// Walk the program and its module graph collecting the self-type names that
-/// declare at least one `consume self` method in a sibling inherent-impl
-/// block. Trait impls (`impl T for U`) are skipped — the consume surface this
-/// records is the inherent `<T>::method` dispatch, the form that lowers to a
-/// callable symbol.
-fn collect_inherent_impl_consuming_methods(program: &Program) -> HashSet<String> {
-    let mut out: HashSet<String> = HashSet::new();
-    collect_inherent_impl_consuming_methods_from_items(&program.items, &mut out);
-    for items in imported_module_item_lists(program) {
-        collect_inherent_impl_consuming_methods_from_items(items, &mut out);
-    }
-    out
-}
-
-fn collect_inherent_impl_consuming_methods_from_items(
-    items: &[(Item, Span)],
-    out: &mut HashSet<String>,
-) {
-    for (item, _item_span) in items {
-        let Item::Impl(impl_decl) = item else {
-            continue;
-        };
-        if impl_decl.trait_bound.is_some() {
-            continue;
-        }
-        let TypeExpr::Named {
-            name: self_type_name,
-            ..
-        } = &impl_decl.target_type.0
-        else {
-            continue;
-        };
-        if impl_decl.methods.iter().any(|method| method.consumes_self) {
-            out.insert(self_type_name.clone());
-        }
-    }
-}
-
-/// Collect trait default method bodies from the complete module graph.  Root
-/// traits retain their root spelling; imported traits are keyed by their full
-/// declaration owner so same-final-module traits cannot overwrite one another.
-/// Also returns the `module_idx` the checker stamped each declaring trait's
-/// `SpanKey` facts with.
-///
-/// A default body materialised onto an impl keeps the SPANS of the trait
-/// declaration it was copied from, but is lowered at the impl's site. When the
-/// trait lives in another module the impl's `current_module_idx` does not match
-/// the index the checker recorded those spans under, so every `mk_key` lookup
-/// inside the body misses and the fail-closed contract fires
-/// (`MethodCallNoRewrite` for a `self.other()` call in a default body). The
-/// index numbering mirrors `Checker::check_program` exactly: skip the root,
-/// bump a 1-based counter for every module present in `modules`, in topo order.
-fn collect_trait_default_methods(
-    program: &Program,
-    file_import_module_idx: &HashMap<usize, u32>,
-    trait_method_ids_by_binding: &HashMap<
-        TraitMethodBindingKey,
-        (hew_types::DefId, hew_types::DefId),
-    >,
-) -> (HashMap<String, Vec<TraitMethod>>, HashMap<String, u32>) {
-    fn checker_binding_owner(
-        scope: Option<&str>,
-        module_idx: u32,
-        trait_name: &str,
-        defaults: &[TraitMethod],
-        trait_method_ids_by_binding: &HashMap<
-            TraitMethodBindingKey,
-            (hew_types::DefId, hew_types::DefId),
-        >,
-    ) -> Option<String> {
-        let scope = scope.map(str::to_string);
-        let mut owners = defaults
-            .iter()
-            .map(|method| {
-                trait_method_ids_by_binding
-                    .get(&(
-                        scope.clone(),
-                        module_idx,
-                        trait_name.to_string(),
-                        method.name.clone(),
-                    ))
-                    .map(|(trait_id, _)| trait_id.full_path().to_string())
-            })
-            .collect::<Option<Vec<_>>>()?;
-        owners.sort_unstable();
-        owners.dedup();
-        (owners.len() == 1).then(|| owners.pop().expect("checked length"))
-    }
-
-    let mut owner_module_idx: HashMap<String, u32> = HashMap::new();
-    let mut out: HashMap<String, Vec<TraitMethod>> = HashMap::new();
-    let mut collect = |items: &[(Item, Span)],
-                       owner: Option<&str>,
-                       flat_file_items: Option<&HashMap<usize, u32>>,
-                       idx_for: &dyn Fn(usize) -> u32| {
-        for (item_idx, (item, _)) in items.iter().enumerate() {
-            let Item::Trait(trait_decl) = item else {
-                continue;
-            };
-            let defaults: Vec<TraitMethod> = trait_decl
-                .items
-                .iter()
-                .filter_map(|ti| match ti {
-                    TraitItem::Method(method) if method.body.is_some() => Some(method.clone()),
-                    _ => None,
-                })
-                .collect();
-            if !defaults.is_empty() {
-                let key = if flat_file_items.is_some_and(|items| items.contains_key(&item_idx)) {
-                    let Some(owner) = checker_binding_owner(
-                        None,
-                        idx_for(item_idx),
-                        &trait_decl.name,
-                        &defaults,
-                        trait_method_ids_by_binding,
-                    ) else {
-                        continue;
-                    };
-                    owner
-                } else {
-                    owner.map_or_else(
-                        || trait_decl.name.clone(),
-                        |owner| format!("{owner}.{}", trait_decl.name),
-                    )
-                };
-                // A trait spliced into the ROOT items by a file import keeps
-                // its root binding spelling, but its declaration identity is
-                // the exact canonical owner published by the checker. A trait
-                // in a directory module's peer file likewise owns that PEER's
-                // index, not the assembled module's base — recover both per
-                // item.
-                owner_module_idx.insert(key.clone(), idx_for(item_idx));
-                out.insert(key, defaults);
-            }
-        }
-    };
-    collect(
-        &program.items,
-        None,
-        Some(file_import_module_idx),
-        &|item_idx| file_import_module_idx.get(&item_idx).copied().unwrap_or(0),
-    );
-    if let Some(graph) = &program.module_graph {
-        let span_indices = graph.file_span_indices();
-        for module_id in &graph.topo_order {
-            if *module_id == graph.root {
-                continue;
-            }
-            let Some(module) = graph.modules.get(module_id) else {
-                continue;
-            };
-            let owner = module_id.path.join(".");
-            collect(&module.items, Some(&owner), None, &|item_idx| {
-                span_indices.item_index(module_id, item_idx).unwrap_or(0)
-            });
-        }
-    }
-    (out, owner_module_idx)
-}
-
-fn collect_trait_declaring_surfaces(
-    program: &Program,
-) -> (
-    HashMap<String, Vec<String>>,
-    HashMap<String, HashSet<String>>,
-) {
-    fn visit_items(
-        items: &[(Item, Span)],
-        module_owner: Option<&str>,
-        supers: &mut HashMap<String, Vec<String>>,
-        methods: &mut HashMap<String, HashSet<String>>,
-    ) {
-        for (item, _) in items {
-            let Item::Trait(trait_decl) = item else {
-                continue;
-            };
-            let key = module_owner.map_or_else(
-                || trait_decl.name.clone(),
-                |module| format!("{module}.{}", trait_decl.name),
-            );
-            methods.insert(
-                key.clone(),
-                trait_decl
-                    .items
-                    .iter()
-                    .filter_map(|item| match item {
-                        TraitItem::Method(method) => Some(method.name.clone()),
-                        TraitItem::AssociatedType { .. } => None,
-                    })
-                    .collect(),
-            );
-            let super_names: Vec<String> = trait_decl
-                .super_traits
-                .as_ref()
-                .map(|bounds| {
-                    bounds
-                        .iter()
-                        .map(|bound| {
-                            module_owner.map_or_else(
-                                || bound.name.clone(),
-                                |module| {
-                                    if bound.name.contains('.') {
-                                        bound.name.clone()
-                                    } else {
-                                        format!("{module}.{}", bound.name)
-                                    }
-                                },
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            supers.insert(key, super_names);
-        }
-    }
-
-    let mut supers = HashMap::new();
-    let mut methods = HashMap::new();
-    visit_items(&program.items, None, &mut supers, &mut methods);
-    if let Some(ref mg) = program.module_graph {
-        for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
-                continue;
-            }
-            if let Some(module) = mg.modules.get(mod_id) {
-                let module_owner = mod_id.path.join(".");
-                visit_items(
-                    &module.items,
-                    Some(&module_owner),
-                    &mut supers,
-                    &mut methods,
-                );
-            }
-        }
-    }
-    (supers, methods)
-}
-
-/// Harvest opaque-type identity from the whole program (root items + every
-/// imported module) for the `ResolvedTy::Named.is_opaque` discriminator
-/// stamped by [`LowerCtx::lower_type`]:
-///
-/// * `opaque` — opaque type names in BOTH forms: the bare short name
-///   (`"Value"` for a `#[opaque] type Value` in `std::encoding::json`) AND
-///   the module-qualified form (`"json.Value"`). A bare reference matches the
-///   short form; a qualified reference (`json.Value`) matches the qualified
-///   form EXACTLY, so it cannot be confused with a same-short-name user type
-///   in a different module (`m.Value`).
-/// * `non_opaque` — short names of every non-opaque user type declaration
-///   (`type`/`record`/`enum`/`actor`/`machine`). Used to resolve a BARE
-///   reference whose short name is opaque-in-one-module: if a local user type
-///   shadows the short name, the bare reference is the user type, not the
-///   opaque handle.
-///
-/// Keeping qualified opaque keys is what makes the discriminator a precise
-/// identity fact rather than a short-name heuristic: `m.Value` (user record
-/// from module `m`) and `json.Value` (opaque handle) both have short name
-/// `"Value"`, but only `json.Value` is in `opaque` under its qualified key.
-fn collect_opaque_type_short_names(
-    program: &Program,
-    opaque: &mut HashSet<String>,
-    non_opaque: &mut HashSet<String>,
-) {
-    fn visit_items(
-        items: &[(Item, Span)],
-        module_short: Option<&str>,
-        opaque: &mut HashSet<String>,
-        non_opaque: &mut HashSet<String>,
-    ) {
-        for (item, _) in items {
-            match item {
-                Item::TypeDecl(decl) => {
-                    if decl.is_opaque {
-                        opaque.insert(decl.name.clone());
-                        if let Some(m) = module_short {
-                            opaque.insert(format!("{m}.{}", decl.name));
-                        }
-                    } else {
-                        non_opaque.insert(decl.name.clone());
-                    }
-                }
-                // `record`/`enum`/`actor`/`machine` are never `#[opaque]`
-                // (opacity is only expressible on `type` decls), so they only
-                // ever contribute to the non-opaque complement.
-                Item::Record(decl) => {
-                    non_opaque.insert(decl.name.clone());
-                }
-                Item::Actor(decl) => {
-                    non_opaque.insert(decl.name.clone());
-                }
-                Item::Machine(decl) => {
-                    non_opaque.insert(decl.name.clone());
-                }
-                _ => {}
-            }
-        }
-    }
-
-    visit_items(&program.items, None, opaque, non_opaque);
-    if let Some(ref mg) = program.module_graph {
-        for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
-                continue;
-            }
-            if let Some(module) = mg.modules.get(mod_id) {
-                let module_identity = mod_id.path.join(".");
-                visit_items(
-                    &module.items,
-                    Some(module_identity.as_str()),
-                    opaque,
-                    non_opaque,
-                );
-            }
-        }
     }
 }
 
@@ -2747,53 +2262,6 @@ fn imported_type_name_collides(
         > 1
 }
 
-/// The bare function bindings a module's own file imports contribute.
-///
-/// `import "helper.hew";` inside a module publishes helper's pub free
-/// functions into that module's scope. Helper keeps its own module identity
-/// (only the ROOT's file-import chain is spliced into `program.items`), so its
-/// bodies are emitted under `{helper}.{name}` and the importing module's
-/// bodies reach them through this rewrite.
-fn module_file_import_fn_rewrites(
-    module: &hew_parser::module::Module,
-    mg: &hew_parser::module::ModuleGraph,
-) -> HashMap<String, String> {
-    let mut rewrites = HashMap::new();
-    for (item, _) in &module.items {
-        let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved_items) = decl.resolved_items.as_ref() else {
-            continue;
-        };
-        let Some(source) = decl.resolved_source_paths.first() else {
-            continue;
-        };
-        let Some(owner) = mg
-            .modules
-            .iter()
-            .find(|(_, candidate)| candidate.source_paths.first() == Some(source))
-            .map(|(id, _)| id.path.join("."))
-        else {
-            continue;
-        };
-        for (resolved_item, _) in resolved_items.iter() {
-            let Item::Function(function) = resolved_item else {
-                continue;
-            };
-            if !function.visibility.is_pub() {
-                continue;
-            }
-            rewrites.insert(
-                function.name.clone(),
-                crate::mangle_dotted_name(&format!("{owner}.{}", function.name)),
-            );
-        }
-    }
-    rewrites
-}
-
 #[must_use]
 pub fn lower_program(
     program: &Program,
@@ -2881,7 +2349,6 @@ pub fn lower_program_with_mono_cap(
                 .keys()
                 .any(|module| module.path.join(".") == "std.prelude")
     });
-    ctx.type_aliases = collect_type_aliases(program);
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
     // declaration namespace.  Compute the checker-aligned module-name carrier
@@ -2964,68 +2431,6 @@ pub fn lower_program_with_mono_cap(
             None => (None, None),
         };
 
-    // Pre-pre-pass: harvest inherent-impl `close` method signatures from
-    // the root program and imported modules so the type-decl pre-pass below
-    // can broaden the `ResourceMissingClose` presence check to consider
-    // inherent-impl surface and enforce the close-must-return-unit discipline.
-    // See [`collect_inherent_impl_close_methods`] for the precise contract
-    // (W3.030 Q-α-B + Q-β-C ratifications).
-    ctx.impl_close_methods = collect_inherent_impl_close_methods(program);
-    if let Some(builtins) = &builtin_declarations {
-        for (name, signature) in collect_inherent_impl_close_methods(builtins) {
-            ctx.impl_close_methods
-                .insert(format!("std.builtins.{name}"), signature);
-        }
-    }
-    // Harvest the self-type names that declare a `consume self` inherent
-    // method so the `#[linear]` validation accepts a sibling-inherent consuming
-    // method as satisfying the must-declare-a-consumer contract — the inherent
-    // form is the surface that lowers to a callable symbol.
-    ctx.impl_consuming_methods = collect_inherent_impl_consuming_methods(program);
-
-    // Pre-pre-pass: harvest trait default method bodies so that impl-block
-    // lowering can emit them for impls that do not override them.
-    let (trait_defaults, trait_default_module_idx) = collect_trait_default_methods(
-        program,
-        &file_import_module_idx,
-        &ctx.trait_method_ids_by_binding,
-    );
-    ctx.trait_default_methods = trait_defaults;
-    ctx.trait_default_module_idx = trait_default_module_idx;
-    let (trait_super, trait_declared_methods) = collect_trait_declaring_surfaces(program);
-    ctx.trait_super = trait_super;
-    ctx.trait_declared_methods = trait_declared_methods;
-
-    // Pre-pre-pass: harvest `#[opaque]` type-decl short names (and the
-    // complement of non-opaque user type short names) from the whole program
-    // — root items and every imported module. `lower_type` reads these to
-    // stamp the `ResolvedTy::Named.is_opaque` discriminator BEFORE any actor
-    // state-field type is resolved, so the actor-state clone/drop classifier
-    // can tell a real opaque handle apart from a colliding user type by
-    // identity rather than by name. See the field docs on `LowerCtx`.
-    collect_opaque_type_short_names(
-        program,
-        &mut ctx.opaque_type_short_names,
-        &mut ctx.non_opaque_type_short_names,
-    );
-    if let Some(builtins) = &builtin_declarations {
-        for (item, _) in &builtins.items {
-            if let Item::TypeDecl(decl) = item {
-                if decl.is_opaque {
-                    ctx.opaque_type_short_names.insert(decl.name.clone());
-                    ctx.opaque_type_short_names
-                        .insert(format!("std.builtins.{}", decl.name));
-                }
-            }
-        }
-    }
-    ctx.root_opaque_type_short_names
-        .extend(program.items.iter().filter_map(|(item, _)| {
-            let Item::TypeDecl(decl) = item else {
-                return None;
-            };
-            decl.is_opaque.then(|| decl.name.clone())
-        }));
     // Root-authored declarations only: items spliced into `program.items` by
     // `flatten_file_import_items` keep their defining file's module identity
     // (`file_import_module_idx`), so they must not claim the root bare
@@ -3244,16 +2649,16 @@ pub fn lower_program_with_mono_cap(
                         if let Some(tb) = &impl_decl.trait_bound {
                             let overridden: HashSet<&str> =
                                 impl_decl.methods.iter().map(|m| m.name.as_str()).collect();
-                            if let Some(default_owner) = ctx.trait_default_owner_key(&tb.name) {
+                            if let Some(default_owner) = ctx.trait_declaration(&tb.name) {
                                 if let Some(defaults) =
-                                    ctx.trait_default_methods.get(&default_owner).cloned()
+                                    ctx.trait_defaults.get(&default_owner).cloned()
                                 {
                                     for default_method in &defaults {
-                                        if !overridden.contains(default_method.name.as_str()) {
-                                            let fn_decl = trait_method_to_fn_decl(default_method);
-                                            ctx.register_impl_method_fn_entry(
+                                        if !overridden.contains(default_method.method.name.as_str())
+                                        {
+                                            ctx.register_trait_default_fn_entry(
                                                 &symbol_name,
-                                                &fn_decl,
+                                                default_method,
                                                 &impl_type_params,
                                             );
                                         }
@@ -3356,12 +2761,35 @@ pub fn lower_program_with_mono_cap(
                 // that MIR cannot resolve.
                 let saved_module_name = ctx.current_module_name.replace(module_full_path.clone());
                 let saved_module_idx = ctx.current_module_idx;
+                let private_fns = module
+                    .items
+                    .iter()
+                    .filter_map(|(item, _)| match item {
+                        Item::Function(function) if !function.visibility.is_pub() => {
+                            Some(function.name.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let private_closure = collect_imported_private_fn_closure(
+                    module,
+                    &private_fns,
+                    ctx.trait_defaults
+                        .values()
+                        .flatten()
+                        .filter(|default| {
+                            default.source_module.as_deref() == Some(module_full_path.as_str())
+                        })
+                        .filter_map(|default| default.method.body.as_ref()),
+                );
                 for (item_idx, (item, item_span)) in module.items.iter().enumerate() {
                     ctx.current_module_idx = span_indices
                         .item_index(mod_id, item_idx)
                         .unwrap_or_default();
                     match item {
-                        Item::Function(func) if func.visibility.is_pub() => {
+                        Item::Function(func)
+                            if func.visibility.is_pub() || private_closure.contains(&func.name) =>
+                        {
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -3519,20 +2947,18 @@ pub fn lower_program_with_mono_cap(
                                             .iter()
                                             .map(|m| m.name.as_str())
                                             .collect();
-                                        if let Some(default_owner) =
-                                            ctx.trait_default_owner_key(&tb.name)
+                                        if let Some(default_owner) = ctx.trait_declaration(&tb.name)
                                         {
-                                            if let Some(defaults) = ctx
-                                                .trait_default_methods
-                                                .get(&default_owner)
-                                                .cloned()
+                                            if let Some(defaults) =
+                                                ctx.trait_defaults.get(&default_owner).cloned()
                                             {
                                                 for default_method in &defaults {
-                                                    if !overridden
-                                                        .contains(default_method.name.as_str())
-                                                    {
-                                                        let fn_decl =
-                                                            trait_method_to_fn_decl(default_method);
+                                                    if !overridden.contains(
+                                                        default_method.method.name.as_str(),
+                                                    ) {
+                                                        let fn_decl = trait_method_to_fn_decl(
+                                                            &default_method.method,
+                                                        );
                                                         ctx.register_impl_method_fn_entry(
                                                             &symbol_self_name,
                                                             &fn_decl,
@@ -4178,8 +3604,7 @@ pub fn lower_program_with_mono_cap(
                     // surface and drop-elaboration would silently elide the
                     // close call.
                     .or_else(|| {
-                        ctx.impl_close_methods
-                            .get(&hir_decl.name)
+                        ctx.inherent_close_signature(&hir_decl.declaration)
                             .map(|_| "close".to_string())
                     })
             } else {
@@ -4393,8 +3818,7 @@ pub fn lower_program_with_mono_cap(
                                     .find(|m| m.as_str() == "close")
                                     .cloned()
                                     .or_else(|| {
-                                        ctx.impl_close_methods
-                                            .get(&hir_decl.name)
+                                        ctx.inherent_close_signature(&hir_decl.declaration)
                                             .map(|_| "close".to_string())
                                     })
                             } else {
@@ -4973,12 +4397,10 @@ pub fn lower_program_with_mono_cap(
                         .get(&(impl_decl as *const _))
                         .cloned()
                 });
-                let rewrites = HashMap::new();
                 let skip_methods = HashSet::new();
                 let imported = imported_symbol_self_name
                     .as_deref()
                     .map(|symbol_self_name| ImportedImplLowering {
-                        rewrites: &rewrites,
                         skip_methods: &skip_methods,
                         symbol_self_name: Some(symbol_self_name),
                     });
@@ -5227,54 +4649,16 @@ pub fn lower_program_with_mono_cap(
                         None
                     })
                     .collect();
-                let same_module_private_fn_decls: HashMap<String, &FnDecl> = module
-                    .items
-                    .iter()
-                    .filter_map(|(it, _)| {
-                        if let Item::Function(f) = it {
-                            if !f.visibility.is_pub() {
-                                return Some((f.name.clone(), f));
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                let same_module_pub_fns: HashSet<String> = module
-                    .items
-                    .iter()
-                    .filter_map(|(it, _)| {
-                        if let Item::Function(f) = it {
-                            if f.visibility.is_pub() {
-                                return Some(f.name.clone());
-                            }
-                        }
-                        None
-                    })
-                    .collect();
-                let imported_private_closure =
-                    collect_imported_private_fn_closure(module, &same_module_private_fns);
-                for helper_name in &imported_private_closure {
-                    if let Some(helper) = same_module_private_fn_decls.get(helper_name) {
-                        let qualified =
-                            crate::mangle_dotted_name(&format!("{source_module}.{}", helper.name));
-                        ctx.register_fn_entry(&qualified, helper);
-                    }
-                }
-                // A file this module imports publishes its pub free functions
-                // into THIS module's scope under bare names, while its bodies
-                // are emitted under its own module symbol. The module's own
-                // declarations are collected after, so a local name wins.
-                let mut same_module_fn_rewrites = module_file_import_fn_rewrites(module, mg);
-                same_module_fn_rewrites.extend(
-                    same_module_pub_fns
-                        .iter()
-                        .chain(imported_private_closure.iter())
-                        .map(|name| {
-                            (
-                                name.clone(),
-                                crate::mangle_dotted_name(&format!("{source_module}.{name}")),
-                            )
-                        }),
+                let imported_private_closure = collect_imported_private_fn_closure(
+                    module,
+                    &same_module_private_fns,
+                    ctx.trait_defaults
+                        .values()
+                        .flatten()
+                        .filter(|default| {
+                            default.source_module.as_deref() == Some(source_module.as_str())
+                        })
+                        .filter_map(|default| default.method.body.as_ref()),
                 );
                 let same_module_actor_rewrites: HashMap<String, String> = module
                     .items
@@ -5345,7 +4729,6 @@ pub fn lower_program_with_mono_cap(
                                 &qualified,
                                 &source_module,
                                 span.clone(),
-                                &same_module_fn_rewrites,
                             ) {
                                 items.push(HirItem::Function(lowered));
                             }
@@ -5371,7 +4754,6 @@ pub fn lower_program_with_mono_cap(
                                 &qualified,
                                 &source_module,
                                 span.clone(),
-                                &same_module_fn_rewrites,
                             ) {
                                 items.push(HirItem::Function(lowered));
                             }
@@ -5572,11 +4954,8 @@ pub fn lower_program_with_mono_cap(
                                 // carrier resolved at monomorphisation time, not a
                                 // The pre-lowering body plan and this emitter
                                 // share one exact eligibility authority.
-                                let skip_methods = ctx.imported_impl_skip_methods(
-                                    impl_decl,
-                                    &source_module,
-                                    &same_module_fn_rewrites,
-                                );
+                                let skip_methods =
+                                    ctx.imported_impl_skip_methods(impl_decl, &source_module);
                                 // Impl method symbols are declaration-owned,
                                 // not collision-owned. Consume the canonical
                                 // owner established by the declaration-keyed
@@ -5607,7 +4986,6 @@ pub fn lower_program_with_mono_cap(
                                     &mut items,
                                     false,
                                     Some(&ImportedImplLowering {
-                                        rewrites: &same_module_fn_rewrites,
                                         skip_methods: &skip_methods,
                                         symbol_self_name: planned_symbol_self_name.as_deref(),
                                     }),
@@ -5648,7 +5026,7 @@ pub fn lower_program_with_mono_cap(
                         // `spawn of unknown actor` / `actor call on unknown actor`,
                         // even though HIR/types resolved the cross-module
                         // reference. Mirrors the `Item::Machine` arm above. The
-                        // receive-fn bodies lower with `same_module_fn_rewrites`
+                        // receive-fn bodies resolve names in their checker file scope
                         // active (see `lower_imported_actor`) so bare same-module
                         // calls resolve to their qualified symbols, exactly like
                         // the imported free-fn path.
@@ -5675,12 +5053,8 @@ pub fn lower_program_with_mono_cap(
                                     ),
                                 ));
                             }
-                            let lowered = ctx.lower_imported_actor(
-                                actor,
-                                span.clone(),
-                                &source_module,
-                                &same_module_fn_rewrites,
-                            );
+                            let lowered =
+                                ctx.lower_imported_actor(actor, span.clone(), &source_module);
                             if let Some(lowered) = lowered {
                                 items.push(HirItem::Actor(lowered));
                             }
@@ -5782,7 +5156,6 @@ pub fn lower_program_with_mono_cap(
             let saved_none = ctx
                 .machine_ctor_registry
                 .insert("None".to_string(), ("Option".to_string(), 1));
-            let empty_rewrites = HashMap::new();
             for (item, span) in &program.items {
                 if let Item::ExternBlock(block) = item {
                     for function in &block.functions {
@@ -5888,7 +5261,6 @@ pub fn lower_program_with_mono_cap(
                             ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
                         } else {
                             let imported = ImportedImplLowering {
-                                rewrites: &empty_rewrites,
                                 skip_methods: &skipped_methods,
                                 symbol_self_name: Some(&symbol_owner),
                             };
@@ -7590,11 +6962,6 @@ struct LowerCtx {
     /// per-symbol/per-parameter ownership contract says so; ordinary Hew
     /// functions that merely share a spelling never inherit that privilege.
     extern_fn_names: HashSet<String>,
-    /// Same-module bare-call rewrites active while lowering an imported module
-    /// free-function body. Keys are source-visible bare identifiers; values are
-    /// the qualified, native-symbol-safe `fn_registry` keys emitted for that
-    /// imported module.
-    imported_fn_rewrites: Option<HashMap<String, String>>,
     /// Same-module actor identity rewrites active while lowering imported
     /// module bodies. Keys are source-visible bare actor names; values are the
     /// fully-qualified actor-layout identities used by MIR.
@@ -7604,7 +6971,7 @@ struct LowerCtx {
     /// by bare name (e.g. `STATUS_OK` inside `tls.hew`), but only the
     /// qualified key `"tls.STATUS_OK"` is in the global `const_registry`.
     /// This scoped map bridges the gap: it is populated before lowering each
-    /// module's bodies and cleared after, mirroring `imported_fn_rewrites`.
+    /// module's bodies and cleared after.
     imported_module_consts: Option<HashMap<String, ConstEntry>>,
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
@@ -7615,31 +6982,6 @@ struct LowerCtx {
     /// Checker-derived closeable-opaque candidates awaiting resolved HIR
     /// close-body admission.
     opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
-    /// Pre-collected inherent-impl `close` method signatures, keyed by the
-    /// self-type name. Populated in `lower_program` before the type-decl
-    /// pre-pass so `lower_type_decl` can:
-    ///
-    ///   * broaden the `ResourceMissingClose` presence check to consider
-    ///     inherent-impl `<T>::close` declarations (W3.030 Q-α-B); and
-    ///   * enforce the close-must-return-unit discipline at the HIR
-    ///     boundary (W3.030 Q-β-C).
-    ///
-    /// Empty when called from non-`lower_program` entry points (the cross-
-    /// module `lower_type_decl` calls under `program.module_graph` reach
-    /// this with the root map already populated; imported enum `TypeDecls`
-    /// carry no `#[resource]` marker so the absence of their inherent
-    /// impls in this map is harmless).
-    impl_close_methods: HashMap<String, ImplCloseSignature>,
-    /// Self-type names that declare at least one `consume self` method in a
-    /// sibling inherent-impl block (`impl T { fn m(consume self) { … } }`).
-    ///
-    /// A `#[linear]` type's required consuming method may live here instead of
-    /// in the type body — the inherent-impl form is the one that actually lowers
-    /// to a callable symbol, so it is the usable consume surface. Populated the
-    /// same way as `impl_close_methods`; consulted by the `#[linear]` validation
-    /// so `LinearNoConsumingMethods` only fires when NEITHER a type-body nor a
-    /// sibling-inherent consuming method exists.
-    impl_consuming_methods: HashSet<String>,
     /// Resource declarations for which `check_resource_close_discipline`
     /// already pushed a user-facing close-discipline diagnostic
     /// (`ResourceMissingClose`, `ResourceCloseMustReturnUnit` or
@@ -8171,46 +7513,9 @@ struct LowerCtx {
     /// `Display` dispatch can defer to monomorphisation. Empty outside a
     /// function body.
     current_fn_type_params: HashSet<String>,
-    /// Default method bodies harvested from every `Item::Trait` in the root
-    /// program. Keyed by trait name; values are the `TraitMethod` entries
-    /// that carry a `body`. Populated once before the first lowering pass
-    /// so that `lower_impl_block` can lower default methods that are not
-    /// overridden in the concrete impl.
-    trait_default_methods: HashMap<String, Vec<TraitMethod>>,
-    /// The checker `module_idx` each entry of `trait_default_methods` was
-    /// recorded under, keyed identically. A default body materialised onto an
-    /// impl in another module must be lowered under its DECLARING module's
-    /// index or every `mk_key` lookup inside the copied body misses the
-    /// checker fact recorded against the trait's own source.
-    trait_default_module_idx: HashMap<String, u32>,
-    trait_super: HashMap<String, Vec<String>>,
-    trait_declared_methods: HashMap<String, HashSet<String>>,
-    /// Short names of every `#[opaque]` type declaration in the program
-    /// (root + imported modules), e.g. `"Value"` for `json.Value`.
-    ///
-    /// Consulted by [`LowerCtx::lower_type`] to stamp the
-    /// `ResolvedTy::Named.is_opaque` discriminator so the actor-state
-    /// clone/drop classifier (`hew-mir::state_clone`) can distinguish a real
-    /// opaque handle from a user record/enum that merely shares its short
-    /// name. Populated by the type-decl pre-passes (root + imported) before
-    /// any actor body lowers, so the discriminator is available when actor
-    /// state-field types are resolved.
-    ///
-    /// `non_opaque_type_short_names` carries the complement: short names that
-    /// are user records/enums/actors. A bare (unqualified) annotation whose
-    /// short name is in BOTH sets refers to the user type (the local
-    /// declaration shadows the imported opaque handle); only a qualified
-    /// reference (`json.Value`) or a bare name that is exclusively opaque
-    /// resolves to the opaque handle. This keeps the discriminator a type
-    /// identity fact rather than a short-name heuristic.
-    opaque_type_short_names: HashSet<String>,
-    non_opaque_type_short_names: HashSet<String>,
-    /// Root-visible opaque declarations: declarations authored in the root
-    /// source plus flattened file-import declarations, kept separate from
-    /// package-imported compiler carriers. A root-visible
-    /// `#[opaque] type Receiver {}` shadows the builtin by declaration identity
-    /// even though its short name is registered in the builtin catalog.
-    root_opaque_type_short_names: HashSet<String>,
+    /// Checker-selected trait bindings and default source bodies.
+    trait_bindings: HashMap<(Option<String>, u32, String), hew_types::DefId>,
+    trait_defaults: HashMap<hew_types::DefId, Vec<hew_types::ResolvedTraitDefault>>,
     /// Source-declared type names visible in the root namespace, including
     /// declarations flattened from file imports. These identities must be
     /// considered before the compiler-only `Task`, `Unit`, and
@@ -8281,9 +7586,7 @@ struct LowerCtx {
     declaration_module_by_file_index: HashMap<u32, hew_types::ModuleId>,
     /// Immutable checker declaration authority. This view cannot mint.
     identity: hew_types::IdentityView,
-    type_aliases: HashMap<String, TypeAliasLowering>,
-    type_alias_substitutions: Vec<HashMap<String, ResolvedTy>>,
-    resolving_type_aliases: HashSet<String>,
+    type_aliases: HashMap<hew_types::DefId, hew_types::TypeAliasDef>,
     /// Checker-authoritative import resolution table: maps `(importer_module,
     /// source spelling)` → canonical qualified source identity for named/glob
     /// imports and canonical lifecycle whole-module aliases.
@@ -8316,60 +7619,11 @@ struct LowerCtx {
         HashMap<(Option<String>, u32, String), std::collections::BTreeSet<String>>,
     /// Exact owner identities for the bare function bindings an import
     /// published, keyed by the file that wrote the import. The companion of
-    /// `published_bare_const_owners`; see `imported_rewrite_symbol`.
+    /// `published_bare_const_owners`; see `resolved_bare_function_symbol`.
     import_fn_name_aliases: HashMap<(Option<String>, u32, String), String>,
     /// Root-scope value bindings the program itself declares. A root
     /// declaration outranks a name an import published into the root scope.
     root_value_bindings: HashSet<String>,
-}
-
-#[derive(Debug, Clone)]
-struct TypeAliasLowering {
-    type_params: Vec<String>,
-    target: Spanned<TypeExpr>,
-}
-
-fn collect_type_aliases(program: &Program) -> HashMap<String, TypeAliasLowering> {
-    fn insert_alias(
-        aliases: &mut HashMap<String, TypeAliasLowering>,
-        owner: Option<&str>,
-        decl: &TypeAliasDecl,
-    ) {
-        let alias = TypeAliasLowering {
-            type_params: decl
-                .type_params
-                .as_ref()
-                .map(|params| params.iter().map(|param| param.name.clone()).collect())
-                .unwrap_or_default(),
-            target: decl.ty.clone(),
-        };
-        if let Some(owner) = owner {
-            aliases.insert(format!("{owner}.{}", decl.name), alias);
-        } else {
-            aliases.insert(decl.name.clone(), alias);
-        }
-    }
-
-    let mut aliases = HashMap::new();
-    for (item, _) in &program.items {
-        if let Item::TypeAlias(decl) = item {
-            insert_alias(&mut aliases, None, decl);
-        }
-    }
-    if let Some(graph) = &program.module_graph {
-        for module_id in &graph.topo_order {
-            let Some(module) = graph.modules.get(module_id) else {
-                continue;
-            };
-            let owner = module_id.path.join(".");
-            for (item, _) in &module.items {
-                if let Item::TypeAlias(decl) = item {
-                    insert_alias(&mut aliases, Some(&owner), decl);
-                }
-            }
-        }
-    }
-    aliases
 }
 
 /// Whether `ty` transitively carries a value whose SOLE ownership crosses an
@@ -8498,13 +7752,10 @@ impl LowerCtx {
             fn_registry: HashMap::new(),
             fn_symbol_overrides: HashMap::new(),
             extern_fn_names: HashSet::new(),
-            imported_fn_rewrites: None,
             imported_actor_rewrites: None,
             imported_module_consts: None,
             type_classes,
             opaque_resource_candidates: tc_output.opaque_resource_candidates.clone(),
-            impl_close_methods: HashMap::new(),
-            impl_consuming_methods: HashSet::new(),
             resource_close_discipline_failures: HashSet::new(),
             diagnostics: Vec::new(),
             // Resolution spellings remain a checker lookup index. Declaration
@@ -8620,13 +7871,8 @@ impl LowerCtx {
             target_arch,
             current_impl_self_ty: None,
             current_fn_type_params: HashSet::new(),
-            trait_default_methods: HashMap::new(),
-            trait_default_module_idx: HashMap::new(),
-            trait_super: HashMap::new(),
-            trait_declared_methods: HashMap::new(),
-            opaque_type_short_names: HashSet::new(),
-            non_opaque_type_short_names: HashSet::new(),
-            root_opaque_type_short_names: HashSet::new(),
+            trait_bindings: tc_output.trait_bindings.clone(),
+            trait_defaults: tc_output.trait_defaults.clone(),
             root_visible_source_type_short_names: HashSet::new(),
             file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
@@ -8652,9 +7898,7 @@ impl LowerCtx {
             lowering_injected_items: false,
             current_module_name: None,
             declaration_module_by_file_index: HashMap::new(),
-            type_aliases: HashMap::new(),
-            type_alias_substitutions: Vec::new(),
-            resolving_type_aliases: HashSet::new(),
+            type_aliases: tc_output.resolved_type_aliases.clone(),
             import_type_name_aliases: tc_output.import_type_name_aliases.clone(),
             module_import_bindings: tc_output.module_import_bindings.clone(),
             published_bare_const_owners: tc_output.published_bare_const_owners.clone(),
@@ -9283,25 +8527,21 @@ impl LowerCtx {
             .map_or(source_identity, |(_, name)| name)
     }
 
-    /// The emitted symbol a bare function name reaches from the file being
-    /// lowered: the same-module rewrite map while an imported module's bodies
-    /// lower, else the exact owner an import published into this file's scope.
-    ///
-    /// The published fact is keyed by file, so a file the root spliced in
-    /// (`import "sub.hew";`) resolves its own `import lib.{ bump };` here and a
-    /// file that never wrote that import does not see `bump`.
-    fn imported_rewrite_symbol(&self, name: &str) -> Option<String> {
-        if let Some(symbol) = self
-            .imported_fn_rewrites
-            .as_ref()
-            .and_then(|rewrites| rewrites.get(name))
-        {
-            return Some(symbol.clone());
-        }
-        // The root's own value namespace outranks a name an import published
-        // into it, exactly as it does in the checker's use-time gate.
+    /// Resolve a bare function through the checker's declaration namespace and
+    /// exact importer/file binding. Registry membership concerns emission only;
+    /// it must not choose which source declaration an identifier names.
+    fn resolved_bare_function_symbol(&self, name: &str) -> Option<String> {
         if self.current_module_name.is_none() && self.root_value_bindings.contains(name) {
             return None;
+        }
+        if let Some(module) = &self.current_module_name {
+            let declared = format!("{module}.{name}");
+            if self.identity.declaration_kind_by_path(&declared)
+                == Some(hew_types::DeclarationKind::Function)
+                && self.fn_sigs.contains_key(&declared)
+            {
+                return Some(self.published_declaration_symbol(&declared));
+            }
         }
         self.import_fn_name_aliases
             .get(&(
@@ -9309,8 +8549,17 @@ impl LowerCtx {
                 self.current_module_idx,
                 name.to_string(),
             ))
+            .or_else(|| {
+                // File-import binding keys carry the importing module's
+                // namespace; named imports use the bare source binding.
+                let module = self.current_module_name.as_ref()?;
+                self.import_fn_name_aliases.get(&(
+                    self.current_module_name.clone(),
+                    self.current_module_idx,
+                    format!("{module}.{name}"),
+                ))
+            })
             .map(|owner| self.published_declaration_symbol(owner))
-            .filter(|symbol| self.fn_registry.contains_key(symbol))
     }
 
     fn record_var_self_direct_monomorphisation(
@@ -9424,7 +8673,7 @@ impl LowerCtx {
             return;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name)
+            self.resolved_bare_function_symbol(name)
                 .unwrap_or_else(|| name.clone())
         } else {
             name.clone()
@@ -9449,7 +8698,7 @@ impl LowerCtx {
             return false;
         };
         let registry_name = if self.lookup(name).is_none() {
-            self.imported_rewrite_symbol(name)
+            self.resolved_bare_function_symbol(name)
                 .unwrap_or_else(|| name.clone())
         } else {
             name.clone()
@@ -10122,9 +9371,10 @@ fn imported_impl_signature_type_is_safe(
     }
 }
 
-fn collect_imported_private_fn_closure(
+fn collect_imported_private_fn_closure<'a>(
     module: &hew_parser::module::Module,
     private_fns: &HashSet<String>,
+    default_bodies: impl Iterator<Item = &'a Block>,
 ) -> HashSet<String> {
     let private_fn_bodies: HashMap<String, &Block> = module
         .items
@@ -10187,6 +9437,9 @@ fn collect_imported_private_fn_closure(
             }
             _ => {}
         }
+    }
+    for body in default_bodies {
+        seed_from(body, &mut reachable, &mut worklist);
     }
     while let Some(helper) = worklist.pop() {
         if let Some(body) = private_fn_bodies.get(&helper) {
@@ -13026,43 +12279,6 @@ impl LowerCtx {
         self.lower_fn_with_name(func, &func.name, span)
     }
 
-    fn resolve_method_declaring_trait(
-        &self,
-        trait_name: &str,
-        method_name: &str,
-    ) -> Option<String> {
-        if self
-            .trait_declared_methods
-            .get(trait_name)
-            .is_some_and(|methods| methods.contains(method_name))
-        {
-            return Some(trait_name.to_string());
-        }
-
-        let mut stack = self
-            .trait_super
-            .get(trait_name)
-            .cloned()
-            .unwrap_or_default();
-        let mut visited = HashSet::new();
-        while let Some(current) = stack.pop() {
-            if !visited.insert(current.clone()) {
-                continue;
-            }
-            if self
-                .trait_declared_methods
-                .get(&current)
-                .is_some_and(|methods| methods.contains(method_name))
-            {
-                return Some(current);
-            }
-            if let Some(supers) = self.trait_super.get(&current) {
-                stack.extend(supers.iter().cloned());
-            }
-        }
-        None
-    }
-
     /// Return the checker-authored declaration identities for a trait method.
     /// An absent entry is intentionally propagated as `None`: static-dispatch
     /// indexing must fail closed instead of constructing an id from HIR text.
@@ -13125,67 +12341,29 @@ impl LowerCtx {
             })
     }
 
-    /// Resolve a trait bound written on an impl to the exact key used by the
-    /// default-method harvest.  Import aliases are resolved solely through the
-    /// checker-published binding table; local and already-qualified traits are
-    /// accepted only when an existing checker declaration ID proves that exact
-    /// owner.  There is intentionally no leaf-name/suffix fallback.
-    fn trait_default_owner_key(&self, trait_bound: &str) -> Option<String> {
-        let mut binding_owners: Vec<String> = self
-            .trait_method_ids_by_binding
-            .iter()
-            .filter(|((scope, file, binding, _), _)| {
-                scope == &self.current_module_name
-                    && *file == self.current_module_idx
-                    && binding == trait_bound
-            })
-            .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
-            .collect();
-        binding_owners.sort_unstable();
-        binding_owners.dedup();
-        if let [owner] = binding_owners.as_slice() {
-            return Some(owner.clone());
-        }
-        if !binding_owners.is_empty() {
-            return None;
-        }
+    fn register_trait_default_fn_entry(
+        &mut self,
+        self_name: &str,
+        default: &hew_types::ResolvedTraitDefault,
+        impl_type_params: &[String],
+    ) {
+        let previous_module =
+            std::mem::replace(&mut self.current_module_name, default.source_module.clone());
+        let previous_file = std::mem::replace(&mut self.current_module_idx, default.file_index);
+        let function = trait_method_to_fn_decl(&default.method);
+        self.register_impl_method_fn_entry(self_name, &function, impl_type_params);
+        self.current_module_name = previous_module;
+        self.current_module_idx = previous_file;
+    }
 
-        // A file import splices declarations into the root scope, but the
-        // checker publishes each trait binding under its declaring file index.
-        // If the root has no exact file-local binding, accept only one
-        // unambiguous checker-published owner across those flat-import files.
-        if self.current_module_name.is_none() {
-            let mut flat_file_owners: Vec<String> = self
-                .trait_method_ids_by_binding
-                .iter()
-                .filter(|((scope, _, binding, _), _)| scope.is_none() && binding == trait_bound)
-                .map(|(_, (trait_id, _))| trait_id.full_path().to_string())
-                .collect();
-            flat_file_owners.sort_unstable();
-            flat_file_owners.dedup();
-            if let [owner] = flat_file_owners.as_slice() {
-                return Some(owner.clone());
-            }
-            if !flat_file_owners.is_empty() {
-                return None;
-            }
-        }
-
-        let local_owner = self.current_module_name.as_ref().map_or_else(
-            || trait_bound.to_string(),
-            |module| format!("{module}.{trait_bound}"),
-        );
-        let mut exact_owners: Vec<String> = self
-            .trait_method_ids
-            .values()
-            .filter_map(|(trait_id, _)| {
-                let owner = trait_id.full_path();
-                (owner == trait_bound || owner == local_owner).then(|| owner.to_string())
-            })
-            .collect();
-        exact_owners.sort_unstable();
-        exact_owners.dedup();
-        (exact_owners.len() == 1).then(|| exact_owners.pop().expect("checked length"))
+    fn trait_declaration(&self, binding: &str) -> Option<hew_types::DefId> {
+        self.trait_bindings
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                binding.to_string(),
+            ))
+            .cloned()
     }
 
     fn ordinary_call_target(&self, span: &Span) -> Option<CallTarget> {
@@ -13433,7 +12611,12 @@ impl LowerCtx {
         // such as `Vec`, `Option`, and `Result` are ordinary user nominals
         // unless they carry the corresponding builtin discriminator.
         let target_is_alias = self.type_alias_for_name(self_type_name).is_some();
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            type_params.iter().cloned().collect(),
+        );
         let mut resolved_impl_self_ty = self.lower_type(&decl.target_type);
+        self.current_fn_type_params = previous_type_params;
         // Injected `std/builtins.hew` impls are compiler-owned declarations.
         // A root user declaration with the same source leaf must not retag
         // their `Self` type or their static-dispatch metadata. Recover the
@@ -13649,14 +12832,6 @@ impl LowerCtx {
         };
         let prior_self_ty = self.current_impl_self_ty.take();
         self.current_impl_self_ty = Some(resolved_impl_self_ty);
-        // For imported impl blocks, apply the same-module fn-name rewrite map
-        // (bare helper name → mangled qualified symbol) to method bodies, just
-        // as `lower_imported_fn_with_name` does for free functions. Methods
-        // whose bodies call a private same-module helper that is NOT in the
-        // rewrite closure are listed in `skip_methods` and dropped here; the
-        // caller has already emitted a fail-closed diagnostic for them.
-        let prior_imported_rewrites =
-            imported.map(|imp| self.imported_fn_rewrites.replace(imp.rewrites.clone()));
         for method in &decl.methods {
             if pub_only && !method.visibility.is_pub() {
                 continue;
@@ -13728,12 +12903,7 @@ impl LowerCtx {
             let declaring_trait = decl
                 .trait_bound
                 .as_ref()
-                .and_then(|tb| self.resolve_method_declaring_trait(&tb.name, &method.name))
-                .unwrap_or_else(|| {
-                    decl.trait_bound
-                        .as_ref()
-                        .map_or(String::new(), |tb| tb.name.clone())
-                });
+                .map_or(String::new(), |tb| tb.name.clone());
             let ids = self.trait_method_identity(&declaring_trait, &method.name);
             let declaring_trait = ids.as_ref().map_or(declaring_trait, |(trait_id, _)| {
                 trait_id.full_path().to_string()
@@ -13751,34 +12921,27 @@ impl LowerCtx {
         // so `Self` inside the default body lowers to the correct concrete type.
         if let Some(tb) = &decl.trait_bound {
             let overridden: HashSet<&str> = decl.methods.iter().map(|m| m.name.as_str()).collect();
-            if let Some(default_owner_key) = self.trait_default_owner_key(&tb.name) {
-                if let Some(defaults) = self.trait_default_methods.get(&default_owner_key).cloned()
-                {
-                    // The bodies below were copied from the trait declaration,
-                    // so their spans index the DECLARING module's source. The
-                    // checker recorded their facts under that module's index
-                    // (it checks each trait's default bodies once, during the
-                    // module walk). Lower them under the same index or every
-                    // `mk_key` lookup inside a copied body misses — a
-                    // `self.other()` call in a default body then fails closed
-                    // with `MethodCallNoRewrite`. Restored below.
+            if let Some(default_owner_key) = self.trait_declaration(&tb.name) {
+                if let Some(defaults) = self.trait_defaults.get(&default_owner_key).cloned() {
                     let saved_module_idx = self.current_module_idx;
-                    self.current_module_idx = self
-                        .trait_default_module_idx
-                        .get(&default_owner_key)
-                        .copied()
-                        .unwrap_or(saved_module_idx);
+                    let saved_module = self.current_module_name.clone();
                     for default_method in &defaults {
-                        if overridden.contains(default_method.name.as_str()) {
+                        if overridden.contains(default_method.method.name.as_str()) {
                             continue;
                         }
-                        let fn_decl = trait_method_to_fn_decl(default_method);
+                        self.current_module_idx = default_method.file_index;
+                        self.current_module_name
+                            .clone_from(&default_method.source_module);
+                        let fn_decl = trait_method_to_fn_decl(&default_method.method);
                         let symbol = crate::node::HirImplBlock::method_symbol(
                             &symbol_self_name,
                             &fn_decl.name,
                         );
-                        let declaring_trait = tb.name.clone();
-                        let ids = self.trait_method_identity(&declaring_trait, &fn_decl.name);
+                        let declaring_trait = default_method.trait_id.full_path().to_string();
+                        let ids = Some((
+                            default_method.trait_id.clone(),
+                            default_method.method_id.clone(),
+                        ));
                         // Trait declaration IDs own static lookup; this
                         // materialised default body needs a distinct concrete
                         // implementation identity for body lookup and
@@ -13864,13 +13027,11 @@ impl LowerCtx {
                         method_declaring_traits.push(declaring_trait);
                     }
                     self.current_module_idx = saved_module_idx;
+                    self.current_module_name = saved_module;
                 }
             }
         }
 
-        if let Some(prev) = prior_imported_rewrites {
-            self.imported_fn_rewrites = prev;
-        }
         self.current_impl_self_ty = prior_self_ty;
 
         // Lower associated-type bindings to `ResolvedTy`s. Recorded as
@@ -13910,45 +13071,14 @@ impl LowerCtx {
         self.lower_fn_with_name_and_impl_params(func, name, span, &[], None, None)
     }
 
-    fn lower_imported_fn_with_name(
-        &mut self,
-        func: &FnDecl,
-        name: &str,
-        span: std::ops::Range<usize>,
-        rewrites: &HashMap<String, String>,
-    ) -> Option<HirFn> {
-        let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
-        let lowered = self.lower_fn_with_name(func, name, span);
-        self.imported_fn_rewrites = previous_rewrites;
-        lowered
-    }
-
-    /// Lower an actor declared in an imported module.
-    ///
-    /// Identical to [`lower_actor`](Self::lower_actor) except that the actor's
-    /// `init`/`receive fn`/lifecycle-hook bodies lower with the module's
-    /// `same_module_fn_rewrites` active, so a bare call to a sibling pub (or
-    /// reachable private) function inside the actor body resolves to that
-    /// function's qualified, native-symbol-safe name — the same contract the
-    /// imported free-fn and impl-method paths use. State-field defaults and
-    /// types lower the same way as a local actor.
-    ///
-    /// The resulting `HirActorDecl` carries `defining_module =
-    /// Some(module_short)` — the `(defining-module, name)` identity that lets
-    /// MIR layout keys and codegen symbols distinguish two same-named actors
-    /// from different modules. The decl's `name` stays bare and all symbol
-    /// mangling still derives from the bare name; switching keys/symbols to
-    /// `qualified_name()` is the downstream re-key that this carrier enables.
+    /// Lower an imported actor under its checker's current module and file scope.
     fn lower_imported_actor(
         &mut self,
         decl: &ActorDecl,
         span: Span,
         module_full_path: &str,
-        rewrites: &HashMap<String, String>,
     ) -> Option<HirActorDecl> {
-        let previous_rewrites = self.imported_fn_rewrites.replace(rewrites.clone());
         let lowered = self.lower_actor(decl, span, Some(module_full_path));
-        self.imported_fn_rewrites = previous_rewrites;
         let mut lowered = lowered?;
         // Owner-qualify each receive handler's return type to the declaring
         // module (`testffi.Result`) ONLY when the returned record's bare name
@@ -14056,11 +13186,10 @@ impl LowerCtx {
         qualified: &str,
         source_module: &str,
         span: std::ops::Range<usize>,
-        rewrites: &HashMap<String, String>,
     ) -> Option<HirFn> {
         let source_key = format!("{source_module}.{}", func.name);
         let Some(intrinsic_key) = self.intrinsic_declarations.get(&source_key).cloned() else {
-            return self.lower_imported_fn_with_name(func, qualified, span, rewrites);
+            return self.lower_fn_with_name(func, qualified, span);
         };
         let Some(entry) = crate::stdlib_catalog::entries()
             .iter()
@@ -14112,8 +13241,7 @@ impl LowerCtx {
         }
         match entry.linkage {
             crate::stdlib_catalog::BuiltinLinkage::CalleeNameDispatchOnly => {
-                let mut lowered =
-                    self.lower_imported_fn_with_name(func, qualified, span, rewrites)?;
+                let mut lowered = self.lower_fn_with_name(func, qualified, span)?;
                 lowered.intrinsic_id = Some(intrinsic_key);
                 Some(lowered)
             }
@@ -14447,6 +13575,20 @@ impl LowerCtx {
         }
     }
 
+    /// Query checker signatures by their canonical receiver identity.
+    fn inherent_close_signature(
+        &self,
+        declaration: &hew_types::DefId,
+    ) -> Option<&hew_types::FnSig> {
+        self.fn_sigs.values().find(|sig| {
+            sig.impl_method.as_ref().is_some_and(|origin| {
+                origin.is_inherent
+                    && origin.receiver.as_ref() == Some(declaration)
+                    && origin.name == "close"
+            })
+        })
+    }
+
     /// W3.030 Stage 1 — three layered checks on `#[resource]` close:
     ///
     ///   1. Inline `TypeBodyItem::Method` named `close` is rejected
@@ -14458,8 +13600,7 @@ impl LowerCtx {
     ///      per `close` slot (review R-4 determinism contract).
     ///
     ///   2. Otherwise look for an inherent-impl `<T>::close`
-    ///      (collected in `impl_close_methods` during the
-    ///      pre-pre-pass). Presence here satisfies the broadened
+    ///      (published on the checker signature). Presence satisfies the broadened
     ///      `ResourceMissingClose` check (Q-α-B); a non-unit return
     ///      type triggers `ResourceCloseMustReturnUnit` (Q-β-C).
     ///
@@ -14491,10 +13632,15 @@ impl LowerCtx {
             ));
             return;
         }
-        if let Some(sig) = self.impl_close_methods.get(&decl.name) {
-            if !sig.return_ty_unit {
-                let display = sig.return_ty_display.clone();
-                let decl_span = sig.decl_span.clone();
+        if let Some(sig) = self.inherent_close_signature(declaration) {
+            if sig.return_type != hew_types::Ty::Unit {
+                let display = sig.return_type.to_string();
+                let decl_span = sig
+                    .impl_method
+                    .as_ref()
+                    .expect("inherent provenance")
+                    .span
+                    .clone();
                 self.resource_close_discipline_failures
                     .insert(declaration.clone());
                 self.diagnostics.push(HirDiagnostic::new(
@@ -14544,9 +13690,14 @@ impl LowerCtx {
     ///      supported surface, mirroring the `#[resource]` inline-`close`
     ///      rejection.
     ///   2. Otherwise the type must carry a sibling-inherent consuming method
-    ///      (`impl_consuming_methods`); absent that, no exit path could exhaust
+    ///      (published on the checker signature); without one no exit path exhausts
     ///      a binding — `LinearNoConsumingMethods`.
-    fn check_linear_consume_discipline(&mut self, decl: &TypeDecl, span: &Span) {
+    fn check_linear_consume_discipline(
+        &mut self,
+        decl: &TypeDecl,
+        span: &Span,
+        declaration: &hew_types::DefId,
+    ) {
         let has_inline_consuming = decl.body.iter().any(|item| {
             matches!(item, TypeBodyItem::Method(m)
                 if decl.consuming_methods.iter().any(|n| n == &m.name))
@@ -14562,7 +13713,12 @@ impl LowerCtx {
                  { ... } }`); the inline `type T { fn commit(consume self) ... }` \
                  surface is not lowered to a callable consume target",
             ));
-        } else if !self.impl_consuming_methods.contains(&decl.name) {
+        } else if !self.fn_sigs.values().any(|sig| {
+            sig.consumes_receiver
+                && sig.impl_method.as_ref().is_some_and(|origin| {
+                    origin.is_inherent && origin.receiver.as_ref() == Some(declaration)
+                })
+        }) {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::LinearNoConsumingMethods {
                     name: decl.name.clone(),
@@ -14588,17 +13744,46 @@ impl LowerCtx {
         Some(self.lower_type_decl_with_identity(decl, span, declaration))
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declaration lowering keeps checker classification, scoped fields and variants together"
+    )]
     fn lower_type_decl_with_identity(
         &mut self,
         decl: &TypeDecl,
         span: Span,
         declaration: hew_types::DefId,
     ) -> HirTypeDecl {
+        let facts = self
+            .type_declarations
+            .get(declaration.full_path())
+            .cloned()
+            .unwrap_or_else(|| {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: declaration.full_path().to_string(),
+                        reason: "missing declared type facts".to_string(),
+                    },
+                    span.clone(),
+                    "type declaration reached HIR without checker classification",
+                ));
+                hew_types::value_class::DeclaredType::default()
+            });
+        let marker = match facts.marker {
+            hew_types::value_class::DeclarationMarker::Resource => ResourceMarker::Resource,
+            hew_types::value_class::DeclarationMarker::Linear => ResourceMarker::Linear,
+            hew_types::value_class::DeclarationMarker::None if facts.is_opaque => {
+                ResourceMarker::BitCopy
+            }
+            hew_types::value_class::DeclarationMarker::None => ResourceMarker::None,
+        };
         // Generic resource/linear types are rejected — the type→class map is
         // keyed by name, not by instantiation. This rule belongs at the
         // checker boundary (LESSONS `checker-output-boundary`); HIR is the
         // first place the marker is durable, so the check lands here.
-        if decl.resource_marker != AstResourceMarker::None && decl.type_params.is_some() {
+        if matches!(marker, ResourceMarker::Resource | ResourceMarker::Linear)
+            && !facts.type_params.is_empty()
+        {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::ResourceGenericUnsupported {
                     name: decl.name.clone(),
@@ -14608,15 +13793,20 @@ impl LowerCtx {
             ));
         }
 
-        match decl.resource_marker {
-            AstResourceMarker::Resource => {
+        match marker {
+            ResourceMarker::Resource => {
                 self.check_resource_close_discipline(decl, &span, &declaration);
             }
-            AstResourceMarker::Linear => {
-                self.check_linear_consume_discipline(decl, &span);
+            ResourceMarker::Linear => {
+                self.check_linear_consume_discipline(decl, &span, &declaration);
             }
-            AstResourceMarker::None => {}
+            ResourceMarker::None | ResourceMarker::BitCopy => {}
         }
+
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            facts.type_params.iter().cloned().collect(),
+        );
 
         // Carry the field set so dump-hir and future analysis have something
         // to reason about; methods are out of scope for v0.5 MIR lowering
@@ -14697,15 +13887,7 @@ impl LowerCtx {
             .type_params
             .as_ref()
             .map_or(vec![], |ps| ps.iter().map(|p| p.name.clone()).collect());
-        // `#[opaque]`-only handles classify as `BitCopy`: pointer-width,
-        // copied wholesale by memcpy, no implicit drop. `#[resource]`/`#[linear]`
-        // ownership (if also declared) takes precedence — representation and
-        // ownership are orthogonal axes.
-        let marker = if decl.is_opaque && decl.resource_marker == AstResourceMarker::None {
-            ResourceMarker::BitCopy
-        } else {
-            ResourceMarker::from(decl.resource_marker)
-        };
+        self.current_fn_type_params = previous_type_params;
         HirTypeDecl {
             kind: match decl.kind {
                 TypeDeclKind::Struct => HirTypeDeclKind::Struct,
@@ -14720,7 +13902,7 @@ impl LowerCtx {
             // package-exported types.
             defining_module: None,
             marker,
-            is_opaque: decl.is_opaque,
+            is_opaque: facts.is_opaque,
             is_indirect: decl.is_indirect,
             consuming_methods: decl.consuming_methods.clone(),
             type_params,
@@ -14746,6 +13928,10 @@ impl LowerCtx {
             params.iter().map(|p| p.name.clone()).collect()
         });
 
+        let previous_type_params = std::mem::replace(
+            &mut self.current_fn_type_params,
+            type_params.iter().cloned().collect(),
+        );
         let (fields, positional_field_tys): (Vec<HirField>, Vec<ResolvedTy>) = match &decl.kind {
             RecordKind::Named(record_fields) => (
                 record_fields
@@ -14780,6 +13966,7 @@ impl LowerCtx {
             .record_registry
             .get(&decl.name)
             .map_or_else(|| self.ids.item(), |entry| entry.id);
+        self.current_fn_type_params = previous_type_params;
         Some(HirRecordDecl {
             id,
             node: self.ids.node(),
@@ -22580,7 +21767,7 @@ impl LowerCtx {
                 );
             }
         }
-        if let Some(symbol) = self.imported_rewrite_symbol(name) {
+        if let Some(symbol) = self.resolved_bare_function_symbol(name) {
             if self.fn_registry.contains_key(&symbol) {
                 return self.lower_function_value(&symbol, &span, site);
             }
@@ -22588,11 +21775,11 @@ impl LowerCtx {
                 HirDiagnosticKind::CheckerBoundaryViolation {
                     name: name.to_string(),
                     reason: format!(
-                        "imported same-module callee `{symbol}` missing from HIR fn registry"
+                        "checker-selected callee `{symbol}` missing from HIR fn registry"
                     ),
                 },
                 span.clone(),
-                "imported free-function body rewrite target was not registered",
+                "checker-selected free-function declaration was not registered",
             ));
         }
         // Bare-name same-module const reference inside an imported module's
@@ -22780,7 +21967,7 @@ impl LowerCtx {
         // because the short spelling collides.
         if self.current_module_name.is_none()
             && !name.contains('.')
-            && self.root_opaque_type_short_names.contains(name)
+            && self.declared_type_is_opaque(name)
         {
             return ResolvedTy::named_opaque(name.to_string(), args);
         }
@@ -22804,7 +21991,7 @@ impl LowerCtx {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
-                if self.resolves_to_opaque_handle(&qualified, name) {
+                if self.declared_type_is_opaque(&qualified) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
@@ -22863,7 +22050,7 @@ impl LowerCtx {
             if let Some(builtin) = self.qualified_source_builtin(&canonical) {
                 return Self::resolved_source_builtin_ty(&canonical, builtin, args);
             }
-            if self.resolves_to_opaque_handle(&canonical, type_name) {
+            if self.declared_type_is_opaque(&canonical) {
                 return ResolvedTy::named_opaque(canonical, args);
             }
             return ResolvedTy::named_user(canonical, args);
@@ -22876,7 +22063,7 @@ impl LowerCtx {
         // CrashInfo }` into a user type, losing the crash-hook ABI identity.
         if !name.contains('.')
             && self.current_scope_declares_source_type(name, current_module_is_file_import)
-            && !self.resolves_to_opaque_handle(name, type_name)
+            && !self.declared_type_is_opaque(name)
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
@@ -22920,7 +22107,7 @@ impl LowerCtx {
             && self.record_registry.contains_key(name)
             && hew_types::lookup_source_owned_lifecycle_type(name).is_none()
             && crate::builtin_type_classes::builtin_type_registration(type_name).is_none()
-            && !self.resolves_to_opaque_handle(name, type_name)
+            && !self.declared_type_is_opaque(name)
         {
             return ResolvedTy::named_user(name.to_string(), args);
         }
@@ -22964,12 +22151,12 @@ impl LowerCtx {
             }
         } else if let Some(builtin) = self.qualified_source_builtin(name) {
             Self::resolved_source_builtin_ty(name, builtin, args)
-        } else if name.contains('.') && self.resolves_to_opaque_handle(name, type_name) {
+        } else if name.contains('.') && self.declared_type_is_opaque(name) {
             // `#[opaque]` runtime handle (e.g. `json.Value`). Stamp the
             // type-identity discriminator so the actor-state clone/drop
             // classifier fails closed on the handle even when its short name
             // collides with a user record/enum of the same name. See
-            // `LowerCtx::resolves_to_opaque_handle`.
+            // `LowerCtx::declared_type_is_opaque`.
             ResolvedTy::named_opaque(name.to_string(), args)
         } else if name.contains('.') {
             // Module-qualified user type (`widgeti64.Widget`). Preserve the
@@ -22991,7 +22178,7 @@ impl LowerCtx {
             .filter(|builtin| !builtin.requires_source_import())
         {
             ResolvedTy::named_builtin(type_name.to_string(), builtin, args)
-        } else if self.resolves_to_opaque_handle(name, type_name) {
+        } else if self.declared_type_is_opaque(name) {
             ResolvedTy::named_opaque(name.to_string(), args)
         } else {
             ResolvedTy::named_user(type_name.to_string(), args)
@@ -23034,7 +22221,7 @@ impl LowerCtx {
         if self.current_module_name.is_none()
             && self.root_visible_source_type_short_names.contains(name)
         {
-            return Some(if self.root_opaque_type_short_names.contains(name) {
+            return Some(if self.declared_type_is_opaque(name) {
                 ResolvedTy::named_opaque(name.to_string(), args)
             } else {
                 ResolvedTy::named_user(name.to_string(), args)
@@ -23047,7 +22234,7 @@ impl LowerCtx {
                 if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                     return Some(Self::resolved_source_builtin_ty(&qualified, builtin, args));
                 }
-                return Some(if self.resolves_to_opaque_handle(&qualified, name) {
+                return Some(if self.declared_type_is_opaque(&qualified) {
                     ResolvedTy::named_opaque(qualified, args)
                 } else {
                     ResolvedTy::named_user(qualified, args)
@@ -23249,7 +22436,7 @@ impl LowerCtx {
                     return Self::resolved_source_builtin_ty(&canonical, builtin, args);
                 }
             }
-            if self.resolves_to_opaque_handle(&canonical, &name) {
+            if self.declared_type_is_opaque(&canonical) {
                 return ResolvedTy::named_opaque(canonical, args);
             }
             return ResolvedTy::named_user(canonical, args);
@@ -23266,7 +22453,7 @@ impl LowerCtx {
         }
         if !name.contains('.')
             && self.current_module_name.is_none()
-            && self.root_opaque_type_short_names.contains(&name)
+            && self.declared_type_is_opaque(&name)
         {
             return ResolvedTy::named_opaque(name, args);
         }
@@ -23282,7 +22469,7 @@ impl LowerCtx {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
                 }
-                if self.resolves_to_opaque_handle(&qualified, &name) {
+                if self.declared_type_is_opaque(&qualified) {
                     if let Some(builtin) = self.qualified_source_builtin(&qualified) {
                         return Self::resolved_source_builtin_ty(&qualified, builtin, args);
                     }
@@ -23307,11 +22494,11 @@ impl LowerCtx {
             // `http.ResponseHandle`), which is harvested as an exact opaque
             // key but otherwise reached MIR as an ordinary user type.
             || (builtin.is_none()
-                && self.resolves_to_opaque_handle(&name, hew_types::short_name(&name)))
+                && self.declared_type_is_opaque(&name))
             || (builtin.is_none()
                 && self.current_module_name.is_none()
                 && !name.contains('.')
-                && self.root_opaque_type_short_names.contains(&name));
+                && self.declared_type_is_opaque(&name));
         // Checker expression facts for a flat-file-imported return type can
         // retain the root-visible bare spelling. Project it through the same
         // declaration map source annotations use before MIR observes the
@@ -23423,7 +22610,7 @@ impl LowerCtx {
             }
         } else if let Some(builtin) = self.qualified_source_builtin(&canonical) {
             Self::resolved_source_builtin_ty(&canonical, builtin, args)
-        } else if self.resolves_to_opaque_handle(&canonical, hew_types::short_name(&canonical)) {
+        } else if self.declared_type_is_opaque(&canonical) {
             ResolvedTy::named_opaque(canonical, args)
         } else {
             ResolvedTy::named_user(canonical, args)
@@ -23731,7 +22918,6 @@ impl LowerCtx {
         &self,
         impl_decl: &hew_parser::ast::ImplDecl,
         source_module: &str,
-        same_module_fn_rewrites: &HashMap<String, String>,
     ) -> HashSet<String> {
         let TypeExpr::Named {
             name: self_type_name,
@@ -23762,7 +22948,7 @@ impl LowerCtx {
                     .into_iter()
                     .any(|callee| {
                         !is_builtin_enum_variant_bare_name(&callee)
-                            && !same_module_fn_rewrites.contains_key(&callee)
+                            && self.resolved_bare_function_symbol(&callee).is_none()
                             && !self.fn_registry.contains_key(&callee)
                             && !callable_params.contains(callee.as_str())
                             && !stdlib_catalog::is_overloaded_builtin(&callee)
@@ -23846,94 +23032,74 @@ impl LowerCtx {
         ))
     }
 
-    /// Decide whether a `Named` type reference resolves to a `#[opaque]`
-    /// runtime handle, used to stamp `ResolvedTy::Named.is_opaque`.
-    ///
-    /// `full_name` is the annotation as written (qualified `json.Value` /
-    /// `m.Value`, or bare `Value`); `short_name` is its module-prefix-stripped
-    /// form. The decision is made from declared identity (the opaque sets
-    /// harvested by `collect_opaque_type_short_names`), never from a
-    /// name-collision heuristic:
-    ///
-    /// * A qualified reference (`json.Value`, `m.Value`) is opaque IFF its
-    ///   EXACT qualified name is a registered opaque key. `json.Value` is
-    ///   (it names the opaque handle); `m.Value` is NOT (it names a user
-    ///   record in module `m` that merely shares the short name). A user type
-    ///   cannot be declared `#[opaque]`, so the qualified key is unambiguous.
-    /// * A bare reference (`Value`) is opaque ONLY when its short name is
-    ///   opaque AND no non-opaque user type shares that short name. When both
-    ///   exist, the local user declaration shadows the imported opaque handle
-    ///   for an unqualified reference (matching name resolution), so the bare
-    ///   reference resolves to the user type (`is_opaque: false`).
-    fn resolves_to_opaque_handle(&self, full_name: &str, short_name: &str) -> bool {
-        let is_qualified = full_name.contains('.');
-        if is_qualified {
-            // Exact qualified-key match only: distinguishes `json.Value`
-            // (opaque) from `m.Value` (user record sharing the short name).
-            return self.opaque_type_short_names.contains(full_name);
-        }
-        // Bare reference: opaque only if the short name is opaque and no user
-        // type shadows it.
-        self.opaque_type_short_names.contains(short_name)
-            && !self.non_opaque_type_short_names.contains(short_name)
+    /// Opacity belongs to the checker declaration at this exact identity.
+    fn declared_type_is_opaque(&self, identity: &str) -> bool {
+        self.type_declarations
+            .get(identity)
+            .is_some_and(|decl| decl.is_opaque)
     }
 
-    fn type_alias_for_name(&self, name: &str) -> Option<(String, TypeAliasLowering)> {
-        if let Some(alias) = self.type_aliases.get(name) {
-            return Some((name.to_string(), alias.clone()));
+    fn type_alias_for_name(&self, name: &str) -> Option<&hew_types::TypeAliasDef> {
+        let local = self.current_module_name.as_ref().map_or_else(
+            || name.to_string(),
+            |module| {
+                if name.contains('.') {
+                    name.to_string()
+                } else {
+                    format!("{module}.{name}")
+                }
+            },
+        );
+        if let Some(declaration) = self.identity.declaration_by_path(&local) {
+            return self.type_aliases.get(declaration);
         }
-        let module = self.current_module_name.as_deref()?;
-        let qualified = format!("{module}.{name}");
-        self.type_aliases
-            .get(&qualified)
+        let canonical = self
+            .import_type_name_aliases
+            .get(&(
+                self.current_module_name.clone(),
+                self.current_module_idx,
+                name.to_string(),
+            ))
             .cloned()
-            .map(|alias| (qualified, alias))
+            .or_else(|| {
+                let (binding, tail) = name.split_once('.')?;
+                self.module_import_bindings
+                    .get(&(
+                        self.current_module_name.clone(),
+                        self.current_module_idx,
+                        binding.to_string(),
+                    ))
+                    .map(|owner| format!("{owner}.{tail}"))
+            })?;
+        let declaration = self.identity.declaration_by_path(&canonical)?;
+        self.type_aliases.get(declaration)
     }
 
-    fn lower_type_alias(
+    fn instantiate_type_alias(
         &mut self,
-        identity: String,
-        alias: TypeAliasLowering,
-        args: Vec<ResolvedTy>,
+        alias: &hew_types::TypeAliasDef,
+        args: &[ResolvedTy],
         span: &Span,
     ) -> ResolvedTy {
-        if alias.type_params.len() != args.len() {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: identity,
-                    reason: format!(
-                        "alias arity mismatch: expected {}, found {}",
-                        alias.type_params.len(),
-                        args.len()
-                    ),
-                },
-                span.clone(),
-                "type alias reached HIR with invalid type arguments",
-            ));
-            return ResolvedTy::Unit;
+        let parameters = alias.type_params.iter().cloned().collect();
+        let target = ResolvedTy::from_ty_with_type_params(&alias.target, &parameters);
+        match target {
+            Ok(target) if alias.type_params.len() == args.len() => {
+                let instantiated = substitute_type_params(&target, &alias.type_params, args);
+                self.qualify_current_module_record_ty(instantiated)
+            }
+            target => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: alias.declaration.full_path().to_string(),
+                        reason: format!("invalid resolved alias target or arity: {target:?}"),
+                    },
+                    span.clone(),
+                    "type alias reached HIR without a resolved checker contract",
+                ));
+                ResolvedTy::Unit
+            }
         }
-        if !self.resolving_type_aliases.insert(identity.clone()) {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::CheckerBoundaryViolation {
-                    name: identity.clone(),
-                    reason: "recursive type alias".to_string(),
-                },
-                span.clone(),
-                "recursive type aliases are not supported",
-            ));
-            return ResolvedTy::Unit;
-        }
-        self.type_alias_substitutions.push(
-            alias
-                .type_params
-                .into_iter()
-                .zip(args)
-                .collect::<HashMap<_, _>>(),
-        );
-        let lowered = self.lower_type(&alias.target);
-        self.type_alias_substitutions.pop();
-        self.resolving_type_aliases.remove(&identity);
-        lowered
     }
 
     #[expect(
@@ -23947,19 +23113,14 @@ impl LowerCtx {
                     .as_ref()
                     .map(|args| args.iter().map(|arg| self.lower_type(arg)).collect())
                     .unwrap_or_default();
-                if args.is_empty() {
-                    if let Some(substituted) = self
-                        .type_alias_substitutions
-                        .iter()
-                        .rev()
-                        .find_map(|scope| scope.get(name))
-                        .cloned()
-                    {
-                        return substituted;
-                    }
+                if args.is_empty() && self.current_fn_type_params.contains(name) {
+                    // Checker expression facts retain abstract binders as named
+                    // types until monomorphisation. Annotations must use the same
+                    // representation while keeping lexical binders ahead of aliases.
+                    return ResolvedTy::named_user(name.clone(), Vec::new());
                 }
-                if let Some((identity, alias)) = self.type_alias_for_name(name) {
-                    return self.lower_type_alias(identity, alias, args, &ty.1);
+                if let Some(alias) = self.type_alias_for_name(name).cloned() {
+                    return self.instantiate_type_alias(&alias, &args, &ty.1);
                 }
                 // W3.042 S2-S1: `Self` in an impl-method body annotation
                 // resolves to the concrete impl-target type. Without this
@@ -34106,79 +33267,6 @@ impl Sample for Broken {
     }
 
     #[test]
-    fn flat_file_trait_defaults_use_checker_published_owner() {
-        let parsed = hew_parser::parse(
-            r#"
-    trait Greet {
-        fn simple(self) -> i64 { 42 }
-        fn greeting(self) -> string { "hello" }
-    }
-    "#,
-        );
-        assert!(
-            parsed.errors.is_empty(),
-            "parse errors: {:#?}",
-            parsed.errors
-        );
-        let owner = hew_types::DefId::for_test("support.greeting.Greet");
-        let bindings = ["simple", "greeting"]
-            .into_iter()
-            .map(|method| {
-                (
-                    (None, 7, "Greet".to_string(), method.to_string()),
-                    (
-                        owner.clone(),
-                        hew_types::DefId::for_test(format!("{}::{method}", owner.full_path())),
-                    ),
-                )
-            })
-            .collect();
-        let file_import_module_idx = HashMap::from([(0, 7)]);
-
-        let (defaults, module_indices) =
-            collect_trait_default_methods(&parsed.program, &file_import_module_idx, &bindings);
-
-        assert!(defaults.contains_key("support.greeting.Greet"));
-        assert!(!defaults.contains_key("Greet"));
-        assert_eq!(module_indices.get("support.greeting.Greet"), Some(&7));
-    }
-
-    #[test]
-    fn root_trait_default_owner_uses_unambiguous_flat_file_binding() {
-        let mut ctx = LowerCtx::new(
-            &TypeCheckOutput::default(),
-            MONOMORPHISATION_REGISTRY_CAP,
-            TargetArch::host(),
-        );
-        let owner = hew_types::DefId::for_test("support.greeting.Greet");
-        ctx.trait_method_ids_by_binding.insert(
-            (None, 7, "Greet".to_string(), "greeting".to_string()),
-            (
-                owner.clone(),
-                hew_types::DefId::for_test("support.greeting.Greet::greeting"),
-            ),
-        );
-
-        assert_eq!(
-            ctx.trait_default_owner_key("Greet"),
-            Some(owner.full_path().to_string())
-        );
-
-        ctx.trait_method_ids_by_binding.insert(
-            (None, 8, "Greet".to_string(), "greeting".to_string()),
-            (
-                hew_types::DefId::for_test("other.greeting.Greet"),
-                hew_types::DefId::for_test("other.greeting.Greet::greeting"),
-            ),
-        );
-        assert_eq!(
-            ctx.trait_default_owner_key("Greet"),
-            None,
-            "same-leaf flat-file traits must remain ambiguous"
-        );
-    }
-
-    #[test]
     fn trait_method_identity_prefers_local_and_imported_same_leaf_traits_over_prelude_items() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
@@ -34420,19 +33508,29 @@ impl Widget {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one identity precedence matrix covers exact source, builtin and importer bindings"
+    )]
     fn imported_opaque_identity_precedes_short_builtin_fallback() {
         let mut ctx = LowerCtx::new(
             &TypeCheckOutput::default(),
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        ctx.opaque_type_short_names.extend([
-            "Receiver".to_string(),
-            "Connection".to_string(),
-            "foo.Receiver".to_string(),
-            "foo.Connection".to_string(),
-            "net.Connection".to_string(),
-        ]);
+        ctx.type_declarations.extend(
+            ["foo.Receiver", "foo.Connection", "net.Connection"]
+                .into_iter()
+                .map(|name| {
+                    (
+                        name.to_string(),
+                        hew_types::value_class::DeclaredType {
+                            is_opaque: true,
+                            ..Default::default()
+                        },
+                    )
+                }),
+        );
 
         for qualified in ["foo.Receiver", "foo.Connection", "net.Connection"] {
             assert_eq!(
@@ -34492,15 +33590,20 @@ impl Widget {
         );
 
         ctx.import_type_name_aliases.clear();
-        ctx.root_opaque_type_short_names
-            .insert("Receiver".to_string());
+        ctx.type_declarations.insert(
+            "Receiver".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             ctx.resolve_named_type_ref("Receiver", Vec::new()),
             ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
             "a flattened file-import declaration must outrank the bare builtin"
         );
 
-        ctx.root_opaque_type_short_names.clear();
+        ctx.type_declarations.remove("Receiver");
         ctx.current_module_name = Some("std.channel".to_string());
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
@@ -34516,8 +33619,13 @@ impl Widget {
         );
 
         ctx.current_module_name = Some("std.net.http".to_string());
-        ctx.opaque_type_short_names
-            .insert("http.ResponseHandle".to_string());
+        ctx.type_declarations.insert(
+            "http.ResponseHandle".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
                 "http.ResponseHandle".to_string(),
@@ -34702,9 +33810,13 @@ impl Widget {
         std_ctx
             .source_type_identities
             .insert("std.net.Connection".to_string());
-        std_ctx
-            .opaque_type_short_names
-            .insert("std.net.Connection".to_string());
+        std_ctx.type_declarations.insert(
+            "std.net.Connection".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(
             std_ctx.resolve_named_type_ref("Connection", Vec::new()),
@@ -34717,9 +33829,13 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        root_ctx
-            .opaque_type_short_names
-            .insert("std.net.Connection".to_string());
+        root_ctx.type_declarations.insert(
+            "std.net.Connection".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(
             root_ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
                 "std.net.Connection".to_string(),
@@ -34957,55 +34073,6 @@ impl Widget {
         );
     }
 
-    #[test]
-    fn nested_imported_opaque_identity_keeps_only_full_module_owner() {
-        use hew_parser::module::{Module, ModuleGraph, ModuleId};
-
-        let parsed = hew_parser::parse("#[opaque] type Handle {}");
-        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-
-        let root_id = ModuleId::root();
-        let nested_id = ModuleId::new(vec!["a".to_string(), "b".to_string()]);
-        let mut graph = ModuleGraph::new(root_id.clone());
-        graph
-            .add_module(Module {
-                id: nested_id.clone(),
-                items: parsed.program.items,
-                imports: Vec::new(),
-                source_paths: Vec::new(),
-                doc: None,
-            })
-            .unwrap();
-        graph.topo_order = vec![nested_id, root_id];
-        let program = Program {
-            module_graph: Some(graph),
-            items: Vec::new(),
-            module_doc: None,
-        };
-
-        let mut opaque = HashSet::new();
-        let mut non_opaque = HashSet::new();
-        collect_opaque_type_short_names(&program, &mut opaque, &mut non_opaque);
-
-        assert!(opaque.contains("a.b.Handle"));
-        assert!(
-            !opaque.contains("b.Handle"),
-            "a nested module leaf is not declaration authority for opaque identity"
-        );
-        assert!(opaque.contains("Handle"));
-
-        let mut ctx = LowerCtx::new(
-            &TypeCheckOutput::default(),
-            MONOMORPHISATION_REGISTRY_CAP,
-            TargetArch::host(),
-        );
-        ctx.opaque_type_short_names = opaque;
-        assert_eq!(
-            ctx.resolve_named_type_ref("a.b.Handle", Vec::new()),
-            ResolvedTy::named_opaque("a.b.Handle".to_string(), Vec::new()),
-        );
-    }
-
     fn named_type_ref(name: &str, args: Vec<Spanned<TypeExpr>>) -> Spanned<TypeExpr> {
         (
             TypeExpr::Named {
@@ -35028,8 +34095,13 @@ impl Widget {
             "Unit".to_string(),
             "CancellationToken".to_string(),
         ]);
-        ctx.root_opaque_type_short_names
-            .insert("CancellationToken".to_string());
+        ctx.type_declarations.insert(
+            "CancellationToken".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
 
         let i64_arg = || vec![named_type_ref("i64", Vec::new())];
         assert_eq!(
@@ -35052,7 +34124,7 @@ impl Widget {
         );
 
         ctx.root_visible_source_type_short_names.clear();
-        ctx.root_opaque_type_short_names.clear();
+        ctx.type_declarations.remove("CancellationToken");
         assert_eq!(
             ctx.lower_type(&named_type_ref("Unit", Vec::new())),
             ResolvedTy::Unit
@@ -35091,8 +34163,13 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        ctx.opaque_type_short_names
-            .insert("foo.CancellationToken".to_string());
+        ctx.type_declarations.insert(
+            "foo.CancellationToken".to_string(),
+            hew_types::value_class::DeclaredType {
+                is_opaque: true,
+                ..Default::default()
+            },
+        );
 
         assert_eq!(
             ctx.lower_type(&named_type_ref(
@@ -35383,7 +34460,8 @@ impl Widget {
         assert_eq!(error.message, "use of moved value `self`");
         assert_eq!(error.source_module.as_deref(), Some("std.fs"));
         // The checker now rejects the duplicate release through the branch.
-        // HIR must still refuse lifecycle authority for this malformed body.
+        // A rejected checker output supplies no declaration classification;
+        // HIR must not grant lifecycle authority to this malformed body.
         let candidate = output
             .opaque_resource_candidates
             .candidates
@@ -35391,10 +34469,6 @@ impl Widget {
             .expect("checker candidate")
             .clone();
         let lowered = lower_program(&program, &output, &ResolutionCtx, TargetArch::host());
-        assert!(lowered.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::OpaqueResourceCloseMismatch { .. }
-        )));
         assert!(
             lowered
                 .module
@@ -37327,7 +36401,13 @@ impl Widget {
         );
         for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
             let name = builtin.canonical_name();
-            ctx.opaque_type_short_names.insert(name.to_string());
+            ctx.type_declarations.insert(
+                name.to_string(),
+                hew_types::value_class::DeclaredType {
+                    is_opaque: true,
+                    ..Default::default()
+                },
+            );
             ctx.canonical_std_source_type_identities
                 .insert(name.to_string());
             let opaque = ResolvedTy::named_opaque(name, vec![]);

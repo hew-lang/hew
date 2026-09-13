@@ -562,6 +562,8 @@ pub struct TypeCheckOutput {
     /// Duplicates are harmless (the seed collector deduplicates).
     pub user_clone_record_seeds: Vec<String>,
     pub type_defs: HashMap<String, TypeDef>,
+    /// Fully expanded alias targets keyed by their source declaration.
+    pub resolved_type_aliases: HashMap<crate::DefId, TypeAliasDef>,
     /// Names of monomorphic builtin enums (e.g. `LookupError`) that were
     /// pre-registered into `type_defs` from `std/builtins.hew` for use in
     /// pattern-matching dispatch (`match Err(LookupError::NotFound) { … }`)
@@ -593,17 +595,18 @@ pub struct TypeCheckOutput {
     /// adopt the established contract. Also the `unsafe`-gating declaration
     /// index (replaces the former `unsafe_functions` side registry).
     pub extern_contracts: crate::extern_table::ExternTable,
-    /// Function signatures keyed by declaration identity.
+    /// Function signatures keyed by declaration identity. Impl methods retain
+    /// their exact `DefId` path as well as their receiver/method lookup spelling,
+    /// so trait and inherent declarations sharing a name remain distinct.
     ///
     /// Key shapes: `{module}.{name}` for source free functions — the module
     /// being the identity table's render, so a module reached under two import
     /// spellings keys one namespace — `Type::method` for methods, and bare
     /// names for compiler builtins and `extern "C"` symbols, whose namespace is
     /// the linker's rather than a module's. No source declaration is reachable
-    /// under a bare name: an import publishes a binding into the importing
-    /// file's `{module}.{name}` namespace and records the declaration it names
-    /// in `import_fn_name_aliases`, so a module sees what it declares or
-    /// imports and nothing else.
+    /// under a bare name: explicit imports publish only exact per-file bindings
+    /// in `import_fn_name_aliases`, leaving the canonical declaration signature
+    /// and ambient builtin signatures unchanged.
     pub fn_sigs: HashMap<String, FnSig>,
     /// Checker-selected target for every ordinary direct or indirect call
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
@@ -613,6 +616,10 @@ pub struct TypeCheckOutput {
     /// owner-qualified source spelling `Trait::method`. This is the sole
     /// checker-to-HIR authority for static-trait implementation indexing.
     pub trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    /// Trait declarations selected by exact lexical bindings.
+    pub trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
+    /// Default bodies retain declaration identity and their checked source scope.
+    pub trait_defaults: HashMap<crate::DefId, Vec<ResolvedTraitDefault>>,
     /// Canonical trait/method identities published through each exact source
     /// binding. The key is `(module, binding spelling, method)`; HIR uses it
     /// when an impl names an imported trait bare or through an alias, rather
@@ -1465,6 +1472,7 @@ impl Default for TypeCheckOutput {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             type_defs: HashMap::new(),
+            resolved_type_aliases: HashMap::new(),
             internal_builtin_enum_names: HashSet::new(),
             identity: crate::IdentityView::default(),
             entry_exit_plan: None,
@@ -1473,6 +1481,8 @@ impl Default for TypeCheckOutput {
             suspension_effects: super::effects::SuspensionEffects::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
+            trait_bindings: HashMap::new(),
+            trait_defaults: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),
@@ -2465,13 +2475,27 @@ pub struct TypeDef {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct TypeAliasDef {
-    pub(super) type_params: Vec<String>,
-    pub(super) target: Ty,
+pub struct TypeAliasDef {
+    pub declaration: crate::DefId,
+    pub type_params: Vec<String>,
+    pub target: Ty,
+    pub source_module: Option<String>,
+    pub file_index: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ResolvedTraitDefault {
+    pub trait_id: crate::DefId,
+    pub method_id: crate::DefId,
+    pub method: TraitMethod,
+    pub source_module: Option<String>,
+    pub file_index: u32,
 }
 
 #[derive(Debug, Clone)]
 pub(super) struct TraitInfo {
+    pub(super) source_module: Option<String>,
+    pub(super) file_index: u32,
     pub(super) methods: Vec<TraitMethod>,
     pub(super) associated_types: Vec<TraitAssociatedTypeInfo>,
     pub(super) type_params: Vec<String>,
@@ -2539,6 +2563,19 @@ pub enum ReceiverUpdate {
     Staged,
 }
 
+/// Declaration provenance retained on an impl method's resolved signature.
+/// Signatures keep return and receiver-ownership facts; this identifies the
+/// declaring method and nominal independently of lexical import spellings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplMethodProvenance {
+    pub declaration: crate::DefId,
+    /// Nominal declaration, absent for primitive receiver types.
+    pub receiver: Option<crate::DefId>,
+    pub name: String,
+    pub is_inherent: bool,
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(
     clippy::struct_excessive_bools,
@@ -2548,6 +2585,7 @@ pub enum ReceiverUpdate {
               an enum would force per-flag enum-variant matches at every read site"
 )]
 pub struct FnSig {
+    pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<String>,
     pub type_param_bounds: HashMap<String, Vec<String>>,
     pub param_names: Vec<String>,
@@ -2629,6 +2667,7 @@ pub(super) struct GenericLambdaSig {
 impl Default for FnSig {
     fn default() -> Self {
         Self {
+            impl_method: None,
             type_params: vec![],
             type_param_bounds: HashMap::new(),
             param_names: vec![],
@@ -2991,6 +3030,7 @@ pub struct Checker {
     /// Checker-owned canonical declaration ids for trait methods. Keys are
     /// owner-qualified source spellings, never linker symbols.
     pub(super) trait_method_ids: HashMap<String, (crate::DefId, crate::DefId)>,
+    pub(super) trait_bindings: HashMap<ImportBindingKey, crate::DefId>,
     /// Source-owned trait method IDs as exposed through an exact source
     /// binding. Lookup registries may retain short compatibility keys, but
     /// call targets use this full-path table and never mint identities from
@@ -4009,6 +4049,7 @@ impl Checker {
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),
             trait_method_ids: HashMap::new(),
+            trait_bindings: HashMap::new(),
             trait_method_ids_by_binding: HashMap::new(),
             impl_method_declaration_ids: HashMap::new(),
             consuming_inherent_methods: HashSet::new(),

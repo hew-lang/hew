@@ -1,0 +1,15 @@
+#[linear]
+type Transaction {
+    id: i64,
+}
+
+impl Transaction {
+    fn commit(consume self) {
+        println(self.id);
+    }
+}
+
+pub fn run() {
+    let transaction = Transaction { id: 1 };
+    transaction.commit();
+}

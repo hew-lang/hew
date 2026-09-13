@@ -1,0 +1,16 @@
+import aliases.words as words;
+
+import aliases.numbers.{Value as Number, answer};
+
+type Message {
+    names: words.Names,
+    number: Number,
+}
+
+fn main() {
+    let message = Message { names: words.names(), number: answer() };
+    let (first, second) = message.names;
+    println(first);
+    println(second);
+    println(message.number);
+}

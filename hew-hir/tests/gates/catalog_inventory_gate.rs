@@ -1,75 +1,18 @@
-//! Inventory gate: every `stdlib_catalog` builtin with a runtime symbol must
-//! appear in the `stable` section of `scripts/runtime-export-classification.toml`.
-//!
-//! This test prevents silent drift where a catalog row names a symbol that is
-//! either misspelled, removed from the runtime, or never classified.
-//!
-//! Authority: the `stable` list in `scripts/runtime-export-classification.toml`
-//! covers every `#[no_mangle] extern "C"` symbol that generated native modules may
-//! reference directly. This is a superset of `known_runtime_symbols` (which is the
-//! MIR-emitter subset). We validate against `stable` here because:
-//!
-//! - `RuntimeFfiShim`, `ToStringShim`, `StringCloneShim`, and `PrintIntercept`
-//!   entries name real C-ABI symbols the codegen will link against.
-//! - `known_runtime_symbols` is not exhaustive: for example `hew_int_to_string`
-//!   is in the catalog but not in M2. Using M2 would produce false failures for
-//!   legitimately classified symbols.
-//! - `CompilerIntrinsic` entries do not name a C-ABI symbol; they are handled
-//!   entirely inside the codegen backend (LLVM ops). They always pass.
-//!
-//! When a symbol is missing from `stable`, it either needs to be added to
-//! `scripts/runtime-export-classification.toml` or the catalog row's linkage
-//! is wrong.
+//! Every catalogue runtime endpoint must belong to the shared source-declarable
+//! export inventory, including contracts generated from stdlib declarations.
+//! Compiler intrinsics and descriptor globals are outside this function-symbol
+//! inventory. A missing endpoint indicates stale linkage or classification.
 
 use hew_hir::stdlib_catalog::{entries, BuiltinLinkage};
 use hew_types::{module_registry::ModuleRegistry, stdlib_catalog_identity, Checker, Ty};
 use std::collections::HashSet;
 
-/// Parse the `stable = [ ... ]` block from the TOML classification file using
-/// simple line-based extraction. The block format is well-defined (one quoted
-/// string per line inside `stable = [` ... `]`) and does not require a full
-/// TOML parser.
-///
-/// WHY: avoids adding a toml crate test-dep; the format has been stable since
-/// the file was introduced and is enforced by the runtime export verifier (scripts/verify-ffi-symbols.py).
-fn parse_stable_symbols() -> HashSet<String> {
-    let raw = include_str!("../../../scripts/runtime-export-classification.toml");
-    let mut inside = false;
-    let mut symbols = HashSet::new();
-
-    for line in raw.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("stable = [") {
-            inside = true;
-            continue;
-        }
-        // The stable list ends at the next `]` that
-        // closes the stable section (it's always on its own line).
-        if inside && trimmed == "]" {
-            break;
-        }
-        // A data line looks like: `  "hew_something",` or `  "hew_something"`
-        if inside {
-            if let Some(rest) = trimmed.strip_prefix('"') {
-                if let Some(sym) = rest.split('"').next() {
-                    if !sym.is_empty() {
-                        symbols.insert(sym.to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    symbols
-}
-
 #[test]
 fn catalog_runtime_symbols_are_classified() {
-    let stable = parse_stable_symbols();
+    let stable = hew_types::jit_symbols::stable_symbols();
     assert!(
         !stable.is_empty(),
-        "failed to parse any symbols from scripts/runtime-export-classification.toml — \
-         check that the file exists and the stable = [ ] block is intact"
+        "the shared source-declarable runtime inventory must not be empty"
     );
 
     let mut failures: Vec<String> = Vec::new();
@@ -104,7 +47,7 @@ fn catalog_runtime_symbols_are_classified() {
                     if !stable.contains(sym) {
                         failures.push(format!(
                             "catalog row `{}` (linkage symbol `{sym}`) is not in the \
-                             `stable` section of scripts/runtime-export-classification.toml",
+                             shared source-declarable runtime inventory",
                             entry.name,
                         ));
                     }
@@ -127,7 +70,7 @@ fn catalog_runtime_symbols_are_classified() {
         if !stable.contains(symbol) {
             failures.push(format!(
                 "catalog row `{}` (linkage symbol `{}`) is not in the \
-                 `stable` section of scripts/runtime-export-classification.toml",
+                 shared source-declarable runtime inventory",
                 entry.name, symbol
             ));
         }
@@ -137,8 +80,8 @@ fn catalog_runtime_symbols_are_classified() {
         let list = failures.join("\n  ");
         panic!(
             "{} catalog row(s) name a runtime symbol absent from the classification table:\n  {}\n\n\
-             To fix: add each missing symbol to the `stable` list in \
-             scripts/runtime-export-classification.toml, or correct the catalog linkage.",
+             To fix: classify the missing symbol in its owning declaration or export list, \
+             or correct the catalog linkage.",
             failures.len(),
             list
         );

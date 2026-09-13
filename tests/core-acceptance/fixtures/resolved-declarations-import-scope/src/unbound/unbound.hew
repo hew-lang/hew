@@ -1,0 +1,5 @@
+import "../left.hew";
+
+pub fn imported() -> string {
+    label(7)
+}

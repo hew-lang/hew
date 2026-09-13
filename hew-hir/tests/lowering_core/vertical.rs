@@ -1182,7 +1182,7 @@ fn top_level_float_consts_fold_literals_and_resolve_references() {
         "const PI: f64 = 3.14; \
          const HALF: f32 = 0.5; \
          fn add_pi(x: f64) -> f64 { return x + PI; } \
-         fn main() -> f32 { return HALF + 1.0; }",
+         fn add_half() -> f32 { return HALF + 1.0; } fn main() {}",
     );
     assert!(
         output.diagnostics.is_empty(),
@@ -1216,7 +1216,7 @@ fn top_level_float_consts_fold_literals_and_resolve_references() {
 
 #[test]
 fn top_level_negative_float_const_folds_literal() {
-    let output = lower("const NEG: f64 = -3.14; fn main() -> f64 { return NEG; }");
+    let output = lower("const NEG: f64 = -3.14; fn negative() -> f64 { return NEG; } fn main() {}");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let value = output
         .module

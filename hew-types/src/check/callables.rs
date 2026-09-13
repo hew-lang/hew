@@ -344,7 +344,7 @@ impl Checker {
 
     pub(super) fn check_callable_receiver(&mut self, ty: &Ty, callee: &Spanned<Expr>) {
         let (Ty::Function { capabilities, .. } | Ty::Closure { capabilities, .. }) =
-            self.subst.resolve(ty)
+            self.normalize_for_use(ty)
         else {
             return;
         };

@@ -9,7 +9,7 @@ def load_document(path: Path, generated: Path | None = None) -> dict:
     if generated is None:
         return document
     derived = tomllib.loads(generated.read_text(encoding="utf-8"))
-    for tier in ("non-declarable", "non-declarable-stdlib"):
+    for tier in ("stable", "stable-stdlib", "non-declarable", "non-declarable-stdlib"):
         symbols = document.get(tier, [] if tier == "non-declarable-stdlib" else None)
         if isinstance(symbols, list):
             document[tier] = symbols + derived.get(tier, [])

@@ -6,7 +6,7 @@ suites = ["acceptance"]
 timeout_seconds = 30
 
 [case.env]
-HEW_WORKERS = "4"
+HEW_WORKERS = "1"
 
 [case.expected]
 stdout = "LOSS_VISIBLE\n"

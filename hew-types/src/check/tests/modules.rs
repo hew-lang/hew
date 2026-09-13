@@ -2264,7 +2264,7 @@ mod warning_source_attribution {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         checker.trait_defs.insert(
             "fakemod.FakeTrait".to_string(),
-            Checker::trait_info_from_decl(&fake_trait),
+            Checker::trait_info_from_decl(&fake_trait, None, 0),
         );
         checker
             .trait_impls_set

@@ -348,7 +348,8 @@ fn encoding_value_reexported_signature_preserves_original_owner() {
     });
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
-        output.fn_sigs["forward"].return_type,
+        output.fn_sigs[&output.import_fn_name_aliases[&(None, 0, "forward".to_string())]]
+            .return_type,
         Ty::Named {
             name: "Vec".to_string(),
             args: vec![encoding_ty(BuiltinType::JsonValue)],

@@ -1,0 +1,16 @@
+#[resource]
+type Ticket {
+    id: i64,
+}
+
+pub fn run() {
+    let ticket = Ticket { id: 2 };
+}
+
+trait Finalize {
+    fn close(consume self);
+}
+
+impl Finalize for Ticket {
+    fn close(consume self) {}
+}

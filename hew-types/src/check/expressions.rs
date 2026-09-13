@@ -2155,11 +2155,7 @@ impl Checker {
                 }
             }
             ty
-        } else if let Some(fn_sig_key) =
-            Some(self.canonical_fn_identity(self.canonical_fn_owner(), name))
-                .filter(|key| self.fn_sigs.contains_key(key))
-                .or_else(|| self.fn_sigs.contains_key(name).then(|| name.to_string()))
-        {
+        } else if let Some(fn_sig_key) = self.visible_fn_signature_key(name) {
             // Function name used as a value (e.g., variant constructor)
             if let Some(source_identity) = self
                 .import_fn_name_aliases
@@ -8374,13 +8370,16 @@ impl Checker {
                 {
                     self.resolve_module_variant(module_short, surface_type, variant)
                         .filter(|(_, variant_def)| matches!(variant_def, VariantDef::Struct(_)))
-                        .map(|(type_def, _)| {
+                        .map(|_| {
                             self.used_modules.borrow_mut().insert(ImportKey::in_file(
                                 self.current_module.clone(),
                                 self.current_module_idx,
                                 (*module_short).to_string(),
                             ));
-                            format!("{}::{variant}", type_def.name)
+                            format!(
+                                "{}.{surface_type}::{variant}",
+                                self.canonical_module_import_owner(module_short)
+                            )
                         })
                 }
                 _ => None,

@@ -1,0 +1,22 @@
+type Finished = ();
+
+#[resource]
+type Ticket {
+    label: string,
+}
+
+impl Ticket {
+    fn close(consume self) -> Finished {
+        println(self.label);
+    }
+}
+
+fn use_ticket() {
+    let ticket = Ticket { label: "closed through alias".to_upper() };
+    println("using ticket");
+}
+
+fn main() {
+    use_ticket();
+    println("finished");
+}

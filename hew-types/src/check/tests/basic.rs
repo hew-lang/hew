@@ -423,7 +423,7 @@ fn qualified_associated_item_rejects_multiple_trait_owners() {
             _ => None,
         })
         .expect("trait fixture");
-    let info = Checker::trait_info_from_decl(trait_decl);
+    let info = Checker::trait_info_from_decl(trait_decl, None, 0);
 
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker

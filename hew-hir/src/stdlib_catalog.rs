@@ -469,7 +469,7 @@ macro_rules! tostring_entry {
     };
 }
 
-pub const CATALOG: &[BuiltinEntry] = &[
+const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
     // Class A: direct builtin calls.
     // `Vec::new()` is a compiler-lowered constructor. Codegen selects the
     // concrete runtime allocator from the checker-authoritative destination
@@ -664,124 +664,6 @@ pub const CATALOG: &[BuiltinEntry] = &[
         BuiltinTy::I64,
         BuiltinLinkage::RuntimeFfiShim {
             symbol: "vec.value.len",
-        },
-    ),
-    // Receiver-method rewrite targets for the `impl duration` methods declared
-    // in `std/builtins.hew`. The checker's `Ty::Duration` dispatch arm records a
-    // `RewriteToFunction` carrying the typed `RuntimeCallFamily::Duration*`
-    // descriptor (the canonical stdlib extern signature table admits it); HIR
-    // resolves that callee through the seeded `fn_registry`, so each runtime
-    // symbol needs a catalog row here to be resolvable. `duration` is i64-backed:
-    // the receiver is modelled as the single `I64` param so codegen's
-    // `declare_catalog_ffi` declares the extern with the real `(i64) -> ...`
-    // C ABI. `nanos`/`micros`/`millis`/`secs`/
-    // `mins`/`hours`/`abs` return `I64`; `is_zero` returns `Bool`.
-    direct(
-        "hew_duration_nanos",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_nanos",
-        },
-    ),
-    direct(
-        "hew_duration_micros",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_micros",
-        },
-    ),
-    direct(
-        "hew_duration_millis",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_millis",
-        },
-    ),
-    direct(
-        "hew_duration_secs",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_secs",
-        },
-    ),
-    direct(
-        "hew_duration_mins",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_mins",
-        },
-    ),
-    direct(
-        "hew_duration_hours",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_hours",
-        },
-    ),
-    direct(
-        "hew_duration_abs",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_abs",
-        },
-    ),
-    direct(
-        "hew_duration_is_zero",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::Bool,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_duration_is_zero",
-        },
-    ),
-    // Runtime targets for the `impl instant` methods declared in
-    // `std/builtins.hew`. `instant` is i64-backed (a nanosecond timestamp),
-    // mirroring the `hew_duration_*` rows above. `elapsed` and `duration_since`
-    // are receiver-method rewrites whose `c_symbol` HIR resolves through the
-    // seeded `fn_registry`. `hew_instant_now` carries no receiver: the static
-    // `instant::now()` callee resolves by name through the typed registry seed
-    // (`builtin_family = InstantNow`), but the symbol still needs a catalog row
-    // here so codegen declares the extern with the real `() -> i64` C ABI and
-    // resolves it to an `FnSymbol::Real` at the `Terminator::Call` boundary.
-    direct(
-        "hew_instant_now",
-        BuiltinClass::ClassB,
-        EMPTY,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_instant_now",
-        },
-    ),
-    direct(
-        "hew_instant_elapsed",
-        BuiltinClass::ClassB,
-        I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_instant_elapsed",
-        },
-    ),
-    direct(
-        "hew_instant_duration_since",
-        BuiltinClass::ClassB,
-        I64_I64,
-        BuiltinTy::I64,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_instant_duration_since",
         },
     ),
     // Class A: string predicate overloads (ABI-safe: bool return, no i32/i64 conflict).
@@ -2758,9 +2640,43 @@ pub const CATALOG: &[BuiltinEntry] = &[
     ),
 ];
 
+pub static CATALOG: std::sync::LazyLock<Vec<BuiltinEntry>> = std::sync::LazyLock::new(|| {
+    use hew_types::runtime_call::{CanonicalExternTy, DECLARED_DIRECT_RUNTIME_METHODS};
+    fn scalar(ty: CanonicalExternTy) -> BuiltinTy {
+        match ty {
+            CanonicalExternTy::I64 | CanonicalExternTy::Duration | CanonicalExternTy::Instant => {
+                BuiltinTy::I64
+            }
+            CanonicalExternTy::Bool => BuiltinTy::Bool,
+            _ => unreachable!("generated direct runtime descriptor contains unsupported scalar"),
+        }
+    }
+    let mut entries = HANDWRITTEN_CATALOG.to_vec();
+    entries.extend(DECLARED_DIRECT_RUNTIME_METHODS.iter().map(|method| {
+        // The catalogue and these parameter slices live for the process lifetime.
+        let params = method
+            .params
+            .iter()
+            .copied()
+            .map(scalar)
+            .collect::<Vec<_>>()
+            .leak();
+        direct(
+            method.row.symbol,
+            BuiltinClass::ClassB,
+            params,
+            scalar(method.signature.result),
+            BuiltinLinkage::RuntimeFfiShim {
+                symbol: method.row.symbol,
+            },
+        )
+    }));
+    entries
+});
+
 #[must_use]
 pub fn entries() -> &'static [BuiltinEntry] {
-    CATALOG
+    &CATALOG
 }
 
 #[must_use]

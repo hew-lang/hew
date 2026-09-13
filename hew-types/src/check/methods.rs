@@ -10680,6 +10680,8 @@ mod tests {
         checker.trait_defs.insert(
             "left.Render".to_string(),
             TraitInfo {
+                source_module: None,
+                file_index: 0,
                 methods: Vec::new(),
                 associated_types: Vec::new(),
                 type_params: Vec::new(),

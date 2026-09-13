@@ -695,6 +695,14 @@ impl IdentityView {
             .map(|&index| &self.declarations[index].declaration)
     }
 
+    /// Source declaration classification at an already-established canonical path.
+    #[must_use]
+    pub fn declaration_kind_by_path(&self, canonical_path: &str) -> Option<DeclarationKind> {
+        self.declarations_by_path
+            .get(canonical_path)
+            .map(|&index| self.declarations[index].occurrence.kind)
+    }
+
     #[must_use]
     pub fn nominal(&self, occurrence: DeclarationOccurrence) -> Option<NominalId> {
         self.declaration(occurrence)

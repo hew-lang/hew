@@ -3,10 +3,43 @@
 Pre-tag validation checklist for Hew releases.
 This is the concrete expansion of the `ci-full-run-pre-tag` todo.
 
+## v0.6.0-rc3 native candidate scope
+
+`v0.6.0-rc3` qualifies native compiler distributions after the SIR/MIR
+cutover. Native debug metadata (`hew build -g` and `hew debug`), compiler
+WASM emission and production WASI execution remain unavailable. The release
+notes must state these limitations and the other known gaps in the candidate.
+
+For this exact workspace version, `make test-release-workspace` runs the
+existing Rust failure ratchet. It executes the selected tests and rejects
+unrecorded failures, changed failure outcomes and invalid reports. It does
+not expand the failure ledger. Every other version uses `make test-strict`.
+The release report is `target/nextest/ci/release.xml` in either mode.
+
+Native core acceptance, C-ABI tests, ASan and executable release-library
+checks remain required. Every full-suite platform runs native acceptance;
+the emulated FreeBSD aarch64 lane retains its compiled-program smoke scope.
+The tag workflow must also pass its packaged-archive and clean-room checks
+before the binaries are considered distributed successfully.
+
+The Windows CodeView CI test remains a valid debugging check. Its documented
+failure against the unavailable debug backend does not block this native
+candidate. Review other main-CI failures against the exact candidate and its
+existing ledger; an unrelated failure is not covered by this exception.
+
+Publish the three matched npm packages through the normal immutable-tag
+workflow. Their browser analysis and educational sandbox subset have a
+separate implementation and validation scope from CLI WASI emission.
+For this candidate, omit the candidate playground image and leave the hosted
+playground version unchanged: its publication smoke requires CLI WASI.
+Other releases retain the full publication requirements unless their scope
+is explicitly revised.
+
 ## Prerequisites
 
 - [ ] All release PRs merged to `main`
-- [ ] `main` CI is green (check [Actions → CI](../../actions/workflows/ci.yml))
+- [ ] `main` CI is green, subject to the exact native candidate exception above
+      (check [Actions → CI](../../actions/workflows/ci.yml))
 - [ ] The release branch `gate-sanitizers` job is green: ASan executed and passed
 - [ ] The latest nightly TSan and Miri results have been reviewed with their documented scope limits (see Known gaps)
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
@@ -111,6 +144,9 @@ This triggers `.github/workflows/release-gate.yml`, which runs:
 **Wait for all release gate jobs to go green, including `gate-sanitizers`.**
 The sanitizer job executes ASan directly, so a missing, skipped, or red run
 fails the release gate without a separate evidence parser.
+Rust workspace jobs use `make test-release-workspace`; their green result
+means an exact ratchet match for v0.6.0-rc3 and an all-pass result for other
+versions. Report known failures separately from passing tests.
 
 ## Release dependencies and notices
 
@@ -260,6 +296,9 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/release/${release_tag}")
 2. Before creating the signed tag, publish the candidate playground image from
    the exact reviewed playground commit that introduced the candidate contract:
 
+   **Native v0.6.0-rc3 exception:** omit this step. Its compiler does not emit
+   sandbox programs, so a playground image is outside the candidate scope.
+
    ```bash
    PLAYGROUND_CONTRACT_REF=21be84bb97436436b640f2acd09fb6dd2e0fbf94
    PLAYGROUND_REF=<exact-reviewed-40-character-playground-sha>
@@ -343,12 +382,16 @@ test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/release/${release_tag}")
    `scripts/publish-release-image.sh publish` manually from that same exact clean
    playground checkout. Reconfirm the new digest and update the version-scoped
    lock before rerunning the assertion; never dispatch a mutable remote branch.
+   Omit this playground verification for the native v0.6.0-rc3 candidate.
 7. Only after both independent publication arms are green, pin the candidate and cut over the banner in
    `hew.sh` and `hew.run`.
+   For native v0.6.0-rc3, update native download information only after the
+   archive workflow and npm publication pass; leave the playground version
+   unchanged.
 8. Rebuild Android from the tagged candidate and verify its artifact.
 
-Homebrew intentionally skips prerelease tags; its optional tap update is
-separate from the required playground release image. Do not run obsolete downstream
+Homebrew's optional tap update includes prerelease tags and is separate from
+the playground release image. Do not run obsolete downstream
 vendoring commands for npm consumers until their vendoring assumptions are
 repaired or the commands are removed.
 
@@ -425,7 +468,8 @@ macOS release notes:
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
 - [ ] Verify `release.yml` downstream jobs completed:
   - Homebrew formula update (`hew-lang/homebrew-hew`)
-  - Playground compiler bump (`hew-lang/playground`)
+  - Playground image verification (`hew-lang/playground`), except for the
+    native v0.6.0-rc3 candidate
   - VS Code extension version sync (`hew-lang/vscode-hew`)
 - [ ] If any downstream job failed (e.g. missing secret), re-trigger manually after fixing.
 - [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.

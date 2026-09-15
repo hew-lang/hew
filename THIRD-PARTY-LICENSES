@@ -5828,7 +5828,7 @@ Apache License 2.0
   * rustc_version 0.4.1 — https://github.com/djc/rustc-version-rs
   * rustix 1.1.4 — https://github.com/bytecodealliance/rustix
   * rustls-native-certs 0.8.3 — https://github.com/rustls/rustls-native-certs
-  * rustls 0.23.40 — https://github.com/rustls/rustls
+  * rustls 0.23.45 — https://github.com/rustls/rustls
   * rusty-fork 0.3.1 — https://github.com/altsysrq/rusty-fork
   * scopeguard 1.2.0 — https://github.com/bluss/scopeguard
   * security-framework-sys 2.17.0 — https://github.com/kornelski/rust-security-framework
@@ -8413,7 +8413,7 @@ Apache License 2.0
   * anes 0.1.6 — https://github.com/zrzka/anes-rs
   * anyhow 1.0.102 — https://github.com/dtolnay/anyhow
   * async-trait 0.1.89 — https://github.com/dtolnay/async-trait
-  * aws-lc-sys 0.40.0 — https://github.com/aws/aws-lc-rs
+  * aws-lc-sys 0.45.0 — https://github.com/aws/aws-lc-rs
   * cesu8 1.1.0 — https://github.com/emk/cesu8-rs
   * cron 0.16.0 — https://github.com/zslayton/cron
   * dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
@@ -8874,7 +8874,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
 BSD 3-Clause "New" or "Revised" License
-  * aws-lc-sys 0.40.0 — https://github.com/aws/aws-lc-rs
+  * aws-lc-sys 0.45.0 — https://github.com/aws/aws-lc-rs
   * curve25519-dalek 4.1.3 — https://github.com/dalek-cryptography/curve25519-dalek/tree/main/curve25519-dalek
 
 Copyright (c) <year> <owner>. 
@@ -9284,7 +9284,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 ================================================================================
 ISC License
-  * rustls-webpki 0.103.13 — https://github.com/rustls/webpki
+  * rustls-webpki 0.103.15 — https://github.com/rustls/webpki
 
 Except as otherwise noted, this project is licensed under the following
 (ISC-style) terms:
@@ -9309,8 +9309,8 @@ third-party/chromium/LICENSE.
 
 ================================================================================
 ISC License
-  * aws-lc-rs 1.16.3 — https://github.com/aws/aws-lc-rs
-  * aws-lc-sys 0.40.0 — https://github.com/aws/aws-lc-rs
+  * aws-lc-rs 1.18.1 — https://github.com/aws/aws-lc-rs
+  * aws-lc-sys 0.45.0 — https://github.com/aws/aws-lc-rs
 
 ISC License:
 
@@ -11092,7 +11092,7 @@ SOFTWARE.
 
 ================================================================================
 MIT License
-  * aws-lc-sys 0.40.0 — https://github.com/aws/aws-lc-rs
+  * aws-lc-sys 0.45.0 — https://github.com/aws/aws-lc-rs
 
 The MIT License (MIT)
 

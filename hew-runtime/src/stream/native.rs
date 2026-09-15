@@ -309,6 +309,26 @@ pub(super) fn blocking_tcp_write(connection: i32, content: &[u8]) {
 }
 
 #[cfg(test)]
+pub(super) struct TestReactor;
+
+#[cfg(test)]
+impl TestReactor {
+    pub(super) fn new() -> Self {
+        // The worker-less runtime test guard does not run scheduler startup,
+        // which reopens admission after an earlier runtime's shutdown.
+        crate::reactor::reset_listener_admission();
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for TestReactor {
+    fn drop(&mut self) {
+        crate::reactor::reactor_shutdown();
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -488,7 +508,15 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let mut peer = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
         let (socket, _) = listener.accept().unwrap();
-        let stream = super::super::into_stream_ptr(super::super::TcpStreamBacking::new(socket));
+        // SAFETY: the fresh stream transfers its sole allocation to this test.
+        let mut stream = unsafe {
+            Box::from_raw(super::super::into_stream_ptr(
+                super::super::TcpStreamBacking::new(socket),
+            ))
+        };
+        // Join readiness work before the stream loan or runtime can be dropped,
+        // including when an assertion unwinds this test.
+        let _reactor = TestReactor::new();
         let (signal, notifications) = mpsc::channel();
         let signal = Arc::new(signal);
         let wake = waker(&signal);
@@ -500,19 +528,26 @@ mod tests {
         // SAFETY: every receive exclusively borrows the same live stream until
         // its readiness registration is detached and its producer drains.
         unsafe {
-            let abandoned =
-                hew_stream_read_start_native(stream, &raw const wake, &raw const layout);
-            assert_eq!(hew_stream_read_poll_native(abandoned), 0);
-            hew_stream_cancel_native(abandoned);
-            while hew_stream_cleanup_status_native(abandoned, &raw const wake) == 0 {
+            let mut abandoned = Box::from_raw(hew_stream_read_start_native(
+                &raw mut *stream,
+                &raw const wake,
+                &raw const layout,
+            ));
+            assert_eq!(hew_stream_read_poll_native(&raw mut *abandoned), 0);
+            hew_stream_cancel_native(&raw mut *abandoned);
+            while hew_stream_cleanup_status_native(&raw mut *abandoned, &raw const wake) == 0 {
                 notifications.recv_timeout(Duration::from_secs(5)).unwrap();
             }
-            hew_stream_operation_free_native(abandoned);
+            drop(abandoned);
 
-            let next = hew_stream_read_start_native(stream, &raw const wake, &raw const layout);
+            let mut next = Box::from_raw(hew_stream_read_start_native(
+                &raw mut *stream,
+                &raw const wake,
+                &raw const layout,
+            ));
             peer.write_all(&[0]).unwrap();
             loop {
-                match hew_stream_read_poll_native(next) {
+                match hew_stream_read_poll_native(&raw mut *next) {
                     0 => {
                         notifications.recv_timeout(Duration::from_secs(5)).unwrap();
                     }
@@ -520,18 +555,17 @@ mod tests {
                     status => panic!("live socket was invalidated by cancellation: {status}"),
                 }
             }
-            while hew_stream_cleanup_status_native(next, &raw const wake) == 0 {
+            while hew_stream_cleanup_status_native(&raw mut *next, &raw const wake) == 0 {
                 notifications.recv_timeout(Duration::from_secs(5)).unwrap();
             }
             let mut output: *mut hew_cabi::string::HewString = std::ptr::null_mut();
             assert_eq!(
-                hew_stream_read_take_native(next, (&raw mut output).cast()),
+                hew_stream_read_take_native(&raw mut *next, (&raw mut output).cast()),
                 1
             );
-            assert_eq!(hew_cabi::string::string_as_bytes(output), &[0]);
+            let bytes = hew_cabi::string::string_as_bytes(output).to_vec();
             hew_cabi::string::string_release(output);
-            hew_stream_operation_free_native(next);
-            drop(Box::from_raw(stream));
+            assert_eq!(bytes, &[0]);
         }
     }
 }

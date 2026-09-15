@@ -2,33 +2,60 @@
 
 ## [Unreleased]
 
-The native core and current source surface target v0.6.0. Refer to the
-[language specification](docs/specs/HEW-SPEC-2026.md) and
-[guide](docs/hew-language-guide.md) for current spellings; release entries
-below describe the source and interfaces of their own releases.
+## [0.6.0-rc3] - 2026-09-14
+
+This native-focused candidate replaces the compiler core and expands value,
+resource and concurrency support. See the [release notes](docs/releases/v0.6.0-rc3.md)
+for migration guidance and known limitations.
 
 ### Changed
 
-- **`panic()` in main context unwinds with cleanup.** A panic outside an actor
-  now runs the same drop obligations and `#[resource]` closes as a panic inside
-  one, instead of ending the process with them skipped. An unrecovered native
-  fault reports a typed failure on stderr and exits 1; an explicit non-zero
-  main result is preserved. Explicit `exit(code)` terminates without scope
-  cleanup.
+- Native compilation now uses ownership SIR and physical MIR before LLVM
+  emission. The previous native lowering implementation has been removed.
+- Nested aggregates, fixed arrays, closures, trait objects, resources and
+  linear values compose through explicit ownership and cleanup operations.
+  Nested collection updates preserve value semantics.
+- Tasks, generators, actor calls and native I/O participate in structured
+  cleanup. Native main-context panics unwind through cleanup before exit.
+- Strings preserve UTF-8 and embedded NUL contents, with codepoint operations
+  and explicit fallible or lossy byte decoding.
+- Native C interop carries ownership contracts for arguments, results and
+  opaque resources. Rebuild integrations against the matching rc3 toolchain.
 
-- **Calls wait; `fork` starts concurrent work.** An ordinary actor call waits
-  for handler completion, including a handler with no return value. Use a
-  `mailbox(...)` view for one-way submission and `policy(...)` to choose
-  admission behaviour for completion calls. `await` joins a task or a vector
-  of tasks. Actor streams use ordinary `for`, and task scopes may produce values.
+### Added
+
+- Typed actor completion and rejected-request recovery; mailbox and policy
+  views; actor-call selection; restart-aware supervision and shutdown observers.
+- Machine step reports, typed outputs, generic and constant parameters,
+  entry/exit hooks and one level of composite states.
+- Automatic JSON/YAML value cleanup, expanded numeric operations and seeded
+  random generators.
+- `hew new`, build output under `target/<profile>`, consistent `-o` handling,
+  clearer command help and stricter package configuration diagnostics.
 
 ### Changed (breaking)
 
-- **Supervised actors use `ChildRef<T>` handles.** Named child and static-pool
-  accessors no longer return `LocalPid<T>`. A `ChildRef<T>` carries its
-  supervisor identity and child slot, so asks and tells re-resolve the current
-  incarnation after restarts and fail closed while the role is unavailable or
-  permanently stopped.
+- Records use `type`; structural members use commas; enum variants use dotted
+  forms, and matches must be exhaustive.
+- Actor handle types use the actor name instead of `Pid<T>` or `LocalPid<T>`.
+  Supervised child handles use `ChildRef<T>`.
+- Ordinary actor calls wait for completion and return a result. Use `fork`
+  for concurrent work, `await` for tasks and mailbox views for submission.
+  The former send, join, actor-await and timeout-combinator forms are removed.
+- Fallible library calls use bare names returning `Result`; `expect(reason)`
+  replaces parameterless `unwrap()`. Environment lookup returns `Option`.
+- Resource cleanup uses `close(consume self)` returning unit; callable types
+  carry explicit capabilities and mutable captures use `capture(var ...)`.
+- Bytes require explicit UTF-8 decoding; optional wire fields require
+  `Option<T>`; `Vec.get` requires a copyable element.
+
+### Known limitations
+
+- WebAssembly emission and native source-level debug metadata are not yet
+  implemented on the new compiler path. Some distributed, resource, generator
+  and shutdown combinations remain recorded expected failures.
+- Native mailbox coalescing, supervisor sibling wiring and stream-read
+  selection remain unsupported. See the release notes for the candidate scope.
 
 ## [0.6.0-rc2] - 2026-08-24
 

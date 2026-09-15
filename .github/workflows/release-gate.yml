@@ -10,7 +10,9 @@
 #
 # Coverage vs. ci.yml:
 #   - Builds ALL release artifacts (hew-cli, hew-lsp, hew-observe, hew-lib)
-#   - Runs full Rust workspace tests (matching ci.yml scope)
+#   - Runs Rust workspace tests against the candidate policy in Make
+#     (v0.6.0-rc3 uses the existing failure ratchet; other versions are strict)
+#   - Requires native acceptance, C-ABI tests and sanitizer execution
 #   - Smoke-tests the compile+run pipeline with a trivial .hew program
 #
 # NOT covered here (run separately before tagging):
@@ -208,7 +210,7 @@ jobs:
         # and nothing in CI reads it.
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
-        run: make test-strict
+        run: make test-release-workspace
 
       - name: Run C-ABI crate tests
         run: make test-cabi
@@ -254,7 +256,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
+          report_paths: "{target/nextest/ci/release.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
           check_name: Release Gate Test Results (Linux x86_64)
           fail_on_failure: true
           fail_on_parse_error: true
@@ -357,16 +359,19 @@ jobs:
         # (child helper exits 101); they pass natively on arm64 Linux
         # (container repro) and on every other platform. Runner-environment
         # classification — excluded here, tracked for investigation.
-        run: make test-strict
+        run: make test-release-workspace
 
       - name: Run C-ABI crate tests
         run: make test-cabi
+
+      - name: Run native acceptance
+        run: make core-acceptance
 
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
+          report_paths: "{target/nextest/ci/release.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (Linux aarch64)
           fail_on_failure: true
           fail_on_parse_error: true
@@ -467,16 +472,19 @@ jobs:
         # their memory coverage is the Linux ASan job; exclude them here.
         env:
           NEXTEST_WORKSPACE_FILTER: "not binary(~oracle)"
-        run: make test-strict
+        run: make test-release-workspace
 
       - name: Run C-ABI crate tests
         run: make test-cabi
+
+      - name: Run native acceptance
+        run: make core-acceptance
 
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
+          report_paths: "{target/nextest/ci/release.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
           fail_on_failure: true
           fail_on_parse_error: true
@@ -566,18 +574,22 @@ jobs:
 
       - name: Run Rust workspace tests
         shell: bash
-        run: make SHELL=bash test-strict
+        run: make SHELL=bash test-release-workspace
 
       - name: Run C-ABI crate tests
         # Standalone because the workspace run above must exclude hew-cabi.
         shell: bash
         run: make SHELL=bash test-cabi
 
+      - name: Run native acceptance
+        shell: bash
+        run: make SHELL=bash core-acceptance
+
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
+          report_paths: "{target/nextest/ci/release.xml,target/nextest/ci-cabi/junit.xml}"
           check_name: Release Gate Test Results (Windows x86_64)
           fail_on_failure: true
           fail_on_parse_error: true
@@ -680,7 +692,7 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
 
-            gmake test-strict
+            gmake test-release-workspace
 
             # hew-cabi is excluded from the workspace run above because its
             # cfg(test) runtime stubs collide with hew-runtime's real symbols
@@ -702,7 +714,7 @@ jobs:
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
-          report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
+          report_paths: "{target/nextest/ci/release.xml,target/nextest/ci-cabi/junit.xml,target/hew-test-reports/hew-suite-ratchet.xml}"
           check_name: Release Gate Test Results (FreeBSD x86_64)
           fail_on_failure: true
           fail_on_parse_error: true

@@ -2,7 +2,7 @@
 
 ## [Unreleased]
 
-## [0.6.0-rc3] - 2026-09-14
+## [0.6.0-rc3] - 2026-09-16
 
 This native-focused candidate replaces the compiler core and expands value,
 resource and concurrency support. See the [release notes](docs/releases/v0.6.0-rc3.md)

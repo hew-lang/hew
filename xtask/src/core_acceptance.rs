@@ -1333,6 +1333,12 @@ struct ActualSpan {
 /// diagnostic means: a `check` case proves the exact set and fails on one, a
 /// `reject` case proves only that the named diagnostics are reported and
 /// ignores the rest.
+/// Expected provenance is written with `/`, and a manifest's path suffix must
+/// match the same file on Windows, where the compiler reports `\\`.
+fn with_forward_slashes(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 fn diagnostics_match(
     expected: &[ExpectedDiagnostic],
     actual: &[ActualDiagnostic],
@@ -1354,10 +1360,9 @@ fn diagnostics_match(
                     None => true,
                 }
                 && match &want.file {
-                    Some(suffix) => got
-                        .file
-                        .as_deref()
-                        .is_some_and(|file| file.ends_with(suffix.as_str())),
+                    Some(suffix) => got.file.as_deref().is_some_and(|file| {
+                        with_forward_slashes(file).ends_with(&with_forward_slashes(suffix))
+                    }),
                     None => true,
                 }
         });
@@ -2306,6 +2311,38 @@ mod tests {
         let error = diagnostics_match(&expected, &actual, true)
             .expect_err("a diagnostic reported against another file must fail the case");
         assert!(error.contains("cases/token.hew"));
+    }
+
+    /// Windows reports provenance as an extended-length path with `\`
+    /// separators; the manifest's `/` suffix names the same file.
+    #[test]
+    fn diagnostics_match_accepts_a_windows_reported_path() {
+        let actual = vec![ActualDiagnostic {
+            code: "ResourceBoundaryParamMustConsume".to_string(),
+            severity: "error".to_string(),
+            span: ActualSpan {
+                start_line: 13,
+                start_col: 5,
+            },
+            message: "must pin its disposition".to_string(),
+            file: Some(r"\\?\D:\checkout\fixtures\provenance\token.hew".to_string()),
+        }];
+        let expected = vec![ExpectedDiagnostic {
+            code: "ResourceBoundaryParamMustConsume".to_string(),
+            line: 13,
+            column: 5,
+            severity: None,
+            message: None,
+            file: Some("provenance/token.hew".to_string()),
+        }];
+        assert!(diagnostics_match(&expected, &actual, true).is_ok());
+
+        let other_file = vec![ExpectedDiagnostic {
+            file: Some("provenance/handle.hew".to_string()),
+            ..expected[0].clone()
+        }];
+        diagnostics_match(&other_file, &actual, true)
+            .expect_err("another file under the same directory must still fail");
     }
 
     #[test]

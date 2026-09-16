@@ -294,14 +294,22 @@ The publication sequence is a fail-closed dependency graph. Do not advance
 past a failed or missing result; items grouped in braces may run independently,
 but every arm must succeed before the graph rejoins:
 
-All identities below are derived from the checked-out candidate:
+The candidate is tagged on `main`, after its release PR merges, so that the
+tag is reachable from `main` and `git describe` resolves for every later
+commit. Merge the release PR with a merge commit rather than a squash: the
+commit the cross-platform gate verified must remain an ancestor of the tag,
+which a squash does not preserve. This is what `v0.6.0-rc2` did.
+
+All identities below are derived from the checked-out candidate, on `main`
+after the merge:
 
 ```bash
 release_version="$(scripts/workspace-version.py)"
 release_tag="v${release_version}"
 release_sha="$(git rev-parse HEAD)"
 test "$(git status --porcelain)" = ""
-test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/release/${release_tag}")"
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+git merge-base --is-ancestor "origin/release/${release_tag}" HEAD
 ```
 
 1. Confirm every release bar and the final-candidate checklist are green on

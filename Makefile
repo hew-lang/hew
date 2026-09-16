@@ -566,6 +566,11 @@ wasm-runtime: wasm-runtime-debug
 wasm: ## Build: build the browser WebAssembly package
 	wasm-pack build hew-wasm --target web --release
 
+.PHONY: npm-packages
+npm-packages: ## Release: build, stage and execute the three npm packages together
+	node "$(MAKEFILE_ROOT)/scripts/build-npm-packages.mjs"
+	node "$(MAKEFILE_ROOT)/scripts/smoke-npm-packages.mjs"
+
 # Regenerate the typed WASM capability consumers.
 wasm-capability:
 	cargo run -p hew-capability-gen

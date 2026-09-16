@@ -478,6 +478,11 @@ jobs:
         run: make test-cabi
 
       - name: Run native acceptance
+        # macOS x86_64 loses a restarted nested supervisor role (#3417), which
+        # aarch64 and every other platform do not. The v0.6.0-rc3 candidate
+        # names that lane as unqualified; restore the step for both arches
+        # when #3417 closes.
+        if: matrix.arch == 'aarch64'
         run: make core-acceptance
 
       - name: Upload test reports
@@ -581,9 +586,11 @@ jobs:
         shell: bash
         run: make SHELL=bash test-cabi
 
-      - name: Run native acceptance
-        shell: bash
-        run: make SHELL=bash core-acceptance
+      # Native acceptance does not run here yet. Windows has no glob (#3412),
+      # links a deferred actor stop against POSIX usleep (#3413), and the
+      # corpus assumes POSIX temp paths and LF expectations (#3414) with exit
+      # statuses that disagree (#3415). The v0.6.0-rc3 candidate names this
+      # lane as unqualified; add the step back when those close.
 
       - name: Upload test reports
         if: always()

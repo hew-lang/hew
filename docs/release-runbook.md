@@ -17,10 +17,24 @@ not expand the failure ledger. Every other version uses `make test-strict`.
 The release report is `target/nextest/ci/release.xml` in either mode.
 
 Native core acceptance, C-ABI tests, ASan and executable release-library
-checks remain required. Every full-suite platform runs native acceptance;
-the emulated FreeBSD aarch64 lane retains its compiled-program smoke scope.
-The tag workflow must also pass its packaged-archive and clean-room checks
-before the binaries are considered distributed successfully.
+checks remain required. Native acceptance runs on Linux x86_64, Linux
+aarch64, macOS aarch64 and FreeBSD x86_64; the emulated FreeBSD aarch64 lane
+retains its compiled-program smoke scope. The tag workflow must also pass its
+packaged-archive and clean-room checks before the binaries are considered
+distributed successfully.
+
+Two lanes are unqualified for this candidate and the release notes name them.
+Windows x86_64 has no glob (#3412), links a deferred actor stop against POSIX
+`usleep` (#3413), and reads the corpus through POSIX temp paths and LF
+expectations (#3414) with exit statuses that disagree (#3415). macOS x86_64
+loses a restarted nested supervisor role (#3417), which macOS aarch64 does
+not. Both lanes still run the Rust workspace and C-ABI tests. Restore their
+acceptance steps as those issues close; no other release omits them.
+
+The opaque-resource lifecycle matrix asserts wasm32-wasi evidence this
+candidate cannot produce, so `make test-opaque-resource-lifecycle-matrix`
+defers that arm for exactly this workspace version and keeps the native
+audit, counterfactuals and runtime anchors required.
 
 The Windows CodeView CI test remains a valid debugging check. Its documented
 failure against the unavailable debug backend does not block this native

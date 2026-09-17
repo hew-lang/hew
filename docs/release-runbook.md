@@ -28,8 +28,11 @@ Windows x86_64 has no glob (#3412), links a deferred actor stop against POSIX
 `usleep` (#3413), and reads the corpus through POSIX temp paths and LF
 expectations (#3414) with exit statuses that disagree (#3415). A restarted nested
 supervisor role can be unreachable under load on every platform (#3417,
-#3419); the macOS lanes surface it because those hosts are slowest. Both
-lanes still run the Rust workspace and C-ABI tests. Restore their
+#3419); the macOS lanes surface it because those hosts are slowest, so
+neither macOS arch runs native acceptance for this candidate. Every excluded
+lane still runs the Rust workspace and C-ABI tests. The exclusion is a whole
+step because the ledger cannot scope a row to a platform (#3421), so it costs
+the other 2078 passing cases on those hosts. Restore their
 acceptance steps as those issues close; no other release omits them.
 
 The opaque-resource lifecycle matrix asserts wasm32-wasi evidence this

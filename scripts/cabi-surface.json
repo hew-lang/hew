@@ -12262,6 +12262,19 @@
       "availability": [
         "native"
       ],
+      "classification": "unclassified-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_process_exit_byte( i32) -> i32"
+      },
+      "symbol": "hew_process_exit_byte"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

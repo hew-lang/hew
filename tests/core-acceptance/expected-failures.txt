@@ -1,10 +1,14 @@
 # expected-failures.txt — the one expected-failure ledger for the core
 # acceptance runner (`make core-acceptance`).
 #
-# One case id per row, with an issue or a one-line reason after `#`. The
-# runner refuses a row naming a case that no longer exists and refuses a
-# row naming a case that now passes: ratchets only shrink. A case that
-# fails without a row is red.
+# One row per case per platform: `<platforms>\t<id>  # <reason>`, where
+# <platforms> is a comma-separated list of linux, macos, windows, freebsd (a
+# row that applies everywhere spells all four; there is no wildcard). The
+# runner applies a row only on its named platforms, refuses a row naming a
+# case that no longer exists, refuses two rows selecting the same case on
+# the same platform, and refuses a row naming a case that now passes on that
+# platform: ratchets only shrink. A case that fails without a matching row
+# is red.
 #
 # A doc fence's id is <prefix>-<cksum of the fence's own text>, so editing
 # an unrelated fence never relabels the ones around it and a fence whose
@@ -15,3 +19,6 @@
 # ── Remaining migrated execution defects ──────────────────────────────
 # These programs assert the documented behaviour; current native execution
 # still disagrees. Source repairs removed old ABI and shared-mutation probes.
+
+# ── Platform-specific defects ───────────────────────────────────────────
+windows	tcp_write_backpressure  # 3436 a full send-buffer write does not yet report backpressure on Windows

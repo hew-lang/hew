@@ -223,7 +223,7 @@ pub(crate) fn run(args: &[String]) -> Result<()> {
     let mut manifest = load_manifest(&root)?;
     expand_doc_cases(&mut manifest, &root, run_dir.path())?;
     validate_manifest(&manifest, &root)?;
-    let ratchet = load_expected_failures(&root, &manifest)?;
+    let ratchet = load_expected_failures(&root, &manifest, current_platform())?;
     let selected = select_cases(&manifest, &options.suite, &options.cases, &options.kinds)?;
     let fingerprint = compiler_fingerprint(&options.hew_bin)?;
     let instrumentation_request = if options.suite == "safety" {
@@ -359,13 +359,35 @@ fn classify<'a>(verdicts: &[(&'a str, bool)], ratchet: &BTreeMap<String, String>
 
 const EXPECTED_FAILURES_PATH: &str = "tests/core-acceptance/expected-failures.txt";
 
-/// The one expected-failure ledger for the acceptance runner: a case id per
-/// row, with an issue or a one-line reason after `#`.
+/// The platform names the ledger and the runner both spell, matching
+/// `std::env::consts::OS` on every supported host.
+const PLATFORMS: [&str; 4] = ["linux", "macos", "windows", "freebsd"];
+
+/// The host this run is measuring, in ledger spelling.
+fn current_platform() -> &'static str {
+    let os = std::env::consts::OS;
+    PLATFORMS
+        .iter()
+        .find(|&&name| name == os)
+        .copied()
+        .unwrap_or_else(|| panic!("unsupported core-acceptance host platform {os:?}"))
+}
+
+/// The one expected-failure ledger for the acceptance runner: a row is
+/// `<platforms>\t<id>  # <reason>`, where `<platforms>` is a comma-separated
+/// list drawn from [`PLATFORMS`] (a row that applies everywhere spells all
+/// four; there is no wildcard). Only rows naming `platform` are returned.
 ///
 /// A row naming a case that no longer exists is refused here rather than
 /// silently ignored — a renamed or deleted case must take its row with it,
-/// otherwise the ledger accumulates rows that can never be retired.
-fn load_expected_failures(root: &Path, manifest: &Manifest) -> Result<BTreeMap<String, String>> {
+/// otherwise the ledger accumulates rows that can never be retired. Two rows
+/// selecting the same case for the same platform are refused as an overlap,
+/// the same rule the nextest ratchet enforces.
+fn load_expected_failures(
+    root: &Path,
+    manifest: &Manifest,
+    platform: &str,
+) -> Result<BTreeMap<String, String>> {
     let path = root.join(EXPECTED_FAILURES_PATH);
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -375,14 +397,39 @@ fn load_expected_failures(root: &Path, manifest: &Manifest) -> Result<BTreeMap<S
     let ids: std::collections::BTreeSet<&str> =
         manifest.cases.iter().map(|case| case.id.as_str()).collect();
     let mut rows = BTreeMap::new();
+    let mut seen: std::collections::BTreeSet<(&str, String)> = std::collections::BTreeSet::new();
     for (number, line) in contents.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
-        let (id, reason) = match line.split_once('#') {
+        let (platforms_field, rest) = line.split_once('\t').ok_or_else(|| {
+            format!(
+                "{}:{}: row has no platform column; prefix it with a comma-separated \
+                 platform list and a tab",
+                path.display(),
+                number + 1
+            )
+        })?;
+        let platforms: Vec<&str> = platforms_field.split(',').collect();
+        if platforms.iter().any(|item| item.is_empty()) {
+            return Err(format!(
+                "{}:{}: row has an empty platform",
+                path.display(),
+                number + 1
+            ));
+        }
+        if let Some(unknown) = platforms.iter().find(|item| !PLATFORMS.contains(item)) {
+            return Err(format!(
+                "{}:{}: unknown platform {unknown:?}; use one of {PLATFORMS:?} (no wildcard)",
+                path.display(),
+                number + 1
+            ));
+        }
+        let rest = rest.trim();
+        let (id, reason) = match rest.split_once('#') {
             Some((id, reason)) => (id.trim(), reason.trim()),
-            None => (line, ""),
+            None => (rest, ""),
         };
         if reason.is_empty() {
             return Err(format!(
@@ -398,12 +445,17 @@ fn load_expected_failures(root: &Path, manifest: &Manifest) -> Result<BTreeMap<S
                 number + 1
             ));
         }
-        if rows.insert(id.to_string(), reason.to_string()).is_some() {
-            return Err(format!(
-                "{}:{}: duplicate row for {id}",
-                path.display(),
-                number + 1
-            ));
+        for &candidate in &PLATFORMS {
+            if platforms.contains(&candidate) && !seen.insert((candidate, id.to_string())) {
+                return Err(format!(
+                    "{}:{}: {id} is already selected for {candidate}",
+                    path.display(),
+                    number + 1
+                ));
+            }
+        }
+        if platforms.contains(&platform) {
+            rows.insert(id.to_string(), reason.to_string());
         }
     }
     Ok(rows)
@@ -2097,25 +2149,84 @@ mod tests {
 
     #[test]
     fn a_row_naming_no_case_is_refused_rather_than_ignored() {
-        let directory = ledger_root("ghost  # issue #1\n");
-        let error = load_expected_failures(directory.path(), &manifest())
+        let directory = ledger_root("linux,macos,windows,freebsd\tghost  # issue #1\n");
+        let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("a row for a case that no longer exists must be refused");
         assert!(error.contains("is not a core-acceptance case"), "{error}");
     }
 
     #[test]
     fn a_row_without_a_reason_is_refused() {
-        let directory = ledger_root("acceptance-case\n");
-        let error = load_expected_failures(directory.path(), &manifest())
+        let directory = ledger_root("linux,macos,windows,freebsd\tacceptance-case\n");
+        let error = load_expected_failures(directory.path(), &manifest(), "linux")
             .expect_err("a row with no reason must be refused");
         assert!(error.contains("has no reason"), "{error}");
     }
 
     #[test]
+    fn a_row_without_a_platform_column_is_refused() {
+        let directory = ledger_root("acceptance-case  # issue #3001\n");
+        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+            .expect_err("a row with no platform column must be refused");
+        assert!(error.contains("no platform column"), "{error}");
+    }
+
+    #[test]
+    fn a_row_with_an_unknown_platform_is_refused() {
+        let directory = ledger_root("solaris\tacceptance-case  # issue #3001\n");
+        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+            .expect_err("an unknown platform must be refused");
+        assert!(error.contains("unknown platform"), "{error}");
+    }
+
+    #[test]
+    fn a_row_with_a_wildcard_platform_is_refused() {
+        let directory = ledger_root("*\tacceptance-case  # issue #3001\n");
+        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+            .expect_err("core-acceptance has no wildcard platform");
+        assert!(error.contains("unknown platform"), "{error}");
+    }
+
+    #[test]
     fn a_ledger_row_is_read_with_its_reason() {
-        let directory = ledger_root("# a comment\n\nacceptance-case  # issue #3001\n");
-        let rows = load_expected_failures(directory.path(), &manifest()).unwrap();
+        let directory = ledger_root(
+            "# a comment\n\nlinux,macos,windows,freebsd\tacceptance-case  # issue #3001\n",
+        );
+        let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
         assert_eq!(rows["acceptance-case"], "issue #3001");
+    }
+
+    #[test]
+    fn a_row_applies_only_on_its_named_platforms() {
+        let directory = ledger_root("windows\tacceptance-case  # issue #3436\n");
+        let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        assert_eq!(windows["acceptance-case"], "issue #3436");
+        let linux = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
+        assert!(
+            linux.is_empty(),
+            "row must not apply on an unnamed platform"
+        );
+    }
+
+    #[test]
+    fn two_rows_selecting_the_same_case_and_platform_are_refused_as_overlap() {
+        let directory = ledger_root(
+            "windows,freebsd\tacceptance-case  # issue #1\nfreebsd\tacceptance-case  # issue #2\n",
+        );
+        let error = load_expected_failures(directory.path(), &manifest(), "freebsd")
+            .expect_err("overlapping platform selection for one case must be refused");
+        assert!(error.contains("already selected for freebsd"), "{error}");
+    }
+
+    #[test]
+    fn two_rows_selecting_the_same_case_on_disjoint_platforms_are_both_kept() {
+        let directory = ledger_root(
+            "windows\tacceptance-case  # issue #1\nfreebsd\tacceptance-case  # issue #2\n",
+        );
+        let windows = load_expected_failures(directory.path(), &manifest(), "windows").unwrap();
+        assert_eq!(windows["acceptance-case"], "issue #1");
+        let freebsd = load_expected_failures(directory.path(), &manifest(), "freebsd").unwrap();
+        assert_eq!(freebsd["acceptance-case"], "issue #2");
     }
 
     // -----------------------------------------------------------------

@@ -53,12 +53,6 @@ fn native_defer_abi_child() {
             hew_runtime::print::hew_print_value as *const () as usize,
         );
     }
-    if let Some(exit_byte) = llvm.get_function("hew_process_exit_byte") {
-        engine.add_global_mapping(
-            &exit_byte,
-            hew_runtime::exit_status::hew_process_exit_byte as *const () as usize,
-        );
-    }
     let newer = match case.as_str() {
         "nested-empty" => "",
         "nested-nul" => "nested\0é 🦀",

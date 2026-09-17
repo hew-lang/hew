@@ -287,6 +287,7 @@ fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
         fault::hew_fault_combine,
         fault::hew_fault_drop,
         fault::hew_fault_report,
+        exit_status::hew_process_exit_byte,
     );
     engine
 }

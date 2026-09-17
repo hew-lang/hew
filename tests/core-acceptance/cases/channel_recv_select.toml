@@ -1,6 +1,6 @@
 [[case]]
 id = "channel_recv_select"
-intent = "Bounded channel send/recv/try_recv/close + select."
+intent = "Bounded pipe send/recv/try_recv/close + select."
 source = "cases/channel_recv_select.hew"
 suites = ["acceptance"]
 kind = "run"

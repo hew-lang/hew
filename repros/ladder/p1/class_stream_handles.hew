@@ -1,0 +1,14 @@
+// §1.1: `stream.Sink` and `stream.Stream` are the one pipe family's affine
+// resource handles, so both are `AffineResource` with no clone (Sink's
+// `.clone()` adds a producer handle; that is a semantic clone, not a marker
+// exemption from the resource verdict). The verdict comes from the builtin
+// row, and the declaration lookup answering for a contentless declaration
+// must not take it away.
+import std.stream;
+
+fn main() -> i64 {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let _ = tx;
+    let _ = rx;
+    0
+}

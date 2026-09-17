@@ -1,7 +1,7 @@
-import std.channel;
+import std.stream;
 
 actor Worker {
-    receive fn deliver(pair: (channel.Receiver<i64>, i64)) {
+    receive fn deliver(pair: (stream.Stream<i64>, i64)) {
         let (rx, n) = pair;
         rx.close();
         println(f"worker got {n}");
@@ -9,7 +9,7 @@ actor Worker {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
     tx.close();
     let w = spawn Worker;
     let _ = w.deliver((rx, 99));

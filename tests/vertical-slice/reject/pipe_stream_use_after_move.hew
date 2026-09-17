@@ -1,0 +1,37 @@
+// Reject fixture: the pipe's read half is affine.
+// `close()` consumes the `Stream`, and `stream.forward` consumes both halves
+// it drains; either way the binding is gone and a later use must fail the
+// move checker. Without this wall a second consuming call would release the
+// same stream twice.
+// Expected: type error "use of moved value".
+import std.stream;
+
+fn after_close() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    tx.close();
+    rx.close();
+    let _again = rx.recv();
+}
+
+fn after_forward() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    let (out, drained): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(error) => panic(error),
+    };
+    tx.close();
+    stream.forward(rx, out);
+    let _again = rx.recv();
+    drained.close();
+}
+
+fn main() {
+    after_close();
+    after_forward();
+}

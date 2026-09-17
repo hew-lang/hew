@@ -2,7 +2,7 @@ import std.process;
 import std.stream;
 
 fn fail(divisor: i64) -> i64 {
-    let _pair = match stream.bytes_pipe(1) {
+    let _pair: (Sink<bytes>, Stream<bytes>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(_) => panic("bytes pipe allocation failed"),
     };
@@ -14,7 +14,7 @@ fn fail(divisor: i64) -> i64 {
 }
 
 fn main() -> i64 {
-    let _caller = match stream.pipe(1) {
+    let _caller: (Sink<string>, Stream<string>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(_) => panic("text pipe allocation failed"),
     };

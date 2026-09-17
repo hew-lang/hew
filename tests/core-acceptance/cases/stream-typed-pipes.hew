@@ -2,20 +2,20 @@ import std.stream;
 
 fn write_text(consume sink: stream.Sink<string>) -> i64 {
     let first = "TEXT\0ACROSS A BOUNDED PIPE".to_lower();
-    sink.write(first);
+    sink.send(first).expect("send");
     assert(first == "text\0across a bounded pipe");
-    sink.write("");
-    sink.write("last");
+    sink.send("").expect("send");
+    sink.send("last").expect("send");
     sink.close();
     3
 }
 
 fn write_bytes(consume sink: stream.Sink<bytes>) -> i64 {
     let first = "bytes\0across a bounded pipe".to_bytes();
-    sink.write(first);
+    sink.send(first).expect("send");
     assert(first == "bytes\0across a bounded pipe".to_bytes());
-    sink.write("".to_bytes());
-    sink.write("last".to_bytes());
+    sink.send("".to_bytes()).expect("send");
+    sink.send("last".to_bytes()).expect("send");
     sink.close();
     3
 }
@@ -32,7 +32,7 @@ fn main() {
     }
     text.close();
 
-    let (byte_sink, data) = stream.bytes_pipe(1).expect("bytes pipe");
+    let (byte_sink, data) = stream.pipe(1).expect("bytes pipe");
     scope {
         let writer = fork write_bytes(byte_sink);
         assert(data.recv().expect("first bytes") == "bytes\0across a bounded pipe".to_bytes());

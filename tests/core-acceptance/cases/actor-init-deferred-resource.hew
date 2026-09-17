@@ -5,8 +5,8 @@ actor Loader {
     var input: Stream<string>,
     init(path: string) {
         label = path.to_upper();
-        input = match stream.from_file(path) {
-            .Ok(opened) => opened,
+        input = match stream.open(path) {
+            .Ok(opened) => opened.lines(),
             .Err(_) => panic("fixture open failed"),
         };
     }

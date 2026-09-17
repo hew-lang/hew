@@ -1,0 +1,13 @@
+[[case]]
+id = "actor_pipe_shadow_endpoint_codec"
+intent = "User records named `Sink` and `Stream` are ordinary serializable actor-message payloads, not builtin pipe handles: the send transfers a value and the codec seeder emits their codecs."
+source = "../vertical-slice/accept/actor_pipe_shadow_endpoint_codec.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "sink shadow 20\nstream shadow 22\nsum 42\n"
+exit = 0

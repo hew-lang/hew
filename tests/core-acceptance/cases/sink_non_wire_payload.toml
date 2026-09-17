@@ -1,13 +1,13 @@
 [[case]]
 id = "sink_non_wire_payload"
-intent = "Reject fixture: Sink<T> / Stream<T> payload must implement Wire (Encode + Decode)."
+intent = "Reject fixture: a pipe carries data, not handles. A `Sink<T>` over an actor handle is refused at the first method use by the element-layout queue witness."
 source = "../vertical-slice/reject/sink_non_wire_payload.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "SinkPayloadNotWire"
+code = "InvalidOperation"
 line = 14
 column = 5
-message = "`Sink<Foo>` payload must implement Wire (Encode + Decode); the type does not satisfy the required marker traits"
+message = "`Sink<Foo>` is not supported: builtin container and handle types cannot ride the element-layout queue witness"

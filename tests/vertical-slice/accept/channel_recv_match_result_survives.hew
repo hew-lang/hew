@@ -1,7 +1,7 @@
-// Accept + run: the value a `match` over a channel `recv()` produces must
+// Accept + run: the value a `match` over a pipe `recv()` produces must
 // survive the match.
 //
-// A channel receive is lowered as an intercepted layout-witness call that
+// A pipe receive is lowered as an intercepted layout-witness call that
 // writes the `Option<T>` carrier straight into a temp, so no
 // `__hew_call_scrutinee` owner is minted for it. Without a carrier owner the
 // arm binder becomes the sole owner of the payload; it is then consumed into
@@ -12,14 +12,14 @@
 // The second half is the negative control: binding the carrier to a local
 // first does mint the scrutinee owner, so that shape already yields the string
 // today and must keep doing so.
-import std.channel;
+import std.stream;
 
 fn main() {
-    let (tx1, rx1): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+    let (tx1, rx1): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
-    tx1.send("direct");
+    tx1.send("direct").expect("send");
     tx1.close();
     let direct = match rx1.recv() {
         .Some(s) => s,
@@ -28,11 +28,11 @@ fn main() {
     println(f"direct: [{direct}]");
     rx1.close();
 
-    let (tx2, rx2): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+    let (tx2, rx2): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
-    tx2.send("via local");
+    tx2.send("via local").expect("send");
     tx2.close();
     let carrier = rx2.recv();
     let via_local = match carrier {
@@ -44,11 +44,11 @@ fn main() {
 
     // `try_recv` is the non-suspending sibling of `recv` and reaches the same
     // codegen intercept, so it lost the same payload before the fix.
-    let (tx3, rx3): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+    let (tx3, rx3): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
-    tx3.send("try");
+    tx3.send("try").expect("send");
     tx3.close();
     let attempted = match rx3.try_recv() {
         .Some(s) => s,

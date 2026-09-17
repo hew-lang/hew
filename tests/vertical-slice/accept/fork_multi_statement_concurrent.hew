@@ -25,17 +25,17 @@ actor Driver {
         scope {
             fork {
                 let conn = first_listener.accept();
-                let _ = conn.write_string("ready");
-                let _ = conn.read_string();
+                let _ = conn.send("ready".to_bytes());
+                let _ = conn.recv();
                 println("first-end");
-                let _ = conn.write_string("done");
+                let _ = conn.send("done".to_bytes());
             };
             fork {
                 let conn = second_listener.accept();
-                let _ = conn.write_string("ready");
-                let _ = conn.read_string();
+                let _ = conn.send("ready".to_bytes());
+                let _ = conn.recv();
                 println("second-end");
-                let _ = conn.write_string("done");
+                let _ = conn.send("done".to_bytes());
             };
 
             let first_client = match net.connect(first_addr) {
@@ -46,13 +46,13 @@ actor Driver {
                 .Ok(conn) => conn,
                 .Err(_) => return 1,
             };
-            let _ = first_client.read_string();
-            let _ = second_client.read_string();
+            let _ = first_client.recv();
+            let _ = second_client.recv();
             println("both-started");
-            let _ = first_client.write_string("finish");
-            let _ = first_client.read_string();
-            let _ = second_client.write_string("finish");
-            let _ = second_client.read_string();
+            let _ = first_client.send("finish".to_bytes());
+            let _ = first_client.recv();
+            let _ = second_client.send("finish".to_bytes());
+            let _ = second_client.recv();
         };
         println("complete");
         0

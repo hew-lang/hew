@@ -1,15 +1,15 @@
-import std.channel;
-// Receiver is a drop-only Vec element: construction moves the sole endpoint
+import std.stream;
+// Stream is a drop-only Vec element: construction moves the sole endpoint
 // authority into a descriptor-backed slot, and returning closes that slot
 // exactly once. ASan catches a duplicate source/slot close; LSan catches an
-// omitted slot close and its retained channel state.
+// omitted slot close and its retained pipe state.
 fn exercise_receiver_vec_drop() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
     tx.close();
-    let receivers: Vec<channel.Receiver<i64>> = [rx];
+    let receivers: Vec<stream.Stream<i64>> = [rx];
     if receivers.len() != 1 {
         panic("receiver Vec move failed");
     }

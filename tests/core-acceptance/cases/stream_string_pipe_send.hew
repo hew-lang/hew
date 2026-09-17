@@ -8,7 +8,7 @@ actor Echo {
             .Ok(pair) => pair,
             .Err(error) => panic(error),
         };
-        sink.send("hi");
+        sink.send("hi").expect("send");
         sink.close();
         input.close();
     }

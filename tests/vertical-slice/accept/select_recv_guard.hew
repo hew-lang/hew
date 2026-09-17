@@ -1,17 +1,17 @@
-// Regression guard for select's channel-receive arm: a `select`
-// channel-receive arm (`pat from rx.recv()`) is valid and must keep
+// Regression guard for select's stream-receive arm: a `select`
+// stream-receive arm (`pat from rx.recv()`) is valid and must keep
 // checking OK independently of batch fork's actor-ask-only branch
 // enforcement.
-import std.channel;
+import std.stream;
 
 actor Worker {
     #[on(start)]
     fn start() {
-        let (txa, rxa): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+        let (txa, rxa): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
             .Ok(pair) => pair,
             .Err(_) => return,
         };
-        txa.send(7);
+        txa.send(7).expect("send");
         select {
             a from rxa.recv() => {
                 match a {

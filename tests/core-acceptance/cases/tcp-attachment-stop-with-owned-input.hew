@@ -1,12 +1,12 @@
 import std.net;
 
-import std.channel;
+import std.stream;
 
 actor AttachedInput {
-    let ready: channel.Sender<i64>,
+    let ready: stream.Sink<i64>,
     receive fn on_close() {}
     receive fn on_data(data: bytes) {
-        ready.send(data.len());
+        ready.send(data.len()).expect("send");
         // The parent observes readiness before closing this actor. The input
         // remains live across suspension, so termination must clean its owner.
         sleep(30s);
@@ -15,9 +15,9 @@ actor AttachedInput {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
         .Ok(value) => value,
-        .Err(_) => panic("channel failed"),
+        .Err(_) => panic("pipe failed"),
     };
     let listener = match net.listen("127.0.0.1:0") {
         .Ok(value) => value,
@@ -33,7 +33,7 @@ fn main() {
         .Ok(()) => {},
         .Err(_) => panic("attach refused"),
     }
-    match client.write_string("owned\0input") {
+    match client.send("owned\0input".to_bytes()) {
         .Ok(()) => {},
         .Err(_) => panic("write failed"),
     }
@@ -41,7 +41,7 @@ fn main() {
         .Some(size) => assert(size > 0),
         .None => panic("actor never received input"),
     }
-    let _ = client.write_string("pending\0input");
+    let _ = client.send("pending\0input".to_bytes());
     close(receiver);
     client.close();
     listener.close();

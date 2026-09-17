@@ -1,14 +1,11 @@
-// Reject fixture: the lazy stream adapters (#2530 diagnostic-honesty gate).
-// `Stream<T>.map/filter` type-check (they carry builtin signatures) but
-// have no MIR lowering. They previously routed to the legacy `DeferToLowering`
-// codegen path the Rust MIR pipeline does not consume, so they dead-ended in
-// HIR lowering with TWO misleading, internal-shaped `E_NOT_YET_IMPLEMENTED`
-// notes ("method-call rewrite variant" + "Unsupported HIR node reached
-// verification"). The checker must now reject the call with exactly ONE honest
-// capability-boundary diagnostic that points at the supported alternative, so a
-// regression back to the dead-ending stub (or a diagnostic cascade) fails this
-// gate.
-// Expected: exactly one error carrying `E_STREAM_ADAPTER_UNSUPPORTED`, and NO
+// Reject fixture: the lazy stream adapters are not part of the pipe surface.
+// `Stream<T>.map/filter` once type-checked on a builtin signature with no MIR
+// lowering behind it, and dead-ended in HIR lowering with two internal-shaped
+// `E_NOT_YET_IMPLEMENTED` notes. They are gone from the surface now, so the
+// call is refused at the method lookup with one honest diagnostic naming the
+// receiver type. A regression that re-adds the signature without a lowering
+// behind it fails this gate.
+// Expected: exactly one error, `no method `map` on `Stream<string>``, and NO
 // leftover `E_NOT_YET_IMPLEMENTED` / "reached verification" internal noise.
 fn use_stream(s: Stream<string>) {
     let _t = s.map(|x: string| x);

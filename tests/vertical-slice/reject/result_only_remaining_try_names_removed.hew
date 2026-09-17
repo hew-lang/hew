@@ -1,5 +1,4 @@
 // Removed Result-only API names must fail at the public API boundary.
-import std.channel;
 import std.crypto.crypto;
 import std.encoding.json;
 import std.metrics;
@@ -13,7 +12,6 @@ import std.time.datetime;
 fn main() {
     let _ = process.try_run;
     let _ = stream.try_pipe;
-    let _ = channel.try_new;
     let _ = string.try_to_int;
     let _ = net.try_connect;
     let _ = crypto.try_random_bytes;

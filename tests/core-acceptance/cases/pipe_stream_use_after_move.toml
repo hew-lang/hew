@@ -1,0 +1,19 @@
+[[case]]
+id = "pipe_stream_use_after_move"
+intent = "Reject fixture: the pipe's read half is affine. `close()` and `stream.forward` each consume the `Stream`, so a later use is refused as a use of a moved value."
+source = "../vertical-slice/reject/pipe_stream_use_after_move.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 16
+column = 18
+message = "use of moved value `rx`"
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 30
+column = 18
+message = "use of moved value `rx`"

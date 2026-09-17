@@ -1,16 +1,15 @@
+import std.encoding.utf8;
 import std.fs;
 import std.os;
 import std.stream;
 
 fn main() {
     let path = f"{os.temp_dir()}/hew-stream-adaptors-{os.pid()}.txt";
-    let output = stream.to_file(path).expect("open output");
-    output.write("alpha\nbravo\ncharlie\ndelta\n");
-    output.close();
+    fs.write(path, "alpha\nbravo\ncharlie\ndelta\n").expect("write input");
 
     // `lines()` re-frames the file stream's fixed-size reads as newline-free
     // lines; `take(2)` stops before the source is drained.
-    let first_two = stream.from_file(path).expect("open lines").lines().take(2);
+    let first_two = stream.open(path).expect("open lines").lines().take(2);
     var seen = "";
     loop {
         match first_two.recv() {
@@ -23,11 +22,11 @@ fn main() {
 
     // `chunks(n)` counts bytes. The early stop leaves the file stream
     // underneath unread, so cleanup has to close the whole chain.
-    let two_chunks = stream.from_file(path).expect("open chunks").chunks(4).take(2);
+    let two_chunks = stream.open(path).expect("open chunks").chunks(4).take(2);
     var chunks = "";
     loop {
         match two_chunks.recv() {
-            .Some(chunk) => { chunks = chunks + chunk + "|"; },
+            .Some(chunk) => { chunks = chunks + utf8.decode(chunk).expect("utf-8 chunk") + "|"; },
             .None => { break; },
         }
     }

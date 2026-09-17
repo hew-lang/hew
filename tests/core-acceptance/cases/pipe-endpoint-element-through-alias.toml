@@ -1,0 +1,14 @@
+[[case]]
+id = "pipe-endpoint-element-through-alias"
+intent = "An aliased module import keeps a pipe endpoint's element: a `Sink<string>` handed to a `Sink<i64>` parameter is refused at the checker with both elements spelled out."
+source = "fixtures/pipe-endpoint-element-through-alias/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "Mismatch"
+file = "pipe-endpoint-element-through-alias/main.hew"
+line = 16
+column = 23
+message = "expected `Sink<i64>`, found `Sink<string>`"

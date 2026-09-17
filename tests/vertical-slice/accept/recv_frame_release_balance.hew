@@ -1,7 +1,7 @@
 // Accept + run (ASan/LSan oracle): a recv frame is released exactly once on
 // every path out of the consuming body.
 //
-// A channel or stream recv hands the consumer a fresh, solely-owned frame per
+// A pipe or generator recv hands the consumer a fresh, solely-owned frame per
 // iteration. The recv carrier owns that frame, the arm binder takes it by
 // transfer, and drop elaboration releases it wherever the binder's generation
 // ends. A withheld release leaks one heap block per iteration; a second
@@ -18,7 +18,7 @@
 //                     each and both must be released
 //   record_frames   - a heap-owning record payload released through the
 //                     carrier's in-place thunk
-import std.channel;
+import std.stream;
 
 type Frame {
     name: string,
@@ -92,13 +92,13 @@ fn main() {
 
     // The direct-match shape #3127 reported: the value the match produces must
     // survive the match, and its frame must still be released exactly once.
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(8) {
+    let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(8) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
     var seen = 0;
     for i in 0..500 {
-        tx.send(f"channel-frame-{i}-payload");
+        tx.send(f"channel-frame-{i}-payload").expect("send");
         let got = match rx.recv() {
             .Some(s) => s,
             .None => "",

@@ -1,16 +1,16 @@
-import std.channel;
+import std.stream;
 
-// Sender is a cloneable Vec element. The first Vec takes tx by move, the
+// Sink is a cloneable Vec element. The first Vec takes tx by move, the
 // second one is a descriptor-backed clone, and both must drop exactly one
-// sender reference. The paired Receiver is closed explicitly. ASan catches
+// sink reference. The paired Stream is closed explicitly. ASan catches
 // an under-retained clone or duplicate close; LSan catches a missing Vec-slot
 // close across this repeated lifecycle.
 fn exercise_sender_vec_clone_drop() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(_) => return,
     };
-    let senders: Vec<channel.Sender<i64>> = [tx];
+    let senders: Vec<stream.Sink<i64>> = [tx];
     let senders_copy = senders.clone();
     if senders.len() != 1 {
         panic("sender Vec source clone failed");

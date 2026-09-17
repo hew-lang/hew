@@ -13,8 +13,8 @@ fn collected(round: i64) -> string {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    sink.send(f"round-{round}");
-    sink.send("|");
+    sink.send(f"round-{round}").expect("send");
+    sink.send("|").expect("send");
     // A consuming close: the sink box is the runtime's after this call.
     sink.close();
     // A consuming collect: the stream box goes with it, and the string comes
@@ -31,7 +31,7 @@ fn forwarded(round: i64) -> i64 {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    source_sink.send(f"payload-{round}");
+    source_sink.send(f"payload-{round}").expect("send");
     source_sink.close();
     // Both halves are consumed by the one call.
     stream.forward(source, dest_sink);
@@ -44,7 +44,7 @@ fn abandoned(round: i64) -> i64 {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
-    sink.send(f"unread-{round}");
+    sink.send(f"unread-{round}").expect("send");
     sink.close();
     // A consuming close over an undrained stream: the queued item is released
     // with the box, not leaked and not freed twice.

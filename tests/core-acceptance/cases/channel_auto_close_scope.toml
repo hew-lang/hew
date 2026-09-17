@@ -1,6 +1,6 @@
 [[case]]
 id = "channel_auto_close_scope"
-intent = "Sender/Receiver scope-exit auto-close."
+intent = "Sink/Stream scope-exit auto-close."
 source = "cases/channel_auto_close_scope.hew"
 suites = ["acceptance"]
 kind = "run"

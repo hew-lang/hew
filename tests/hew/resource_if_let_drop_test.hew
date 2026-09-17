@@ -1,78 +1,54 @@
 //! Regression coverage for owned resource payloads bound by conditional patterns.
 
-import std.fs;
 import std.stream;
 import std.testing;
 
-fn cleanup(path: string) {
-    if fs.exists(path) {
-        let _ = fs.delete(path);
-    }
+/// The conditional patterns below all bind one owned `Sink` out of a `Result`.
+/// The paired `Stream` stays with the caller, so what the arm did with the
+/// sink is observable as the text the stream collects.
+fn opened(consume sink: stream.Sink<string>) -> Result<stream.Sink<string>, string> {
+    Ok(sink)
 }
 
 #[test]
 fn test_if_let_resource_can_close_explicitly() {
-    let path = "tests/hew/_resource_if_let_close.txt";
-    cleanup(path);
-    if let .Ok(sink) = stream.to_file(path) {
-        sink.write("rc1");
+    let (writer, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    if let .Ok(sink) = opened(writer) {
+        sink.send("rc1").expect("send");
         sink.close();
     }
-    let contents = match fs.read(path) {
-        .Ok(contents) => contents,
-        .Err(_) => panic("expected resource output"),
-    };
-    testing.assert_eq_str(contents, "rc1");
-    cleanup(path);
+    testing.assert_eq_str(input.collect(), "rc1");
 }
 
 #[test]
 fn test_if_let_resource_empty_body_drops_at_scope_exit() {
-    let path = "tests/hew/_resource_if_let_drop.txt";
-    cleanup(path);
-    if let .Ok(sink) = stream.to_file(path) {}
-    let contents = match fs.read(path) {
-        .Ok(contents) => contents,
-        .Err(_) => panic("expected resource output"),
-    };
-    testing.assert_eq_str(contents, "");
-    cleanup(path);
+    let (writer, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    if let .Ok(sink) = opened(writer) {}
+    testing.assert_eq_str(input.collect(), "");
 }
 
 #[test]
 fn test_match_resource_can_close_explicitly() {
-    let path = "tests/hew/_resource_match_close.txt";
-    cleanup(path);
-    match stream.to_file(path) {
+    let (writer, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    match opened(writer) {
         .Ok(sink) => {
-            sink.write("match");
+            sink.send("match").expect("send");
             sink.close();
         },
-        .Err(_) => panic("expected file sink"),
+        .Err(_) => panic("expected a sink"),
     }
-    let contents = match fs.read(path) {
-        .Ok(contents) => contents,
-        .Err(_) => panic("expected resource output"),
-    };
-    testing.assert_eq_str(contents, "match");
-    cleanup(path);
+    testing.assert_eq_str(input.collect(), "match");
 }
 
 #[test]
 fn test_while_let_resource_can_close_explicitly() {
-    let path = "tests/hew/_resource_while_let_close.txt";
-    cleanup(path);
-    while let .Ok(sink) = stream.to_file(path) {
-        sink.write("while");
+    let (writer, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    while let .Ok(sink) = opened(writer) {
+        sink.send("while").expect("send");
         sink.close();
         break;
     }
-    let contents = match fs.read(path) {
-        .Ok(contents) => contents,
-        .Err(_) => panic("expected resource output"),
-    };
-    testing.assert_eq_str(contents, "while");
-    cleanup(path);
+    testing.assert_eq_str(input.collect(), "while");
 }
 
 type Endpoint { host: string, port: i64 }
@@ -114,8 +90,8 @@ fn test_match_payload_binders_share_one_scrutinee_release() {
     testing.assert_eq_str(describe_endpoint("localhost"), "localhost:7");
 }
 
-fn open_from_if_let(path: string) -> Result<stream.Sink<string>, string> {
-    if let .Ok(sink) = stream.to_file(path) {
+fn sink_from_if_let(consume writer: stream.Sink<string>) -> Result<stream.Sink<string>, string> {
+    if let .Ok(sink) = opened(writer) {
         return Ok(sink);
     }
     Err("open failed")
@@ -123,19 +99,13 @@ fn open_from_if_let(path: string) -> Result<stream.Sink<string>, string> {
 
 #[test]
 fn test_if_let_resource_can_be_returned() {
-    let path = "tests/hew/_resource_if_let_return.txt";
-    cleanup(path);
-    match open_from_if_let(path) {
+    let (writer, input): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    match sink_from_if_let(writer) {
         .Ok(sink) => {
-            sink.write("returned");
+            sink.send("returned").expect("send");
             sink.close();
         },
-        .Err(_) => panic("expected file sink"),
+        .Err(_) => panic("expected a sink"),
     }
-    let contents = match fs.read(path) {
-        .Ok(contents) => contents,
-        .Err(_) => panic("expected resource output"),
-    };
-    testing.assert_eq_str(contents, "returned");
-    cleanup(path);
+    testing.assert_eq_str(input.collect(), "returned");
 }

@@ -1,15 +1,15 @@
-// Reject fixture: Sink<T> / Stream<T> payload must implement Wire (Encode + Decode).
+// Reject fixture: a pipe carries data, not handles.
 //
-// Foo derives Send + Sync + Copy + Clone but NOT Encode or Decode —
-// actor pids are in-process handles, not serialisable values.  Using one as a
-// Sink payload must be rejected by the Wire-capability admissibility gate with a
-// SinkPayloadNotWire diagnostic.
+// An actor handle is an in-process identity, not a value the element-layout
+// queue witness can clone or drop, so a `Sink<Foo>` over an actor type is
+// refused at the first method use.
 //
-// Expected: hew check exits non-zero and output contains "Encode + Decode"
+// Expected: hew check exits non-zero and the error names the element-layout
+// queue witness.
 actor Foo {
     receive fn ping() {}
 }
 
 fn _try_send(s: Sink<Foo>) {
-    s.send(spawn Foo);
+    s.send(spawn Foo).expect("send");
 }

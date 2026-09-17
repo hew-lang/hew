@@ -36,7 +36,7 @@ fn main() {
         .Ok(()) => {},
         .Err(_) => panic("attach refused"),
     }
-    match client.write_string("A\0é") {
+    match client.send("A\0é".to_bytes()) {
         .Ok(()) => {},
         .Err(_) => panic("write failed"),
     }

@@ -3,8 +3,8 @@ import std.stream;
 enum Source { File(Stream<string>, string), Missing }
 
 fn open(path: string) -> Stream<string> {
-    match stream.from_file(path) {
-        .Ok(input) => input,
+    match stream.open(path) {
+        .Ok(input) => input.lines(),
         .Err(_) => panic("fixture open failed"),
     }
 }

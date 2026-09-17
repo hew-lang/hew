@@ -1,32 +1,34 @@
 // Two guarded `.Ok(sink)` arms before the unguarded one: a false guard must
-// fall through with the payload intact, so the arm finally selected writes
-// its text and closes the sink exactly once.
-import std.fs;
-import std.os;
+// fall through with the payload intact, so the arm finally selected sends its
+// text and closes the sink exactly once.
 import std.stream;
 
-fn pick(path: string, first: bool, second: bool) {
-    match stream.to_file(path) {
+fn pick(first: bool, second: bool) {
+    let (writer, input): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(e) => panic(e),
+    };
+    let opened: Result<stream.Sink<string>, string> = Ok(writer);
+    match opened {
         .Ok(sink) if first => {
-            sink.write("first");
+            sink.send("first").expect("send");
+            sink.close();
         },
         .Ok(sink) if second => {
-            sink.write("second");
+            sink.send("second").expect("send");
+            sink.close();
         },
         .Ok(sink) => {
-            sink.write("third");
+            sink.send("third").expect("send");
+            sink.close();
         },
-        .Err(e) => println(f"open failed: {e}"),
+        .Err(e) => println(f"pipe failed: {e}"),
     }
-    match fs.read(path) {
-        .Ok(contents) => println(contents),
-        .Err(_) => panic("failed to read guarded-arm output"),
-    }
+    println(input.collect());
 }
 
 fn main() {
-    let base = os.temp_dir() + "/guarded_arms_sink_fallthrough_";
-    pick(base + "a.txt", true, false);
-    pick(base + "b.txt", false, true);
-    pick(base + "c.txt", false, false);
+    pick(true, false);
+    pick(false, true);
+    pick(false, false);
 }

@@ -3,8 +3,8 @@ import std.stream;
 type Bag { input: Stream<string>, label: string }
 
 fn open() -> Stream<string> {
-    match stream.from_file("resource-read.bin") {
-        .Ok(input) => input,
+    match stream.open("resource-read.bin") {
+        .Ok(input) => input.lines(),
         .Err(_) => panic("fixture open failed"),
     }
 }

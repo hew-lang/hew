@@ -1,0 +1,24 @@
+// Accept + run: the pipe's two halves round-trip the exact value.
+// `stream.pipe(n)` hands back a paired `(Sink<i64>, Stream<i64>)`; sending 7
+// on the write half and receiving it on the read half carries the value into
+// the exit code. The halves close explicitly, exactly once each. Exit code 7
+// proves the value crossed intact, distinct from the EOF path (exit 1).
+import std.stream;
+
+fn main() -> i64 {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
+        .Ok(pair) => pair,
+        .Err(_) => return 1,
+    };
+    match tx.send(7) {
+        .Ok(_) => {},
+        .Err(_) => return 1,
+    }
+    let received = match rx.recv() {
+        .Some(value) => value,
+        .None => return 1,
+    };
+    tx.close();
+    rx.close();
+    return received;
+}

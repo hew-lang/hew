@@ -1,8 +1,8 @@
-import std.channel;
+import std.stream;
 
 actor Worker {
-    receive fn delayed(value: string, consume entered: channel.Sender<i64>, consume gate: channel.Receiver<i64>) -> string {
-        entered.send(1);
+    receive fn delayed(value: string, consume entered: stream.Sink<i64>, consume gate: stream.Stream<i64>) -> string {
+        entered.send(1).expect("send");
         entered.close();
         let _ = gate.recv();
         gate.close();
@@ -10,7 +10,7 @@ actor Worker {
     }
 }
 
-fn fail_after_start(consume entered: channel.Receiver<i64>) -> duration {
+fn fail_after_start(consume entered: stream.Stream<i64>) -> duration {
     let _ = entered.recv().expect("handler started");
     entered.close();
     panic("later select source failed");
@@ -18,10 +18,10 @@ fn fail_after_start(consume entered: channel.Receiver<i64>) -> duration {
 
 fn main() {
     let worker = spawn Worker;
-    let (entered, waiting): (channel.Sender<i64>, channel.Receiver<i64>) =
-        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let (release, gate): (channel.Sender<i64>, channel.Receiver<i64>) =
-        match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (entered, waiting): (stream.Sink<i64>, stream.Stream<i64>) =
+        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) =
+        match stream.pipe(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
     defer println("caller cleanup");
     // The call starts before evaluating the later source. Its owned request
     // and reply sink must remain visible to the ordinary fault cleanup path.

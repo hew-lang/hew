@@ -1,6 +1,6 @@
 [[case]]
 id = "handle-error-early-return-loan"
-intent = "A channel send releases its sender loan on the fault edge its element evaluation opens, so an early return out of a handle-error block inside a receive-fn loop leaves no live borrow."
+intent = "A pipe send releases its sink loan on the fault edge its element evaluation opens, so an early return out of a handle-error block inside a receive-fn loop leaves no live borrow."
 source = "cases/handle-error-early-return-loan.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

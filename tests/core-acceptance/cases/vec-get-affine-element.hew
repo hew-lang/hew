@@ -2,15 +2,15 @@
 // decision: `get`, `[]` and a range slice all copy the element out, so an
 // element with no copy operation refuses at all three. An owning removal is
 // how the endpoint leaves the vector.
-import std.channel;
+import std.stream;
 
 fn main() {
-    let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
     tx.close();
-    var receivers: Vec<channel.Receiver<i64>> = Vec.new();
+    var receivers: Vec<stream.Stream<i64>> = Vec.new();
     receivers.push(rx);
     let _got = receivers.get(0);
     let _indexed = receivers[0];

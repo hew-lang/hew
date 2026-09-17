@@ -1,12 +1,12 @@
-// The timer arm wins over an idle channel, and disarming the selection leaves
-// the receiver untouched: the very next send is still received.
-import std.channel;
+// The timer arm wins over an idle pipe, and disarming the selection leaves
+// the read half untouched: the very next send is still received.
+import std.stream;
 
 fn main() {
     // No annotation: the element type is inferred from the arm bodies, so this
     // also proves a select arm classifies a receive whose element is still a
     // variable at the select.
-    let (tx, rx) = match channel.new(2) {
+    let (tx, rx) = match stream.pipe(2) {
         .Ok(pair) => pair,
         .Err(error) => {
             println(error);
@@ -20,7 +20,7 @@ fn main() {
         },
         after 20ms => println("timeout"),
     }
-    tx.send("late");
+    tx.send("late").expect("send");
     tx.close();
     match rx.recv() {
         .Some(item) => println(f"received {item}"),

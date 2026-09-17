@@ -3,6 +3,8 @@
 //! TCP operations return `net.NetError` so callers handle network failures
 //! independently from file-system errors.
 
+import std.encoding.utf8;
+
 import std.net;
 
 import std.testing;
@@ -131,13 +133,13 @@ fn test_net_error_windows_cancelled_variants() {
     }
 }
 
-// ── try_read: EOF is a valid empty read, a read failure is not ────────
+// ── recv: an orderly EOF is `None`, a read failure traps ─────────────
 extern "C" {
     fn hew_tcp_listener_local_port(listener: net.Listener) -> i32;
 }
 
 #[test]
-fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
+fn test_recv_reports_an_orderly_eof_as_none() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
@@ -151,16 +153,16 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
         .Err(_) => {},
     }
     client.close();
-    match server.try_read() {
-        .Ok(data) => testing.assert_eq(data.len(), 0),
-        .Err(err) => panic(f"expected EOF to be an empty success, got {err}"),
+    match server.recv() {
+        .Some(data) => panic(f"expected EOF, got {data.len()} bytes"),
+        .None => testing.assert_true(true),
     }
     server.close();
     listener.close();
 }
 
 // I removed `test_try_read_reports_a_closed_handle_as_a_failure_not_an_empty_success`
-// from here. It did `server.close()` followed by `server.try_read()`, which the checker
+// from here. It did `server.close()` followed by a read on `server`, which the checker
 // now rejects outright: a canonical `close` moves its receiver, so there is no
 // well-typed way to hold a closed handle and read from it. Leaving the test in place
 // would have made this entire file fail to compile.
@@ -175,17 +177,17 @@ fn test_try_read_reports_an_orderly_eof_as_an_empty_success() {
 // for FFI callers that bypass the checker. It is unreachable from Hew source now, so it
 // belongs to the runtime's own test surface rather than a `.hew` test.
 #[test]
-fn test_try_read_delivers_payload_bytes_unchanged() {
+fn test_recv_delivers_payload_bytes_unchanged() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = unsafe {
         hew_tcp_listener_local_port(listener)
     };
     let client = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let server = listener.accept();
-    let _ = client.write_string("ping");
-    match server.try_read_string() {
-        .Ok(text) => testing.assert_eq_str(text, "ping"),
-        .Err(err) => panic(f"expected a payload read to succeed: {err}"),
+    client.send("ping".to_bytes()).expect("send");
+    match server.recv() {
+        .Some(data) => testing.assert_eq_str(utf8.decode(data).expect("utf-8 payload"), "ping"),
+        .None => panic("expected a payload read to succeed"),
     }
     client.close();
     server.close();
@@ -224,8 +226,10 @@ fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowi
 }
 
 #[test]
-fn test_write_error_display_formats_variant_and_errno() {
-    testing.assert_eq_str(to_string(WriteError.BackpressureExceeded(11)), "BackpressureExceeded(11)");
-    testing.assert_eq_str(to_string(WriteError.Disconnected(104)), "Disconnected(104)");
-    testing.assert_eq_str(to_string(WriteError.Other(0)), "Other(0)");
+fn test_send_error_display_names_the_refusal() {
+    // `Connection.send` answers with the one `SendError` the whole pipe family
+    // uses; a full send buffer past its deadline is `Full`, a gone peer is
+    // `Closed`, and anything else traps rather than returning a variant.
+    testing.assert_eq_str(to_string(SendError.Full), "the destination mailbox is full");
+    testing.assert_eq_str(to_string(SendError.Closed), "the destination is closed or no longer alive");
 }

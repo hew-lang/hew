@@ -1,0 +1,43 @@
+// Accept: user records named `Sink` and `Stream` are ordinary serializable
+// actor-message payloads, not builtin pipe handles.
+//
+// This pins the builtin-discriminant gate shared by HIR and codegen. The HIR
+// actor-send consume decision must not treat these user records as pipe
+// handle transfers, and the cross-node codec seeder must emit their codecs
+// rather than silently skipping them by bare name.
+type Sink {
+    x: i64,
+}
+
+type Stream {
+    y: i64,
+}
+
+actor Collector {
+    var total: i64,
+
+    receive fn accept_sink(msg: Sink) {
+        total = total + msg.x;
+        println(f"sink shadow {msg.x}");
+    }
+
+    receive fn accept_stream(msg: Stream) {
+        total = total + msg.y;
+        println(f"stream shadow {msg.y}");
+    }
+
+    receive fn sum() -> i64 {
+        total
+    }
+}
+
+fn main() {
+    let collector = spawn Collector(total: 0);
+    let _ = collector.accept_sink(Sink { x: 20 });
+    let _ = collector.accept_stream(Stream { y: 22 });
+    let sum = collector.sum();
+    match sum {
+        .Ok(v) => println(f"sum {v}"),
+        .Err(_) => println("sum failed"),
+    }
+}

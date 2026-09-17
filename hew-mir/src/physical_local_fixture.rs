@@ -87,6 +87,7 @@ pub fn edge(target: u32, args: &[u32]) -> Edge {
 }
 pub fn block(id: u32, ops: Vec<SemOp>, terminator: SemTerminator) -> SemBlock {
     SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: BlockId(id),
         args: vec![],
         ops,
@@ -213,6 +214,7 @@ pub fn module(case: Case) -> SemModule {
         Case::EmptyLoop => vec![
             block(0, vec![destroy(0)], SemTerminator::Goto(edge(1, &[1]))),
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 args: vec![BlockArg {
                     value: ValueId(2),
                     ty: ResolvedTy::Bool,

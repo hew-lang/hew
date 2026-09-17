@@ -26,6 +26,7 @@ pub fn module(owned: bool) -> sir::SemModule {
     function.entry = sir::BlockId(0);
     function.blocks = vec![
         sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: sir::BlockId(0),
             args: vec![],
             ops: vec![],
@@ -41,6 +42,7 @@ pub fn module(owned: bool) -> sir::SemModule {
             },
         },
         sir::SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: sir::BlockId(1),
             args: vec![],
             ops: if owned {

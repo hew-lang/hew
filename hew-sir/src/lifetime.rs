@@ -2073,6 +2073,7 @@ mod tests {
 
     fn block(id: u32, ops: Vec<SemOp>, terminator: SemTerminator) -> SemBlock {
         SemBlock {
+            terminator_provenance: crate::Provenance::Synthesized,
             id: BlockId(id),
             args: Vec::new(),
             ops,

@@ -13,6 +13,7 @@ fn stream_owner() -> (SemModule, ResolvedTy) {
         .resources
         .insert(ty.clone(), hew_sir::ResourceRelease::Stream);
     module.functions[0].blocks = vec![hew_sir::SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: BlockId(0),
         args: vec![],
         ops: vec![op(0, SemOpKind::DestroyValue { value: operand(0) }, vec![])],

@@ -547,6 +547,25 @@ fn if_branch_result_ty(then_ty: &ResolvedTy, else_ty: Option<&ResolvedTy>) -> Re
 /// divergence tracking, kept narrow: only the LAST statement is inspected,
 /// matching the well-formed case where any earlier diverging statement makes
 /// the rest unreachable (the checker already warned on that).
+/// The source extent a block's lexical scope covers: from its first statement
+/// to the end of its tail expression.
+fn block_extent(block: &Block) -> std::ops::Range<usize> {
+    let start = block
+        .stmts
+        .first()
+        .map(|(_, span)| span.start)
+        .or_else(|| block.trailing_expr.as_ref().map(|expr| expr.1.start));
+    let end = block
+        .trailing_expr
+        .as_ref()
+        .map(|expr| expr.1.end)
+        .or_else(|| block.stmts.last().map(|(_, span)| span.end));
+    match (start, end) {
+        (Some(start), Some(end)) if end > start => start..end,
+        _ => 0..0,
+    }
+}
+
 fn block_diverges(statements: &[HirStmt]) -> bool {
     let Some(last) = statements.last() else {
         return false;
@@ -14791,7 +14810,11 @@ impl LowerCtx {
             statements,
             tail,
             ty,
-            span: 0..0,
+            // The AST block carries no span of its own, so the lexical extent
+            // is the extent of what it contains: every binding and statement
+            // the scope owns lies inside it, which is what scope containment
+            // asks. An empty block owns nothing and gets an empty extent.
+            span: block_extent(block),
         }
     }
 

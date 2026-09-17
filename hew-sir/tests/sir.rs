@@ -117,6 +117,7 @@ fn module(functions: Vec<SemFunction>) -> SemModule {
         let _ = fact_service.require(ty);
     }
     SemModule {
+        debug: Default::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),
@@ -164,6 +165,7 @@ fn unit_function(
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -185,6 +187,7 @@ fn choice_ty() -> ResolvedTy {
 
 fn empty_choice_block(choice: &ResolvedTy) -> SemBlock {
     SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: BlockId(2),
         args: Vec::new(),
         ops: vec![
@@ -255,6 +258,7 @@ fn exhaustive_choice_switch() -> SemModule {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -298,6 +302,7 @@ fn exhaustive_choice_switch() -> SemModule {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(3),
@@ -493,6 +498,7 @@ fn block_arguments_are_ssa_join_values() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -530,6 +536,7 @@ fn block_arguments_are_ssa_join_values() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(4),
@@ -560,6 +567,7 @@ fn block_arguments_are_ssa_join_values() {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![BlockArg {
                     value: ValueId(7),
@@ -590,6 +598,7 @@ fn block_arguments_are_ssa_join_values() {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(3),
                 args: vec![BlockArg {
                     value: ValueId(10),
@@ -719,6 +728,7 @@ fn verifier_rejects_entry_block_arguments() {
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: vec![BlockArg {
                 value: ValueId(0),
@@ -757,6 +767,7 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -778,12 +789,14 @@ fn verifier_requires_zero_results_for_a_unit_direct_call() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: call(0, 0, Vec::new(), CallResult::Unit, 1, Vec::new()),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -833,6 +846,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -842,6 +856,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -880,6 +895,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -893,6 +909,7 @@ fn verifier_rejects_noncanonical_block_ids_and_order() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -957,6 +974,7 @@ fn verifier_checks_resolved_direct_call_signature() {
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -984,6 +1002,7 @@ fn verifier_checks_resolved_direct_call_signature() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -1001,6 +1020,7 @@ fn verifier_checks_resolved_direct_call_signature() {
                 ),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(2),
@@ -1043,6 +1063,7 @@ fn verifier_rejects_unknown_direct_callable() {
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -1083,6 +1104,7 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: vec![SemOp {
@@ -1111,12 +1133,14 @@ fn verifier_requires_one_result_for_a_non_unit_direct_call() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
                 terminator: call(0, 0, Vec::new(), CallResult::Unit, 1, Vec::new()),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -1157,6 +1181,7 @@ fn verifier_rejects_eager_logical_ops() {
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: vec![SemOp {
@@ -1203,6 +1228,7 @@ fn verifier_rejects_duplicate_semantic_and_emitted_function_identities() {
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -1323,6 +1349,7 @@ fn verifier_requires_entry_to_be_a_parameterless_root_callable_with_a_portable_a
         return_ty: ResolvedTy::Bool,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: vec![SemOp {
@@ -1388,6 +1415,7 @@ fn verifier_rejects_value_carrying_return_from_unit_function() {
         return_ty: ResolvedTy::Unit,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: vec![SemOp {
@@ -1449,6 +1477,7 @@ fn rewrite_fixture() -> SemFunction {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -1474,6 +1503,7 @@ fn rewrite_fixture() -> SemFunction {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(4),
@@ -1487,6 +1517,7 @@ fn rewrite_fixture() -> SemFunction {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![BlockArg {
                     value: ValueId(5),
@@ -1500,6 +1531,7 @@ fn rewrite_fixture() -> SemFunction {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(3),
                 args: vec![BlockArg {
                     value: ValueId(6),
@@ -1762,6 +1794,7 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -1784,6 +1817,7 @@ fn verifier_rejects_a_suspend_no_relation_row_admits() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -1821,6 +1855,7 @@ fn verifier_admits_a_typed_trap_endpoint() {
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: Vec::new(),
@@ -1859,6 +1894,7 @@ fn verifier_still_admits_the_terminators_it_states_rules_for() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -1875,6 +1911,7 @@ fn verifier_still_admits_the_terminators_it_states_rules_for() {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -1984,6 +2021,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -2002,6 +2040,7 @@ fn own_kind_function(result_own: OwnKind, arg_own: OwnKind) -> SemFunction {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(2),
@@ -2047,6 +2086,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: vec![SemOp {
@@ -2065,6 +2105,7 @@ fn the_dump_renders_the_ownership_kind_a_value_carries() {
                 }),
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(2),
@@ -2137,6 +2178,7 @@ fn borrow_slot_module(passing: SemParamPassing) -> SemModule {
         Vec::new(),
     );
     call_site.blocks.push(SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: BlockId(1),
         args: Vec::new(),
         ops: Vec::new(),

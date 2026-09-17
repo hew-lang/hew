@@ -233,6 +233,10 @@ pub struct SemBlock {
     pub args: Vec<BlockArg>,
     pub ops: Vec<SemOp>,
     pub terminator: SemTerminator,
+    /// Source attribution for the terminator. A call is a terminator in SIR,
+    /// so without this a statement whose only effect is a call has no source
+    /// point of its own.
+    pub terminator_provenance: Provenance,
 }
 
 #[derive(Debug, Clone, PartialEq)]

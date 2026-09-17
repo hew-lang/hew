@@ -3150,6 +3150,7 @@ struct PendingBlock {
     args: Vec<BlockArg>,
     ops: Vec<SemOp>,
     terminator: Option<SemTerminator>,
+    terminator_provenance: Provenance,
 }
 
 impl PendingBlock {
@@ -3159,6 +3160,7 @@ impl PendingBlock {
             args,
             ops: Vec::new(),
             terminator: None,
+            terminator_provenance: Provenance::Synthesized,
         }
     }
 
@@ -3189,6 +3191,7 @@ impl PendingBlock {
             args: self.args,
             ops: self.ops,
             terminator,
+            terminator_provenance: self.terminator_provenance,
         })
     }
 }
@@ -3230,6 +3233,9 @@ struct Builder<'hir, 'service> {
     callable: SemCallable,
     substitution: TypeSubstitution,
     blocks: Vec<PendingBlock>,
+    /// The source site of the most recently lowered expression, which is the
+    /// point a sealed terminator belongs to.
+    current_site: Option<hew_hir::SiteId>,
     current: BlockId,
     values: u32,
     ops: u32,
@@ -3390,6 +3396,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             callable,
             substitution,
             blocks: vec![PendingBlock::new(entry, Vec::new())],
+            current_site: None,
             current: entry,
             values,
             ops: 0,
@@ -4906,6 +4913,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         reason = "a trait method reached through a where-clause bound is not builtin-generic dispatch, so `ResolvedImplCall` does not carry it; these arms read the node, they do not construct one"
     )]
     fn lower_discarded_expr(&mut self, expr: &HirExpr) -> Result<(), String> {
+        // A statement whose value is discarded reaches several lowerings that
+        // do not go through `lower_expr_inner`, so stamp its source point here
+        // as well: a call statement's terminator must name its own line.
+        self.current_site = Some(expr.site);
         match &expr.kind {
             HirExprKind::ActorDelivery {
                 operation: hew_types::actor_delivery::ActorDeliveryCall::AwaitClosed,
@@ -5238,6 +5249,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         expr: &HirExpr,
         binding_use: OwnedBindingUse,
     ) -> Result<ValueId, String> {
+        self.current_site = Some(expr.site);
         // A supervisor pool accessor is decided by the checker, not by the
         // expression shape: `sup.pool[i]` and `sup.pool.get(i)` are an ordinary
         // index and call until this site table says otherwise.
@@ -9486,7 +9498,15 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         self.current_block().is_open()
     }
     fn set_terminator(&mut self, term: SemTerminator) -> Result<(), String> {
+        // The last expression visited is the source point this terminator
+        // belongs to: a `Return` is sealed after its operand is lowered, and a
+        // call terminator after its arguments, so the most recent leaf is the
+        // statement a debugger should stop on.
+        let provenance = self
+            .current_site
+            .map_or(Provenance::Synthesized, Provenance::Site);
         let block = self.current_block_mut();
+        block.terminator_provenance = provenance;
         if block.terminator.is_some() {
             return Err(format!(
                 "SIR builder attempted to overwrite completed block bb{}",

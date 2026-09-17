@@ -75,6 +75,7 @@ pub(super) fn decode_module() -> SemModule {
         entry: BlockId(0),
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: Vec::new(),
                 ops: Vec::new(),
@@ -98,6 +99,7 @@ pub(super) fn decode_module() -> SemModule {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(2),
@@ -145,6 +147,7 @@ pub(super) fn decode_module() -> SemModule {
         type_facts.insert(TypeInstanceKey(ty), row);
     }
     SemModule {
+        debug: Default::default(),
         regex_patterns: Vec::new(),
         actors: Vec::new(),
         supervisors: Vec::new(),

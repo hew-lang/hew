@@ -84,6 +84,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         bindings: vec![],
         blocks: vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![],
@@ -107,6 +108,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: selected,
@@ -122,12 +124,14 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
                 terminator: SemTerminator::ResumeUnwind,
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(3),
                 args: vec![],
                 ops: vec![],
@@ -146,6 +150,7 @@ pub fn module(task_count: u32, has_timeout: bool) -> SemModule {
         resources.insert(task_ty, ResourceRelease::Task);
     }
     SemModule {
+        debug: Default::default(),
         regex_patterns: Vec::new(),
         callables: vec![callable],
         functions: vec![function],

@@ -2478,6 +2478,11 @@ fn lower_function(
                     }
                     Ok::<_, PhysicalError>(ops)
                 })?;
+            if let Some(offset) = module.debug.site_offset(&block.terminator_provenance) {
+                // The terminator's attribution takes the index one past the
+                // last op, the position codegen reaches it at.
+                sites.insert((block.id, ops.len() as u32), offset);
+            }
             let terminator = lowerer.lower_terminator(&block.terminator)?;
             Ok(PhysicalBlock {
                 id: block.id,
@@ -9588,6 +9593,7 @@ mod tests {
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
             blocks: vec![SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![SemOp {
@@ -9618,6 +9624,7 @@ mod tests {
             },
         );
         SemModule {
+            debug: Default::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -9665,6 +9672,7 @@ mod tests {
         let main = &mut module.functions[0];
         main.blocks = vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![],
@@ -9688,6 +9696,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![hew_sir::BlockArg {
                     value: ValueId(1),
@@ -9703,6 +9712,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
@@ -9717,6 +9727,7 @@ mod tests {
         let mut module = module_with_return();
         module.functions[0].blocks = vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -9765,6 +9776,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![hew_sir::BlockArg {
                     value: ValueId(3),
@@ -9780,6 +9792,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
@@ -11111,6 +11124,7 @@ mod tests {
             ],
         };
         let physical = PhysicalModule {
+            debug: Default::default(),
             regex_patterns: Vec::new(),
             pure_releases: PureDataReleases::default(),
             actors: Vec::new(),

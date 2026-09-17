@@ -164,6 +164,7 @@ fn edge(target: u32) -> Edge {
 }
 fn block(id: u32, ops: Vec<SemOp>, terminator: SemTerminator) -> SemBlock {
     SemBlock {
+        terminator_provenance: hew_sir::Provenance::Synthesized,
         id: BlockId(id),
         args: vec![],
         ops,

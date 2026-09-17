@@ -377,11 +377,13 @@ fn allocated_closure() -> hew_sir::SemModule {
         // The consuming iteration breaks: a once callable cannot be called on
         // a second iteration. The untaken edge reaches the same after-loop work.
         SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             args: vec![arg(5, ResolvedTy::I64)],
             ..block(3, vec![], SemTerminator::Goto(edge(4, &[])))
         },
         block(4, vec![], observe),
         SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             args: vec![arg(8, ResolvedTy::I64)],
             ..block(
                 5,

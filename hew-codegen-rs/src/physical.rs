@@ -1941,7 +1941,7 @@ fn build_module<'ctx>(
     name: &str,
     machine: &TargetMachine,
 ) -> CodegenResult<Module<'ctx>> {
-    build_module_with_host(ctx, physical, name, machine, None)
+    build_module_with_host(ctx, physical, name, machine, None, None)
 }
 
 fn build_module_with_host<'ctx>(
@@ -2703,6 +2703,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;
             }
+            self.locate(block.id, block.ops.len());
             self.emit_terminator(block)?;
         }
         Ok(())
@@ -9041,6 +9042,7 @@ mod tests {
         };
         function.blocks = vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: copies,
@@ -9061,6 +9063,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value,
@@ -9093,6 +9096,7 @@ mod tests {
         ];
         if let Some(failure) = contract.failures.first() {
             function.blocks.push(SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: failed_inputs,
@@ -9585,6 +9589,7 @@ mod tests {
             return_ty: ResolvedTy::I64,
             entry: BlockId(0),
             blocks: vec![SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![SemOp {
@@ -9608,6 +9613,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            debug: Default::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),
@@ -9650,6 +9656,7 @@ mod tests {
         let mut module = scalar_entry_module();
         module.functions[0].blocks = vec![
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -9698,6 +9705,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(1),
                 args: vec![BlockArg {
                     value: ValueId(3),
@@ -9713,6 +9721,7 @@ mod tests {
                 },
             },
             SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(2),
                 args: vec![],
                 ops: vec![],
@@ -9752,6 +9761,7 @@ mod tests {
             return_ty: ResolvedTy::Bytes,
             entry: BlockId(0),
             blocks: vec![SemBlock {
+                terminator_provenance: hew_sir::Provenance::Synthesized,
                 id: BlockId(0),
                 args: vec![],
                 ops: vec![
@@ -9797,6 +9807,7 @@ mod tests {
             bindings: vec![],
         };
         SemModule {
+            debug: Default::default(),
             regex_patterns: Vec::new(),
             actors: Vec::new(),
             supervisors: Vec::new(),

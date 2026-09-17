@@ -214,6 +214,7 @@ fn tuple_verifier_rejects_non_tuple_construction_and_projection() {
         return_ty: ResolvedTy::I64,
         entry: BlockId(0),
         blocks: vec![SemBlock {
+            terminator_provenance: hew_sir::Provenance::Synthesized,
             id: BlockId(0),
             args: Vec::new(),
             ops: vec![

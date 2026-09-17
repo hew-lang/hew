@@ -11382,9 +11382,10 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
     // SAFETY: the caller keeps `sup` live through this inline-field read.
     let baseline = *unsafe { &(*sup).restart_epoch }.0.lock_or_recover();
 
+    // SAFETY: the caller keeps `sup` live through this inline-field read.
+    let owner = unsafe { (*sup).local_pid_id };
     let role = RoleKey {
-        // SAFETY: the caller keeps `sup` live through this inline-field read.
-        owner: unsafe { (*sup).local_pid_id },
+        owner,
         slot: key,
         nested: false,
     };
@@ -11577,8 +11578,9 @@ unsafe fn supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32, n
         return;
     }
     // SAFETY: the caller keeps the allocation live for the whole wait.
+    let owner = unsafe { (*sup).local_pid_id };
     let role = RoleKey {
-        owner: unsafe { (*sup).local_pid_id },
+        owner,
         slot: key,
         nested,
     };

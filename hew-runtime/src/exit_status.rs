@@ -433,10 +433,7 @@ impl RoleFaultIndex {
     }
 
     fn pending(state: &RoleFaultState, role: RoleKey) -> bool {
-        state
-            .open
-            .iter()
-            .any(|(_, roles)| roles.iter().any(|candidate| *candidate == role))
+        state.open.iter().any(|(_, roles)| roles.contains(&role))
     }
 }
 

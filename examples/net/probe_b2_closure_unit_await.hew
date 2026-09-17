@@ -1,5 +1,5 @@
 // Closure probe that reads a captured connection and discards the value.
-// The ordinary read can suspend; this probe checks the captured handle lifetime.
+// The ordinary recv can suspend; this probe checks the captured handle lifetime.
 import std.net.{Listener};
 
 extern "C" {
@@ -15,7 +15,7 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_once = move || {
-            let _ = conn.read_string();
+            let _ = conn.recv();
             let _ = conn.close();
         };
         read_once();
@@ -34,7 +34,7 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     fork reader.go(0);
     let client = listener.accept();
-    let _ = client.write_string("hello-from-server");
+    let _ = client.send("hello-from-server".to_bytes());
     sleep(500ms);
     let _ = client.close();
     println("server-done");

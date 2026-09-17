@@ -149,7 +149,7 @@ trait RequestMethods {
 
     /// Begin a streaming response and return a `Sink` for chunked output.
     ///
-    /// Each `sink.write(chunk)` sends data to the client immediately.
+    /// Each `sink.send(chunk)` sends data to the client immediately.
     /// Call `sink.close()` to finish the response.
     ///
     /// # Examples
@@ -162,8 +162,8 @@ trait RequestMethods {
     ///         .Ok(server) => {
     ///             let req = server.accept();
     ///             let body = req.respond_stream(200, "text/plain").expect("begin response");
-    ///             body.write("chunk 1");
-    ///             body.write("chunk 2");
+    ///             body.send("chunk 1").expect("send");
+    ///             body.send("chunk 2").expect("send");
     ///             body.close();
     ///             server.close();
     ///         },

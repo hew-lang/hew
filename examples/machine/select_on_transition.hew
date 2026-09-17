@@ -2,17 +2,17 @@
 //
 // Machines are value types — there is no shared machine instance an
 // observer could subscribe to. The supported observation pattern is the
-// notification channel: the OWNER steps its machine and publishes each
-// observed transition into a `Sender<Transition>`; the OBSERVER receives
-// the channel end through an actor message (local handle transfer) and
-// selects on the receive arm with an `after` safety net. Channel close
+// notification pipe: the OWNER steps its machine and publishes each
+// observed transition into a `Sink<Transition>`; the OBSERVER receives
+// the pipe half through an actor message (local handle transfer) and
+// selects on the receive arm with an `after` safety net. End of stream
 // (`None`) is the cancellation-clean teardown. Replay semantics are
 // transitions-after-subscribe; the owner sends the current state as a
 // self-transition at attach so a watcher joining an already-started
 // machine fires immediately.
 import std.concurrency.lifecycle.{Lifecycle, LifecycleEvent};
 
-import std.channel;
+import std.stream;
 
 /// One observed transition, with the previous and next state names.
 type Transition {
@@ -22,27 +22,27 @@ type Transition {
 
 actor Owner {
     var lc: Lifecycle<i64> = .Created,
-    receive fn drive(tx: channel.Sender<Transition>) {
+    receive fn drive(consume tx: stream.Sink<Transition>) {
 
         // Attach snapshot: a self-transition naming the current state.
         let current = lc.state_name();
-        tx.send(Transition { from_state: current, to_state: lc.state_name() });
+        tx.send(Transition { from_state: current, to_state: lc.state_name() }).expect("send");
         let before_init = lc.state_name();
         lc.step(LifecycleEvent.Initialise);
         if before_init != lc.state_name() {
-            tx.send(Transition { from_state: before_init, to_state: lc.state_name() });
+            tx.send(Transition { from_state: before_init, to_state: lc.state_name() }).expect("send");
         }
         let before_start = lc.state_name();
         lc.step(LifecycleEvent.Started { handle: 7 });
         if before_start != lc.state_name() {
-            tx.send(Transition { from_state: before_start, to_state: lc.state_name() });
+            tx.send(Transition { from_state: before_start, to_state: lc.state_name() }).expect("send");
         }
         tx.close();
     }
 }
 
 actor Observer {
-    receive fn watch(rx: channel.Receiver<Transition>) {
+    receive fn watch(consume rx: stream.Stream<Transition>) {
         var waiting = true;
         while waiting {
             select {
@@ -73,12 +73,15 @@ actor Observer {
 }
 
 fn main() {
-    let (tx, rx): (channel.Sender<Transition>, channel.Receiver<Transition>) = match channel.new(8) {
+    let (tx, rx): (stream.Sink<Transition>, stream.Stream<Transition>) = match stream.pipe(8) {
         .Ok(pair) => pair,
-        .Err(err) => panic(f"channel.new failed: {err}"),
+        .Err(err) => panic(f"stream.pipe failed: {err}"),
     };
     let obs = spawn Observer;
-    let _ = obs.watch(rx);
+    // `fork` starts the watcher concurrently: an ordinary call would wait for
+    // the handler to finish before `main` reaches the owner below, and the
+    // watcher cannot finish until the owner publishes.
+    fork obs.watch(rx);
     let owner = spawn Owner;
     let _ = owner.drive(tx);
     sleep(300ms);

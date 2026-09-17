@@ -27,7 +27,6 @@ import std.stream.{Sink, Stream};
 
 extern "C" {
     fn hew_actor_self_stop();
-    fn hew_sink_shutdown(sink: Sink<bytes>);
 }
 
 actor ChatRoom {
@@ -71,7 +70,7 @@ actor ClientHandler {
     let room: ChatRoom,
     var registered: bool,
     receive fn welcome() {
-        sink.send(f"[server] welcome {name}".to_bytes());
+        let _ = sink.send(f"[server] welcome {name}".to_bytes());
     }
     receive fn on_data(chunk: bytes) -> bool {
         let data = utf8.decode(chunk) handle error {
@@ -84,7 +83,7 @@ actor ClientHandler {
             return false;
         }
         if data.contains("__HEW_TCP_DISCONNECT__") {
-            sink.send("__HEW_TCP_DISCONNECT__".to_bytes());
+            let _ = sink.send("__HEW_TCP_DISCONNECT__".to_bytes());
             self_close();
             return false;
         }
@@ -97,16 +96,14 @@ actor ClientHandler {
         self_close();
     }
     receive fn deliver(msg: string) {
-        sink.send(msg.to_bytes());
+        let _ = sink.send(msg.to_bytes());
     }
     fn self_close() {
         if registered {
             let _ = room.unregister(name);
             registered = false;
         }
-        unsafe {
-            hew_sink_shutdown(sink)
-        };
+        sink.finish();
         unsafe {
             hew_actor_self_stop()
         };
@@ -163,7 +160,7 @@ fn main() {
     loop {
         let conn = listener.accept();
         let name = f"client-{next_id}";
-        let (input, sink) = conn.into_stream_sink();
+        let (input, sink) = conn.split();
         let handler = spawn ClientHandler(sink: sink, name: name.clone(), room: room, registered: true);
         let _ = room.register(handler, name);
         let _ = handler.welcome();

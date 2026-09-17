@@ -1,6 +1,6 @@
-//! TCP read from an actor using the ordinary `conn.read()` call.
-//! Migration needed: main waits for the reader before accepting its connection.
-//! Start the reader concurrently before accepting and serving the connection.
+//! TCP read from an actor using the ordinary `conn.recv()` call.
+//! `fork` starts the reader concurrently before main accepts and serves
+//! the connection; an ordinary call would wait for the reader first.
 
 import std.encoding.utf8;
 
@@ -16,11 +16,16 @@ actor Reader {
             .Ok(conn) => conn,
             .Err(_) => panic(f"network setup failed"),
         };
-        let body = utf8.decode(conn.read()) handle error {
-            println(f"invalid UTF-8: {error}");
-            return;
-        };
-        println(f"reader-received: {body}");
+        match conn.recv() {
+            .Some(data) => {
+                let body = utf8.decode(data) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    return;
+                };
+                println(f"reader-received: {body}");
+            },
+            .None => println("reader-received: peer closed"),
+        }
         let _ = conn.close();
     }
 }
@@ -31,9 +36,9 @@ fn main() {
         .Err(_) => panic(f"network setup failed"),
     };
     let reader = spawn Reader(port: "18077");
-    let _ = reader.go(0);
+    fork reader.go(0);
     let client = listener.accept();
-    let _ = client.write_string("hello-from-server");
+    let _ = client.send("hello-from-server".to_bytes());
     sleep(500ms);
     let _ = client.close();
     println("server-done");

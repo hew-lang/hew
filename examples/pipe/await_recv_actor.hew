@@ -1,0 +1,31 @@
+//! Receive a queued pipe item, then observe end-of-stream with `rx.recv()`.
+//! Calls wait directly. This example exercises the ready and EOF paths;
+//! it does not demonstrate suspension on an empty pipe with a live sink.
+
+import std.stream;
+
+actor Worker {
+    receive fn run() {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
+            .Ok(pair) => pair,
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
+        };
+        tx.send("ping").expect("send");
+        tx.close();
+        match rx.recv() {
+            .Some(v) => println(v),
+            .None => println("closed"),
+        }
+        match rx.recv() {
+            .Some(v) => println(v),
+            .None => println("closed"),
+        }
+        rx.close();
+    }
+}
+
+fn main() {
+    let w = spawn Worker;
+    let _ = w.run();
+    sleep(100ms);
+}

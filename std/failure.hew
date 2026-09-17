@@ -109,7 +109,7 @@ pub enum CrashKind {
     Crashed,
     /// Per-actor arena cap exceeded.
     HeapExceeded,
-    /// A duplex / mailbox partition was observed on a recv path the
+    /// A pipe / mailbox partition was observed on a recv path the
     /// crashed actor was awaiting.
     PartitionDetected,
 }

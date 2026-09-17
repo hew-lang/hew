@@ -1,11 +1,9 @@
 //! Executed regression for NEW-4: worker-free `Stream<T>.recv()` (no `await`
 //! needed for a local stream) and the `select { pat from rx.recv() }` arm.
 //!
-//! The programs are embedded here rather than read from `examples/channel/`:
-//! that directory still holds pre-D506 fixtures using the deleted
-//! `std.channel` API and is out of this file's scope to rewrite. Each program
-//! below is the direct translation to `std.stream` (`Sink`/`Stream`,
-//! `stream.pipe`), compiled and run via `hew run`, with stdout asserted under
+//! The programs are embedded here so the oracle does not move with
+//! `examples/pipe/`. Each program is compiled and run via `hew run`, with
+//! stdout asserted under
 //! both the default pool and `HEW_WORKERS=1` — the single-worker run is the
 //! worker-freeing proof (a blocking recv would strand the lone worker).
 

@@ -1,17 +1,17 @@
-//! Status: runnable (v0.5 ordinary for over Receiver<i64>)
-//! Description: Drains an integer channel receiver with `for`.
+//! Status: runnable (ordinary for over Stream<i64>)
+//! Description: Drains an integer pipe with `for`.
 
-import std.channel;
+import std.stream;
 
 actor DrainInts {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+        let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        tx.send(1);
-        tx.send(2);
-        tx.send(3);
+        tx.send(1).expect("send");
+        tx.send(2).expect("send");
+        tx.send(3).expect("send");
         tx.close();
         for item in rx {
             println(item);

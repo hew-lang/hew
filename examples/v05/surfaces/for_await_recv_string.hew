@@ -1,17 +1,17 @@
-//! Status: runnable (v0.5 ordinary for over Receiver<string>)
-//! Description: Drains a channel receiver with `for`.
+//! Status: runnable (ordinary for over Stream<string>)
+//! Description: Drains a string pipe with `for`.
 
-import std.channel;
+import std.stream;
 
 actor DrainStrings {
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        tx.send("a");
-        tx.send("b");
-        tx.send("c");
+        tx.send("a").expect("send");
+        tx.send("b").expect("send");
+        tx.send("c").expect("send");
         tx.close();
         for item in rx {
             println(item);

@@ -1,22 +1,22 @@
-//! `select { pat = rx.recv() }` — a channel-receive arm in select (NEW-4).
+//! `select { pat from rx.recv() }` — a pipe-receive arm in select.
 //!
-//! Two channels race plus an `after` safety net; the ready channel's arm wins,
+//! Two pipes race plus an `after` safety net; the ready pipe's arm wins,
 //! the loser arm's poll is cancelled at the dispatch site, and the after-timer
-//! never fires. A correct run prints the winning channel's value.
+//! never fires. A correct run prints the winning pipe's value.
 
-import std.channel;
+import std.stream;
 
 actor Worker {
     receive fn run() {
-        let (txa, rxa): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) {
+        let (txa, rxa): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        let (txb, rxb): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(4) {
+        let (txb, rxb): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        txb.send(7);
+        txb.send(7).expect("send");
         select {
             a from rxa.recv() => {
                 match a {

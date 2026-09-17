@@ -38,8 +38,8 @@ fn main() {
 
 Calls wait for their results, including actor handlers returning unit. Use
 `fork` to start concurrent work; `await` takes `Task<T>` or `Vec<Task<T>>` and
-returns `T` or `Vec<T>`. Channel and stream calls wait directly, and streams
-are drained with ordinary `for` loops.
+returns `T` or `Vec<T>`. Pipe calls wait directly, and streams are drained
+with ordinary `for` loops.
 
 A `scope` produces its body value after child tasks and cleanup finish.
 `scope within duration { ... } handle failure { ... }` provides deadline

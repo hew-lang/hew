@@ -34,7 +34,7 @@ actor Drainer {
 }
 
 fn main() {
-    let (sink, input) = match stream.bytes_pipe(8) {
+    let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = match stream.pipe(8) {
         .Ok(pair) => pair,
         .Err(error) => panic(error),
     };
@@ -47,7 +47,7 @@ fn main() {
     fork d.run();
     // Producer side: drive the local sink, then close it to signal EOF.
     for i in 0 .. 3 {
-        sink.send(f"frame-{i}".to_bytes());
+        sink.send(f"frame-{i}".to_bytes()).expect("send");
     }
     sink.close();
     // Every printed line comes from the handler; runtime shutdown drains the

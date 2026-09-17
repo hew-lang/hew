@@ -31,7 +31,6 @@ import std.os;
 
 extern "C" {
     fn hew_actor_self_stop();
-    fn hew_sink_shutdown(sink: Sink<bytes>);
 }
 
 // Bound buffering for peers that advertise a very large Remaining Length and
@@ -229,9 +228,7 @@ actor ClientHandler {
         if accepted {
             registered = true;
         } else {
-            unsafe {
-                hew_sink_shutdown(sink)
-            };
+            sink.finish();
             unsafe {
                 hew_actor_self_stop()
             };
@@ -239,7 +236,7 @@ actor ClientHandler {
         accepted
     }
     receive fn deliver(packet: bytes) {
-        sink.send(packet);
+        let _ = sink.send(packet);
     }
     receive fn on_data(chunk: bytes) -> bool {
         var connected = true;
@@ -318,16 +315,16 @@ actor ClientHandler {
                                         client_id = new_client_id;
                                     }
                                     println(f"[mqtt] CONNECT client_id={client_id}");
-                                    sink.send(build_connack(0, 0));
+                                    let _ = sink.send(build_connack(0, 0));
                                 } else {
                                     connect_rejected = true;
                                     connected = false;
                                     if claim_status == 0 {
                                         println(f"[mqtt] duplicate client_id={new_client_id} rejected session={session_id}");
-                                        sink.send(build_connack(0, 2));
+                                        let _ = sink.send(build_connack(0, 2));
                                     } else {
                                         println(f"[mqtt] ClientId claim unavailable session={session_id}");
-                                        sink.send(build_connack(0, 3));
+                                        let _ = sink.send(build_connack(0, 3));
                                     }
                                 }
                             }
@@ -355,7 +352,7 @@ actor ClientHandler {
                             if has_bytes(packet_end, payload_off, 2) {
                                 packet_id = read_u16(buf, payload_off);
                                 payload_off = payload_off + 2;
-                                sink.send(build_puback(packet_id));
+                                let _ = sink.send(build_puback(packet_id));
                             } else {
                                 connected = false;
                             }
@@ -401,7 +398,7 @@ actor ClientHandler {
                             topic_off = topic_off + tw + 1;
                         }
                         if connected {
-                            sink.send(build_suback(sub_packet_id, return_codes));
+                            let _ = sink.send(build_suback(sub_packet_id, return_codes));
                             println("[mqtt] SUBSCRIBE processed");
                         }
                     }
@@ -431,7 +428,7 @@ actor ClientHandler {
                             topic_off = topic_off + tw;
                         }
                         if connected {
-                            sink.send(build_unsuback(unsub_packet_id));
+                            let _ = sink.send(build_unsuback(unsub_packet_id));
                             println(f"[mqtt] UNSUBSCRIBE {client_id}");
                         }
                     }
@@ -442,7 +439,7 @@ actor ClientHandler {
                 12 => {
                     // PINGREQ
                     if pflags == 0 && remaining_len == 0 {
-                        sink.send(build_pingresp());
+                        let _ = sink.send(build_pingresp());
                     } else {
                         connected = false;
                         println(f"[mqtt] malformed PINGREQ for {client_id}");
@@ -475,9 +472,7 @@ actor ClientHandler {
                 registered = false;
             }
             println(f"[mqtt] connection closed for {client_id}");
-            unsafe {
-                hew_sink_shutdown(sink)
-            };
+            sink.finish();
             unsafe {
                 hew_actor_self_stop()
             };
@@ -490,9 +485,7 @@ actor ClientHandler {
             registered = false;
             println(f"[mqtt] connection closed for {client_id}");
         }
-        unsafe {
-            hew_sink_shutdown(sink)
-        };
+        sink.finish();
         unsafe {
             hew_actor_self_stop()
         };
@@ -674,7 +667,7 @@ actor Acceptor {
         loop {
             let conn = lst.accept();
             let cid = f"client-{next_id}";
-            let (input, sink) = conn.into_stream_sink();
+            let (input, sink) = conn.split();
             let handler = spawn ClientHandler(sink: sink, session_id: cid.clone(), client_id: cid.clone(), router: router, buf: bytes.new(), registered: false);
             let accepted = match handler.register() {
                 .Ok(value) => value,

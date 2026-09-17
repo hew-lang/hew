@@ -1,16 +1,16 @@
-//! Status: runnable (v0.5 record elements over std.channel)
-//! Description: Round-trips a heap-owning record through a channel and
+//! Status: runnable (record elements over std.stream)
+//! Description: Round-trips a heap-owning record through a pipe and
 //! breaks out of a `for` drain early with items still queued.
 //!
 //! A record with a `string` field is a LayoutManaged element: `send` deep-
 //! copies it into the queue envelope via the witness `clone_fn` (the caller
 //! keeps its value), `recv`/`try_recv` move the decoded element to the
-//! consumer, and a receiver dropped with items still queued releases each
+//! consumer, and a stream dropped with items still queued releases each
 //! unconsumed envelope exactly once via the witness `drop_fn`. The early
 //! `break` below exercises that queue-drop path: two `Tagged` envelopes are
 //! still queued when `rx` goes out of scope.
 
-import std.channel;
+import std.stream;
 
 type Tagged {
     label: string,
@@ -26,13 +26,13 @@ actor DrainRecords {
         0
     }
     receive fn run(unused: i64) {
-        let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = match channel.new(4) {
+        let (tx, rx): (stream.Sink<Tagged>, stream.Stream<Tagged>) = match stream.pipe(4) {
             .Ok(pair) => pair,
-            .Err(err) => panic(f"channel.new failed: {err}"),
+            .Err(err) => panic(f"stream.pipe failed: {err}"),
         };
-        tx.send(Tagged { label: "first", value: 1 });
-        tx.send(Tagged { label: "second", value: 2 });
-        tx.send(Tagged { label: "third", value: 3 });
+        tx.send(Tagged { label: "first", value: 1 }).expect("send");
+        tx.send(Tagged { label: "second", value: 2 }).expect("send");
+        tx.send(Tagged { label: "third", value: 3 }).expect("send");
         tx.close();
         for item in rx {
             println(item.label);
@@ -52,11 +52,11 @@ fn main() {
     }
     // Non-blocking sibling: try_recv moves one queued record out; the match
     // owns the payload and drops it at arm scope exit.
-    let (tx, rx): (channel.Sender<Tagged>, channel.Receiver<Tagged>) = match channel.new(2) {
+    let (tx, rx): (stream.Sink<Tagged>, stream.Stream<Tagged>) = match stream.pipe(2) {
         .Ok(pair) => pair,
-        .Err(err) => panic(f"channel.new failed: {err}"),
+        .Err(err) => panic(f"stream.pipe failed: {err}"),
     };
-    tx.send(Tagged { label: "polled", value: 9 });
+    tx.send(Tagged { label: "polled", value: 9 }).expect("send");
     tx.close();
     match rx.try_recv() {
         .Some(item) => println(item.label),

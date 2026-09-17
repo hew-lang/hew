@@ -23,9 +23,13 @@ fn serve(addr: string, requests: i64) {
         var reads = 0;
         var done = false;
         while !done {
-            let chunk = utf8.decode(conn.read()) handle error {
-                println(f"invalid UTF-8: {error}");
-                return;
+            // `None` is the peer's end of stream; an empty chunk ends the loop.
+            let chunk = match conn.recv() {
+                .Some(data) => utf8.decode(data) handle error {
+                    println(f"invalid UTF-8: {error}");
+                    return;
+                },
+                .None => "",
             };
             reads = reads + 1;
             if string.is_empty(chunk) {
@@ -51,7 +55,7 @@ fn serve(addr: string, requests: i64) {
                 _ => http_async_server.response_text(404, "not found"),
             };
         }
-        let _ = conn.write_string(reply);
+        let _ = conn.send(reply.to_bytes());
         let _ = conn.close();
     }
     let _ = listener.close();
@@ -62,14 +66,18 @@ fn fetch(addr: string, host: string, path: string) {
         .Ok(conn) => conn,
         .Err(_) => panic(f"network setup failed"),
     };
-    let _ = conn.write_string(http_async_client.build_get(host, path));
+    let _ = conn.send(http_async_client.build_get(host, path).to_bytes());
     var raw = "";
     var reads = 0;
     var done = false;
     while !done {
-        let chunk = utf8.decode(conn.read()) handle error {
-            println(f"invalid UTF-8: {error}");
-            return;
+        // `None` is the peer's end of stream; an empty chunk ends the loop.
+        let chunk = match conn.recv() {
+            .Some(data) => utf8.decode(data) handle error {
+                println(f"invalid UTF-8: {error}");
+                return;
+            },
+            .None => "",
         };
         reads = reads + 1;
         if string.is_empty(chunk) {

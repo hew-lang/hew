@@ -1,5 +1,5 @@
 //! Closure probe with two reads from a captured connection.
-//! Each ordinary read waits for data or EOF; the closure must preserve its
+//! Each ordinary recv waits for data or EOF; the closure must preserve its
 //! captured handle across suspension. `await_e2e` runs this under both pools.
 
 import std.encoding.utf8;
@@ -20,8 +20,16 @@ actor Reader {
             .Err(_) => panic(f"network setup failed"),
         };
         let read_twice = move || {
-            let first = utf8.decode(conn.read());
-            let second = utf8.decode(conn.read());
+            let first_bytes = match conn.recv() {
+                .Some(data) => data,
+                .None => "".to_bytes(),
+            };
+            let second_bytes = match conn.recv() {
+                .Some(data) => data,
+                .None => "".to_bytes(),
+            };
+            let first = utf8.decode(first_bytes);
+            let second = utf8.decode(second_bytes);
             let _ = conn.close();
             (first, second)
         };
@@ -50,7 +58,7 @@ fn main() {
     let reader = spawn Reader(addr: f"127.0.0.1:{port}");
     fork reader.go(0);
     let client = listener.accept();
-    let _ = client.write_string("payload");
+    let _ = client.send("payload".to_bytes());
     sleep(300ms);
     let _ = client.close();
     sleep(300ms);

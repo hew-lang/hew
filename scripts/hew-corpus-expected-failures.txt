@@ -79,7 +79,7 @@ examples/v05/cancellation_is_cancelled_observation.hew E_SIR_UNSUPPORTED
 
 # corpus-intentional-refusal: `*_fails.hew` programs demonstrate the refusal
 # their name states
-examples/v05/channel_vec_element_fails.hew
+examples/v05/pipe_vec_element_fails.hew
 examples/v05/vec_unsupported_method_fails.hew
 
 # ── hew-cli/ ────────────────────────────────────────────────────────────────────
@@ -281,7 +281,6 @@ tests/pkg-import/pkgs/sinkres/sinkres.hew
 tests/vertical-slice/accept/actor_state_field_reinit.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/branch_join_diverging_guard.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/coalesce_owned_payload_leak.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/duplex_split_roundtrip.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/free_fn_actor_scope_spawn.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/gen_block_explicit_return.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/generic_spawn_unit.hew E_SIR_UNSUPPORTED

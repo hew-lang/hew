@@ -5148,17 +5148,22 @@ socket stream is not a select source in edition 2026 (§2.1.1).
 `trait Codec<T>` frames bytes into items and back:
 
 ```
+enum Decoded<T> {
+    Frame(T, bytes),
+    Incomplete(bytes),
+}
+
 trait Codec<T> {
-    fn decode(self, buf: bytes) -> Result<(Option<T>, bytes), CodecError>;
+    fn decode(self, buf: bytes) -> Result<Decoded<T>, CodecError>;
     fn encode(self, item: T) -> bytes;
 }
 ```
 
 `decode` returns the first complete frame with the bytes that follow it,
-or `None` with the buffer unchanged when more bytes are needed; `encode`
-returns one item's frame. The shape follows value semantics: a `var`
-parameter is the callee's own copy, so a codec hands the remaining bytes
-back instead of advancing the caller's buffer in place. `std.stream`
+or `Incomplete` with the buffer unchanged when more bytes are needed;
+`encode` returns one item's frame. The shape follows value semantics: a
+`var` parameter is the callee's own copy, so a codec hands the remaining
+bytes back instead of advancing the caller's buffer in place. `std.stream`
 ships `Lines` (`Codec<string>`) and
 `LengthPrefixed { width }` (`Codec<bytes>`); `lines()` is the `Lines`
 case as a method. Generic `frames(codec)` / `framed(codec)` adapters over

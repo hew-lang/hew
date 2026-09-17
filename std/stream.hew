@@ -148,17 +148,24 @@ impl Display for CodecError {
     }
 }
 
+/// One `decode` step: a complete frame with the bytes after it, or the
+/// buffer handed back unchanged because more bytes are needed.
+pub enum Decoded<T> {
+    Frame(T, bytes),
+    Incomplete(bytes),
+}
+
 /// Frames bytes into typed items and back.
 ///
 /// `decode` takes the buffered bytes and returns the first complete frame
-/// with the bytes that follow it, or `None` with the buffer unchanged when
-/// more bytes are needed. `encode` returns one item's frame. Values are
-/// copy-on-write, so the caller keeps what `decode` hands back: a `var`
+/// with the bytes that follow it, or `Incomplete` with the buffer unchanged
+/// when more bytes are needed. `encode` returns one item's frame. Values
+/// are copy-on-write, so the caller keeps what `decode` hands back: a `var`
 /// parameter is the callee's own copy and cannot advance the caller's
 /// buffer. `Lines` and `LengthPrefixed` are the shipped codecs;
 /// `Stream<bytes>.lines()` is the `Lines` case as a method.
 pub trait Codec<T> {
-    fn decode(self, buf: bytes) -> Result<(Option<T>, bytes), CodecError>;
+    fn decode(self, buf: bytes) -> Result<Decoded<T>, CodecError>;
     fn encode(self, item: T) -> bytes;
 }
 
@@ -167,7 +174,7 @@ pub type Lines {
 }
 
 impl Codec<string> for Lines {
-    fn decode(self, buf: bytes) -> Result<(Option<string>, bytes), CodecError> {
+    fn decode(self, buf: bytes) -> Result<Decoded<string>, CodecError> {
         var end = -1;
         for i in 0 .. buf.len() {
             if end < 0 && buf[i] == 10 {
@@ -175,12 +182,12 @@ impl Codec<string> for Lines {
             }
         }
         if end < 0 {
-            return Ok((None, buf));
+            return Ok(Decoded.Incomplete(buf));
         }
         let line = buf[0..end];
         let rest = buf[end + 1..buf.len()];
         match utf8.decode(line) {
-            .Ok(text) => Ok((Some(text), rest)),
+            .Ok(text) => Ok(Decoded.Frame(text, rest)),
             .Err(error) => Err(CodecError.Malformed(to_string(error))),
         }
     }
@@ -197,23 +204,23 @@ pub type LengthPrefixed {
 }
 
 impl Codec<bytes> for LengthPrefixed {
-    fn decode(self, buf: bytes) -> Result<(Option<bytes>, bytes), CodecError> {
+    fn decode(self, buf: bytes) -> Result<Decoded<bytes>, CodecError> {
         if self.width != 1 && self.width != 2 && self.width != 4 {
             return Err(CodecError.Malformed(f"length prefix width {self.width} is not 1, 2 or 4"));
         }
         if buf.len() < self.width {
-            return Ok((None, buf));
+            return Ok(Decoded.Incomplete(buf));
         }
         var length = 0;
         for i in 0 .. self.width {
             length = length * 256 + (buf[i] as i64);
         }
         if buf.len() < self.width + length {
-            return Ok((None, buf));
+            return Ok(Decoded.Incomplete(buf));
         }
         let frame = buf[self.width..self.width + length];
         let rest = buf[self.width + length..buf.len()];
-        Ok((Some(frame), rest))
+        Ok(Decoded.Frame(frame, rest))
     }
     fn encode(self, item: bytes) -> bytes {
         var remaining = item.len();

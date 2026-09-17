@@ -224,28 +224,6 @@ tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(scope):"
 
 [[feature]]
-id = "channel-non-blocking"
-label = "`channel.new`, `Sender<T>.send/clone/close`, `Receiver<T>.try_recv/close`"
-checker = "pass"
-runtime = "implemented"
-runtime_status = "Bounded non-blocking slice implemented; `send` traps on full queue"
-categories = ["runtime", "channels"]
-tracking_label = "v0.3.2"
-
-[[feature]]
-id = "channel-blocking-recv"
-enum_variant = "BlockingChannelRecv"
-label = "Blocking channel receive operations"
-prose_label = "`Receiver<T>.recv`, `for item in rx` over `Receiver<T>`"
-reason = "Receiver<T>.recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead"
-checker = "reject"
-runtime = "trap"
-runtime_status = "`unreachable!()` trap"
-categories = ["runtime", "channels"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(channels):"
-
-[[feature]]
 id = "semaphore-non-blocking"
 label = "`semaphore.new`, `Semaphore.try_acquire/release/count/free`"
 checker = "pass"
@@ -294,8 +272,8 @@ tracking_label = "Implemented"
 id = "streams"
 enum_variant = "Streams"
 label = "Stream operations"
-prose_label = "`stream.*` constructors, `Stream<T>.*` methods"
-reason = "I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32"
+prose_label = "`stream.pipe`/`stream.open`, `Stream<T>.*` and `Sink<T>.*` methods"
+reason = "the pipe runtime (suspending queue core, file and socket backings) is not compiled for wasm32; the one pipe family is native-only until the queue core is ported"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "Module not compiled"
@@ -513,14 +491,8 @@ tracking_label = "WASM-TODO(crypto-sign):"
 native_only_modules = ["sign"]
 
 # ---------------------------------------------------------------------------
-# WASM-TODO backlog (40 rows; mirror of the backlog table).
+# WASM-TODO backlog (mirror of the backlog table).
 # ---------------------------------------------------------------------------
-
-[[backlog]]
-id = "channels"
-gap = "Blocking channel recv / full-queue backpressure parity"
-blocker = "Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs`"
-tracking_label = "WASM-TODO(channels):"
 
 [[backlog]]
 id = "actor-crash-containment"
@@ -705,12 +677,6 @@ blocker = "A host-provided source map for WASM and no-filesystem diagnostic rend
 tracking_label = "WASM-TODO(diagnostic-source-map):"
 
 [[backlog]]
-id = "duplex"
-gap = "Duplex channel parity"
-blocker = "A cooperative WASM implementation of the native dual-queue Duplex runtime"
-tracking_label = "WASM-TODO(duplex):"
-
-[[backlog]]
 id = "http-client"
 gap = "Outbound HTTP client parity"
 blocker = "A browser/WASI request bridge for the native-only HTTP client wrapper"
@@ -749,7 +715,7 @@ tracking_label = "WASM-TODO(smtp):"
 [[backlog]]
 id = "suspending-receive"
 gap = "Shared suspending receive carrier parity"
-blocker = "WASM continuation routing for for-await over channel and stream receive operations"
+blocker = "WASM continuation routing for `for` over a stream and the pipe receive/send suspensions"
 tracking_label = "WASM-TODO(suspending-receive):"
 
 [[backlog]]

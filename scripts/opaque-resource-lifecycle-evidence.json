@@ -18,22 +18,6 @@
       "release_symbol": "hew_msg_envelope_release"
     },
     {
-      "source_path": "std/channel/channel.hew",
-      "resource": "ChannelPair",
-      "runtime": {
-        "path": "hew-runtime/src/channel.rs",
-        "test": "pair_held_receiver_releases_queued_owned_elements",
-        "valid_handle": true,
-        "execution_profile": "local"
-      },
-      "wasm": {
-        "profile": "wasm32-wasi",
-        "disposition": "accepted",
-        "proof_kind": "internal-transient"
-      },
-      "release_symbol": "hew_channel_pair_free"
-    },
-    {
       "source_path": "std/encoding/toml/toml.hew",
       "resource": "Value",
       "runtime": {

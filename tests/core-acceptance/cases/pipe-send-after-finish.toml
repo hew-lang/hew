@@ -1,0 +1,10 @@
+[[case]]
+id = "pipe-send-after-finish"
+intent = "A send to a finished sink answers `SendError.Closed` for a plain, string and bytes element, and releases the element the call took exactly once."
+source = "cases/pipe-send-after-finish.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "i64 closed\nstring closed\nbytes closed\n"
+exit = 0

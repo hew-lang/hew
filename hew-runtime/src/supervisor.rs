@@ -1905,6 +1905,15 @@ fn schedule_delayed_restart(
     delay: Duration,
     record: FaultRecord,
 ) -> bool {
+    // Test-only: refuse the arm before any lease is taken, which is the state a
+    // failed thread spawn leaves behind (the failed builder drops the closure
+    // and its lease). Process-global rather than thread-local because this runs
+    // on whichever scheduler worker dispatched the crash, not on the test's
+    // thread.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if should_fail_delayed_restart_arm() {
+        return false;
+    }
     // SAFETY: caller keeps `sup` live through timer admission; the returned
     // lease extends raw-pointer lifetime through the spawned closure.
     let Some(timer) = (unsafe { &(*sup).restart_timers }).begin(record) else {
@@ -2296,6 +2305,17 @@ thread_local! {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 fn should_fail_owned_deferred_supervisor_spawn() -> bool {
     FAIL_OWNED_DEFERRED_SUPERVISOR_SPAWN.with(Cell::get)
+}
+
+/// Test-only: make the next delayed-restart arm refuse, as a failed timer
+/// thread spawn does. Process-global, unlike the thread-local hooks above: the
+/// arm runs on the scheduler worker that dispatched the crash.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+static FAIL_DELAYED_RESTART_ARM: AtomicBool = AtomicBool::new(false);
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+fn should_fail_delayed_restart_arm() -> bool {
+    FAIL_DELAYED_RESTART_ARM.load(Ordering::Acquire)
 }
 
 /// Test-only hook fired in `hew_supervisor_restart_await_suspend` exactly in the
@@ -3776,6 +3796,45 @@ unsafe fn apply_restart(
     }
 }
 
+/// Arm a backoff restart for one child and rule on the attempt.
+///
+/// Arming TRANSFERS `record` to the timer: the restart's effect when it fires
+/// is the ruling, so a successful arm reports [`FaultRuling::ArmedForRestart`].
+/// A REFUSED arm is terminal. No timer exists to fire, so nothing will ever
+/// refill the slot; left unspent it classifies `Transient(Restarting)` — a
+/// restart that is not coming — which every caller reads as "wait". Retiring
+/// the role is the fail-closed answer.
+///
+/// # Safety
+///
+/// `sup` must be valid and stay live across the arm.
+unsafe fn arm_backoff_restart(
+    sup: *mut HewSupervisor,
+    spec_identity: u64,
+    delay_ms: u64,
+    record: FaultRecord,
+    sup_actor_id: u64,
+) -> FaultRuling {
+    crate::tracing::record_supervisor_event(
+        sup_actor_id,
+        crate::tracing::SPAN_SUPERVISOR_BACKOFF,
+        i32::try_from(delay_ms).unwrap_or(i32::MAX),
+    );
+    // Scheduling retains its own timer lease and carries the stable child
+    // identity, never an index.
+    if schedule_delayed_restart(
+        sup,
+        spec_identity,
+        std::time::Duration::from_millis(delay_ms),
+        record,
+    ) {
+        FaultRuling::ArmedForRestart
+    } else {
+        mark_child_spec_spent(sup, spec_identity);
+        FaultRuling::Unrecovered
+    }
+}
+
 /// Decide whether this supervisor recovers a child failure.
 ///
 /// Returns [`FaultRuling::Handled`] only when this supervisor owns
@@ -3920,26 +3979,8 @@ unsafe fn decide_child_failure(
     };
 
     if let Some(delay_ms) = delay_ms {
-        crate::tracing::record_supervisor_event(
-            sup_actor_id,
-            crate::tracing::SPAN_SUPERVISOR_BACKOFF,
-            i32::try_from(delay_ms).unwrap_or(i32::MAX),
-        );
-        // The caller keeps the supervisor live; scheduling retains its own
-        // timer lease and carries the stable child identity, never an index.
-        // Arming TRANSFERS the record to the timer; the restart's effect when
-        // it fires is the ruling. A timer that could not be armed attempts no
-        // restart at all.
-        return if schedule_delayed_restart(
-            sup,
-            spec_identity,
-            std::time::Duration::from_millis(delay_ms),
-            record,
-        ) {
-            FaultRuling::ArmedForRestart
-        } else {
-            FaultRuling::Unrecovered
-        };
+        // SAFETY: the caller keeps `sup` live across the arm and its ruling.
+        return unsafe { arm_backoff_restart(sup, spec_identity, delay_ms, record, sup_actor_id) };
     }
 
     // SAFETY: budget/strategy resolves the stable identity under the roster
@@ -7807,6 +7848,75 @@ mod tests {
                 settled.reason,
                 ChildSlotReason::BudgetExhausted as u8,
                 "a declined restart is BudgetExhausted, not a shutdown"
+            );
+
+            hew_supervisor_stop(sup);
+        }
+    }
+
+    /// Restores the delayed-restart arm on the way out, so one test's injected
+    /// failure cannot leak into another.
+    struct FailDelayedRestartArmGuard;
+
+    impl FailDelayedRestartArmGuard {
+        fn new() -> Self {
+            FAIL_DELAYED_RESTART_ARM.store(true, Ordering::Release);
+            Self
+        }
+    }
+
+    impl Drop for FailDelayedRestartArmGuard {
+        fn drop(&mut self) {
+            FAIL_DELAYED_RESTART_ARM.store(false, Ordering::Release);
+        }
+    }
+
+    /// A delayed restart whose timer could not be armed retires the role.
+    ///
+    /// `schedule_delayed_restart` returning false is the end of the line: no
+    /// timer will fire, so nothing will ever refill the slot. Left unspent it
+    /// classified `Transient(Restarting)` — a restart that is not coming —
+    /// which every caller reads as "wait".
+    ///
+    /// The arm failure is injected at the seam because the real trigger is a
+    /// thread spawn refused under memory or thread-limit pressure, which cannot
+    /// be produced on demand.
+    ///
+    /// This asserts the CLASSIFICATION only. The matching "a blocked
+    /// `await_restart` is released" assertion belongs with the flush barrier:
+    /// on the current barrier the grace window releases the waiter regardless,
+    /// so asserting it here would pass whether or not the role was retired.
+    #[test]
+    fn unarmable_delayed_restart_retires_the_role() {
+        let _rt = crate::runtime_test_guard();
+        let _scheduler = RealSchedulerGuard::new();
+        let _arm = FailDelayedRestartArmGuard::new();
+        // SAFETY: the test owns the supervisor tree.
+        unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            {
+                let mut roster = locked_roster!(sup);
+                let spec = &mut roster.child_specs[0];
+                // Restartable by policy, and already backing off, so the crash
+                // takes the DELAYED path rather than restarting in line.
+                spec.restart_policy = RESTART_PERMANENT;
+                spec.restart_delay_ms = 200;
+            }
+
+            actor::hew_actor_trap(child, 1);
+
+            assert!(
+                wait_for_condition(std::time::Duration::from_secs(10), || {
+                    hew_supervisor_child_get(sup, 0).tag == 2
+                }),
+                "a role whose restart could not be armed must settle Dead, not sit \
+                 on Transient waiting for a timer that was never armed"
+            );
+            let settled = hew_supervisor_child_get(sup, 0);
+            assert_eq!(
+                settled.reason,
+                ChildSlotReason::BudgetExhausted as u8,
+                "an unarmable restart is a decline, not a shutdown"
             );
 
             hew_supervisor_stop(sup);

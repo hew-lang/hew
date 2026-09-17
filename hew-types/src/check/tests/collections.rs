@@ -1240,22 +1240,6 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
         },
     );
     checker.type_defs.insert(
-        "SinkWrapper".to_string(),
-        record_type_def_with_field(
-            "SinkWrapper",
-            "sink",
-            Ty::builtin_named(BuiltinType::Sink, vec![resource.clone()]),
-        ),
-    );
-    checker.type_defs.insert(
-        "StreamWrapper".to_string(),
-        record_type_def_with_field(
-            "StreamWrapper",
-            "stream",
-            Ty::builtin_named(BuiltinType::Stream, vec![resource.clone()]),
-        ),
-    );
-    checker.type_defs.insert(
         "PhantomKey".to_string(),
         TypeDef {
             kind: TypeDefKind::Record,
@@ -1278,24 +1262,47 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
         checker.record_clone_admissibility("HandleWrapper", &[], &span),
         RecordCloneAdmissibility::Admissible
     ));
-    assert!(
-        matches!(
-            checker.record_clone_admissibility("SinkWrapper", &[], &span),
-            RecordCloneAdmissibility::AffineValue { .. }
-        ),
-        "a Sink member has no per-field retain: only `sink.clone()` on the handle adds a producer"
-    );
-    assert!(
-        matches!(
-            checker.record_clone_admissibility("StreamWrapper", &[], &span),
-            RecordCloneAdmissibility::AffineValue { .. }
-        ),
-        "Stream has no semantic clone and must not be a terminal affine-clone leaf"
-    );
     assert!(matches!(
         checker.record_clone_admissibility("PhantomKey", &[resource], &span),
         RecordCloneAdmissibility::Admissible
     ));
+}
+
+/// Both pipe halves are affine members, and the refusal names the endpoint
+/// rather than its payload: a `Sink` gains a producer only through
+/// `sink.clone()` on the handle itself, and nothing lowers a per-field retain,
+/// so a record holding either half has no copy operation whatever it carries.
+#[test]
+fn record_clone_refuses_either_pipe_half_by_the_endpoint() {
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker
+        .registry
+        .register_resource_type("ResourceToken".to_string());
+    let resource = Ty::Named {
+        name: "ResourceToken".to_string(),
+        args: vec![],
+        builtin: None,
+    };
+    for (name, builtin) in [
+        ("SinkWrapper", BuiltinType::Sink),
+        ("StreamWrapper", BuiltinType::Stream),
+    ] {
+        checker.type_defs.insert(
+            name.to_string(),
+            record_type_def_with_field(
+                name,
+                "half",
+                Ty::builtin_named(builtin, vec![resource.clone()]),
+            ),
+        );
+        assert!(
+            matches!(
+                checker.record_clone_admissibility(name, &[], &Span::from(0..0)),
+                RecordCloneAdmissibility::MissingClone { ref member, .. } if member == "half"
+            ),
+            "{name} must refuse the clone at its pipe-half member, not at the payload"
+        );
+    }
 }
 
 #[test]

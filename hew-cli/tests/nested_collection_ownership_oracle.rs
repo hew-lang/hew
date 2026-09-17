@@ -77,7 +77,7 @@ fn main() -> i64 {
     rows.push(inner);
     let holder = spawn Holder(rows: rows);
     sleep(500ms);
-    match await holder.count() {
+    match holder.count() {
         .Ok(v) => v,
         .Err(_) => -1,
     }
@@ -104,8 +104,8 @@ fn actor_nested_vec_source(rows: usize) -> String {
          \x20   }}\n\
          \x20   let buckets = spawn Buckets(rows: rows);\n\
          \x20   sleep(500ms);\n\
-         \x20   match await buckets.count() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20   match buckets.count() {{\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -123,9 +123,9 @@ fn actor_nested_vec_iterate_source(rows: usize) -> String {
          \x20   var rows: Vec<Vec<i64>>,\n\
          \n\
          \x20   receive fn sum_firsts() -> i64 {{\n\
-         \x20       var s: i64 = 0, \n\
+         \x20       var s: i64 = 0;\n\
          \x20       for row in rows {{\n\
-         \x20           s = s + row[0], \n\
+         \x20           s = s + row[0];\n\
          \x20 }}\n\
          \x20       s\n\
          \x20   }}\n\
@@ -141,8 +141,8 @@ fn actor_nested_vec_iterate_source(rows: usize) -> String {
          \x20   }}\n\
          \x20   let buckets = spawn Buckets(rows: rows);\n\
          \x20   sleep(500ms);\n\
-         \x20   match await buckets.sum_firsts() {{\n\
-         \x20       Ok(_) => 0,\n\
+         \x20   match buckets.sum_firsts() {{\n\
+         \x20       .Ok(_) => 0,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -172,8 +172,8 @@ fn actor_nested_hashmap_source(rows: usize) -> String {
          \x20   }}\n\
          \x20   let reg = spawn Registry(buckets: buckets);\n\
          \x20   sleep(500ms);\n\
-         \x20   match await reg.total() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20   match reg.total() {{\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"

@@ -100,6 +100,8 @@
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use crate::util::{CondvarExt as _, MutexExt as _};
+
 /// A supervised crash's record id.
 ///
 /// Rides the system-message payloads that transfer the record's ownership, so a
@@ -319,8 +321,16 @@ pub(crate) fn open_supervised_fault() -> FaultRecord {
 }
 
 /// Apply an authority's ruling to one record.
+///
+/// A ruling that settles the record here also clears its role attribution and
+/// releases every restart barrier waiting on those roles. Routing both through
+/// this one function is what makes "a settled record is never still pending
+/// under a role" structural rather than a rule each of the six settle sites
+/// has to remember.
 pub(crate) fn settle_supervised_fault(record: FaultRecord, ruling: FaultRuling) {
-    AUTHORITY.settle(record, ruling);
+    if AUTHORITY.settle(record, ruling) {
+        ROLE_FAULTS.release(record);
+    }
 }
 
 /// Whether ONE named record is still awaiting a ruling.
@@ -330,6 +340,147 @@ pub(crate) fn settle_supervised_fault(record: FaultRecord, ruling: FaultRuling) 
 #[cfg(test)]
 pub(crate) fn supervised_fault_is_open(record: FaultRecord) -> bool {
     AUTHORITY.is_open(record)
+}
+
+// ── Role attribution ────────────────────────────────────────────────────────
+
+/// One declared supervisor role: a slot on a named supervisor.
+///
+/// `owner` is the supervisor's stable local-handle token, so a key outlives the
+/// incarnations that occupy the slot and no supervisor pointer is ever stored
+/// or dereferenced here. `nested` picks the slot space: `false` indexes the
+/// actor children (`hew_supervisor_child_get`), `true` the child supervisors
+/// (`hew_supervisor_nested_get`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct RoleKey {
+    pub(crate) owner: crate::lifetime::local_handles::HewLocalPidId,
+    pub(crate) slot: u32,
+    pub(crate) nested: bool,
+}
+
+/// Which roles each open record is still pending under, and the barrier wake.
+///
+/// This is the one place "is a fault still unresolved under role R?" is known.
+/// `await_restart R` is defined on it, together with the role's own slot state:
+/// a role is settled when it reads Dead, or holds a non-terminal incarnation
+/// with nothing open here. That makes the barrier a function of supervision
+/// facts rather than of a clock.
+///
+/// The crash site attributes the record to the crashing child's role and to
+/// every ancestor role on the declared-child chain, so an escalated fault keeps
+/// a parent's nested role pending until the parent rules on it.
+///
+/// LOCKING: the record table above is lock-free because it is written on the
+/// language-panic unwind path. This mutex is taken on that same path, and is
+/// safe there because it guards nothing but list operations on a bounded Vec —
+/// it is never held across a call-out, and never acquired while holding a
+/// supervisor `roster` or `restart_epoch`, so no thread involved in crash
+/// handling can be behind it.
+struct RoleFaultIndex {
+    state: std::sync::Mutex<RoleFaultState>,
+    changed: std::sync::Condvar,
+}
+
+struct RoleFaultState {
+    /// One entry per attributed open record: its id and its role chain.
+    /// Bounded by [`MAX_OPEN_RECORDS`], since a record is attributed once and
+    /// released when it settles.
+    open: Vec<(u64, Vec<RoleKey>)>,
+    /// Advanced by every supervision transition that can release a barrier: a
+    /// record settling, a restart cycle completing, a terminal ruling. A
+    /// barrier snapshots it BEFORE reading the slot state it decides on, so a
+    /// transition published in the gap between that read and the wait is seen
+    /// as a change rather than lost.
+    generation: u64,
+}
+
+impl RoleFaultIndex {
+    const fn new() -> Self {
+        Self {
+            state: std::sync::Mutex::new(RoleFaultState {
+                open: Vec::new(),
+                generation: 0,
+            }),
+            changed: std::sync::Condvar::new(),
+        }
+    }
+
+    fn attribute(&self, record: FaultRecord, roles: Vec<RoleKey>) {
+        if !record.is_some() || roles.is_empty() {
+            return;
+        }
+        let mut state = self.state.lock_or_recover();
+        state.open.push((record.as_raw(), roles));
+    }
+
+    fn release(&self, record: FaultRecord) {
+        {
+            let mut state = self.state.lock_or_recover();
+            state.open.retain(|(id, _)| *id != record.as_raw());
+            state.generation += 1;
+        }
+        self.changed.notify_all();
+    }
+
+    /// Announce a supervision transition that changed no record but may have
+    /// changed a slot: a completed restart cycle, a cancellation, a spent role.
+    fn note_change(&self) {
+        {
+            let mut state = self.state.lock_or_recover();
+            state.generation += 1;
+        }
+        self.changed.notify_all();
+    }
+
+    fn pending(state: &RoleFaultState, role: RoleKey) -> bool {
+        state.open.iter().any(|(_, roles)| roles.contains(&role))
+    }
+}
+
+static ROLE_FAULTS: RoleFaultIndex = RoleFaultIndex::new();
+
+/// Attribute an open record to the roles it is pending under.
+pub(crate) fn attribute_supervised_fault(record: FaultRecord, roles: Vec<RoleKey>) {
+    ROLE_FAULTS.attribute(record, roles);
+}
+
+/// Announce a supervision transition to every waiting restart barrier.
+pub(crate) fn note_supervision_change() {
+    ROLE_FAULTS.note_change();
+}
+
+/// The supervision generation a barrier must snapshot before it reads the slot
+/// state it decides on.
+pub(crate) fn supervision_generation() -> u64 {
+    ROLE_FAULTS.state.lock_or_recover().generation
+}
+
+/// Whether a fault is still pending under this role.
+pub(crate) fn role_has_unsettled_fault(role: RoleKey) -> bool {
+    let state = ROLE_FAULTS.state.lock_or_recover();
+    RoleFaultIndex::pending(&state, role)
+}
+
+/// Whether a barrier waiting on `role` may return.
+pub(crate) fn role_barrier_outcome(role: RoleKey, live: bool, seen: u64) -> RoleBarrier {
+    let state = ROLE_FAULTS.state.lock_or_recover();
+    if live && !RoleFaultIndex::pending(&state, role) {
+        return RoleBarrier::Settled;
+    }
+    if state.generation != seen {
+        return RoleBarrier::Changed;
+    }
+    let _unblocked = ROLE_FAULTS.changed.wait_or_recover(state);
+    RoleBarrier::Changed
+}
+
+/// What one step of a restart barrier resolved to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RoleBarrier {
+    /// The role holds a live incarnation and no fault is pending under it.
+    Settled,
+    /// Supervision moved; re-read the slot and decide again.
+    Changed,
 }
 
 /// Whether this runtime's fault accounting is still moving.
@@ -406,6 +557,12 @@ pub(crate) fn final_exit_code(user_code: i64) -> i64 {
 /// runtime's fault cannot colour a new one.
 pub fn reset_process_exit_status() {
     AUTHORITY.reset();
+    {
+        let mut state = ROLE_FAULTS.state.lock_or_recover();
+        state.open.clear();
+        state.generation += 1;
+    }
+    ROLE_FAULTS.changed.notify_all();
 }
 
 /// C ABI: the process exit status a Hew `main` must report.

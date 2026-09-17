@@ -20,17 +20,20 @@ fn refused(reason: SendError) {
     }
 }
 
-// A dead or closed role refuses the submission and names why. The sends go
-// through a one-way `mailbox(..)` view: a completion call on a handler that
-// panics reports the trap, not the delivery refusal this case is about.
+// A dead or closed role refuses the submission and names why. The probe sends
+// go through a one-way `mailbox(..)` view, which reports the delivery refusal
+// this case is about rather than a handler trap. The crashes themselves go
+// through completion calls: their `Err` proves the crash record is open before
+// `await_restart`, which is what the barrier waits on.
 fn main() {
     let app = spawn App;
     let inbox = mailbox(app.worker, on_full: .Reject);
+    match inbox.ping() {
+        .Ok(_) => println("accepted"),
+        .Err(failure) => refused(failure.reason),
+    }
     for _ in 0..2 {
-        match inbox.boom() {
-            .Ok(_) => println("accepted"),
-            .Err(failure) => refused(failure.reason),
-        }
+        let _ = app.worker.boom();
         let _ = await_restart app.worker;
     }
     match inbox.ping() {

@@ -4810,13 +4810,17 @@ fn main() {
 - `await_restart sup.child_name` / `await_restart sup.pool_name[i]` — resume
   once that one slot is Live again after a crash, or is permanently gone, with
   the same `ChildRef<Actor>`. A whole pool names many slots and has no single
-  restart signal, so it is not an operand.
+  restart signal, so it is not an operand. The form resumes when the role holds
+  a live incarnation with no crash still awaiting a supervisor's ruling, or when
+  the role is permanently gone; a role with nothing pending resumes at once. A
+  crash the caller has already observed — its own completion call returned `Err`
+  — is pending by then, so `let _ = child.fail(); await_restart sup.child` waits
+  for the ruling. A crash from a one-way mailbox submission that has not been
+  processed when `await_restart` is entered is not yet pending and is not waited
+  for.
 - `close(sup)` — requests cooperative stop and waits for every child's terminal cleanup.
 - `fork close(sup)` — starts that stop operation as a `Task<()>`.
 - `closed(sup)` — waits for termination without requesting it.
-
-These supervisor lifetime forms are decided but not implemented on the current
-native path (§2.1.1). They are not aliases for an internal runtime entry point.
 
 **Terminal destinations (normative).**
 

@@ -1,0 +1,31 @@
+actor Worker {
+    var count: i64 = 0,
+    receive fn put(next: i64) { count = next; }
+    receive fn get() -> i64 { count }
+    receive fn fail() { panic("declined child"); }
+}
+
+// `one_for_all` restarts every role in the group when one of them fails. A role
+// this supervisor already declined to restart is not one of them: `temporary`
+// means never restart, and a sibling's failure does not overrule that.
+supervisor Group {
+    strategy: one_for_all,
+    intensity: 5 within 60s,
+    child short_lived: Worker restart: temporary,
+    child durable: Worker,
+}
+
+fn main() {
+    let group = spawn Group();
+    let short = group.short_lived;
+    let durable = group.durable;
+    let _ = short.fail();
+    let _ = await_restart group.short_lived;
+    assert(short.get().is_err());
+    durable.put(7).expect("mark the surviving role");
+    let _ = durable.fail();
+    let _ = await_restart group.durable;
+    assert(durable.get().expect("the group restart replaced the durable role") == 0);
+    assert(group.short_lived.get().is_err());
+    println("a declined role stays dead through a sibling group restart");
+}

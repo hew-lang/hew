@@ -7111,6 +7111,7 @@ pub(crate) unsafe fn hew_actor_trap_from_activation(actor: *mut HewActor, error_
 fn publish_crash_fault_record(
     terminal: i32,
     supervisor: *mut c_void,
+    supervisor_child_index: i32,
 ) -> crate::exit_status::FaultRecord {
     if terminal != HewActorState::Crashed as i32 {
         return crate::exit_status::FaultRecord::NONE;
@@ -7119,7 +7120,18 @@ fn publish_crash_fault_record(
         crate::exit_status::record_unrecovered_actor_fault();
         return crate::exit_status::FaultRecord::NONE;
     }
-    crate::exit_status::open_supervised_fault()
+    let record = crate::exit_status::open_supervised_fault();
+    // Attribute the record to the declared role this actor occupies and to
+    // every ancestor role above it, so an `await_restart` on any of them treats
+    // the crash as pending until a ruling settles it. Attribution happens here,
+    // with the record, and therefore also before the first wake.
+    if let Ok(child_index) = u32::try_from(supervisor_child_index) {
+        // SAFETY: the back-pointer was set by `hew_supervisor_add_child` and
+        // the supervisor outlives the child that names it.
+        let roles = unsafe { crate::supervisor::child_role_chain(supervisor.cast(), child_index) };
+        crate::exit_status::attribute_supervised_fault(record, roles);
+    }
+    record
 }
 
 /// Implementation seam for [`hew_actor_trap`].
@@ -7248,7 +7260,7 @@ unsafe fn hew_actor_trap_inner(
         }
     }
 
-    let fault_record = publish_crash_fault_record(terminal, supervisor);
+    let fault_record = publish_crash_fault_record(terminal, supervisor, supervisor_child_index);
     run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_FIRST_WAKE);
 
     // This actor just became terminal — the crash/trap path. Any

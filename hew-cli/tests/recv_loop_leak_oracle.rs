@@ -438,7 +438,7 @@ fn assert_sender_vec_clone_drop_work(bin: &Path, expected_frames: usize, context
     );
 }
 
-/// Source-level `let opt = await rx.recv(); match opt {{ .Some(item) =>
+/// Source-level `let opt = rx.recv(); match opt {{ .Some(item) =>
 /// println(item), .None => stop }}` over the same channel. The leak
 /// pre-fix is opt's payload (Local 14 in the elab MIR), not the Some-
 /// arm item binding (which is non-escaping); the fix populates opt's
@@ -459,7 +459,7 @@ fn await_recv_source(frames: usize) -> String {
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
          \x20       while keep_going {{\n\
-         \x20           let opt = await rx.recv();\n\
+         \x20           let opt = rx.recv();\n\
          \x20           match opt {{\n\
          \x20               .Some(item) => println(item),\n\
          \x20               .None => {{ keep_going = false; }},\n\
@@ -555,7 +555,7 @@ fn try_recv_continue_source(frames: usize) -> String {
     )
 }
 
-/// Source-level `let opt = await rx.recv(); match opt { .Some(_) =>
+/// Source-level `let opt = rx.recv(); match opt { .Some(_) =>
 /// { ...; continue; } .None => break-out }`. Same continue back-edge
 /// path as `try_recv_continue_source`, but through the suspending
 /// recv ramp — the MIR loop terminator differs
@@ -578,7 +578,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
          \x20       while keep_going {{\n\
-         \x20           let opt = await rx.recv();\n\
+         \x20           let opt = rx.recv();\n\
          \x20           match opt {{\n\
          \x20               .Some(item) => {{\n\
          \x20                   println(\"got\");\n\

@@ -34,14 +34,14 @@ fn main() -> i64 {
             label: f"normal-owned-{i}",
             crash_stage: false,
         };
-        match await source.push(item) {
+        match source.push(item) {
             .Ok(admitted) => { if !admitted { return 2; } },
             .Err(_) => { return 3; },
         }
         println("normal");
         i = i + 1;
     }
-    match await source.shutdown(__FRAMES__) {
+    match source.shutdown(__FRAMES__) {
         .Ok(drained) => if drained { 0 } else { 4 },
         .Err(_) => 5,
     }
@@ -61,15 +61,15 @@ fn item(value: i64, label: string) -> pipeline.PipelineItemI64 {
 
 fn main() -> i64 {
     var source = pipeline.run(pipeline.from(0));
-    let control = match await source.control_handle() {
+    let control = match source.control_handle() {
         .Ok(value) => value,
         .Err(_) => { return 10; },
     };
-    match await source.push(item(-2, "cancel-seed-one")) {
+    match source.push(item(-2, "cancel-seed-one")) {
         .Ok(admitted) => { if !admitted { return 11; } },
         .Err(_) => { return 12; },
     }
-    match await source.push(item(-1, "cancel-seed-two")) {
+    match source.push(item(-1, "cancel-seed-two")) {
         .Ok(admitted) => { if !admitted { return 13; } },
         .Err(_) => { return 14; },
     }
@@ -83,10 +83,10 @@ fn main() -> i64 {
         if outcome != 0 {
             return 15;
         }
-        control.release();
+        let _ = control.release();
         var posts: i64 = 0;
         while posts < i + 3 {
-            match await control.post_sends() {
+            match control.post_sends() {
                 .Ok(value) => { posts = value; },
                 .Err(_) => { return 16; },
             }
@@ -98,9 +98,9 @@ fn main() -> i64 {
         i = i + 1;
     }
 
-    control.release();
-    control.release();
-    match await source.shutdown(__FRAMES__ + 2) {
+    let _ = control.release();
+    let _ = control.release();
+    match source.shutdown(__FRAMES__ + 2) {
         .Ok(drained) => if drained { 0 } else { 17 },
         .Err(_) => 18,
     }
@@ -123,11 +123,11 @@ fn main() -> i64 {
             label: f"crash-owned-{i}",
             crash_stage: true,
         };
-        match await source.push(item) {
+        match source.push(item) {
             .Ok(admitted) => { if admitted { return 20; } },
             .Err(_) => { return 21; },
         }
-        match await source.count() {
+        match source.count() {
             .Ok(count) => { if count != 0 { return 22; } },
             .Err(_) => { return 23; },
         }
@@ -154,14 +154,14 @@ fn main() -> i64 {
             label: f"drain-owned-{i}",
             crash_stage: false,
         };
-        match await source.push(item) {
+        match source.push(item) {
             .Ok(admitted) => { if !admitted { return 30; } },
             .Err(_) => { return 31; },
         }
         println("queued");
         i = i + 1;
     }
-    match await source.shutdown(__FRAMES__) {
+    match source.shutdown(__FRAMES__) {
         .Ok(drained) => if drained { 0 } else { 32 },
         .Err(_) => 33,
     }

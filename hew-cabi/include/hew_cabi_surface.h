@@ -4524,7 +4524,7 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1657] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_exit_byte",
      "{\"native\": \"fn hew_process_exit_byte( i32) -> i32\"}", "native",
-     "unclassified-stdlib", "not-applicable", "not-applicable",
+     "non-declarable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_free",
      "{\"native\": \"fn hew_process_free( *mut HewProcess)\"}", "native",

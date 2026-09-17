@@ -12262,7 +12262,7 @@
       "availability": [
         "native"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",

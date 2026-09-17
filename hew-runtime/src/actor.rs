@@ -2597,25 +2597,6 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
         return;
     }
 
-    // C1 abandonment teardown (D-C1, R326/R327): a never-woken `Suspended` actor
-    // freed at shutdown still owns a live coroutine frame in `suspended_cont`
-    // (e.g. a `scope` whose child awaits, or an actor awaiting a reply that
-    // never arrives before shutdown). Destroy it exactly once BEFORE reclaiming
-    // the box, or the frame + any frame-owned heap values leak. `destroy_parked`
-    // wins the single `… → Destroyed` CAS (FG1), runs the `cleanup` outline
-    // (coro.free → hew_cont_frame_free), and nulls the slot in the same critical
-    // section (FG4); it refuses if a resume is in flight or it was already
-    // destroyed, so this is the safe single-teardown owner on the free path.
-    // Dormant today (no actor reaches `Suspended` while the source surface stays
-    // thread-parked), but it makes the live suspend edge non-leaking. NOTE: the
-    // single-task cancellation FLOW (unregister-readiness + resume-with-cancel)
-    // is a separate concern; this is only the single-destroy plumbing.
-    if crate::coro_exec::has_live_parked_cont(a) {
-        // SAFETY: `a` is the actor being freed; the caller guarantees exclusive
-        // access (no concurrent dispatch), so no resume can race this teardown.
-        let _ = unsafe { crate::coro_exec::destroy_parked(a) };
-    }
-
     // Run codegen-generated state-drop on the live state so types
     // implementing `impl Drop` (Vec, String, HashMap, IO handles) release
     // their resources before the underlying allocation goes away.
@@ -2656,6 +2637,28 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     // crashed, so the consumer observes a fault rather than a clean EOF.
     let crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
     crate::fault::release_actor_state(a.id, crashed, || {
+        // C1 abandonment teardown (D-C1, R326/R327): a never-woken `Suspended`
+        // actor freed at shutdown still owns a live coroutine frame in
+        // `suspended_cont` (a `scope` whose child awaits, or an actor awaiting
+        // a reply that never arrives before shutdown). Destroy it exactly once
+        // BEFORE reclaiming the box, or the frame + any frame-owned heap values
+        // leak. `destroy_parked` wins the single `… → Destroyed` CAS (FG1), runs
+        // the `cleanup` outline (coro.free → hew_cont_frame_free), and nulls the
+        // slot in the same critical section (FG4); it refuses if a resume is in
+        // flight or it was already destroyed, so this is the safe
+        // single-teardown owner on the free path. It runs INSIDE the disclosure
+        // window because the frame's owners are the crashed actor's too: a sink
+        // in an abandoned frame released outside it would publish a clean EOF
+        // and the consumer would read `None` where the crash belongs. NOTE: the
+        // single-task cancellation FLOW (unregister-readiness +
+        // resume-with-cancel) is a separate concern; this is only the
+        // single-destroy plumbing.
+        if crate::coro_exec::has_live_parked_cont(a) {
+            // SAFETY: `a` is the actor being freed; the caller guarantees
+            // exclusive access (no concurrent dispatch), so no resume can
+            // race this teardown.
+            let _ = unsafe { crate::coro_exec::destroy_parked(a) };
+        }
         // SAFETY: terminal teardown owns every remaining state field.
         unsafe { drop_initialized_actor_state(a) };
     });

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1615u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1616u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1615] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1616] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\", \"wasm32-wasip1\": \"fn hew_actor_ask( *mut "
@@ -4362,6 +4362,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1615] = {
     {"hew_process_drop",
      "{\"native\": \"fn hew_process_drop( *mut HewProcess)\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_process_exit_byte",
+     "{\"native\": \"fn hew_process_exit_byte( i32) -> i32\"}", "native",
+     "non-declarable", "not-applicable", "not-applicable",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_free",
      "{\"native\": \"fn hew_process_free( *mut HewProcess)\"}", "native",

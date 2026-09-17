@@ -1844,7 +1844,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("stream request lacks its payload destructor".into())
             })?;
         let request = [
-            self.load(*target, "stream.start.target")?.into(),
+            self.load_actor_target(*target, "stream.start.target")?
+                .into(),
             self.ctx
                 .i32_type()
                 .const_int(u64::from(message), false)

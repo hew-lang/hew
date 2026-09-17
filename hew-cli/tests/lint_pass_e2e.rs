@@ -562,84 +562,14 @@ fn comment_invisible_warns_by_default_and_deny_promotes() {
     );
 }
 
-// ── checker-stage lint: must_use ─────────────────────────────────────
-
-/// A program that triggers `must_use`: `c.write(...)` returns
-/// `Result<(), std.net.WriteError>` and the call is discarded in statement
-/// position, so a backpressure/disconnect signal is silently dropped. The
-/// lint matches `std.net.WriteError` by its exact canonical owner (a
-/// same-named local enum no longer spoofs it — see `must_use.rs`), so the
-/// fixture must exercise the real stdlib type, not a look-alike local one.
-/// `w` is never called, so `dead_code` can fire here too; the assertions
-/// below match the `must_use` message specifically rather than asserting a
-/// single diagnostic.
-const MUST_USE_DISCARD: &str = "import std.net.{Connection};\n\
-     fn w(c: Connection) {\n\
-     c.write(b\"hi\");\n\
-     }\n\
-     fn main() {\n\
-     }\n";
-
-/// The same program with an in-source allow directive on the line above.
-const MUST_USE_SUPPRESSED: &str = "import std.net.{Connection};\n\
-     fn w(c: Connection) {\n\
-     // hew:allow(must_use)\n\
-     c.write(b\"hi\");\n\
-     }\n\
-     fn main() {\n\
-     }\n";
-
-const MUST_USE_MESSAGE: &str = "an ignored write/send error fails open";
-
-#[test]
-fn must_use_warning_renders_by_default() {
-    let output = run_check(MUST_USE_DISCARD, &[]);
-    let stderr = stderr_of(&output);
-    assert!(
-        output.status.success(),
-        "a must_use warning must not fail the build:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("warning:") && stderr.contains(MUST_USE_MESSAGE),
-        "expected the must_use warning to render:\n{stderr}"
-    );
-}
-
-#[test]
-fn must_use_allow_flag_suppresses() {
-    let output = run_check(MUST_USE_DISCARD, &["--allow", "must_use"]);
-    let stderr = stderr_of(&output);
-    assert!(output.status.success(), "check should pass:\n{stderr}");
-    assert!(
-        !stderr.contains(MUST_USE_MESSAGE),
-        "--allow must_use must suppress the lint:\n{stderr}"
-    );
-}
-
-#[test]
-fn must_use_deny_flag_promotes_to_error() {
-    let output = run_check(MUST_USE_DISCARD, &["--deny", "must_use"]);
-    let stderr = stderr_of(&output);
-    assert!(
-        !output.status.success(),
-        "--deny must_use must fail the build:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("error:") && stderr.contains(MUST_USE_MESSAGE),
-        "--deny must render must_use as an error:\n{stderr}"
-    );
-}
-
-#[test]
-fn must_use_inline_directive_suppresses() {
-    let output = run_check(MUST_USE_SUPPRESSED, &[]);
-    let stderr = stderr_of(&output);
-    assert!(output.status.success(), "check should pass:\n{stderr}");
-    assert!(
-        !stderr.contains(MUST_USE_MESSAGE),
-        "an in-source `// hew:allow(must_use)` must suppress the lint:\n{stderr}"
-    );
-}
+// The `must_use` warning lint on a discarded `Connection.write`/`.send`
+// result (`must_use_warning_renders_by_default`, `must_use_allow_flag_suppresses`,
+// `must_use_deny_flag_promotes_to_error`, `must_use_inline_directive_suppresses`)
+// was deleted with the old `Connection.write` surface: a discarded
+// `Result<(), SendError>` is now a hard check error, `E_SEND_RESULT_DROPPED`
+// ("discarded delivery outcome"), not a suppressible lint — the same
+// diagnostic family the `discarded_call_result_is_refused_by_default` test
+// below already pins for a discarded `ActorError`.
 
 // ── checker-stage lint: must_use on a discarded `actor.msg()` result ───
 

@@ -35,6 +35,7 @@ fn fixture_source(port: u16) -> String {
     format!(
         r#"
 import std.net;
+import std.encoding.utf8;
 
 actor Handler {{
     let addr: string,
@@ -45,11 +46,12 @@ actor Handler {{
         let conn = listener.accept();
         listener.close();
         println("HANDLER_WAITING");
-        let request = conn.read_string() handle error {{
+        let data = match conn.recv() {{ .Some(data) => data, .None => panic("connection closed"), }};
+        let request = utf8.decode(data) handle error {{
             panic("invalid utf8");
         }};
         println("HANDLER_STARTED:" + request);
-        let _ = conn.write_string("response:" + request);
+        let _ = conn.send(("response:" + request).to_bytes());
         println("HANDLER_DONE");
     }}
 }}

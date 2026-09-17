@@ -1,26 +1,21 @@
-//! E5c integration tests: WASM parity classification for native-only substrates.
+//! WASM emission gating and native-only substrate classification.
 //!
 //! Behaviours under test:
 //!
-//! 1. Non-duplex programs (`01-arith.hew`) still emit a `.wasm` artefact when
-//!    WASM is requested with `--target wasm32-unknown-unknown`. The duplex
-//!    detection gate must not fire for programs that don't use the duplex
-//!    substrate.
+//! 1. A plain arithmetic program still emits a `.wasm` artefact when WASM is
+//!    requested with `--target wasm32-unknown-unknown`.
 //!
-//! 2. A bare compile of a non-duplex program skips WASM emission and produces
+//! 2. A bare compile of that same program skips WASM emission and produces
 //!    only the native binary.
 //!
 //! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
 //!    selected by the codegen display path: lambda-actor surfaces `lambda_actor`
-//!    + `WASM-TODO(lambda-actors):`; duplex surfaces `duplex` +
-//!      `WASM-TODO(duplex):`.
-//!      (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.)
-//!
-//! 4. WASM-TODO(duplex): `hew_duplex_*` symbols are excluded from wasm32
-//!    builds via `hew-runtime/src/duplex.rs:54`. The codegen layer returns
-//!    `CodegenError::WasmUnsupportedSubstrate` before invoking `wasm-ld`,
-//!    so the CLI surfaces a structured diagnostic pointing to the WASM target
-//!    rather than a raw linker error.
+//!    + `WASM-TODO(lambda-actors):`.
+//!    (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.
+//!    The one pipe family, `std.stream`'s `Sink`/`Stream`, is native-only on
+//!    wasm32 too, classified under `WASM-TODO(streams):` — see
+//!    `wasm-capability-manifest.toml`, id `streams` — but has no representative
+//!    fixture in this file.)
 mod support;
 
 use std::process::Command;
@@ -28,16 +23,15 @@ use std::process::Command;
 use support::{describe_output, hew_binary, repo_root, require_codegen};
 
 // ---------------------------------------------------------------------------
-// Non-duplex WASM smoke: existing fixture must still emit wasm
+// Plain WASM smoke: existing fixture must still emit wasm
 // ---------------------------------------------------------------------------
 
-/// Non-duplex programs must still emit a `.wasm` artefact when WASM is
-/// requested.  This verifies that the duplex detection gate introduced in E5c
-/// does not inadvertently block programs that have no duplex symbols.
+/// A plain arithmetic program must still emit a `.wasm` artefact when WASM is
+/// requested.
 ///
 /// Uses the existing `01-arith.hew` fixture (`return 3 + 4`).
 #[test]
-fn non_duplex_program_emits_wasm() {
+fn arith_program_emits_wasm() {
     require_codegen();
 
     // wasm-ld is needed to link the .wasm; skip the test if it's not available.
@@ -58,7 +52,7 @@ fn non_duplex_program_emits_wasm() {
     assert!(fixture.exists(), "fixture not found: {}", fixture.display());
 
     let emit_dir = tempfile::Builder::new()
-        .prefix("compile-wasm-non-duplex-")
+        .prefix("compile-wasm-arith-")
         .tempdir()
         .expect("create temp dir");
 
@@ -81,7 +75,7 @@ fn non_duplex_program_emits_wasm() {
 
     assert!(
         output.status.success(),
-        "hew compile (non-duplex, with WASM) failed:\n{}",
+        "hew compile (arith, with WASM) failed:\n{}",
         describe_output(&output),
     );
 
@@ -89,7 +83,7 @@ fn non_duplex_program_emits_wasm() {
     let wasm_line = stdout.lines().find(|l| l.starts_with("wasm:"));
     assert!(
         wasm_line.is_some(),
-        "expected a `wasm:` line in stdout for non-duplex WASM emission; got:\n{stdout}"
+        "expected a `wasm:` line in stdout for arith WASM emission; got:\n{stdout}"
     );
 
     // The .wasm file must actually exist.
@@ -105,13 +99,13 @@ fn non_duplex_program_emits_wasm() {
 }
 
 // ---------------------------------------------------------------------------
-// Bare non-duplex compile: no wasm line, native binary present
+// Bare compile: no wasm line, native binary present
 // ---------------------------------------------------------------------------
 
-/// A bare compile of a non-duplex program skips WASM emission; the native
+/// A bare compile of the arithmetic program skips WASM emission; the native
 /// binary is still produced.
 #[test]
-fn bare_compile_skips_wasm_for_non_duplex() {
+fn bare_compile_skips_wasm() {
     require_codegen();
 
     let fixture = repo_root().join("tests/vertical-slice/accept/01-arith.hew");
@@ -133,7 +127,7 @@ fn bare_compile_skips_wasm_for_non_duplex() {
 
     assert!(
         output.status.success(),
-        "hew compile (native default, non-duplex) failed:\n{}",
+        "hew compile (native default, arith) failed:\n{}",
         describe_output(&output),
     );
 
@@ -163,11 +157,11 @@ fn wasm_unsupported_substrate_diagnostics_preserve_symbol_category() {
     assert_wasm_unsupported_category(
         "tests/vertical-slice/accept/lambda_method_send.hew",
         // Spawn-side wiring (Terminator::MakeLambdaActor → hew_lambda_actor_new)
-        // surfaces the lambda-actor substrate symbol BEFORE the Duplex send symbol
-        // because the spawn fail-closes first. Both `hew_lambda_actor_*` and the
-        // underlying `hew_duplex_*` symbols are native-only on wasm32; the test's
-        // intent is to assert the diagnostic preserves the symbol category in the
-        // first surface, and "lambda_actor" satisfies that for this fixture.
+        // surfaces the lambda-actor substrate symbol before any other native-only
+        // symbol the fixture happens to reach, because the spawn fail-closes
+        // first. The test's intent is to assert the diagnostic preserves the
+        // symbol category in the first surface, and "lambda_actor" satisfies
+        // that for this fixture.
         &["lambda_actor", "WASM-TODO(lambda-actors):"],
         &[],
     );

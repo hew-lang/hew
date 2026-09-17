@@ -193,10 +193,12 @@ fn for_await_recv_f64_drains_to_completion_under_single_worker() {
     run_for_await_surface_fixture("for_await_recv_f64");
 }
 
-#[test]
-fn channel_record_elements_roundtrip_and_early_exit_under_single_worker() {
-    run_for_await_surface_fixture("channel_record_elements");
-}
+// `channel_record_elements_roundtrip_and_early_exit_under_single_worker` was
+// deleted with `std.channel`: its `examples/v05/surfaces/channel_record_elements.hew`
+// fixture no longer exists (it was already retired, per the note below on the
+// sibling MIR-dump oracle), and no one-pipe-family fixture replaces it — the
+// record-element roundtrip and early-exit shapes it pinned are covered by the
+// `try_recv_stream_string`/`for_await_recv_f64` surface fixtures above.
 
 // A `for_await_mir_dump_contains_suspending_recv_terminators` MIR-dump oracle
 // used to live here (`--dump-mir checked`/`raw`, both retired). Physical MIR
@@ -1762,48 +1764,12 @@ fn eval_wasm_fast_typecheck_rejects_wasm_unsupported_ops() {
     );
 }
 
-/// A wasm32 compile must reject `for item in rx` over a channel receiver
-/// before link/runtime discovery. The `for` HIR desugar now reaches the
-/// suspending recv carrier on native targets, so this pins the wasm fail-closed
-/// gate directly against the compile path rather than relying on REPL chunking.
-#[test]
-fn compile_wasm_rejects_for_await_receiver_before_link() {
-    let dir = support::tempdir();
-    let path = dir.path().join("for_await_receiver_wasm.hew");
-    std::fs::write(
-        &path,
-        concat!(
-            "import std.channel;\n",
-            "fn main() {\n",
-            "    let (tx, rx) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };\n",
-            "    tx.send(\"hello\");\n",
-            "    tx.close();\n",
-            "    for item in rx {\n",
-            "        println(item);\n",
-            "    }\n",
-            "}\n",
-        ),
-    )
-    .expect("write wasm for-await receiver fixture");
-
-    let output = Command::new(hew_binary())
-        .args(["compile", "--target", "wasm32-wasi"])
-        .arg(&path)
-        .current_dir(repo_root())
-        .output()
-        .unwrap();
-
-    assert!(
-        !output.status.success(),
-        "expected failure for `for` over Receiver<T> on WASM target"
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("Blocking channel receive")
-            || stderr.contains("UnknownType { name: \"Receiver\" }"),
-        "expected pre-codegen channel receiver diagnostic, stderr: {stderr}"
-    );
-}
+// `compile_wasm_rejects_for_await_receiver_before_link` was deleted with the
+// old `std.channel` surface: the one pipe family (`stream.pipe`/`Sink`/
+// `Stream`) that replaced it is native-only end to end and is rejected
+// before code generation on wasm32 for any use, not specifically `for` over
+// a `Stream` (`wasm-capability-manifest.toml`, id `streams`). There is no
+// wasm-channel-shaped compile path left to pin here.
 
 // ── Runtime-failure output contract ──────────────────────────────────────────
 //

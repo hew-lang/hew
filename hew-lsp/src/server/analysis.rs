@@ -1542,17 +1542,17 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn coverage_channel_recv_surface() {
-        let source = "import std.channel;\n\
+    fn coverage_pipe_recv_surface() {
+        let source = "import std.stream;\n\
                       actor Worker {\n\
                       \x20   receive fn run(unused: i64) {\n\
-                      \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-                      \x20       tx.send(\"ping\");\n\
+                      \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+                      \x20       tx.send(\"ping\").expect(\"send\");\n\
                       \x20       tx.close();\n\
                       \x20       let item = rx.recv();\n\
                       \x20   }\n\
                       }\n";
-        let doc = analyze_repo_rooted("lsp_cov_channel_recv", source);
+        let doc = analyze_repo_rooted("lsp_cov_pipe_recv", source);
 
         assert_eq!(hard_type_diagnostic(&doc), None);
         assert!(
@@ -1569,7 +1569,7 @@ pub(super) mod tests {
         for expected in ["recv", "try_recv", "close"] {
             assert!(
                 completions.contains(&expected.to_string()),
-                "completion on channel.Receiver<string> should include `{expected}`, got: {completions:?}",
+                "completion on stream.Stream<string> should include `{expected}`, got: {completions:?}",
             );
         }
         assert!(

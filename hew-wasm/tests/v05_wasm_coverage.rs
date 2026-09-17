@@ -104,12 +104,6 @@ const ANALYSIS_ERROR_FIXTURES: &[&str] = &[
     // lambda actor spawn syntax is not yet supported.  The corresponding LSP test
     // is kept ignored pending a dedicated lambda-spawn lane.
     "v05_spawn_lambda_actor",
-    // accepted (known type error): `Channel<i32>` / `Stream<i32>` / `Sink<i32>`
-    // — generic channel lowering is currently implemented only for `string` and
-    // `bytes`; other element types produce type errors.  The fixture exercises
-    // channel syntax, not full lowering.  Stage 4 should add fail-closed
-    // type-error assertions for generic channel params.
-    "v05_std_channels",
 ];
 
 // ── Helpers ───────────────────────────────────────────────────────────────
@@ -166,8 +160,8 @@ fn v05_wasm_coverage_fixture_count() {
     );
     assert_eq!(
         ANALYSIS_ERROR_FIXTURES.len(),
-        9,
-        "ANALYSIS_ERROR_FIXTURES must list exactly 9 known-error fixtures"
+        8,
+        "ANALYSIS_ERROR_FIXTURES must list exactly 8 known-error fixtures"
     );
 }
 

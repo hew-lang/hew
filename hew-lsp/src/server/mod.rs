@@ -1805,7 +1805,7 @@ impl Worker {
 
     #[test]
     fn hover_on_builtin_type_name() {
-        let source = "fn drain(rx: Receiver<string>) { rx.close(); }";
+        let source = "fn drain(rx: Stream<string>) { rx.close(); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -1819,12 +1819,12 @@ impl Worker {
             "type errors: {:?}",
             type_output.errors
         );
-        let offset = source.find("Receiver").unwrap();
+        let offset = source.find("Stream").unwrap();
         let result = hew_analysis::hover::hover(source, &parse_result, Some(&type_output), offset);
         assert!(result.is_some(), "expected hover for builtin type name");
         let hr = result.unwrap();
         assert!(
-            hr.contents.contains("Receiver"),
+            hr.contents.contains("Stream"),
             "hover should mention builtin type name, got: {}",
             hr.contents
         );
@@ -2960,7 +2960,7 @@ machine Traffic {
 
     #[test]
     fn signature_help_for_builtin_method_call() {
-        let source = "fn send_one(tx: Sender<i64>) { tx.send(1); }";
+        let source = "fn send_one(tx: Sink<i64>) { let _ = tx.send(1); }";
         let parse_result = hew_parser::parse(source);
         assert!(
             parse_result.errors.is_empty(),
@@ -2982,7 +2982,10 @@ machine Traffic {
             "expected signature help inside builtin method call"
         );
         let sh = result.unwrap();
-        assert_eq!(sh.signatures[0].label, "fn send(value: i64)");
+        assert_eq!(
+            sh.signatures[0].label,
+            "fn send(item: i64) -> Result<(), SendError>"
+        );
     }
 
     // ── Non-empty helper test ───────────────────────────────────────
@@ -6230,9 +6233,9 @@ machine Traffic {
     //  v05_regex_literal                  | accepted                       | `re"…"` regex literal; LSP + hover tests pass
     //  v05_result_option_ctors            | accepted                       | Result/Option enum ctors; LSP test passes
     //  v05_scope_fork                     | accepted                       | `scope { fork { … } }` syntax; LSP test passes
-    //  v05_select_arms                    | accepted                       | compiler-accepted actor ask, channel recv, and after select arms; LSP + hard-error guard pass
+    //  v05_select_arms                    | accepted                       | compiler-accepted actor ask, pipe recv, and after select arms; LSP + hard-error guard pass
     //  v05_spawn_lambda_actor             | pending-upstream-substrate     | `spawn |msg: T| { … }` lambda-actor spawn syntax; parser/analysis do not support inline lambda spawn; blocking lane: unassigned (no W3 lane in current PLANNING-MAP; file follow-on lane before Stage 4)
-    //  v05_std_channels                   | accepted (syntax/smoke tier)   | parser admits Channel<T>/Stream<T>/Sink<T>; LSP probe test passes; generic channel type errors are a substrate limitation (lowering implemented only for string/bytes), not intentional fixture design; future work should add fail-closed type-error assertions for the generic params
+    //  v05_std_channels                   | accepted                       | one-pipe-family surface: `Stream<T>`/`Sink<T>` params, `.recv()`/`.send()`; parses and type-checks clean; LSP probe test passes
     //  v05_string_methods                 | accepted                       | string method completions; LSP + full L2 surface tests pass
     //  v05_trait_bounds                   | accepted                       | trait bounds + impl; LSP test passes
     //  v05_unsafe_block                   | accepted                       | unsafe block; LSP test passes
@@ -6258,14 +6261,12 @@ machine Traffic {
     //
     //  Total v05_*.hew fixtures: 31
     //    accepted:                          28 (all have passing native LSP tests;
-    //                                          v05_std_channels accepted at
-    //                                          syntax/smoke tier — see row note;
     //                                          v05_spawn_lambda_actor re-enabled)
     //    cross-module-single-source-limited: 1 (v05_cross_module_machine_main)
     //    known-rejected:                     1 (v05_async_await)
     //    pending-upstream-substrate:         1 (v05_record_tuple_literal)
     //  WASM fixture table covers 30 (all except v05_cross_module_machine_main, tested separately).
-    //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==9 in v05_wasm_coverage.rs.
+    //  Hard count guards: FIXTURES.len()==30, ANALYSIS_ERROR_FIXTURES.len()==8 in v05_wasm_coverage.rs.
 
     fn v05_fixture_path(name: &str) -> String {
         format!("file:///v05/{name}.hew")

@@ -26,8 +26,7 @@ use std::net::{TcpListener, TcpStream};
 
 use hew_cabi::sink::hew_stream_last_errno;
 use hew_runtime::stream::{
-    hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream_bytes,
-    hew_tcp_stream_from_conn,
+    hew_stream_next_sized, hew_stream_pair_free, hew_stream_pair_stream, hew_tcp_stream_from_conn,
 };
 use hew_runtime::transport::{
     clear_clone_failures, force_next_clone_failures, hew_tcp_close, hew_tcp_connect,
@@ -237,7 +236,7 @@ fn success_path_releases_entry_without_breaking_roundtrip() {
     );
 
     // SAFETY: pair is valid; extract the stream half.
-    let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+    let stream_ptr = unsafe { hew_stream_pair_stream(pair) };
     assert!(!stream_ptr.is_null());
 
     peer.write_all(payload).unwrap();

@@ -94,8 +94,8 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
         };
         let source = format!(r#"import std.stream;
             type Reader {{ input: Stream<string> }}
-            fn open() -> Stream<string> {{ match stream.from_file("resource.txt") {{
-                .Ok(input) => input, .Err(_) => panic("open failed"),
+            fn open() -> Stream<string> {{ match stream.open("resource.txt") {{
+                .Ok(input) => input.lines(), .Err(_) => panic("open failed"),
             }} }}
             {extra_declaration}
             fn main() {{ {body} }}

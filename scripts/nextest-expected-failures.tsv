@@ -4,7 +4,6 @@ linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	channel_
 linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	receiver_vec_move_is_descriptor_owned_and_read_copy_surfaces_reject	#3395 stops Vec.get handing out a second owner of a non-cloneable endpoint
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
-linux,macos,windows,freebsd	failure	hew-cli::channel_send_shutdown_e2e	full_send_at_shutdown_fails_closed_with_named_channel	#3380 makes a periodic handler's send observe the channel bound
 macos	failure	hew-cli::closure_capture_owned_leak_oracle	nested_closure_parameter_control_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,freebsd,macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
@@ -81,7 +80,6 @@ macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_dead_actor_s
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
-linux,macos,windows,freebsd	failure	hew-cli::machine_transition_watch_e2e	select_on_transition_example_runs_clean	#3392 waits out a select's after arm inside an actor handler
 macos	failure	hew-cli::match_bound_payload_drop_leak_oracle	nested_enum_payload_cancel_drops_parent_exactly_once	#3450 fixes the observable result of a recovery edge
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee

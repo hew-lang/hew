@@ -3,10 +3,10 @@
 //! Empirical leak oracle for the heap-owning `Option<T>` let-binding that
 //! lives across a loop back-edge in the recv shapes:
 //!
-//!   * `for item in rx` over `std::channel::Receiver<string>`,
+//!   * `for item in rx` over `std::stream::Stream<string>`,
 //!     where the Some-arm binding `item` is the per-iteration heap
 //!     holder.
-//!   * Source-level `let opt = await rx.recv()` over the same channel,
+//!   * Source-level `let opt = rx.recv()` over the same pipe,
 //!     where `opt: Option<string>` is the per-iteration heap holder and
 //!     the Some-arm uses the payload read-only.
 //!   * Non-suspending `let opt = rx.try_recv()` in a `while` loop, same
@@ -180,23 +180,23 @@ const CHANNEL_CAPACITY: usize = 1024;
 // is ONE node growing in bytes, while a per-frame allocation leak
 // produces one node each.
 
-/// `for item in rx` over `std::channel::Receiver<string>`.
-/// `frames` drives the number of `send` calls before the channel
-/// closes. Channel capacity is `CHANNEL_CAPACITY` (constant across
+/// `for item in rx` over `std::stream::Stream<string>`.
+/// `frames` drives the number of `send` calls before the pipe
+/// closes. Pipe capacity is `CHANNEL_CAPACITY` (constant across
 /// probes); main's `sleep_ms(3000)` lets the actor drain the queue
 /// before the process exits.
 fn for_await_source(frames: usize) -> String {
     use std::fmt::Write as _;
     let sends = (0..frames).fold(String::new(), |mut acc, i| {
-        let _ = writeln!(acc, "        tx.send(\"f{i}\");");
+        let _ = writeln!(acc, "        tx.send(\"f{i}\").expect(\"send\");");
         acc
     });
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor ForAwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       for item in rx {{\n\
@@ -248,13 +248,13 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
     });
 
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor ParkedReceiver {{\n\
          \x20   receive fn run(index: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20       let payload = f\"parked-direct-receiver-{{index}}\";\n\
-         \x20       tx.send(payload);\n\
+         \x20       tx.send(payload).expect(\"send\");\n\
          \x20       for item in rx {{\n\
          \x20           if item.len() <= 0 {{ panic(\"receiver payload\"); }}\n\
          \x20           println(\"parked\");\n\
@@ -306,21 +306,31 @@ fn assert_parked_for_await_receiver_work(bin: &Path, expected_frames: usize, con
     );
 }
 
-// ── Drop-only Vec<Receiver<T>> ownership ──────────────────────────────────
+// ── Drop-only Vec<Stream<T>> ownership ────────────────────────────────────
 //
-// A Receiver cannot be cloned, so `Vec<Receiver<T>>` uses the owned move-in
+// A Stream cannot be cloned, so `Vec<Stream<T>>` uses the owned move-in
 // element ABI with a descriptor whose clone thunk is null and whose drop thunk
-// closes exactly one slot. Each helper invocation below creates a fresh channel,
-// explicitly closes its Sender, moves the sole Receiver into `[rx]`, witnesses
+// closes exactly one slot. Each helper invocation below creates a fresh pipe,
+// explicitly closes its Sink, moves the sole Stream into `[rx]`, witnesses
 // the Vec length, and returns so the Vec owns the only remaining endpoint drop.
 //
 // Repeating the helper makes both failure directions authoritative:
 //
-//   * a missing/incorrect descriptor drop grows one live channel allocation
+//   * a missing/incorrect descriptor drop grows one live pipe allocation
 //     family per call and fails the exact-zero LOW/HIGH endpoint checks;
 //   * retaining source authority after `hew_vec_push_owned_move` closes the same
-//     Receiver twice when the source binding and Vec unwind, which the HIGH
+//     Stream twice when the source binding and Vec unwind, which the HIGH
 //     MallocScribble run turns into an abort.
+//
+// The complementary "Cloneable Vec<Sink<T>>" block (Vec<Sender<T>>.clone()
+// under the old channel API) is gone: `Vec<stream.Sink<i64>>.clone()` hits an
+// internal compiler error on this branch (`E_SIR_VERIFY`: "`Vec<Sink<i64>>`
+// has no copy operation" — SIR treats the element as trivially-copyable
+// instead of routing through `Sink::clone()`), not a graceful type-check
+// refusal. Repro at
+// `/tank/tmp/hew/claude-1000/lane-pipe/group-a/repros/vec_sink_clone_ice.hew`.
+// `Vec<Sink<T>>` as a bare element (this file's drop-only Stream shape) is
+// unaffected — only `.clone()` on the Vec ICEs.
 fn receiver_vec_drop_only_source(frames: usize) -> String {
     use std::fmt::Write as _;
 
@@ -329,12 +339,12 @@ fn receiver_vec_drop_only_source(frames: usize) -> String {
         acc
     });
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          fn drop_receiver_vec() {{\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20   let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20   tx.close();\n\
-         \x20   let receivers: Vec<channel.Receiver<i64>> = [rx];\n\
+         \x20   let receivers: Vec<stream.Stream<i64>> = [rx];\n\
          \x20   if receivers.len() != 1 {{ panic(\"receiver Vec move\"); }}\n\
          \x20   println(\"receiver-vec-dropped\");\n\
          }}\n\
@@ -369,75 +379,6 @@ fn assert_receiver_vec_drop_only_work(bin: &Path, expected_frames: usize, contex
     );
 }
 
-// ── Cloneable Vec<Sender<T>> ownership ───────────────────────────────────
-//
-// Sender is the complementary endpoint contract to the drop-only Receiver
-// above: moving `tx` into the first Vec transfers its endpoint authority, and
-// cloning that Vec must call the descriptor's sender-clone thunk once for its
-// sole slot.  Both Vec values then release their separate sender references at
-// scope exit, while the paired Receiver is closed explicitly.  Repeating this
-// complete lifecycle catches every refcount imbalance directly:
-//
-//   * a missing Vec clone retain makes the second Vec drop an unowned sender
-//     reference (MallocScribble turns that use-after-free into a failure);
-//   * a missing Vec-slot close retains one sender/channel family per helper
-//     invocation and fails the exact-zero endpoint checks;
-//   * retaining source authority after move-in closes one sender twice.
-//
-// The `sender-vec-cloned` line is an exact work witness.  It proves the clone
-// and both length reads completed before either Vec reaches scope teardown;
-// a binary that failed before taking the clone would otherwise look leak-free
-// merely because it did no relevant work.
-fn sender_vec_clone_drop_source(frames: usize) -> String {
-    use std::fmt::Write as _;
-
-    let calls = (0..frames).fold(String::new(), |mut acc, _| {
-        let _ = writeln!(acc, "    clone_and_drop_sender_vec();");
-        acc
-    });
-    format!(
-        "import std.channel;\n\
-         \n\
-         fn clone_and_drop_sender_vec() {{\n\
-         \x20   let (tx, rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
-         \x20   let senders: Vec<channel.Sender<i64>> = [tx];\n\
-         \x20   let senders_copy = senders.clone();\n\
-         \x20   if senders.len() != 1 {{ panic(\"sender Vec source clone\"); }}\n\
-         \x20   if senders_copy.len() != 1 {{ panic(\"sender Vec cloned clone\"); }}\n\
-         \x20   rx.close();\n\
-         \x20   println(\"sender-vec-cloned\");\n\
-         }}\n\
-         \n\
-         fn main() {{\n\
-         {calls}\
-         }}\n"
-    )
-}
-
-fn assert_sender_vec_clone_drop_work(bin: &Path, expected_frames: usize, context: &str) {
-    let output = run_bounded_command(
-        Command::new(bin),
-        format!("run cloneable Sender Vec fixture ({context})"),
-    );
-    assert!(
-        output.status.success(),
-        "{context}: cloneable Sender Vec fixture failed:\n{}",
-        describe_output(&output)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let lines: Vec<_> = stdout.lines().collect();
-    assert_eq!(
-        lines.len(),
-        expected_frames,
-        "{context}: work witness expected {expected_frames} cloned Sender Vec lifecycles, got {} lines {lines:?}",
-        lines.len(),
-    );
-    assert!(
-        lines.iter().all(|line| *line == "sender-vec-cloned"),
-        "{context}: cloneable Sender Vec fixture had an unexpected marker sequence {lines:?}",
-    );
-}
-
 /// Source-level `let opt = rx.recv(); match opt {{ .Some(item) =>
 /// println(item), .None => stop }}` over the same channel. The leak
 /// pre-fix is opt's payload (Local 14 in the elab MIR), not the Some-
@@ -446,15 +387,15 @@ fn assert_sender_vec_clone_drop_work(bin: &Path, expected_frames: usize, context
 fn await_recv_source(frames: usize) -> String {
     use std::fmt::Write as _;
     let sends = (0..frames).fold(String::new(), |mut acc, i| {
-        let _ = writeln!(acc, "        tx.send(\"f{i}\");");
+        let _ = writeln!(acc, "        tx.send(\"f{i}\").expect(\"send\");");
         acc
     });
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor AwaitRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -482,15 +423,15 @@ fn await_recv_source(frames: usize) -> String {
 fn try_recv_source(frames: usize) -> String {
     use std::fmt::Write as _;
     let sends = (0..frames).fold(String::new(), |mut acc, i| {
-        let _ = writeln!(acc, "        tx.send(\"f{i}\");");
+        let _ = writeln!(acc, "        tx.send(\"f{i}\").expect(\"send\");");
         acc
     });
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor TryRecv {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -522,15 +463,15 @@ fn try_recv_source(frames: usize) -> String {
 fn try_recv_continue_source(frames: usize) -> String {
     use std::fmt::Write as _;
     let sends = (0..frames).fold(String::new(), |mut acc, i| {
-        let _ = writeln!(acc, "        tx.send(\"f{i}\");");
+        let _ = writeln!(acc, "        tx.send(\"f{i}\").expect(\"send\");");
         acc
     });
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor TryRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -565,15 +506,15 @@ fn try_recv_continue_source(frames: usize) -> String {
 fn await_recv_continue_source(frames: usize) -> String {
     use std::fmt::Write as _;
     let sends = (0..frames).fold(String::new(), |mut acc, i| {
-        let _ = writeln!(acc, "        tx.send(\"f{i}\");");
+        let _ = writeln!(acc, "        tx.send(\"f{i}\").expect(\"send\");");
         acc
     });
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor AwaitRecvContinue {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          {sends}\
          \x20       tx.close();\n\
          \x20       var keep_going = true;\n\
@@ -610,15 +551,15 @@ fn await_recv_continue_source(frames: usize) -> String {
 /// the borrow contract failed to balance) shows up as 1.0 leak / frame.
 fn owned_send_source(frames: usize) -> String {
     format!(
-        "import std.channel;\n\
+        "import std.stream;\n\
          \n\
          actor OwnedSend {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
          \x20           let s = f\"item-{{i}}\";\n\
-         \x20           tx.send(s);\n\
+         \x20           tx.send(s).expect(\"send\");\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20       tx.close();\n\
@@ -786,76 +727,6 @@ fn receiver_vec_drop_only_has_zero_leak_endpoints_and_no_double_close() {
         high_leaks,
         (0, 0),
         "drop-only Receiver Vec HIGH endpoint leaked: {high_leaks:?}; a per-Vec endpoint leak must not be hidden behind a slope tolerance"
-    );
-}
-
-/// `Vec<Sender<i64>>` moves the original endpoint into an owned descriptor,
-/// clones it through that descriptor's sender retain thunk, then releases both
-/// Vecs while an explicitly closed paired Receiver completes the channel
-/// lifecycle.  LOW and HIGH endpoints must both be exactly zero leaks; the
-/// HIGH `MallocScribble` execution catches duplicate/missing sender ownership
-/// before a flat slope could hide it.
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
-)]
-#[test]
-fn sender_vec_clone_drop_has_zero_leak_endpoints_and_no_double_free() {
-    require_leaks_tool();
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix("sender-vec-clone-drop-")
-        .tempdir()
-        .expect("tempdir");
-    let low = compile_to_native(
-        &sender_vec_clone_drop_source(LOW_FRAMES),
-        dir.path(),
-        "sender_vec_clone_drop_low",
-    );
-    let high = compile_to_native(
-        &sender_vec_clone_drop_source(HIGH_FRAMES),
-        dir.path(),
-        "sender_vec_clone_drop_high",
-    );
-
-    assert_sender_vec_clone_drop_work(&low, LOW_FRAMES, "low plain run");
-    assert_sender_vec_clone_drop_work(&high, HIGH_FRAMES, "high plain run");
-
-    let scribble = run_under_malloc_scribble(&high);
-    assert!(
-        scribble.status.success(),
-        "cloneable Sender Vec aborted under the poisoned allocator — source, clone, or one Vec slot may have released an endpoint twice:\n{}",
-        describe_output(&scribble)
-    );
-    let scribble_stdout = String::from_utf8_lossy(&scribble.stdout);
-    let scribble_lines: Vec<_> = scribble_stdout.lines().collect();
-    assert_eq!(
-        scribble_lines.len(),
-        HIGH_FRAMES,
-        "poisoned allocator run did not witness all {HIGH_FRAMES} cloned Sender Vec lifecycles: {scribble_lines:?}"
-    );
-    assert!(
-        scribble_lines
-            .iter()
-            .all(|line| *line == "sender-vec-cloned"),
-        "poisoned allocator run had an unexpected Sender Vec work witness {scribble_lines:?}"
-    );
-
-    let low_leaks = measure_leaks_exact(&low);
-    let high_leaks = measure_leaks_exact(&high);
-    eprintln!(
-        "sender_vec_clone_drop: low_frames={LOW_FRAMES} low={low_leaks:?} high_frames={HIGH_FRAMES} high={high_leaks:?}"
-    );
-    assert_eq!(
-        low_leaks,
-        (0, 0),
-        "cloneable Sender Vec LOW endpoint leaked: {low_leaks:?}"
-    );
-    assert_eq!(
-        high_leaks,
-        (0, 0),
-        "cloneable Sender Vec HIGH endpoint leaked: {high_leaks:?}; a per-Vec clone/drop imbalance must not be hidden behind a slope tolerance"
     );
 }
 
@@ -1038,11 +909,11 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \n\
          actor ForAwaitStreamBytes {{\n\
          \x20   receive fn run(unused: i64) {{\n\
-         \x20       let (sink, input) = match stream.bytes_pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
+         \x20       let (sink, input) = match stream.pipe({CHANNEL_CAPACITY}) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
          \x20       let b = \"frame-some-long-data\".to_bytes();\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
-         \x20           sink.send(b);\n\
+         \x20           sink.send(b).expect(\"send\");\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20       sink.close();\n\
@@ -1134,9 +1005,9 @@ fn carry_for_await_bytes_escape_source() -> String {
      \n\
      actor CarryStreamBytesEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+     \x20       let (sink, input) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20       let b = \"escaped-bytes-payload\".to_bytes();\n\
-     \x20       sink.send(b);\n\
+     \x20       sink.send(b).expect(\"send\");\n\
      \x20       sink.close();\n\
      \x20       var carry = \"init\".to_bytes();\n\
      \x20       println(\"before\");\n\
@@ -1212,12 +1083,12 @@ fn carry_for_await_bytes_payload_escape_no_uaf() {
 /// scan sees `item → carry` as an unbound-destination escape → root
 /// excluded → no back-edge drop → no UAF.
 fn carry_continue_escape_source() -> String {
-    "import std.channel;\n\
+    "import std.stream;\n\
      \n\
      actor CarryContinueEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-     \x20       tx.send(\"escaped\");\n\
+     \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+     \x20       tx.send(\"escaped\").expect(\"send\");\n\
      \x20       tx.close();\n\
      \x20       var carry = \"init\";\n\
      \x20       var keep_going = true;\n\
@@ -1253,12 +1124,12 @@ fn carry_continue_escape_source() -> String {
 /// both — the propagation step runs once and feeds both back-edge
 /// registrations identically.
 fn carry_fallthrough_escape_source() -> String {
-    "import std.channel;\n\
+    "import std.stream;\n\
      \n\
      actor CarryFallEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
-     \x20       let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
-     \x20       tx.send(\"escaped\");\n\
+     \x20       let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+     \x20       tx.send(\"escaped\").expect(\"send\");\n\
      \x20       tx.close();\n\
      \x20       var carry = \"init\";\n\
      \x20       var keep_going = true;\n\

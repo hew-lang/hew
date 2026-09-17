@@ -12,7 +12,7 @@ import std.stream;
 
 fn main() {
     let (text_sink, text_input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    text_sink.send("text-frame");
+    text_sink.send("text-frame").expect("send");
     text_sink.close();
     match text_input.try_recv() {
         .Some(frame) => {
@@ -23,8 +23,8 @@ fn main() {
         .None => panic("stream text frame missing"),
     }
 
-    let (bytes_sink, bytes_input) = match stream.bytes_pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    bytes_sink.send(b"ok");
+    let (bytes_sink, bytes_input) = match stream.pipe(2) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    bytes_sink.send(b"ok").expect("send");
     bytes_sink.close();
     match bytes_input.try_recv() {
         .Some(frame) => {
@@ -38,35 +38,15 @@ fn main() {
 }
 "#;
 
-const CHANNEL_PAIR_SOURCE: &str = r#"
-import std.channel;
-
-fn main() {
-    let (tx, rx): (channel.Sender<string>, channel.Receiver<string>) = match channel.new(1) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    tx.send("channel-frame");
-    tx.close();
-    match rx.try_recv() {
-        .Some(frame) => {
-            if frame != "channel-frame" {
-                panic("channel payload changed");
-            }
-        },
-        .None => panic("channel frame missing"),
-    }
-    println("channel-owner-transfer-ok");
-}
-"#;
-
 const TCP_SPLIT_SOURCE: &str = r#"
 import std.net;
-import std.stream.{Sink, Stream};
 
 fn main() {
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
     let peer = match net.connect(f"127.0.0.1:{port as i64}") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let server = listener.accept();
-    let (input, sink): (Stream<bytes>, Sink<bytes>) = server.into_stream_sink();
+    let (input, sink) = server.split();
     sink.close();
     input.close();
     peer.close();
@@ -100,11 +80,6 @@ fn consumed_pair_carriers_run_to_clean_exit_with_sentinels() {
             "stream-pair",
             STREAM_PAIR_SOURCE,
             "stream-owner-transfer-ok",
-        ),
-        (
-            "channel-pair",
-            CHANNEL_PAIR_SOURCE,
-            "channel-owner-transfer-ok",
         ),
         ("tcp-split", TCP_SPLIT_SOURCE, "tcp-split-owner-transfer-ok"),
     ];

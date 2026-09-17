@@ -71,7 +71,6 @@ examples/distributed_hello.hew E_SIR_UNSUPPORTED
 
 # final-path-limitation: QUIC / advanced net
 examples/quic_mesh/client.hew E_SIR_UNSUPPORTED
-examples/quic_mesh/selector_smoke.hew E_SIR_UNSUPPORTED
 
 # final-path-limitation: cancellation observation and the linear accept corpus
 # reach unlowered semantic operations
@@ -292,7 +291,6 @@ tests/vertical-slice/accept/link_monitor_value_monitor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_monitor_in_actor.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/link_monitor_value_result.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/match_float_literal_arm.hew E_SIR_UNSUPPORTED
-tests/vertical-slice/accept/stream_state_field_for_await_asan.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/structural_rendering.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/vec_into_iter_typeck.hew E_SIR_UNSUPPORTED
 tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED

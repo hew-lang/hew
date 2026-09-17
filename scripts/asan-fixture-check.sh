@@ -428,12 +428,13 @@ ENUM_PAYLOAD_LOOP_SRC="${ROOT}/tests/vertical-slice/accept/enum_payload_call_loo
 CALL_SCRUTINEE_FRESH_SRC="${ROOT}/tests/vertical-slice/accept/call_scrutinee_fresh_forwarder_release.hew"
 ENUM_RESOURCE_MATCH_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_heap_sibling_asan.hew"
 ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state_overwrite_asan.hew"
-# Actor-state stream for-await ownership (#3218, KNOWN v0.6.0 limit): a
-# `for` loop draining an actor-state `Stream<T>` field double-closes the
-# stream at teardown on the current lowerer, so this is registered below as an
-# EXPECTED ASan finding via `run_asan_fixture_expect_leak`. Flip it to
-# `compile_asan_fixture` + `run_asan_fixture ... 0` once #3218 is fixed.
-STREAM_STATE_FIELD_FOR_AWAIT_SRC="${ROOT}/tests/vertical-slice/accept/stream_state_field_for_await_asan.hew"
+# Actor-state stream drain ownership (#3218): a handler that drains its
+# actor-state `Stream<T>` field through `recv` borrows the seat, so the field's
+# own state-drop close authority is the one owner of the runtime pointer.
+# Exits 0, clean. The consuming `for` spelling mints a second authority and is
+# refused in source; its negative control is
+# tests/vertical-slice/reject/stream_state_field_for_consumes_the_seat.hew.
+STREAM_STATE_FIELD_DRAIN_SRC="${ROOT}/tests/vertical-slice/accept/stream_state_field_drain_asan.hew"
 # Composite resource close-exactly-once (#3070, KNOWN v0.6.0 limit): a
 # `#[resource]` leaf reached through a record field projection
 # (`p.slot.close()`) double-frees on the current lowerer's first loop
@@ -519,8 +520,8 @@ compile_asan_fixture "resource enum match-consume (#2641)" "${ENUM_RESOURCE_MATC
 ENUM_RESOURCE_STATE_BIN="${WORK_DIR}/enum_resource_state_overwrite_asan"
 compile_asan_fixture "resource enum actor-state overwrite (#2641)" "${ENUM_RESOURCE_STATE_SRC}" "${ENUM_RESOURCE_STATE_BIN}"
 
-STREAM_STATE_FIELD_FOR_AWAIT_BIN="${WORK_DIR}/stream_state_field_for_await_asan"
-compile_asan_fixture "actor-state stream for-await ownership (#3218)" "${STREAM_STATE_FIELD_FOR_AWAIT_SRC}" "${STREAM_STATE_FIELD_FOR_AWAIT_BIN}"
+STREAM_STATE_FIELD_DRAIN_BIN="${WORK_DIR}/stream_state_field_drain_asan"
+compile_asan_fixture "actor-state stream drain ownership (#3218)" "${STREAM_STATE_FIELD_DRAIN_SRC}" "${STREAM_STATE_FIELD_DRAIN_BIN}"
 
 COMPOSITE_RESOURCE_CLOSE_BIN="${WORK_DIR}/composite_resource_close_once_asan"
 compile_asan_fixture "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_SRC}" "${COMPOSITE_RESOURCE_CLOSE_BIN}"
@@ -663,13 +664,9 @@ else
     fail=$((fail + 1))
 fi
 
-# KNOWN (#3218, v0.6.0 documented limit): `for` over an actor-state
-# `Stream<T>` field mints a second close authority for the loop cursor while
-# the field's own state-drop close authority stays intact, so the runtime
-# stream pointer is closed twice at teardown. Registered as an EXPECTED
-# finding until #3218 is fixed. When it is, this must flip to
-# `run_asan_fixture ... 0` and the ledger note above must be removed.
-if run_asan_fixture_expect_leak "actor-state stream for-await ownership (#3218)" "${STREAM_STATE_FIELD_FOR_AWAIT_BIN}"; then
+# The state seat keeps its own close authority across the drain, so the field
+# is released exactly once when the actor terminates (#3218).
+if run_asan_fixture "actor-state stream drain ownership (#3218)" "${STREAM_STATE_FIELD_DRAIN_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

@@ -38,7 +38,6 @@
 # E_SIR_UNSUPPORTED: nested type `Receiver` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `Ticket` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `f32` has no semantic value contract
-# E_SIR_UNSUPPORTED: nested type `instant` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `std.encoding.toml.Value` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `std.net.http.http_client.Response` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `std.process.ProcessResultHandle` has no semantic value contract
@@ -53,12 +52,10 @@
 # E_SIR_UNSUPPORTED: runtime family SinkWrite has no ownership-SIR semantic contract
 # E_SIR_UNSUPPORTED: runtime family StringCharAt has no ownership-SIR semantic contract
 # E_SIR_UNSUPPORTED: runtime family StringCharAtUtf has no ownership-SIR semantic contract
-# E_SIR_UNSUPPORTED: runtime family StringGet has no ownership-SIR semantic contract
 # E_SIR_UNSUPPORTED: runtime family TcpAttachLocal has no ownership-SIR semantic contract
 # E_SIR_UNSUPPORTED: select arms over actor calls need a task or timer source
 # E_SIR_UNSUPPORTED: string ordering operators have no ownership-SIR runtime operation
 # E_SIR_UNSUPPORTED: whole-scrutinee binding matches need an explicit SIR binding transfer
-# E_HIR: `instant` arithmetic through an explicit return annotation reports ReturnTypeMismatch
 # E_SIR_VERIFY: InvalidCallable, LocalPid parameter outside the owned-call SIR surface
 # E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.encoding.toml.Value)
 # E_SIR_VERIFY: InvalidResourceType, nominal resource release has no synchronous runtime contract (std.net.http.Server)
@@ -122,12 +119,6 @@ tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_
 tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path runtime
 tests/hew/imported_same_file_supervisor_test.hew::imported_supervisor_runs_its_same_file_actor compile
 tests/hew/imported_supervisor_child_layout_test.hew::imported_actor_is_a_supervised_child compile
-tests/hew/instant_annotated_arith_test.hew::annotated_instant_minus_annotated_instant_yields_duration compile
-tests/hew/instant_annotated_arith_test.hew::annotated_instant_minus_duration_compiles_and_runs compile
-tests/hew/instant_annotated_arith_test.hew::annotated_instant_plus_duration_compiles_and_runs compile
-tests/hew/instant_annotated_arith_test.hew::param_typed_instant_minus_duration_compiles_and_runs compile
-tests/hew/instant_annotated_arith_test.hew::param_typed_instant_plus_duration_compiles_and_runs compile
-tests/hew/instant_methods_test.hew::test_typed_instant_to_string_is_consistent_across_surfaces compile
 tests/hew/metrics_test.hew::test_counter_add_accumulates runtime
 tests/hew/metrics_test.hew::test_counter_exact_value_in_scrape runtime
 tests/hew/metrics_test.hew::test_counter_ok_for_valid_name runtime
@@ -156,11 +147,6 @@ tests/hew/owned_nested_aggregate_clone_drop_test.hew::test_vec_clone_drops_neste
 tests/hew/pipeline_i64_two_stage_test.hew::admission_reply_waits_for_downstream_post_send_barrier timeout
 tests/hew/pipeline_i64_two_stage_test.hew::cancelled_admission_settles_and_pipeline_continues timeout
 tests/hew/pipeline_i64_two_stage_test.hew::graceful_shutdown_drains_queued_owned_items timeout
-tests/hew/string_get_option_proving_test.hew::test_string_get_does_not_consume_receiver compile
-tests/hew/string_get_option_proving_test.hew::test_string_get_empty_is_none compile
-tests/hew/string_get_option_proving_test.hew::test_string_get_multibyte_codepoint compile
-tests/hew/string_get_option_proving_test.hew::test_string_get_negative_index_is_none compile
-tests/hew/string_get_option_proving_test.hew::test_string_get_some_and_oob_none compile
 tests/hew/toml_test.hew::test_try_stringify_preserves_a_populated_table compile
 tests/hew/toml_test.hew::test_try_stringify_rejects_a_bare_array_root compile
 tests/hew/var_record_reassign_ownership_test.hew::_test_actor_record_state_field_swap_is_exact compile

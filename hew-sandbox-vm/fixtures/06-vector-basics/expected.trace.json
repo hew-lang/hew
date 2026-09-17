@@ -3,7 +3,7 @@
   "trace_id": "trace:vector-basics",
   "fixture_id": "vector-basics",
   "profile": "sandbox.sandbox-vm-export.v0",
-  "hew_version": "0.6.0-rc3",
+  "hew_version": "0.6.0-rc4",
   "sandbox_version": "0.0.0-spec",
   "result": "ok",
   "replay": {

@@ -4,10 +4,12 @@
       "disposition": "allowed",
       "id": "core.stdout",
       "reason": "stdout is captured by the educational sandbox trace",
-      "required_by": ["sym:core.stdout.println"]
+      "required_by": [
+        "sym:core.stdout.println"
+      ]
     }
   ],
-  "compiler_version": "hew-sandbox-wasm-0.6.0-rc3",
+  "compiler_version": "hew-sandbox-wasm-0.6.0-rc4",
   "functions": [
     {
       "blocks": [
@@ -59,7 +61,9 @@
       ],
       "module": "mod:main",
       "name": "id",
-      "params": ["local:id.0"],
+      "params": [
+        "local:id.0"
+      ],
       "result": "type:T",
       "span": "span:0-39"
     },
@@ -174,7 +178,7 @@
       "span": "span:39-73"
     }
   ],
-  "hew_version": "0.6.0-rc3",
+  "hew_version": "0.6.0-rc4",
   "layouts": {
     "actors": [],
     "enums": [],
@@ -528,7 +532,10 @@
     "entry": "mod:main",
     "modules": [
       {
-        "functions": ["fn:id", "fn:main"],
+        "functions": [
+          "fn:id",
+          "fn:main"
+        ],
         "id": "mod:main",
         "imports": [],
         "path": "main",
@@ -655,7 +662,9 @@
       "id": "sym:core.stdout.println",
       "module": "core.stdout",
       "name": "println",
-      "params": ["type:string"],
+      "params": [
+        "type:string"
+      ],
       "result": "type:unit"
     }
   ]

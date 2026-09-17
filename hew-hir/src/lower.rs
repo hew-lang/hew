@@ -23165,7 +23165,16 @@ impl LowerCtx {
                     "i8" => ResolvedTy::I8,
                     "i16" => ResolvedTy::I16,
                     "i32" => ResolvedTy::I32,
-                    "i64" => ResolvedTy::I64,
+                    // `instant` joins `i64` here: it is a monotonic
+                    // i64-nanosecond timestamp with no representation of
+                    // its own. The checker keeps `Ty::Named { instant }`
+                    // to route `impl instant` method dispatch; below the
+                    // checker it is an `i64`, exactly as
+                    // `ResolvedTy::from_ty` resolves it. Annotations
+                    // resolve the same way, so an annotated binding and
+                    // an inferred one are one type at every stage after
+                    // HIR.
+                    "i64" | "instant" => ResolvedTy::I64,
                     "u8" => ResolvedTy::U8,
                     "u16" => ResolvedTy::U16,
                     "u32" => ResolvedTy::U32,
@@ -23181,14 +23190,6 @@ impl LowerCtx {
                     "char" => ResolvedTy::Char,
                     "string" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
-                    // `instant` is a monotonic i64-nanosecond timestamp with no
-                    // representation of its own. The checker keeps `Ty::Named
-                    // { instant }` to route `impl instant` method dispatch;
-                    // below the checker it is an `i64`, exactly as
-                    // `ResolvedTy::from_ty` resolves it. Annotations resolve the
-                    // same way, so an annotated binding and an inferred one are
-                    // one type at every stage after HIR.
-                    "instant" => ResolvedTy::I64,
                     "bytes" => ResolvedTy::Bytes,
                     "CancellationToken" => self
                         .resolve_early_source_type_ref(name, args)

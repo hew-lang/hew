@@ -534,13 +534,14 @@ jobs:
     name: Build & test (Windows)
     runs-on: windows-2022
     timeout-minutes: 60
-    # Informational on pull requests until V060-RELEASE (#3236): Windows CI is
-    # flaky enough that a red leg here is not reliably the PR's own fault, and
-    # required-check policy narrowed to Clippy & format + Build & test (Linux).
-    # Stays blocking on push-to-main (this job still gates a red main) and on
-    # release-gate.yml, which defines its own jobs and does not read this
-    # continue-on-error.
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # Advisory on every ci.yml event (D505): Windows is not a branch-protection
+    # required check on pull requests, so a hard failure here on push read as
+    # a red main for a platform PRs never gated on. The scheduled
+    # nightly-ratchet-accounting.yml job (Strict nextest accounting) is the
+    # sole hard authority for Windows; its ledger, not this job, decides
+    # whether Windows is broken. release-gate.yml defines its own jobs and
+    # does not read this continue-on-error.
+    continue-on-error: true
     env:
       # aws-lc-sys (rustls under hew-runtime, jsonwebtoken under hew-lib) wants
       # NASM on windows-msvc; the documented escape consumes the crate's
@@ -704,13 +705,14 @@ jobs:
     name: Build & test (macOS arm64)
     runs-on: macos-14
     timeout-minutes: 60
-    # Informational on pull requests until V060-RELEASE (#3222): macOS CI is
-    # flaky enough that a red leg here is not reliably the PR's own fault, and
-    # required-check policy narrowed to Clippy & format + Build & test (Linux).
-    # Stays blocking on push-to-main (this job still gates a red main) and on
-    # release-gate.yml, which defines its own jobs and does not read this
-    # continue-on-error.
-    continue-on-error: ${{ github.event_name == 'pull_request' }}
+    # Advisory on every ci.yml event (D505): macOS is not a branch-protection
+    # required check on pull requests, so a hard failure here on push read as
+    # a red main for a platform PRs never gated on. The scheduled
+    # nightly-ratchet-accounting.yml job (Strict nextest accounting) is the
+    # sole hard authority for macOS; its ledger, not this job, decides
+    # whether macOS is broken. release-gate.yml defines its own jobs and does
+    # not read this continue-on-error.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 

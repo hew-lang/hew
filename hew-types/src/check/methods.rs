@@ -2276,10 +2276,24 @@ impl Checker {
     /// 4. the modules exporting an actor of that name: exactly one resolves
     ///    to it; two or more is `Ambiguous` (never silent first-wins).
     pub(super) fn resolve_bare_actor_identity(&self, name: &str) -> BareActorResolution {
+        self.resolve_bare_declaration_identity(name, &[TypeDefKind::Actor])
+    }
+
+    /// Resolve a bare `spawn` target. A supervisor is spawned exactly as an
+    /// actor is, so both declaration kinds answer to the same resolution.
+    pub(super) fn resolve_bare_spawn_target_identity(&self, name: &str) -> BareActorResolution {
+        self.resolve_bare_declaration_identity(name, &[TypeDefKind::Actor, TypeDefKind::Supervisor])
+    }
+
+    fn resolve_bare_declaration_identity(
+        &self,
+        name: &str,
+        kinds: &[TypeDefKind],
+    ) -> BareActorResolution {
         let is_actor = |key: &str| {
             self.type_defs
                 .get(key)
-                .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                .is_some_and(|td| kinds.contains(&td.kind))
         };
         if let Some(module) = self.current_module.as_deref() {
             let dotted = format!("{module}.{name}");

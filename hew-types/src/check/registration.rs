@@ -11953,7 +11953,12 @@ impl Checker {
                     ) {
                         continue;
                     }
-                    self.register_actor_base(ad, None);
+                    // The declaring file owns the identity; the bare spelling is
+                    // only the binding published into this importer's scope. A
+                    // bare declaration row here would be a second authority for
+                    // one actor, and the ask/spawn boundaries downstream would
+                    // then disagree with the qualified path HIR carries.
+                    self.register_actor_base(ad, Some(owner).filter(|owner| !owner.is_empty()));
                     self.publish_file_import_type_name(owner, &ad.name);
                 }
                 Item::Impl(id) => {

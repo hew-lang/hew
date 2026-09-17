@@ -9087,7 +9087,7 @@ impl Checker {
             // module export). A bare name exported by 2+ modules with no
             // local actor is a typed error naming the candidates — never
             // silent first-wins.
-            Expr::Identifier(name) => match self.resolve_bare_actor_identity(name) {
+            Expr::Identifier(name) => match self.resolve_bare_spawn_target_identity(name) {
                 super::types::BareActorResolution::Resolved(identity) => Some(identity),
                 super::types::BareActorResolution::Ambiguous(candidate_modules) => {
                     self.report_ambiguous_actor_reference(name, &candidate_modules, span);

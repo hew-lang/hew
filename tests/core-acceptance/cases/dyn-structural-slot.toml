@@ -1,0 +1,10 @@
+[[case]]
+id = "dyn-structural-slot"
+intent = "A trait whose slots are filled by inherent `impl T` methods erases and dispatches like a nominal impl; the record, `Vec`-field record and enum concretes each release their owned storage at the dyn drop site."
+source = "cases/dyn-structural-slot.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "person aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nbag 2\ncount=3\nperson lin\n"
+exit = 0

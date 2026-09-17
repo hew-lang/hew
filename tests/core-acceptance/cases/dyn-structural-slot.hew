@@ -1,0 +1,67 @@
+// A trait satisfied by an inherent `impl T { ... }` method, with no
+// `impl Trait for T` block, erases and dispatches like a nominal one. Each
+// concrete carries owned heap storage so the slot-0 drop has real work to do.
+
+import std.string;
+
+trait Labeled {
+    fn label(val: Self) -> string;
+}
+
+type Person {
+    tag: string,
+}
+
+impl Person {
+    fn label(val: Person) -> string {
+        f"person {val.tag}"
+    }
+}
+
+type Bag {
+    items: Vec<i64>,
+}
+
+impl Bag {
+    fn label(val: Bag) -> string {
+        f"bag {val.items.len()}"
+    }
+}
+
+enum Status {
+    Active(string),
+    Retired(i64),
+}
+
+impl Status {
+    fn label(val: Status) -> string {
+        match val {
+            .Active(name) => f"active {name}",
+            .Retired(year) => f"retired {year}",
+        }
+    }
+}
+
+fn describe(value: dyn Labeled) -> string {
+    value.label()
+}
+
+fn main() {
+    let person: dyn Labeled = Person { tag: string.repeat("a", 64) };
+    println(describe(person));
+
+    var items: Vec<i64> = Vec.new();
+    items.push(1);
+    items.push(2);
+    let bag: dyn Labeled = Bag { items: items };
+    println(describe(bag));
+
+    var crowd: Vec<dyn Labeled> = Vec.new();
+    crowd.push(Status.Active(string.repeat("z", 32)));
+    crowd.push(Status.Retired(1998));
+    crowd.push(Person { tag: "lin" });
+    println(f"count={crowd.len()}");
+    let last = crowd.pop();
+    println(describe(last));
+    // The remaining two trait objects are released with the vector.
+}

@@ -8761,6 +8761,10 @@ fn get_or_declare_external<'ctx>(
 }
 
 #[cfg(test)]
+#[path = "physical_debug_tests.rs"]
+mod debug_tests;
+
+#[cfg(test)]
 #[path = "physical_resource_tests.rs"]
 mod resource_tests;
 

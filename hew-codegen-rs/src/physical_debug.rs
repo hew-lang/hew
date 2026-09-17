@@ -725,6 +725,8 @@ pub(super) fn resolve_coroutine_locals<'ctx>(
         return;
     }
     let expression = emitter.builder.create_expression(vec![]);
+    // `DW_OP_deref`: the variable's value is whatever its own slot holds.
+    let through_slot = emitter.builder.create_expression(vec![0x06]);
     let suspend = llvm
         .get_function("llvm.coro.suspend")
         .map(|function| function.as_value_ref());
@@ -827,11 +829,16 @@ pub(super) fn resolve_coroutine_locals<'ctx>(
             // Hew has no null. Anchoring undef ends the location list there, so
             // the local reads unavailable until the replacement's range begins.
             // Integer zero stays a real anchor.
-            let anchor = match stored {
+            let (anchor, anchor_expression) = match stored {
                 BasicValueEnum::PointerValue(pointer) if pointer.is_null() => {
-                    pointer.get_type().get_undef().as_value_ref()
+                    (pointer.get_type().get_undef().as_value_ref(), expression)
                 }
-                other => other.as_value_ref(),
+                // Anchor the slot, not the stored SSA value. `CoroSplit` maps a
+                // spilled value onto whichever frame word held it, and that word
+                // is reused — a release-and-null of the source slot then reads
+                // back as the variable. The variable's own storage is the one
+                // address that stays true until the next assignment.
+                _ => (local.slot.as_value_ref(), through_slot),
             };
             // SAFETY: every wrapper belongs to this module's context and
             // builder; the call inserts one record and returns a handle we
@@ -841,7 +848,7 @@ pub(super) fn resolve_coroutine_locals<'ctx>(
                     emitter.builder.as_mut_ptr(),
                     anchor,
                     local.variable.as_mut_ptr(),
-                    expression.as_mut_ptr(),
+                    anchor_expression.as_mut_ptr(),
                     local.location.as_mut_ptr(),
                     next.as_value_ref(),
                 );

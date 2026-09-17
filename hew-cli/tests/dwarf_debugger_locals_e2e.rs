@@ -930,8 +930,11 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         "{dbg} failed while reading handler backtrace:\n{text}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // The physical lowerer emits a handler as `__hew_actor_<n>_<Actor>__<fn>`;
+    // the actor index is a module-local allocation, so the assertion names the
+    // handler, not the index.
     assert!(
-        text.contains("Handler__recv__run"),
+        text.contains("Handler__run"),
         "backtrace must name the Hew handler frame:\n{text}"
     );
     assert!(

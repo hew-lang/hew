@@ -478,10 +478,11 @@ jobs:
         run: make test-cabi
 
       - name: Run native acceptance
-        # macOS x86_64 loses a restarted nested supervisor role (#3417), which
-        # aarch64 and every other platform do not. The v0.6.0-rc3 candidate
-        # names that lane as unqualified; restore the step for both arches
-        # when #3417 closes.
+        # A restarted nested supervisor role can be unreachable under load
+        # (#3417, #3419). It is not arch-specific — aarch64 and Linux both
+        # reproduce it — but the x86_64 lane is the slowest host here and hits
+        # it most. The v0.6.0-rc3 candidate names that lane as unqualified;
+        # restore the step for both arches when #3417 closes.
         if: matrix.arch == 'aarch64'
         run: make core-acceptance
 

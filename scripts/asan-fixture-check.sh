@@ -61,14 +61,11 @@
 #       A match-consumed resource payload with heap-owning sibling variants and
 #       an actor-state resource enum overwritten Loaded→Broken. Both must remain
 #       leak- and double-free-clean through recursive enum/record drop thunks.
-#   composite resource close-exactly-once (#3070, KNOWN v0.6.0 limit)
+#   composite resource close-exactly-once (#3070)
 #       A `#[resource]` leaf reached through a record field projection
 #       (`p.slot.close()`) and through an enum payload binder (`.Ok(s)`), with
-#       the untouched-binder and declining-arm controls. On the current
-#       lowerer the record-field shape double-frees on the first iteration, so
-#       this runs through `run_asan_fixture_expect_leak` as an EXPECTED
-#       finding rather than a zero-findings probe; flip it to a clean probe
-#       once #3070 is fixed.
+#       the untouched-binder and declining-arm controls. Exactly one authority
+#       closes the leaf on every shape.
 #   drop-only Vec<channel.Receiver<T>>
 #       Repeatedly moves the sole Receiver authority into `[rx]`, closes the
 #       paired Sender, and returns through the Vec's clone-null/drop-present
@@ -80,13 +77,12 @@
 #       through its descriptor clone thunk, drops both Vecs, and explicitly
 #       closes the paired Receiver. An under-retained clone or duplicate close
 #       is an ASan failure; a missing sender-slot release is an LSan failure.
-#   actor-state stream for-await ownership (#3218, KNOWN v0.6.0 limit)
-#       A `for` loop over an actor-state `Stream<T>` field. Loop
-#       exhaustion mints a second close authority for the cursor while the
-#       field's own state-drop close authority stays intact, so the runtime
-#       stream pointer is closed twice at teardown. Registered through
-#       `run_asan_fixture_expect_leak` as an EXPECTED finding rather than a
-#       zero-findings probe; flip it once P1-L3/P1-L5 land.
+#   actor-state stream drain ownership (#3218)
+#       A handler draining its actor-state `Stream<T>` field through `recv`.
+#       The borrow leaves the seat's own state-drop close authority as the one
+#       owner of the runtime pointer, so the field is closed exactly once at
+#       teardown. The consuming `for` spelling would mint a second authority
+#       and is refused in source.
 #
 # SHIM: Linux-only gate.  On macOS the leak oracle is the `leaks --atExit`
 # path in hew-cli/tests/*_leak_oracle.rs; ASan + LSan on Darwin does not
@@ -406,7 +402,7 @@ CLEAN_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_clean_probe.hew"
 LEAK_SRC="${ROOT}/tests/vertical-slice/accept/asan_fixture_leak_probe.hew"
 # Crash+restart clean probe: an actor really traps, its #[on(crash)] hook clones
 # and reads CrashInfo.message, mutates the child's restart template, and returns
-# CrashAction::Restart; the supervisor restarts it and main exits 43. Exercises
+# CrashAction::Restart; the supervisor restarts it and main exits 42. Exercises
 # the emitted __on_crash on a REAL crash under ASan/LSan — the crash-message
 # clone (hew_string_clone) and the
 # CrashInfo drop must balance the supervisor's str_to_malloc/free_cstring with no
@@ -435,13 +431,10 @@ ENUM_RESOURCE_STATE_SRC="${ROOT}/tests/vertical-slice/accept/enum_resource_state
 # refused in source; its negative control is
 # tests/vertical-slice/reject/stream_state_field_for_consumes_the_seat.hew.
 STREAM_STATE_FIELD_DRAIN_SRC="${ROOT}/tests/vertical-slice/accept/stream_state_field_drain_asan.hew"
-# Composite resource close-exactly-once (#3070, KNOWN v0.6.0 limit): a
-# `#[resource]` leaf reached through a record field projection
-# (`p.slot.close()`) double-frees on the current lowerer's first loop
-# iteration, so this is registered below as an EXPECTED ASan finding via
-# `run_asan_fixture_expect_leak`, the same predicate the deliberate leak-probe
-# uses (it accepts any ASan/LSan finding marker, not only a leak). Flip it to
-# `compile_asan_fixture` + `run_asan_fixture ... 0` once #3070 is fixed.
+# Composite resource close-exactly-once (#3070): a `#[resource]` leaf reached
+# through a record field projection (`p.slot.close()`) is closed by exactly one
+# authority - the projection nulls the record's slot on transfer, so the
+# scope-exit walk skips it. Exits 0, clean.
 COMPOSITE_RESOURCE_CLOSE_SRC="${ROOT}/tests/vertical-slice/accept/composite_resource_close_once_asan.hew"
 # Owned-Vec element-store temp-leak (Linux arm of vec_push_temp_leak_oracle.rs):
 # a fresh unbound aggregate rvalue used as a `Vec::push` / `Vec::set` element
@@ -607,14 +600,15 @@ else
     fail=$((fail + 1))
 fi
 
-# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 43 ─
+# ── Gate 4: crash+restart clean probe MUST produce zero findings, exit 42 ─
 # A real crash fires the emitted __on_crash, which clones + reads
 # CrashInfo.message and returns CrashAction::Restart. The crash-message
 # clone/drop (hew_string_clone / CrashInfo record drop) must balance the
 # supervisor's str_to_malloc/free_cstring with no double-free, no leak, no OOB.
-# Exit 43 is the restarted-child success sentinel; any ASan/LSan finding (or a
-# non-43 exit) fails the gate.
-if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 43; then
+# Exit 42 is the replacement's declared init value, so it proves the restart
+# completed and re-ran the declaration; any ASan/LSan finding (or a non-42
+# exit) fails the gate.
+if run_asan_fixture "crash-restart (on_crash real crash)" "${CRASH_RESTART_BIN}" 42; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))
@@ -672,13 +666,7 @@ else
     fail=$((fail + 1))
 fi
 
-# KNOWN (#3070, v0.6.0 documented limit): a composite's resource leaf can be
-# closed once by the composite's own field walk and once by the program's
-# explicit close. The current lowerer double-frees on the record-field shape's
-# first iteration, so this is registered as an EXPECTED finding until #3070 is
-# fixed. When it is, this must flip to `run_asan_fixture ... 0` and the
-# ledger note above must be removed.
-if run_asan_fixture_expect_leak "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_BIN}"; then
+if run_asan_fixture "composite resource close-exactly-once (#3070)" "${COMPOSITE_RESOURCE_CLOSE_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

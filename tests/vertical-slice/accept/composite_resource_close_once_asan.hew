@@ -3,14 +3,6 @@
 // This fixture is compiled against an ASan/LSan-instrumented libhew.a by
 // `scripts/asan-fixture-check.sh` and run with ASAN_OPTIONS=detect_leaks=1.
 //
-// KNOWN FAILURE (#3070, v0.6.0 documented limit): on the current lowerer the
-// record-field shape double-frees on the FIRST loop iteration, so this fixture
-// is currently registered as an expected ASan finding, not a zero-findings
-// probe. `scripts/asan-fixture-check.sh` runs it through
-// `run_asan_fixture_expect_leak` (which accepts any ASan/LSan finding marker,
-// not only a leak) until the fix lands; flip it to `run_asan_fixture ... 0`
-// and drop this note once it is fixed.
-//
 // Shapes covered, each looped so one bad exit edge is 64 findings:
 //
 //   record field projected into its close — `p.slot.close()` reads the leaf out

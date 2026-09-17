@@ -1,5 +1,5 @@
 //! Borrowed readiness observation for source selection. A selection registers
-//! its sources in arm order — a checked task, actor call or channel receive — and an
+//! its sources in arm order — a checked task, actor call or stream receive — and an
 //! optional timer last. Observing readiness never consumes a source: the
 //! winning branch performs the ordinary await or receive.
 
@@ -12,12 +12,12 @@ use crate::actor_native::wait_graph::{
     hew_actor_wait_edge_fault, hew_actor_wait_edge_free, hew_actor_wait_edge_pending,
     hew_actor_wait_edge_prepare, select_alternatives, HewActorWaitEdge,
 };
-use crate::channel::HewChannelReceiver;
 use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
 };
 use crate::coro_state::CoroStatus;
 use crate::lifetime::live_actors::ActorIncarnation;
+use crate::stream::HewStream;
 use crate::util::MutexExt;
 use crate::wake::{HewWaker, OwnedWaker};
 use std::ptr;
@@ -36,10 +36,10 @@ enum SelectSource {
     },
     /// An independently retained observation of a checked task handle.
     Task(HewCheckedTaskWait),
-    /// A borrowed receiver plus the completion order stamped when its
+    /// A borrowed pipe stream plus the completion order stamped when its
     /// readiness was first observed. The selection never consumes an element.
-    Channel {
-        receiver: *mut HewChannelReceiver,
+    Stream {
+        stream: *mut HewStream,
         ready_order: Option<u64>,
         waker: Arc<OwnedWaker>,
     },
@@ -144,17 +144,27 @@ pub unsafe extern "C" fn hew_checked_task_select_add_task(
 /// `selection` is the live handle from `hew_checked_task_select_new` and
 /// `receiver` is a live receiver that outlives this selection.
 #[no_mangle]
-pub unsafe extern "C" fn hew_checked_task_select_add_channel(
+pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     selection: *mut HewCheckedTaskSelect,
-    receiver: *mut HewChannelReceiver,
+    stream: *mut HewStream,
 ) {
     if selection.is_null() {
         return;
     }
+    // SAFETY: the stream is a live borrowed handle per the caller's contract.
+    if !stream.is_null() && unsafe { (*stream).pipe_core() }.is_none() {
+        // A content stream (socket, file) has no observable queue yet: its
+        // readiness lives in the async I/O layer, which `select` does not
+        // register. Refuse rather than block a worker in a hidden read.
+        crate::channel_common::abort_elem_witness(
+            "hew_checked_task_select_add_stream",
+            "select observes pipe streams only; a socket or file stream is not a select source yet",
+        );
+    }
     // SAFETY: caller owns the selection for the duration of this call.
     unsafe {
-        (*selection).sources.push(SelectSource::Channel {
-            receiver,
+        (*selection).sources.push(SelectSource::Stream {
+            stream,
             ready_order: None,
             waker: Arc::new(OwnedWaker::retain(&*(*selection).waker)),
         });
@@ -225,7 +235,7 @@ unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> 
                         external_progress = true;
                     }
                 }
-                SelectSource::Task(_) | SelectSource::Channel { .. } => external_progress = true,
+                SelectSource::Task(_) | SelectSource::Stream { .. } => external_progress = true,
             }
         }
         selection.wait = select_alternatives(selection.owner, targets, external_progress);
@@ -267,20 +277,23 @@ unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> 
                 }
                 state.order
             }
-            SelectSource::Channel {
-                receiver,
+            SelectSource::Stream {
+                stream,
                 ready_order,
                 waker,
             } => {
                 if let Some(order) = *ready_order {
                     order
                 } else {
-                    if receiver.is_null() {
+                    if stream.is_null() {
                         return -2;
                     }
-                    // SAFETY: the receiver is borrowed for the selection and
+                    // SAFETY: the stream is borrowed for the selection and
                     // the waker descriptor is live per the caller's contract.
-                    let status = unsafe { (**receiver).poll_recv_ready(waker) };
+                    let Some(core) = (unsafe { (**stream).pipe_core() }) else {
+                        return -2;
+                    };
+                    let status = core.poll_recv_ready(waker);
                     if status == 0 {
                         continue;
                     }

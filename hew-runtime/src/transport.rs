@@ -3656,6 +3656,32 @@ pub(crate) fn tcp_full_close_conn(handle: c_int) -> bool {
     tcp_close_unowned_conn(handle)
 }
 
+/// `Connection.finish`: send FIN to the peer with `shutdown(Write)` while the
+/// read side stays open, so the peer sees EOF and the local reads still drain.
+///
+/// Returns 0 on success, -1 if the handle is not a live connection or the
+/// shutdown failed (the errno is recorded for the caller).
+#[no_mangle]
+pub extern "C" fn hew_tcp_shutdown_write(conn: c_int) -> c_int {
+    let Some(stream) = tcp_clone_stream(conn) else {
+        hew_cabi::sink::set_last_error_with_errno(
+            "hew_tcp_shutdown_write: invalid connection handle".into(),
+            9, // EBADF: Bad file descriptor
+        );
+        return -1;
+    };
+    match stream.shutdown(Shutdown::Write) {
+        Ok(()) => 0,
+        Err(error) => {
+            hew_cabi::sink::set_last_error_with_errno(
+                format!("hew_tcp_shutdown_write: {error}"),
+                error.raw_os_error().unwrap_or(0),
+            );
+            -1
+        }
+    }
+}
+
 /// Close either a TCP connection handle or listener handle.
 ///
 /// Returns 0 on success, -1 if handle is unknown.

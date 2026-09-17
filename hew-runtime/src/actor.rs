@@ -2652,8 +2652,13 @@ unsafe fn free_actor_resources(actor: *mut HewActor) {
     //    which `hew_supervisor_add_child_spec` (supervisor.rs:1379) created
     //    by an independent sized-block allocation + `ptr::copy_nonoverlapping`
     //    from the caller's spec bytes at registration time.
-    // SAFETY: terminal teardown owns every remaining state field.
-    unsafe { drop_initialized_actor_state(a) };
+    // A pipe sink among the state fields learns here whether its owner
+    // crashed, so the consumer observes a fault rather than a clean EOF.
+    let crashed = a.actor_state.load(Ordering::Acquire) == HewActorState::Crashed as i32;
+    crate::fault::release_actor_state(a.id, crashed, || {
+        // SAFETY: terminal teardown owns every remaining state field.
+        unsafe { drop_initialized_actor_state(a) };
+    });
     // SAFETY: all native state fields are released before publishing completion.
     unsafe { crate::actor_native::finish_native_terminal(a) };
 

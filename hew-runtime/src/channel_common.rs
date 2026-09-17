@@ -5,35 +5,8 @@ use std::ffi::c_void;
 
 use hew_cabi::vec::{HewTypeOwnershipKind, HewValueLayout};
 
-pub(crate) unsafe fn free_channel_pair<P, S, R>(
-    pair: *mut P,
-    split: impl FnOnce(&mut P) -> (&mut *mut S, &mut *mut R),
-) {
-    if pair.is_null() {
-        return;
-    }
-
-    // SAFETY: caller guarantees `pair` came from Box::into_raw.
-    let mut pair = unsafe { Box::from_raw(pair) };
-    let (sender, receiver) = split(&mut pair);
-    // SAFETY: `sender` points into the boxed pair and is valid for replacement.
-    let sender = unsafe { ptr::replace(sender, ptr::null_mut()) };
-    // SAFETY: `receiver` points into the boxed pair and is valid for replacement.
-    let receiver = unsafe { ptr::replace(receiver, ptr::null_mut()) };
-    drop(pair);
-
-    if !sender.is_null() {
-        // SAFETY: unextracted sender handles are still Box-owned here.
-        unsafe { drop(Box::from_raw(sender)) };
-    }
-    if !receiver.is_null() {
-        // SAFETY: unextracted receiver handles are still Box-owned here.
-        unsafe { drop(Box::from_raw(receiver)) };
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Element-layout witness (generic Stream<T> / Sender<T> / Receiver<T> width)
+// Element-layout witness (generic Stream<T> / Sink<T> width)
 // ---------------------------------------------------------------------------
 //
 // The channel and stream queue cores carry opaque `Vec<u8>` envelopes; the

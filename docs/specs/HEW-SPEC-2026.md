@@ -2325,6 +2325,15 @@ provides owning extraction. An enum of concrete variants, such as
 `enum Shape { Circle(Circle), Square(Square), }`, is an alternative when the
 program needs an exhaustive set of concrete cases.
 
+Trait satisfaction is structural. A type satisfies a trait when it declares
+every method the trait declares, with the trait's signature, whether those
+declarations come from an `impl Trait for T` block or from an inherent
+`impl T` block. A `dyn Trait` slot names the declaration that satisfies it,
+so an inherent method fills the slot exactly as an `impl Trait for T` method
+does. A trait with no required method of its own - a marker trait, or one
+whose methods all carry defaults - is not satisfied structurally and still
+needs an explicit `impl Trait for T` block.
+
 #### 3.8.3 Trait Bounds
 
 **Inline bounds:**

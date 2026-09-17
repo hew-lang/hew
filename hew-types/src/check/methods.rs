@@ -2660,6 +2660,54 @@ impl Checker {
         Some(self.qualify_method_return_to_receiver_owner(&canonical_name, &return_type))
     }
 
+    /// The key a named type's source method is published under in
+    /// `impl_method_declaration_ids`.  A concrete specialisation takes its own
+    /// mangled receiver key; every other receiver keeps the plain one.
+    pub(super) fn named_source_method_dispatch_key(
+        &self,
+        receiver_ty: &Ty,
+        method: &str,
+    ) -> Option<String> {
+        let Ty::Named {
+            name,
+            args: type_args,
+            ..
+        } = receiver_ty
+        else {
+            return None;
+        };
+        let canonical_name = self
+            .canonical_nominal_name(name)
+            .unwrap_or_else(|| name.clone());
+        let method_key = format!("{canonical_name}::{method}");
+        if type_args.is_empty() {
+            return Some(method_key);
+        }
+        Some(
+            type_args
+                .iter()
+                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
+                .collect::<Option<Vec<_>>>()
+                .as_ref()
+                .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical_name, args))
+                .map(|owner| format!("{owner}::{method}"))
+                .filter(|key| self.impl_method_declaration_ids.contains_key(key))
+                .unwrap_or(method_key),
+        )
+    }
+
+    /// The inherent `impl T { fn method(…) }` declaration identity, which is
+    /// what a direct `T.method(…)` call targets.  A trait slot filled by
+    /// structural satisfaction names this same declaration.
+    pub(super) fn inherent_impl_method_declaration(
+        &self,
+        receiver_ty: &Ty,
+        method: &str,
+    ) -> Option<crate::DefId> {
+        let key = self.named_source_method_dispatch_key(receiver_ty, method)?;
+        self.impl_method_declaration_ids.get(&key).cloned()
+    }
+
     /// Record a direct call to the exact source implementation that supplied
     /// a named-method signature.  This is intentionally keyed only by the
     /// checker-owned declaration map: same-leaf user types and registry
@@ -2671,31 +2719,14 @@ impl Checker {
         sig: &FnSig,
         span: &Span,
     ) {
-        let Ty::Named {
-            name,
-            args: type_args,
-            builtin,
-            ..
-        } = receiver_ty
-        else {
+        let Ty::Named { name, builtin, .. } = receiver_ty else {
             return;
         };
         let canonical_name = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| name.clone());
-        let method_key = format!("{canonical_name}::{method}");
-        let dispatch_key = if type_args.is_empty() {
-            method_key.clone()
-        } else {
-            type_args
-                .iter()
-                .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)).ok())
-                .collect::<Option<Vec<_>>>()
-                .as_ref()
-                .and_then(|args| crate::resolved_ty::mangle_impl_self_name(&canonical_name, args))
-                .map(|owner| format!("{owner}::{method}"))
-                .filter(|key| self.impl_method_declaration_ids.contains_key(key))
-                .unwrap_or_else(|| method_key.clone())
+        let Some(dispatch_key) = self.named_source_method_dispatch_key(receiver_ty, method) else {
+            return;
         };
         let Some(declaration) = self.impl_method_declaration_ids.get(&dispatch_key).cloned() else {
             return;

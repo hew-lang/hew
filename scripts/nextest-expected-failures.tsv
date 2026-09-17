@@ -6,13 +6,13 @@ macos	failure	hew-cli::arena_stdlib_leak_oracle	stdlib_arena_holder_insert_remov
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
 linux,macos,windows,freebsd	failure	hew-cli::channel_send_shutdown_e2e	full_send_at_shutdown_fails_closed_with_named_channel	#3380 makes a periodic handler's send observe the channel bound
-macos	failure	hew-cli::closure_capture_owned_leak_oracle	nested_closure_parameter_control_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_capture_owned_leak_oracle	nested_closure_parameter_control_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
+macos	failure	hew-cli::closure_env_drop_leak_oracle	closure_owned_type_param_no_per_frame_leak_slope	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,freebsd	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
-macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_fresh_call_result_into_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::collection_borrowed_cow_ingress_leak_oracle	reassigned_param_ingress_reads_back_exact_values	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_fresh_call_result_into_field_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
+macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
+macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
+macos	failure	hew-cli::collection_borrowed_cow_ingress_leak_oracle	reassigned_param_ingress_reads_back_exact_values	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	non_duplex_program_emits_wasm	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	wasm_unsupported_substrate_diagnostics_preserve_symbol_category	#3368 implements sandbox emission on the physical path
 macos	failure	hew-cli::composite_yield_leak_oracle	record_yield_break_freed_exactly_once_under_malloc_scribble	#3104 removes stale suspension cleanup after owned yields
@@ -64,19 +64,9 @@ linux,macos,windows,freebsd	failure	hew-cli::explain_cow_e2e	explain_cow_no_send
 linux,macos,windows,freebsd	failure	hew-cli::explain_cow_e2e	explain_cow_renders_mir_authored_send_modes	#3383 makes hew check --explain-cow report what it explains
 freebsd	failure	hew-cli::extern_ownership_double_release_e2e	resource_payload_beside_an_interpolated_string_closes_exactly_once	#3106 keeps resource Result match authorities consistent
 linux,macos,freebsd	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
-macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_actor_record_param_suspended_teardown_has_zero_leaks	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_and_closure_env_clone_are_malloc_scribble_clean	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_closure_env_clone_has_zero_leaks	#3079 derives cleanup from exact owner states
+macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_actor_record_param_suspended_teardown_has_zero_leaks	#3438 borrowed fn-parameter values cannot be captured or stored without consume
+macos	failure	hew-cli::generator_env_clone_leak_oracle	generator_and_closure_env_clone_are_malloc_scribble_clean	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 linux,macos,windows,freebsd	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 fix/collections-final-path: refuses a HashMap affine clone in source, not in the verifier
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_deep_tree_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_inline_wrapped_child_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_inline_wrapped_child_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_loop_build_consume_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_loop_build_consume_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_mutual_recursion_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_single_leaf_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_var_overwrite_loop_leak_slope_below_tolerance	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::indirect_enum_drop_leak_oracle	indirect_enum_var_overwrite_loop_no_corruption_under_malloc_scribble	#3079 derives cleanup from exact owner states
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_is_still_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::is_value_type_reject_e2e	is_on_an_actor_handle_through_an_inferred_closure_is_accepted	#3372 lowers identity comparison
 linux,macos,windows,freebsd	failure	hew-cli::machine_e2e	machine_diagram_renders_composite_nesting_in_mermaid	#3379 evaluates const parameters and generic fallbacks in a pure machine
@@ -90,8 +80,6 @@ freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	alternating_weak_
 linux,freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	machine_state_payload_does_not_over_release	#3379 evaluates const parameters and generic fallbacks in a pure machine
 freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_after_ingress_does_not_over_release	#3079 ends the prior aggregate generation before reassignment
 freebsd	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	reassign_in_loop_does_not_over_release	#3079 makes aggregate ingress generations loop-sensitive
-macos	failure	hew-cli::recv_loop_leak_oracle	carry_continue_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
-macos	failure	hew-cli::recv_loop_leak_oracle	carry_for_await_bytes_payload_escape_no_uaf	#3079 derives cleanup from exact owner states
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_closure_borrowed_element_store_fails_closed	#3377 fix/collections-final-path: renders a borrowed Vec-element closure store's ownership refusal as a source diagnostic
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy

@@ -518,6 +518,56 @@ fn structural_impl_populates_method_table_for_dyn_named() {
         vec![("name".to_string(), "Widget::name".to_string())],
         "structural-match method_table should map `name` to `Widget::name`"
     );
+    let inherent = output
+        .impl_method_declaration_ids
+        .get("Widget::name")
+        .cloned();
+    assert!(
+        inherent.is_some(),
+        "the inherent impl must publish a declaration identity: {:#?}",
+        output.impl_method_declaration_ids
+    );
+    assert_eq!(
+        entry.vtable_entries[0].impl_method, inherent,
+        "a structurally filled slot must name the inherent declaration a direct \
+         `Widget.name(..)` call targets, not a second identity"
+    );
+}
+
+/// A type that provides none of the trait's methods is still refused at the
+/// coercion site, and records no side-table entry.  The structural filler only
+/// resolves a slot the structural match already admitted.
+#[test]
+fn type_without_the_method_is_refused_for_dyn_named() {
+    let output = typecheck_isolated(
+        r#"
+        trait Named {
+            fn name(val: Self) -> string;
+        }
+
+        type Widget { label: string, }
+
+        fn use_named(value: dyn Named) {}
+
+        fn main() {
+            let w = Widget { label: "x" };
+            use_named(w);
+        }
+        "#,
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|e| matches!(e.kind, TypeErrorKind::Mismatch { .. })),
+        "expected a coercion refusal, got: {:#?}",
+        output.errors
+    );
+    assert!(
+        output.dyn_trait_coercions.is_empty(),
+        "no side-table entry should be recorded for an unsatisfied trait, got: {:#?}",
+        output.dyn_trait_coercions
+    );
 }
 
 // ─── `dyn Trait`-annotated local bindings ────────────────────────────────────

@@ -739,9 +739,16 @@ impl Checker {
                 );
             };
             self.apply_trait_object_bound_substitutions(&mut signature, bound);
-            let impl_method = self
-                .trait_impl_method_declaration(concrete_type, &declaring_spelling, &method_name)
-                .map(|(declaration, _)| declaration);
+            // The admission path names the filler: a nominal `impl Trait for T`
+            // publishes its method under the trait impl registry, a structural
+            // match is the inherent method a direct `T.method(…)` call targets.
+            // Whichever admitted the bound owns the slot's declaration identity.
+            let impl_method = if structural_ok {
+                self.inherent_impl_method_declaration(concrete_type, &method_name)
+            } else {
+                self.trait_impl_method_declaration(concrete_type, &declaring_spelling, &method_name)
+                    .map(|(declaration, _)| declaration)
+            };
             table.push(DynVtableEntry {
                 trait_name: declaring_spelling,
                 method_name,

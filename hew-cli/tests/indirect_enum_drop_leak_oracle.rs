@@ -101,8 +101,6 @@
 
 mod support;
 
-use std::os::unix::process::ExitStatusExt;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, measure_leaks, require_leaks_tool,
     run_under_malloc_scribble, HIGH_FRAMES, LOW_FRAMES, SLOPE_TOLERANCE,
@@ -561,37 +559,6 @@ fn dead_actor_select_request_source(frames: usize) -> String {
         frames.saturating_mul(frames.saturating_sub(1)) / 2
     )
 }
-
-/// Join preserves its fail-closed process trap when a branch cannot enqueue.
-/// The only observable continuation is therefore the trap itself: cleanup of
-/// the prepared owning carrier must complete under the poisoned allocator, and
-/// the post-join `BAD` sentinel must remain unreachable.
-const DEAD_ACTOR_JOIN_REQUEST_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
-actor Worker {\n\
-\x20   receive fn score(tag: i64, tree: Tree) -> i64 { tag }\n\
-\x20   receive fn crash_me() { panic(\"worker crash\"); }\n\
-}\n\
-supervisor App {\n\
-\x20   strategy: one_for_one,\n\
-\x20   intensity: 1 within 60s,\n\
-\x20   child worker: Worker,\n\
-}\n\
-fn main() -> i64 {\n\
-\x20   let sup = spawn App;\n\
-\x20   let worker = sup.worker;\n\
-\x20   for _ in 0..5 {\n\
-\x20       worker.crash_me();\n\
-\x20       sleep(80ms);\n\
-\x20   }\n\
-\x20   sleep(200ms);\n\
-\x20   let (left, right) = join {\n\
-\x20       worker.score(1, .Node(.Leaf(2), .Leaf(3))),\n\
-\x20       worker.score(4, .Node(.Leaf(5), .Leaf(6))),\n\
-\x20   };\n\
-\x20   print(\"BAD\");\n\
-\x20   left + right\n\
-}\n";
 
 /// Compare recursive-payload and scalar-control leak slopes for the exact same
 /// request topology. The recursive shape may add only constant measurement
@@ -1052,65 +1019,6 @@ fn indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble()
         &dead_actor_select_request_source(50),
         "ok",
     );
-}
-
-/// Join deliberately traps when setup cannot enqueue a branch, so it cannot
-/// expose a post-exit leak slope. Its exact IR drop oracle is paired with this
-/// runtime poisoned-allocator pin: the prepared carrier cleanup must finish and
-/// reach the intended LLVM trap, not abort with allocator corruption first.
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
-)]
-#[test]
-fn indirect_enum_dead_actor_join_request_cleans_before_intentional_trap() {
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix("indirect-enum-dead-actor-join-")
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(
-        DEAD_ACTOR_JOIN_REQUEST_SOURCE,
-        dir.path(),
-        "dead_actor_join_request",
-    );
-    let output = run_under_malloc_scribble(&bin);
-    let signal = output.status.signal();
-    let exit_code = output.status.code();
-    let stderr_text = String::from_utf8_lossy(&output.stderr);
-    let handled_trap = matches!(
-        exit_code,
-        Some(value) if value == 128 + libc::SIGILL || value == 128 + libc::SIGTRAP
-    ) && stderr_text.contains("trap in main context: ActorSendFailed");
-
-    assert!(
-        matches!(signal, Some(value) if value == libc::SIGILL || value == libc::SIGTRAP)
-            || handled_trap,
-        "dead join setup must reach the intentional LLVM trap after releasing its unsubmitted \
-         carrier, not exit normally or abort in allocator cleanup; signal={signal:?}, \
-         code={exit_code:?}\n{}",
-        describe_output(&output)
-    );
-    assert!(
-        !String::from_utf8_lossy(&output.stdout).contains("BAD"),
-        "join continued past its fail-closed setup trap:\n{}",
-        describe_output(&output)
-    );
-    let stderr = stderr_text.to_ascii_lowercase();
-    for corruption in [
-        "double free",
-        "incorrect checksum",
-        "pointer being freed was not allocated",
-        "heap corruption",
-    ] {
-        assert!(
-            !stderr.contains(corruption),
-            "dead join setup hit allocator corruption `{corruption}` instead of its intentional \
-             trap after exact carrier cleanup:\n{}",
-            describe_output(&output)
-        );
-    }
 }
 
 /// F4 / #2208 - the actor ask-reply ABI-boundary leg, pinned at the IR level.

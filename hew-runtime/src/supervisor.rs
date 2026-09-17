@@ -2012,14 +2012,17 @@ fn schedule_delayed_restart(
 
 /// Advance the restart epoch and wake every restart waiter.
 ///
-/// Two wake paths fire here, both AFTER the restart cycle's `store_child_slot`
+/// Three wake paths fire here, all AFTER the restart cycle's `store_child_slot`
 /// has made the new child reachable (this function is called at the tail of
 /// `restart_with_budget_and_strategy` / `restart_child_supervisor_with_budget`):
 ///
 /// 1. The `restart_epoch` counter/Condvar — the bump + `notify_all`, read by
-///    the contextless blocking `await_restart`
-///    (`hew_supervisor_restart_await_blocking`) and by test-support code.
-/// 2. The COOPERATIVE `await_restart` observers — every parked continuation in
+///    `hew_supervisor_get_child_wait` and by test-support code.
+/// 2. The supervision generation, which is what the contextless blocking
+///    `await_restart` (`hew_supervisor_restart_await_blocking`) waits on. The
+///    restart changed a slot without touching a fault record, so a barrier
+///    parked on that slot has to be told.
+/// 3. The COOPERATIVE `await_restart` observers — every parked continuation in
 ///    `restart_await_waiters` gets readiness deposited + `enqueue_resume`, then
 ///    the registry is drained. A resumed continuation re-resolves the slot and
 ///    is guaranteed Live (the store-before-notify ordering is the resume-contract
@@ -2052,8 +2055,9 @@ fn notify_restart(sup: *mut HewSupervisor) {
 /// ran out of budget, or the fault ruling declined to restart this spec. The
 /// state transition is published before this call, so a woken barrier re-reads
 /// the slot as Dead and returns. The epoch must NOT move: it counts completed
-/// restart cycles, which is what `test_wait_for_restart` and the blocking
-/// barrier's "restarted" condition read.
+/// restart cycles, which is what `test_wait_for_restart` and
+/// `hew_supervisor_get_child_wait` read. The supervision generation does move,
+/// because a barrier's answer may have changed.
 ///
 /// Same ordering as `notify_restart`: `notify_all` under the epoch mutex (a
 /// bare notify could land between a waiter's slot read and its `wait` and be
@@ -7866,11 +7870,10 @@ mod tests {
     /// The contextless barrier resolves on fault-record settlement, not on a
     /// clock.
     ///
-    /// Three phases, because they are three answers from one rule. A healthy
-    /// role with nothing pending returns AT ONCE — no grace window to sit out.
-    /// A role with an open record BLOCKS, however long the ruling takes, which
-    /// is what the deleted grace window got wrong under load. The ruling
-    /// releases it.
+    /// Two answers from one rule. A healthy role with nothing pending returns
+    /// AT ONCE — no grace window to sit out. A role with an open record BLOCKS,
+    /// however long the ruling takes, which is what the deleted grace window got
+    /// wrong under load. The ruling releases it.
     #[test]
     fn restart_await_blocking_resolves_on_fault_settlement() {
         let _rt = crate::runtime_test_guard();

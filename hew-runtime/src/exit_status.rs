@@ -361,9 +361,10 @@ pub(crate) struct RoleKey {
 /// Which roles each open record is still pending under, and the barrier wake.
 ///
 /// This is the one place "is a fault still unresolved under role R?" is known.
-/// `await_restart R` is defined on it: a role is settled when it reads Dead, or
-/// reads Live with nothing open here. That makes the barrier a function of
-/// supervision facts rather than of a clock.
+/// `await_restart R` is defined on it, together with the role's own slot state:
+/// a role is settled when it reads Dead, or holds a non-terminal incarnation
+/// with nothing open here. That makes the barrier a function of supervision
+/// facts rather than of a clock.
 ///
 /// The crash site attributes the record to the crashing child's role and to
 /// every ancestor role on the declared-child chain, so an escalated fault keeps

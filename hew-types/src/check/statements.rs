@@ -1863,6 +1863,11 @@ impl Checker {
                         );
                         return;
                     }
+                    // Draining a pipe consumes its read half: the loop
+                    // closes the stream at end of data, so a later
+                    // `rx.close()` is a use after move here rather than an
+                    // unbalanced close in SIR.
+                    self.mark_expr_moved(&iterable.0, &iterable.1);
                 }
                 // Infer the element type from the iterable.
                 let elem_ty = match &iter_ty {

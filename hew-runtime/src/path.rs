@@ -197,6 +197,24 @@ fn glob_expand(pattern: &CStr) -> GlobExpansion {
 #[cfg(not(target_family = "unix"))]
 fn glob_expand_windows(pattern: &CStr) -> GlobExpansion {
     let pattern_text = pattern.to_string_lossy();
+
+    // A pattern with no glob metacharacters is a literal path. POSIX
+    // `glob(3)` returns that path unchanged (with a check for existence),
+    // rather than re-deriving it by walking the filesystem, so its separators
+    // and case are exactly the caller's. The `glob` crate instead reconstructs
+    // matches component-by-component from a directory walk, which normalizes
+    // separators to the OS-native `\` and can't reproduce a caller's own
+    // mixed-separator literal (e.g. `path.combine`'s `/`-joined temp path).
+    // Match the POSIX contract exactly for the literal case instead of
+    // reporting a spuriously different string back.
+    if !pattern_text.contains(['*', '?', '[']) {
+        return Ok(if std::path::Path::new(pattern_text.as_ref()).exists() {
+            vec![pattern_text.into_owned()]
+        } else {
+            Vec::new()
+        });
+    }
+
     let paths = match glob::glob(&pattern_text) {
         Ok(paths) => paths,
         Err(err) => {

@@ -42,20 +42,7 @@ use std::alloc::{alloc, dealloc, realloc, Layout};
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Write a message to stderr (fd 2) in a signal-safe, cross-platform manner.
-///
-/// # Safety
-///
-/// `msg` must be a valid byte slice. This is safe to call in abort paths.
-unsafe fn write_stderr(msg: &[u8]) {
-    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
-    unsafe {
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-    }
-}
+use crate::trap_code::write_stderr;
 
 /// Ensure `v` can hold at least `needed` elements, growing if necessary.
 ///

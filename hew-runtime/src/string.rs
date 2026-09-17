@@ -230,20 +230,7 @@ pub unsafe extern "C" fn hew_string_builder_finish(builder: *mut c_void) -> *mut
     string_from_str(text)
 }
 
-/// Write a message to stderr.
-///
-/// # Safety
-///
-/// `msg` must be valid for reads for its full length.
-unsafe fn write_stderr(msg: &[u8]) {
-    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
-    unsafe {
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-    }
-}
+use crate::trap_code::write_stderr;
 
 /// Emit a string bounds diagnostic and route through the trap seam.
 ///
@@ -854,11 +841,7 @@ pub unsafe extern "C" fn hew_string_char_at(s: *const HewString, idx: i64) -> i3
 pub unsafe extern "C" fn hew_string_abort_oob(index: i64, len: i64) -> ! {
     // SAFETY: writing to stderr and aborting is always safe.
     unsafe {
-        let msg = b"PANIC: String index out of bounds\n";
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
+        write_stderr(b"PANIC: String index out of bounds\n");
         let _ = (index, len);
         libc::abort();
     }

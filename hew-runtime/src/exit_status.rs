@@ -553,6 +553,34 @@ pub(crate) fn final_exit_code(user_code: i64) -> i64 {
     exit_code_rule(user_code, unrecovered_actor_fault())
 }
 
+/// Truncate a final exit code to the portable process-exit byte range
+/// (0-255), the one place every native process-exit path (the `exit()`
+/// builtin, the native `main`-return epilogue) applies this rule.
+///
+/// POSIX already does this at the OS level: `waitpid` masks whatever value
+/// `exit(3)` is given, so a code outside 0-255 already reads back truncated
+/// on Linux and macOS regardless of what Hew does. Windows keeps the full
+/// 32-bit exit code instead, so the same program previously reported a
+/// different exit status depending on the host. Applying the truncation here
+/// makes it a portable runtime rule rather than a POSIX kernel accident: the
+/// observed status is one byte on every target. Not applied on WASM, which
+/// has no process-exit-status authority (see the module doc).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn to_process_exit_byte(code: i64) -> i32 {
+    // Intentional wraparound truncation to the low byte, matching what
+    // `waitpid` already does on unix regardless of the value `exit(3)` is
+    // given: `code.rem_euclid(256)` for any i64 (negative included) always
+    // lands in 0..256, so the `as` narrowing here can't lose information
+    // clippy would otherwise want guarded.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rem_euclid(256) provably lands in 0..256, so this cast can't truncate or misread sign"
+    )]
+    let byte = code.rem_euclid(256) as u8;
+    i32::from(byte)
+}
+
 /// Clear the authority for a freshly initialized runtime, so a previous
 /// runtime's fault cannot colour a new one.
 pub fn reset_process_exit_status() {

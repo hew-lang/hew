@@ -34,20 +34,7 @@ const HEADER_SIZE: usize = 8;
 /// Minimum capacity for new or grown buffers.
 const MIN_CAPACITY: u32 = 16;
 
-/// Write a message to stderr.
-///
-/// # Safety
-///
-/// `msg` must be valid for reads for its full length.
-unsafe fn write_stderr(msg: &[u8]) {
-    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
-    unsafe {
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-    }
-}
+use crate::trap_code::write_stderr;
 
 /// Emit a bytes bounds diagnostic and route through the trap seam.
 ///

@@ -3,6 +3,51 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 
+/// Write a message to stderr in a signal-safe, cross-platform manner.
+///
+/// The one shared implementation for every fail-closed trap path (string,
+/// bytes, vec, deque bounds) that writes its diagnostic straight to the fd
+/// rather than through buffered `eprintln!`.
+///
+/// On unix this is a raw `write(2, ...)`. On Windows, `libc::write` goes
+/// through the MSVCRT fd layer, which opens fd 2 in TEXT mode by default and
+/// silently rewrites every `\n` in the message to `\r\n` — so a trap message
+/// this crate writes with a plain `\n` line ending would reach the process's
+/// actual stderr with an extra `\r` a POSIX host never adds. Go around the
+/// CRT text-mode translation entirely with a raw `WriteFile` to the OS
+/// stderr handle, which writes the bytes given, unchanged.
+///
+/// # Safety
+///
+/// `msg` must be valid for reads for its full length.
+pub(crate) unsafe fn write_stderr(msg: &[u8]) {
+    #[cfg(not(target_os = "windows"))]
+    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
+    unsafe {
+        libc::write(2, msg.as_ptr().cast(), msg.len());
+    }
+    #[cfg(target_os = "windows")]
+    // SAFETY: msg.as_ptr() is valid for msg.len() bytes. GetStdHandle/WriteFile
+    // are called with valid arguments per their documented contract; a null or
+    // invalid stderr handle (redirected to nothing) is a normal WriteFile
+    // failure we deliberately ignore, matching the unix write(2) side, which
+    // also does not check its return value on this best-effort trap path.
+    unsafe {
+        use windows_sys::Win32::Storage::FileSystem::WriteFile;
+        use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE};
+
+        let handle = GetStdHandle(STD_ERROR_HANDLE);
+        let mut written: u32 = 0;
+        WriteFile(
+            handle,
+            msg.as_ptr(),
+            msg.len() as u32,
+            &mut written,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
 const DECIMAL: &[u8; 10] = b"0123456789";
 
 fn decimal_digit_u64(value: u64) -> u8 {

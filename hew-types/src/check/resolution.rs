@@ -3832,7 +3832,16 @@ impl Checker {
                                 crate::lookup_builtin_type(declaration.name) == Some(builtin)
                             })
                             .map_or_else(
-                                || resolved_name.clone(),
+                                || {
+                                    // A pipe half carries its identity in the
+                                    // discriminator; every stage spells it by
+                                    // the canonical name.
+                                    if builtin.is_substrate_handle() {
+                                        builtin.canonical_name().to_string()
+                                    } else {
+                                        resolved_name.clone()
+                                    }
+                                },
                                 |declaration| declaration.canonical_name.to_string(),
                             );
                     Ty::Named {

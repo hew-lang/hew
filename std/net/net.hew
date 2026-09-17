@@ -600,7 +600,7 @@ impl Connection {
             let pair = hew_tcp_stream_from_conn(self);
             let input: Stream<bytes> = stream.pair_stream(pair);
             let output: Sink<bytes> = stream.pair_sink(pair);
-            hew_stream_pair_free(pair);
+            pair.close();
             (input, output)
         }
     }
@@ -782,5 +782,4 @@ extern "C" {
     // handle, otherwise the real dup(2) errno.  Not available on wasm32;
     // WASM-TODO(tcp-networking): add the TCP-to-stream bridge to the WASM transport.
     fn hew_tcp_stream_from_conn(consume conn: Connection) -> stream.StreamPair;
-    fn hew_stream_pair_free(consume pair: stream.StreamPair);
 }

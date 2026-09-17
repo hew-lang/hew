@@ -4278,6 +4278,14 @@ resource-param-types = ["std.net.Connection", ""]
 release-symbol = ""
 discharge-depth = "none"
 
+[[ownership.contracts]]
+symbol = "hew_tcp_shutdown_write"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.Connection"]
+release-symbol = ""
+discharge-depth = "none"
+
 # IP / CIDR — hew-std/src/ipnet.rs. Read-only string predicates; network and
 # broadcast return owned managed strings.
 [[ownership.contracts]]

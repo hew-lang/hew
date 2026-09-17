@@ -24,7 +24,6 @@ pub enum BuiltinType {
     Task,
     /// Compiler-only owned completion operation; its argument is the checked result.
     ActorCall,
-    StreamPair,
     Generator,
     Range,
     Rc,
@@ -211,7 +210,6 @@ builtin_types! {
     HashMapIter => "HashMapIter",
     Task => "Task",
     ActorCall => "__ActorCall",
-    StreamPair => "StreamPair",
     Generator => "Generator",
     Range => "Range",
     Rc => "Rc",
@@ -503,7 +501,6 @@ impl BuiltinType {
             Self::Result
             | Self::HashMap
             | Self::HashMapIter
-            | Self::StreamPair
             | Self::SupervisorPool
             | Self::ActorFn => 2,
             Self::JsonValue

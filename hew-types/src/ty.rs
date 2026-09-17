@@ -35,7 +35,6 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
-            | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::Range
             | BuiltinType::Rc

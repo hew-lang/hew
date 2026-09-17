@@ -390,7 +390,8 @@ pub(crate) fn resolve_member_ty(
                     .then(|| crate::lookup_source_owned_lifecycle_type(&name))
                     .flatten()
             });
-            let is_opaque = is_opaque || is_opaque_type(&name);
+            let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_substrate_handle)
+                && (is_opaque || is_opaque_type(&name));
             ResolvedTy::Named {
                 name,
                 args,

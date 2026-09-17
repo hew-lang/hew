@@ -265,7 +265,6 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::ActorCall
             | BuiltinType::SupervisorPool
             | BuiltinType::ChildRef
-            | BuiltinType::StreamPair
             | BuiltinType::Generator
             | BuiltinType::Range
             | BuiltinType::Rc

@@ -1013,8 +1013,8 @@ impl ChannelCore {
     /// Named so the panic message identifies the faulted producer actor.
     fn panic_faulted(actor_id: u64) -> ! {
         panic!(
-            "receive-gen stream: producer actor {actor_id} crashed or was torn down; \
-             stream faulted — no more values will ever arrive"
+            "pipe faulted: producer actor {actor_id} crashed while holding a sink; \
+             no more items will arrive"
         );
     }
 

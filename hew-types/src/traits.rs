@@ -759,6 +759,23 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
+            // Stream<T> and Sink<T>: the two halves of one pipe. A half moves
+            // between actors and its items cross that boundary, so Send/Sync
+            // iff T: Send. Sink clones a producer handle; a Stream has one
+            // consumer. Both are resources: release publishes EOF.
+            Ty::Named {
+                builtin: Some(kind @ (BuiltinType::Stream | BuiltinType::Sink)),
+                args,
+                ..
+            } if args.len() == 1 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => {
+                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
+                }
+                MarkerTrait::Clone => *kind == BuiltinType::Sink,
+                MarkerTrait::Resource | MarkerTrait::Debug => true,
+                _ => false,
+            },
+
             // actor(M) -> R: the user-visible lambda-actor handle.
             // Send/Sync iff BOTH M: Send AND R: Send (message and reply cross
             // the actor boundary).

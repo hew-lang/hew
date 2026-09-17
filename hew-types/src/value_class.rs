@@ -788,7 +788,6 @@ fn classify(
             }
             BuiltinType::Rc | BuiltinType::Weak => affine_retain,
             BuiltinType::Generator
-            | BuiltinType::StreamPair
             | BuiltinType::BoxedActor
             | BuiltinType::Sink
             | BuiltinType::Stream

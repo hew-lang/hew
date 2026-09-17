@@ -1,19 +1,21 @@
 //! Rejection oracle for a `#[resource]` held inside a `machine` state.
 //!
-//! The drop-obligation lattice's `MachineStatePayload` position has no wired
-//! release: a handle carried in a machine state payload is closed neither on
-//! transition nor at scope exit. Two silent-leak shapes lived here — a
-//! `reenter` that carried a payload field through unchanged, and a machine
-//! value ending its scope in a state still holding the handle. Rather than
-//! compiling either into a leak, the checker rejects the machine declaration
-//! outright (`check_machine_state_resource_payloads` in
-//! `hew-types/src/check/admissibility.rs`).
+//! A handle carried in a machine state payload is closed neither on transition
+//! nor at scope exit. Two silent-leak shapes lived here — a `reenter` that
+//! carried a payload field through unchanged, and a machine value ending its
+//! scope in a state still holding the handle. Rather than compiling either
+//! into a leak, the checker rejects the machine declaration outright: a
+//! `#[resource]` payload is not a demonstrably pure machine value.
 //!
 //! This oracle pins that fail-closed floor: both shapes must stop in the
-//! checker with the diagnostic naming the machine, the state, and the resource
-//! type, and must leave no native artifacts behind. When machine drop
-//! elaboration lands and the payloads are released tag-aware, these revert to
-//! leak-slope oracles proving the exactly-once close.
+//! checker naming the machine, and must leave no native artifacts behind.
+//! When machine drop elaboration lands and the payloads are released
+//! tag-aware, these revert to leak-slope oracles proving the exactly-once
+//! close.
+//!
+//! The fixtures construct their handles purely. A transition body that calls
+//! into `extern "C"` is refused by the same purity rule for the effect rather
+//! than for the payload, which would leave the payload veto unexercised.
 
 mod support;
 
@@ -23,19 +25,11 @@ use std::process::Command;
 use support::{hew_binary, repo_root};
 
 const REENTER_CARRY_SOURCE: &str = r#"
-#[opaque]
-type Dq {}
-
 #[resource]
-type Handle { raw: Dq, }
+type Handle { id: i64, }
 
 impl Handle {
-    fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
-}
-
-extern "C" {
-    fn hew_deque_new() -> Dq;
-    fn hew_deque_free(consume dq: Dq);
+    fn close(consume self) { print("C"); }
 }
 
 machine Session {
@@ -43,7 +37,7 @@ machine Session {
     state Idle,
     state Active { h: Handle, },
 
-    on Open: Idle => Active { h: Handle { raw: unsafe { hew_deque_new() } } }
+    on Open: Idle => Active { h: Handle { id: 1 } }
     on UseIt: Active => Active reenter { h: state.h }
 
     default { state }
@@ -60,19 +54,11 @@ fn main() {
 "#;
 
 const RELEASE_PATH_SOURCE: &str = r#"
-#[opaque]
-type Dq {}
-
 #[resource]
-type Handle { raw: Dq, }
+type Handle { id: i64, }
 
 impl Handle {
-    fn close(consume self) { unsafe { hew_deque_free(self.raw) }; print("C"); }
-}
-
-extern "C" {
-    fn hew_deque_new() -> Dq;
-    fn hew_deque_free(consume dq: Dq);
+    fn close(consume self) { print("C"); }
 }
 
 machine Mixed {
@@ -80,7 +66,7 @@ machine Mixed {
     state Idle,
     state Active { h: Handle, label: string, },
 
-    on Open: Idle => Active { h: Handle { raw: unsafe { hew_deque_new() } }, label: "live".to_upper() }
+    on Open: Idle => Active { h: Handle { id: 1 }, label: "live" }
     on Touch: Active => Active reenter { h: state.h, label: state.label }
 
     default { state }
@@ -91,7 +77,7 @@ machine Plain {
     state Idle,
     state Live { h: Handle, },
 
-    on Open: Idle => Live { h: Handle { raw: unsafe { hew_deque_new() } } }
+    on Open: Idle => Live { h: Handle { id: 2 } }
     on Shut: Live => Idle,
 
     default { state }
@@ -145,14 +131,10 @@ fn assert_rejected_in_checker(source: &str, name: &str, expected_diagnostics: &[
     for expected in expected_diagnostics {
         assert!(
             combined.contains(expected),
-            "{name}: diagnostic must name the machine, state, and resource:\n\
+            "{name}: diagnostic must name the rejected machine:\n\
              expected substring: {expected}\nactual output:\n{combined}"
         );
     }
-    assert!(
-        combined.contains("is not released on transition or scope exit"),
-        "{name}: diagnostic must state why the machine is rejected:\n{combined}"
-    );
     assert_no_native_artifacts(&emit_dir, name);
 }
 
@@ -173,7 +155,7 @@ fn machine_reenter_carrying_resource_is_rejected_in_checker() {
     assert_rejected_in_checker(
         REENTER_CARRY_SOURCE,
         "machine_reenter_resource",
-        &["machine `Session` state `Active` holds `#[resource]`/`#[linear]` value `Handle`"],
+        &["machine evaluator is not demonstrably pure: `Session`"],
     );
 }
 
@@ -183,8 +165,8 @@ fn machine_state_resource_release_paths_are_rejected_in_checker() {
         RELEASE_PATH_SOURCE,
         "machine_release_paths",
         &[
-            "machine `Mixed` state `Active` holds `#[resource]`/`#[linear]` value `Handle`",
-            "machine `Plain` state `Live` holds `#[resource]`/`#[linear]` value `Handle`",
+            "machine evaluator is not demonstrably pure: `Mixed`",
+            "machine evaluator is not demonstrably pure: `Plain`",
         ],
     );
 }

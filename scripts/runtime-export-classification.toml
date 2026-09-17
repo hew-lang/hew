@@ -2141,6 +2141,41 @@ stops the call site from being read as an independent lane operation."""
 # string_as_str / string_as_bytes and returns a scalar, so no owner crosses the
 # boundary in either direction and the caller keeps every handle it passed.
 [[ownership.contracts]]
+symbol = "hew_node_api_allow_peer"
+result = "none"
+params = ["borrow", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_api_load_keys"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_api_set_transport"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_api_start"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_api_unregister"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_string_byte_length"
 result = "none"
 params = ["borrow"]

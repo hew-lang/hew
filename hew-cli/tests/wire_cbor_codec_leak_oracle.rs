@@ -11,7 +11,8 @@
 //!     type-mismatched stream the ciborium reader LATCHES failure and the
 //!     thunk's `fail_bb` drops every owned field already written — before
 //!     `free(dst)`, in place, so the shell is freed exactly once — then
-//!     returns null, which traps the `.decode()` call site (fail-closed).
+//!     returns null, which reports the typed fail-closed failure at the
+//!     `.decode()` call site (exit 1, `WireDecodeFailed (210)`).
 //!
 //! These oracles pin both halves, for both record and enum `#[wire]` shapes:
 //!
@@ -37,10 +38,13 @@
 //!     cross-decode where a value is decoded against a layout that allocates an
 //!     owned field and then latches failure on a later field, driving the
 //!     `fail_bb` partial-drop path. Run under the poisoned-allocator triple:
-//!     the program must trap (fail-closed) WITHOUT the `hew-cabi: free_cstring:
+//!     the program must report the typed fail-closed outcome (exit 1 with
+//!     `WireDecodeFailed (210)` on stderr) WITHOUT the `hew-cabi: free_cstring:
 //!     ... double-free` abort — proving the partial owned field is freed exactly
 //!     once (no double-free) and that the shell free does not race the field
-//!     drop.
+//!     drop. A double-free still aborts on a signal, so the oracle distinguishes
+//!     that abort from the clean typed failure rather than accepting any
+//!     non-success exit.
 //!
 //!   * **Owned-Vec-element decode-failure partial free-on-error**
 //!     (`vec_owned_struct_decode_failure_frees_partials_no_double_free` and its
@@ -80,10 +84,11 @@
 //!
 //! ## Error-path under-free disposition
 //!
-//! `.decode()` traps (SIGTRAP/SIGILL) on a malformed stream in `fn main` — it
-//! does not return a `Result` — so `leaks --atExit` (which needs a normal exit
-//! to run its hook) cannot snapshot THAT process for an UNDER-free slope. The
-//! `assert_decode_failure_traps_no_double_free` oracles therefore prove only the
+//! `.decode()` reports a typed fail-closed failure (exit 1, `WireDecodeFailed
+//! (210)` on stderr) on a malformed stream in `fn main` — it does not return a
+//! `Result` — so `leaks --atExit` (which needs a normal exit to run its hook)
+//! cannot snapshot THAT process for an UNDER-free slope. The
+//! `assert_decode_failure_typed_no_double_free` oracles therefore prove only the
 //! no-DOUBLE-free half (the poisoned-allocator triple aborts on an over-free).
 //!
 //! The UNDER-free half is proven dynamically by
@@ -506,14 +511,16 @@ fn actor_in_range_enum_decode_source(frames: usize) -> String {
 
 // ── under-free (leak) teeth for the decode-failure `fail_bb` ─────────────────
 //
-// The `assert_decode_failure_traps_no_double_free` oracles run the failing
-// decode in `fn main`, where the null-return TRAPS the process. That trap
-// catches OVER-free (the scribbled double-free aborts with the cabi guard) but
-// is BLIND to UNDER-free: a `fail_bb` that never dropped the partial owned
-// fields still exits via the same trap, and `leaks --atExit` cannot snapshot a
-// signal-terminated process. Removing `emit_de_drop_owned` therefore leaves the
-// trap-based oracles green while the error path leaks every already-decoded
-// owned element.
+// The `assert_decode_failure_typed_no_double_free` oracles run the failing
+// decode in `fn main`, where the null-return reports the typed fail-closed
+// failure (exit 1, `WireDecodeFailed (210)`) and the process exits. That
+// catches OVER-free (a double-free still aborts on a signal under the
+// poisoned-allocator triple) but is BLIND to UNDER-free: a `fail_bb` that
+// never dropped the partial owned fields still exits the same clean way, and
+// `leaks --atExit` needs the actor-supervised survival path below to snapshot
+// it. Removing `emit_de_drop_owned` therefore leaves the exit-code-based
+// oracles green while the error path leaks every already-decoded owned
+// element.
 //
 // These fixtures give that path under-free teeth by running the SAME failing
 // decode inside an actor `receive` handler. The supervisor's crash-recovery
@@ -904,19 +911,26 @@ fn anonymous_to_json_temp_round_trip_leaks_exactly_zero() {
     );
 }
 
-/// Compile `source` (a decode-failure shape that traps fail-closed) and run it
-/// under the poisoned-allocator triple, asserting it (a) traps (SIGILL=4 /
-/// SIGTRAP=5) rather than exiting 0 with a silent partial, and (b) does NOT
-/// fire the cabi `free_cstring` / `double-free` guard — proving every partial
-/// owned field decoded before the failure is freed exactly once on the error
-/// path.
+/// Compile `source` (a decode-failure shape) and run it under the
+/// poisoned-allocator triple, asserting it (a) reports the typed fail-closed
+/// outcome — exit status 1 with `WireDecodeFailed (210)` on stderr — rather
+/// than succeeding, panicking or exiting silently, and (b) does NOT fire the
+/// cabi `free_cstring` / `double-free` guard — proving every partial owned
+/// field decoded before the failure is freed exactly once on the error path.
+///
+/// The current runtime contract reports a malformed wire decode as this typed
+/// failure rather than trapping with a signal; a double-free of a partially
+/// decoded payload must still abort with a signal (SIGABRT under the
+/// poisoned-allocator triple's guard), so this asserts the exact typed-failure
+/// shape rather than merely "did not succeed" — an ordinary panic or a silent
+/// non-1 exit still fails the test.
 ///
 /// macOS-only: the poisoned-allocator triple is a Darwin libmalloc facility, so
 /// the gate is the compile-time `#[cfg_attr(not(target_os = "macos"), ignore)]`
 /// on each caller, which the runner RECORDS as a skip. Reaching this function
 /// off macOS means that attribute is missing and
 /// `require_macos_poisoned_allocator` panics rather than returning success.
-fn assert_decode_failure_traps_no_double_free(shape_name: &str, source: &str) {
+fn assert_decode_failure_typed_no_double_free(shape_name: &str, source: &str) {
     require_macos_poisoned_allocator();
     require_codegen();
 
@@ -942,20 +956,28 @@ fn assert_decode_failure_traps_no_double_free(shape_name: &str, source: &str) {
         stderr.trim()
     );
 
-    // Fail-closed: the malformed decode must trap (SIGILL=4 / SIGTRAP=5), never
-    // exit 0 with a silent partial.
-    let trapped = matches!(output.status.signal(), Some(4 | 5));
-    assert!(
-        trapped,
-        "{shape_name}: expected a fail-closed trap (SIGILL/SIGTRAP) on the malformed decode, \
-         got status={:?} signal={:?}\nstderr:\n{stderr}",
+    // Fail-closed: the malformed decode must report the typed failure — exit
+    // status 1 AND `WireDecodeFailed (210)` on stderr — never succeed, die on
+    // an unrelated signal, or exit silently.
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{shape_name}: expected exit status 1 for the fail-closed typed failure on the malformed \
+         decode, got status={:?} signal={:?}\nstderr:\n{stderr}",
         output.status.code(),
         output.status.signal()
+    );
+    assert!(
+        stderr.contains("WireDecodeFailed (210)"),
+        "{shape_name}: malformed wire decode must attribute the failure to `WireDecodeFailed (210)`\n\
+         stderr:\n{stderr}"
     );
 
     // No double-free: the cabi `free_cstring` guard aborts with this exact
     // sentinel on a double-free / corrupted header. Its ABSENCE proves the
-    // partial owned field was freed exactly once on the error path.
+    // partial owned field was freed exactly once on the error path. A real
+    // double-free still aborts on a signal, distinct from the clean typed
+    // failure asserted above.
     assert!(
         !stderr.contains("free_cstring") && !stderr.contains("double-free"),
         "{shape_name}: the cabi double-free guard fired on the decode-failure path — the partial \
@@ -964,20 +986,21 @@ fn assert_decode_failure_traps_no_double_free(shape_name: &str, source: &str) {
 }
 
 /// Decode-failure partial free-on-error: a cross-decode that allocates field 1
-/// (string) then latches failure on field 2 (int-where-text) must trap
-/// (fail-closed) WITHOUT the cabi `free_cstring` double-free abort under the
-/// poisoned-allocator triple. Proves the `fail_bb` drops the partial owned
-/// field exactly once before freeing the shell — no double-free, no shell/field
-/// free race. (The under-free half is structural — the `fail_bb` walks every
-/// field via the same null-safe drop helpers the slope oracle proves leak-free
-/// — because the trap precludes a `leaks --atExit` snapshot.)
+/// (string) then latches failure on field 2 (int-where-text) must report the
+/// typed fail-closed failure (exit 1, `WireDecodeFailed (210)`) WITHOUT the
+/// cabi `free_cstring` double-free abort under the poisoned-allocator triple.
+/// Proves the `fail_bb` drops the partial owned field exactly once before
+/// freeing the shell — no double-free, no shell/field free race. (The
+/// under-free half is structural — the `fail_bb` walks every field via the
+/// same null-safe drop helpers the slope oracle proves leak-free — because the
+/// typed-failure exit precludes a `leaks --atExit` snapshot.)
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
 fn decode_failure_frees_partials_no_double_free() {
-    assert_decode_failure_traps_no_double_free("wire_cbor_decode_failure", DECODE_FAILURE_SOURCE);
+    assert_decode_failure_typed_no_double_free("wire_cbor_decode_failure", DECODE_FAILURE_SOURCE);
 }
 
 /// Item 2 — owned-payload enum round-trip drop. A `#[wire]` enum variant
@@ -1003,15 +1026,16 @@ fn enum_owned_payload_round_trip_no_per_frame_leak_slope() {
 /// Item 2 — owned-payload enum decode-failure free-on-error. Decoding a
 /// `Full(string, Vec<string>, Inner)` payload against a `Full(string, i64,
 /// Inner)` layout allocates the first owned string, then latches failure on the
-/// `i64`-where-array field, driving the enum-variant `fail_bb`. Must trap
-/// fail-closed with no double-free of the partial owned string.
+/// `i64`-where-array field, driving the enum-variant `fail_bb`. Must report
+/// the typed fail-closed failure with no double-free of the partial owned
+/// string.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
 fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
-    assert_decode_failure_traps_no_double_free(
+    assert_decode_failure_typed_no_double_free(
         "wire_cbor_enum_decode_failure",
         ENUM_DECODE_FAILURE_SOURCE,
     );
@@ -1021,8 +1045,9 @@ fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
 /// `{ items: Vec<Item> @1; tail: string @2 }` value against a `{ items:
 /// Vec<Item> @1; tail: i64 @2 }` layout decodes the full owned Vec (allocating
 /// each element's owned string) then latches on the `i64`-where-text tail,
-/// driving the `fail_bb`. Must trap fail-closed with no cabi double-free of any
-/// already-decoded owned element — proving the owned Vec (and its per-element
+/// driving the `fail_bb`. Must report the typed fail-closed failure with no
+/// cabi double-free of any already-decoded owned element — proving the owned
+/// Vec (and its per-element
 /// strings) is dropped exactly once before the shell free. This is the headline
 /// owned-Vec-element error path the CBOR Vec codec change admits.
 #[cfg_attr(
@@ -1031,7 +1056,7 @@ fn enum_owned_payload_decode_failure_frees_partials_no_double_free() {
 )]
 #[test]
 fn vec_owned_struct_decode_failure_frees_partials_no_double_free() {
-    assert_decode_failure_traps_no_double_free(
+    assert_decode_failure_typed_no_double_free(
         "wire_cbor_vec_owned_struct_decode_failure",
         VEC_OWNED_STRUCT_DECODE_FAILURE_SOURCE,
     );
@@ -1048,7 +1073,7 @@ fn vec_owned_struct_decode_failure_frees_partials_no_double_free() {
 )]
 #[test]
 fn vec_owned_enum_decode_failure_frees_partials_no_double_free() {
-    assert_decode_failure_traps_no_double_free(
+    assert_decode_failure_typed_no_double_free(
         "wire_cbor_vec_owned_enum_decode_failure",
         VEC_OWNED_ENUM_DECODE_FAILURE_SOURCE,
     );

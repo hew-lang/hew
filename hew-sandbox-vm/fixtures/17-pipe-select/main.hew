@@ -1,14 +1,14 @@
-import std.channel;
+import std.stream;
 
 fn main() {
-    let (tx, rx) = match channel.new(1) {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = match stream.pipe(1) {
         .Ok(pair) => pair,
         .Err(error) => {
             println(error);
             return;
         },
     };
-    tx.send(7);
+    tx.send(7).expect("send");
     select {
         value from rx.recv() => match value {
             .Some(item) => println(f"{item}"),

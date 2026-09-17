@@ -67,7 +67,6 @@ hir-ast-boundary	expr-use:peel_range_adapter_chain	hew-hir/src/lower.rs	stage-2	
 hir-ast-boundary	expr-use:prepare_fork_call	hew-hir/src/lower/fork.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:record_monomorphisation	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:scan_expr_for_binop_gates	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
-hir-ast-boundary	expr-use:scan_expr_for_blocking_recv	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:scan_expr_for_private_refs	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:scan_expr_for_supervisor_spawn	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
 hir-ast-boundary	expr-use:scan_expr_for_vec_index_gate	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Expr variants directly instead of the checker's typed HirExprKind shape
@@ -77,7 +76,6 @@ hir-ast-boundary	item-use:builtin_callable_impl_program	hew-hir/src/lower.rs	sta
 hir-ast-boundary	item-use:check_binary_operator_gates	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
 hir-ast-boundary	item-use:check_builtin_callable_impl_program	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
 hir-ast-boundary	item-use:check_coroutine_gate	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
-hir-ast-boundary	item-use:check_wasm_blocking_recv_gate	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
 hir-ast-boundary	item-use:collect_imported_private_fn_closure	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
 hir-ast-boundary	item-use:collect_supervisor_registry	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
 hir-ast-boundary	item-use:is_builtin_callable_impl	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Item variants to rebuild fn/type/record resolution the checker's TypeCheckOutput already decided
@@ -109,7 +107,6 @@ hir-ast-boundary	stmt-use:collect_emitted_events_inner	hew-hir/src/lower.rs	stag
 hir-ast-boundary	stmt-use:lower_stmt	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:lower_stmt_multi	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:scan_stmt_for_binop_gates	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
-hir-ast-boundary	stmt-use:scan_stmt_for_blocking_recv	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:scan_stmt_for_private_refs	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:scan_stmt_for_supervisor_spawn	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
 hir-ast-boundary	stmt-use:scan_stmt_for_vec_index_gate	hew-hir/src/lower.rs	stage-2	D486 stage one freeze: matches hew_parser::ast::Stmt variants directly instead of a checker-resolved statement shape
@@ -141,7 +138,6 @@ signature-application	check_collection_args	hew-types/src/check/methods.rs	stage
 signature-application	check_condition	hew-types/src/check/patterns.rs	stage-1	pattern conditions (12.5): each let operand binds its pattern against the synthesized scrutinee through bind_pattern and the match resolution table; boolean operands check against bool
 signature-application	check_const	hew-types/src/check/items.rs	stage-1	const initialiser checked against the declared const type
 signature-application	check_discarded_if_chain	hew-types/src/check/statements.rs	stage-1	discarded if-chain arms checked against unit
-signature-application	check_duplex_method	hew-types/src/check/methods.rs	stage-1	builtin Duplex arguments checked against the channel's payload type
 signature-application	check_expr_with_expected	hew-types/src/check/expressions.rs	stage-1	the primitive's own thin entry point, delegating to the expression spine
 signature-application	check_hashmap_method	hew-types/src/check/methods.rs	stage-1	builtin HashMap key/value arguments checked against the receiver's own K/V
 signature-application	check_hashset_element_arg	hew-types/src/check/methods.rs	stage-1	builtin HashSet element argument checked against the receiver's element type
@@ -153,7 +149,6 @@ signature-application	check_match_stmt	hew-types/src/check/statements.rs	stage-1
 signature-application	check_method_call_inner	hew-types/src/check/methods.rs	stage-1	method-dispatch paths that check a receiver or operand shape, not a named signature's parameters
 signature-application	check_return_operand	hew-types/src/check/statements.rs	stage-1	return operand checked against the enclosing function's declared return type
 signature-application	check_runtime_vec_method_from_source	hew-types/src/check/methods.rs	stage-1	source-derived Vec method arguments checked against the receiver's element type
-signature-application	check_send_half_method	hew-types/src/check/methods.rs	stage-1	builtin Sender arguments checked against the channel's payload type
 signature-application	check_spawn_constructor_args	hew-types/src/check/expressions.rs	stage-1	spawn constructor arguments checked against actor init parameter types, which carry no generic callee signature
 signature-application	check_stmt_as_expr	hew-types/src/check/statements.rs	stage-1	tail statement checked against the block's expected type
 signature-application	check_stmt_inner	hew-types/src/check/statements.rs	stage-1	statement operands retain declared and inferred checking after splitting the statement entry point

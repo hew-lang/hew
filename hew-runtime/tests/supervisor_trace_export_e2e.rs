@@ -27,8 +27,7 @@ use hew_runtime::mailbox::{
     hew_mailbox_try_recv, hew_mailbox_try_recv_sys, hew_msg_node_free,
 };
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_get_child, hew_supervisor_set_restart_notify,
-    test_wait_for_restart, HewChildSpec,
+    hew_supervisor_add_child_spec, hew_supervisor_get_child, test_wait_for_restart, HewChildSpec,
 };
 use hew_runtime::tracing::{drain_events_json, hew_trace_enable, hew_trace_reset};
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
@@ -93,7 +92,6 @@ fn start_one_child_supervisor(name: &str) -> (TestSupervisor, CString) {
     let mut state = 0i32;
     // SAFETY: sup wraps a live supervisor; spec fields are valid for the call.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
         let spec = HewChildSpec {
             name: cname.as_ptr(),
             init_state: (&raw mut state).cast(),

@@ -22,10 +22,7 @@ use std::sync::atomic::{AtomicI32, AtomicI64, Ordering};
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
 use hew_runtime::internal::types::HewCrashActionAbi;
-use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_set_restart_notify, test_wait_for_restart,
-    HewChildSpec,
-};
+use hew_runtime::supervisor::{hew_supervisor_add_child_spec, test_wait_for_restart, HewChildSpec};
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
 
 /// Global lock — these tests mutate fault-injection state and handler-side
@@ -165,8 +162,6 @@ fn on_crash_handler_fires_once_per_crash_then_restart_proceeds() {
 
     // SAFETY: sup is live; spec lives across the FFI call.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let spec = HewChildSpec {
             name: name.as_ptr(),
             init_state: (&raw mut state).cast(),
@@ -274,8 +269,6 @@ fn null_on_crash_handler_is_skipped_cleanly() {
 
     // SAFETY: sup is live; spec lives across the FFI call.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let spec = HewChildSpec {
             name: name.as_ptr(),
             init_state: (&raw mut state).cast(),
@@ -359,8 +352,6 @@ fn on_crash_kill_return_terminates_child_overriding_restart_policy() {
 
     // SAFETY: sup is live; spec lives across the FFI call.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let spec = HewChildSpec {
             name: name.as_ptr(),
             init_state: (&raw mut state).cast(),
@@ -462,8 +453,6 @@ fn on_crash_escalate_on_root_supervisor_does_not_abort() {
 
     // SAFETY: sup is live; spec lives across the FFI call.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let spec = HewChildSpec {
             name: name.as_ptr(),
             init_state: (&raw mut state).cast(),

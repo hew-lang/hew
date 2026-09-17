@@ -42,9 +42,8 @@ use hew_runtime::arena::ActorArena;
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, test_wait_for_restart, ExitReason, HewChildSpec,
-    HEW_TRAP_HEAP_EXCEEDED,
+    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, test_wait_for_restart,
+    ExitReason, HewChildSpec, HEW_TRAP_HEAP_EXCEEDED,
 };
 use hew_runtime_testkit::ensure_scheduler;
 
@@ -218,8 +217,6 @@ fn max_heap_actor_crash_routes_through_heap_exceeded_supervisor_exit() {
     // SAFETY: sup wraps a live supervisor; child-management FFI pointers remain
     // valid for the duration of this block.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = std::ffi::CString::new("capped-child").unwrap();
         let spec = HewChildSpec {

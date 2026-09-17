@@ -1,5 +1,7 @@
 // Accept: Node::lookup returns the exact carried RemotePid location for a
 // registration, and a different name remains LookupError.NotFound.
+import std.os;
+
 actor Worker {
     receive fn ping() {}
 }
@@ -13,7 +15,7 @@ fn main() -> i64 {
     let started = Node.start(NodeConfig {
         bind: "127.0.0.1:0",
         transport: "tcp",
-        key: "/tmp/hew-node-lookup-location.key",
+        key: f"{os.temp_dir()}/hew-node-lookup-location-{os.pid()}.key",
         trust: "pinned",
         peers: Vec.new(),
         seeds: Vec.new(),

@@ -174,25 +174,57 @@ pub unsafe extern "C" fn hew_glob(pattern: *const HewString) -> *mut HewGlobResu
     }
 }
 
-/// Perform the POSIX `glob(3)` expansion and return the matched strings.
+/// Perform the glob expansion and return the matched strings.
 ///
-/// Uses `libc::glob` on unix targets.
+/// Uses `libc::glob` on unix targets and the `glob` crate on Windows, which
+/// implements the same recursive (`**`) and single-level (`*`, `?`, `[...]`)
+/// pattern syntax `std/path.hew` documents without a hand-rolled
+/// FindFirstFileW/FindNextFileW walk.
 fn glob_expand(pattern: &CStr) -> GlobExpansion {
     #[cfg(target_family = "unix")]
     {
         glob_expand_unix(pattern)
     }
-    // SHIM: Windows glob not yet implemented.  The symbols stay present and
-    // link-clean, and the gap is RECORDED (fail-closed: the expansion reports
-    // an explicit failure, so it can never be read as "no matches").
-    // WHEN obsolete: when a Windows target gains an end-to-end path/glob test
-    // coverage.  WHAT the real solution looks like: FindFirstFileW/FindNextFileW
-    // expansion with the same HewGlobResult ownership contract.
     #[cfg(not(target_family = "unix"))]
     {
-        let _ = pattern;
-        Err("hew_glob: glob expansion is not implemented on this platform".to_owned())
+        glob_expand_windows(pattern)
     }
+}
+
+/// Expand `pattern` using the `glob` crate, matching the unix path's contract:
+/// results are the matched paths in sorted order, and an entry that cannot be
+/// read (rather than simply not matching) aborts the whole expansion.
+#[cfg(not(target_family = "unix"))]
+fn glob_expand_windows(pattern: &CStr) -> GlobExpansion {
+    let pattern_text = pattern.to_string_lossy();
+    let paths = match glob::glob(&pattern_text) {
+        Ok(paths) => paths,
+        Err(err) => {
+            return Err(format!(
+                "hew_glob: expansion of '{pattern_text}' failed: invalid pattern: {err}"
+            ));
+        }
+    };
+
+    let mut results: Vec<String> = Vec::new();
+    for entry in paths {
+        match entry {
+            Ok(path) => match path.to_str() {
+                Some(s) => results.push(s.replace('\\', "/")),
+                None => {
+                    return Err(format!(
+                        "hew_glob: expansion of '{pattern_text}' matched a non-UTF-8 path"
+                    ));
+                }
+            },
+            Err(err) => {
+                return Err(format!(
+                    "hew_glob: expansion of '{pattern_text}' aborted: {err}"
+                ));
+            }
+        }
+    }
+    Ok(results)
 }
 
 #[cfg(target_family = "unix")]

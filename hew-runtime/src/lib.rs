@@ -213,6 +213,15 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
         std::process::abort();
     };
+    // A POSIX process exit status is always the low byte of the requested
+    // code (`waitpid` masks it whatever the program passed to `exit(3)`), so
+    // a negative or out-of-byte-range code already reads back truncated on
+    // Linux and macOS. Windows keeps the full 32-bit code instead, so the
+    // same program would otherwise report a different exit status per host.
+    // Apply that truncation ourselves so the process exit status is one
+    // portable byte everywhere, matching what every supported OS other than
+    // Windows already produces on its own.
+    let code = code as u8 as i32;
 
     if let Err(error) = std::io::stdout().flush() {
         eprintln!("hew_exit: failed to flush stdout before exit: {error}");

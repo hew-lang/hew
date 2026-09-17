@@ -139,6 +139,9 @@ windows-sys = { version = "0.61.2", features = [
   "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
 ] }
+# hew_glob's Windows path: implements the same recursive (`**`) glob syntax
+# `std/path.hew` documents without a hand-rolled FindFirstFileW/FindNextFileW walk.
+glob = "0.3"
 
 [dev-dependencies]
 # For unit tests

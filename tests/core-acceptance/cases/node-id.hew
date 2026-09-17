@@ -1,6 +1,8 @@
 // `Node.id()` reports the key-derived node identity as `Option<NodeId>`:
 // `None` before a stable identity is loaded, `Some` after a start, and `Some`
 // again on every later call.
+import std.os;
+
 fn starts(consume config: NodeConfig) -> bool {
     match Node.start(config) {
         .Ok(_) => true,
@@ -10,7 +12,7 @@ fn starts(consume config: NodeConfig) -> bool {
 
 fn configured_at(bind: string) -> NodeConfig {
     var config = NodeConfig.at(bind);
-    config.key = "/tmp/hew-node-id-case.key";
+    config.key = f"{os.temp_dir()}/hew-node-id-case-{os.pid()}.key";
     config
 }
 

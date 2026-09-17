@@ -31,7 +31,6 @@
 # E_SIR_UNSUPPORTED: extern returns `bytes` by value; the byte triple C-ABI aggregate return is not realized
 # E_SIR_UNSUPPORTED: f32 values have no semantic value contract
 # E_SIR_UNSUPPORTED: generic direct call is missing checker-resolved type arguments
-# E_SIR_UNSUPPORTED: mailbox coalescing requires a checked key projection
 # E_SIR_UNSUPPORTED: nested type `AsyncGenerator` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `Dq` has no semantic value contract
 # E_SIR_UNSUPPORTED: nested type `Duplex` has no semantic value contract
@@ -88,10 +87,6 @@ tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_aliv
 tests/hew/bytes_mutation_proving_test.hew::test_pop_cow_leaves_slice_intact compile
 tests/hew/bytes_mutation_proving_test.hew::test_push_cow_leaves_slice_intact compile
 tests/hew/bytes_mutation_proving_test.hew::test_set_cow_leaves_slice_intact compile
-tests/hew/coalesce_int_key.hew::coalesce_int_key_latest_wins compile
-tests/hew/coalesce_msgtype_gate.hew::coalesce_same_key_different_message_types_do_not_merge compile
-tests/hew/coalesce_owned_payload_leak.hew::coalesce_owned_payload_superseded_values_drop_once compile
-tests/hew/coalesce_string_key.hew::coalesce_string_key_latest_wins_and_distinct_keys_survive compile
 tests/hew/dyn_owned_heap_drop_test.hew::test_borrowed_dyn_argument_temporary_drops_clean compile
 tests/hew/dyn_owned_heap_drop_test.hew::test_dyn_enum_bitcopy_payload_drops_clean compile
 tests/hew/dyn_owned_heap_drop_test.hew::test_dyn_enum_owned_payload_drops_clean compile
@@ -104,7 +99,6 @@ tests/hew/hashmap_generic_mono_test.hew::test_generic_hashmap_methods_honor_key_
 tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_trips runtime
 tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path runtime
 tests/hew/imported_same_file_supervisor_test.hew::imported_supervisor_runs_its_same_file_actor compile
-tests/hew/imported_supervisor_child_layout_test.hew::imported_actor_is_a_supervised_child compile
 tests/hew/metrics_test.hew::test_counter_ok_for_valid_name runtime
 tests/hew/msgpack_test.hew::test_unicode_string_field_round_trip runtime
 tests/hew/net_scalar_failclosed_test.hew::test_http_client_set_timeout_panics_at_legacy_boundary runtime

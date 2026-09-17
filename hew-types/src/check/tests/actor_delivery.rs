@@ -681,3 +681,43 @@ fn a_policy_view_refuses_the_discarding_policies() {
         );
     }
 }
+
+/// A coalescing mailbox names the parameter its key is projected from, so the
+/// key must exist and must have a type a mailbox key can be derived from.
+#[test]
+fn a_coalesce_key_names_a_receive_parameter_with_a_key_type() {
+    let output = check_source(
+        "actor Worker { mailbox 1 overflow coalesce(id) fallback drop_new, \
+           receive fn update(id: i64, value: i64) {} } \
+         fn main() { let _ = spawn Worker(); }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+
+    let unknown = check_source(
+        "actor Worker { mailbox 1 overflow coalesce(missing) fallback drop_new, \
+           receive fn update(id: i64, value: i64) {} } \
+         fn main() { let _ = spawn Worker(); }",
+    );
+    assert!(
+        unknown
+            .errors
+            .iter()
+            .any(|error| error.message.contains("names no parameter")),
+        "{:?}",
+        unknown.errors
+    );
+
+    let untypeable = check_source(
+        "actor Worker { mailbox 1 overflow coalesce(pause) fallback drop_new, \
+           receive fn update(pause: duration) {} } \
+         fn main() { let _ = spawn Worker(); }",
+    );
+    assert!(
+        untypeable
+            .errors
+            .iter()
+            .any(|error| error.message.contains("must be an integer, bool or string")),
+        "{:?}",
+        untypeable.errors
+    );
+}

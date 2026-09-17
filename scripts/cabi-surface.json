@@ -1194,7 +1194,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, ) -> HewLocalPidId"
+        "native": "fn hew_actor_spawn_native( *mut c_void, usize, HewDispatchFn, unsafe extern \"C\" fn(*mut c_void), HewStateCloneFn, Option<unsafe extern \"C-unwind\" fn(*mut c_void)>, i32, i32, usize, *const HewNativePeriodicHandler, usize, Option<HewSysDispatchFn>, Option<HewNativeCrashFn>, *mut *mut HewFault, Option<mailbox::HewCoalesceKeyFn>, i32, ) -> HewLocalPidId"
       },
       "symbol": "hew_actor_spawn_native"
     },

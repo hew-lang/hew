@@ -28,7 +28,8 @@ mod wire;
 
 pub use actor::{
     ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation, LocalObservationKind,
-    SemActor, SemActorField, SemActorHandler, SemActorOverflow, SemFailureDisplay,
+    SemActor, SemActorCoalesce, SemActorField, SemActorHandler, SemActorOverflow,
+    SemCoalesceFallback, SemCoalesceKey, SemCoalesceKeyKind, SemFailureDisplay,
 };
 pub use analysis::{
     build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,

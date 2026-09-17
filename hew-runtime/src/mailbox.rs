@@ -2651,6 +2651,53 @@ pub(crate) unsafe fn admit_native_terminal(
     unsafe { admit_native_request(mb, msg_type, envelope, ptr::null_mut(), true) }
 }
 
+/// Replace the queued message this request supersedes, if any.
+///
+/// Only messages of the same type and key merge, so a handler whose payload
+/// carries no key projection never matches. On a match the queued node takes
+/// the incoming envelope and releases the superseded one exactly once; the
+/// caller's envelope reference is consumed.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn coalesce_native_request(
+    mb: &HewMailbox,
+    queue: &SlowPathQueue,
+    msg_type: i32,
+    envelope: *mut HewMsgEnvelope,
+) -> Option<SendOutcome> {
+    // SAFETY: the caller owns this unpublished envelope.
+    let key = unsafe {
+        coalesce_message_key(
+            mb.coalesce_key_fn,
+            msg_type,
+            hew_msg_envelope_payload_ptr(envelope),
+            (*envelope).payload_size,
+            ptr::null_mut(),
+        )
+    };
+    let queued = queue.user_queue.iter().copied().find(|&node| {
+        // SAFETY: every queued node is live while the queue lock is held.
+        unsafe {
+            (*node).msg_type == msg_type
+                && !(*node).envelope.is_null()
+                // A queued completion call owes its caller a reply.
+                && (*node).reply_channel.is_null()
+                && coalesce_message_key(
+                    mb.coalesce_key_fn,
+                    msg_type,
+                    ptr::null_mut(),
+                    0,
+                    (*node).envelope,
+                ) == key
+        }
+    })?;
+    // SAFETY: `queued` is live and exclusively reachable under the queue lock.
+    unsafe {
+        hew_msg_envelope_release((*queued).envelope);
+        (*queued).envelope = envelope;
+    }
+    Some(SendOutcome::Coalesced)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn admit_native_request(
     mb: &HewMailbox,
@@ -2674,7 +2721,54 @@ unsafe fn admit_native_request(
         } else if !terminal
             && i64::try_from(queue.user_queue.len()).unwrap_or(i64::MAX) >= mb.capacity
         {
-            SendOutcome::Failed
+            // The declared mailbox policy answers a full queue before the
+            // sender's own `on_full` view does. A completion call is exempt:
+            // superseding or discarding it would leave its caller waiting for
+            // a reply no handler will send, so it parks for a slot instead.
+            if mb.overflow == HewOverflowPolicy::Coalesce && reply.is_null() {
+                // SAFETY: the queue is locked and the caller owns `envelope`.
+                match unsafe { coalesce_native_request(mb, &queue, msg_type, envelope) } {
+                    Some(outcome) => {
+                        // SAFETY: nothing published this node; the envelope
+                        // either transferred to the queued message or was
+                        // released with it.
+                        unsafe {
+                            (*node).envelope = ptr::null_mut();
+                            (*node).reply_channel = ptr::null_mut();
+                            hew_msg_node_free(node);
+                        }
+                        return outcome;
+                    }
+                    None => match normalize_coalesce_fallback(mb.coalesce_fallback) {
+                        HewOverflowPolicy::DropNew => {
+                            // SAFETY: the unpublished envelope is this
+                            // producer's; the declared policy discards it.
+                            unsafe { hew_msg_envelope_release(envelope) };
+                            (*node).envelope = ptr::null_mut();
+                            (*node).reply_channel = ptr::null_mut();
+                            // SAFETY: the node was never published.
+                            unsafe { hew_msg_node_free(node) };
+                            return SendOutcome::Dropped;
+                        }
+                        HewOverflowPolicy::DropOld => {
+                            if let Some(old) = queue.user_queue.pop_front() {
+                                // SAFETY: every queued node came from this
+                                // mailbox's own allocator.
+                                unsafe { hew_msg_node_free(old) };
+                                mb.count.fetch_sub(1, Ordering::Release);
+                            }
+                            enqueue_bounded_slow_path_node(mb, &mut queue, node);
+                            drop(queue);
+                            update_high_water_mark(mb);
+                            MESSAGES_SENT.fetch_add(1, Ordering::Relaxed);
+                            return SendOutcome::Enqueued;
+                        }
+                        _ => SendOutcome::Failed,
+                    },
+                }
+            } else {
+                SendOutcome::Failed
+            }
         } else {
             enqueue_bounded_slow_path_node(mb, &mut queue, node);
             drop(queue);
@@ -7199,6 +7293,67 @@ mod tests {
                 2,
                 "surviving alias envelope released exactly once on drain"
             );
+            hew_mailbox_free(mb);
+        }
+    }
+    static COALESCE_TEST_DROPS: std::sync::atomic::AtomicUsize =
+        std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn count_envelope_drop(_payload: *mut c_void) {
+        COALESCE_TEST_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    unsafe extern "C" fn first_u64_key(_msg: i32, payload: *mut c_void, _size: usize) -> u64 {
+        // SAFETY: every envelope in this fixture carries one `u64` key.
+        unsafe { *payload.cast::<u64>() }
+    }
+
+    unsafe fn keyed_envelope(key: u64) -> *mut HewMsgEnvelope {
+        // SAFETY: the envelope takes ownership of this allocation.
+        unsafe {
+            let payload = mailbox_malloc(size_of::<u64>()).cast::<u64>();
+            payload.write(key);
+            hew_msg_envelope_new(payload.cast(), size_of::<u64>(), Some(count_envelope_drop))
+        }
+    }
+
+    /// A full coalescing mailbox replaces the queued message its key
+    /// supersedes, releasing the superseded payload exactly once, and applies
+    /// the declared fallback when nothing matches.
+    #[test]
+    fn envelope_admission_coalesces_by_key_and_falls_back_on_a_miss() {
+        COALESCE_TEST_DROPS.store(0, Ordering::SeqCst);
+        // SAFETY: the fixture owns its mailbox and every envelope it makes.
+        unsafe {
+            let mb = hew_mailbox_new_with_policy(1, HewOverflowPolicy::Coalesce);
+            hew_mailbox_set_coalesce_config(mb, Some(first_u64_key), HewOverflowPolicy::DropNew);
+            assert!(matches!(
+                try_admit_native_request(&*mb, 3, keyed_envelope(7), ptr::null_mut()),
+                SendOutcome::Enqueued
+            ));
+            // Same message type and key: the queued payload is superseded.
+            assert!(matches!(
+                try_admit_native_request(&*mb, 3, keyed_envelope(7), ptr::null_mut()),
+                SendOutcome::Coalesced
+            ));
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 1);
+            assert_eq!(hew_mailbox_len(mb), 1);
+            // A different key has nothing to supersede, so `drop_new` discards it.
+            assert!(matches!(
+                try_admit_native_request(&*mb, 3, keyed_envelope(9), ptr::null_mut()),
+                SendOutcome::Dropped
+            ));
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 2);
+            // The same key on a different message type never merges.
+            assert!(matches!(
+                try_admit_native_request(&*mb, 4, keyed_envelope(7), ptr::null_mut()),
+                SendOutcome::Dropped
+            ));
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 3);
+            let node = hew_mailbox_try_recv(mb);
+            assert!(!node.is_null());
+            hew_msg_node_free(node);
+            assert_eq!(COALESCE_TEST_DROPS.load(Ordering::SeqCst), 4);
             hew_mailbox_free(mb);
         }
     }

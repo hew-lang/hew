@@ -111,8 +111,6 @@ linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_closure_borrowed_elem
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	run_file_imported_actor_closure_and_range_body_runs	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	run_file_imported_actor_spawns_and_calls	#3374 fix/collections-final-path: gives an imported ask its exact receive protocol member
 macos,windows,freebsd	failure	hew-cli::run_e2e	run_record_of_handles_return_drops_each_field_once	#3374 gives an imported declaration its exact SIR identity
 macos,windows,freebsd	failure	hew-cli::run_e2e	run_record_of_handles_return_without_explicit_close_exits_clean	#3374 gives an imported declaration its exact SIR identity
 windows	failure	hew-cli::run_e2e	run_record_resource_field_partial_close_leaks_the_sibling	#3070 closes a composite's resource leaf exactly once

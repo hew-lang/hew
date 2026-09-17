@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-mailbox-coalesce-owned"
+intent = "A full coalescing mailbox replaces the queued message carrying the same key, releasing each superseded owned payload exactly once."
+source = "cases/actor-mailbox-coalesce-owned.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\n14\n"
+exit = 0

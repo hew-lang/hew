@@ -564,8 +564,6 @@ stable = [
   "hew_stdin_read_line",
   "hew_stream_cancel_pending_read",
   "hew_stream_await_next",
-  "hew_stream_await_send",
-  "hew_stream_await_send_layout",
   "hew_stream_detach_await",
   "hew_stream_channel",
   "hew_stream_chunks",

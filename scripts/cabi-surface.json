@@ -15042,32 +15042,6 @@
       "availability": [
         "native"
       ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_stream_await_send( *mut HewSink, *mut HewActor, *mut HewReadSlot, *const BytesTriple, ) -> i32"
-      },
-      "symbol": "hew_stream_await_send"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_stream_await_send_layout( *mut HewSink, *mut HewActor, *mut HewReadSlot, *const c_void, *const HewValueLayout, ) -> i32"
-      },
-      "symbol": "hew_stream_await_send_layout"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

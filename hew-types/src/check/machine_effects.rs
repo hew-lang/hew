@@ -739,7 +739,6 @@ fn pure_runtime(family: RuntimeCallFamily) -> bool {
             | R::StringIsAlpha
             | R::StringIsAlphanumeric
             | R::StringFind
-            | R::StringGet
             | R::StringIndex
             | R::StringLen
             | R::StringSliceCodepoints

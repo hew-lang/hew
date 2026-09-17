@@ -6,6 +6,10 @@
 //! The element class is the scalar `char`, which is `Copy`, so the `Some`
 //! payload is an independent value by construction; the receiver is borrowed,
 //! not consumed, and stays usable after `get`.
+//!
+//! `get` is the `Index` spelling of `char_at` and binds the same export,
+//! `hew_string_char_at`: codepoint-indexed, `-1` for a negative or
+//! out-of-bounds index.
 
 import std.testing;
 
@@ -33,8 +37,8 @@ fn test_string_get_some_and_oob_none() {
 #[test]
 fn test_string_get_negative_index_is_none() {
     let s = "hi";
-    // The codegen bounds-check is an unsigned compare, so a negative index
-    // folds to "out of bounds" and yields `None` rather than trapping.
+    // `hew_string_char_at` rejects a negative index outright and returns its
+    // `-1` absent sentinel, which codegen wraps as `None` rather than trapping.
     match s.get(0 - 1) {
         .Some(_) => testing.assert_true(false),
         .None => testing.assert_true(true),

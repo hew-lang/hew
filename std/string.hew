@@ -767,8 +767,9 @@ impl string {
     }
     /// Return the `char` at codepoint-index `index`, or `None` when the index
     /// is out of bounds. This is the non-trapping `Index.get` accessor,
-    /// de-aliased from the trapping `s[i]` sugar (which aborts on OOB).
-    #[extern_symbol(hew_string_get)]
+    /// de-aliased from the trapping `s[i]` sugar (which aborts on OOB). It is
+    /// the same runtime operation as `char_at`, under the `Index` spelling.
+    #[extern_symbol(hew_string_char_at)]
     fn get(s: string, index: i64) -> Option<char> {
         None
     }

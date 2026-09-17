@@ -70,15 +70,15 @@ fn test_instant_result_interops_with_duration_methods() {
 
 // ── Display of a TYPED instant renders raw nanos (regression for #2277) ───────
 //
-// A typed `instant` binding (`let t: instant`, `fn f(t: instant)`) reaches HIR
-// as `Named{Instant}` rather than a bare `i64`, so the i64 Display catalog
-// overload never matched it directly. Before the fix, `println`/`to_string`/
-// f-string interpolation of such a value failed HIR with
+// `instant` has no representation of its own below the checker: annotation
+// lowering resolves it to `i64` exactly as `ResolvedTy::from_ty` does, so a
+// typed binding (`let t: instant`, `fn f(t: instant)`) and an inferred one are
+// one type and both render through the ordinary i64 Display path. While
+// annotation lowering disagreed and kept `Named{Instant}`, `println`/
+// `to_string`/f-string interpolation of an annotated value failed HIR with
 // `UnresolvedBuiltinOverload` + `UnresolvedSymbol` even though the checker
-// admitted it (the inline `println(instant::now())` shape, whose arg is already
-// i64, worked — masking the annotated/param-typed gap). The fix routes
-// `Named{Instant}` through the i64 Display path in `lower_display_dispatch`,
-// mirroring the checker's own `Named{Instant} -> i64` satisfaction.
+// admitted it — the inline `println(instant::now())` shape, whose argument is
+// already i64, worked and masked the annotated/param-typed gap.
 //
 // The clock is monotonic so the exact number is not fixed; these assert the
 // load-bearing invariant that all three Display surfaces render the SAME

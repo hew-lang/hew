@@ -71,7 +71,6 @@ fn string_methods_resolve_through_std_string_extern_symbols() {
         "hew_string_slice",
         "hew_string_repeat",
         "hew_string_char_at",
-        "hew_string_get",
         "hew_string_chars",
         "hew_string_to_bytes",
     ] {

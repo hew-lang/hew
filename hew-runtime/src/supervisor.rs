@@ -11331,10 +11331,11 @@ pub static HEW_CIRCUIT_BREAKER_HALF_OPEN: c_int = 2;
 /// it via `enqueue_resume` when the restart cycle completes. The caller MUST
 /// `coro.suspend`.
 pub const RESTART_AWAIT_SUSPEND: i32 = 0;
-/// Codegen ABI: the child is already Live, or permanently Dead (will never
-/// restart). The caller MUST NOT suspend and resumes immediately on the bind
-/// edge — re-resolving the slot, which is either Live (proceed) or fails closed
-/// at the send re-resolve (never an infinite hang).
+/// Codegen ABI: the role is settled — it holds a running incarnation with no
+/// fault pending under it, or it is permanently Dead (will never restart). The
+/// caller MUST NOT suspend and resumes immediately on the bind edge —
+/// re-resolving the slot, which is either Live (proceed) or fails closed at the
+/// send re-resolve (never an infinite hang).
 pub const RESTART_AWAIT_READY: i32 = 1;
 
 /// Register a suspending `await_restart sup.child`.
@@ -11401,8 +11402,7 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
     // SAFETY: `sup`/`key` are the FFI contract; `child_get` does its own guards.
     let current = unsafe { hew_supervisor_child_get(sup, key) };
     if current.tag == 2
-        || (current.tag == 0
-            && !role_holds_retired_incarnation(sup, key, false)
+        || (role_holds_running_incarnation(sup, key, false)
             && !crate::exit_status::role_has_unsettled_fault(role))
     {
         return RESTART_AWAIT_READY;
@@ -11432,8 +11432,7 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_suspend(
     let settled = unsafe { hew_supervisor_child_get(sup, key) };
     if advanced
         || settled.tag == 2
-        || (settled.tag == 0
-            && !role_holds_retired_incarnation(sup, key, false)
+        || (role_holds_running_incarnation(sup, key, false)
             && !crate::exit_status::role_has_unsettled_fault(role))
     {
         // The restart cycle completed, the supervisor ruled the slot spent, or
@@ -11495,11 +11494,12 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_detach(
 /// [`hew_supervisor_restart_await_suspend`].
 ///
 /// A role is settled when it reads Dead — nothing will ever refill it, so the
-/// caller's re-fetch fails closed — or when it holds an incarnation that has
-/// not itself gone terminal and has no fault still pending under it. The first
-/// half covers a `close(role)`, which opens no fault record: the slot keeps the
-/// stopped occupant until the ruling replaces it, and that occupant's own
-/// terminal state says so. "Pending" is the fact the crash site opened
+/// caller's re-fetch fails closed — or when it holds a RUNNING incarnation with
+/// no fault still pending under it. The first half covers a `close(role)`,
+/// which opens no fault record: the slot keeps the stopped occupant until the
+/// ruling replaces it, and that occupant's own terminal state says so. An empty
+/// slot is a ruling in flight and is never settled. "Pending" is the fact the
+/// crash site opened
 /// before it woke anybody: a supervised crash opens its record at the crash
 /// site and attributes it to the crashing child's role and every ancestor role,
 /// and the ruling that settles the record clears the attribution. So the
@@ -11531,20 +11531,26 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupe
     unsafe { supervisor_restart_await_blocking(sup, key, false) };
 }
 
-/// Whether the role's slot still holds the incarnation that already went
-/// terminal.
+/// Whether the role's slot holds an incarnation that is still running.
 ///
-/// `hew_supervisor_child_get` and `hew_supervisor_nested_get` classify an
-/// occupied slot Live: the occupant is what a send re-resolves, and a send to a
-/// terminal incarnation fails closed on its own. A restart barrier needs the
-/// stricter question, because "the slot still holds the thing I just stopped"
-/// is precisely the state it has to wait out — a `close(role)` is not a crash,
-/// so it opens no fault record, and the ruling that replaces the occupant has
-/// not run yet.
+/// ONE roster acquisition answers both halves, because they race each other.
+/// The ruling empties the slot under `roster` and refills it under `roster`, so
+/// asking "is the slot occupied?" and "is its occupant terminal?" in two
+/// separate critical sections can see the crashed occupant in the first and an
+/// empty slot in the second, and read the pair as a settled role.
+///
+/// An EMPTY slot is not settled: a ruling is mid-flight, and the restart or the
+/// spent mark that ends it wakes the barrier. An occupant that has already gone
+/// terminal is not settled either. `hew_supervisor_child_get` and
+/// `hew_supervisor_nested_get` classify it Live because that is what a send
+/// re-resolves, and a send to a terminal incarnation fails closed on its own;
+/// the barrier needs the stricter question, because "the slot still holds the
+/// thing I just stopped" is exactly what it has to wait out, and a
+/// `close(role)` opens no fault record to say so.
 ///
 /// The slot is read under `roster`, which owns the pointer: a ruling takes the
 /// occupant out of the slot under the same lock before freeing it.
-fn role_holds_retired_incarnation(sup: *mut HewSupervisor, key: u32, nested: bool) -> bool {
+fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: bool) -> bool {
     let index = key as usize;
     // SAFETY: the caller keeps `sup` live for this lookup.
     let roster = unsafe { &(*sup).roster }.lock_or_recover();
@@ -11557,8 +11563,8 @@ fn role_holds_retired_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
         }
         // SAFETY: the roster guard owns this nested supervisor pointer.
         unsafe {
-            (*child).cancelled.load(Ordering::Acquire)
-                || (*child).running.load(Ordering::Acquire) == 0
+            !(*child).cancelled.load(Ordering::Acquire)
+                && (*child).running.load(Ordering::Acquire) != 0
         }
     } else {
         let Some(child) = roster.children.get(index).copied() else {
@@ -11569,7 +11575,7 @@ fn role_holds_retired_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
         }
         // SAFETY: the roster guard owns this child pointer.
         let state = unsafe { &*child }.actor_state.load(Ordering::Acquire);
-        state == HewActorState::Stopped as i32 || state == HewActorState::Crashed as i32
+        state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32
     }
 }
 
@@ -11601,7 +11607,7 @@ unsafe fn supervisor_restart_await_blocking(sup: *mut HewSupervisor, key: u32, n
         if current.tag == 2 {
             return;
         }
-        let live = current.tag == 0 && !role_holds_retired_incarnation(sup, key, nested);
+        let live = role_holds_running_incarnation(sup, key, nested);
         if crate::exit_status::role_barrier_outcome(role, live, seen)
             == crate::exit_status::RoleBarrier::Settled
         {

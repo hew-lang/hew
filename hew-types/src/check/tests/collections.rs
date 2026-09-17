@@ -1224,10 +1224,6 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                     "actor".to_string(),
                     Ty::builtin_named(BuiltinType::HewActor, vec![]),
                 ),
-                (
-                    "sink".to_string(),
-                    Ty::builtin_named(BuiltinType::Sink, vec![resource.clone()]),
-                ),
             ]),
             variants: HashMap::new(),
             methods: HashMap::new(),
@@ -1239,10 +1235,17 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                 "remote".to_string(),
                 "lambda".to_string(),
                 "actor".to_string(),
-                "sink".to_string(),
             ],
             is_indirect: false,
         },
+    );
+    checker.type_defs.insert(
+        "SinkWrapper".to_string(),
+        record_type_def_with_field(
+            "SinkWrapper",
+            "sink",
+            Ty::builtin_named(BuiltinType::Sink, vec![resource.clone()]),
+        ),
     );
     checker.type_defs.insert(
         "StreamWrapper".to_string(),
@@ -1275,6 +1278,13 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
         checker.record_clone_admissibility("HandleWrapper", &[], &span),
         RecordCloneAdmissibility::Admissible
     ));
+    assert!(
+        matches!(
+            checker.record_clone_admissibility("SinkWrapper", &[], &span),
+            RecordCloneAdmissibility::AffineValue { .. }
+        ),
+        "a Sink member has no per-field retain: only `sink.clone()` on the handle adds a producer"
+    );
     assert!(
         matches!(
             checker.record_clone_admissibility("StreamWrapper", &[], &span),

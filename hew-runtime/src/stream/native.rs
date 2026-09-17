@@ -20,6 +20,9 @@ pub struct HewNativeStream {
     core: Option<Arc<ChannelCore>>,
     io: *const HewAsyncIo,
     envelope: Option<Vec<u8>>,
+    /// The sink had already finished when this write began. The poll reports
+    /// the closed status and `Drop` releases the element the operation took.
+    closed: bool,
 }
 
 impl Drop for HewNativeStream {
@@ -104,6 +107,7 @@ pub unsafe extern "C" fn hew_stream_read_start_native(
         core,
         io,
         envelope: None,
+        closed: false,
     }))
 }
 
@@ -123,6 +127,21 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
     let layout = unsafe { *move_elem_layout_witness(layout, "native stream write") };
     // SAFETY: the source value transfers exactly once at operation construction.
     let envelope = unsafe { move_elem_envelope(data, &layout, "native stream write") };
+    // A finished sink has released its backing, so there is nothing left to
+    // inspect for a queue or a transport. Report the closed status the write
+    // poll already carries; `Drop` releases the element this operation took.
+    // SAFETY: sink is a live exclusive loan.
+    if unsafe { (*sink).is_closed() } {
+        return Box::into_raw(Box::new(HewNativeStream {
+            layout,
+            // SAFETY: waker is borrowed during this call.
+            waker: Arc::new(unsafe { OwnedWaker::retain(&*waker) }),
+            core: None,
+            io: std::ptr::null(),
+            envelope: Some(envelope),
+            closed: true,
+        }));
+    }
     // SAFETY: sink is a live exclusive loan.
     let raw = unsafe { (*sink).channel_core_ptr().cast::<ChannelCore>() };
     let core = if raw.is_null() {
@@ -155,6 +174,7 @@ pub unsafe extern "C" fn hew_stream_write_start_native(
         core,
         io,
         envelope,
+        closed: false,
     }))
 }
 
@@ -202,6 +222,9 @@ pub unsafe extern "C" fn hew_stream_read_take_native(
 pub unsafe extern "C" fn hew_stream_write_poll_native(operation: *mut HewNativeStream) -> i32 {
     // SAFETY: the caller lends the live exclusive operation.
     let operation = unsafe { &mut *operation };
+    if operation.closed {
+        return 2;
+    }
     if let Some(core) = &operation.core {
         let Some(envelope) = operation.envelope.take() else {
             return 1;

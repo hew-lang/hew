@@ -95,6 +95,44 @@ fn test_try_send_reports_full_then_closed() {
     tx.close();
 }
 
+/// `finish` is a half-close, so a later `send` answers the same `Closed` the
+/// non-blocking half reports. The element type does not change the answer: a
+/// finished sink has no backing to write to, whatever it carried.
+#[test]
+fn test_send_after_finish_reports_closed() {
+    let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(4).expect("pipe");
+    // Negative control: the same send on the open sink is accepted.
+    tx.send(1).expect("send before finish");
+    tx.finish();
+    match tx.send(2) {
+        .Ok(()) => panic("a finished sink must refuse send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a finished sink reports Closed"),
+    }
+    tx.close();
+    rx.close();
+
+    let (stx, srx): (stream.Sink<string>, stream.Stream<string>) = stream.pipe(4).expect("pipe");
+    stx.finish();
+    match stx.send("late") {
+        .Ok(()) => panic("a finished string sink must refuse send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a finished string sink reports Closed"),
+    }
+    stx.close();
+    srx.close();
+
+    let (btx, brx): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(4).expect("pipe");
+    btx.finish();
+    match btx.send("late".to_bytes()) {
+        .Ok(()) => panic("a finished bytes sink must refuse send"),
+        .Err(SendError.Closed) => testing.assert_true(true),
+        .Err(_) => panic("a finished bytes sink reports Closed"),
+    }
+    btx.close();
+    brx.close();
+}
+
 /// `try_recv` on an empty but still open pipe is `None` without waiting, and
 /// the same pipe still delivers the next item.
 #[test]

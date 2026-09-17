@@ -219,6 +219,17 @@ impl HewSink {
         self.channel_core
     }
 
+    /// Whether this sink has published EOF and released its backing.
+    ///
+    /// The one closed-sink authority: [`HewSink::close`] takes `inner` exactly
+    /// once, and [`HewSink::try_write_item`] reports `Closed` from the same
+    /// state. Every send surface answers `SendError.Closed` from this predicate
+    /// rather than from a backing-specific remnant.
+    #[must_use]
+    pub fn is_closed(&self) -> bool {
+        self.inner.is_none()
+    }
+
     /// Write one item (exact bytes). Blocks if the backing buffer is full.
     pub fn write_item(&mut self, data: &[u8]) {
         let Some(inner) = self.inner.as_mut() else {

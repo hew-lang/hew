@@ -53,6 +53,10 @@ pub struct HewCheckedTaskSelect {
     waker: *const HewWaker,
     owner: ActorIncarnation,
     wait: *const HewActorWaitEdge,
+    /// A source this selection cannot observe. The poll answers the cycle
+    /// status so the selecting actor traps with this message on its own turn,
+    /// instead of the process aborting under a program the checker admits.
+    refusal: Option<String>,
 }
 
 impl Drop for HewCheckedTaskSelect {
@@ -80,6 +84,7 @@ pub unsafe extern "C" fn hew_checked_task_select_new(
         waker,
         owner: ActorIncarnation::NONE,
         wait: ptr::null(),
+        refusal: None,
     }))
 }
 
@@ -155,11 +160,15 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     if !stream.is_null() && unsafe { (*stream).pipe_core() }.is_none() {
         // A content stream (socket, file) has no observable queue yet: its
         // readiness lives in the async I/O layer, which `select` does not
-        // register. Refuse rather than block a worker in a hidden read.
-        crate::channel_common::abort_elem_witness(
-            "hew_checked_task_select_add_stream",
-            "select observes pipe streams only; a socket or file stream is not a select source yet",
-        );
+        // register. `stream.pipe` and `stream.open` share one nominal type, so
+        // the checker cannot tell them apart; the selecting actor traps on its
+        // own turn and its supervisor rules on the crash.
+        // SAFETY: caller owns the selection for the duration of this call.
+        unsafe { &mut *selection }.refusal.get_or_insert_with(|| {
+            "select observes pipe streams only; a socket or file stream is not \
+             a select source yet"
+                .to_string()
+        });
     }
     // SAFETY: caller owns the selection for the duration of this call.
     unsafe {
@@ -224,6 +233,9 @@ pub unsafe extern "C" fn hew_checked_task_select_poll_first(
 unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> i64 {
     // SAFETY: caller retains the observation throughout this poll.
     let selection = unsafe { &mut *selection };
+    if selection.refusal.is_some() {
+        return -3;
+    }
     if selection.wait.is_null() && !selection.owner.is_none() {
         let mut targets = Vec::new();
         let mut external_progress = !selection.timer.is_null();
@@ -344,6 +356,13 @@ unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> 
 pub unsafe extern "C" fn hew_checked_task_select_fault(
     selection: *mut HewCheckedTaskSelect,
 ) -> *mut crate::fault::HewFault {
+    // SAFETY: the selection is live per the caller's contract.
+    if let Some(reason) = unsafe { &(*selection).refusal } {
+        return Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+            crate::internal::types::HEW_TRAP_USER_PANIC,
+            reason.clone(),
+        )));
+    }
     // SAFETY: the selection retains its diagnosed edge until this copy returns.
     unsafe { hew_actor_wait_edge_fault((*selection).wait) }
 }

@@ -297,10 +297,9 @@ impl BuiltinType {
     /// type arguments as protocol/identity tags rather than stored payloads.
     ///
     /// This is the shared checker/MIR authority for the affine-marker walk.
-    /// Actor references are bit-copied, `Rc`/`Weak` retain their shared
-    /// allocation, and `Sink` clones its producer handle on the shared pipe;
-    /// none recursively clones a resource-bearing type argument. `Stream` is
-    /// deliberately absent: the single-consumer half has no clone helper.
+    /// Actor references are bit-copied and `Rc`/`Weak` retain their shared
+    /// allocation; none recursively clones a resource-bearing type argument.
+    /// Both pipe halves are deliberately absent - see [`Self::is_pipe_half`].
     #[must_use]
     pub const fn is_affine_clone_terminal(self) -> bool {
         matches!(
@@ -312,8 +311,20 @@ impl BuiltinType {
                 | Self::HewActor
                 | Self::Rc
                 | Self::Weak
-                | Self::Sink
         )
+    }
+
+    /// Whether this builtin is one half of a pipe.
+    ///
+    /// Both halves are affine. A `Sink` gains a producer only through
+    /// `sink.clone()` on the handle itself, which retains the pipe's handle
+    /// count; a `Stream` has one consumer. No structural recipe - record,
+    /// tuple, `Option`, `Result` or collection - duplicates either, so a
+    /// composite holding a pipe half has no copy operation. This is the one
+    /// predicate every affine-pipe-half refusal reads.
+    #[must_use]
+    pub const fn is_pipe_half(self) -> bool {
+        matches!(self, Self::Sink | Self::Stream)
     }
 
     /// Whether a value of this builtin type transfers SOLE ownership when it

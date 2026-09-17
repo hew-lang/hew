@@ -3446,29 +3446,29 @@ impl Checker {
     /// Ordinary `#[resource]` / `#[linear]` elements are deliberately admitted:
     /// MIR lowers `values[i]` through the owned-layout getter as an interior
     /// borrow and its escape/consume/rebind checks keep that borrow inside the
-    /// collection's release authority. A `Receiver`, however, is an opaque
-    /// single-consumer endpoint with no readable borrowed-value surface, so it
-    /// remains rejected regardless of its payload type.
+    /// collection's release authority. A pipe half, however, is an opaque
+    /// endpoint with no readable borrowed-value surface, so it remains
+    /// rejected regardless of its payload type.
     pub(super) fn validate_vec_index_borrow_surface(&mut self, ty: &Ty, span: &Span) -> bool {
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if matches!(
-            resolved,
-            Ty::Named {
-                builtin: Some(BuiltinType::Stream),
-                ..
+        if let Ty::Named {
+            builtin: Some(builtin),
+            ..
+        } = resolved
+        {
+            if builtin.is_pipe_half() {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "cannot index `Vec<{}>` by value: a pipe half is non-cloneable and \
+                         has no copy operation; use `pop`, `remove`, or consuming iteration \
+                         to move the endpoint out",
+                        resolved.user_facing()
+                    ),
+                );
+                return false;
             }
-        ) {
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                format!(
-                    "cannot index `Vec<{}>` by value: `Stream` is a non-cloneable, \
-                     single-consumer endpoint; use `pop`, `remove`, or consuming iteration \
-                     to move the endpoint out",
-                    resolved.user_facing()
-                ),
-            );
-            return false;
         }
         true
     }
@@ -3506,6 +3506,14 @@ impl Checker {
                     return None;
                 }
                 let member = if path.is_empty() { "value" } else { path };
+                // Both pipe halves are affine: no composite recipe duplicates
+                // one as a member, and the payload type is irrelevant to that.
+                if builtin.is_some_and(BuiltinType::is_pipe_half) {
+                    return Some(CloneCapabilityBlocker::Missing {
+                        member: member.to_string(),
+                        member_ty: resolved.clone(),
+                    });
+                }
                 // Type-parameter capability inside a generic template comes
                 // from the parameter's declared BOUND, never from a concrete
                 // type (there is none yet). `T: Clone` makes every `T`-shaped
@@ -3584,15 +3592,6 @@ impl Checker {
                             return Some(blocker);
                         }
                     }
-                }
-                // A stream has one consumer: no record or container clone
-                // recipe duplicates it as a member. A sink member clones
-                // through its own handle retain, the affine clone terminal.
-                if *builtin == Some(BuiltinType::Stream) {
-                    return Some(CloneCapabilityBlocker::Missing {
-                        member: member.to_string(),
-                        member_ty: resolved.clone(),
-                    });
                 }
                 if let Some(type_def) = self.lookup_type_def(name) {
                     let visit_key = type_def.name.clone();
@@ -5744,9 +5743,9 @@ impl Checker {
             && matches!(
                 self.subst.resolve(&elem_ty),
                 Ty::Named {
-                    builtin: Some(BuiltinType::Sink | BuiltinType::Stream),
+                    builtin: Some(builtin),
                     ..
-                }
+                } if builtin.is_pipe_half()
             )
         {
             self.check_arity(args, 0, "`Vec.clone`", span);

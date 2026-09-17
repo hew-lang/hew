@@ -1,0 +1,11 @@
+[[case]]
+id = "select-file-stream-refused"
+intent = "Select over a file stream traps the selecting actor with a named reason; the process survives and a sibling actor keeps serving."
+source = "cases/select-file-stream-refused.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "watcher crashed\nsibling 42\n"
+stderr = "hew: failure: UserPanic (212): select observes pipe streams only; a socket or file stream is not a select source yet\nhew: actor crash in Watcher.watch (actor 2): UserPanic\n"
+exit = 1

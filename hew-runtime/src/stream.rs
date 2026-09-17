@@ -2561,7 +2561,14 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
         unsafe { crate::channel_common::elem_layout_witness(layout, "hew_stream_try_send_layout") };
     // SAFETY: sink is valid per caller contract.
     let core = unsafe { sink_channel_core(sink) };
-    if core.is_none() && layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
+    // A finished sink answers `Closed` for every element type: its backing is
+    // gone, so no element kind can require an in-memory channel of it.
+    // SAFETY: sink is valid per caller contract.
+    let closed = unsafe { (*sink).is_closed() };
+    if !closed
+        && core.is_none()
+        && layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged
+    {
         crate::channel_common::abort_elem_witness(
             "hew_stream_try_send_layout",
             "layout-managed elements require an in-memory channel sink",
@@ -2571,6 +2578,12 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
     let env = unsafe {
         crate::channel_common::encode_elem_envelope(data, layout, "hew_stream_try_send_layout")
     };
+    if closed {
+        // The caller relinquished the element at the call, so the refusal
+        // releases it here rather than leaking it with the answer.
+        crate::channel_common::drop_elem_envelope(Some(layout), env, "hew_stream_try_send_layout");
+        return TrySendResult::Closed.into_abi_code();
+    }
     match core {
         Some(core) => {
             if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {

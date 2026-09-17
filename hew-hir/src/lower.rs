@@ -4382,6 +4382,13 @@ pub fn lower_program_with_mono_cap(
                 if let Some(actor) =
                     ctx.lower_actor(actor, span.clone(), defining_module.as_deref())
                 {
+                    // Positive root-origin record, on the same terms as a free
+                    // function: an actor declared in the root file gives its
+                    // handlers bodies that index the root source, so a
+                    // fail-closed caret and native debug metadata may name it.
+                    if ctx.current_module_idx == 0 && !ctx.lowering_injected_items {
+                        ctx.root_item_ids.insert(actor.id);
+                    }
                     items.push(HirItem::Actor(actor));
                 }
             }

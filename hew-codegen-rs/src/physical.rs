@@ -853,6 +853,8 @@ struct FunctionEmitter<'a, 'ctx> {
         debug::FunctionDebug<'ctx>,
         &'a hew_mir::physical::PhysicalDebugFunction,
     )>,
+    prologue: BasicBlock<'ctx>,
+    pending_locals: Vec<debug::PendingLocal<'ctx>>,
 }
 
 /// Execute verified type recipes in either a language body or a container
@@ -2556,8 +2558,8 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             None
         };
         let slots = partial::allocate_storage(module, function, callable, value, &builder)?;
-        if let Some((emitter, function_debug, attribution)) = &debug {
-            debug::declare_locals(
+        let pending_locals = match &debug {
+            Some((emitter, function_debug, attribution)) => debug::declare_locals(
                 ctx,
                 emitter,
                 function_debug,
@@ -2565,8 +2567,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 function,
                 &slots,
                 prologue,
-            );
-        }
+                callable.is_resumable,
+            ),
+            None => Vec::new(),
+        };
         let place_flags = partial::allocate_flags(module, function, &builder)?;
         let active_fault = builder
             .build_alloca(ctx.ptr_type(AddressSpace::default()), "active.fault")
@@ -2693,12 +2697,20 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             frame,
             task_scopes,
             debug,
+            prologue,
+            pending_locals,
         })
     }
 
     fn emit(self) -> CodegenResult<()> {
+        let inspectable = self.debug.is_some();
+        let value = self.value;
         for block in &self.function.blocks {
             self.builder.position_at_end(self.blocks[&block.id]);
+            // Blocks are emitted in id order, not execution order, so a block
+            // opens on its own first source point rather than inheriting the
+            // line of whichever block was emitted before it.
+            self.enter_block(block.id);
             for (index, operation) in block.ops.iter().enumerate() {
                 self.locate(block.id, index);
                 self.emit_op(operation)?;
@@ -2706,12 +2718,42 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             self.locate(block.id, block.ops.len());
             self.emit_terminator(block)?;
         }
+        if let Some((emitter, _, _)) = &self.debug {
+            debug::resolve_coroutine_locals(
+                emitter,
+                self.llvm,
+                value,
+                self.prologue,
+                &self.pending_locals,
+            );
+        }
+        if inspectable {
+            debug::order_blocks_for_inspection(value);
+        }
         Ok(())
     }
 
+    /// Open a block at the earliest source point anything in it names, or at
+    /// the body's declaration when it names none.
+    fn enter_block(&self, block: BlockId) {
+        let Some((emitter, function_debug, attribution)) = &self.debug else {
+            return;
+        };
+        let first = attribution
+            .sites
+            .range((block, 0)..=(block, u32::MAX))
+            .next()
+            .map(|(_, offset)| *offset);
+        let location = first.map_or_else(
+            || emitter.declaration_location(self.ctx, function_debug, attribution.decl),
+            |offset| emitter.location(self.ctx, function_debug, offset),
+        );
+        self.builder.set_current_debug_location(location);
+    }
+
     /// Point the builder at the source this operation lowered from. An
-    /// operation with no source point keeps the previous location: the
-    /// terminator of a block belongs to the last statement that reached it.
+    /// operation with no source point keeps the location of the last one in
+    /// this block that had one.
     fn locate(&self, block: BlockId, index: usize) {
         let Some((emitter, function_debug, attribution)) = &self.debug else {
             return;

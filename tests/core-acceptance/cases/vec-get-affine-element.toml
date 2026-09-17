@@ -16,7 +16,7 @@ message = "E_ELEMENT_NO_COPY: `Vec<Stream<i64>>` cannot be read with `get`"
 code = "InvalidOperation"
 line = 16
 column = 20
-message = "non-cloneable, single-consumer endpoint"
+message = "a pipe half is non-cloneable and has no copy operation"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"

@@ -264,7 +264,7 @@ fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
         .iter()
         .filter_map(|block| match &block.terminator {
             SemTerminator::Suspend {
-                kind: hew_sir::SuspendKind::StreamSend,
+                kind: hew_sir::SuspendKind::StreamSend { .. },
                 inputs,
                 resumes,
                 ..
@@ -330,7 +330,7 @@ fn verifier_refuses_a_stream_send_that_keeps_its_element() {
     let mut changed = false;
     for block in &mut body.blocks {
         if let SemTerminator::Suspend {
-            kind: hew_sir::SuspendKind::StreamSend,
+            kind: hew_sir::SuspendKind::StreamSend { .. },
             inputs,
             ..
         } = &mut block.terminator
@@ -345,7 +345,7 @@ fn verifier_refuses_a_stream_send_that_keeps_its_element() {
         diagnostics.iter().any(|diagnostic| matches!(
             &diagnostic.kind,
             SirDiagnosticKind::InvalidTerminator { reason }
-                if reason.contains("StreamSend suspension")
+                if reason.contains("StreamSend")
         )),
         "{diagnostics:#?}"
     );

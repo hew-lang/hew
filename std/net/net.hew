@@ -494,6 +494,7 @@ impl ConnectionMethods for Connection {
     /// Receive the next chunk; `None` is EOF, a failure traps.
     fn recv(conn: Connection) -> Option<bytes> {
         unsafe {
+
             // Drop any status left by an earlier operation so the status read
             // after the call describes this read and nothing else.
             let _ = hew_stream_last_errno();

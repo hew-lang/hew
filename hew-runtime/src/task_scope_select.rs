@@ -217,6 +217,10 @@ pub unsafe extern "C" fn hew_checked_task_select_poll_first(
     unsafe { poll(selection, true) }
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "one readiness sweep over every source kind; splitting it would hide the order"
+)]
 unsafe fn poll(selection: *mut HewCheckedTaskSelect, first_completion: bool) -> i64 {
     // SAFETY: caller retains the observation throughout this poll.
     let selection = unsafe { &mut *selection };

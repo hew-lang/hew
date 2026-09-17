@@ -11,11 +11,11 @@
 //! 3. `CodegenError::WasmUnsupportedSubstrate` diagnostics keep the category
 //!    selected by the codegen display path: lambda-actor surfaces `lambda_actor`
 //!    + `WASM-TODO(lambda-actors):`.
-//!    (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.
-//!    The one pipe family, `std.stream`'s `Sink`/`Stream`, is native-only on
-//!    wasm32 too, classified under `WASM-TODO(streams):` — see
-//!    `wasm-capability-manifest.toml`, id `streams` — but has no representative
-//!    fixture in this file.)
+//!      (Generators are now fully supported on wasm32 — see `wasm_generator_exec.rs`.
+//!      The one pipe family, `std.stream`'s `Sink`/`Stream`, is native-only on
+//!      wasm32 too, classified under `WASM-TODO(streams):` — see
+//!      `wasm-capability-manifest.toml`, id `streams` — but has no representative
+//!      fixture in this file.)
 mod support;
 
 use std::process::Command;

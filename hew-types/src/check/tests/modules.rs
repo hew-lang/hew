@@ -210,10 +210,12 @@ fn aliased_and_full_stdlib_builtin_spellings_normalize_to_one_nominal() {
         checker.normalize_for_use(&full),
         "an actor field spelled through the module alias must carry the factory's canonical nominal"
     );
+    // A pipe half has one spelling at every stage: the builtin's canonical
+    // name, whatever module alias the source wrote.
     assert_eq!(
         aliased_normalized,
         Ty::Named {
-            name: "std.stream.Stream".to_string(),
+            name: "Stream".to_string(),
             args: vec![Ty::String],
             builtin: Some(BuiltinType::Stream),
         },

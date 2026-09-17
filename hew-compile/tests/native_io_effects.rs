@@ -15,12 +15,10 @@ fn files(path: string, bytes: bytes) {
     let _ = fs.write(path, "text");
     let _ = fs.write_bytes(path, bytes);
 }
-fn sockets(listener: net.Listener, conn: net.Connection) {
+fn sockets(listener: net.Listener, conn: net.Connection, bytes: bytes) {
     let _ = listener.accept();
-    let _ = conn.read();
-    let _ = conn.try_read();
-    let _ = conn.read_string();
-    let _ = conn.try_read_string();
+    let _ = conn.recv();
+    let _ = conn.send(bytes);
 }
 fn main() {}
 "#;
@@ -62,10 +60,8 @@ fn canonical_io_wrappers_propagate_checked_native_operation_effects() {
         "fs.write(path, \"text\")",
         "fs.write_bytes(path, bytes)",
         "listener.accept()",
-        "conn.read()",
-        "conn.try_read()",
-        "conn.read_string()",
-        "conn.try_read_string()",
+        "conn.recv()",
+        "conn.send(bytes)",
     ] {
         let start = SOURCE.find(call).unwrap();
         assert!(

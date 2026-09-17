@@ -3502,19 +3502,10 @@ impl Checker {
                 args,
                 builtin,
             } => {
-                let member = if path.is_empty() { "value" } else { path };
-                // A pipe half is cloned one handle at a time (`sink.clone()`
-                // retains the pipe's handle count); no container or record
-                // clone recipe duplicates it as a member.
-                if builtin.is_some_and(BuiltinType::is_substrate_handle) {
-                    return Some(CloneCapabilityBlocker::Opaque {
-                        type_name: resolved.user_facing().to_string(),
-                        member: member.to_string(),
-                    });
-                }
                 if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
+                let member = if path.is_empty() { "value" } else { path };
                 // Type-parameter capability inside a generic template comes
                 // from the parameter's declared BOUND, never from a concrete
                 // type (there is none yet). `T: Clone` makes every `T`-shaped
@@ -3593,6 +3584,15 @@ impl Checker {
                             return Some(blocker);
                         }
                     }
+                }
+                // A stream has one consumer: no record or container clone
+                // recipe duplicates it as a member. A sink member clones
+                // through its own handle retain, the affine clone terminal.
+                if *builtin == Some(BuiltinType::Stream) {
+                    return Some(CloneCapabilityBlocker::Missing {
+                        member: member.to_string(),
+                        member_ty: resolved.clone(),
+                    });
                 }
                 if let Some(type_def) = self.lookup_type_def(name) {
                     let visit_key = type_def.name.clone();

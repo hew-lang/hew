@@ -28221,6 +28221,10 @@ impl LowerCtx {
     /// `1` is `Err(SendError.Closed)` (the reader is gone or the sink
     /// finished) and `2` is `Err(SendError.Full)` (`try_send` on a pipe at
     /// capacity).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fold builds every constructor of the Result it returns"
+    )]
     fn lower_send_status_result(
         &mut self,
         status: HirExpr,
@@ -33775,7 +33779,7 @@ impl Widget {
     /// (the `unlink` × stream-layout alias was caught by inspection, not
     /// by a test). This list mirrors the seeding sites exactly:
     /// `seed_typed_builtin_fn_registry` (the `supervisor_stop` inline id,
-    /// link/monitor/unlink/link_remote/instant::now) and the pipe
+    /// `link/monitor/unlink/link_remote/instant::now`) and the pipe
     /// layout-witness sentinels (the four `hew_stream_*_layout` entries).
     /// Adding a sentinel without extending this list leaves the new id
     /// unguarded — extend both together.

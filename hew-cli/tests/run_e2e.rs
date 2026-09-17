@@ -322,7 +322,7 @@ fn main() {
 }
 
 #[test]
-fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
+fn tcp_loopback_recv_roundtrip_returns_written_bytes() {
     require_codegen();
 
     let addr = unused_loopback_addr();
@@ -333,12 +333,13 @@ fn tcp_loopback_read_string_roundtrip_returns_written_bytes() {
         format!(
             r#"
 import std.net;
+import std.encoding.utf8;
 
 actor EchoServer {{
     receive fn connect_send_and_read(unused: i64) {{
         let conn = match net.connect("{addr}") {{ .Ok(value) => value, .Err(error) => panic("network operation failed"), }};
-        let _ = conn.write_string("client-ping:r319");
-        let reply = match conn.read_string() {{ .Ok(text) => text, .Err(error) => panic("client read is not valid UTF-8"), }};
+        conn.send("client-ping:r319".to_bytes()).expect("send");
+        let reply = match conn.recv() {{ .Some(data) => utf8.decode(data).expect("client read is valid UTF-8"), .None => panic("client read hit end of data"), }};
         println(f"client-read={{reply}}");
         conn.close();
     }}
@@ -354,9 +355,9 @@ fn main() {{
         let _client_turn = fork client.connect_send_and_read(0);
 
         let conn = listener.accept();
-        let request = match conn.read_string() {{ .Ok(text) => text, .Err(error) => panic("server read is not valid UTF-8"), }};
+        let request = match conn.recv() {{ .Some(data) => utf8.decode(data).expect("server read is valid UTF-8"), .None => panic("server read hit end of data"), }};
         println(f"server-read={{request}}");
-        let _ = conn.write_string("tcp-echo:hew-net-r319");
+        conn.send("tcp-echo:hew-net-r319".to_bytes()).expect("send");
         conn.close();
     }}
     listener.close();
@@ -4042,7 +4043,7 @@ fn run_tuple_of_owned_handles_returns_and_drops_exactly_once() {
          \n\
          fn main() {\n\
          \x20   let (sink, input) = make_pair();\n\
-         \x20   sink.send(\"alpha\");\n\
+         \x20   sink.send(\"alpha\").expect(\"send\");\n\
          \x20   sink.close();\n\
          \x20   input.close();\n\
          \x20   println(\"pair-ok\");\n\
@@ -4077,7 +4078,7 @@ fn run_whole_tuple_of_handles_drops_each_member_once() {
         "import std.stream.{ Sink, Stream };\n\
          \n\
          fn main() {\n\
-         \x20   let pair = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
+         \x20   let pair: (Sink<string>, Stream<string>) = match stream.pipe(8) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
          \x20   println(\"whole-ok\");\n\
          }\n",
     )
@@ -4113,7 +4114,7 @@ fn run_let_bound_tuple_return_no_double_free() {
          }\n\
          fn main() {\n\
          \x20   let (sink, input) = make_pair();\n\
-         \x20   sink.send(\"alpha\");\n\
+         \x20   sink.send(\"alpha\").expect(\"send\");\n\
          \x20   sink.close();\n\
          \x20   input.close();\n\
          \x20   println(\"bound-ok\");\n\
@@ -4146,7 +4147,7 @@ fn run_if_tail_tuple_return_no_double_free() {
          }\n\
          fn main() {\n\
          \x20   let (sink, input) = make_pair(true);\n\
-         \x20   sink.send(\"alpha\");\n\
+         \x20   sink.send(\"alpha\").expect(\"send\");\n\
          \x20   sink.close();\n\
          \x20   input.close();\n\
          \x20   println(\"if-ok\");\n\
@@ -4184,7 +4185,7 @@ fn run_record_of_handles_return_drops_each_field_once() {
          }\n\
          fn main() {\n\
          \x20   let p = make_pipe();\n\
-         \x20   p.sink.send(\"alpha\");\n\
+         \x20   p.sink.send(\"alpha\").expect(\"send\");\n\
          \x20   p.sink.close();\n\
          \x20   p.input.close();\n\
          \x20   println(\"record-ok\");\n\
@@ -4225,7 +4226,7 @@ fn run_record_of_handles_return_without_explicit_close_exits_clean() {
          }\n\
          fn main() {\n\
          \x20   let p = make_pipe();\n\
-         \x20   p.sink.send(\"alpha\");\n\
+         \x20   p.sink.send(\"alpha\").expect(\"send\");\n\
          \x20   println(\"record-noclose-ok\");\n\
          }\n",
     )
@@ -4268,7 +4269,7 @@ fn run_bound_tuple_field_close_drops_each_handle_once() {
          }\n\
          fn main() {\n\
          \x20   let p = make_pipe();\n\
-         \x20   p.0.send(\"alpha\");\n\
+         \x20   p.0.send(\"alpha\").expect(\"send\");\n\
          \x20   p.0.close();\n\
          \x20   p.1.close();\n\
          \x20   println(\"tuple-field-ok\");\n\

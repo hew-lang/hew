@@ -166,6 +166,7 @@ pub enum Decoded<T> {
 /// `Stream<bytes>.lines()` is the `Lines` case as a method.
 pub trait Codec<T> {
     fn decode(self, buf: bytes) -> Result<Decoded<T>, CodecError>;
+
     fn encode(self, item: T) -> bytes;
 }
 
@@ -213,7 +214,7 @@ impl Codec<bytes> for LengthPrefixed {
         }
         var length = 0;
         for i in 0 .. self.width {
-            length = length * 256 + (buf[i] as i64);
+            length = length * 256 + buf[i] as i64;
         }
         if buf.len() < self.width + length {
             return Ok(Decoded.Incomplete(buf));

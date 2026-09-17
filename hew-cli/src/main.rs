@@ -372,10 +372,6 @@ fn emit_module_with_triple(
         );
         return Err(DiagChannel::Limitation);
     }
-    if debug {
-        eprintln!("E_NOT_YET_IMPLEMENTED: physical native debug metadata is not implemented");
-        return Err(DiagChannel::Limitation);
-    }
     let _ = link_freestanding_wasm;
     hew_codegen_rs::emit_physical_object(
         pipeline,
@@ -386,6 +382,7 @@ fn emit_module_with_triple(
             opt_level,
             emit_llvm,
             address_sanitizer: link::address_sanitizer_requested(),
+            debug_source: debug.then_some(source_path).flatten(),
         },
     )
     .map_err(|error| {

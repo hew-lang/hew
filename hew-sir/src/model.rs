@@ -700,6 +700,8 @@ pub struct SemModule {
     /// HIR's deduplicated table. Each is compiled once into the module's
     /// handle array; a `RegexMatch` call selects its slot by index.
     pub regex_patterns: Vec<String>,
+    /// Root-unit lexical scopes and site offsets, for native debug metadata.
+    pub debug: crate::SemDebugFacts,
 }
 
 impl SemModule {

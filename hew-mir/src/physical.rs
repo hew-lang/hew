@@ -1309,6 +1309,47 @@ pub struct PhysicalModule {
     /// Regex-literal patterns in slot order; each is compiled once into the
     /// module's handle array and selected by index at a match arm.
     pub regex_patterns: Vec<String>,
+    /// Source attribution for `hew build -g`.
+    pub debug: PhysicalDebug,
+}
+
+pub use hew_sir::SemDebugScope;
+
+/// Source attribution carried for native debug metadata.
+///
+/// Every fact here is projected from SIR during lowering: codegen reads it and
+/// decides nothing about naming or attribution. Only root-unit bodies appear —
+/// a foreign module's spans belong to another file's coordinate space.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PhysicalDebug {
+    /// Lexical blocks of the root compilation unit, in HIR scope order.
+    pub scopes: Vec<hew_sir::SemDebugScope>,
+    pub functions: BTreeMap<CallableId, PhysicalDebugFunction>,
+}
+
+/// One body's source name, declaration point, named locals and op attribution.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PhysicalDebugFunction {
+    pub name: String,
+    /// Byte offset where the declaration begins.
+    pub decl: u32,
+    /// Byte offset just past the declaration, bounding the body's scopes.
+    pub end: u32,
+    /// Named source locals by the storage that realizes them.
+    pub locals: BTreeMap<StorageId, PhysicalDebugLocal>,
+    /// Source byte of each physical op, by block and index within the block.
+    /// Sparse: an op lowered from a synthesized operation has no source point.
+    pub sites: BTreeMap<(BlockId, u32), u32>,
+}
+
+/// One source binding and the storage that realizes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalDebugLocal {
+    pub name: String,
+    /// Byte offset of the binding that names this storage.
+    pub decl: u32,
+    /// One-based position when this storage realizes a parameter.
+    pub parameter: Option<u32>,
 }
 
 /// Immutable evidence that physical MIR passed its structural verifier.
@@ -1427,6 +1468,10 @@ pub fn lower_physical_module(
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
+    let mut debug = PhysicalDebug {
+        scopes: module.debug.scopes.clone(),
+        functions: BTreeMap::new(),
+    };
     let functions = module
         .functions
         .iter()
@@ -1434,9 +1479,14 @@ pub fn lower_physical_module(
             let certificate = checked
                 .function(function.callable)
                 .ok_or_else(|| PhysicalError::new("physical function lacks its SIR certificate"))?;
-            lower_function(module, &target, function, &ids, certificate)
+            let (lowered, attribution) =
+                lower_function(module, &target, function, &ids, certificate)?;
+            if let Some(attribution) = attribution {
+                debug.functions.insert(function.callable, attribution);
+            }
+            Ok(lowered)
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Result<Vec<_>, PhysicalError>>()?;
 
     let vtables = module
         .vtables
@@ -1523,6 +1573,7 @@ pub fn lower_physical_module(
         string_literals: module.string_literals.clone(),
         bytes_literals: module.bytes_literals.clone(),
         regex_patterns: module.regex_patterns.clone(),
+        debug,
     };
     physical.pure_releases = PureDataReleases::compute(&physical);
     verify_physical_module(&physical)?;
@@ -2196,7 +2247,7 @@ fn lower_function(
     function: &SemFunction,
     glue_ids: &PhysicalGlueIds,
     certificate: &hew_sir::CheckedFunction,
-) -> Result<PhysicalFunction, PhysicalError> {
+) -> Result<(PhysicalFunction, Option<PhysicalDebugFunction>), PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
         target,
@@ -2388,6 +2439,7 @@ fn lower_function(
     }
 
     let cfg = hew_sir::build_cfg_index(function);
+    let mut sites: BTreeMap<(BlockId, u32), u32> = BTreeMap::new();
     let blocks = function
         .blocks
         .iter()
@@ -2417,7 +2469,13 @@ fn lower_function(
                 .ops
                 .iter()
                 .try_fold(Vec::new(), |mut ops, operation| {
+                    let first = ops.len();
                     ops.extend(lowerer.lower_op(operation, (block.id, ops.len()))?);
+                    if let Some(offset) = module.debug.site_offset(&operation.provenance) {
+                        for index in first..ops.len() {
+                            sites.insert((block.id, index as u32), offset);
+                        }
+                    }
                     Ok::<_, PhysicalError>(ops)
                 })?;
             let terminator = lowerer.lower_terminator(&block.terminator)?;
@@ -2430,13 +2488,63 @@ fn lower_function(
         })
         .collect::<Result<Vec<_>, PhysicalError>>()?;
 
-    Ok(PhysicalFunction {
-        callable: function.callable,
-        entry: function.entry,
-        parameters,
-        place_storage: lowerer.lower_place_storage()?,
-        storage: lowerer.storage,
-        blocks,
+    let place_storage = lowerer.lower_place_storage()?;
+    let attribution = function_attribution(function, &lowerer.storage, &parameters, sites);
+    Ok((
+        PhysicalFunction {
+            callable: function.callable,
+            entry: function.entry,
+            parameters,
+            place_storage,
+            storage: lowerer.storage,
+            blocks,
+        },
+        attribution,
+    ))
+}
+
+/// Join SIR's ordered binding table onto the storage that realizes each source
+/// name. Only a root-unit body is attributed: another module's spans index a
+/// different file.
+fn function_attribution(
+    function: &SemFunction,
+    storage: &[PhysicalStorage],
+    parameters: &[StorageId],
+    sites: BTreeMap<(BlockId, u32), u32>,
+) -> Option<PhysicalDebugFunction> {
+    if function.source_origin != hew_sir::FunctionSourceOrigin::RootUnit {
+        return None;
+    }
+    let mut locals = BTreeMap::new();
+    for entry in storage {
+        let binding = match entry.origin {
+            StorageOrigin::Local(place) | StorageOrigin::Aggregate(place) => {
+                function.binding_rooting(place)
+            }
+            StorageOrigin::Parameter(value)
+            | StorageOrigin::Value(value)
+            | StorageOrigin::BlockArgument(value) => function.binding_naming(value),
+            StorageOrigin::ActorState { .. } | StorageOrigin::Capture { .. } => None,
+        };
+        let Some(binding) = binding else { continue };
+        locals.insert(
+            entry.id,
+            PhysicalDebugLocal {
+                name: binding.name.clone(),
+                decl: u32::try_from(binding.span.start).unwrap_or(u32::MAX),
+                parameter: parameters
+                    .iter()
+                    .position(|parameter| *parameter == entry.id)
+                    .and_then(|index| u32::try_from(index + 1).ok()),
+            },
+        );
+    }
+    Some(PhysicalDebugFunction {
+        name: function.name.clone(),
+        decl: u32::try_from(function.span.start).unwrap_or(u32::MAX),
+        end: u32::try_from(function.span.end).unwrap_or(u32::MAX),
+        locals,
+        sites,
     })
 }
 

@@ -2350,6 +2350,7 @@ impl<'a> InstanceService<'a> {
             value_capabilities,
             ..
         } = self;
+        let debug = crate::SemDebugFacts::project(module);
         let regex_patterns: Vec<String> = module
             .regex_literals
             .iter()
@@ -2416,6 +2417,7 @@ impl<'a> InstanceService<'a> {
             }
         }
         SemModule {
+            debug,
             actors,
             supervisors,
             resources,

@@ -5054,8 +5054,10 @@ primitive, a `string`, `bytes`, or a value record, enum or tuple whose
 members are items. Containers and handles are not items: `Sink<Vec<T>>`
 and `Stream<Sink<T>>` are refused at check time. A half is itself a
 handle. It moves between actors as a message payload or a state field,
-and it is `Send` exactly when `T` is `Send`. `Sink<T>` is `Clone`; a
-`Stream<T>` has one consumer.
+and it is `Send` exactly when `T` is `Send`. `sink.clone()` adds a
+producer on the same pipe and a `Stream<T>` has one consumer. Neither
+half has a structural copy, so a record, tuple or collection holding
+one is not cloneable.
 
 #### 6.4.1 Constructors (`std.stream`)
 

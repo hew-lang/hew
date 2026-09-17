@@ -401,8 +401,8 @@ fn fstring_result_payload_interp_loop_source(frames: usize) -> String {
          \x20   var err_total: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match mkres(i) {{\n\
-         \x20           Ok(s) => {{ println(f\"v={{s}}\"); ok_total = ok_total + s.len(); }}\n\
-         \x20           Err(e) => {{ println(f\"e={{e}}\"); err_total = err_total + e.len(); }}\n\
+         \x20           .Ok(s) => {{ println(f\"v={{s}}\"); ok_total = ok_total + s.len(); }}\n\
+         \x20           .Err(e) => {{ println(f\"e={{e}}\"); err_total = err_total + e.len(); }}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\

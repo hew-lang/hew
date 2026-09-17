@@ -68,7 +68,7 @@ fn weighted(matched: bool, weight: i64) -> i64 {
 /// rather than a count: `87381` per call when every true/false case resolves
 /// as expected.
 fn run_case() -> i64 {
-    let v = semver.parse("1.2.3");
+    let v = semver.parse("1.2.3").expect("parse");
     var sum = 0;
     sum = sum + weighted(v.matches(">=1.2.3"), 1);
     sum = sum + weighted(v.matches(">=1.3.0"), 2);

@@ -29,18 +29,24 @@ import std.net.quic;
 
 fn require_ok(result: Result<(), net.NetError>) {{
     match result {{
-        Ok(_) => {{}},
-        Err(_) => panic("QUIC retention operation failed"),
+        .Ok(_) => {{}},
+        .Err(_) => panic("QUIC retention operation failed"),
     }}
 }}
 
-actor Client {{ 
+actor Client {{
     let address: string,
     var complete: i64,
 
     receive fn run(unused: i64) {{
-        let endpoint = quic.new_client(), let connection = endpoint.connect(address, "localhost"), let stream = connection.open_stream(), require_ok(stream.send_string("client-probe")), let reply = stream.recv_string(), if reply != "retention-probe" {{
-            panic("QUIC retention reply mismatch") }}
+        let endpoint = quic.new_client();
+        let connection = endpoint.connect(address, "localhost");
+        let stream = connection.open_stream();
+        require_ok(stream.send_string("client-probe"));
+        let reply = stream.recv_string().expect("utf8 decode");
+        if reply != "retention-probe" {{
+            panic("QUIC retention reply mismatch");
+        }}
         let eof = stream.recv();
         if eof.len() != 0 {{
             panic("QUIC retention expected EOF");
@@ -73,7 +79,7 @@ fn main() {{
 
     let address = endpoint.observe().local_addr;
     let client = spawn Client(address: address, complete: 0);
-    client.run(0);
+    let _ = client.run(0);
 
     let connection = endpoint.accept();
     let endpoint_after_accept = endpoint.observe();
@@ -86,14 +92,14 @@ fn main() {{
         panic("QUIC stream-open event missing");
     }}
     opened.close();
-    let client_probe = stream.recv_string();
+    let client_probe = stream.recv_string().expect("utf8 decode");
     if client_probe != "client-probe" {{
         panic("QUIC retention client probe mismatch");
     }}
 
     match stream.stop(-7) {{
-        Ok(_) => panic("invalid QUIC application code unexpectedly succeeded"),
-        Err(_) => {{}},
+        .Ok(_) => panic("invalid QUIC application code unexpectedly succeeded"),
+        .Err(_) => {{}},
     }}
     let errored = connection.on_event();
     if errored.kind() != -1 {{
@@ -142,13 +148,13 @@ fn main() {{
 
     require_ok(connection.disconnect());
     endpoint.close();
-    match await client.finished() {{
-        Ok(done) => {{
+    match client.finished() {{
+        .Ok(done) => {{
             if done != 1 {{
                 panic("QUIC retention client stopped early");
             }}
         }},
-        Err(_) => panic("QUIC retention client failed"),
+        .Err(_) => panic("QUIC retention client failed"),
     }}
 }}
 "#

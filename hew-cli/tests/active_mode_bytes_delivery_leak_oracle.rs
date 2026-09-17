@@ -56,7 +56,7 @@ fn server_source(port: u16, deliveries: usize) -> String {
          \n\
          actor ProbeSink {{ \n\
          \x20   receive fn on_data(data: bytes) {{\n\
-         \x20       println(\"DATA\"), \n\
+         \x20       println(\"DATA\");\n\
          \x20 }}\n\
          \x20   receive fn on_close() {{}}\n\
          }}\n\
@@ -185,7 +185,7 @@ actor Router {
     let sink: ProbeSink,
     receive fn route(data: bytes, forward: bool) {
         if forward {
-            sink.take(data);
+            let _ = sink.take(data);
         } else {
             let n = data.len();
             println(n as i64);
@@ -196,8 +196,8 @@ actor Router {
 fn main() -> i64 {
     let sink = spawn ProbeSink();
     let router = spawn Router(sink: sink);
-    router.route(b"forward-owner", true);
-    router.route(b"local-owner", false);
+    let _ = router.route(b"forward-owner", true);
+    let _ = router.route(b"local-owner", false);
     sleep(100ms);
     println("DONE");
     0

@@ -101,8 +101,6 @@
 
 mod support;
 
-use std::os::unix::process::ExitStatusExt;
-
 use support::leak_slope::{
     assert_frame_slope_below_tolerance, compile_to_native, measure_leaks, require_leaks_tool,
     run_under_malloc_scribble, HIGH_FRAMES, LOW_FRAMES, SLOPE_TOLERANCE,
@@ -118,10 +116,10 @@ use support::{describe_output, require_codegen};
 /// the clean exit pin both directions.
 const NAMED_CHILD_DF_CONTROL_SOURCE: &str = "\
 indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
-fn sum(t: Tree) -> i64 { match t { Leaf(n) => n, Node(l, r) => sum(l) + sum(r), } }\n\
+fn sum(t: Tree) -> i64 { match t { .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), } }\n\
 fn main() {\n\
-\x20   let left = Node(Leaf(1), Leaf(2));\n\
-\x20   let t = Node(left, Leaf(3));\n\
+\x20   let left = Tree.Node(.Leaf(1), .Leaf(2));\n\
+\x20   let t = Tree.Node(left, .Leaf(3));\n\
 \x20   let s = sum(t);\n\
 \x20   if s == 6 { print(\"ok\"); } else { print(\"BAD\"); }\n\
 }\n";
@@ -140,14 +138,14 @@ const NAMED_CHILD_DF_CONTROL_EXPECTED: &str = "ok";
 /// returns the running total (`3 * iters`), checked in `main`, so the loop is
 /// never dead-code-eliminated and a use-after-free corrupts the printed result.
 fn loop_build_consume_source(iters: usize) -> String {
-    let expected_total = iters * 3; // val(Node(Leaf(1), Leaf(2))) == 1 + 2 == 3
+    let expected_total = iters * 3; // val(.Node(.Leaf(1), .Leaf(2))) == 1 + 2 == 3
     format!(
         "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
-         fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
+         fn val(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let t = Node(Leaf(1), Leaf(2));\n\
+         \x20       let t = Tree.Node(.Leaf(1), .Leaf(2));\n\
          \x20       let s = val(t);\n\
          \x20       total = total + s;\n\
          \x20   }}\n\
@@ -181,15 +179,15 @@ fn loop_build_consume_source(iters: usize) -> String {
 /// missing overwrite release); the oracle pins it so a future refactor of either
 /// the allocation site or the owner-set gate cannot silently reintroduce it.
 fn var_overwrite_loop_source(iters: usize) -> String {
-    let expected_total = iters * 3; // val(Node(Leaf(1), Leaf(2))) == 1 + 2 == 3
+    let expected_total = iters * 3; // val(.Node(.Leaf(1), .Leaf(2))) == 1 + 2 == 3
     format!(
         "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
-         fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
+         fn val(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
-         \x20   var t = Leaf(0);\n\
+         \x20   var t: Tree = .Leaf(0);\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       t = Node(Leaf(1), Leaf(2));\n\
+         \x20       t = .Node(.Leaf(1), .Leaf(2));\n\
          \x20       total = total + val(t);\n\
          \x20   }}\n\
          \x20   total\n\
@@ -208,14 +206,14 @@ fn var_overwrite_loop_source(iters: usize) -> String {
 /// binding slot is dead at process exit. Pre-fix each cycle leaked 3 nodes;
 /// post-fix the per-iteration slope is flat.
 fn single_leaf_loop_source(iters: usize) -> String {
-    let expected_total = iters * 5; // val(Leaf(5)) == 5
+    let expected_total = iters * 5; // val(.Leaf(5)) == 5
     format!(
         "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
-         fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
+         fn val(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let t = Leaf(5);\n\
+         \x20       let t = Tree.Leaf(5);\n\
          \x20       total = total + val(t);\n\
          \x20   }}\n\
          \x20   total\n\
@@ -234,14 +232,14 @@ fn single_leaf_loop_source(iters: usize) -> String {
 /// `10 * iters`, self-checked. Pre-fix each cycle leaked 19 nodes; post-fix the
 /// slope is flat (per-node free + recursion across depth).
 fn deep_tree_loop_source(iters: usize) -> String {
-    let expected_total = iters * 10; // val(Node(Node(1,2),Node(3,4))) == 1+2+3+4 == 10
+    let expected_total = iters * 10; // val(.Node(.Node(1,2),.Node(3,4))) == 1+2+3+4 == 10
     format!(
         "indirect enum Tree {{ Leaf(i64), Node(Tree, Tree), }}\n\
-         fn val(t: Tree) -> i64 {{ match t {{ Leaf(n) => n, Node(l, r) => val(l) + val(r), }} }}\n\
+         fn val(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => val(l) + val(r), }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let t = Node(Node(Leaf(1), Leaf(2)), Node(Leaf(3), Leaf(4)));\n\
+         \x20       let t = Tree.Node(.Node(.Leaf(1), .Leaf(2)), .Node(.Leaf(3), .Leaf(4)));\n\
          \x20       total = total + val(t);\n\
          \x20   }}\n\
          \x20   total\n\
@@ -259,16 +257,16 @@ fn deep_tree_loop_source(iters: usize) -> String {
 /// returns `10 * iters`, self-checked. Post-fix the slope is flat (the cross-thunk
 /// synthesis frees the chain and does not loop forever).
 fn mutual_loop_source(iters: usize) -> String {
-    let expected_total = iters * 10; // depthA(AWrap(BWrap(AWrap(BEnd(7))))) == 7 + 1 + 1 + 1 == 10
+    let expected_total = iters * 10; // depthA(.AWrap(.BWrap(.AWrap(.BEnd(7))))) == 7 + 1 + 1 + 1 == 10
     format!(
         "indirect enum A {{ AEnd(i64), AWrap(B), }}\n\
          indirect enum B {{ BEnd(i64), BWrap(A), }}\n\
-         fn depthA(a: A) -> i64 {{ match a {{ AEnd(n) => n, AWrap(b) => depthB(b) + 1, }} }}\n\
-         fn depthB(b: B) -> i64 {{ match b {{ BEnd(n) => n, BWrap(a) => depthA(a) + 1, }} }}\n\
+         fn depthA(a: A) -> i64 {{ match a {{ .AEnd(n) => n, .AWrap(b) => depthB(b) + 1, }} }}\n\
+         fn depthB(b: B) -> i64 {{ match b {{ .BEnd(n) => n, .BWrap(a) => depthA(a) + 1, }} }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let v = AWrap(BWrap(AWrap(BEnd(7))));\n\
+         \x20       let v = A.AWrap(.BWrap(.AWrap(.BEnd(7))));\n\
          \x20       total = total + depthA(v);\n\
          \x20   }}\n\
          \x20   total\n\
@@ -297,20 +295,20 @@ fn mutual_loop_source(iters: usize) -> String {
 /// returns `3 * iters`, self-checked in `main`, so the loop is never
 /// dead-code-eliminated and the binding slot is dead at process exit.
 fn inline_enum_wrapped_indirect_loop_source(iters: usize) -> String {
-    let expected_total = iters * 3; // val(Node(W(Leaf(3)))) == 3
+    let expected_total = iters * 3; // val(.Node(.W(.Leaf(3)))) == 3
     format!(
         "enum Wrap {{ W(Tree), }}\n\
          indirect enum Tree {{ Leaf(i64), Node(Wrap), }}\n\
          fn val(t: Tree) -> i64 {{\n\
          \x20   match t {{\n\
-         \x20       Leaf(n) => n,\n\
-         \x20       Node(w) => match w {{ W(inner) => val(inner), }},\n\
+         \x20       .Leaf(n) => n,\n\
+         \x20       .Node(w) => match w {{ .W(inner) => val(inner), }},\n\
          \x20   }}\n\
          }}\n\
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let t = Node(W(Leaf(3)));\n\
+         \x20       let t = Tree.Node(.W(.Leaf(3)));\n\
          \x20       total = total + val(t);\n\
          \x20   }}\n\
          \x20   total\n\
@@ -350,7 +348,7 @@ fn record_of_inline_enum_loop_source(iters: usize) -> String {
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let h = Holder {{ tag: 3, wrap: W(Node(Leaf(1), Leaf(2))) }};\n\
+         \x20       let h = Holder {{ tag: 3, wrap: .W(.Node(.Leaf(1), .Leaf(2))) }};\n\
          \x20       total = total + h.tag;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -383,7 +381,7 @@ fn tuple_of_inline_enum_loop_source(iters: usize) -> String {
          fn run_loop() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   for i in 0..{iters} {{\n\
-         \x20       let pair = (W(Node(Leaf(1), Leaf(2))), 3);\n\
+         \x20       let pair: (Wrap, i64) = (.W(.Node(.Leaf(1), .Leaf(2))), 3);\n\
          \x20       total = total + pair.1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -408,9 +406,9 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
          fn sum(t: Tree) -> i64 {{ match t {{ .Leaf(n) => n, .Node(l, r) => sum(l) + sum(r), }} }}\n\
          actor ProbeSink {{ \n\
          \x20   receive fn hold(ready: channel.Sender<i64>) {{\n\
-         \x20       ready.send(1), \n\
-         \x20       sleep(10s), \n\
-         \x20 }}\n\
+         \x20       ready.send(1);\n\
+         \x20       sleep(10s);\n\
+         \x20   }}\n\
          \x20   receive fn take(t: Tree) {{ let _ = sum(t); }}\n\
          \x20   receive fn tagged(tag: i64, t: Tree) {{ let _ = tag + sum(t); }}\n\
          }}\n\
@@ -423,13 +421,13 @@ fn actor_mailbox_teardown_source(frames: usize) -> String {
          \x20   let sup = spawn App;\n\
          \x20   let sink = sup.sink;\n\
          \x20   let (ready_tx, ready_rx): (channel.Sender<i64>, channel.Receiver<i64>) = match channel.new(1) {{ .Ok(pair) => pair, .Err(error) => panic(error), }};\n\
-         \x20   sink.hold(ready_tx);\n\
-         \x20   let started = match await ready_rx.recv() {{ .Some(n) => n, .None => 0, }};\n\
+         \x20   let _ = sink.hold(ready_tx);\n\
+         \x20   let started = match ready_rx.recv() {{ .Some(n) => n, .None => 0, }};\n\
          \x20   if started != 1 {{ print(\"BAD\"); return 1; }}\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       sink.take(Node(Node(Leaf(1), Leaf(2)), Node(Leaf(3), Leaf(4))));\n\
-         \x20       sink.tagged(i, Node(Node(Leaf(5), Leaf(6)), Node(Leaf(7), Leaf(8))));\n\
+         \x20       let _ = sink.take(.Node(.Node(.Leaf(1), .Leaf(2)), .Node(.Leaf(3), .Leaf(4))));\n\
+         \x20       let _ = sink.tagged(i, .Node(.Node(.Leaf(5), .Leaf(6)), .Node(.Leaf(7), .Leaf(8))));\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   supervisor_stop(sup);\n\
@@ -467,14 +465,14 @@ fn actor_request_carrier_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let direct = match await scorer.score(i, Node(Leaf(1), Leaf(2))) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
-         \x20       let selected = select {{ reply = await scorer.score(i, Node(Leaf(3), Leaf(4))) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
-         \x20       let (joined_a, joined_b) = join {{\n\
-         \x20           scorer.score(i, Node(Leaf(5), Leaf(6))),\n\
-         \x20           scorer.score(i, Node(Leaf(7), Leaf(8))),\n\
-         \x20       }};\n\
-         \x20       let suspended_ask = match await coordinator.ask_score(i, Node(Leaf(9), Leaf(10))) {{ .Ok(value) => value, .Err(_) => -5, }};\n\
-         \x20       let suspended_select = match await coordinator.select_score(i, Node(Leaf(11), Leaf(12))) {{ .Ok(value) => value, .Err(_) => -6, }};\n\
+         \x20       let direct = match scorer.score(i, .Node(.Leaf(1), .Leaf(2))) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
+         \x20       let selected = select {{ reply from scorer.score(i, .Node(.Leaf(3), .Leaf(4))) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
+         \x20       let task_a = fork scorer.score(i, .Node(.Leaf(5), .Leaf(6)));\n\
+         \x20       let task_b = fork scorer.score(i, .Node(.Leaf(7), .Leaf(8)));\n\
+         \x20       let joined_a = match await task_a {{ .Ok(value) => value, .Err(_) => -7, }};\n\
+         \x20       let joined_b = match await task_b {{ .Ok(value) => value, .Err(_) => -8, }};\n\
+         \x20       let suspended_ask = match coordinator.ask_score(i, .Node(.Leaf(9), .Leaf(10))) {{ .Ok(value) => value, .Err(_) => -5, }};\n\
+         \x20       let suspended_select = match coordinator.select_score(i, .Node(.Leaf(11), .Leaf(12))) {{ .Ok(value) => value, .Err(_) => -6, }};\n\
          \x20       total = total + direct + selected + joined_a + joined_b + suspended_ask + suspended_select;\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -497,10 +495,10 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          actor Coordinator {{\n\
          \x20   let scorer: Scorer,\n\
          \x20   receive fn ask_score(tag: i64, value: i64) -> i64 {{\n\
-         \x20       match await scorer.score(tag, value) {{ .Ok(result) => result, .Err(_) => -1, }}\n\
+         \x20       match scorer.score(tag, value) {{ .Ok(result) => result, .Err(_) => -1, }}\n\
          \x20   }}\n\
          \x20   receive fn select_score(tag: i64, value: i64) -> i64 {{\n\
-         \x20       select {{ reply = await scorer.score(tag, value) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
+         \x20       select {{ reply from scorer.score(tag, value) => reply.expect(\"ask reply\"), after 5s => -2, }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -509,11 +507,14 @@ fn actor_request_carrier_scalar_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let direct = match await scorer.score(i, 3) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
-         \x20       let selected = select {{ reply = await scorer.score(i, 7) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
-         \x20       let (joined_a, joined_b) = join {{ scorer.score(i, 11), scorer.score(i, 15), }};\n\
-         \x20       let suspended_ask = match await coordinator.ask_score(i, 19) {{ .Ok(value) => value, .Err(_) => -5, }};\n\
-         \x20       let suspended_select = match await coordinator.select_score(i, 23) {{ .Ok(value) => value, .Err(_) => -6, }};\n\
+         \x20       let direct = match scorer.score(i, 3) {{ .Ok(value) => value, .Err(_) => -3, }};\n\
+         \x20       let selected = select {{ reply from scorer.score(i, 7) => reply.expect(\"ask reply\"), after 5s => -4, }};\n\
+         \x20       let task_a = fork scorer.score(i, 11);\n\
+         \x20       let task_b = fork scorer.score(i, 15);\n\
+         \x20       let joined_a = match await task_a {{ .Ok(value) => value, .Err(_) => -7, }};\n\
+         \x20       let joined_b = match await task_b {{ .Ok(value) => value, .Err(_) => -8, }};\n\
+         \x20       let suspended_ask = match coordinator.ask_score(i, 19) {{ .Ok(value) => value, .Err(_) => -5, }};\n\
+         \x20       let suspended_select = match coordinator.select_score(i, 23) {{ .Ok(value) => value, .Err(_) => -6, }};\n\
          \x20       total = total + direct + selected + joined_a + joined_b + suspended_ask + suspended_select;\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -546,7 +547,7 @@ fn dead_actor_select_request_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let selected = select {{\n\
-         \x20           reply = await worker.score(i, Node(Leaf(1), Leaf(2))) => reply.expect(\"ask reply\"),\n\
+         \x20           reply from worker.score(i, .Node(.Leaf(1), .Leaf(2))) => reply.expect(\"ask reply\"),\n\
          \x20           after 1ms => i,\n\
          \x20       }};\n\
          \x20       total = total + selected;\n\
@@ -558,37 +559,6 @@ fn dead_actor_select_request_source(frames: usize) -> String {
         frames.saturating_mul(frames.saturating_sub(1)) / 2
     )
 }
-
-/// Join preserves its fail-closed process trap when a branch cannot enqueue.
-/// The only observable continuation is therefore the trap itself: cleanup of
-/// the prepared owning carrier must complete under the poisoned allocator, and
-/// the post-join `BAD` sentinel must remain unreachable.
-const DEAD_ACTOR_JOIN_REQUEST_SOURCE: &str = "\
-indirect enum Tree { Leaf(i64), Node(Tree, Tree), }\n\
-actor Worker {\n\
-\x20   receive fn score(tag: i64, tree: Tree) -> i64 { tag }\n\
-\x20   receive fn crash_me() { panic(\"worker crash\"); }\n\
-}\n\
-supervisor App {\n\
-\x20   strategy: one_for_one,\n\
-\x20   intensity: 1 within 60s,\n\
-\x20   child worker: Worker,\n\
-}\n\
-fn main() -> i64 {\n\
-\x20   let sup = spawn App;\n\
-\x20   let worker = sup.worker;\n\
-\x20   for _ in 0..5 {\n\
-\x20       worker.crash_me();\n\
-\x20       sleep(80ms);\n\
-\x20   }\n\
-\x20   sleep(200ms);\n\
-\x20   let (left, right) = join {\n\
-\x20       worker.score(1, Node(Leaf(2), Leaf(3))),\n\
-\x20       worker.score(4, Node(Leaf(5), Leaf(6))),\n\
-\x20   };\n\
-\x20   print(\"BAD\");\n\
-\x20   left + right\n\
-}\n";
 
 /// Compare recursive-payload and scalar-control leak slopes for the exact same
 /// request topology. The recursive shape may add only constant measurement
@@ -1049,65 +1019,6 @@ fn indirect_enum_dead_actor_select_request_no_corruption_under_malloc_scribble()
         &dead_actor_select_request_source(50),
         "ok",
     );
-}
-
-/// Join deliberately traps when setup cannot enqueue a branch, so it cannot
-/// expose a post-exit leak slope. Its exact IR drop oracle is paired with this
-/// runtime poisoned-allocator pin: the prepared carrier cleanup must finish and
-/// reach the intended LLVM trap, not abort with allocator corruption first.
-#[cfg_attr(
-    not(target_os = "macos"),
-    ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
-)]
-#[test]
-fn indirect_enum_dead_actor_join_request_cleans_before_intentional_trap() {
-    require_codegen();
-
-    let dir = tempfile::Builder::new()
-        .prefix("indirect-enum-dead-actor-join-")
-        .tempdir()
-        .expect("tempdir");
-    let bin = compile_to_native(
-        DEAD_ACTOR_JOIN_REQUEST_SOURCE,
-        dir.path(),
-        "dead_actor_join_request",
-    );
-    let output = run_under_malloc_scribble(&bin);
-    let signal = output.status.signal();
-    let exit_code = output.status.code();
-    let stderr_text = String::from_utf8_lossy(&output.stderr);
-    let handled_trap = matches!(
-        exit_code,
-        Some(value) if value == 128 + libc::SIGILL || value == 128 + libc::SIGTRAP
-    ) && stderr_text.contains("trap in main context: ActorSendFailed");
-
-    assert!(
-        matches!(signal, Some(value) if value == libc::SIGILL || value == libc::SIGTRAP)
-            || handled_trap,
-        "dead join setup must reach the intentional LLVM trap after releasing its unsubmitted \
-         carrier, not exit normally or abort in allocator cleanup; signal={signal:?}, \
-         code={exit_code:?}\n{}",
-        describe_output(&output)
-    );
-    assert!(
-        !String::from_utf8_lossy(&output.stdout).contains("BAD"),
-        "join continued past its fail-closed setup trap:\n{}",
-        describe_output(&output)
-    );
-    let stderr = stderr_text.to_ascii_lowercase();
-    for corruption in [
-        "double free",
-        "incorrect checksum",
-        "pointer being freed was not allocated",
-        "heap corruption",
-    ] {
-        assert!(
-            !stderr.contains(corruption),
-            "dead join setup hit allocator corruption `{corruption}` instead of its intentional \
-             trap after exact carrier cleanup:\n{}",
-            describe_output(&output)
-        );
-    }
 }
 
 /// F4 / #2208 - the actor ask-reply ABI-boundary leg, pinned at the IR level.

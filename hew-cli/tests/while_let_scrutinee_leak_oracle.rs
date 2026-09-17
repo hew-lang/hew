@@ -12,12 +12,12 @@ use support::{describe_output, require_codegen};
 fn successful_iterations_source(frames: usize) -> String {
     format!(
         "fn next(i: i64, cap: i64) -> Result<string, string> {{\n\
-         \x20   if i < cap {{ Ok(\"while-let-ok\".to_upper()) }} else {{ Err(\"done\".to_upper()) }}\n\
+         \x20   if i < cap {{ .Ok(\"while-let-ok\".to_upper()) }} else {{ .Err(\"done\".to_upper()) }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var i = 0;\n\
          \x20   var total = 0;\n\
-         \x20   while let Ok(value) = next(i, {frames}) {{\n\
+         \x20   while let .Ok(value) = next(i, {frames}) {{\n\
          \x20       total = total + value.len();\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -28,9 +28,9 @@ fn successful_iterations_source(frames: usize) -> String {
 
 fn final_false_source(frames: usize) -> String {
     format!(
-        "fn next() -> Result<string, string> {{ Err(\"while-let-false\".to_upper()) }}\n\
+        "fn next() -> Result<string, string> {{ .Err(\"while-let-false\".to_upper()) }}\n\
          fn one() {{\n\
-         \x20   while let Ok(value) = next() {{ print(value); }}\n\
+         \x20   while let .Ok(value) = next() {{ print(value); }}\n\
          }}\n\
          fn main() {{\n\
          \x20   for i in 0..{frames} {{ one(); }}\n\
@@ -40,12 +40,12 @@ fn final_false_source(frames: usize) -> String {
 
 const EXIT_EDGES_SCRIBBLE_SOURCE: &str = "\
 fn next(i: i64) -> Result<string, string> {\n\
-\x20   if i < 4 { Ok(\"edge-payload\".to_upper()) } else { Err(\"done\".to_upper()) }\n\
+\x20   if i < 4 { .Ok(\"edge-payload\".to_upper()) } else { .Err(\"done\".to_upper()) }\n\
 }\n\
 \n\
 fn run_continue() {\n\
 \x20   var i = 0;\n\
-\x20   while let Ok(value) = next(i) {\n\
+\x20   while let .Ok(value) = next(i) {\n\
 \x20       i = i + 1;\n\
 \x20       if value.len() > 0 { continue; }\n\
 \x20   }\n\
@@ -53,13 +53,13 @@ fn run_continue() {\n\
 \n\
 fn run_break() {\n\
 \x20   var i = 0;\n\
-\x20   while let Ok(value) = next(i) {\n\
+\x20   while let .Ok(value) = next(i) {\n\
 \x20       if value.len() > 0 { break; }\n\
 \x20   }\n\
 }\n\
 \n\
 fn run_return() -> i64 {\n\
-\x20   while let Ok(value) = next(0) {\n\
+\x20   while let .Ok(value) = next(0) {\n\
 \x20       if value.len() > 0 { return 1; }\n\
 \x20   }\n\
 \x20   0\n\

@@ -202,7 +202,7 @@ fn main() {\n\
 \x20       v.push(2);\n\
 \x20       v.iter()\n\
 \x20   };\n\
-\x20   let _ = await e.ping();\n\
+\x20   let _ = e.ping();\n\
 \x20   var sum: i64 = 0;\n\
 \x20   for x in c {\n\
 \x20       sum = sum + x;\n\

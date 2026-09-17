@@ -65,32 +65,32 @@ use support::{describe_output, require_codegen};
 /// caller's duplicate) execute. `store_value` and `add_member` cover the
 /// `HashMap` VALUE and `HashSet` ELEMENT positions of the same MOVE ingress.
 const BORROWED_STRING_INGRESS_SOURCE: &str = "\
-fn bump(counts: HashMap<string, i64>, category: string) {\n\
-\x20   let next = match counts.get(category) { Some(old) => old + 1, None => 1 };\n\
+fn bump(var counts: HashMap<string, i64>, category: string) {\n\
+\x20   let next = match counts.get(category) { .Some(old) => old + 1, .None => 1 };\n\
 \x20   counts.insert(category, next);\n\
 }\n\
 \n\
-fn store_value(labels: HashMap<i64, string>, id: i64, label: string) {\n\
+fn store_value(var labels: HashMap<i64, string>, id: i64, label: string) {\n\
 \x20   labels.insert(id, label);\n\
 }\n\
 \n\
-fn add_member(members: HashSet<string>, name: string) {\n\
+fn add_member(var members: HashSet<string>, name: string) {\n\
 \x20   members.insert(name);\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let counts: HashMap<string, i64> = HashMap.new();\n\
+\x20   var counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   for raw in \" coffee , rent , coffee \".split(\",\") {\n\
 \x20   \x20   bump(counts, raw.trim());\n\
 \x20   }\n\
-\x20   let labels: HashMap<i64, string> = HashMap.new();\n\
-\x20   let members: HashSet<string> = HashSet.new();\n\
+\x20   var labels: HashMap<i64, string> = HashMap.new();\n\
+\x20   var members: HashSet<string> = HashSet.new();\n\
 \x20   store_value(labels, 1, \"label\".to_upper());\n\
 \x20   store_value(labels, 1, \"relabel\".to_upper());\n\
 \x20   add_member(members, \"member\".to_upper());\n\
 \x20   add_member(members, \"member\".to_upper());\n\
-\x20   let coffee = match counts.get(\"coffee\") { Some(n) => n, None => -1 };\n\
-\x20   let label = match labels.get(1) { Some(s) => s, None => \"absent\" };\n\
+\x20   let coffee = match counts.get(\"coffee\") { .Some(n) => n, .None => -1 };\n\
+\x20   let label = match labels.get(1) { .Some(s) => s, .None => \"absent\" };\n\
 \x20   print(f\"{coffee}|{counts.len()}|{label}|{members.len()}\");\n\
 }\n";
 
@@ -111,17 +111,17 @@ const BORROWED_STRING_INGRESS_EXPECTED: &str = "2|2|RELABEL|1";
 /// with `frames`.
 fn borrowed_ingress_loop_source(frames: usize) -> String {
     format!(
-        "fn store_key(counts: HashMap<string, i64>, key: string, amount: i64) {{\n\
+        "fn store_key(var counts: HashMap<string, i64>, key: string, amount: i64) {{\n\
          \x20   counts.insert(key, amount);\n\
          }}\n\
          \n\
-         fn store_member(members: HashSet<string>, name: string) {{\n\
+         fn store_member(var members: HashSet<string>, name: string) {{\n\
          \x20   members.insert(name);\n\
          }}\n\
          \n\
          fn run_cycle() -> i64 {{\n\
-         \x20   let counts: HashMap<string, i64> = HashMap.new();\n\
-         \x20   let members: HashSet<string> = HashSet.new();\n\
+         \x20   var counts: HashMap<string, i64> = HashMap.new();\n\
+         \x20   var members: HashSet<string> = HashSet.new();\n\
          \x20   store_key(counts, \"key\".to_upper(), 1);\n\
          \x20   store_key(counts, \"key\".to_upper(), 2);\n\
          \x20   store_member(members, \"member\".to_upper());\n\

@@ -24,12 +24,12 @@ trait Labeled {{
 }}
 
 type Person {{ label: string }}
-impl Person {{
+impl Labeled for Person {{
     fn label_size(val: Person) -> i64 {{ val.label.len() }}
 }}
 
 type Parcel {{ label: string }}
-impl Parcel {{
+impl Labeled for Parcel {{
     fn label_size(val: Parcel) -> i64 {{ val.label.len() }}
 }}
 

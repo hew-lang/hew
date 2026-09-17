@@ -24,17 +24,17 @@ fn ignored_string_source(frames: usize) -> String {
     format!(
         "actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
-         \x20   receive fn take(label: string) {{ seen = seen + 1 }}\n\
+         \x20   receive fn take(label: string) {{ seen = seen + 1; }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       sink.take(\"unused\".to_upper());\n\
+         \x20       let _ = sink.take(\"unused\".to_upper());\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.count() {{ Ok(n) => if n == {frames} {{ 0 }} else {{ 71 }}, Err(_) => 72 }}\n\
+         \x20   match sink.count() {{ .Ok(n) => if n == {frames} {{ 0 }} else {{ 71 }}, .Err(_) => 72 }}\n\
          }}\n"
     )
 }
@@ -45,7 +45,7 @@ fn ignored_recursive_record_source(frames: usize) -> String {
          type Envelope {{ payload: Inner }}\n\
          actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
-         \x20   receive fn take(message: Envelope) {{ seen = seen + 1 }}\n\
+         \x20   receive fn take(message: Envelope) {{ seen = seen + 1; }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -53,10 +53,10 @@ fn ignored_recursive_record_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let message = Envelope {{ payload: Inner {{ label: \"record\".to_upper(), values: [i, i + 1] }} }};\n\
-         \x20       sink.take(message);\n\
+         \x20       let _ = sink.take(message);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.count() {{ Ok(n) => if n == {frames} {{ 0 }} else {{ 73 }}, Err(_) => 74 }}\n\
+         \x20   match sink.count() {{ .Ok(n) => if n == {frames} {{ 0 }} else {{ 73 }}, .Err(_) => 74 }}\n\
          }}\n"
     )
 }
@@ -65,7 +65,7 @@ fn ignored_container_source(frames: usize) -> String {
     format!(
         "actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
-         \x20   receive fn take(values: Vec<string>) {{ seen = seen + 1 }}\n\
+         \x20   receive fn take(values: Vec<string>) {{ seen = seen + 1; }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
          }}\n\
          fn main() -> i64 {{\n\
@@ -73,10 +73,10 @@ fn ignored_container_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let values: Vec<string> = [\"left\".to_upper(), \"right\".to_upper()];\n\
-         \x20       sink.take(values);\n\
+         \x20       let _ = sink.take(values);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.count() {{ Ok(n) => if n == {frames} {{ 0 }} else {{ 75 }}, Err(_) => 76 }}\n\
+         \x20   match sink.count() {{ .Ok(n) => if n == {frames} {{ 0 }} else {{ 75 }}, .Err(_) => 76 }}\n\
          }}\n"
     )
 }
@@ -86,7 +86,7 @@ fn branch_and_early_exit_source(frames: usize) -> String {
         "actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(label: string, early: bool) {{\n\
-         \x20       if early {{ seen = seen + 1, return }}\n\
+         \x20       if early {{ seen = seen + 1; return }}\n\
          \x20       seen = seen + 1;\n\
          \x20   }}\n\
          \x20   receive fn count() -> i64 {{ seen }}\n\
@@ -95,10 +95,10 @@ fn branch_and_early_exit_source(frames: usize) -> String {
          \x20   let sink = spawn ProbeSink(seen: 0);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       sink.take(\"branch\".to_upper(), i % 2 == 0);\n\
+         \x20       let _ = sink.take(\"branch\".to_upper(), i % 2 == 0);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.count() {{ Ok(n) => if n == {frames} {{ 0 }} else {{ 77 }}, Err(_) => 78 }}\n\
+         \x20   match sink.count() {{ .Ok(n) => if n == {frames} {{ 0 }} else {{ 77 }}, .Err(_) => 78 }}\n\
          }}\n"
     )
 }
@@ -109,7 +109,7 @@ fn state_or_drop_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var last: string,\n\
          \x20   receive fn take(label: string, keep: bool) {{\n\
-         \x20       if keep {{ last = label }} else {{ seen = seen + label.len(); }}\n\
+         \x20       if keep {{ last = label; }} else {{ seen = seen + label.len(); }}\n\
          \x20   }}\n\
          \x20   receive fn total() -> i64 {{ seen + last.len() }}\n\
          }}\n\
@@ -117,10 +117,10 @@ fn state_or_drop_source(frames: usize) -> String {
          \x20   let sink = spawn Keeper(seen: 0, last: \"seed\");\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       sink.take(\"state\".to_upper(), i % 2 == 0);\n\
+         \x20       let _ = sink.take(\"state\".to_upper(), i % 2 == 0);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.total() {{ Ok(n) => if n > 0 {{ 0 }} else {{ 79 }}, Err(_) => 80 }}\n\
+         \x20   match sink.total() {{ .Ok(n) => if n > 0 {{ 0 }} else {{ 79 }}, .Err(_) => 80 }}\n\
          }}\n"
     )
 }
@@ -143,10 +143,10 @@ fn conditional_local_record_handoff_source(frames: usize) -> String {
          \x20   let fan = spawn Fan(seen: 0, held: Wrap {{ name: \"seed\" }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"discard\".to_upper(), false);\n\
+         \x20       let _ = fan.route(\"discard\".to_upper(), false);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n == {expected} {{ 0 }} else {{ 99 }}, Err(_) => 100 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n == {expected} {{ 0 }} else {{ 99 }}, .Err(_) => 100 }}\n\
          }}\n"
     )
 }
@@ -158,7 +158,7 @@ fn loop_carried_record_ingress_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var held: Wrap,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0, \n\
+         \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           let next = Wrap {{ name: label }};\n\
          \x20           if j > 0 {{ seen = seen + 1; }}\n\
@@ -173,10 +173,10 @@ fn loop_carried_record_ingress_source(frames: usize) -> String {
          \x20   let fan = spawn Fan(seen: 0, held: Wrap {{ name: \"seed\" }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"loop\".to_upper(), i % 5);\n\
+         \x20       let _ = fan.route(\"loop\".to_upper(), i % 5);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 85 }}, Err(_) => 86 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 85 }}, .Err(_) => 86 }}\n\
          }}\n"
     )
 }
@@ -189,7 +189,7 @@ fn nested_loop_carried_record_ingress_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var held: Outer,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0, \n\
+         \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           held = Outer {{ inner: Inner {{ name: label }} }};\n\
          \x20           j = j + 1;\n\
@@ -202,10 +202,10 @@ fn nested_loop_carried_record_ingress_source(frames: usize) -> String {
          \x20   let fan = spawn Fan(seen: 0, held: Outer {{ inner: Inner {{ name: \"seed\" }} }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"nested\".to_upper(), i % 5);\n\
+         \x20       let _ = fan.route(\"nested\".to_upper(), i % 5);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 87 }}, Err(_) => 88 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 87 }}, .Err(_) => 88 }}\n\
          }}\n"
     )
 }
@@ -217,7 +217,7 @@ fn branch_selected_record_ingress_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var held: Wrap,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0, \n\
+         \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           let next = if j > 0 {{\n\
          \x20               Wrap {{ name: label }}\n\
@@ -235,10 +235,10 @@ fn branch_selected_record_ingress_source(frames: usize) -> String {
          \x20   let fan = spawn Fan(seen: 0, held: Wrap {{ name: \"seed\" }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"branch\".to_upper(), i % 5);\n\
+         \x20       let _ = fan.route(\"branch\".to_upper(), i % 5);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 89 }}, Err(_) => 90 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 89 }}, .Err(_) => 90 }}\n\
          }}\n"
     )
 }
@@ -251,7 +251,7 @@ fn branch_selected_nested_record_ingress_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var held: Outer,\n\
          \x20   receive fn route(label: string, count: i64) {{\n\
-         \x20       var j: i64 = 0, \n\
+         \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           let inner = if j > 0 {{\n\
          \x20               Inner {{ name: label }}\n\
@@ -270,10 +270,10 @@ fn branch_selected_nested_record_ingress_source(frames: usize) -> String {
          \x20   let fan = spawn Fan(seen: 0, held: Outer {{ inner: Inner {{ name: \"seed\" }} }});\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"nested-branch\".to_upper(), i % 5);\n\
+         \x20       let _ = fan.route(\"nested-branch\".to_upper(), i % 5);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 93 }}, Err(_) => 94 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 93 }}, .Err(_) => 94 }}\n\
          }}\n"
     )
 }
@@ -286,7 +286,7 @@ fn cross_field_swapped_record_ingress_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var held: Pair,\n\
          \x20   receive fn route(label: string, other: string, count: i64) {{\n\
-         \x20       var j: i64 = 0, \n\
+         \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           let named = Inner {{ name: label }};\n\
          \x20           let alternate = Inner {{ name: other }};\n\
@@ -311,10 +311,10 @@ fn cross_field_swapped_record_ingress_source(frames: usize) -> String {
          \x20   );\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"named\".to_upper(), \"alternate\".to_upper(), i % 5);\n\
+         \x20       let _ = fan.route(\"named\".to_upper(), \"alternate\".to_upper(), i % 5);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 91 }}, Err(_) => 92 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 91 }}, .Err(_) => 92 }}\n\
          }}\n"
     )
 }
@@ -327,7 +327,7 @@ fn shifted_repeated_record_ingress_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var held: Triple,\n\
          \x20   receive fn route(label: string, other: string, count: i64) {{\n\
-         \x20       var j: i64 = 0, \n\
+         \x20       var j: i64 = 0;\n\
          \x20       while j < count {{\n\
          \x20           let next = if j % 2 == 0 {{\n\
          \x20               Triple {{\n\
@@ -362,10 +362,10 @@ fn shifted_repeated_record_ingress_source(frames: usize) -> String {
          \x20   );\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"repeat\".to_upper(), \"other\".to_upper(), i % 5);\n\
+         \x20       let _ = fan.route(\"repeat\".to_upper(), \"other\".to_upper(), i % 5);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 93 }}, Err(_) => 94 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 93 }}, .Err(_) => 94 }}\n\
          }}\n"
     )
 }
@@ -392,10 +392,10 @@ fn branch_to_two_state_fields_source(frames: usize) -> String {
          \x20   );\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       fan.route(\"either\".to_upper(), i % 2 == 0);\n\
+         \x20       let _ = fan.route(\"either\".to_upper(), i % 2 == 0);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await fan.total() {{ Ok(n) => if n > {frames} {{ 0 }} else {{ 95 }}, Err(_) => 96 }}\n\
+         \x20   match fan.total() {{ .Ok(n) => if n > {frames} {{ 0 }} else {{ 95 }}, .Err(_) => 96 }}\n\
          }}\n"
     )
 }
@@ -411,7 +411,7 @@ actor Relay {\n\
 \x20   let consumer: Consumer,\n\
 \x20   var seen: i64,\n\
 \x20   receive fn forward(value: string) -> i64 {\n\
-\x20       let delivered = match await consumer.take(value) { .Ok(n) => n, Err(_) => -1 };\n\
+\x20       let delivered = match consumer.take(value) { .Ok(n) => n, .Err(_) => -1 };\n\
 \x20       seen = seen + 1;\n\
 \x20       delivered\n\
 \x20   }\n\
@@ -422,12 +422,12 @@ fn main() -> i64 {\n\
 \x20   let relay = spawn Relay(consumer: consumer, seen: 0);\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 40 {\n\
-\x20       let delivered = match await relay.forward(\"forward\".to_upper()) { .Ok(n) => n, Err(_) => -1 };\n\
+\x20       let delivered = match relay.forward(\"forward\".to_upper()) { .Ok(n) => n, .Err(_) => -1 };\n\
 \x20       if delivered < 0 { return 82; }\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
-\x20   let relayed = match await relay.count() { .Ok(n) => n, Err(_) => -1 };\n\
-\x20   let consumed = match await consumer.total() { .Ok(n) => n, Err(_) => -1 };\n\
+\x20   let relayed = match relay.count() { .Ok(n) => n, .Err(_) => -1 };\n\
+\x20   let consumed = match consumer.total() { .Ok(n) => n, .Err(_) => -1 };\n\
 \x20   if relayed == 40 && consumed == 40 { 0 } else { 81 }\n\
 }\n";
 
@@ -448,10 +448,10 @@ fn main() -> i64 {\n\
 \x20   let fan = spawn Fan(seen: 0, held: Wrap { name: \"held\" }, last: \"last\");\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 40 {\n\
-\x20       fan.route(\"payload\".to_upper(), i % 2);\n\
+\x20       let _ = fan.route(\"payload\".to_upper(), i % 2);\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
-\x20   match await fan.total() { Ok(n) => if n > 40 { 0 } else { 83 }, Err(_) => 84 }\n\
+\x20   match fan.total() { .Ok(n) => if n > 40 { 0 } else { 83 }, .Err(_) => 84 }\n\
 }\n";
 
 const BRANCH_LOCAL_FRESH_NESTED_POISON_SOURCE: &str = "\
@@ -477,10 +477,10 @@ fn main() -> i64 {\n\
 \x20   let fan = spawn Fan(seen: 0, held: Outer { inner: Inner { name: \"seed\" } });\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 12 {\n\
-\x20       fan.route(i % 2 == 0, i % 3 == 0);\n\
+\x20       let _ = fan.route(i % 2 == 0, i % 3 == 0);\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
-\x20   match await fan.total() { Ok(n) => if n > 12 { 0 } else { 97 }, Err(_) => 98 }\n\
+\x20   match fan.total() { .Ok(n) => if n > 12 { 0 } else { 97 }, .Err(_) => 98 }\n\
 }\n";
 
 const CONDITIONAL_LOCAL_RECORD_HANDOFF_POISON_SOURCE: &str = "\
@@ -499,10 +499,10 @@ fn main() -> i64 {\n\
 \x20   let fan = spawn Fan(seen: 0, held: Wrap { name: \"seed\" });\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 40 {\n\
-\x20       fan.route(\"handoff\".to_upper(), i % 2 == 0);\n\
+\x20       let _ = fan.route(\"handoff\".to_upper(), i % 2 == 0);\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
-\x20   match await fan.total() { Ok(n) => if n > 40 { 0 } else { 101 }, Err(_) => 102 }\n\
+\x20   match fan.total() { .Ok(n) => if n > 40 { 0 } else { 101 }, .Err(_) => 102 }\n\
 }\n";
 
 /// Counterfactual for the resource/record classification overlap. The local is

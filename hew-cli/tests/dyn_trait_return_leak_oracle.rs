@@ -28,7 +28,7 @@ type Person {{
     label: string,
 }}
 
-impl Person {{
+impl Labeled for Person {{
     fn label_size(val: Person) -> i64 {{
         val.label.len()
     }}
@@ -39,7 +39,7 @@ type Parcel {{
     route: string,
 }}
 
-impl Parcel {{
+impl Labeled for Parcel {{
     fn label_size(val: Parcel) -> i64 {{
         val.label.len()
     }}
@@ -90,7 +90,7 @@ type Person {{
     label: string,
 }}
 
-impl Person {{
+impl Labeled for Person {{
     fn label_size(val: Person) -> i64 {{
         val.label.len()
     }}
@@ -100,7 +100,7 @@ fn make_labeled(seed: string) -> dyn Labeled {{
     Person {{ label: string.repeat(seed, 64) }}
 }}
 
-fn identity(value: dyn Labeled) -> dyn Labeled {{
+fn identity(consume value: dyn Labeled) -> dyn Labeled {{
     value
 }}
 

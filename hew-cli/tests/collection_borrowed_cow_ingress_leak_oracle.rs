@@ -36,7 +36,7 @@ use support::{describe_output, require_codegen};
 /// parameter. Without the carrier-general retain the map teardown and the
 /// caller's drop released the same buffer (abort before printing).
 const BORROWED_BYTES_INGRESS_SOURCE: &str = "\
-fn ingest(store: HashMap<string, bytes>, payload: bytes) -> i64 {\n\
+fn ingest(var store: HashMap<string, bytes>, payload: bytes) -> i64 {\n\
 \x20   store.insert(\"k\" + \"-heap\", payload);\n\
 \x20   return store.len();\n\
 }\n\
@@ -53,7 +53,7 @@ const BORROWED_BYTES_INGRESS_EXPECTED: &str = "1|16";
 
 fn borrowed_bytes_loop_source(frames: usize) -> String {
     format!(
-        "fn ingest(store: HashMap<string, bytes>, payload: bytes) -> i64 {{\n\
+        "fn ingest(var store: HashMap<string, bytes>, payload: bytes) -> i64 {{\n\
          \x20   store.insert(\"k\" + \"-heap\", payload);\n\
          \x20   return store.len();\n\
          }}\n\
@@ -80,7 +80,7 @@ fn borrowed_bytes_loop_source(frames: usize) -> String {
 /// the new generation is frame-owned, so the ingress must CONSUME it. Covers
 /// the vacant path and (second call) the overwrite path.
 const REASSIGNED_PARAM_INGRESS_SOURCE: &str = "\
-fn put(counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {\n\
+fn put(var counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {\n\
 \x20   key = (\"fresh\" + \"-key\").to_upper();\n\
 \x20   counts.insert(key, amount);\n\
 \x20   return counts.len();\n\
@@ -90,7 +90,7 @@ fn main() {\n\
 \x20   let counts: HashMap<string, i64> = HashMap.new();\n\
 \x20   let first = put(counts, \"caller\" + \"-a\", 1);\n\
 \x20   let second = put(counts, \"caller\" + \"-b\", 2);\n\
-\x20   let stored = match counts.get(\"FRESH-KEY\") { Some(n) => n, None => -1 };\n\
+\x20   let stored = match counts.get(\"FRESH-KEY\") { .Some(n) => n, .None => -1 };\n\
 \x20   print(f\"{first}|{second}|{stored}\");\n\
 }\n";
 
@@ -98,7 +98,7 @@ const REASSIGNED_PARAM_INGRESS_EXPECTED: &str = "1|1|2";
 
 fn reassigned_param_loop_source(frames: usize) -> String {
     format!(
-        "fn put(counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {{\n\
+        "fn put(var counts: HashMap<string, i64>, var key: string, amount: i64) -> i64 {{\n\
          \x20   key = (\"fresh\" + \"-key\").to_upper();\n\
          \x20   counts.insert(key, amount);\n\
          \x20   return counts.len();\n\

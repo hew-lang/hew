@@ -43,13 +43,13 @@ const MATCH_FIELD_CLONE_SCRIBBLE_SOURCE: &str = "\
 type Row { name: string, }\n\
 \n\
 fn make(n: i64) -> Option<Row> {\n\
-\x20   if n > 0 { Some(Row { name: \"g64-fieldload-heap\".to_upper() }) } else { None }\n\
+\x20   if n > 0 { .Some(Row { name: \"g64-fieldload-heap\".to_upper() }) } else { .None }\n\
 }\n\
 \n\
 fn run() {\n\
 \x20   let opt = make(1);\n\
 \x20   match opt {\n\
-\x20       Some(r) => { let name = r.name.to_upper(); if !name.is_empty() { print(\"m\"); } }\n\
+\x20       .Some(r) => { let name = r.name.to_upper(); if !name.is_empty() { print(\"m\"); } }\n\
 \x20       .None => { print(\"e\"); }\n\
 \x20   }\n\
 }\n\
@@ -66,13 +66,13 @@ const MATCH_FIELD_BARE_SCRIBBLE_SOURCE: &str = "\
 type Row { name: string, }\n\
 \n\
 fn make(n: i64) -> Option<Row> {\n\
-\x20   if n > 0 { Some(Row { name: \"g64-bare-fieldload\".to_upper() }) } else { None }\n\
+\x20   if n > 0 { .Some(Row { name: \"g64-bare-fieldload\".to_upper() }) } else { .None }\n\
 }\n\
 \n\
 fn run() {\n\
 \x20   let opt = make(1);\n\
 \x20   match opt {\n\
-\x20       Some(r) => { let name = r.name; if !name.is_empty() { print(\"m\"); } }\n\
+\x20       .Some(r) => { let name = r.name; if !name.is_empty() { print(\"m\"); } }\n\
 \x20       .None => { print(\"e\"); }\n\
 \x20   }\n\
 }\n\
@@ -91,14 +91,14 @@ fn match_field_clone_loop_source(frames: usize) -> String {
         "type Row {{ name: string, }}\n\
          \n\
          fn make(n: i64) -> Option<Row> {{\n\
-         \x20   if n > 0 {{ Some(Row {{ name: \"g64-fieldload-heap\".to_upper() }}) }} else {{ None }}\n\
+         \x20   if n > 0 {{ .Some(Row {{ name: \"g64-fieldload-heap\".to_upper() }}) }} else {{ .None }}\n\
          }}\n\
          \n\
          fn run_cycle(n: i64) -> i64 {{\n\
          \x20   let opt = make(n);\n\
          \x20   var got: i64 = 0;\n\
          \x20   match opt {{\n\
-         \x20       Some(r) => {{ let name = r.name.to_upper(); if !name.is_empty() {{ got = name.len(); }} }}\n\
+         \x20       .Some(r) => {{ let name = r.name.to_upper(); if !name.is_empty() {{ got = name.len(); }} }}\n\
          \x20       .None => {{}}\n\
          \x20   }}\n\
          \x20   got\n\

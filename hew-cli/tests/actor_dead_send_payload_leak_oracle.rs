@@ -116,15 +116,15 @@ fn parcel(n: i64) -> Parcel {{
 
 fn main() {{
     let sink = spawn Sink;
-    match await sink.die() {{
+    match sink.die() {{
         .Ok(_) => println("UNEXPECTED_REPLY"),
         .Err(_) => println("SINK_DEAD"),
     }}
     for i in 0..{iters} {{
-        sink.take_string(f"owned-payload-{{i}}".to_upper());
-        sink.take_record(parcel(i));
+        let _ = sink.take_string(f"owned-payload-{{i}}".to_upper());
+        let _ = sink.take_record(parcel(i));
         let items: Vec<string> = [f"item-{{i}}", "vector-heap-element".to_upper()];
-        sink.take_vec(items);
+        let _ = sink.take_vec(items);
         println(f"SENT:{{i}}");
     }}
     println("DONE");
@@ -165,13 +165,13 @@ fn main() {{
     let sink = spawn Sink;
     for i in 0..{iters} {{
         if i == {iters} / 2 {{
-            sink.die();
+            let _ = sink.die();
         }}
-        sink.take_string(f"racing-payload-{{i}}".to_upper());
+        let _ = sink.take_string(f"racing-payload-{{i}}".to_upper());
     }}
     sleep(200ms);
     for i in 0..{iters} {{
-        sink.take_string(f"post-crash-payload-{{i}}".to_upper());
+        let _ = sink.take_string(f"post-crash-payload-{{i}}".to_upper());
     }}
     println("RACE_DONE");
 }}

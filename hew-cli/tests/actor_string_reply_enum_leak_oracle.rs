@@ -90,9 +90,9 @@ fn actor_enum_reply_source(frames: usize) -> String {
          \x20   let name: string,\n\
          \x20   receive fn describe(suffix: string, sel: i64) -> Status {{\n\
          \x20       if sel % 2 == 0 {{\n\
-         \x20           Loaded(sel)\n\
+         \x20           .Loaded(sel)\n\
          \x20       }} else {{\n\
-         \x20           Described(name + suffix)\n\
+         \x20           .Described(name + suffix)\n\
          \x20       }}\n\
          \x20   }}\n\
          }}\n\
@@ -102,15 +102,15 @@ fn actor_enum_reply_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   var sink: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let r = await d.describe(\"-suffix\", i);\n\
+         \x20       let r = d.describe(\"-suffix\", i);\n\
          \x20       match r {{\n\
-         \x20           Ok(st) => {{\n\
+         \x20           .Ok(st) => {{\n\
          \x20               match st {{\n\
-         \x20                   Described(s) => {{ sink = sink + s.len(); }},\n\
-         \x20                   Loaded(v) => {{ sink = sink + v; }},\n\
+         \x20                   .Described(s) => {{ sink = sink + s.len(); }},\n\
+         \x20                   .Loaded(v) => {{ sink = sink + v; }},\n\
          \x20               }}\n\
          \x20           }},\n\
-         \x20           Err(_) => {{}},\n\
+         \x20           .Err(_) => {{}},\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -136,10 +136,10 @@ fn actor_string_concat_reply_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   var sink: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let r = await g.greet(\"-suffix\");\n\
+         \x20       let r = g.greet(\"-suffix\");\n\
          \x20       match r {{\n\
-         \x20           Ok(s) => {{ sink = sink + s.len(); }},\n\
-         \x20           Err(_) => {{}},\n\
+         \x20           .Ok(s) => {{ sink = sink + s.len(); }},\n\
+         \x20           .Err(_) => {{}},\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -164,10 +164,10 @@ fn actor_string_plain_reply_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   var sink: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       let r = await t.tag();\n\
+         \x20       let r = t.tag();\n\
          \x20       match r {{\n\
-         \x20           Ok(s) => {{ sink = sink + s.len(); }},\n\
-         \x20           Err(_) => {{}},\n\
+         \x20           .Ok(s) => {{ sink = sink + s.len(); }},\n\
+         \x20           .Err(_) => {{}},\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -190,9 +190,9 @@ fn result_enum_scalar_sibling_source(frames: usize) -> String {
          \n\
          fn describe(name: string, suffix: string, sel: i64) -> Result<Status, i64> {{\n\
          \x20   if sel % 2 == 0 {{\n\
-         \x20       Ok(Loaded(sel))\n\
+         \x20       .Ok(.Loaded(sel))\n\
          \x20   }} else {{\n\
-         \x20       Ok(Described(name + suffix))\n\
+         \x20       .Ok(.Described(name + suffix))\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -202,13 +202,13 @@ fn result_enum_scalar_sibling_source(frames: usize) -> String {
          \x20   while i < {frames} {{\n\
          \x20       let r = describe(\"widget\", \"-suffix\", i);\n\
          \x20       match r {{\n\
-         \x20           Ok(st) => {{\n\
+         \x20           .Ok(st) => {{\n\
          \x20               match st {{\n\
-         \x20                   Described(s) => {{ sink = sink + s.len(); }},\n\
-         \x20                   Loaded(v) => {{ sink = sink + v; }},\n\
+         \x20                   .Described(s) => {{ sink = sink + s.len(); }},\n\
+         \x20                   .Loaded(v) => {{ sink = sink + v; }},\n\
          \x20               }}\n\
          \x20           }},\n\
-         \x20           Err(_) => {{}},\n\
+         \x20           .Err(_) => {{}},\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\

@@ -46,8 +46,8 @@ fn mailbox_record_collection_loop_source(frames: usize) -> String {
          actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
-         \x20       var s: i64 = 0, \n\
-         \x20       for v in b.payload {{ s = s + v }}\n\
+         \x20       var s: i64 = 0;\n\
+         \x20       for v in b.payload {{ s = s + v; }}\n\
          \x20       seen = seen + s;\n\
          \x20   }}\n\
          \x20   receive fn total() -> i64 {{ seen }}\n\
@@ -58,12 +58,12 @@ fn mailbox_record_collection_loop_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
-         \x20       sink.take(b);\n\
+         \x20       let _ = sink.take(b);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.total() {{\n\
-         \x20       Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
-         \x20       Err(_e) => 1,\n\
+         \x20   match sink.total() {{\n\
+         \x20       .Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
+         \x20       .Err(_e) => 1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -78,8 +78,8 @@ fn mailbox_record_two_collections_loop_source(frames: usize) -> String {
          actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
-         \x20       var s: i64 = 0, \n\
-         \x20       for v in b.payload {{ s = s + v }}\n\
+         \x20       var s: i64 = 0;\n\
+         \x20       for v in b.payload {{ s = s + v; }}\n\
          \x20       for v in b.extra {{ s = s + v; }}\n\
          \x20       seen = seen + s;\n\
          \x20   }}\n\
@@ -91,12 +91,12 @@ fn mailbox_record_two_collections_loop_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2], extra: [i * 2, i * 3] }};\n\
-         \x20       sink.take(b);\n\
+         \x20       let _ = sink.take(b);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.total() {{\n\
-         \x20       Ok(v) => {{ if v < 0 {{ 75 }} else {{ 0 }} }},\n\
-         \x20       Err(_e) => 1,\n\
+         \x20   match sink.total() {{\n\
+         \x20       .Ok(v) => {{ if v < 0 {{ 75 }} else {{ 0 }} }},\n\
+         \x20       .Err(_e) => 1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -116,7 +116,7 @@ fn mailbox_record_borrow_only_slice_source(frames: usize) -> String {
          actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
-         \x20       seen = seen + b.payload.len(), \n\
+         \x20       seen = seen + b.payload.len();\n\
          \x20 }}\n\
          \x20   receive fn total() -> i64 {{ seen }}\n\
          }}\n\
@@ -126,12 +126,12 @@ fn mailbox_record_borrow_only_slice_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
-         \x20       sink.take(b);\n\
+         \x20       let _ = sink.take(b);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.total() {{\n\
-         \x20       Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
-         \x20       Err(_e) => 1,\n\
+         \x20   match sink.total() {{\n\
+         \x20       .Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
+         \x20       .Err(_e) => 1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -148,7 +148,7 @@ fn mailbox_record_borrow_only_vec_source(frames: usize) -> String {
          actor ProbeSink {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(b: Boxed) {{\n\
-         \x20       seen = seen + b.payload.len(), \n\
+         \x20       seen = seen + b.payload.len();\n\
          \x20 }}\n\
          \x20   receive fn total() -> i64 {{ seen }}\n\
          }}\n\
@@ -158,12 +158,12 @@ fn mailbox_record_borrow_only_vec_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
-         \x20       sink.take(b);\n\
+         \x20       let _ = sink.take(b);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.total() {{\n\
-         \x20       Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
-         \x20       Err(_e) => 1,\n\
+         \x20   match sink.total() {{\n\
+         \x20       .Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
+         \x20       .Err(_e) => 1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -185,8 +185,8 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
          \x20   var seen: i64,\n\
          \x20   var store: Vec<i64>,\n\
          \x20   receive fn take(b: Boxed) {{\n\
-         \x20       store = b.payload, \n\
-         \x20       seen = seen + store.len(), \n\
+         \x20       store = b.payload;\n\
+         \x20       seen = seen + store.len();\n\
          \x20 }}\n\
          \x20   receive fn total() -> i64 {{ seen }}\n\
          }}\n\
@@ -196,12 +196,12 @@ fn mailbox_record_retained_into_state_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let b = Boxed {{ payload: [i, i + 1, i + 2] }};\n\
-         \x20       sink.take(b);\n\
+         \x20       let _ = sink.take(b);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
-         \x20   match await sink.total() {{\n\
-         \x20       Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
-         \x20       Err(_e) => 1,\n\
+         \x20   match sink.total() {{\n\
+         \x20       .Ok(v) => {{ if v < 0 {{ 74 }} else {{ 0 }} }},\n\
+         \x20       .Err(_e) => 1,\n\
          \x20   }}\n\
          }}\n"
     )
@@ -229,12 +229,12 @@ const MAILBOX_RETAINED_CONTENT_SOURCE: &str = "type Boxed { payload: Vec<i64> }\
      \x20   var i: i64 = 0;\n\
      \x20   while i < 7 {\n\
      \x20       let b = Boxed { payload: [i * 10, i, i] };\n\
-     \x20       sink.take(b);\n\
+     \x20       let _ = sink.take(b);\n\
      \x20       i = i + 1;\n\
      \x20   }\n\
-     \x20   match await sink.peek() {\n\
-     \x20       Ok(v) => v,\n\
-     \x20       Err(_e) => 99,\n\
+     \x20   match sink.peek() {\n\
+     \x20       .Ok(v) => v,\n\
+     \x20       .Err(_e) => 99,\n\
      \x20   }\n\
      }\n";
 

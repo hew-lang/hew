@@ -21,7 +21,7 @@ type Dq {{}}\n\
 type Handle {{ raw: Dq, }}\n\
 impl Handle {{\n\
     fn value(self) -> i64 {{ 7 }}\n\
-    fn sink(self) {{ self.close(); }}\n\
+    fn sink(consume self) {{ self.close(); }}\n\
     fn close(consume self) {{ unsafe {{ hew_deque_free(self.raw) }}; print(\"C\"); }}\n\
 }}\n\
 extern \"C\" {{\n\
@@ -55,12 +55,12 @@ fn main() {{\n\
 const XML_STRING_TEMP_SOURCE: &str = "\
 import std.encoding.xml;\n\
 fn parse_result(s: string) -> Result<xml.Node, string> {\n\
-    if xml.is_wellformed(s) { Ok(xml.parse(s)) } else { Err(\"not well-formed\") }\n\
+    if xml.is_wellformed(s) { .Ok(xml.parse(s).expect(\"well-formed checked\")) } else { .Err(\"not well-formed\") }\n\
 }\n\
 fn main() {\n\
     match parse_result(\"<a><b>hi</b></a>\") {\n\
-        Ok(node) => { println(node.to_string()); node.close(); }\n\
-        Err(message) => println(message),\n\
+        .Ok(node) => { println(node.to_string()); node.close(); }\n\
+        .Err(message) => println(message),\n\
     }\n\
 }\n";
 
@@ -72,7 +72,7 @@ enum Pair {
     Nothing,
 }
 
-fn consume(pair: Pair, trigger: i64) -> i64 {
+fn consume(consume pair: Pair, trigger: i64) -> i64 {
     match pair {
         Pair.Both(node, text) => {
             node.close();
@@ -95,11 +95,11 @@ actor Crasher {
     let helper: Helper,
 
     receive fn run(trigger: i64) -> i64 {
-        let seed = match await helper.ping() {
+        let seed = match helper.ping() {
             .Ok(value) => value,
             .Err(_) => 0,
         };
-        let pair = Pair.Both(xml.parse("<x/>"), "hi");
+        let pair = Pair.Both(xml.parse("<x/>").expect("well-formed literal"), "hi");
         consume(pair, trigger) + seed
     }
 }
@@ -107,11 +107,11 @@ actor Crasher {
 fn main() {
     let helper = spawn Helper;
     let crasher = spawn Crasher(helper: helper);
-    match await crasher.run(0) {
+    match crasher.run(0) {
         .Ok(value) => println(f"ok={value}"),
         .Err(_) => println("bad"),
     }
-    match await crasher.run(1) {
+    match crasher.run(1) {
         .Ok(value) => println(f"unexpected={value}"),
         .Err(_) => println("handled-crash"),
     }
@@ -121,7 +121,7 @@ fn main() {
 
 const BYTES_MUTATING_HELPER_CRASH_SOURCE: &str = r#"
 fn clear_then_maybe_crash(trigger: i64) -> i64 {
-    let value: bytes = "owned-bytes".to_bytes();
+    var value: bytes = "owned-bytes".to_bytes();
     value.clear();
     if trigger != 0 {
         panic("crash after bytes.clear");
@@ -139,7 +139,7 @@ actor Runner {
     let gate: Gate,
 
     receive fn run(trigger: i64) -> i64 {
-        let seed = match await gate.tick() {
+        let seed = match gate.tick() {
             .Ok(value) => value,
             .Err(_) => 0,
         };
@@ -150,11 +150,11 @@ actor Runner {
 fn main() {
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
-    match await runner.run(0) {
+    match runner.run(0) {
         .Ok(value) => println(f"ok={value}"),
         .Err(_) => println("bad"),
     }
-    match await runner.run(1) {
+    match runner.run(1) {
         .Ok(value) => println(f"unexpected={value}"),
         .Err(_) => println("handled-crash"),
     }
@@ -163,7 +163,7 @@ fn main() {
 "#;
 
 const RETURNED_BYTES_LOAN_CRASH_SOURCE: &str = r#"
-fn push_then_maybe_crash(value: bytes, trigger: i64) {
+fn push_then_maybe_crash(var value: bytes, trigger: i64) {
     value.push(0x40 as u8);
     if trigger != 0 {
         panic("crash during returned bytes loan");
@@ -186,7 +186,7 @@ actor Runner {
     let gate: Gate,
 
     receive fn run(trigger: i64) -> i64 {
-        let seed = match await gate.tick() {
+        let seed = match gate.tick() {
             .Ok(value) => value,
             .Err(_) => 0,
         };
@@ -198,11 +198,11 @@ actor Runner {
 fn main() {
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
-    match await runner.run(0) {
+    match runner.run(0) {
         .Ok(value) => println(f"ok={value}"),
         .Err(_) => println("bad"),
     }
-    match await runner.run(1) {
+    match runner.run(1) {
         .Ok(value) => println(f"unexpected={value}"),
         .Err(_) => println("handled-crash"),
     }

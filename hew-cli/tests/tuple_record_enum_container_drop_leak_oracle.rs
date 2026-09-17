@@ -39,9 +39,9 @@ enum Slot {
 fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
     if i < 2 {
         let next = Holder { items: h.items, tag: f"tag-{i}" };
-        (next, Filled(i), 100 + i)
+        (next, .Filled(i), 100 + i)
     } else {
-        (h, Empty, 100 + i)
+        (h, .Empty, 100 + i)
     }
 }
 
@@ -134,9 +134,9 @@ enum Slot {
 fn step(h: Holder, i: i64) -> (Holder, Slot, i64) {
     if i < 2 {
         let next = Holder { items: h.items, tag: f"tag-{i}" };
-        (next, Filled(i), 100 + i)
+        (next, .Filled(i), 100 + i)
     } else {
-        (h, Empty, 100 + i)
+        (h, .Empty, 100 + i)
     }
 }
 

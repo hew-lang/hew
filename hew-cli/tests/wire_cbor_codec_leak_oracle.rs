@@ -296,8 +296,8 @@ fn anonymous_to_json_temp_round_trip_source(frames: usize) -> String {
          \x20   while i < {frames} {{\n\
          \x20       let p = Scalar {{ seq: i, flag: true }};\n\
          \x20       match Scalar.from_json(p.to_json()) {{\n\
-         \x20           Ok(back) => {{ total = total + back.seq; }},\n\
-         \x20           Err(_) => {{ total = total + 0; }},\n\
+         \x20           .Ok(back) => {{ total = total + back.seq; }},\n\
+         \x20           .Err(_) => {{ total = total + 0; }},\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -471,7 +471,7 @@ fn actor_enum_decode_source(frames: usize, message_expr: &str) -> String {
          actor Decoder {{ \n\
          \x20   let seq: i64,\n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
-         \x20       let back = Narrow.decode(raw), \n\
+         \x20       let back = Narrow.decode(raw);\n\
          \x20       match back {{ Narrow.A => 0, Narrow.B(n) => n }}\n\
          \x20   }}\n\
          }}\n\
@@ -483,8 +483,8 @@ fn actor_enum_decode_source(frames: usize, message_expr: &str) -> String {
          \x20       let w = {message_expr};\n\
          \x20       let raw = w.encode();\n\
          \x20       let a = spawn Decoder(seq: i);\n\
-         \x20       let r = await a.decode_it(raw);\n\
-         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       let r = a.decode_it(raw);\n\
+         \x20       match r {{ .Ok(v) => {{ total = total + v; }}, .Err(_) => {{ total = total + 1; }}, }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -560,7 +560,7 @@ fn actor_vec_owned_struct_decode_source(frames: usize, mismatch: bool) -> String
          actor Decoder {{ \n\
          \x20   let seq: i64, \n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
-         \x20       let bad = BatchBad.decode(raw), \n\
+         \x20       let bad = BatchBad.decode(raw);\n\
          \x20       bad.tail\n\
          \x20 }}\n\
          }}\n\
@@ -575,8 +575,8 @@ fn actor_vec_owned_struct_decode_source(frames: usize, mismatch: bool) -> String
          \x20       {build}\n\
          \x20       let raw = g.encode();\n\
          \x20       let a = spawn Decoder(seq: i);\n\
-         \x20       let r = await a.decode_it(raw);\n\
-         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       let r = a.decode_it(raw);\n\
+         \x20       match r {{ .Ok(v) => {{ total = total + v; }}, .Err(_) => {{ total = total + 1; }}, }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\
@@ -617,7 +617,7 @@ fn actor_vec_owned_enum_decode_source(frames: usize, mismatch: bool) -> String {
          actor Decoder {{ \n\
          \x20   let seq: i64, \n\
          \x20   receive fn decode_it(raw: bytes) -> i64 {{\n\
-         \x20       let bad = BagBad.decode(raw), \n\
+         \x20       let bad = BagBad.decode(raw);\n\
          \x20       bad.tail\n\
          \x20 }}\n\
          }}\n\
@@ -633,8 +633,8 @@ fn actor_vec_owned_enum_decode_source(frames: usize, mismatch: bool) -> String {
          \x20       {build}\n\
          \x20       let raw = g.encode();\n\
          \x20       let a = spawn Decoder(seq: i);\n\
-         \x20       let r = await a.decode_it(raw);\n\
-         \x20       match r {{ Ok(v) => {{ total = total + v; }}, Err(_) => {{ total = total + 1; }}, }}\n\
+         \x20       let r = a.decode_it(raw);\n\
+         \x20       match r {{ .Ok(v) => {{ total = total + v; }}, .Err(_) => {{ total = total + 1; }}, }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   total\n\

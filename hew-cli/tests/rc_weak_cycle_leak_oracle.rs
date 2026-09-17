@@ -18,28 +18,28 @@ type Node {{
 }}
 
 fn build_dead_graph() -> Weak<Node> {{
-    var root = Rc.new(Node {{ label: "r" + "oot", parent: None }});
+    var root = Rc.new(Node {{ label: "r" + "oot", parent: .None }});
     if root.strong_count() != 1 {{ panic("initial strong count"); }}
     if root.weak_count() != 0 {{ panic("initial weak count"); }}
 
     let weak = root.downgrade();
     if root.weak_count() != 1 {{ panic("downgrade count"); }}
 
-    root.set(Node {{ label: "b" + "ack", parent: Some(weak.clone()) }});
+    root.set(Node {{ label: "b" + "ack", parent: .Some(weak.clone()) }});
     if root.weak_count() != 2 {{ panic("first back-edge count"); }}
 
-    root.set(Node {{ label: "r" + "eplace", parent: Some(weak.clone()) }});
+    root.set(Node {{ label: "r" + "eplace", parent: .Some(weak.clone()) }});
     if root.weak_count() != 2 {{ panic("replacement release count"); }}
 
     match weak.upgrade() {{
-        Some(alias) => {{
+        .Some(alias) => {{
             if alias.strong_count() != 2 {{ panic("upgrade strong count"); }}
         }},
-        None => panic("live upgrade returned None"),
+        .None => panic("live upgrade returned None"),
     }}
     if root.strong_count() != 1 {{ panic("upgraded owner was not released"); }}
 
-    root.set(Node {{ label: "f" + "inal", parent: None }});
+    root.set(Node {{ label: "f" + "inal", parent: .None }});
     if root.weak_count() != 1 {{ panic("displaced back-edge was not released"); }}
     weak
 }}
@@ -49,7 +49,7 @@ fn main() {{
     for _ in 0..{frames} {{
         let weak = build_dead_graph();
         match weak.upgrade() {{
-            Some(_) => panic("dead upgrade returned Some"),
+            .Some(_) => panic("dead upgrade returned Some"),
             .None => {{
                 dead = dead + 1;
             }},

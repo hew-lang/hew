@@ -5,28 +5,13 @@
 //! and manipulate deques through the `std::deque` module.
 
 use crate::internal::types::HEW_TRAP_INDEX_OUT_OF_BOUNDS;
-use crate::trap_code::runtime_bounds_trap;
+use crate::trap_code::{runtime_bounds_trap, write_stderr};
 use std::collections::VecDeque;
 
 /// Opaque handle to a `VecDeque<i64>`.
 #[derive(Debug)]
 pub struct HewDeque {
     inner: VecDeque<i64>,
-}
-
-/// Write a message to stderr.
-///
-/// # Safety
-///
-/// `msg` must be valid for reads for its full length.
-unsafe fn write_stderr(msg: &[u8]) {
-    // SAFETY: msg.as_ptr() is valid for msg.len() bytes, and fd 2 is stderr.
-    unsafe {
-        #[cfg(not(target_os = "windows"))]
-        libc::write(2, msg.as_ptr().cast(), msg.len());
-        #[cfg(target_os = "windows")]
-        libc::write(2, msg.as_ptr().cast(), msg.len() as core::ffi::c_uint);
-    }
 }
 
 /// Emit a deque empty-pop diagnostic and route through the trap seam.

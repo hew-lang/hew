@@ -213,6 +213,8 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
         std::process::abort();
     };
+    #[cfg(not(target_arch = "wasm32"))]
+    let code = crate::exit_status::to_process_exit_byte(i64::from(code));
 
     if let Err(error) = std::io::stdout().flush() {
         eprintln!("hew_exit: failed to flush stdout before exit: {error}");

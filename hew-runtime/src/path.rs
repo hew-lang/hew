@@ -174,25 +174,75 @@ pub unsafe extern "C" fn hew_glob(pattern: *const HewString) -> *mut HewGlobResu
     }
 }
 
-/// Perform the POSIX `glob(3)` expansion and return the matched strings.
+/// Perform the glob expansion and return the matched strings.
 ///
-/// Uses `libc::glob` on unix targets.
+/// Uses `libc::glob` on unix targets and the `glob` crate on Windows, which
+/// implements the same recursive (`**`) and single-level (`*`, `?`, `[...]`)
+/// pattern syntax `std/path.hew` documents without a hand-rolled
+/// FindFirstFileW/FindNextFileW walk.
 fn glob_expand(pattern: &CStr) -> GlobExpansion {
     #[cfg(target_family = "unix")]
     {
         glob_expand_unix(pattern)
     }
-    // SHIM: Windows glob not yet implemented.  The symbols stay present and
-    // link-clean, and the gap is RECORDED (fail-closed: the expansion reports
-    // an explicit failure, so it can never be read as "no matches").
-    // WHEN obsolete: when a Windows target gains an end-to-end path/glob test
-    // coverage.  WHAT the real solution looks like: FindFirstFileW/FindNextFileW
-    // expansion with the same HewGlobResult ownership contract.
     #[cfg(not(target_family = "unix"))]
     {
-        let _ = pattern;
-        Err("hew_glob: glob expansion is not implemented on this platform".to_owned())
+        glob_expand_windows(pattern)
     }
+}
+
+/// Expand `pattern` using the `glob` crate, matching the unix path's contract:
+/// results are the matched paths in sorted order, and an entry that cannot be
+/// read (rather than simply not matching) aborts the whole expansion.
+#[cfg(not(target_family = "unix"))]
+fn glob_expand_windows(pattern: &CStr) -> GlobExpansion {
+    let pattern_text = pattern.to_string_lossy();
+
+    // A pattern with no glob metacharacters is a literal path. POSIX
+    // `glob(3)` returns that path unchanged (with a check for existence),
+    // rather than re-deriving it by walking the filesystem, so its separators
+    // and case are exactly the caller's. The `glob` crate instead reconstructs
+    // matches component-by-component from a directory walk, which normalizes
+    // separators to the OS-native `\` and can't reproduce a caller's own
+    // mixed-separator literal (e.g. `path.combine`'s `/`-joined temp path).
+    // Match the POSIX contract exactly for the literal case instead of
+    // reporting a spuriously different string back.
+    if !pattern_text.contains(['*', '?', '[']) {
+        return Ok(if std::path::Path::new(pattern_text.as_ref()).exists() {
+            vec![pattern_text.into_owned()]
+        } else {
+            Vec::new()
+        });
+    }
+
+    let paths = match glob::glob(&pattern_text) {
+        Ok(paths) => paths,
+        Err(err) => {
+            return Err(format!(
+                "hew_glob: expansion of '{pattern_text}' failed: invalid pattern: {err}"
+            ));
+        }
+    };
+
+    let mut results: Vec<String> = Vec::new();
+    for entry in paths {
+        match entry {
+            Ok(path) => match path.to_str() {
+                Some(s) => results.push(s.replace('\\', "/")),
+                None => {
+                    return Err(format!(
+                        "hew_glob: expansion of '{pattern_text}' matched a non-UTF-8 path"
+                    ));
+                }
+            },
+            Err(err) => {
+                return Err(format!(
+                    "hew_glob: expansion of '{pattern_text}' aborted: {err}"
+                ));
+            }
+        }
+    }
+    Ok(results)
 }
 
 #[cfg(target_family = "unix")]
@@ -553,23 +603,35 @@ mod tests {
         text
     }
 
-    // Pins the non-unix SHIM in glob_expand: matching files exist, but the
-    // unimplemented platform reports an explicit expansion failure rather than
-    // zero matches (fail-closed: never readable as a fabricated "no matches").
+    // Windows glob is implemented via the `glob` crate (glob_expand_windows)
+    // and normalizes matched paths to '/' separators, matching the POSIX walk.
     #[cfg(not(target_family = "unix"))]
     #[test]
-    fn glob_unsupported_platform_reports_failure_not_no_matches() {
+    fn glob_matches_files_on_windows_with_forward_slashes() {
         let dir = test_dir("glob_match");
         std::fs::write(dir.join("a.txt"), "").unwrap();
-        let pattern = format!("{}/*.txt", dir.to_str().unwrap());
+        let pattern = format!("{}/*.txt", dir.to_str().unwrap().replace('\\', "/"));
         let cp = ManagedString::new(pattern);
         // SAFETY: cp is a live managed string.
         let res = unsafe { hew_glob(cp.as_ptr()) };
         assert!(!res.is_null());
         // SAFETY: res is a live HewGlobResult.
-        assert!(!unsafe { hew_glob_is_valid(res) });
-        assert!(glob_error_text(res).contains("glob expansion is not implemented"));
-        // SAFETY: res is live.
+        assert!(unsafe { hew_glob_is_valid(res) });
+        // SAFETY: res is a live HewGlobResult.
+        assert_eq!(unsafe { hew_glob_count(res) }, 1);
+        // SAFETY: res is live; index 0 is valid.
+        let p0 = unsafe { hew_glob_get(res, 0) };
+        assert!(!p0.is_null());
+        // SAFETY: p0 is a live managed string from string_from_str.
+        let matched = unsafe { string_as_str(p0) }.to_owned();
+        assert!(
+            !matched.contains('\\'),
+            "expected '/' separators, got {matched}"
+        );
+        assert!(matched.ends_with("a.txt"));
+        // SAFETY: p0 is a live managed string from string_from_str.
+        unsafe { string_release(p0) };
+        // SAFETY: res is a live HewGlobResult.
         unsafe { hew_glob_free(res) };
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -583,21 +645,11 @@ mod tests {
         // SAFETY: res is a live HewGlobResult.
         let count = unsafe { hew_glob_count(res) };
         assert_eq!(count, 0);
-        #[cfg(target_family = "unix")]
-        {
-            // A completed POSIX walk that matched nothing is a success.
-            // SAFETY: res is a live HewGlobResult.
-            assert!(unsafe { hew_glob_is_valid(res) });
-            assert_eq!(glob_error_text(res), "");
-        }
-        #[cfg(not(target_family = "unix"))]
-        {
-            // The non-Unix shim cannot perform the walk, so zero paths is an
-            // explicit unsupported-platform failure, not "no matches".
-            // SAFETY: res is a live HewGlobResult.
-            assert!(!unsafe { hew_glob_is_valid(res) });
-            assert!(glob_error_text(res).contains("glob expansion is not implemented"));
-        }
+        // Zero matches is a valid, error-free walk on every platform now
+        // that Windows glob support is implemented.
+        // SAFETY: res is a live HewGlobResult.
+        assert!(unsafe { hew_glob_is_valid(res) });
+        assert_eq!(glob_error_text(res), "");
         // SAFETY: res is live.
         unsafe { hew_glob_free(res) };
     }

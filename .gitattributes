@@ -28,3 +28,9 @@
 
 # File-read fixtures include empty, NUL and invalid UTF-8 byte sequences.
 /tests/core-acceptance/fixtures/file-resources/*.bin -text
+
+# core-acceptance case manifests carry expected stdout/stderr as literal
+# TOML strings (including triple-quoted multi-line blocks); a CRLF checkout
+# would embed \r into an expectation compared byte-for-byte against the
+# program's LF-only output.
+/tests/core-acceptance/cases/*.toml text eol=lf

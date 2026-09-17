@@ -1399,6 +1399,7 @@ non-declarable = [
   "hew_hashmap_visit_close",
   "hew_hashset_visit_close",
   "hew_native_runtime_finish",
+  "hew_process_exit_byte",
   "hew_reply_channel_new_native",
   "hew_reply_channel_poll_native",
   "hew_reply_channel_status_native",

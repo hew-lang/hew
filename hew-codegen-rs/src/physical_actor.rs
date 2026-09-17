@@ -471,7 +471,27 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         status: IntValue<'ctx>,
     ) -> CodegenResult<IntValue<'ctx>> {
         if !self.needs_process_runtime() {
-            return Ok(status);
+            // No actors, spawns or other process-runtime dependency: skip
+            // `hew_native_runtime_finish` (it would pull in the scheduler for
+            // a program that never needs it), but the returned status is
+            // still this program's process exit code, so it still needs the
+            // portable byte rule (HEW-SPEC-2026 5.8; see
+            // `exit_status::to_process_exit_byte`'s doc for why every native
+            // `main`-return path applies it, not only `exit()`).
+            let byte_status = get_or_declare_external(
+                &self.llvm,
+                "hew_process_exit_byte",
+                self.ctx
+                    .i32_type()
+                    .fn_type(&[self.ctx.i32_type().into()], false),
+            )?;
+            return builder
+                .build_call(byte_status, &[status.into()], "runtime.exit_byte")
+                .llvm_ctx("apply the portable exit-status byte rule")?
+                .try_as_basic_value()
+                .basic()
+                .map(BasicValueEnum::into_int_value)
+                .ok_or_else(|| CodegenError::FailClosed("exit byte rule returned void".into()));
         }
         let finish = get_or_declare_external(
             &self.llvm,

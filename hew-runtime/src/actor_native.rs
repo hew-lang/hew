@@ -124,7 +124,17 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
     let shutdown_status = crate::shutdown::hew_shutdown_wait();
     crate::scheduler::hew_runtime_cleanup_after_main();
     if source_status != 0 {
-        source_status
+        // A native `main` return is the process exit code directly (unlike
+        // the `exit()` builtin, it never passes through `hew_exit`), so it
+        // needs the same portable byte truncation applied here.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            crate::exit_status::to_process_exit_byte(i64::from(source_status))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            source_status
+        }
     } else if shutdown_status != 0 {
         1
     } else {

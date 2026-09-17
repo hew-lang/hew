@@ -6,10 +6,6 @@
 // tail before the worker can activate the Runnable sibling.
 import std.channel;
 
-extern "C" {
-    fn usleep(usec: i32) -> i32;
-}
-
 actor Busy {
     receive fn work(_n: i64) {
         _n;
@@ -21,7 +17,7 @@ actor Stopper {
         let _ = sup.busy.work(1);
         supervisor_stop(sup);
         ready.send(42);
-        let _ = unsafe { usleep(200000) };
+        sleep(200ms);
     }
 }
 

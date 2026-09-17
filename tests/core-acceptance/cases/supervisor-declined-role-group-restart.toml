@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-declined-role-group-restart"
+intent = "A `temporary` child this supervisor declined to restart is not resurrected by a sibling's `one_for_all` group restart."
+source = "cases/supervisor-declined-role-group-restart.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "a declined role stays dead through a sibling group restart\n"
+stderr = "hew: failure: UserPanic (212): declined child\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): declined child\nhew: actor crash in Worker.fail (actor 2): UserPanic\n"
+exit = 1

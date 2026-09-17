@@ -477,15 +477,8 @@ jobs:
       - name: Run C-ABI crate tests
         run: make test-cabi
 
-      # Native acceptance does not run on either macOS arch yet. A restarted
-      # nested supervisor role can be unreachable under load (#3417, #3419):
-      # not arch-specific — Linux reproduces it under saturation — but these
-      # are the slowest hosts in the gate, so they hit it on ordinary runs.
-      # Only `supervisor-nested-roles` and `supervisor-mixed-strategies` fail;
-      # the other 2078 cases pass here, and that coverage is what this
-      # exception costs. The ledger cannot express a platform-scoped row
-      # (#3421), which is why this is a step condition rather than a ratchet
-      # entry. Restore the step for both arches when #3417 closes.
+      - name: Run native acceptance
+        run: make core-acceptance
 
       - name: Upload test reports
         if: always()

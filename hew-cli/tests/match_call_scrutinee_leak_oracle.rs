@@ -45,7 +45,7 @@ use support::{describe_output, require_codegen};
 fn bytes_scrutinee_loop_source(frames: usize) -> String {
     format!(
         "fn f() -> Result<bytes, string> {{\n\
-         \x20   Ok(\"g2429-bytes-payload\".to_bytes())\n\
+         \x20   .Ok(\"g2429-bytes-payload\".to_bytes())\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -53,8 +53,8 @@ fn bytes_scrutinee_loop_source(frames: usize) -> String {
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match f() {{\n\
-         \x20           Ok(b) => {{ total = total + b.len(); }}\n\
-         \x20           Err(e) => {{}}\n\
+         \x20           .Ok(b) => {{ total = total + b.len(); }}\n\
+         \x20           .Err(e) => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -67,7 +67,7 @@ fn bytes_scrutinee_loop_source(frames: usize) -> String {
 fn string_scrutinee_loop_source(frames: usize) -> String {
     format!(
         "fn f() -> Result<string, string> {{\n\
-         \x20   Ok(\"g2429-string-payload\".to_upper())\n\
+         \x20   .Ok(\"g2429-string-payload\".to_upper())\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -75,8 +75,8 @@ fn string_scrutinee_loop_source(frames: usize) -> String {
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match f() {{\n\
-         \x20           Ok(b) => {{ total = total + b.len(); }}\n\
-         \x20           Err(e) => {{}}\n\
+         \x20           .Ok(b) => {{ total = total + b.len(); }}\n\
+         \x20           .Err(e) => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -90,7 +90,7 @@ fn string_scrutinee_loop_source(frames: usize) -> String {
 fn err_arm_loop_source(frames: usize) -> String {
     format!(
         "fn f(n: i64) -> Result<i64, string> {{\n\
-         \x20   if n >= 0 {{ Err(\"g2429-err-payload\".to_upper()) }} else {{ Ok(n) }}\n\
+         \x20   if n >= 0 {{ .Err(\"g2429-err-payload\".to_upper()) }} else {{ .Ok(n) }}\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -98,8 +98,8 @@ fn err_arm_loop_source(frames: usize) -> String {
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match f(i) {{\n\
-         \x20           Ok(v) => {{}}\n\
-         \x20           Err(e) => {{ if !e.is_empty() {{ hits = hits + 1; }} }}\n\
+         \x20           .Ok(v) => {{}}\n\
+         \x20           .Err(e) => {{ if !e.is_empty() {{ hits = hits + 1; }} }}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -118,7 +118,7 @@ fn composite_payload_loop_source(frames: usize) -> String {
          }}\n\
          \n\
          fn f(n: i64) -> Result<Row, string> {{\n\
-         \x20   Ok(Row {{ name: \"g2429-row-payload\".to_upper(), id: n }})\n\
+         \x20   .Ok(Row {{ name: \"g2429-row-payload\".to_upper(), id: n }})\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -126,8 +126,8 @@ fn composite_payload_loop_source(frames: usize) -> String {
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match f(i) {{\n\
-         \x20           Ok(r) => {{ total = total + r.id; }}\n\
-         \x20           Err(e) => {{}}\n\
+         \x20           .Ok(r) => {{ total = total + r.id; }}\n\
+         \x20           .Err(e) => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -141,7 +141,7 @@ fn composite_payload_loop_source(frames: usize) -> String {
 fn continue_loop_source(frames: usize) -> String {
     format!(
         "fn f() -> Result<bytes, string> {{\n\
-         \x20   Ok(\"g2429-continue-payload\".to_bytes())\n\
+         \x20   .Ok(\"g2429-continue-payload\".to_bytes())\n\
          }}\n\
          \n\
          fn main() -> i64 {{\n\
@@ -150,8 +150,8 @@ fn continue_loop_source(frames: usize) -> String {
          \x20   while i < {frames} {{\n\
          \x20       i = i + 1;\n\
          \x20       match f() {{\n\
-         \x20           Ok(b) => {{ if b.len() > 3 {{ continue; }} }}\n\
-         \x20           Err(e) => {{}}\n\
+         \x20           .Ok(b) => {{ if b.len() > 3 {{ continue; }} }}\n\
+         \x20           .Err(e) => {{}}\n\
          \x20       }}\n\
          \x20       seen = seen + 1;\n\
          \x20   }}\n\
@@ -166,15 +166,15 @@ fn continue_loop_source(frames: usize) -> String {
 fn early_return_loop_source(frames: usize) -> String {
     format!(
         "fn f() -> Result<bytes, string> {{\n\
-         \x20   Ok(\"g2429-return-payload\".to_bytes())\n\
+         \x20   .Ok(\"g2429-return-payload\".to_bytes())\n\
          }}\n\
          \n\
          fn run(cap: i64) -> i64 {{\n\
          \x20   var i = 0;\n\
          \x20   while i < cap {{\n\
          \x20       match f() {{\n\
-         \x20           Ok(b) => {{ if b.len() == 20 && i == cap - 1 {{ return i; }} }}\n\
-         \x20           Err(e) => {{}}\n\
+         \x20           .Ok(b) => {{ if b.len() == 20 && i == cap - 1 {{ return i; }} }}\n\
+         \x20           .Err(e) => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -202,8 +202,8 @@ fn tls_read_loop_source(frames: usize) -> String {
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match tls.read(stream, 16) {{\n\
-         \x20           Ok(data) => {{ let n = data.len(); }}\n\
-         \x20           Err(e) => {{ errs = errs + 1; }}\n\
+         \x20           .Ok(data) => {{ let n = data.len(); }}\n\
+         \x20           .Err(e) => {{ errs = errs + 1; }}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -220,18 +220,18 @@ fn tls_read_loop_source(frames: usize) -> String {
 /// release stacking on a second release) aborts under the poisoned allocator.
 const LAST_ITERATION_BREAK_SCRIBBLE_SOURCE: &str = "\
 fn f() -> Result<string, string> {\n\
-\x20   Ok(\"g2429-scribble-payload\".to_upper())\n\
+\x20   .Ok(\"g2429-scribble-payload\".to_upper())\n\
 }\n\
 \n\
 fn main() {\n\
 \x20   var i = 0;\n\
 \x20   while i < 3 {\n\
 \x20       match f() {\n\
-\x20           Ok(b) => {\n\
+\x20           .Ok(b) => {\n\
 \x20               print(\"o\");\n\
 \x20               if i == 2 { break; }\n\
 \x20           }\n\
-\x20           Err(e) => { print(\"e\"); }\n\
+\x20           .Err(e) => { print(\"e\"); }\n\
 \x20       }\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
@@ -241,13 +241,13 @@ fn main() {\n\
 /// back before the release.
 const SINGLE_MATCH_SCRIBBLE_SOURCE: &str = "\
 fn f() -> Result<bytes, string> {\n\
-\x20   Ok(\"g2429-single\".to_bytes())\n\
+\x20   .Ok(\"g2429-single\".to_bytes())\n\
 }\n\
 \n\
 fn main() {\n\
 \x20   match f() {\n\
-\x20       Ok(b) => { if b.len() == 12 { print(\"m\"); } }\n\
-\x20       Err(e) => { print(\"e\"); }\n\
+\x20       .Ok(b) => { if b.len() == 12 { print(\"m\"); } }\n\
+\x20       .Err(e) => { print(\"e\"); }\n\
 \x20   }\n\
 }\n";
 

@@ -32,14 +32,14 @@ use support::{describe_output, require_codegen};
 /// binder. Slope 47 pre-fix.
 fn letelse_option_string_loop_source(frames: usize) -> String {
     format!(
-        "fn f() -> Option<string> {{ Some(\"g2429-letelse-string\".to_upper()) }}\n\
+        "fn f() -> Option<string> {{ .Some(\"g2429-letelse-string\".to_upper()) }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       i = i + 1;\n\
-         \x20       let Some(b) = f() else {{ continue; }};\n\
+         \x20       let .Some(b) = f() else {{ continue; }};\n\
          \x20       total = total + b.len();\n\
          \x20   }}\n\
          \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
@@ -50,14 +50,14 @@ fn letelse_option_string_loop_source(frames: usize) -> String {
 /// `Result<bytes, _>` payload unwrapped by `let Ok(b) = … else { continue }`.
 fn letelse_result_bytes_loop_source(frames: usize) -> String {
     format!(
-        "fn f() -> Result<bytes, string> {{ Ok(\"g2429-letelse-bytes\".to_bytes()) }}\n\
+        "fn f() -> Result<bytes, string> {{ .Ok(\"g2429-letelse-bytes\".to_bytes()) }}\n\
          \n\
          fn main() -> i64 {{\n\
          \x20   var total = 0;\n\
          \x20   var i = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       i = i + 1;\n\
-         \x20       let Ok(b) = f() else {{ continue; }};\n\
+         \x20       let .Ok(b) = f() else {{ continue; }};\n\
          \x20       total = total + b.len();\n\
          \x20   }}\n\
          \x20   if total > 0 {{ 0 }} else {{ 1 }}\n\
@@ -70,14 +70,14 @@ fn letelse_result_bytes_loop_source(frames: usize) -> String {
 /// divergent-else release fires (care point B).
 fn letelse_divergent_edge_loop_source(frames: usize) -> String {
     format!(
-        "fn f() -> Option<string> {{ None }}\n\
+        "fn f() -> Option<string> {{ .None }}\n\
          \n\
          fn body() -> i64 {{\n\
          \x20   var misses = 0;\n\
          \x20   var i = 0;\n\
          \x20   while i < 64 {{\n\
          \x20       i = i + 1;\n\
-         \x20       let Some(b) = f() else {{ misses = misses + 1; continue; }};\n\
+         \x20       let .Some(b) = f() else {{ misses = misses + 1; continue; }};\n\
          \x20       misses = misses + b.len();\n\
          \x20   }}\n\
          \x20   misses\n\
@@ -101,16 +101,16 @@ fn letelse_divergent_edge_loop_source(frames: usize) -> String {
 /// drop the FULL temp once. A divergent-edge double free or under-drop is
 /// caught here: clean exit + verbatim output required.
 const DIVERGENT_ELSE_SCRIBBLE_SOURCE: &str = "\
-fn some_f() -> Option<string> { Some(\"g2429-letelse-taken\".to_upper()) }\n\
-fn none_f() -> Option<string> { None }\n\
+fn some_f() -> Option<string> { .Some(\"g2429-letelse-taken\".to_upper()) }\n\
+fn none_f() -> Option<string> { .None }\n\
 \n\
 fn use_return() -> i64 {\n\
-\x20   let Some(b) = some_f() else { return 0; };\n\
+\x20   let .Some(b) = some_f() else { return 0; };\n\
 \x20   b.len()\n\
 }\n\
 \n\
 fn miss_return() -> i64 {\n\
-\x20   let Some(b) = none_f() else { return 7; };\n\
+\x20   let .Some(b) = none_f() else { return 7; };\n\
 \x20   b.len()\n\
 }\n\
 \n\
@@ -119,7 +119,7 @@ fn loop_continue() -> i64 {\n\
 \x20   var i = 0;\n\
 \x20   while i < 3 {\n\
 \x20       i = i + 1;\n\
-\x20       let Some(b) = some_f() else { continue; };\n\
+\x20       let .Some(b) = some_f() else { continue; };\n\
 \x20       seen = seen + b.len();\n\
 \x20   }\n\
 \x20   seen\n\
@@ -136,11 +136,11 @@ fn main() {\n\
 /// released once at scope exit, read back verbatim.
 const SINGLE_LETELSE_SCRIBBLE_SOURCE: &str = "\
 fn f() -> Option<string> {\n\
-\x20   Some(\"g2429-letelse-single\".to_upper())\n\
+\x20   .Some(\"g2429-letelse-single\".to_upper())\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let Some(b) = f() else { return; };\n\
+\x20   let .Some(b) = f() else { return; };\n\
 \x20   if b.len() == 20 { print(\"m\"); }\n\
 }\n";
 

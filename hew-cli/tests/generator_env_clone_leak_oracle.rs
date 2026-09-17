@@ -161,8 +161,8 @@ fn upgraded(edge: Weak<i64>) -> i64 {
     }
 }
 
-fn factory(c: Capture) -> fn() -> Generator<i64, ()> {
-    || {
+fn factory(consume c: Capture) -> fn() -> Generator<i64, ()> {
+    move || {
         let captured = c;
         gen {
             yield captured.label.len() + captured.values[0] + captured.root.get();
@@ -512,7 +512,7 @@ fn main() {
             data: "bytes-param".to_bytes(),
             pair: ("tuple-param".to_upper(), frame),
         };
-        let tree = Node(Leaf(frame), Leaf(frame + 1));
+        let tree = Tree.Node(Tree.Leaf(frame), Tree.Leaf(frame + 1));
         for value in streamer.emit(payload, tree, 3) {
             total = total + value;
         }
@@ -521,7 +521,7 @@ fn main() {
             data: "bytes-param".to_bytes(),
             pair: ("tuple-param".to_upper(), frame),
         };
-        let cancelled_tree = Node(Leaf(frame), Leaf(frame + 1));
+        let cancelled_tree = Tree.Node(Tree.Leaf(frame), Tree.Leaf(frame + 1));
         for value in streamer.endless(cancelled, cancelled_tree) {
             total = total + value;
             break;
@@ -581,9 +581,9 @@ fn main() {
         data: "bytes-param".to_bytes(),
         pair: ("tuple-param".to_upper(), 0),
     };
-    let tree = Node(Leaf(0), Leaf(1));
+    let tree = Tree.Node(Tree.Leaf(0), Tree.Leaf(1));
     let stream = streamer.endless(payload, tree);
-    let first = await stream.recv();
+    let first = stream.recv();
     match first {
         .Some(value) => print(f"{value}:"),
         .None => print("missing:"),

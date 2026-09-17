@@ -23,7 +23,7 @@
 //!   excludes the composite on that path; the poisoned allocator proves no
 //!   double-free.
 //! - the Item A / #2743 interaction: a consumed enum passed as an inline
-//!   TEMPORARY (`ef(Ok("a" + "b"))`) is dropped by the callee, NOT the caller —
+//!   TEMPORARY (`ef(.Ok("a" + "b"))`) is dropped by the callee, NOT the caller —
 //!   the caller mint is borrow-gated and stays silent, so the two paths are
 //!   mutually exclusive (single drop, no double-free).
 
@@ -41,11 +41,11 @@ use support::{describe_output, require_codegen};
 /// drops the shell exactly once. Passed a NAMED scrutinee. `ef` returns 2.
 fn result_named_consume_source(frames: usize) -> String {
     format!(
-        "fn ef(e: Result<string, string>) -> i64 {{ match e {{ Ok(x) => 2, Err(y) => 3 }} }}\n\
+        "fn ef(e: Result<string, string>) -> i64 {{ match e {{ .Ok(x) => 2, .Err(y) => 3 }} }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       let e: Result<string, string> = Ok(\"a\" + \"b\");\n\
+         \x20       let e: Result<string, string> = .Ok(\"a\" + \"b\");\n\
          \x20       total = total + ef(e);\n\
          \x20   }}\n\
          \x20   if total != {frames} * 2 {{ return 73; }}\n\
@@ -59,11 +59,11 @@ fn result_named_consume_source(frames: usize) -> String {
 /// drops the shell — single release, no double-free.
 fn result_temp_consume_source(frames: usize) -> String {
     format!(
-        "fn ef(e: Result<string, string>) -> i64 {{ match e {{ Ok(x) => 2, Err(y) => 3 }} }}\n\
+        "fn ef(e: Result<string, string>) -> i64 {{ match e {{ .Ok(x) => 2, .Err(y) => 3 }} }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       total = total + ef(Ok(\"a\" + \"b\"));\n\
+         \x20       total = total + ef(.Ok(\"a\" + \"b\"));\n\
          \x20   }}\n\
          \x20   if total != {frames} * 2 {{ return 73; }}\n\
          \x20   0\n\
@@ -76,7 +76,7 @@ fn result_temp_consume_source(frames: usize) -> String {
 fn user_enum_consume_source(frames: usize) -> String {
     format!(
         "enum Msg {{ Text(string), Code(i64) }}\n\
-         fn handle(m: Msg) -> i64 {{ match m {{ Text(s) => 1, Code(n) => n }} }}\n\
+         fn handle(m: Msg) -> i64 {{ match m {{ .Text(s) => 1, .Code(n) => n }} }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
@@ -94,11 +94,11 @@ fn user_enum_consume_source(frames: usize) -> String {
 /// the composite on the move-out path. Content-pinned: `s == "ab"` (len 2).
 fn move_out_source(frames: usize) -> String {
     format!(
-        "fn ef(e: Result<string, string>) -> string {{ match e {{ Ok(x) => x, Err(y) => y }} }}\n\
+        "fn ef(e: Result<string, string>) -> string {{ match e {{ .Ok(x) => x, .Err(y) => y }} }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       let s = ef(Ok(\"a\" + \"b\"));\n\
+         \x20       let s = ef(.Ok(\"a\" + \"b\"));\n\
          \x20       total = total + s.len();\n\
          \x20   }}\n\
          \x20   if total != {frames} * 2 {{ return 75; }}\n\
@@ -116,12 +116,12 @@ fn move_out_source(frames: usize) -> String {
 /// path. `ef` per iteration: Ok yields "ab" (2), Err yields "err" (3).
 fn mixed_move_out_and_read_source(frames: usize) -> String {
     format!(
-        "fn ef(e: Result<string, string>) -> string {{ match e {{ Ok(x) => x, Err(y) => \"e\" + \"rr\" }} }}\n\
+        "fn ef(e: Result<string, string>) -> string {{ match e {{ .Ok(x) => x, .Err(y) => \"e\" + \"rr\" }} }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       let s = ef(Ok(\"a\" + \"b\"));\n\
-         \x20       let t = ef(Err(\"c\" + \"d\"));\n\
+         \x20       let s = ef(.Ok(\"a\" + \"b\"));\n\
+         \x20       let t = ef(.Err(\"c\" + \"d\"));\n\
          \x20       total = total + s.len() + t.len();\n\
          \x20   }}\n\
          \x20   if total != {frames} * 5 {{ return 76; }}\n\
@@ -140,14 +140,14 @@ fn move_out_via_let_share_source(frames: usize) -> String {
     format!(
         "fn ef(e: Result<string, string>) -> string {{\n\
          \x20   match e {{\n\
-         \x20       Ok(x) => {{ let s = x; s }},\n\
-         \x20       Err(y) => y\n\
+         \x20       .Ok(x) => {{ let s = x; s }},\n\
+         \x20       .Err(y) => y\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       let s = ef(Ok(\"a\" + \"b\"));\n\
+         \x20       let s = ef(.Ok(\"a\" + \"b\"));\n\
          \x20       total = total + s.len();\n\
          \x20   }}\n\
          \x20   if total != {frames} * 2 {{ return 77; }}\n\
@@ -202,24 +202,24 @@ fn payload_forward_source(frames: usize) -> String {
          \x20   v.len() + s.len()\n\
          }}\n\
          fn forward_last(e: Result<string, string>) -> i64 {{\n\
-         \x20   match e {{ Ok(x) => stash(x), Err(y) => y.len() }}\n\
+         \x20   match e {{ .Ok(x) => stash(x), .Err(y) => y.len() }}\n\
          }}\n\
          fn forward_live(e: Result<string, string>) -> i64 {{\n\
-         \x20   match e {{ Ok(x) => stash_after(x), Err(y) => y.len() }}\n\
+         \x20   match e {{ .Ok(x) => stash_after(x), .Err(y) => y.len() }}\n\
          }}\n\
          fn inspect(e: Result<string, string>) -> i64 {{\n\
-         \x20   match e {{ Ok(x) => x.len(), Err(y) => y.len() }}\n\
+         \x20   match e {{ .Ok(x) => x.len(), .Err(y) => y.len() }}\n\
          }}\n\
          fn take(e: Result<string, string>) -> string {{\n\
-         \x20   match e {{ Ok(x) => x, Err(y) => y }}\n\
+         \x20   match e {{ .Ok(x) => x, .Err(y) => y }}\n\
          }}\n\
          fn main() -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
-         \x20       total = total + forward_last(Ok(\"a\" + \"b\"));\n\
-         \x20       total = total + forward_live(Ok(\"c\" + \"d\"));\n\
-         \x20       total = total + inspect(Ok(\"e\" + \"f\"));\n\
-         \x20       let moved = take(Ok(\"g\" + \"h\"));\n\
+         \x20       total = total + forward_last(.Ok(\"a\" + \"b\"));\n\
+         \x20       total = total + forward_live(.Ok(\"c\" + \"d\"));\n\
+         \x20       total = total + inspect(.Ok(\"e\" + \"f\"));\n\
+         \x20       let moved = take(.Ok(\"g\" + \"h\"));\n\
          \x20       total = total + moved.len();\n\
          \x20   }}\n\
          \x20   if total != {frames} * 8 {{ return 78; }}\n\

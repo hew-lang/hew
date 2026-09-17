@@ -69,8 +69,8 @@ fn main() {\n\
 \x20   let got: Name = m[\"k\"];\n\
 \x20   let removed = m.remove(\"k\");\n\
 \x20   match removed {\n\
-\x20   \x20   Some(_) => print(got.label),\n\
-\x20   \x20   None => print(\"removed=none\"),\n\
+\x20   \x20   .Some(_) => print(got.label),\n\
+\x20   \x20   .None => print(\"removed=none\"),\n\
 \x20   }\n\
 }\n";
 
@@ -97,8 +97,8 @@ fn index_roundtrip_loop_source(frames: usize) -> String {
          \x20   let got: Name = m[\"k\"];\n\
          \x20   let removed = m.remove(\"k\");\n\
          \x20   match removed {{\n\
-         \x20   \x20   Some(_) => got.label.len(),\n\
-         \x20   \x20   None => 0,\n\
+         \x20   \x20   .Some(_) => got.label.len(),\n\
+         \x20   \x20   .None => 0,\n\
          \x20   }}\n\
          }}\n\
          \n\

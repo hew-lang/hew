@@ -99,18 +99,17 @@ fn cancellation_window() -> i64 {
 
 actor Worker {
     receive fn run() {
-        scope {
+        scope within 20ms {
             fork {
                 cancellation_window();
             };
-            after(20ms) {};
         };
     }
 }
 
 fn main() -> i64 {
     let worker = spawn Worker;
-    worker.run();
+    let _ = worker.run();
     sleep(500ms);
     0
 }
@@ -159,7 +158,7 @@ fn iflet_bound_loop_source(frames: usize) -> String {
          fn run_cycle(n: i64) -> i64 {{\n\
          \x20   let opt = make(n);\n\
          \x20   var got: i64 = 0;\n\
-         \x20   if let Some(s) = opt {{\n\
+         \x20   if let .Some(s) = opt {{\n\
          \x20       if !s.is_empty() {{ got = 1; }}\n\
          \x20   }}\n\
          \x20   got\n\

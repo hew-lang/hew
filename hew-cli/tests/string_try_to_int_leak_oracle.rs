@@ -18,8 +18,8 @@ fn valid_multi_digit_source(frames: usize) -> String {
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
          \x20       match string.to_int(\"1234567\") {{\n\
-         \x20           Ok(value) => {{ total = total + value; }},\n\
-         \x20           Err(_) => {{ return 91; }},\n\
+         \x20           .Ok(value) => {{ total = total + value; }},\n\
+         \x20           .Err(_) => {{ return 91; }},\n\
          \x20       }}\n\
          \x20   }}\n\
          \x20   if total == {expected} {{ 0 }} else {{ 92 }}\n\
@@ -34,8 +34,8 @@ fn invalid_trailing_digit_source(frames: usize) -> String {
          \x20   var failures: i64 = 0;\n\
          \x20   for i in 0..{frames} {{\n\
          \x20       match string.to_int(\"123456x\") {{\n\
-         \x20           Ok(_) => {{ return 93; }},\n\
-         \x20           Err(_) => {{ failures = failures + 1; }},\n\
+         \x20           .Ok(_) => {{ return 93; }},\n\
+         \x20           .Err(_) => {{ failures = failures + 1; }},\n\
          \x20       }}\n\
          \x20   }}\n\
          \x20   if failures == {frames} {{ 0 }} else {{ 94 }}\n\

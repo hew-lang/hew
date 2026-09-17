@@ -207,7 +207,7 @@ fn for_await_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn ForAwaitRecv;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -236,13 +236,13 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
     use std::fmt::Write as _;
 
     let children = (0..frames).fold(String::new(), |mut acc, index| {
-        let _ = writeln!(acc, "    child receiver{index}: ParkedReceiver;");
+        let _ = writeln!(acc, "    child receiver{index}: ParkedReceiver,");
         acc
     });
     let starts = (0..frames).fold(String::new(), |mut acc, index| {
         let _ = writeln!(
             acc,
-            "    let receiver{index} = app.receiver{index};\n    receiver{index}.run({index});"
+            "    let receiver{index} = app.receiver{index};\n    let _ = receiver{index}.run({index});"
         );
         acc
     });
@@ -263,8 +263,8 @@ fn parked_for_await_receiver_handoff_source(frames: usize) -> String {
          }}\n\
          \n\
          supervisor App {{\n\
-         \x20   strategy: one_for_one;\n\
-         \x20   intensity: 3 within 60s;\n\
+         \x20   strategy: one_for_one,\n\
+         \x20   intensity: 3 within 60s,\n\
          {children}\
          }}\n\
          \n\
@@ -461,7 +461,7 @@ fn await_recv_source(frames: usize) -> String {
          \x20       while keep_going {{\n\
          \x20           let opt = await rx.recv();\n\
          \x20           match opt {{\n\
-         \x20               Some(item) => println(item),\n\
+         \x20               .Some(item) => println(item),\n\
          \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
@@ -470,7 +470,7 @@ fn await_recv_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn AwaitRecv;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -497,7 +497,7 @@ fn try_recv_source(frames: usize) -> String {
          \x20       while keep_going {{\n\
          \x20           let opt = rx.try_recv();\n\
          \x20           match opt {{\n\
-         \x20               Some(item) => println(item),\n\
+         \x20               .Some(item) => println(item),\n\
          \x20               .None => {{ keep_going = false; }},\n\
          \x20           }}\n\
          \x20       }}\n\
@@ -506,7 +506,7 @@ fn try_recv_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn TryRecv;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -537,7 +537,7 @@ fn try_recv_continue_source(frames: usize) -> String {
          \x20       while keep_going {{\n\
          \x20           let opt = rx.try_recv();\n\
          \x20           match opt {{\n\
-         \x20               Some(item) => {{\n\
+         \x20               .Some(item) => {{\n\
          \x20                   println(\"got\");\n\
          \x20                   continue;\n\
          \x20               }},\n\
@@ -549,7 +549,7 @@ fn try_recv_continue_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn TryRecvContinue;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -580,7 +580,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          \x20       while keep_going {{\n\
          \x20           let opt = await rx.recv();\n\
          \x20           match opt {{\n\
-         \x20               Some(item) => {{\n\
+         \x20               .Some(item) => {{\n\
          \x20                   println(\"got\");\n\
          \x20                   continue;\n\
          \x20               }},\n\
@@ -592,7 +592,7 @@ fn await_recv_continue_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn AwaitRecvContinue;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -630,7 +630,7 @@ fn owned_send_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn OwnedSend;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -1042,7 +1042,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \x20       let b = \"frame-some-long-data\".to_bytes();\n\
          \x20       var i: i64 = 0;\n\
          \x20       while i < {frames} {{\n\
-         \x20           await sink.send(b);\n\
+         \x20           sink.send(b);\n\
          \x20           i = i + 1;\n\
          \x20       }}\n\
          \x20       sink.close();\n\
@@ -1054,7 +1054,7 @@ fn for_await_stream_bytes_source(frames: usize) -> String {
          \n\
          fn main() {{\n\
          \x20   let w = spawn ForAwaitStreamBytes;\n\
-         \x20   w.run(0);\n\
+         \x20   let _ = w.run(0);\n\
          \x20   sleep(3000ms);\n\
          }}\n"
     )
@@ -1130,26 +1130,27 @@ fn for_await_stream_bytes_loop_no_per_frame_leak_slope() {
 /// Bytes would print empty / poisoned bytes here.
 fn carry_for_await_bytes_escape_source() -> String {
     "import std.stream;\n\
+     import std.encoding.utf8;\n\
      \n\
      actor CarryStreamBytesEscape {\n\
      \x20   receive fn run(unused: i64) {\n\
      \x20       let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };\n\
      \x20       let b = \"escaped-bytes-payload\".to_bytes();\n\
-     \x20       await sink.send(b);\n\
+     \x20       sink.send(b);\n\
      \x20       sink.close();\n\
      \x20       var carry = \"init\".to_bytes();\n\
      \x20       println(\"before\");\n\
      \x20       for frame in input {\n\
      \x20           carry = frame;\n\
      \x20       }\n\
-     \x20       println(carry.to_string());\n\
+     \x20       println(utf8.decode_lossy(carry));\n\
      \x20       println(\"after\");\n\
      \x20   }\n\
      }\n\
      \n\
      fn main() {\n\
      \x20   let w = spawn CarryStreamBytesEscape;\n\
-     \x20   w.run(0);\n\
+     \x20   let _ = w.run(0);\n\
      \x20   sleep(200ms);\n\
      }\n"
     .to_string()
@@ -1224,7 +1225,7 @@ fn carry_continue_escape_source() -> String {
      \x20       while keep_going {\n\
      \x20           let opt = rx.try_recv();\n\
      \x20           match opt {\n\
-     \x20               Some(item) => {\n\
+     \x20               .Some(item) => {\n\
      \x20                   carry = item;\n\
      \x20                   continue;\n\
      \x20               },\n\
@@ -1238,7 +1239,7 @@ fn carry_continue_escape_source() -> String {
      \n\
      fn main() {\n\
      \x20   let w = spawn CarryContinueEscape;\n\
-     \x20   w.run(0);\n\
+     \x20   let _ = w.run(0);\n\
      \x20   sleep(100ms);\n\
      }\n"
         .to_string()
@@ -1265,7 +1266,7 @@ fn carry_fallthrough_escape_source() -> String {
      \x20       while keep_going {\n\
      \x20           let opt = rx.try_recv();\n\
      \x20           match opt {\n\
-     \x20               Some(item) => {\n\
+     \x20               .Some(item) => {\n\
      \x20                   carry = item;\n\
      \x20                   keep_going = false;\n\
      \x20               },\n\
@@ -1279,7 +1280,7 @@ fn carry_fallthrough_escape_source() -> String {
      \n\
      fn main() {\n\
      \x20   let w = spawn CarryFallEscape;\n\
-     \x20   w.run(0);\n\
+     \x20   let _ = w.run(0);\n\
      \x20   sleep(100ms);\n\
      }\n"
         .to_string()
@@ -1462,8 +1463,8 @@ fn gen_stream_bytes_early_return_source(frames: usize) -> String {
         "actor Maker {{ \n\
          \x20   receive gen fn frames() -> bytes {{\n\
          \x20       for i in 0..{frames} {{\n\
-         \x20           yield \"frame-data\".to_bytes(), \n\
-         \x20 }}\n\
+         \x20           yield \"frame-data\".to_bytes();\n\
+         \x20       }}\n\
          \x20   }}\n\
          }}\n\
          fn main() -> i64 {{\n\

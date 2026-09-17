@@ -24,8 +24,11 @@ actor Client {{
     var complete: i64,
 
     receive fn fetch(unused: i64) {{
-        http_client.set_timeout(5000), let response = http_client.get(url), if response.status() != 200 {{
-            panic("HTTP request retention response failed") }}
+        let _ = http_client.set_timeout(5000);
+        let response = http_client.get(url);
+        if response.status() != 200 {{
+            panic("HTTP request retention response failed");
+        }}
         response.close();
         complete = 1;
     }}
@@ -37,13 +40,13 @@ actor Client {{
 
 fn main() {{
     match http.listen("127.0.0.1:0") {{
-        Ok(server) => {{
+        .Ok(server) => {{
             let port = http.server_port(server);
             let client = spawn Client(
                 url: f"http://127.0.0.1:{{port}}/retention",
                 complete: 0,
             );
-            client.fetch(0);
+            let _ = client.fetch(0);
             let request = server.accept();
             for _ in 0..{frames} {{
                 let checksum = request.method().len()
@@ -53,21 +56,21 @@ fn main() {{
                 println(checksum);
             }}
             match request.respond_text(200, "ok") {{
-                Ok(_) => {{}},
-                Err(_) => panic("HTTP retention response failed"),
+                .Ok(_) => {{}},
+                .Err(_) => panic("HTTP retention response failed"),
             }}
             request.close();
-            match await client.finished() {{
-                Ok(done) => {{
+            match client.finished() {{
+                .Ok(done) => {{
                     if done != 1 {{
                         panic("HTTP retention client stopped early");
                     }}
                 }},
-                Err(_) => panic("HTTP retention client failed"),
+                .Err(_) => panic("HTTP retention client failed"),
             }}
             server.close();
         }},
-        Err(_) => panic("HTTP retention listener failed"),
+        .Err(_) => panic("HTTP retention listener failed"),
     }}
 }}
 "#
@@ -86,10 +89,14 @@ actor Client {{
     var complete: i64,
 
     receive fn fetch(unused: i64) {{
-        http_client.set_timeout(5000), let response = http_client.get(url), for _ in 0..frames {{
+        let _ = http_client.set_timeout(5000);
+        let response = http_client.get(url);
+        for _ in 0..frames {{
             let checksum = response.body().len()
                 + response.content_type().len()
-                + response.header("Content-Type").len(), println(checksum) }}
+                + response.header("Content-Type").len();
+            println(checksum);
+        }}
         response.close();
         complete = 1;
     }}
@@ -101,35 +108,35 @@ actor Client {{
 
 fn main() {{
     match http.listen("127.0.0.1:0") {{
-        Ok(server) => {{
+        .Ok(server) => {{
             let port = http.server_port(server);
             let client = spawn Client(
                 url: f"http://127.0.0.1:{{port}}/retention",
                 frames: {frames},
                 complete: 0,
             );
-            client.fetch(0);
+            let _ = client.fetch(0);
             let request = server.accept();
             match request.respond(
                 200,
                 "application/retention",
                 "response-owner",
             ) {{
-                Ok(_) => {{}},
-                Err(_) => panic("HTTP retention response failed"),
+                .Ok(_) => {{}},
+                .Err(_) => panic("HTTP retention response failed"),
             }}
             request.close();
-            match await client.finished() {{
-                Ok(done) => {{
+            match client.finished() {{
+                .Ok(done) => {{
                     if done != 1 {{
                         panic("HTTP retention client stopped early");
                     }}
                 }},
-                Err(_) => panic("HTTP retention client failed"),
+                .Err(_) => panic("HTTP retention client failed"),
             }}
             server.close();
         }},
-        Err(_) => panic("HTTP retention listener failed"),
+        .Err(_) => panic("HTTP retention listener failed"),
     }}
 }}
 "#
@@ -148,7 +155,7 @@ actor Client {{
 
     receive fn send_frames(unused: i64) {{
         match websocket.connect(url) {{
-            Ok(connection) => {{
+            .Ok(connection) => {{
                 for _ in 0..frames {{
                     if connection.send_text("message-owner") != 0 {{
                         panic("WebSocket retention send failed") }}
@@ -156,7 +163,7 @@ actor Client {{
                 connection.close();
                 complete = 1;
             }},
-            Err(_) => panic("WebSocket retention connect failed"),
+            .Err(_) => panic("WebSocket retention connect failed"),
         }}
     }}
 
@@ -167,31 +174,31 @@ actor Client {{
 
 fn main() {{
     match websocket.listen("127.0.0.1:0") {{
-        Ok(server) => {{
+        .Ok(server) => {{
             let client = spawn Client(
                 url: f"ws://127.0.0.1:{{server.port()}}/retention",
                 frames: {frames},
                 complete: 0,
             );
-            client.send_frames(0);
+            let _ = client.send_frames(0);
             let connection = server.accept();
             for _ in 0..{frames} {{
                 let message = connection.recv();
                 println(message.text().len());
                 message.close();
             }}
-            match await client.finished() {{
-                Ok(done) => {{
+            match client.finished() {{
+                .Ok(done) => {{
                     if done != 1 {{
                         panic("WebSocket retention client stopped early");
                     }}
                 }},
-                Err(_) => panic("WebSocket retention client failed"),
+                .Err(_) => panic("WebSocket retention client failed"),
             }}
             connection.close();
             server.close();
         }},
-        Err(_) => panic("WebSocket retention listener failed"),
+        .Err(_) => panic("WebSocket retention listener failed"),
     }}
 }}
 "#
@@ -205,11 +212,11 @@ import std.net.websocket;
 
 fn main() {{
     match websocket.listen("not an address") {{
-        Ok(server) => {{
+        .Ok(server) => {{
             server.close();
             panic("invalid WebSocket address unexpectedly bound");
         }},
-        Err(_) => {{
+        .Err(_) => {{
             for _ in 0..{frames} {{
                 println(websocket.last_error().len());
             }}

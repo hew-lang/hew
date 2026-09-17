@@ -27,15 +27,15 @@ fn arena_holder_insert_remove_source(cycles: usize) -> String {
          \x20       items: [f\"item-{{i}}\", f\"value-{{i}}\"],\n\
          \x20   }});\n\
          \x20   let first = match store.remove(key) {{\n\
-         \x20       Some(holder) => holder.items[0].len() + holder.items[1].len(),\n\
-         \x20       None => -1000,\n\
+         \x20       .Some(holder) => holder.items[0].len() + holder.items[1].len(),\n\
+         \x20       .None => -1000,\n\
          \x20   }};\n\
          \x20   let reused = store.insert(Holder {{\n\
          \x20       items: [f\"again-{{i}}\", f\"next-{{i}}\"],\n\
          \x20   }});\n\
          \x20   let second = match store.remove(reused) {{\n\
-         \x20       Some(holder) => holder.items[0].len() + holder.items[1].len(),\n\
-         \x20       None => -1000,\n\
+         \x20       .Some(holder) => holder.items[0].len() + holder.items[1].len(),\n\
+         \x20       .None => -1000,\n\
          \x20   }};\n\
          \x20   first + second\n\
          }}\n\

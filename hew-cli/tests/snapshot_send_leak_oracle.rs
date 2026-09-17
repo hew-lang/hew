@@ -20,8 +20,11 @@ actor ProbeSink {{
     var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
-        value.payload.push(tag), if value.payload[2] == tag {{
-            seen = seen + 1 }}
+        var v = value;
+        v.payload.push(tag);
+        if v.payload[2] == tag {{
+            seen = seen + 1;
+        }}
     }}
 
     receive fn count() -> i64 {{
@@ -35,17 +38,17 @@ fn main() -> i64 {{
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < {frames} {{
-        let value = Boxed {{ payload: [1, 2] }};
-        a.take(value, 7);
-        b.take(value, 8);
+        var value = Boxed {{ payload: [1, 2] }};
+        let _ = a.take(value, 7);
+        let _ = b.take(value, 8);
         value.payload.push(9);
         if value.payload[2] == 9 {{
             sender_ok = sender_ok + 1;
         }}
         i = i + 1;
     }}
-    let av = match await a.count() {{ Ok(v) => v, Err(_) => -1 }};
-    let bv = match await b.count() {{ Ok(v) => v, Err(_) => -1 }};
+    let av = match a.count() {{ .Ok(v) => v, .Err(_) => -1 }};
+    let bv = match b.count() {{ .Ok(v) => v, .Err(_) => -1 }};
     print(f"{{av}}:{{bv}}:{{sender_ok}}");
     0
 }}
@@ -63,7 +66,8 @@ type Boxed {{
 actor ProbeSink {{ 
     var seen: i64,
     receive fn take(value: Boxed) {{
-        seen = seen + value.payload.len() }}
+        seen = seen + value.payload.len();
+    }}
     receive fn count() -> i64 {{ seen }}
 }}
 
@@ -71,12 +75,12 @@ fn main() -> i64 {{
     let sink = spawn ProbeSink(seen: 0);
     var i: i64 = 0;
     while i < {frames} {{
-        sink.take(Boxed {{ payload: [i] }});
+        let _ = sink.take(Boxed {{ payload: [i] }});
         i = i + 1;
     }}
-    match await sink.count() {{
-        Ok(v) => {{ if v == {frames} {{ 0 }} else {{ 1 }} }},
-        Err(_) => 2,
+    match sink.count() {{
+        .Ok(v) => {{ if v == {frames} {{ 0 }} else {{ 1 }} }},
+        .Err(_) => 2,
     }}
 }}
 "
@@ -98,8 +102,11 @@ actor ProbeSink {{
     var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
-        value.payload.push(tag), if value.payload[2] == tag {{
-            seen = seen + 1 }}
+        var v = value;
+        v.payload.push(tag);
+        if v.payload[2] == tag {{
+            seen = seen + 1;
+        }}
     }}
 
     receive fn count() -> i64 {{
@@ -112,15 +119,15 @@ fn main() -> i64 {{
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < {frames} {{
-        let value = Envelope {{ boxed: Boxed {{ payload: [1, 2] }} }};
-        sink.take(value.boxed, 7);
+        var value = Envelope {{ boxed: Boxed {{ payload: [1, 2] }} }};
+        let _ = sink.take(value.boxed, 7);
         value.boxed.payload.push(9);
         if value.boxed.payload[2] == 9 {{
             sender_ok = sender_ok + 1;
         }}
         i = i + 1;
     }}
-    let seen = match await sink.count() {{ Ok(v) => v, Err(_) => -1 }};
+    let seen = match sink.count() {{ .Ok(v) => v, .Err(_) => -1 }};
     print(f"{{seen}}:{{sender_ok}}");
     0
 }}
@@ -143,8 +150,11 @@ actor ProbeSink {{
     var seen: i64,
 
     receive fn take(value: Boxed, tag: i64) {{
-        value.payload.push(tag), if value.payload[2] == tag {{
-            seen = seen + 1 }}
+        var v = value;
+        v.payload.push(tag);
+        if v.payload[2] == tag {{
+            seen = seen + 1;
+        }}
     }}
 }}
 
@@ -162,8 +172,8 @@ fn main() -> i64 {{
     var sender_ok: i64 = 0;
     var i: i64 = 0;
     while i < {frames} {{
-        let value = Envelope {{ boxed: Boxed {{ payload: [1, 2] }} }};
-        sink.take(value.boxed, 7);
+        var value = Envelope {{ boxed: Boxed {{ payload: [1, 2] }} }};
+        let _ = sink.take(value.boxed, 7);
         value.boxed.payload.push(9);
         if value.boxed.payload[2] == 9 {{
             sender_ok = sender_ok + 1;
@@ -184,7 +194,8 @@ actor Consumer {{
     var last: string,
 
     receive fn take(value: string) {{
-        last = value }}
+        last = value;
+    }}
 
     receive fn received_live() -> i64 {{
         if last.contains("borrow") {{ 1 }} else {{ 0 }}
@@ -196,7 +207,9 @@ actor Relay {{
     var last: string,
 
     receive fn forward(value: string) {{
-        consumer.take(value), last = value }}
+        let _ = consumer.take(value);
+        last = value;
+    }}
 
     receive fn source_live() -> i64 {{
         if last.contains("borrow") {{ 1 }} else {{ 0 }}
@@ -210,14 +223,14 @@ fn main() -> i64 {{
     var i: i64 = 0;
     while i < {frames} {{
         let value = f"{{i}}:borrow";
-        relay.forward(value);
+        let _ = relay.forward(value);
         if value.contains("borrow") {{
             sender_seen = sender_seen + 1;
         }}
         i = i + 1;
     }}
-    let source_live = match await relay.source_live() {{ Ok(v) => v, Err(_) => -1 }};
-    let received_live = match await consumer.received_live() {{ Ok(v) => v, Err(_) => -1 }};
+    let source_live = match relay.source_live() {{ .Ok(v) => v, .Err(_) => -1 }};
+    let received_live = match consumer.received_live() {{ .Ok(v) => v, .Err(_) => -1 }};
     print(f"{{received_live}}:{{source_live}}:{{sender_seen}}");
     0
 }}

@@ -57,7 +57,7 @@ fn fungible_tell_recover_loop_source(frames: usize) -> String {
         "actor Worker {{ \n\
          \x20   var seen: i64,\n\
          \x20   receive fn take(s: string) {{\n\
-         \x20       if s.is_empty() {{ seen = seen }} else {{ seen = seen + 1; }}\n\
+         \x20       if s.is_empty() {{ seen = seen; }} else {{ seen = seen + 1; }}\n\
          \x20   }}\n\
          }}\n\
          \n\
@@ -74,7 +74,7 @@ fn fungible_tell_recover_loop_source(frames: usize) -> String {
          \x20   supervisor_stop(sup);\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
-         \x20       w.take(\"undelivered-heap-payload\".to_upper());\n\
+         \x20       let _ = w.take(\"undelivered-heap-payload\".to_upper());\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   0\n\
@@ -111,11 +111,11 @@ fn main() -> i64 {\n\
 \x20   let w = sup.w;\n\
 \x20   var i: i64 = 0;\n\
 \x20   while i < 5 {\n\
-\x20       w.take(\"delivered-heap-payload\".to_upper());\n\
+\x20       let _ = w.take(\"delivered-heap-payload\".to_upper());\n\
 \x20       i = i + 1;\n\
 \x20   }\n\
-\x20   let n = match await w.count() {\n\
-\x20       Ok(v) => v,\n\
+\x20   let n = match w.count() {\n\
+\x20       .Ok(v) => v,\n\
 \x20       .Err(_) => -1,\n\
 \x20   };\n\
 \x20   if n == 5 {\n\

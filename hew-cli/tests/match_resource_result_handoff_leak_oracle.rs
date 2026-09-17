@@ -90,27 +90,27 @@ impl ActivePayload {
         match self {
             Self::OkConsumed => {
                 "let handle = match make(true) {\n\
-                 \x20   Ok(value) => value,\n\
-                 \x20   Err(_) => return 71,\n\
+                 \x20   .Ok(value) => value,\n\
+                 \x20   .Err(_) => return 71,\n\
                  };\n\
                  handle.close();"
             }
             Self::OkUnconsumed => {
                 "match make(true) {\n\
-                 \x20   Ok(value) => { if value.probe() != 7 { return 76; } },\n\
-                 \x20   Err(_) => return 72,\n\
+                 \x20   .Ok(value) => { if value.probe() != 7 { return 76; } },\n\
+                 \x20   .Err(_) => return 72,\n\
                  };"
             }
             Self::ErrConsumed => {
                 "let message = match make(false) {\n\
-                 \x20   Ok(value) => { value.close(); return 73; },\n\
-                 \x20   Err(value) => value,\n\
+                 \x20   .Ok(value) => { value.close(); return 73; },\n\
+                 \x20   .Err(value) => value,\n\
                  };\n\
                  if message.len() == 0 { return 74; }"
             }
             Self::ErrUnconsumed => {
                 "match make(false) {\n\
-                 \x20   Ok(value) => { value.close(); return 75; },\n\
+                 \x20   .Ok(value) => { value.close(); return 75; },\n\
                  \x20   .Err(_) => {},\n\
                  };"
             }
@@ -122,7 +122,7 @@ fn source(shape: ResourceShape, active: ActivePayload) -> String {
     format!(
         "{}\n\
          fn make(ok: bool) -> Result<Handle, string> {{\n\
-         \x20   if ok {{ Ok(fresh()) }} else {{ Err(\"handoff-error\".to_upper()) }}\n\
+         \x20   if ok {{ .Ok(fresh()) }} else {{ .Err(\"handoff-error\".to_upper()) }}\n\
          }}\n\
          fn run_once() -> i64 {{\n\
          \x20   {}\n\

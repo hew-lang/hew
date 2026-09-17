@@ -68,9 +68,9 @@ fn generic_fork_source(iters: usize) -> String {
          \n\
          actor ForkDriver {{ \n\
          \x20   receive fn run_n(n: i64) -> i64 {{\n\
-         \x20       var i: i64 = 0, \n\
+         \x20       var i: i64 = 0;\n\
          \x20       while i < n {{\n\
-         \x20           let s = string.repeat(\"owned-heap-string-payload\", 20), \n\
+         \x20           let s = string.repeat(\"owned-heap-string-payload\", 20);\n\
          \x20           scope {{\n\
          \x20               fork {{ generic_str_sink<i64>(s) }}\n\
          \x20           }};\n\
@@ -82,8 +82,8 @@ fn generic_fork_source(iters: usize) -> String {
          \n\
          fn main() -> i64 {{\n\
          \x20   let d = spawn ForkDriver;\n\
-         \x20   match await d.run_n({iters}) {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20   match d.run_n({iters}) {{\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"

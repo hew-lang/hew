@@ -110,7 +110,7 @@ fn partitioned_consume_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   match p {{ Packet {{ tag, body }} => body.len() }}\n\
          }}\n\
-         fn pick_wire(w: Wire, left: bool) -> i64 {{\n\
+         fn pick_wire(consume w: Wire, left: bool) -> i64 {{\n\
          \x20   if left {{\n\
          \x20       return match w {{ Wire {{ conn }} => conn.fd }};\n\
          \x20   }}\n\

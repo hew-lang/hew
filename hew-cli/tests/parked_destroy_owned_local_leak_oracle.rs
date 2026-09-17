@@ -61,7 +61,7 @@ supervisor App {
 fn main() {
     let sup = spawn App;
     let s = sup.sleeper;
-    s.work();
+    let _ = s.work();
     sleep(200ms);
     supervisor_stop(sup);
 }
@@ -98,7 +98,7 @@ supervisor App {
 fn main() {
     let sup = spawn App;
     let s = sup.sleeper;
-    s.work();
+    let _ = s.work();
     sleep(200ms);
     supervisor_stop(sup);
 }
@@ -131,7 +131,7 @@ supervisor App {
 fn main() {
     let sup = spawn App;
     let m = sup.mover;
-    m.go();
+    let _ = m.go();
     sleep(200ms);
     supervisor_stop(sup);
 }
@@ -166,7 +166,7 @@ supervisor App {
 fn main() {
     let sup = spawn App;
     let s = sup.sleeper;
-    s.work();
+    let _ = s.work();
     sleep(200ms);
     supervisor_stop(sup);
 }
@@ -202,7 +202,7 @@ supervisor App {
 fn main() {
     let sup = spawn App;
     let s = sup.sleeper;
-    s.work();
+    let _ = s.work();
     sleep(200ms);
     supervisor_stop(sup);
 }
@@ -241,7 +241,7 @@ supervisor App {
 fn main() {
     let sup = spawn App;
     let s = sup.sleeper;
-    s.work();
+    let _ = s.work();
     sleep(200ms);
     supervisor_stop(sup);
 }

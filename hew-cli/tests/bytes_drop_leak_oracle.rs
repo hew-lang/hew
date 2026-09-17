@@ -114,7 +114,7 @@ fn overwrite_source(frames: usize) -> String {
          \x20   var buf: bytes,\n\
          \n\
          \x20   receive fn store(packet: bytes) {{\n\
-         \x20       buf = packet, \n\
+         \x20       buf = packet;\n\
          \x20 }}\n\
          \n\
          \x20   receive fn get_len() -> i64 {{\n\
@@ -127,12 +127,12 @@ fn overwrite_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       let packet = \"overwrite-bytes-payload\".to_bytes();\n\
-         \x20       store.store(packet);\n\
+         \x20       let _ = store.store(packet);\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
-         \x20   match await store.get_len() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20   match store.get_len() {{\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -328,7 +328,7 @@ fn usercall_transient_get_source(frames: usize) -> String {
          \x20   var i: i64 = 0;\n\
          \x20   while i < {frames} {{\n\
          \x20       match mk().get(0) {{\n\
-         \x20           Some(_b) => {{ total = total + 1; }}\n\
+         \x20           .Some(_b) => {{ total = total + 1; }}\n\
          \x20           .None => {{}}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\

@@ -81,16 +81,16 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20   var seen: HashSet<i64>,\n\
          \n\
          \x20   receive fn refresh(round: i64) {{\n\
-         \x20       var next: Vec<string> = Vec.new(), \n\
-         \x20       next.push(\"entry\"), \n\
-         \x20       items = next, \n\
-         \x20       var m: HashMap<string, i64> = HashMap.new(), \n\
-         \x20       m.insert(\"k\", round), \n\
-         \x20       index = m, \n\
-         \x20       var s: HashSet<i64> = HashSet.new(), \n\
-         \x20       s.insert(round), \n\
-         \x20       seen = s, \n\
-         \x20 }}\n\
+         \x20       var next: Vec<string> = Vec.new();\n\
+         \x20       next.push(\"entry\");\n\
+         \x20       items = next;\n\
+         \x20       var m: HashMap<string, i64> = HashMap.new();\n\
+         \x20       m.insert(\"k\", round);\n\
+         \x20       index = m;\n\
+         \x20       var s: HashSet<i64> = HashSet.new();\n\
+         \x20       s.insert(round);\n\
+         \x20       seen = s;\n\
+         \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
          \x20       items.len()\n\
@@ -106,7 +106,7 @@ fn collection_overwrite_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match c.size() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -166,7 +166,7 @@ fn record_functional_update_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match k.count() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -311,7 +311,7 @@ fn enum_overwrite_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match t.code() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -334,8 +334,8 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
          \n\
          \x20   receive fn tick() {{\n\
          \x20       if name.len() < 1000000 {{\n\
-         \x20           name = name + \"x\", \n\
-         \x20 }}\n\
+         \x20           name = name + \"x\";\n\
+         \x20       }}\n\
          \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
@@ -352,7 +352,7 @@ fn string_inspect_overwrite_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match h.size() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"
@@ -374,10 +374,10 @@ fn collection_iterate_source(frames: usize) -> String {
          \x20   var items: Vec<i64>,\n\
          \n\
          \x20   receive fn spin() {{\n\
-         \x20       var s: i64 = 0, \n\
+         \x20       var s: i64 = 0;\n\
          \x20       for v in items {{\n\
-         \x20           s = s + v, \n\
-         \x20 }}\n\
+         \x20           s = s + v;\n\
+         \x20       }}\n\
          \x20   }}\n\
          \n\
          \x20   receive fn size() -> i64 {{\n\
@@ -398,7 +398,7 @@ fn collection_iterate_source(frames: usize) -> String {
          \x20   }}\n\
          \x20   sleep(2000ms);\n\
          \x20   match h.size() {{\n\
-         \x20       Ok(v) => v,\n\
+         \x20       .Ok(v) => v,\n\
          \x20       .Err(_) => -1,\n\
          \x20   }}\n\
          }}\n"

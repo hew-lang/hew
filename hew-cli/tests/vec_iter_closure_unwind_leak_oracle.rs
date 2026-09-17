@@ -43,9 +43,9 @@ actor VecIterProbe {
 fn main() -> i64 {
     let crasher = spawn VecIterCrasher;
     let probe = spawn VecIterProbe;
-    crasher.boom();
+    let _ = crasher.boom();
     sleep(300ms);
-    match await probe.ping() {
+    match probe.ping() {
         .Ok(value) => value,
         .Err(_) => 1,
     }

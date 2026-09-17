@@ -31,9 +31,9 @@ enum Slot {{
 
 fn step(items: Vec<string>, i: i64) -> (Vec<string>, Slot) {{
     if i < 2 {{
-        (items, Filled(i))
+        (items, .Filled(i))
     }} else {{
-        (items, Empty)
+        (items, .Empty)
     }}
 }}
 
@@ -48,10 +48,10 @@ fn run_case(frame: i64) -> i64 {{
         let pair = step(items, i);
         items = pair.0;
         match pair.1 {{
-            Filled(tag) => {{
+            .Filled(tag) => {{
                 if tag != i {{ return 81; }}
             }},
-            Empty => {{
+            .Empty => {{
                 done = true;
             }},
         }}

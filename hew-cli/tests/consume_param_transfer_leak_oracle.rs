@@ -1,14 +1,12 @@
 //! Consumed-param transfer oracle (#2549): a `#[resource]` child moved into a
 //! container via a `consume`-parameter builder must be freed EXACTLY ONCE.
 //!
-//! The json/toml/yaml `Value` builders take the child by `consume` and pass the
+//! The json/toml/yaml `Value` builders take the child by value and pass the
 //! opaque resource directly to a native builder whose FFI parameter also takes
-//! ownership: `json.object().with("items", child)` /
-//! `json.array().push(child)`. The caller's moved binding therefore has no
-//! scope-exit close; its allocation is freed once by the container that now owns
-//! it, reached when the enclosing root is closed. If the moved binding also
-//! closed the child, it would be freed twice: once at the old caller and once by
-//! the container.
+//! ownership: `obj.set("items", child)` / `arr.push(child)`. Cleanup of the
+//! resulting tree is automatic, so a per-iteration double-free here would mean
+//! the transferred child's allocation is reachable from two owners at once
+//! (the old caller binding and the container that now owns it).
 //!
 //! ## What each oracle pins
 //!
@@ -36,25 +34,31 @@ use support::{describe_output, require_codegen};
 
 /// Transfer-builder loop over the real json native handles. Each iteration:
 /// builds a two-element array by `push`-ing two `from_int` children (each child
-/// consumed, its handle transferred to the array), stores the array into a fresh
-/// object with `with` (the array consumed, transferred to the object), reads a
-/// scalar field back, frees the read-back field through the compatibility alias,
-/// then closes the object root through the canonical disposer
-/// (which recursively frees the transferred array + its int children exactly
-/// once). `build(i)` returns the read-back tag so `main` self-checks the running
+/// transferred to the array), stores the array into a fresh object with `set`
+/// (the array transferred to the object), then reads the scalar field back.
+/// Cleanup of the whole tree (recursively freeing the transferred array + its
+/// int children exactly once) is automatic when the object goes out of scope.
+/// `build(i)` returns the read-back tag so `main` self-checks the running
 /// total and returns 0 for the scribble pin's `success()` assertion.
 fn transfer_loop_source(frames: usize) -> String {
     let expected_total = frames * frames.saturating_sub(1) / 2;
     format!(
         "import std.encoding.json;\n\
          fn build(n: i64) -> i64 {{\n\
-         \x20   let arr = json.array().push(json.from_int(n)).push(json.from_int(n + 1));\n\
-         \x20   let obj = json.object().with(\"items\", arr).with_int(\"tag\", n);\n\
-         \x20   let field = obj.get_field(\"tag\");\n\
-         \x20   let got = field.get_int();\n\
-         \x20   field.free();\n\
-         \x20   obj.close();\n\
-         \x20   got\n\
+         \x20   var arr = json.array();\n\
+         \x20   let _ = arr.push(json.from_int(n));\n\
+         \x20   let _ = arr.push(json.from_int(n + 1));\n\
+         \x20   var obj = json.object();\n\
+         \x20   let _ = obj.set(\"items\", arr);\n\
+         \x20   let _ = obj.set(\"tag\", json.from_int(n));\n\
+         \x20   let field = match obj.get_field(\"tag\") {{\n\
+         \x20       .Ok(.Some(v)) => v,\n\
+         \x20       _ => return 71,\n\
+         \x20   }};\n\
+         \x20   match field.get_int() {{\n\
+         \x20       .Ok(v) => v,\n\
+         \x20       .Err(_) => -1,\n\
+         \x20   }}\n\
          }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\

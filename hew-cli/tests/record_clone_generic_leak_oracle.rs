@@ -249,9 +249,9 @@ fn main() -> i64 {{
         let k = spawn Keeper();
         let base = \"row\";
         let tag = base + \"-x\";
-        match await k.store(i, tag) {{
-            Ok(n) => {{ total = total + n; }}
-            Err(_) => {{ return 80; }}
+        match k.store(i, tag) {{
+            .Ok(n) => {{ total = total + n; }}
+            .Err(_) => {{ return 80; }}
         }}
     }}
     if total != {expected} {{ return 81; }}
@@ -289,9 +289,9 @@ fn main() -> i64 {{
         let k = spawn Keeper();
         let base = \"row\";
         let tag = base + \"-x\";
-        match await k.store(i, tag) {{
-            Ok(n) => {{ total = total + n; }}
-            Err(_) => {{ return 80; }}
+        match k.store(i, tag) {{
+            .Ok(n) => {{ total = total + n; }}
+            .Err(_) => {{ return 80; }}
         }}
     }}
     if total != {expected} {{ return 81; }}

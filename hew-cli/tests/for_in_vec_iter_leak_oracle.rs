@@ -744,7 +744,7 @@ fn early_return_source() -> String {
 }
 
 /// Fixture (b) — error propagation lowered onto that same return path. `?`
-/// desugars to `match { .Ok(v) => v, .Err(e) => { return Err(e) } }`, whose
+/// desugars to `match { .Ok(v) => v, .Err(e) => { return .Err(e) } }`, whose
 /// `return` is an EXPRESSION-position `HirExprKind::Return` rather than the
 /// statement-position `HirStmtKind::Return` of fixture (a) — a second lowering
 /// shell that needs the same exit-edge release. `check` always fails, so every
@@ -754,25 +754,25 @@ fn try_propagation_source() -> String {
         "{EARLY_EXIT_PRODUCER}\n\
          fn check(n: i64) -> Result<i64, string> {{\n\
          \x20   if n > 0 {{\n\
-         \x20       return Err(\"propagate\" + \"-boom\");\n\
+         \x20       return .Err(\"propagate\" + \"-boom\");\n\
          \x20   }}\n\
-         \x20   return Ok(n);\n\
+         \x20   return .Ok(n);\n\
          }}\n\
          \n\
          fn frame() -> Result<i64, string> {{\n\
          \x20   for word in make_vec() {{\n\
          \x20       let n = check(word.len())?;\n\
-         \x20       return Ok(n);\n\
+         \x20       return .Ok(n);\n\
          \x20   }}\n\
-         \x20   return Ok(0);\n\
+         \x20   return .Ok(0);\n\
          }}\n\
          \n\
          fn main() {{\n\
          \x20   var i: i64 = 0;\n\
          \x20   while i < {EARLY_EXIT_CALLS} {{\n\
          \x20       match frame() {{\n\
-         \x20           Ok(v) => {{ }}\n\
-         \x20           Err(e) => {{ }}\n\
+         \x20           .Ok(v) => {{ }}\n\
+         \x20           .Err(e) => {{ }}\n\
          \x20       }}\n\
          \x20       i = i + 1;\n\
          \x20   }}\n\
@@ -834,7 +834,7 @@ fn mk() -> Vec<string> {\n\
 \x20   return v;\n\
 }\n\
 \n\
-fn frame(sink: HashMap<i64, string>) -> i64 {\n\
+fn frame(var sink: HashMap<i64, string>) -> i64 {\n\
 \x20   for w in mk() {\n\
 \x20       sink.insert(1, w);\n\
 \x20       return 1;\n\
@@ -843,7 +843,7 @@ fn frame(sink: HashMap<i64, string>) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let sink: HashMap<i64, string> = HashMap.new();\n\
+\x20   var sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   print(frame(sink));\n\
 \x20   print(sink.len());\n\
 \x20   print(\"OK\");\n\
@@ -935,16 +935,16 @@ fn match_arm_return_source() -> String {
         "{EARLY_EXIT_PRODUCER}\n\
          fn classify(n: i64) -> Result<i64, string> {{\n\
          \x20   if n > 0 {{\n\
-         \x20       return Err(\"classify\" + \"-boom\");\n\
+         \x20       return .Err(\"classify\" + \"-boom\");\n\
          \x20   }}\n\
-         \x20   return Ok(n);\n\
+         \x20   return .Ok(n);\n\
          }}\n\
          \n\
          fn frame() {{\n\
          \x20   for word in make_vec() {{\n\
          \x20       match classify(word.len()) {{\n\
-         \x20           Ok(v) => {{ }}\n\
-         \x20           Err(e) => {{ return; }}\n\
+         \x20           .Ok(v) => {{ }}\n\
+         \x20           .Err(e) => {{ return; }}\n\
          \x20       }}\n\
          \x20   }}\n\
          }}\n\
@@ -1023,7 +1023,7 @@ fn mk_b() -> Vec<string> {\n\
 \x20   return v;\n\
 }\n\
 \n\
-fn frame(sink: HashMap<i64, string>) -> i64 {\n\
+fn frame(var sink: HashMap<i64, string>) -> i64 {\n\
 \x20   for a in mk_a() {\n\
 \x20       for b in mk_b() {\n\
 \x20           sink.insert(0, a);\n\
@@ -1035,7 +1035,7 @@ fn frame(sink: HashMap<i64, string>) -> i64 {\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   let sink: HashMap<i64, string> = HashMap.new();\n\
+\x20   var sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   let n = frame(sink);\n\
 \x20   print(sink.len());\n\
 \x20   print(\"OK\");\n\

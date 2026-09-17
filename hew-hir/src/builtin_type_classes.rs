@@ -322,16 +322,6 @@ mod tests {
     use crate::value_class::ValueClass;
 
     #[test]
-    fn duplex_is_seeded_as_resource() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        assert_eq!(
-            table.get("Duplex"),
-            Some(&(ResourceMarker::Resource, Some("close".to_string())))
-        );
-    }
-
-    #[test]
     fn sink_is_seeded_as_resource() {
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
@@ -389,26 +379,6 @@ mod tests {
         seed_builtin_type_classes(&mut table);
         assert_eq!(
             table.get("ActorFn"),
-            Some(&(ResourceMarker::Resource, Some("close".to_string())))
-        );
-    }
-
-    #[test]
-    fn send_half_is_seeded_as_resource() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        assert_eq!(
-            table.get("SendHalf"),
-            Some(&(ResourceMarker::Resource, Some("close".to_string())))
-        );
-    }
-
-    #[test]
-    fn recv_half_is_seeded_as_resource() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        assert_eq!(
-            table.get("RecvHalf"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
     }

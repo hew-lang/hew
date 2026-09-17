@@ -344,8 +344,8 @@ mod tests {
 
     #[test]
     fn named_method_lookup_builtin_receiver_instantiates_type_args() {
-        let sig = lookup_builtin_method_sig(&Ty::receiver(Ty::String), "recv")
-            .expect("builtin receiver method should resolve");
+        let sig = lookup_builtin_method_sig(&Ty::stream(Ty::String), "recv")
+            .expect("builtin stream method should resolve");
         assert_eq!(sig.return_type, Ty::option(Ty::String));
     }
 
@@ -440,13 +440,13 @@ mod tests {
     }
 
     #[test]
-    fn lookup_method_sig_prefers_builtin_channel_method_over_imported_stdlib_signature() {
+    fn lookup_method_sig_prefers_builtin_pipe_method_over_imported_stdlib_signature() {
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "Sender".to_string(),
+            "Sink".to_string(),
             TypeDef {
                 kind: TypeDefKind::Struct,
-                name: "Sender".to_string(),
+                name: "Sink".to_string(),
                 type_params: vec![],
                 bounds: HashMap::new(),
                 fields: HashMap::new(),
@@ -472,7 +472,7 @@ mod tests {
 
         let mut fn_sigs = HashMap::new();
         fn_sigs.insert(
-            "Sender::send".to_string(),
+            "Sink::send".to_string(),
             FnSig {
                 param_names: vec!["data".to_string()],
                 params: vec![Ty::String],
@@ -481,19 +481,19 @@ mod tests {
             },
         );
 
-        let sig = lookup_method_sig(&type_defs, &fn_sigs, &Ty::sender(Ty::I64), "send")
-            .expect("builtin channel method should resolve");
+        let sig = lookup_method_sig(&type_defs, &fn_sigs, &Ty::sink(Ty::I64), "send")
+            .expect("builtin pipe method should resolve");
         assert_eq!(sig.params, vec![Ty::I64]);
     }
 
     #[test]
-    fn lookup_type_def_overrides_imported_stdlib_channel_methods_with_builtin_generics() {
+    fn lookup_type_def_overrides_imported_stdlib_pipe_methods_with_builtin_generics() {
         let mut type_defs = HashMap::new();
         type_defs.insert(
-            "Receiver".to_string(),
+            "Stream".to_string(),
             TypeDef {
                 kind: TypeDefKind::Struct,
-                name: "Receiver".to_string(),
+                name: "Stream".to_string(),
                 type_params: vec![],
                 bounds: HashMap::new(),
                 fields: HashMap::new(),
@@ -515,8 +515,8 @@ mod tests {
             },
         );
 
-        let type_def = lookup_type_def(&type_defs, "Receiver")
-            .expect("builtin receiver type def should resolve");
+        let type_def =
+            lookup_type_def(&type_defs, "Stream").expect("builtin stream type def should resolve");
         assert_eq!(type_def.type_params, vec!["T".to_string()]);
         assert_eq!(
             type_def.methods["recv"].return_type,

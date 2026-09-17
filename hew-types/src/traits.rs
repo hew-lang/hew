@@ -1697,59 +1697,94 @@ mod tests {
     }
 
     // =========================================================================
-    // SendHalf/RecvHalf must be explicitly not-Send
+    // Stream/Sink: Send/Sync iff the element is Send; Sink alone is Clone
     // =========================================================================
 
-    /// `SendHalf`<T> is NOT Send (exclusive channel ownership; cannot cross actor
-    /// boundary). Resource and Drop ARE true (it has a `close()` contract).
-    #[test]
-    fn send_half_is_not_send() {
-        let registry = TraitRegistry::new();
-        let sh = Ty::Named {
-            builtin: Some(BuiltinType::SendHalf),
-            name: "SendHalf".to_string(),
-            args: vec![Ty::I64],
-        };
-        assert!(!registry.is_send(&sh), "SendHalf must NOT be Send");
-        assert!(!registry.is_sync(&sh), "SendHalf must NOT be Sync");
-        assert!(!registry.implements_marker(&sh, MarkerTrait::Copy));
-        assert!(!registry.implements_marker(&sh, MarkerTrait::Clone));
-        assert!(registry.implements_marker(&sh, MarkerTrait::Resource));
-        assert!(registry.implements_marker(&sh, MarkerTrait::Drop));
+    fn stream_of(elem: Ty) -> Ty {
+        Ty::Named {
+            builtin: Some(BuiltinType::Stream),
+            name: "Stream".to_string(),
+            args: vec![elem],
+        }
     }
 
-    /// `RecvHalf`<T> is NOT Send (exclusive channel ownership; cannot cross actor
-    /// boundary). Resource and Drop ARE true (it has a `close()` contract).
-    #[test]
-    fn recv_half_is_not_send() {
-        let registry = TraitRegistry::new();
-        let rh = Ty::Named {
-            builtin: Some(BuiltinType::RecvHalf),
-            name: "RecvHalf".to_string(),
-            args: vec![Ty::I64],
-        };
-        assert!(!registry.is_send(&rh), "RecvHalf must NOT be Send");
-        assert!(!registry.is_sync(&rh), "RecvHalf must NOT be Sync");
-        assert!(!registry.implements_marker(&rh, MarkerTrait::Copy));
-        assert!(!registry.implements_marker(&rh, MarkerTrait::Clone));
-        assert!(registry.implements_marker(&rh, MarkerTrait::Resource));
-        assert!(registry.implements_marker(&rh, MarkerTrait::Drop));
+    fn sink_of(elem: Ty) -> Ty {
+        Ty::Named {
+            builtin: Some(BuiltinType::Sink),
+            name: "Sink".to_string(),
+            args: vec![elem],
+        }
     }
 
-    /// A user struct that holds a `RecvHalf` field must NOT be Send — the
-    /// not-Send-ness of `RecvHalf` propagates structurally to its container.
-    /// This is the load-bearing negative guard: sending a struct containing a
-    /// channel half to an actor must be rejected.
+    /// `Stream<T>`/`Sink<T>` are Send/Sync iff `T: Send` — a pipe handle
+    /// crosses actor boundaries carrying its element type with it.
     #[test]
-    fn struct_holding_recv_half_is_not_send() {
+    fn stream_and_sink_are_send_sync_iff_element_is_send() {
+        let registry = TraitRegistry::new();
+        let stream_i64 = stream_of(Ty::I64);
+        let sink_i64 = sink_of(Ty::I64);
+        assert!(registry.is_send(&stream_i64), "Stream<i64> must be Send");
+        assert!(registry.is_sync(&stream_i64), "Stream<i64> must be Sync");
+        assert!(registry.is_send(&sink_i64), "Sink<i64> must be Send");
+        assert!(registry.is_sync(&sink_i64), "Sink<i64> must be Sync");
+
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
+            args: vec![Ty::I64],
+        };
+        let stream_rc = stream_of(rc_i64.clone());
+        let sink_rc = sink_of(rc_i64);
+        assert!(
+            !registry.is_send(&stream_rc),
+            "Stream<Rc<i64>> must NOT be Send — Rc is not Send"
+        );
+        assert!(
+            !registry.is_send(&sink_rc),
+            "Sink<Rc<i64>> must NOT be Send — Rc is not Send"
+        );
+    }
+
+    /// `Sink<T>` is Clone (adds a producer, EOF on the last one finishing);
+    /// `Stream<T>` is not (one consumer).
+    #[test]
+    fn only_sink_is_clone() {
+        let registry = TraitRegistry::new();
+        assert!(registry.implements_marker(&sink_of(Ty::I64), MarkerTrait::Clone));
+        assert!(!registry.implements_marker(&stream_of(Ty::I64), MarkerTrait::Clone));
+    }
+
+    /// Both handles are resources with a `Debug` impl; neither is Copy,
+    /// Frozen, Eq, Hash or Display.
+    #[test]
+    fn stream_and_sink_marker_inventory() {
+        let registry = TraitRegistry::new();
+        for handle in [stream_of(Ty::I64), sink_of(Ty::I64)] {
+            assert!(registry.implements_marker(&handle, MarkerTrait::Resource));
+            assert!(registry.implements_marker(&handle, MarkerTrait::Debug));
+            assert!(!registry.implements_marker(&handle, MarkerTrait::Copy));
+            assert!(!registry.implements_marker(&handle, MarkerTrait::Frozen));
+            assert!(!registry.implements_marker(&handle, MarkerTrait::Eq));
+            assert!(!registry.implements_marker(&handle, MarkerTrait::Hash));
+            assert!(!registry.implements_marker(&handle, MarkerTrait::Display));
+        }
+    }
+
+    /// A user struct that holds a `Stream` field must NOT be Send when the
+    /// element type is not Send — the not-Send-ness propagates structurally
+    /// to its container. Load-bearing negative guard: sending a struct
+    /// containing a pipe handle over non-Send elements to an actor is refused.
+    #[test]
+    fn struct_holding_stream_of_rc_is_not_send() {
         let mut registry = TraitRegistry::new();
-        let recv_half = Ty::Named {
-            builtin: Some(BuiltinType::RecvHalf),
-            name: "RecvHalf".to_string(),
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
             args: vec![Ty::I64],
         };
-        // type Worker { half: RecvHalf<i64>; id: i64 }
-        registry.register_type("Worker".to_string(), vec![recv_half, Ty::I64]);
+        let stream_rc = stream_of(rc_i64);
+        // type Worker { half: Stream<Rc<i64>>; id: i64 }
+        registry.register_type("Worker".to_string(), vec![stream_rc, Ty::I64]);
         let worker = Ty::Named {
             builtin: None,
             name: "Worker".to_string(),
@@ -1757,7 +1792,7 @@ mod tests {
         };
         assert!(
             !registry.is_send(&worker),
-            "Worker holding RecvHalf must NOT be Send"
+            "Worker holding Stream<Rc<i64>> must NOT be Send"
         );
     }
 
@@ -1919,12 +1954,13 @@ mod tests {
         );
     }
 
-    /// NEGATIVE GUARD: `Box<T>` with `T = RecvHalf<i64>` must NOT be Send.
+    /// NEGATIVE GUARD: `Box<T>` with `T = Stream<Rc<i64>>` must NOT be Send.
     ///
-    /// `RecvHalf` is not-Send (exclusive channel ownership). Wrapping it in a
+    /// A pipe handle over a not-Send element is not-Send (see
+    /// `stream_and_sink_are_send_sync_iff_element_is_send`). Wrapping it in a
     /// user generic container must not launder it into something sendable.
     #[test]
-    fn user_generic_struct_with_recv_half_arg_is_not_send() {
+    fn user_generic_struct_with_stream_arg_is_not_send() {
         let mut registry = TraitRegistry::new();
         let t_param = Ty::Named {
             builtin: None,
@@ -1933,34 +1969,34 @@ mod tests {
         };
         registry.register_type("Box".to_string(), vec![t_param]);
 
-        let recv_half = Ty::Named {
-            builtin: Some(BuiltinType::RecvHalf),
-            name: "RecvHalf".to_string(),
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
             args: vec![Ty::I64],
         };
-        let box_recv = Ty::Named {
+        let box_stream = Ty::Named {
             builtin: None,
             name: "Box".to_string(),
-            args: vec![recv_half],
+            args: vec![stream_of(rc_i64)],
         };
         assert!(
-            !registry.is_send(&box_recv),
-            "Box<RecvHalf<i64>> must NOT be Send — RecvHalf is not Send"
+            !registry.is_send(&box_stream),
+            "Box<Stream<Rc<i64>>> must NOT be Send — the element is not Send"
         );
     }
 
-    /// NEGATIVE GUARD: a concrete user struct that DIRECTLY holds a `RecvHalf`
-    /// field (non-generic) must stay not-Send after the fix.
+    /// NEGATIVE GUARD: a concrete user struct that DIRECTLY holds a `Stream`
+    /// field over a not-Send element (non-generic) must stay not-Send.
     #[test]
-    fn concrete_struct_holding_recv_half_is_not_send() {
+    fn concrete_struct_holding_stream_of_rc_is_not_send() {
         let mut registry = TraitRegistry::new();
-        let recv_half = Ty::Named {
-            builtin: Some(BuiltinType::RecvHalf),
-            name: "RecvHalf".to_string(),
+        let rc_i64 = Ty::Named {
+            builtin: Some(BuiltinType::Rc),
+            name: "Rc".to_string(),
             args: vec![Ty::I64],
         };
-        // type Holder { half: RecvHalf<i64>; value: i64 }
-        registry.register_type("Holder".to_string(), vec![recv_half, Ty::I64]);
+        // type Holder { half: Stream<Rc<i64>>; value: i64 }
+        registry.register_type("Holder".to_string(), vec![stream_of(rc_i64), Ty::I64]);
         let holder = Ty::Named {
             builtin: None,
             name: "Holder".to_string(),
@@ -1968,7 +2004,7 @@ mod tests {
         };
         assert!(
             !registry.is_send(&holder),
-            "Holder (RecvHalf field) must NOT be Send"
+            "Holder (Stream<Rc<i64>> field) must NOT be Send"
         );
     }
 

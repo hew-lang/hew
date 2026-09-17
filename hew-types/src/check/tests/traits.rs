@@ -2145,7 +2145,7 @@ fn structural_hardening_uses_fn_sigs_named_method_fallback() {
 
 #[test]
 fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
-    let mut checker = make_checker_with_trait("Sink", &["close"], false, false);
+    let mut checker = make_checker_with_trait("Closer", &["close"], false, false);
 
     let mut methods = HashMap::new();
     methods.insert(
@@ -2156,11 +2156,11 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
         },
     );
     checker.type_defs.insert(
-        "Sender".to_string(),
-        make_test_type_def("Sender", vec![], methods),
+        "Sink".to_string(),
+        make_test_type_def("Sink", vec![], methods),
     );
     checker.fn_sigs.insert(
-        "Sender::close".to_string(),
+        "Sink::close".to_string(),
         FnSig {
             return_type: Ty::I32,
             ..FnSig::default()
@@ -2168,8 +2168,8 @@ fn structural_hardening_prefers_builtin_method_surface_for_imported_handle() {
     );
 
     assert!(
-        checker.type_structurally_satisfies("channel.Sender", "Sink"),
-        "structural check should prefer builtin Sender::close over imported stubs"
+        checker.type_structurally_satisfies("std.stream.Sink", "Closer"),
+        "structural check should prefer builtin Sink::close over imported stubs"
     );
 }
 

@@ -33108,7 +33108,7 @@ impl Widget {
             TargetArch::host(),
         );
         ctx.type_declarations.extend(
-            ["foo.Receiver", "foo.Connection", "net.Connection"]
+            ["foo.Stream", "foo.Connection", "net.Connection"]
                 .into_iter()
                 .map(|name| {
                     (
@@ -33121,7 +33121,7 @@ impl Widget {
                 }),
         );
 
-        for qualified in ["foo.Receiver", "foo.Connection", "net.Connection"] {
+        for qualified in ["foo.Stream", "foo.Connection", "net.Connection"] {
             assert_eq!(
                 ctx.resolve_named_type_ref(qualified, Vec::new()),
                 ResolvedTy::named_opaque(qualified.to_string(), Vec::new()),
@@ -33130,13 +33130,11 @@ impl Widget {
         }
 
         ctx.canonical_std_source_type_identities.extend([
-            "std.channel.Receiver".to_string(),
             "std.stream.Stream".to_string(),
             "std.stream.Sink".to_string(),
             "std.link_monitor.MonitorRef".to_string(),
         ]);
         for (qualified, builtin) in [
-            ("std.channel.Receiver", BuiltinType::Receiver),
             ("std.stream.Stream", BuiltinType::Stream),
             ("std.stream.Sink", BuiltinType::Sink),
             ("std.link_monitor.MonitorRef", BuiltinType::MonitorRef),
@@ -33153,14 +33151,7 @@ impl Widget {
             );
         }
 
-        for qualified in [
-            "channel.Sender",
-            "channel.Receiver",
-            "stream.Stream",
-            "stream.Sink",
-            "duplex.Duplex",
-            "link_monitor.MonitorRef",
-        ] {
+        for qualified in ["stream.Stream", "stream.Sink", "link_monitor.MonitorRef"] {
             assert_eq!(
                 ctx.resolve_named_type_ref(qualified, Vec::new()),
                 ResolvedTy::named_user(qualified.to_string(), Vec::new()),
@@ -33168,40 +33159,38 @@ impl Widget {
             );
         }
 
-        ctx.import_type_name_aliases.insert(
-            (None, 0, "Receiver".to_string()),
-            "foo.Receiver".to_string(),
-        );
+        ctx.import_type_name_aliases
+            .insert((None, 0, "Stream".to_string()), "foo.Stream".to_string());
         assert_eq!(
-            ctx.resolve_named_type_ref("Receiver", Vec::new()),
-            ResolvedTy::named_opaque("foo.Receiver".to_string(), Vec::new()),
+            ctx.resolve_named_type_ref("Stream", Vec::new()),
+            ResolvedTy::named_opaque("foo.Stream".to_string(), Vec::new()),
             "an unrenamed named import must resolve through its published source identity"
         );
 
         ctx.import_type_name_aliases.clear();
         ctx.type_declarations.insert(
-            "Receiver".to_string(),
+            "Stream".to_string(),
             hew_types::value_class::DeclaredType {
                 is_opaque: true,
                 ..Default::default()
             },
         );
         assert_eq!(
-            ctx.resolve_named_type_ref("Receiver", Vec::new()),
-            ResolvedTy::named_opaque("Receiver".to_string(), Vec::new()),
+            ctx.resolve_named_type_ref("Stream", Vec::new()),
+            ResolvedTy::named_opaque("Stream".to_string(), Vec::new()),
             "a flattened file-import declaration must outrank the bare builtin"
         );
 
-        ctx.type_declarations.remove("Receiver");
-        ctx.current_module_name = Some("std.channel".to_string());
+        ctx.type_declarations.remove("Stream");
+        ctx.current_module_name = Some("std.stream".to_string());
         assert_eq!(
             ctx.qualify_current_module_record_ty(ResolvedTy::named_user(
-                "Receiver".to_string(),
+                "Stream".to_string(),
                 Vec::new(),
             )),
             ResolvedTy::named_builtin(
-                BuiltinType::Receiver.canonical_name(),
-                BuiltinType::Receiver,
+                BuiltinType::Stream.canonical_name(),
+                BuiltinType::Stream,
                 Vec::new(),
             ),
             "a checker-authored bare std handle must recover its exact builtin identity"
@@ -33786,44 +33775,30 @@ impl Widget {
     /// (the `unlink` × stream-layout alias was caught by inspection, not
     /// by a test). This list mirrors the seeding sites exactly:
     /// `seed_typed_builtin_fn_registry` (the `supervisor_stop` inline id,
-    /// the duplex family loop, link/monitor/unlink, `duplex_pair`) and
-    /// `seed_channel_recv_fn_registry` (the six layout-witness entries).
+    /// link/monitor/unlink/link_remote/instant::now) and the pipe
+    /// layout-witness sentinels (the four `hew_stream_*_layout` entries).
     /// Adding a sentinel without extending this list leaves the new id
     /// unguarded — extend both together.
     #[test]
     fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
-        let mut ids: Vec<(&str, ItemId)> = vec![
+        let ids: Vec<(&str, ItemId)> = vec![
             ("supervisor_stop", ItemId(u32::MAX / 2)),
             ("link", SYNTHETIC_LINK_ITEM),
             ("monitor", SYNTHETIC_MONITOR_ITEM),
             ("unlink", SYNTHETIC_UNLINK_ITEM),
-            ("duplex_pair", SYNTHETIC_DUPLEX_PAIR_ITEM),
-            (
-                "hew_channel_recv_layout",
-                SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM,
-            ),
-            (
-                "hew_channel_try_recv_layout",
-                SYNTHETIC_CHANNEL_TRY_RECV_LAYOUT_ITEM,
-            ),
-            (
-                "hew_channel_send_layout",
-                SYNTHETIC_CHANNEL_SEND_LAYOUT_ITEM,
-            ),
+            ("instant::now", SYNTHETIC_INSTANT_NOW_ITEM),
             ("hew_stream_next_layout", SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM),
             (
                 "hew_stream_try_next_layout",
                 SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM,
             ),
             ("hew_stream_send_layout", SYNTHETIC_STREAM_SEND_LAYOUT_ITEM),
+            (
+                "hew_stream_try_send_layout",
+                SYNTHETIC_STREAM_TRY_SEND_LAYOUT_ITEM,
+            ),
             ("link_remote", SYNTHETIC_LINK_REMOTE_ITEM),
         ];
-        // The duplex rewrite-target family (offsets 0..=7 below
-        // supervisor_stop), exactly as `seed_typed_builtin_fn_registry`
-        // computes them.
-        for offset in 0u32..=7 {
-            ids.push(("hew_duplex_* family", ItemId(u32::MAX / 2 - 1 - offset)));
-        }
         for (i, (name_a, id_a)) in ids.iter().enumerate() {
             for (name_b, id_b) in &ids[i + 1..] {
                 assert_ne!(
@@ -34550,7 +34525,7 @@ impl Widget {
 
         #[test]
         fn user_shadow_types_and_cow_values_are_not_transfers() {
-            for shadow in ["Sender", "Receiver"] {
+            for shadow in ["Stream", "Sink"] {
                 let user_ty = named_record_ty(shadow);
                 assert!(
                     !transfers(&user_ty),
@@ -34600,11 +34575,8 @@ impl Widget {
             // The lambda wrappers and the monitor registration are here BECAUSE
             // they look like references but own a release.
             for (name, kind) in [
-                ("Sender", BuiltinType::Sender),
-                ("Receiver", BuiltinType::Receiver),
                 ("Stream", BuiltinType::Stream),
                 ("Sink", BuiltinType::Sink),
-                ("Duplex", BuiltinType::Duplex),
                 ("ActorFn", BuiltinType::ActorFn),
                 ("BoxedActor", BuiltinType::BoxedActor),
                 ("MonitorRef", BuiltinType::MonitorRef),
@@ -34632,8 +34604,8 @@ impl Widget {
             // `std.link_monitor.MonitorRef`), so the tag test alone misses it.
             assert!(transfers(&named_record_ty("std.link_monitor.MonitorRef")));
             assert!(transfers(&named_record_ty("link_monitor.MonitorRef")));
-            assert!(transfers(&named_record_ty("std.channel.Sender")));
-            assert!(transfers(&named_record_ty("channel.Receiver")));
+            assert!(transfers(&named_record_ty("std.stream.Stream")));
+            assert!(transfers(&named_record_ty("stream.Sink")));
             // Resolution is by declaration PATH, never by leaf name.
             assert!(!transfers(&named_record_ty("MonitorRef")));
             assert!(!transfers(&named_record_ty(
@@ -34847,39 +34819,6 @@ impl Widget {
             MONOMORPHISATION_REGISTRY_CAP,
             TargetArch::host(),
         );
-        let renamed_receiver = select_ctx.make_expr(
-            HirExprKind::Unsupported("test receiver".to_string()),
-            named("Inbox", Some(BuiltinType::Receiver), vec![ResolvedTy::I64]),
-            IntentKind::Read,
-            0..0,
-        );
-        assert_eq!(
-            select_ctx.select_arm_binding_ty(
-                &HirSelectArmKind::ChannelRecv {
-                    receiver: Box::new(renamed_receiver),
-                },
-                &(0..0),
-            ),
-            Some(LowerCtx::resolved_option_ty(ResolvedTy::I64)),
-            "a renamed builtin Receiver<T> retains channel receive binding shape"
-        );
-        let user_receiver = select_ctx.make_expr(
-            HirExprKind::Unsupported("test receiver".to_string()),
-            named("Receiver", None, vec![ResolvedTy::I64]),
-            IntentKind::Read,
-            0..0,
-        );
-        assert_eq!(
-            select_ctx.select_arm_binding_ty(
-                &HirSelectArmKind::ChannelRecv {
-                    receiver: Box::new(user_receiver),
-                },
-                &(0..0),
-            ),
-            None,
-            "a user Receiver<T> must not acquire channel receive semantics"
-        );
-
         let renamed_stream = select_ctx.make_expr(
             HirExprKind::Unsupported("test stream".to_string()),
             named(

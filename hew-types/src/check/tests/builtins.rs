@@ -341,22 +341,23 @@ fn typecheck_generator_yield_mismatch_reports_element_type() {
 
 #[test]
 fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
-    // `lines`/`chunks`/`take` reach their runtime rows. `map`/`filter` carry a
-    // user callback with no type-erased runtime entry, so they must fail closed
-    // at the checker with exactly ONE honest, user-facing capability-boundary
-    // diagnostic rather than dead-ending in HIR lowering.
+    // `lines`/`chunks`/`take` reach their runtime rows. `map`/`filter` are not
+    // part of the pipe surface (D506): there is no type-erased runtime entry
+    // for a user callback over a `Stream<T>`, so they fail closed at the
+    // checker with the ordinary undefined-method diagnostic — no special
+    // adapter carve-out, and no leaked internal NYI noise.
     for method in ["map", "filter"] {
         let source =
             format!("fn use_stream(s: Stream<string>) {{\n    let _t = s.{method}(|x| x);\n}}\n");
         let (errors, _warnings) = parse_and_check(&source);
-        let adapter_errors: Vec<_> = errors
+        let undefined_method_errors: Vec<_> = errors
             .iter()
-            .filter(|e| e.kind.as_kind_str() == "StreamAdapterNotSupported")
+            .filter(|e| e.kind.as_kind_str() == "UndefinedMethod")
             .collect();
         assert_eq!(
-            adapter_errors.len(),
+            undefined_method_errors.len(),
             1,
-            "`Stream<string>.{method}` must emit exactly one StreamAdapterNotSupported \
+            "`Stream<string>.{method}` must emit exactly one UndefinedMethod \
              diagnostic; got errors: {errors:?}"
         );
         // No leftover internal-shaped NYI noise from the old DeferToLowering path.
@@ -367,30 +368,32 @@ fn stream_lazy_adapters_fail_closed_with_one_honest_diagnostic() {
             "`Stream<string>.{method}` must not leak the internal NotYetImplemented \
              note; got errors: {errors:?}"
         );
-        // The single diagnostic points at the supported alternative.
-        assert!(
-            adapter_errors[0].message.contains("for"),
-            "the diagnostic must point at the supported `for` consumption \
-             pattern; got: {}",
-            adapter_errors[0].message
-        );
     }
-    // Positive control: the three lowered adaptors are admitted on a content
-    // element, chained, with no diagnostic of their own.
+    // Positive control: the three lowered adaptors are admitted, with no
+    // diagnostic of their own. `lines`/`chunks` each frame a `Stream<bytes>`
+    // directly (D506) — they do not chain off one another — and `take`
+    // bounds either.
+    let (errors, _warnings) =
+        parse_and_check("fn use_stream(s: Stream<bytes>) {\n    let _t = s.lines();\n}\n");
+    assert!(
+        errors.is_empty(),
+        "the lowered `lines` adaptor must type-check; got errors: {errors:?}"
+    );
     let (errors, _warnings) = parse_and_check(
-        "fn use_stream(s: Stream<string>) {\n    let _t = s.lines().chunks(4).take(2);\n}\n",
+        "fn use_stream(s: Stream<bytes>) {\n    let _t = s.chunks(4).take(2);\n}\n",
     );
     assert!(
         errors.is_empty(),
-        "the lowered stream adaptors must type-check; got errors: {errors:?}"
+        "the lowered `chunks`/`take` adaptors must type-check; got errors: {errors:?}"
     );
-    // Negative control: the runtime adaptors read the content witness, so a
-    // non-content element is refused before lowering.
+    // Negative control: `take` admits any content element (i64 included) but
+    // still reads the content-layout witness, so a container element is
+    // refused before lowering.
     let (errors, _warnings) =
-        parse_and_check("fn use_stream(s: Stream<i64>) {\n    let _t = s.take(2);\n}\n");
+        parse_and_check("fn use_stream(s: Stream<Vec<i64>>) {\n    let _t = s.take(2);\n}\n");
     assert!(
         !errors.is_empty(),
-        "`Stream<i64>.take` must be refused: the adaptors need a content element"
+        "`Stream<Vec<i64>>.take` must be refused: the adaptors need a content element"
     );
 }
 
@@ -577,26 +580,19 @@ fn test_stream_canonical_name_still_resolves_after_actor_stream_removal() {
 }
 
 /// A qualified builtin keeps its builtin identity and its element through an
-/// import, aliased or not.
+/// import.
 ///
-/// The nominal spelling differs by family, and that difference is the design.
-/// `std.stream.Stream` carries its owner, because a substrate handle's identity
-/// is the module that declared it. A channel endpoint canonicalizes to the
-/// builtin's own name so one nominal identity carries `Sender`/`Receiver`
-/// however the endpoint was spelled; a source type of the same leaf keeps its
-/// own owner and never unifies with it.
+/// The pipe handles are builtins recognized by their bare canonical name
+/// (`Stream`, `Sink`) wherever they are written, qualified or not — unlike a
+/// user-declared type, which always carries its module owner.
 #[test]
 fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
     let source = concat!(
         "import std.stream;\n",
-        "import std.channel as channel_api;\n",
         "\n",
         "fn stream_id(consume s: stream.Stream<i64>) -> stream.Stream<i64> { s }\n",
-        "fn close_sender(tx: channel_api.Sender<string>) {\n",
+        "fn close_sink(consume tx: stream.Sink<string>) {\n",
         "    tx.close();\n",
-        "}\n",
-        "fn close_receiver(rx: channel_api.Receiver<string>) {\n",
-        "    rx.close();\n",
         "}\n",
     );
     let result = hew_parser::parse(source);
@@ -613,38 +609,29 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
         &output.fn_sigs["stream_id"].params[0],
         &output.fn_sigs["stream_id"].return_type,
     ] {
-        assert!(matches!(
-            ty,
-            Ty::Named {
-                name,
-                args,
-                builtin: Some(crate::BuiltinType::Stream),
-            } if name == "std.stream.Stream" && args == &[Ty::I64]
-        ));
+        assert!(
+            matches!(
+                ty,
+                Ty::Named {
+                    name,
+                    args,
+                    builtin: Some(crate::BuiltinType::Stream),
+                } if name == "Stream" && args == &[Ty::I64]
+            ),
+            "got: {ty:?}",
+        );
     }
-    let sender = &output.fn_sigs["close_sender"].params[0];
+    let sink = &output.fn_sigs["close_sink"].params[0];
     assert!(
         matches!(
-            sender,
+            sink,
             Ty::Named {
                 name,
-                builtin: Some(crate::BuiltinType::Sender),
+                builtin: Some(crate::BuiltinType::Sink),
                 args,
-            } if name == "Sender" && args == &[Ty::String]
+            } if name == "Sink" && args == &[Ty::String]
         ),
-        "an aliased import must keep the endpoint's element: {sender:?}"
-    );
-    let receiver = &output.fn_sigs["close_receiver"].params[0];
-    assert!(
-        matches!(
-            receiver,
-            Ty::Named {
-                name,
-                builtin: Some(crate::BuiltinType::Receiver),
-                args,
-            } if name == "Receiver" && args == &[Ty::String]
-        ),
-        "an aliased import must keep the endpoint's element: {receiver:?}"
+        "a qualified builtin spelling must keep its builtin identity and element: {sink:?}"
     );
 }
 

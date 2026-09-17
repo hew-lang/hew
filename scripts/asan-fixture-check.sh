@@ -477,9 +477,6 @@ OWNED_STRING_RETURN_CARRIER_SRC="${ROOT}/tests/vertical-slice/accept/owned_strin
 # owned-move ABI and released through a descriptor with a null clone thunk and
 # an in-place receiver-close drop thunk.
 VEC_RECEIVER_DROP_ONLY_SRC="${ROOT}/tests/vertical-slice/accept/vec_receiver_drop_only_asan.hew"
-# Sender is cloneable, so this companion fixture exercises the descriptor's
-# clone thunk plus both Vec destructors and the paired receiver close.
-VEC_SENDER_CLONE_DROP_SRC="${ROOT}/tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew"
 
 # ── Step 3: compile the Hew fixtures ─────────────────────────────────────
 echo ""
@@ -550,9 +547,6 @@ compile_asan_fixture "owned string return carrier" "${OWNED_STRING_RETURN_CARRIE
 
 VEC_RECEIVER_DROP_ONLY_BIN="${WORK_DIR}/vec_receiver_drop_only_asan"
 compile_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_SRC}" "${VEC_RECEIVER_DROP_ONLY_BIN}"
-
-VEC_SENDER_CLONE_DROP_BIN="${WORK_DIR}/vec_sender_clone_drop_asan"
-compile_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_SRC}" "${VEC_SENDER_CLONE_DROP_BIN}"
 
 # ── Step 3c: compile and link the clean probe via the CLI flag path ───────
 # Uses HEW_SANITIZE_ADDRESS=1 hew build (full link, not --emit-obj) to exercise
@@ -736,12 +730,6 @@ else
 fi
 
 if run_asan_fixture "drop-only Receiver Vec lifecycle" "${VEC_RECEIVER_DROP_ONLY_BIN}" 0; then
-    pass=$((pass + 1))
-else
-    fail=$((fail + 1))
-fi
-
-if run_asan_fixture "cloneable Sender Vec clone/drop lifecycle" "${VEC_SENDER_CLONE_DROP_BIN}" 0; then
     pass=$((pass + 1))
 else
     fail=$((fail + 1))

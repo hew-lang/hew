@@ -58,41 +58,39 @@ fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
 }
 
 #[test]
-fn channel_new_result_preserves_endpoint_type_parameter() {
+fn pipe_result_preserves_endpoint_type_parameter() {
     for (element_source, element_type) in [("i64", Ty::I64), ("string", Ty::String)] {
         let source = format!(
             r"
-            import std.channel;
+            import std.stream;
 
             fn main() {{
-                let _result: Result<(channel.Sender<{element_source}>, channel.Receiver<{element_source}>), string> =
-                    channel.new(1);
+                let _result: Result<(stream.Sink<{element_source}>, stream.Stream<{element_source}>), string> =
+                    stream.pipe(1);
             }}
             "
         );
         let output = check_source_with_stdlib(&source);
         assert!(
             output.errors.is_empty(),
-            "channel.new should preserve Result while inferring {element_source} endpoints: {:#?}",
+            "stream.pipe should preserve Result while inferring {element_source} endpoints: {:#?}",
             output.errors
         );
 
-        let call = "channel.new(1)";
-        let call_start = source
-            .find(call)
-            .expect("channel constructor call in source");
+        let call = "stream.pipe(1)";
+        let call_start = source.find(call).expect("pipe constructor call in source");
         let call_span = call_start..call_start + call.len();
         let expected = Ty::result(
             Ty::Tuple(vec![
                 Ty::Named {
-                    name: BuiltinType::Sender.canonical_name().to_string(),
+                    name: BuiltinType::Sink.canonical_name().to_string(),
                     args: vec![element_type.clone()],
-                    builtin: Some(BuiltinType::Sender),
+                    builtin: Some(BuiltinType::Sink),
                 },
                 Ty::Named {
-                    name: BuiltinType::Receiver.canonical_name().to_string(),
+                    name: BuiltinType::Stream.canonical_name().to_string(),
                     args: vec![element_type],
-                    builtin: Some(BuiltinType::Receiver),
+                    builtin: Some(BuiltinType::Stream),
                 },
             ]),
             Ty::String,
@@ -100,20 +98,20 @@ fn channel_new_result_preserves_endpoint_type_parameter() {
         assert_eq!(
             output.expr_types.get(&SpanKey::from(&call_span)),
             Some(&expected),
-            "channel.new should record the complete resolved {element_source} Result type: {:?}",
+            "stream.pipe should record the complete resolved {element_source} Result type: {:?}",
             output.expr_types
         );
     }
 }
 
 #[test]
-fn channel_new_result_does_not_coerce_to_endpoint_tuple() {
+fn pipe_result_does_not_coerce_to_endpoint_tuple() {
     let output = check_source_with_stdlib(
         r"
-        import std.channel;
+        import std.stream;
 
         fn main() {
-            let _pair: (channel.Sender<i64>, channel.Receiver<i64>) = channel.new(1);
+            let _pair: (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1);
         }
         ",
     );
@@ -123,7 +121,7 @@ fn channel_new_result_does_not_coerce_to_endpoint_tuple() {
             .errors
             .iter()
             .any(|error| matches!(error.kind, TypeErrorKind::Mismatch { .. })),
-        "channel.new must retain its Result wrapper instead of coercing to a tuple: {:#?}",
+        "stream.pipe must retain its Result wrapper instead of coercing to a tuple: {:#?}",
         output.errors
     );
 }
@@ -1227,8 +1225,8 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                     Ty::builtin_named(BuiltinType::HewActor, vec![]),
                 ),
                 (
-                    "sender".to_string(),
-                    Ty::builtin_named(BuiltinType::Sender, vec![resource.clone()]),
+                    "sink".to_string(),
+                    Ty::builtin_named(BuiltinType::Sink, vec![resource.clone()]),
                 ),
             ]),
             variants: HashMap::new(),
@@ -1241,17 +1239,17 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                 "remote".to_string(),
                 "lambda".to_string(),
                 "actor".to_string(),
-                "sender".to_string(),
+                "sink".to_string(),
             ],
             is_indirect: false,
         },
     );
     checker.type_defs.insert(
-        "ReceiverWrapper".to_string(),
+        "StreamWrapper".to_string(),
         record_type_def_with_field(
-            "ReceiverWrapper",
-            "receiver",
-            Ty::builtin_named(BuiltinType::Receiver, vec![resource.clone()]),
+            "StreamWrapper",
+            "stream",
+            Ty::builtin_named(BuiltinType::Stream, vec![resource.clone()]),
         ),
     );
     checker.type_defs.insert(
@@ -1279,10 +1277,10 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
     ));
     assert!(
         matches!(
-            checker.record_clone_admissibility("ReceiverWrapper", &[], &span),
+            checker.record_clone_admissibility("StreamWrapper", &[], &span),
             RecordCloneAdmissibility::AffineValue { .. }
         ),
-        "Receiver has no semantic clone and must not be a terminal affine-clone leaf"
+        "Stream has no semantic clone and must not be a terminal affine-clone leaf"
     );
     assert!(matches!(
         checker.record_clone_admissibility("PhantomKey", &[resource], &span),

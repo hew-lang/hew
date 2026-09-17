@@ -5,10 +5,10 @@ maintainers · Companion to the ast-grep rule set
 
 M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
 `LintLevels`), the checker `run_lints` sweep, the CLI `--allow` / `--warn` /
-`--deny` flags, and in-source `// hew:allow(...)` suppression — plus eight
+`--deny` flags, and in-source `// hew:allow(...)` suppression — plus nine
 checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`,
-`sleep_loop_blocks_mailbox`,
+`must_use`, `sleep_loop_blocks_mailbox`,
 `text_direction_codepoint_in_comment`, `invisible_codepoint_in_comment`) and the
 two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
 they are now re-levelable and suppressible. `var_param_mutation_lost` joined
@@ -223,6 +223,12 @@ the precise subset that is actually convertible.
     `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
     branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
     chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
+  - **`must_use`** — a discarded machine step report. *Guards:* statement position only (a
+    trailing block value, a `let`/`var` binding and a `match`/`if let` scrutinee are all "used");
+    the resolved type must be a declaration the checker registered as a step report. Opt out with
+    `let _ = …` or `// hew:allow(must_use)`. Send and ask outcomes are **not** a lint tier:
+    discarding one is `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
+    (HEW-SPEC-2026 §2.1.1, §5.6).
   - **`sleep_loop_blocks_mailbox`** — an actor `receive fn` contains a `loop`, `while true`,
     `while flag`, or `while !flag` whose body directly reaches `sleep` or `sleep_until`, has no
     reachable `break` for that loop, and does not assign the bare guard name inside the loop body.

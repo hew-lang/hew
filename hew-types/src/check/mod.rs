@@ -2821,6 +2821,7 @@ impl Checker {
         out: &mut Vec<TypeError>,
     ) {
         let ctx = lints::LintCtx {
+            checker: self,
             subst: &self.subst,
             expr_types: &self.expr_types,
             module_idx,
@@ -2841,6 +2842,7 @@ impl Checker {
         out: &mut Vec<TypeError>,
     ) {
         let ctx = lints::LintCtx {
+            checker: self,
             subst: &self.subst,
             expr_types: &self.expr_types,
             module_idx,

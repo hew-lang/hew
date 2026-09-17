@@ -5,16 +5,16 @@
 pub(super) use super::*;
 
 #[test]
-fn user_receiver_recv_is_not_a_channel_select_source() {
+fn user_stream_recv_is_not_a_pipe_select_source() {
     let output = check_source(
         r"
-        type Receiver<T> { value: T, }
-        impl<T> Receiver<T> {
+        type Stream<T> { value: T, }
+        impl<T> Stream<T> {
             fn recv(self) -> T { self.value }
         }
 
         fn main() {
-            let rx = Receiver { value: 1 };
+            let rx = Stream { value: 1 };
             let _ = select {
                 value from rx.recv() => value,
                 after 1ms => 0,
@@ -28,9 +28,9 @@ fn user_receiver_recv_is_not_a_channel_select_source() {
             error.kind == TypeErrorKind::InvalidOperation
                 && error
                     .message
-                    .contains("a select arm source is a task, an actor call, or a channel")
+                    .contains("a select arm source is a task, an actor call, or a stream receive")
         }),
-        "a same-spelling user Receiver must not acquire channel select semantics: {:#?}",
+        "a same-spelling user Stream must not acquire pipe select semantics: {:#?}",
         output.errors
     );
 }

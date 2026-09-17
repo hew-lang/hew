@@ -1240,41 +1240,41 @@ mod tests {
     }
 
     #[test]
-    fn channel_legacy_request_resolves_source_before_consulting_canonical_cache() {
+    fn net_legacy_request_resolves_source_before_consulting_canonical_cache() {
         let mut reg = registry();
-        reg.load("std.channel")
-            .expect("prime the canonical shipped channel owner");
+        reg.load("std.net")
+            .expect("prime the canonical shipped net owner");
         let shipped = reg
-            .get("std.channel")
+            .get("std.net")
             .and_then(|info| info.source_path.clone())
             .expect("canonical cache entry has a source path");
 
-        let user_dir = TestDir::new("module-registry-user-channel-lookalike");
-        let user_channel_dir = user_dir.root.join("std/channel");
-        fs::create_dir_all(&user_channel_dir).expect("create user channel module directory");
-        let user_source = user_channel_dir.join("channel.hew");
+        let user_dir = TestDir::new("module-registry-user-net-lookalike");
+        let user_net_dir = user_dir.root.join("std/net");
+        fs::create_dir_all(&user_net_dir).expect("create user net module directory");
+        let user_source = user_net_dir.join("net.hew");
         fs::write(
             &user_source,
-            "pub type Sender { marker: i64, }\npub type Receiver { marker: i64, }\n",
+            "pub type Handle { marker: i64, }\npub type Endpoint { marker: i64, }\n",
         )
-        .expect("write user channel lookalike");
+        .expect("write user net lookalike");
 
         // Model a new importer resolution context while preserving the cache.
         // The legacy request must resolve this source before deciding whether
         // its repeated basename denotes the canonical shipped owner.
         reg.search_paths = vec![user_dir.root.clone()];
         let loaded = reg
-            .load("std.channel.channel")
+            .load("std.net.net")
             .expect("load the user lookalike through the legacy spelling");
         assert_eq!(loaded.source_path.as_deref(), Some(user_source.as_path()));
         assert_eq!(
-            reg.get("std.channel.channel")
+            reg.get("std.net.net")
                 .and_then(|info| info.source_path.as_deref()),
             Some(user_source.as_path()),
             "the user source keeps the nested nominal owner"
         );
         assert_eq!(
-            reg.get("std.channel")
+            reg.get("std.net")
                 .and_then(|info| info.source_path.as_deref()),
             Some(shipped.as_path()),
             "resolving a lookalike must not replace the proven shipped owner"
@@ -1629,10 +1629,10 @@ mod tests {
 
     #[test]
     fn imported_registry_signature_uses_source_resolved_physical_alias_owner() {
-        let fixture = TestDir::new("registry-signature-channel-physical-alias");
+        let fixture = TestDir::new("registry-signature-stream-physical-alias");
         fs::write(
             fixture.root.join("signature_importer.hew"),
-            "import std.channel as ch;\n",
+            "import std.stream as st;\n",
         )
         .expect("write signature importer");
 
@@ -1643,12 +1643,12 @@ mod tests {
             .expect("load physical-alias importer");
 
         assert_eq!(
-            reg.canonical_registry_signature_type_identity("ch.Sender", "signature_importer",),
-            Some("std.channel.Sender".to_string()),
+            reg.canonical_registry_signature_type_identity("st.Sink", "signature_importer",),
+            Some("std.stream.Sink".to_string()),
             "the shipped source publishes its declarations under the directory owner"
         );
         assert_eq!(
-            reg.canonical_registry_signature_type_identity("ch.Foreign", "signature_importer",),
+            reg.canonical_registry_signature_type_identity("st.Foreign", "signature_importer",),
             None,
             "an imported qualifier cannot authorize a type absent from that exact source"
         );

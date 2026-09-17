@@ -14,7 +14,6 @@ use crate::builtin_names::{SINK, STREAM};
 pub const STD_NET_LISTENER: &str = "std.net.Listener";
 pub const STD_NET_CONNECTION: &str = "std.net.Connection";
 pub const STD_NET_ERROR: &str = "std.net.NetError";
-pub const STD_NET_WRITE_ERROR: &str = "std.net.WriteError";
 
 /// Resolves a method call on a first-class `Stream<T>` or `Sink<T>` to its C symbol.
 ///

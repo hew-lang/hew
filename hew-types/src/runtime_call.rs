@@ -12406,7 +12406,10 @@ mod tests {
             RuntimeCallFamily::NodeStart.runtime_capability(),
             Some(RuntimeCapability::Node)
         );
-        assert_eq!(RuntimeCallFamily::DuplexSend.runtime_capability(), None);
+        assert_eq!(
+            RuntimeCallFamily::StreamSendLayout.runtime_capability(),
+            None
+        );
     }
 
     #[test]
@@ -12488,32 +12491,22 @@ mod tests {
 
     /// `is_async_suspending` returns `Some(_)` for EXACTLY the symbols
     /// the HIR await-classifier discriminates through `RuntimeCallFamily`
-    /// today: the three sink-send families (`hew_sink_write_bytes`,
-    /// `hew_sink_write_string`, `hew_stream_send_layout`) plus
-    /// `hew_duplex_close`, `hew_channel_recv_layout`, and
-    /// `hew_stream_next_layout`. All three sink-send families share the
-    /// single `SinkSend` kind — codegen picks the concrete runtime entry
-    /// from the value's `ResolvedTy`.
+    /// today: `hew_stream_send_layout` (backpressure-aware sink send) and
+    /// `hew_stream_next_layout` (stream recv).
     /// Locks the consumer contract for the eventual migration.
     ///
     /// Positive: the symbols listed map to the matching
     /// `AsyncSuspendKind`. Negative: every other family returns `None`,
     /// pinned by enumeration via `all_runtime_call_families`. ESP. the
-    /// `try_*` peers (`SinkTryWrite`, `ChannelSendLayout`, `DuplexSend`,
-    /// …) MUST stay non-suspending: those never touch the backpressure
-    /// ramp.
+    /// `try_*` peers (`StreamTrySendLayout`, `StreamTryNextLayout`) MUST
+    /// stay non-suspending: those never touch the backpressure ramp.
     #[test]
     fn async_suspension_classification_preserves_operation_identity() {
         use RuntimeCallFamily as F;
 
-        // Positive: exactly these (family, expected kind) tuples. All
-        // three sink-send families share the single `SinkSend` kind.
+        // Positive: exactly these (family, expected kind) tuples.
         let positives: &[(RuntimeCallFamily, AsyncSuspendKind)] = &[
-            (AsyncSuspendKind::SinkSend,),
-            (AsyncSuspendKind::SinkSend,),
             (F::StreamSendLayout, AsyncSuspendKind::SinkSend),
-            (F::DuplexClose, AsyncSuspendKind::DuplexClose),
-            (F::ChannelRecvLayout, AsyncSuspendKind::ChannelRecv),
             (F::StreamNextLayout, AsyncSuspendKind::StreamRecv),
         ];
         for (family, kind) in positives {
@@ -12524,12 +12517,14 @@ mod tests {
             );
         }
 
-        // Explicit negative regression set: the non-suspending channel
-        // send, the recv/send try_* peers, and the close families the
-        // classifier never touches. `SinkWrite(String)` and
-        // `StreamSendLayout` are NO LONGER here — they suspend now.
-        let must_not_suspend: &[RuntimeCallFamily] =
-            &[F::StreamTryNextLayout, F::StreamClose, F::SinkClose];
+        // Explicit negative regression set: the try_* peers and the
+        // close families the classifier never touches.
+        let must_not_suspend: &[RuntimeCallFamily] = &[
+            F::StreamTrySendLayout,
+            F::StreamTryNextLayout,
+            F::StreamClose,
+            F::SinkClose,
+        ];
         for family in must_not_suspend {
             assert_eq!(
                 family.is_async_suspending(),
@@ -12557,8 +12552,8 @@ mod tests {
         assert!(matches!(err, DescriptorError::UnexpectedElem { .. }));
 
         let err =
-            RuntimeCallDescriptor::new(RuntimeCallFamily::DuplexClose, Some(ResolvedTy::Bool))
-                .expect_err("DuplexClose must reject Some(elem)");
+            RuntimeCallDescriptor::new(RuntimeCallFamily::StreamClose, Some(ResolvedTy::Bool))
+                .expect_err("StreamClose must reject Some(elem)");
         assert!(matches!(err, DescriptorError::UnexpectedElem { .. }));
 
         // Symmetric: every variant accepts `None`.
@@ -12574,13 +12569,12 @@ mod tests {
     /// each axis.
     #[test]
     fn descriptor_accessors_delegate_to_family() {
-        let d = RuntimeCallDescriptor::new(RuntimeCallFamily::DuplexClose, None).unwrap();
-        assert_eq!(d.family(), RuntimeCallFamily::DuplexClose);
+        let d = RuntimeCallDescriptor::new(RuntimeCallFamily::StreamNextLayout, None).unwrap();
+        assert_eq!(d.family(), RuntimeCallFamily::StreamNextLayout);
         assert_eq!(d.elem(), None);
-        assert_eq!(d.c_symbol(), "hew_duplex_close");
-        assert!(d.consumes_receiver());
-        // DuplexClose is one of the suspending classifier symbols.
-        assert_eq!(d.is_async_suspending(), Some(AsyncSuspendKind::DuplexClose));
+        assert_eq!(d.c_symbol(), "hew_stream_next_layout");
+        // StreamNextLayout is one of the suspending classifier symbols.
+        assert_eq!(d.is_async_suspending(), Some(AsyncSuspendKind::StreamRecv));
 
         // Non-suspending close peer: StreamClose / SinkClose are NOT
         // in the await-classifier set.
@@ -12610,13 +12604,8 @@ mod tests {
         // Listed here so a future change to either side fails this test
         // loudly (substrate-tests-the-substrate).
         let expected: &[(&str, &str)] = &[
-            ("Duplex::close", "hew_duplex_close"),
             ("Stream::close", "hew_stream_close"),
             ("Sink::close", "hew_sink_close"),
-            ("Sender::close", "hew_channel_sender_close"),
-            ("Receiver::close", "hew_channel_receiver_close"),
-            ("SendHalf::close", "hew_duplex_close_half"),
-            ("RecvHalf::close", "hew_duplex_close_half"),
             ("CancellationToken::release", "hew_cancel_token_release"),
             ("MonitorRef::close", "hew_actor_demonitor"),
         ];
@@ -12654,16 +12643,8 @@ mod tests {
         use BuiltinType::*;
 
         let inventory = [
-            (Duplex, Some(RuntimeDropDescriptor::DuplexClose)),
-            (HewDuplex, Some(RuntimeDropDescriptor::DuplexClose)),
             (Stream, Some(RuntimeDropDescriptor::StreamClose)),
             (Sink, Some(RuntimeDropDescriptor::SinkClose)),
-            (Sender, Some(RuntimeDropDescriptor::SenderClose)),
-            (Receiver, Some(RuntimeDropDescriptor::ReceiverClose)),
-            (SendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
-            (HewSendHalf, Some(RuntimeDropDescriptor::SendHalfClose)),
-            (RecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
-            (HewRecvHalf, Some(RuntimeDropDescriptor::RecvHalfClose)),
             (ActorFn, None),
             (
                 CancellationToken,
@@ -12689,18 +12670,12 @@ mod tests {
 
     #[test]
     fn runtime_resource_drop_operands_are_exhaustively_typed() {
-        use DuplexHalfDropDirection::{Recv, Send};
         use RuntimeDropDescriptor::*;
-        use RuntimeDropOperandShape::{DuplexHalf, HandlePtr, MonitorRefId};
+        use RuntimeDropOperandShape::{HandlePtr, MonitorRefId};
 
         let expected = [
-            (DuplexClose, HandlePtr),
             (StreamClose, HandlePtr),
             (SinkClose, HandlePtr),
-            (SenderClose, HandlePtr),
-            (ReceiverClose, HandlePtr),
-            (SendHalfClose, DuplexHalf { direction: Send }),
-            (RecvHalfClose, DuplexHalf { direction: Recv }),
             (CancellationTokenRelease, HandlePtr),
             (MonitorRefClose, MonitorRefId),
         ];

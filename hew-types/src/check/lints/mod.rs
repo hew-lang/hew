@@ -47,6 +47,7 @@ use crate::ty::{Substitution, Ty};
 use super::types::SpanKey;
 
 mod len_zero_comparison;
+mod must_use;
 mod needless_bool;
 mod needless_match_to_if_let;
 mod needless_range_loop;
@@ -83,6 +84,10 @@ pub enum LintId {
     /// A function that is defined but never reached from any entry point.
     /// (Migrated from an ad-hoc whole-program dead-code warning.)
     DeadCode,
+    /// A discarded machine step report. A statement-position discard loses
+    /// the step's typed outputs and disposition; read it or bind `let _ = …`.
+    /// Send and ask outcomes are `E_SEND_RESULT_DROPPED`, not a lint tier.
+    MustUse,
     /// A receive handler contains a `sleep`/`sleep_until` loop whose only obvious
     /// exit is a sibling actor message, but the mailbox is not observed until
     /// the current handler returns.
@@ -116,6 +121,7 @@ impl LintId {
         LintId::NeedlessBool,
         LintId::CloneOnCopy,
         LintId::DeadCode,
+        LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
         LintId::ActorHandleBuiltinShadow,
         LintId::TextDirectionCodepointInComment,
@@ -138,6 +144,7 @@ impl LintId {
             LintId::NeedlessBool => "needless_bool",
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
+            LintId::MustUse => "must_use",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
             LintId::ActorHandleBuiltinShadow => "actor_handle_builtin_shadow",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
@@ -167,6 +174,7 @@ impl LintId {
             | LintId::NeedlessBool
             | LintId::CloneOnCopy
             | LintId::DeadCode
+            | LintId::MustUse
             | LintId::SleepLoopBlocksMailbox
             | LintId::ActorHandleBuiltinShadow
             | LintId::InvisibleCodepointInComment
@@ -285,6 +293,7 @@ impl LintSources {
 /// root unit, N = N-th non-root module) and `source_module` tags emitted
 /// diagnostics so the CLI routes them to the correct source file.
 pub(super) struct LintCtx<'a> {
+    pub checker: &'a super::Checker,
     pub subst: &'a Substitution,
     pub expr_types: &'a HashMap<SpanKey, Ty>,
     pub module_idx: u32,
@@ -438,6 +447,7 @@ pub(super) fn lint_block(
     needless_match_to_if_let::check(ctx, levels, body, out);
     len_zero_comparison::check(ctx, levels, body, out);
     needless_bool::check(ctx, levels, body, out);
+    must_use::check(ctx, levels, body, out);
 }
 
 /// Run receive-handler-only lints over one actor message handler body.

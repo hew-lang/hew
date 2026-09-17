@@ -2099,11 +2099,7 @@ mod tests {
         assert_eq!(
             Ok((ValueClass::AffineResource, CloneKind::None)),
             crate::value_class::classify_ty(
-                &named(
-                    "Sender",
-                    Some(BuiltinType::Sender),
-                    vec![ResolvedTy::String]
-                ),
+                &named("Sink", Some(BuiltinType::Sink), vec![ResolvedTy::String]),
                 &context
             )
         );

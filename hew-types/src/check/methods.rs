@@ -3462,7 +3462,7 @@ impl Checker {
                 TypeErrorKind::InvalidOperation,
                 span,
                 format!(
-                    "cannot index `Vec<{}>` by value: `Receiver` is a non-cloneable, \
+                    "cannot index `Vec<{}>` by value: `Stream` is a non-cloneable, \
                      single-consumer endpoint; use `pop`, `remove`, or consuming iteration \
                      to move the endpoint out",
                     resolved.user_facing()
@@ -3502,10 +3502,19 @@ impl Checker {
                 args,
                 builtin,
             } => {
+                let member = if path.is_empty() { "value" } else { path };
+                // A pipe half is cloned one handle at a time (`sink.clone()`
+                // retains the pipe's handle count); no container or record
+                // clone recipe duplicates it as a member.
+                if builtin.is_some_and(BuiltinType::is_substrate_handle) {
+                    return Some(CloneCapabilityBlocker::Opaque {
+                        type_name: resolved.user_facing().to_string(),
+                        member: member.to_string(),
+                    });
+                }
                 if builtin.is_some_and(BuiltinType::is_affine_clone_terminal) {
                     return None;
                 }
-                let member = if path.is_empty() { "value" } else { path };
                 // Type-parameter capability inside a generic template comes
                 // from the parameter's declared BOUND, never from a concrete
                 // type (there is none yet). `T: Clone` makes every `T`-shaped
@@ -5726,6 +5735,29 @@ impl Checker {
                 "`Vec<dyn Trait>.clone()` is not supported because trait objects have no \
                  semantic clone operation; use `into_iter()` to transfer the existing owners"
                     .to_string(),
+            );
+            return Ty::Error;
+        }
+        // A pipe half is cloned one handle at a time: `sink.clone()` retains
+        // the pipe's handle count, and no Vec clone recipe duplicates one.
+        if method == "clone"
+            && matches!(
+                self.subst.resolve(&elem_ty),
+                Ty::Named {
+                    builtin: Some(BuiltinType::Sink | BuiltinType::Stream),
+                    ..
+                }
+            )
+        {
+            self.check_arity(args, 0, "`Vec.clone`", span);
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                format!(
+                    "`Vec<{}>.clone()` is not supported: a pipe half is cloned one handle at a \
+                     time with `.clone()` on a `Sink`, and a `Stream` has one consumer",
+                    elem_ty.user_facing()
+                ),
             );
             return Ty::Error;
         }
@@ -8252,6 +8284,9 @@ impl Checker {
                 },
                 _,
             ) => {
+                // The pipe runtime is native-only; the write half is gated
+                // exactly like the read half.
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Streams);
                 let inner = Self::stream_element_type(type_args);
                 // Gate 2: lowering-capability check.  Only string and bytes have
                 // runtime symbols; other Wire-capable types pass gate 1 but cannot

@@ -2478,7 +2478,7 @@ fn import_with_resolved_items_no_error() {
 }
 
 #[test]
-fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
+fn stdlib_import_keeps_stream_open_stream_typed_after_fs_import() {
     let stream_import = ImportDecl {
         path: vec!["std".to_string(), "stream".to_string()],
         spec: None,
@@ -2510,32 +2510,29 @@ fn stdlib_import_keeps_stream_from_file_stream_typed_after_fs_import() {
 
     let mut checker = Checker::new(test_registry());
     let output = checker.check_program(&program);
-    let stream_from_file = output
+    let stream_open = output
         .fn_sigs
-        .get("std.stream.from_file")
-        .expect("expected std::stream import to register std.stream.from_file");
+        .get("std.stream.open")
+        .expect("expected std::stream import to register std.stream.open");
     assert!(
-        !output.fn_sigs.contains_key("stream.from_file"),
+        !output.fn_sigs.contains_key("stream.open"),
         "the stdlib function registry must not retain a leaf-qualified declaration identity"
     );
 
-    // The element type carries the declaring module's own identity, matching
-    // the leaf-qualified-identity rule the assertion above pins for functions.
+    // The element type is the bare builtin identity: `Stream<bytes>` is
+    // written unqualified inside its own declaring module, unlike a
+    // user-declared type, which always carries its module owner.
     assert_eq!(
-        stream_from_file.return_type,
+        stream_open.return_type,
         Ty::result(
             Ty::Named {
-                name: "std.stream.Stream".to_string(),
-                args: vec![Ty::String],
+                name: "Stream".to_string(),
+                args: vec![Ty::Bytes],
                 builtin: Some(BuiltinType::Stream),
             },
-            Ty::Named {
-                name: "std.fs.IoError".to_string(),
-                args: vec![],
-                builtin: None,
-            }
+            Ty::String,
         ),
-        "std::stream import should keep from_file() typed as Result<std.stream.Stream<string>, std.fs.IoError>"
+        "std::stream import should keep open() typed as Result<std.stream.Stream<bytes>, string>"
     );
 }
 

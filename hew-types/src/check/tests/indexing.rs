@@ -142,14 +142,14 @@ fn vec_index_admits_resource_element_as_an_interior_borrow() {
 }
 
 #[test]
-fn vec_index_still_rejects_single_consumer_receiver() {
+fn vec_index_still_rejects_single_consumer_stream() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let receiver = Ty::Named {
-        name: "std.channel.Receiver".to_string(),
+    let stream = Ty::Named {
+        name: "std.stream.Stream".to_string(),
         args: vec![Ty::I64],
-        builtin: Some(BuiltinType::Receiver),
+        builtin: Some(BuiltinType::Stream),
     };
-    assert!(!checker.validate_vec_index_borrow_surface(&receiver, &Span::from(0..0)));
+    assert!(!checker.validate_vec_index_borrow_surface(&stream, &Span::from(0..0)));
     assert!(checker
         .errors
         .iter()

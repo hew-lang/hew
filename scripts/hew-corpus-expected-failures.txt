@@ -301,7 +301,6 @@ tests/vertical-slice/accept/w2006_scope_spawn.hew E_SIR_UNSUPPORTED
 # verification then refuses
 tests/vertical-slice/accept/supervisor_childref_value_flow_states.hew E_SIR_VERIFY
 tests/vertical-slice/accept/toml_value_resource_exactly_once.hew E_SIR_VERIFY
-tests/vertical-slice/accept/vec_sender_clone_drop_asan.hew E_SIR_VERIFY
 
 # known defect (#3404): `Node.id()` returns the builtin `NodeId` and
 # `RemotePid<T>.node_id()` the one std/builtins.hew declares, so comparing them

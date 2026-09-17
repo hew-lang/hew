@@ -458,14 +458,6 @@ fn normalize_named_canonicalizes_builtin_spellings() {
         Ty::stream(Ty::Bytes)
     );
     assert_eq!(
-        Ty::normalize_named("channel.Sender".to_string(), vec![Ty::I32]),
-        Ty::sender(Ty::I32)
-    );
-    assert_eq!(
-        Ty::normalize_named("channel.Receiver".to_string(), vec![Ty::String]),
-        Ty::receiver(Ty::String)
-    );
-    assert_eq!(
         Ty::normalize_named("stream.Sink".to_string(), vec![Ty::String]),
         Ty::sink(Ty::String)
     );

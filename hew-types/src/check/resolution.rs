@@ -2472,7 +2472,10 @@ impl Checker {
                     // the user-declaration ladder: a private imported `Result`
                     // may share the leaf, but cannot rename builtin
                     // `Result<T, E>` during final checker handoff.
-                    if name.contains('.') {
+                    if kind.is_substrate_handle() {
+                        // A pipe half has one spelling at every stage.
+                        kind.canonical_name().to_string()
+                    } else if name.contains('.') {
                         if self.resolved_builtin_type(name).is_some() {
                             // A trusted qualified carrier still projects its
                             // lexical module alias to the one canonical source

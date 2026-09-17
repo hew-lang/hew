@@ -513,6 +513,53 @@ class CompiledHewShardTests(unittest.TestCase):
         self.assertIn("COMPILED_HEW_REPORT_UNREADABLE shard=1", result.stderr)
         self.assertIn("COMPILED_HEW_FAILURE shard=2 suite=O2", result.stdout)
 
+    def test_ledger_skip_republishes_only_recorded_failures(self) -> None:
+        """A published report must carry the ratchet's verdict, not its own.
+
+        CI parses this report with `fail_on_failure`, so a recorded failure
+        has to read as skipped; an unrecorded one has to stay red.
+        """
+        values = self.full[0::SHARDS]
+        recorded, unrecorded = values[0], values[1]
+        report = self.reports / "hew-suite-ratchet.xml"
+        write_junit(report, values, failed={recorded, unrecorded})
+
+        result = subprocess.run(
+            [sys.executable, str(JUNIT), "--ledger-skip", str(report)],
+            input=f"{recorded}\n",
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            check=True,
+        )
+        self.assertEqual(result.stdout.strip(), "1")
+
+        root = ET.parse(report).getroot()
+        outcomes = {
+            f"{case.get('classname')}::{case.get('name')}": (
+                "skipped"
+                if case.find("skipped") is not None
+                else "failure"
+                if case.find("failure") is not None
+                else "ok"
+            )
+            for case in root.iter("testcase")
+        }
+        self.assertEqual(outcomes[recorded], "skipped")
+        self.assertEqual(outcomes[unrecorded], "failure")
+        self.assertEqual(root.get("failures"), "1")
+        self.assertEqual(root.get("skipped"), "1")
+
+        # The rewritten document must still satisfy the schema authority,
+        # whose parse rejects totals that disagree with the elements.
+        subprocess.run(
+            [sys.executable, str(JUNIT), "--runner-exit", "1", str(report)],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            check=True,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

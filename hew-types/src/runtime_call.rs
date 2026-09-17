@@ -1815,7 +1815,7 @@ pub enum RuntimeCallFamily {
     SupervisorStop,
     /// `hew_supervisor_restart_await_blocking(sup, key) -> void` — the
     /// contextless `await_restart` path (`main` / free fn). Blocks the calling
-    /// thread until the child slot is Live or permanently Dead.
+    /// thread until the child slot has been restarted or is permanently Dead.
     SupervisorRestartAwaitBlocking,
 
     // --- Active transport attach (network actor binding) -------------------

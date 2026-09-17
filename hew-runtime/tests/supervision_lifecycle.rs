@@ -41,8 +41,8 @@ use hew_runtime::supervisor::{
     hew_supervisor_add_child_dynamic, hew_supervisor_add_child_spec, hew_supervisor_child_count,
     hew_supervisor_get_child_circuit_state, hew_supervisor_get_child_wait,
     hew_supervisor_set_child_lifecycle, hew_supervisor_set_child_state_drop,
-    hew_supervisor_set_circuit_breaker, hew_supervisor_set_restart_notify, test_wait_for_restart,
-    HewChildSpec, HEW_CIRCUIT_BREAKER_CLOSED, HEW_CIRCUIT_BREAKER_OPEN,
+    hew_supervisor_set_circuit_breaker, test_wait_for_restart, HewChildSpec,
+    HEW_CIRCUIT_BREAKER_CLOSED, HEW_CIRCUIT_BREAKER_OPEN,
 };
 use hew_runtime_testkit::{ensure_scheduler, HewActorState, TestActor, TestSupervisor};
 
@@ -333,8 +333,6 @@ fn supervised_actor_crash_and_restart() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
     // SAFETY: sup wraps a live supervisor; child-management FFI is raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 42;
         let name = cstr("worker");
         let spec = HewChildSpec {
@@ -457,8 +455,6 @@ fn lifecycle_wrapper_fires_on_initial_spawn_and_restart() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
     // SAFETY: sup wraps a live supervisor; child-management FFI is raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 42;
         let name = cstr("worker");
         let spec = HewChildSpec {
@@ -556,8 +552,6 @@ fn circuit_breaker_trips_on_repeated_crashes() {
     let watcher = TestActor::spawn_with_sys(monitor_user_dispatch, monitor_sys_dispatch);
     // SAFETY: sup and watcher are live for the test duration; child-mgmt FFI is raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = cstr("breaker-test");
         let spec = HewChildSpec {
@@ -779,8 +773,6 @@ fn linked_actor_receives_exit_before_supervisor_restarts() {
     // SAFETY: supervisor and standalone actor wrappers keep the
     // underlying handles live; child-management and link FFI are raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = cstr("cascade-source");
         let spec = HewChildSpec {
@@ -1143,8 +1135,6 @@ fn shallow_supervisor_restart_keeps_borrowed_state_non_owning() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
     // SAFETY: sup is live; child-mgmt FFI is raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: u64 = 0xDEAD_BEEF;
         let name = CString::new("drop-test-child").unwrap();
         let spec = HewChildSpec {
@@ -1244,7 +1234,6 @@ fn dynamic_shallow_child_restart_keeps_borrowed_state_non_owning() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
     // SAFETY: sup is live; child-mgmt FFI is raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
         assert_eq!(sup.start(), 0, "supervisor must start");
 
         let mut state: u64 = 0xCAFE_BABE;
@@ -1344,8 +1333,6 @@ fn one_for_all_borrowed_shallow_siblings_never_claim_typed_drop() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ALL, 5, 60);
     // SAFETY: sup is live; child-mgmt FFI is raw.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         // Child 0.
         let mut state0: u64 = 0xAAAA_0000;
         let name0 = CString::new("ofs-child-0").unwrap();

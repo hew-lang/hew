@@ -67,7 +67,9 @@ jobs:
       - name: Compile, run, and measure the runtime corpus
         env:
           CARGO_PROFILE_DEV_DEBUG: line-tables-only
-        run: timeout 2400 bash scripts/coverage-runtime-e2e.sh
+        # `-k`: compiled Hew programs install a SIGTERM handler, so a plain
+        # `timeout` waits forever on a wedged one instead of failing the step.
+        run: timeout -k 60 2400 bash scripts/coverage-runtime-e2e.sh
 
       - name: Publish runtime coverage summary
         if: always()
@@ -233,7 +235,7 @@ jobs:
           make stdlib
 
           set +e
-          timeout 1800 \
+          timeout -k 60 1800 \
             stdbuf -oL -eL \
             cargo nextest run \
             --workspace --exclude hew-wasm \

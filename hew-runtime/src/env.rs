@@ -251,10 +251,18 @@ fn freebsd_args_with<R: FreeBsdArgvReader>(reader: &R) -> Result<Vec<String>, Fr
     Ok(parse_freebsd_args(&buf))
 }
 
+/// `kern.proc.args` NUL-terminates every argument, so the buffer ends in a
+/// terminator whose split yields one empty tail segment. Only that tail is
+/// dropped: an interior empty segment is a real empty argument, which a
+/// program passing `""` through `process.run_argv` must still receive.
 #[cfg(any(target_os = "freebsd", test))]
 fn parse_freebsd_args(buf: &[u8]) -> Vec<String> {
-    buf.split(|&b| b == 0)
-        .filter(|segment| !segment.is_empty())
+    let arguments = buf.strip_suffix(b"\0").unwrap_or(buf);
+    if arguments.is_empty() {
+        return Vec::new();
+    }
+    arguments
+        .split(|&b| b == 0)
         .map(|segment| String::from_utf8_lossy(segment).into_owned())
         .collect()
 }
@@ -758,6 +766,17 @@ mod tests {
         ]))
         .expect("fake sysctl should succeed");
         assert_eq!(args, vec!["hew", "--flag", "spaced arg"]);
+    }
+
+    /// An empty argument is an ordinary argument; only the buffer's own
+    /// trailing terminator is not one.
+    #[test]
+    fn test_injected_freebsd_sysctl_keeps_empty_arguments() {
+        let args = freebsd_args_with(&FakeFreeBsdArgvReader::success(&[
+            "hew", "", "child", "", "hello", "",
+        ]))
+        .expect("fake sysctl should succeed");
+        assert_eq!(args, vec!["hew", "", "child", "", "hello", ""]);
     }
 
     #[cfg(target_os = "freebsd")]

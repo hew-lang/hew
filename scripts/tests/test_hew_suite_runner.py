@@ -121,11 +121,18 @@ def test_valid_failure_report_and_status_one_reach_the_ratchet() -> None:
         result = run(compiler, fixtures, expected, report, "failure")
 
         assert result.returncode == 0, result.stdout + result.stderr
+        # The published report carries the ratchet's verdict: this failure is
+        # recorded, so it reads as skipped and keeps its semantic kind in the
+        # reason. An unrecorded one stays a failure and is covered by
+        # test_compiled_hew_shards.py's ledger-skip case.
         root = ET.parse(report).getroot()
-        assert root.get("failures") == "1"
-        failure = root.find(".//failure")
-        assert failure is not None
-        assert failure.get("type") == "compile"
+        assert root.get("failures") == "0"
+        assert root.get("skipped") == "1"
+        assert root.find(".//failure") is None
+        skipped = root.find(".//skipped")
+        assert skipped is not None
+        assert "expected compile failure" in (skipped.get("message") or "")
+        assert "assertion failed" in (skipped.get("message") or "")
 
 
 def test_failure_kind_drift_fails_the_ratchet_without_matching_text() -> None:

@@ -213,16 +213,73 @@ def render_outcomes(report: JUnitReport, root: Path) -> str:
     return "\n".join(lines) + "\n"
 
 
+def mark_ledgered_as_skipped(path: Path, ledger: set[str], root: Path) -> int:
+    """Rewrite ``path`` so a ledgered failure reads as skipped, not failed.
+
+    The ratchet's verdict lives in its exit status, but CI publishes this
+    report through a parser that fails on any ``<failure>``. A recorded
+    failure is expected, so it is published as skipped with its reason kept;
+    an unrecorded one stays a failure and still turns the report red.
+    """
+    tree = ET.parse(path)
+    root_element = tree.getroot()
+    converted = 0
+    for element in root_element.iter("testcase"):
+        identity = (
+            f"{canonical_classname(element.get('classname', ''), root)}::"
+            f"{element.get('name', '')}"
+        )
+        if identity not in ledger:
+            continue
+        failure = element.find("failure")
+        if failure is None:
+            continue
+        element.remove(failure)
+        skipped = ET.SubElement(element, "skipped")
+        skipped.set(
+            "message",
+            f"expected {failure.get('type', 'unknown')} failure: "
+            f"{failure.get('message', '')}",
+        )
+        skipped.text = failure.text
+        converted += 1
+    if converted:
+        for suite in [root_element, *root_element.iter("testsuite")]:
+            cases = tuple(suite.iter("testcase"))
+            suite.set(
+                "failures",
+                str(sum(case.find("failure") is not None for case in cases)),
+            )
+            suite.set(
+                "skipped",
+                str(sum(case.find("skipped") is not None for case in cases)),
+            )
+        tree.write(path, encoding="utf-8", xml_declaration=True)
+    return converted
+
+
 def usage() -> None:
     print(
         "usage: python3 scripts/lib/hew_junit.py <junit.xml>\n"
-        "       python3 scripts/lib/hew_junit.py --runner-exit <status> <junit.xml>",
+        "       python3 scripts/lib/hew_junit.py --runner-exit <status> <junit.xml>\n"
+        "       python3 scripts/lib/hew_junit.py --ledger-skip <junit.xml>"
+        "  (identities on stdin)",
         file=sys.stderr,
     )
 
 
 def main(argv: list[str]) -> int:
     runner_exit: int | None = None
+    if len(argv) == 2 and argv[0] == "--ledger-skip":
+        path = Path(argv[1])
+        ledger = {line.strip() for line in sys.stdin if line.strip()}
+        try:
+            converted = mark_ledgered_as_skipped(path, ledger, Path.cwd())
+        except (OSError, ET.ParseError) as error:
+            print(f"error: cannot rewrite {path}: {error}", file=sys.stderr)
+            return 1
+        print(f"{converted}")
+        return 0
     if len(argv) == 3 and argv[0] == "--runner-exit":
         try:
             runner_exit = int(argv[1])

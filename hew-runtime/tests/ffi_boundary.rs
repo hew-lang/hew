@@ -3423,8 +3423,7 @@ mod rest_for_one_tests {
     use hew_runtime::actor::hew_actor_trap;
     use hew_runtime::supervisor::{
         hew_supervisor_add_child_spec, hew_supervisor_get_child, hew_supervisor_new,
-        hew_supervisor_set_restart_notify, hew_supervisor_start, hew_supervisor_stop,
-        test_wait_for_restart, HewChildSpec,
+        hew_supervisor_start, hew_supervisor_stop, test_wait_for_restart, HewChildSpec,
     };
 
     const STRATEGY_REST_FOR_ONE: i32 = 2;
@@ -3457,7 +3456,6 @@ mod rest_for_one_tests {
         unsafe {
             let sup = hew_supervisor_new(STRATEGY_REST_FOR_ONE, 10, 60);
             assert!(!sup.is_null());
-            hew_supervisor_set_restart_notify(sup);
 
             let mut states: [i32; 3] = [0, 0, 0];
 
@@ -3545,9 +3543,8 @@ mod supervisor_escalation_tests {
         hew_supervisor_add_child_spec, hew_supervisor_add_child_supervisor,
         hew_supervisor_add_child_supervisor_with_init, hew_supervisor_get_child,
         hew_supervisor_get_child_supervisor, hew_supervisor_get_child_wait,
-        hew_supervisor_is_running, hew_supervisor_new, hew_supervisor_set_restart_notify,
-        hew_supervisor_start, hew_supervisor_stop, test_wait_for_restart, HewChildSpec,
-        HewSupervisor,
+        hew_supervisor_is_running, hew_supervisor_new, hew_supervisor_start, hew_supervisor_stop,
+        test_wait_for_restart, HewChildSpec, HewSupervisor,
     };
 
     const STRATEGY_ONE_FOR_ONE: i32 = 0;
@@ -3635,8 +3632,6 @@ mod supervisor_escalation_tests {
             return ptr::null_mut();
         }
 
-        unsafe { hew_supervisor_set_restart_notify(child) };
-
         let mut state: i32 = 0;
         let spec = HewChildSpec {
             name: ptr::null::<c_char>(),
@@ -3693,10 +3688,6 @@ mod supervisor_escalation_tests {
             let child = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 1, 60);
             assert!(!parent.is_null());
             assert!(!child.is_null());
-
-            // Install restart notification on both supervisors.
-            hew_supervisor_set_restart_notify(child);
-            hew_supervisor_set_restart_notify(parent);
 
             // Add an actor to the child supervisor via spec.
             let mut state: i32 = 0;
@@ -3877,7 +3868,6 @@ mod supervisor_escalation_tests {
         unsafe {
             let parent = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 10, 60);
             assert!(!parent.is_null());
-            hew_supervisor_set_restart_notify(parent);
 
             let child = nested_child_supervisor_init();
             assert!(!child.is_null(), "child supervisor init should succeed");

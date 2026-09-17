@@ -45,9 +45,8 @@ use hew_runtime::crash::hew_crash_log_count;
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::duplex::{hew_duplex_close, hew_duplex_pair, HewDuplexHandle};
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, hew_trap_with_code, test_wait_for_restart, HewChildSpec,
-    HEW_TRAP_DIVIDE_BY_ZERO,
+    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_trap_with_code,
+    test_wait_for_restart, HewChildSpec, HEW_TRAP_DIVIDE_BY_ZERO,
 };
 use hew_runtime::tracing::{
     drain_events_json, hew_trace_enable, hew_trace_is_enabled, hew_trace_reset, EVENT_TYPE_NAMES,
@@ -191,8 +190,6 @@ fn v05_concurrency_program_has_no_unknown_trace_events() {
 
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = CString::new("taxonomy-child").unwrap();
         let spec = HewChildSpec {

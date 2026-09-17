@@ -183,7 +183,10 @@ actor Reader {
 
 fn main() {
     // Enter the root continuation before sampling its live-frame baseline.
-    sleep(1ms);
+    // A barrier, not a sleep: under load the root continuation is not always
+    // entered within a wall-clock millisecond, and a baseline taken one frame
+    // early reads back as a leak of exactly that frame.
+    let _ = observe.barrier();
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let listener = match net.listen("127.0.0.1:0") { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
     let port = listener.local_port();
@@ -197,8 +200,18 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
-    let _ = observe.barrier();
-    println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
+    // `observe.barrier()` orders dispatch attribution, not frame reclamation:
+    // a crashed dispatch is attributed before its frame is freed. Read the
+    // balance until it settles, bounded, so a real leak still prints its
+    // retained bytes and fails the case.
+    var retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    for _ in 0..200 {
+        if retained == 0 { break; }
+        sleep(10ms);
+        let _ = observe.barrier();
+        retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    }
+    println(retained);
 }
 "#;
 
@@ -420,7 +433,10 @@ actor Runner {
 
 fn main() {
     // Enter the root continuation before sampling its live-frame baseline.
-    sleep(1ms);
+    // A barrier, not a sleep: under load the root continuation is not always
+    // entered within a wall-clock millisecond, and a baseline taken one frame
+    // early reads back as a leak of exactly that frame.
+    let _ = observe.barrier();
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     let runner = spawn Runner(gate: gate);
@@ -430,8 +446,18 @@ fn main() {
         .Err(_) => println("crash-fallback"),
     }
     println("main-done");
-    let _ = observe.barrier();
-    println(observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline);
+    // `observe.barrier()` orders dispatch attribution, not frame reclamation:
+    // a crashed dispatch is attributed before its frame is freed. Read the
+    // balance until it settles, bounded, so a real leak still prints its
+    // retained bytes and fails the case.
+    var retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    for _ in 0..200 {
+        if retained == 0 { break; }
+        sleep(10ms);
+        let _ = observe.barrier();
+        retained = observe.read("coroutines.frame_bytes_live").unwrap_or(0) - frame_baseline;
+    }
+    println(retained);
 }
 "#;
 
@@ -666,7 +692,10 @@ actor Crasher {
 
 fn main() {
     // Enter the root continuation before sampling its live-frame baseline.
-    sleep(1ms);
+    // A barrier, not a sleep: under load the root continuation is not always
+    // entered within a wall-clock millisecond, and a baseline taken one frame
+    // early reads back as a leak of exactly that frame.
+    let _ = observe.barrier();
     let frame_baseline = observe.read("coroutines.frame_bytes_live").unwrap_or(0);
     let gate = spawn Gate;
     for _ in 0..__FRAMES__ {

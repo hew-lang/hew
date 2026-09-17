@@ -35,9 +35,8 @@ use hew_runtime::actor::hew_actor_send;
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last, snapshot_crashes_json};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, hew_trap_with_code, test_wait_for_restart, HewChildSpec,
-    HEW_TRAP_DIVIDE_BY_ZERO,
+    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_trap_with_code,
+    test_wait_for_restart, HewChildSpec, HEW_TRAP_DIVIDE_BY_ZERO,
 };
 use hew_runtime_testkit::ensure_scheduler;
 use serde::Deserialize;
@@ -154,8 +153,6 @@ fn divide_by_zero_trap_surfaces_trap_kind_on_observe_event_surface() {
 
     let sup = hew_runtime_testkit::TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 5, 60);
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = std::ffi::CString::new("divz-child").unwrap();
         let spec = HewChildSpec {

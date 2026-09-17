@@ -5615,6 +5615,7 @@ mod tests {
         use std::time::Duration;
 
         let _guard = crate::runtime_test_guard();
+        let _reactor = native::TestReactor::new();
         let (conn_handle, mut peer) = make_loopback_conn();
         assert!(
             crate::transport::tcp_conn_set_nonblocking(conn_handle, true),
@@ -5624,28 +5625,27 @@ mod tests {
         // SAFETY: conn_handle and the returned pair are live runtime handles.
         let pair = unsafe { hew_tcp_stream_from_conn(conn_handle) };
         assert!(!pair.is_null());
+        // SAFETY: the factory transfers the pair's sole allocation to the test.
+        let mut pair = unsafe { Box::from_raw(pair) };
         // SAFETY: extraction consumes the stream slot in the pair.
-        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(pair) };
+        let stream_ptr = unsafe { hew_stream_pair_stream_bytes(&raw mut *pair) };
         assert!(!stream_ptr.is_null());
+        // SAFETY: extraction transferred the stream's sole allocation.
+        let mut stream = unsafe { Box::from_raw(stream_ptr) };
 
         let writer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(25));
             peer.write_all(b"ready").expect("delayed peer write");
         });
         let mut size = 0usize;
-        // SAFETY: stream_ptr is live and size is writable.
-        let data = unsafe { hew_stream_next_sized(stream_ptr, &raw mut size) };
+        // SAFETY: stream is live and size is writable.
+        let data = unsafe { hew_stream_next_sized(&raw mut *stream, &raw mut size) };
+        // SAFETY: the returned bytes use the runtime buffer allocator; freeing
+        // before assertions also releases them if the writer or size is wrong.
+        unsafe { crate::mem::buf_free(data) };
         writer.join().expect("delayed writer joins");
         assert!(!data.is_null(), "WouldBlock must not masquerade as EOF");
         assert_eq!(size, 5);
-
-        // SAFETY: the returned bytes use malloc, and the wrappers remain
-        // singly owned here.
-        unsafe {
-            crate::mem::buf_free(data);
-            hew_stream_close(stream_ptr);
-            hew_stream_pair_free(pair);
-        }
     }
 
     #[test]

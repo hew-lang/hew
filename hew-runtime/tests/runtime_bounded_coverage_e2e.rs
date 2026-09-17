@@ -31,8 +31,8 @@ use hew_runtime::scheduler::{
 };
 use hew_runtime::supervisor::{
     hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, hew_supervisor_is_running,
-    hew_supervisor_new, hew_supervisor_set_restart_notify, hew_supervisor_start,
-    hew_supervisor_stop, test_wait_for_restart, HewChildSpec, HewSupervisor,
+    hew_supervisor_new, hew_supervisor_start, hew_supervisor_stop, test_wait_for_restart,
+    HewChildSpec, HewSupervisor,
 };
 
 static SCHED_INIT: Once = Once::new();
@@ -219,7 +219,6 @@ fn single_worker_message_budget_and_restart_budget_bound_execution() {
     unsafe {
         let sup = hew_supervisor_new(0, 1, 60);
         assert!(!sup.is_null());
-        hew_supervisor_set_restart_notify(sup);
 
         let name = cstr("bounded-worker");
         let mut state: i32 = 0;

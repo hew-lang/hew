@@ -767,6 +767,14 @@ def main() -> None:
         choices=("local", "external-network", "composition"),
         default="local",
     )
+    # The v0.6.0-rc3 native candidate ships without compiler WASM emission, so
+    # its wasm32-wasi arm has nothing to execute. The Makefile passes this for
+    # exactly that version; every other version runs the whole matrix.
+    parser.add_argument(
+        "--defer-wasm-evidence",
+        action="store_true",
+        help="run the native audit, counterfactuals and runtime anchors only",
+    )
     args = parser.parse_args()
     if not AST_GREP.is_file() or not HEW.is_file():
         raise SystemExit("bootstrap ast-grep and build `hew` before lifecycle matrix")
@@ -795,15 +803,16 @@ def main() -> None:
         assert manifest["schema_version"] == 2
         evidence = validate_rows(facts["candidates"], manifest["resources"])
         run_counterfactuals(facts["candidates"], manifest["resources"])
-        try:
-            assert_wasm_program_has_producer(
-                "counterfactual",
-                'fn main() { println("WASM-LIFECYCLE:counterfactual"); }',
-            )
-        except AssertionError:
-            pass
-        else:
-            fail("print-only Wasm main unexpectedly passed lifecycle evidence")
+        if not args.defer_wasm_evidence:
+            try:
+                assert_wasm_program_has_producer(
+                    "counterfactual",
+                    'fn main() { println("WASM-LIFECYCLE:counterfactual"); }',
+                )
+            except AssertionError:
+                pass
+            else:
+                fail("print-only Wasm main unexpectedly passed lifecycle evidence")
         missing_scope_exit = copy.deepcopy(facts["compiler_e2e_cases"][0])
         missing_scope_exit["scope_exit_source"] = ""
         try:
@@ -867,7 +876,13 @@ def main() -> None:
             fail(
                 "close wrapper without its native release unexpectedly passed lifecycle evidence"
             )
-        run_wasm_evidence(facts["compiler_e2e_cases"], evidence, temp)
+        if args.defer_wasm_evidence:
+            print(
+                f"wasm lifecycle evidence deferred: {len(evidence)} rows unexecuted "
+                "(native candidate scope; not wasm32-wasi success)"
+            )
+        else:
+            run_wasm_evidence(facts["compiler_e2e_cases"], evidence, temp)
         run_runtime_evidence(evidence, args.runtime_profile)
 
 

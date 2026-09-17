@@ -34,8 +34,8 @@ use hew_runtime::actor::hew_actor_send;
 use hew_runtime::crash::{hew_crash_log_count, hew_crash_log_last};
 use hew_runtime::deterministic::hew_deterministic_reset;
 use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait,
-    hew_supervisor_set_restart_notify, test_wait_for_restart, ExitReason, HewChildSpec,
+    hew_supervisor_add_child_spec, hew_supervisor_get_child_wait, test_wait_for_restart,
+    ExitReason, HewChildSpec,
 };
 use hew_runtime_testkit::ensure_scheduler;
 
@@ -248,8 +248,6 @@ fn overflow_hardware_trap_is_process_fatal_under_unwind_safe_raii() {
     // SAFETY: sup wraps a live supervisor; all child-management FFI takes the
     // raw pointer directly. Pointers remain valid for the duration of this block.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = std::ffi::CString::new("trap-child").unwrap();
         let spec = HewChildSpec {
@@ -403,8 +401,6 @@ fn fault_inject_crash_still_works_after_sigtrap_registration() {
     // SAFETY: sup and child actor pointers are valid for the duration of
     // this block; all FFI calls follow the runtime's ownership contract.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let mut state: i32 = 0;
         let name = std::ffi::CString::new("fault-inject-child").unwrap();
         let spec = HewChildSpec {

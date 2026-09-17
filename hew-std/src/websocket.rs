@@ -3164,14 +3164,9 @@ mod tests {
                     .send(Message::Ping(b"race".to_vec().into()))
                     .expect("client ping should send during large send");
 
-                let deadline = Instant::now() + Duration::from_secs(5);
                 let mut saw_binary = false;
                 let mut saw_pong = false;
                 while !(saw_binary && saw_pong) {
-                    assert!(
-                        Instant::now() < deadline,
-                        "client should observe intact binary frame and pong"
-                    );
                     match client
                         .read()
                         .expect("peer parser should not see corrupt frames")

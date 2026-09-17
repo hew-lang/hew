@@ -648,6 +648,13 @@ run_hew_suite() {
         exit 1
     fi
 
+    # The ratchet's verdict is this script's exit status, but CI publishes the
+    # report through a parser that fails on any <failure>. Republish a recorded
+    # failure as skipped so the check agrees with the ratchet; an unrecorded
+    # one stays a failure and still turns the published report red.
+    printf '%s' "$EXPECTED_STR" |
+        "${PYTHON:-python3}" "$hew_junit_py" --ledger-skip "$junit_output" >/dev/null
+
     echo "==> Hew suite ratchet"
     echo "Expected failures: $(count_set "$EXPECTED_STR")"
     echo "Actual failures:   $(count_set "$ACTUAL_STR")"

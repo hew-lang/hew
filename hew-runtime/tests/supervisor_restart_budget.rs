@@ -9,7 +9,7 @@
 //!
 //! The supervisor handle is owned by `TestSupervisor` so its Drop runs
 //! the canonical stop teardown. The supervisor's FFI surface (add child
-//! spec, `set_restart_notify`, etc.) still uses raw `extern "C"` calls
+//! spec, child lookup, etc.) still uses raw `extern "C"` calls
 //! because those are inherently bound to `HewChildSpec` and the
 //! runtime-owned child actor pointers; restart completion itself is
 //! observed through the Rust-only `test_wait_for_restart`.
@@ -24,10 +24,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 
 use hew_runtime::actor::hew_actor_send;
 use hew_runtime::deterministic::{hew_deterministic_reset, hew_fault_inject_crash};
-use hew_runtime::supervisor::{
-    hew_supervisor_add_child_spec, hew_supervisor_set_restart_notify, test_wait_for_restart,
-    HewChildSpec,
-};
+use hew_runtime::supervisor::{hew_supervisor_add_child_spec, test_wait_for_restart, HewChildSpec};
 use hew_runtime_testkit::{ensure_scheduler, TestSupervisor};
 
 /// Global lock — tests share mutable global state (fault injection table,
@@ -114,8 +111,6 @@ fn concurrent_crashes_decrement_budget_correctly() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 10, 60);
     // SAFETY: sup wraps a live supervisor; the FFI calls below take its raw ptr.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         // Add 3 children.
         let names: Vec<CString> = (0..3).map(|i| cstr(&format!("worker-{i}"))).collect();
         let mut states = [0i32; 3];
@@ -196,8 +191,6 @@ fn budget_exhaustion_stops_supervisor() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 2, 60);
     // SAFETY: live supervisor used for child-management FFI.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let name = cstr("doomed");
         let mut state: i32 = 0;
         let spec = HewChildSpec {
@@ -284,8 +277,6 @@ fn delayed_restart_processed_via_mailbox() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 20, 60);
     // SAFETY: live supervisor used for child-management FFI.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         let name = cstr("delayed-worker");
         let mut state: i32 = 0;
         let spec = HewChildSpec {
@@ -359,8 +350,6 @@ fn multiple_delayed_restarts_budget_consistent() {
     let sup = TestSupervisor::new(STRATEGY_ONE_FOR_ONE, 20, 60);
     // SAFETY: live supervisor used for child-management FFI.
     unsafe {
-        hew_supervisor_set_restart_notify(sup.as_ptr());
-
         // Spawn 3 children.
         let names: Vec<CString> = (0..3).map(|i| cstr(&format!("multi-{i}"))).collect();
         let mut states = [0i32; 3];

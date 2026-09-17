@@ -345,9 +345,13 @@ NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(CROSS_NATIVE_LIB_TRIPLES)
 # host (darwin-arm64, linux-x86_64, ...). CI selects its explicit runner target
 # through `SANITIZER_RUST_TARGET` while retaining this single command authority.
 SANITIZER_RUST_TARGET ?= $(HOST_TRIPLE)
-RUNTIME_ASAN_TARGET_DIR := target/sanitizer-runtime-asan
-RUNTIME_TSAN_TARGET_DIR := target/sanitizer-runtime-tsan
-RUNTIME_MIRI_TARGET_DIR := target/miri-runtime
+#
+# Each lane gets its own target directory under Cargo's resolved target root,
+# so an out-of-tree CARGO_TARGET_DIR carries them with it instead of leaving a
+# build tree in the checkout.
+RUNTIME_ASAN_TARGET_DIR := $(CARGO_TARGET_ROOT)/sanitizer-runtime-asan
+RUNTIME_TSAN_TARGET_DIR := $(CARGO_TARGET_ROOT)/sanitizer-runtime-tsan
+RUNTIME_MIRI_TARGET_DIR := $(CARGO_TARGET_ROOT)/miri-runtime
 
 # ── Default target ──────────────────────────────────────────────────────────
 
@@ -1137,7 +1141,11 @@ test-host-client: hew-native ## Test: execute C11 and C++17 clients calling comp
 # Build the compiler and runtime together so the selected compiler resolves the
 # sanitizer archive from its own Cargo profile directory. The safety runner also
 # requires generated LLVM instrumentation and rejects unexpected stderr.
-CORE_SAFETY_TARGET_DIR ?= target/core-safety
+# Derived from Cargo's own resolved target root, so an out-of-tree
+# CARGO_TARGET_DIR (or a build.target-dir in any .cargo/config.toml) keeps the
+# sanitizer build out of the checkout instead of writing a second multi-gigabyte
+# tree into it.
+CORE_SAFETY_TARGET_DIR ?= $(CARGO_TARGET_ROOT)/core-safety
 .PHONY: core-safety core-safety-build
 core-safety-build:
 	@test "$$(uname -s)" = Linux || { echo "core-safety requires Linux ASan/LSan" >&2; exit 1; }

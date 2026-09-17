@@ -865,7 +865,7 @@ fn main() {
 Values are passed by value. `var` on a parameter lets the callee mutate its
 copy; the caller's binding never changes. To hand a grown collection back,
 return it and reassign at the call site. The same rule covers `Vec`, `string`,
-`HashMap` and records. Only handles — actors, channels, resources — share
+`HashMap` and records. Only handles — actors, pipe halves, resources — share
 identity across a call.
 
 ### Unit return and bare early return
@@ -1959,7 +1959,7 @@ compiler still exposes the older free-function `stop(actor)` builtin
 
 ### Accepting connections and reading in a handler
 
-`listener.accept()` and `conn.read()` are plain suspending calls. They park the
+`listener.accept()` and `conn.recv()` are plain suspending calls. They park the
 calling coroutine on the reactor while other actors can run; adding `await`
 is not a switch from blocking I/O to coroutine I/O. Use the declared return
 type to handle failures, and `fork` when the operation should run concurrently.
@@ -3619,7 +3619,7 @@ comparable portion instead.
 
 Each subsection below is a runnable snippet; a full idiomatic program per
 surface lives under [`examples/v05/surfaces/`](../examples/v05/surfaces)
-(text surfaces), [`examples/channel/`](../examples/channel) (channels), or
+(text surfaces), [`examples/pipe/`](../examples/pipe) (pipes), or
 [`examples/net/`](../examples/net) (networking).
 
 ### `#[wire]` — network-serializable schema types
@@ -3770,70 +3770,68 @@ need serializable data, not process-local handles. Consult the particular
 module's declaration instead of assuming every opaque type has the same copy,
 release or actor-admission behaviour.
 
-### Typed streams — `sink.send(x)` / `stream.recv()`
+### Pipes — `sink.send(x)` / `stream.recv()`
+
+One pipe family moves data between actors, sockets and files: `Sink<T>`
+writes, `Stream<T>` reads. `stream.pipe(capacity)` makes an in-memory pair,
+`stream.open(path)` reads a file, and `conn.split()` gives a socket's two
+directions separate owners. Items are data — primitives, `string`, `bytes`
+and value records or enums — never containers or handles; the halves are
+the handles, and they move between actors as messages or state fields.
 
 ```hew
 import std.stream;
-import std.encoding.utf8;
 
-actor Echo {
-    let n: i64,
-    receive fn run(unused: i64) {
-        let (sink, input) = match stream.bytes_pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
-        for i in 0..n {
-            sink.send(f"x{i}".to_bytes());
-        }
-        sink.close();
-        var done = false;
-        while !done {
-            let item = input.recv();
-            match item {
-                .Some(b) => match utf8.decode(b) {
-                    .Ok(text) => println(text), // x0, x1
-                    .Err(error) => println(f"invalid text: {error}"),
-                },
-                .None => { done = true; },
-            }
-        }
+type Order {
+    id: i64,
+    note: string,
+}
+
+actor Producer {
+    out: stream.Sink<Order>,
+
+    receive fn emit(id: i64, note: string) {
+        self.out.send(Order { id: id, note: note }).expect("send");
+    }
+
+    receive fn done() {
+        self.out.finish();
     }
 }
 
 fn main() {
-    let e = spawn Echo(n: 2);
-    match e.run(0) {
-        .Ok(_) => {},
-        .Err(error) => println(f"stream operation failed: {error}"),
+    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) =
+        match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let producer = spawn Producer(out: orders);
+    let _ = producer.emit(1, "first");
+    let _ = producer.emit(2, "second");
+    let _ = producer.done();
+    for order in input {
+        println(f"{order.id} {order.note}"); // 1 first, 2 second
     }
-    close(e);
 }
 ```
 
-`sink.send(x)` and `stream.recv()` suspend the calling coroutine
-instead of OS-parking a worker, so a stream stage frees its worker while waiting.
-Only `Stream<bytes>` / `Sink<bytes>` suspend (the canonical element type), and the
-canonical method names are `recv()` / `send()` — not `next()` / `write()`. `recv()`
-yields `Option<bytes>` (`None` is EOF); match it, never unwrap. `sink.send`
-is statement-position only. Build the pipe with the public
-`std.stream.bytes_pipe(capacity)` constructor — no raw extern, no `unsafe` — and
-turn text into a frame with the public `string.to_bytes()` surface. Keep both
-ends in one handler: moving an owned `Stream`/`Sink` into actor state is not
-yet supported (`OwnedHandleAggregateExtractionUnsupported`). Full example:
-[`examples/v05/surfaces/typed_streams.hew`](../examples/v05/surfaces/typed_streams.hew).
+`sink.send(x)` waits for capacity and returns `Result<(), SendError>`:
+`Err(SendError.Closed)` once the reader is gone. Discarding that result is
+a compile error (`E_SEND_RESULT_DROPPED`); handle it, or write `let _ =`.
+`try_send` never waits and adds `Err(SendError.Full)`. `stream.recv()`
+yields `Option<T>` and `None` is end of data only; `for item in input`
+drains to the end. A zero-length `bytes` or empty `string` is an item.
+Both calls suspend the calling coroutine instead of parking a worker.
 
-### Channels — bounded delivery
+`sink.clone()` adds a producer; the pipe ends when the last one finishes.
+`sink.finish()` publishes the end and keeps the handle (on a socket it
+sends FIN); `close()` consumes either half, and scope exit releases a live
+half the same way. A sink released by a crashing actor faults the pipe:
+the reader traps instead of seeing a clean end. A sink released by a
+normal return or stop ends the pipe cleanly.
 
-`channel.new(capacity)` constructs sender and receiver halves. `rx.recv()`
-waits for an item and yields `Option<T>`; `None` means the channel is closed.
-A full `tx.send(value)` parks the coroutine until it can proceed. The halves
-have automatic cleanup; explicit `.close()` ends the corresponding half early.
-
-The native path supports send/receive suspension, non-parking `try_recv`,
-and channel halves stored in records and vectors. Channel-receive selection
-registers alongside tasks and timers: write `value from rx.recv() => ...`,
-without `await` in its source. Actor-call and stream selection remain separate
-implementation gaps; a parsed arm alone does not establish native support. See the
-[channel module](../std/channel/channel.hew) for declarations and the
-[selection contract](specs/HEW-SPEC-2026.md#411-select) for intended behaviour.
+`Stream<bytes>` re-frames with `lines()` (text lines), `chunks(n)` (byte
+frames) and `take(n)`; each consumes the stream it adapts. `stream.forward(from, to)`
+drains one stream into a sink and finishes it. A `Stream<T>` is also a
+`select` source: `item from input.recv() => ...` binds `Option<T>`. Full
+example: [`examples/pipe/`](../examples/pipe).
 
 ### Regex captures — `capture` / `find_all` / `find_all_submatch`
 
@@ -3964,7 +3962,7 @@ scanner plus `Option<string>`. Full example:
 The flagship networking surface is a suspending HTTP/1.1 client and
 server built on `net.connect` / `net.listen` plus the pure-Hew codecs in
 `std.net.http.http_async_client` / `http_async_server`. A server handler
-accepts a connection, drives a `conn.read_string()` loop until the
+accepts a connection, drives a `conn.recv()` loop until the
 request is buffered, then replies; a client writes a request and reads the
 response. Each call suspends the handler (not the worker), so one worker can
 serve and fetch on the same thread. The request/response codecs are pure and

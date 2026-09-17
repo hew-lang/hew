@@ -42,10 +42,9 @@ enums, lowered match dispatch, direct monomorphized calls, strings, vectors, an
 educational JavaScript `RegExp` subset for curated regex fixtures, the M4
 single-threaded actor scheduler (`spawn`, `send`, `receive`, root `ask/reply`,
 actor crash hooks, bounded mailboxes, seeded chaos scheduling, and replay via
-trace inputs), and the M5 educational coordination subset: bounded in-memory
-channels, in-memory stream/sink/duplex handles layered on those channels,
-async task spawn/await, structured scopes with cancellation observation at await
-and channel boundaries, deterministic `select`, virtual-time timer arms, and
+trace inputs), and the M5 educational coordination subset: async task
+spawn/await, structured scopes with cancellation observation at await
+boundaries, deterministic `select`, virtual-time timer arms, and
 the M6 educational failure-philosophy subset: declarative supervisor specs,
 visible child slots, deterministic one-for-one / one-for-all / rest-for-one
 restart decisions, virtual-time restart windows, linked exit messages, monitor
@@ -99,13 +98,11 @@ The **Checker disposition** column documents what the type checker emits when
 | `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | Educational sandbox subset implements deterministic graph state, exit signals, and monitor notifications; native runtime parity remains gated | WASM-TODO(link-monitor): |
 | `structured-concurrency` | Structured concurrency (`scope {}`, `scope.launch`, `scope.await`) | Structured concurrency scopes | Reject (`StructuredConcurrency`) | the wasm32 scheduler has no cooperative task executor or non-blocking scope join | Native thread/condvar task runtime only; wasm32 has no cooperative task work queue or join | WASM-TODO(scope): |
 | `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Reject (`Tasks`) | task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | Task spawn is thread-based and no cooperative task executor drives forked bodies on wasm32 | WASM-TODO(scope): |
-| `channel-non-blocking` | `channel.new`, `Sender<T>.send/clone/close`, `Receiver<T>.try_recv/close` | `channel.new`, `Sender<T>.send/clone/close`, `Receiver<T>.try_recv/close` | Pass | — | Bounded non-blocking slice implemented; `send` traps on full queue | v0.3.2 |
-| `channel-blocking-recv` | `Receiver<T>.recv`, `for item in rx` over `Receiver<T>` | Blocking channel receive operations | Reject (`BlockingChannelRecv`) | Receiver<T>.recv still requires cooperative scheduler yield/resume on wasm32; use try_recv or the actor ask pattern instead | `unreachable!()` trap | WASM-TODO(channels): |
 | `semaphore-non-blocking` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | Pass | — | Non-blocking semaphore subset only | — |
 | `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Blocking semaphore acquire operations | Reject (`BlockingSemaphoreAcquire`) | Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead | No cooperative blocking wait implementation | WASM-TODO(semaphore): |
 | `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue | Cooperative park at message boundary | Implemented |
 | `timers-every` | `#[every(duration)]` periodic handlers | Timer operations | Warn (`PeriodicTimers`) | timers are cooperative on wasm32: sleep parks at the message boundary, and #[every(duration)] handlers fire only when the host drives the timer queue | Cooperative periodic dispatch via host-driven timer queue | Implemented |
-| `streams` | `stream.*` constructors, `Stream<T>.*` methods | Stream operations | Reject (`Streams`) | I/O streams require the OS threading and networking stack; the stream runtime module is not compiled for wasm32 | Module not compiled | WASM-TODO(streams): |
+| `streams` | `stream.pipe`/`stream.open`, `Stream<T>.*` and `Sink<T>.*` methods | Stream operations | Reject (`Streams`) | the pipe runtime (suspending queue core, file and socket backings) is not compiled for wasm32; the one pipe family is native-only until the queue core is ported | Module not compiled | WASM-TODO(streams): |
 | `filesystem-streams` | `std.fs.read` (file-stream ownership path) | File-backed stream operations | Reject (`FilesystemStreams`) | the FileReadStream runtime and stream collector are not compiled for wasm32; reject before code generation rather than leaving unresolved native symbols | File-backed stream runtime is native-only; path-independent fs helpers remain separately classified | WASM-TODO(filesystem-streams): |
 | `http-client` | `std.net.http.http_client.*`, `http_client.Response.*` | std.net.http.http_client operations | Reject (`HttpClient`) | the std.net.http.http_client wrappers are still native-only; no wasm32 networking bridge exists yet | Native-only wrapper module | WASM-TODO(http-client): |
 | `smtp` | `std.net.smtp.*`, `smtp.Conn.*` | std.net.smtp operations | Reject (`Smtp`) | the std.net.smtp transport is still native-only; no wasm32 SMTP bridge exists yet | Native-only transport wrapper | WASM-TODO(smtp): |
@@ -167,17 +164,11 @@ would otherwise end in a trap or linker failure:
   erases concurrency and can deadlock task/actor coordination, so the compiler
   continues to reject the surface before LLVM/linking.
 
-- **Channels (bounded subset)**: `channel.new`, sender clone/close,
-  `Receiver::try_recv`, and typed `send` are available on wasm32 via the
-  single-threaded queue in `hew-runtime/src/channel_wasm.rs`.
-  `try_recv` preserves the native ABI contract (`None` on both empty and
-  closed), while `send` fails closed by trapping with an explicit message when
-  the bounded queue is full rather than silently dropping or spin-polling.
-
-- **Blocking channel recv**: `Receiver<T>::recv`, `recv_int`, and `for`
-  over `Receiver<T>` still trap on wasm32 because the cooperative scheduler
-  does not yet yield and resume when a channel is empty but still live. The
-  checker rejects these operations at compile time with `BlockingChannelRecv`.
+- **Pipes**: `stream.pipe`, `Stream<T>` and `Sink<T>` are native-only. The
+  former wasm32 channel queue (`channel_wasm.rs`) was retired with
+  `std.channel`; the pipe core is not yet ported to the cooperative
+  scheduler, so the checker rejects every pipe operation at compile time
+  with `Streams` (WASM-TODO(suspending-receive)).
 
 - **Blocking semaphore acquire**: `Semaphore::acquire` and
   `Semaphore::acquire_timeout` can block waiting for a permit. Native builds do
@@ -305,7 +296,6 @@ reject_wasm_feature   → Severity::Error    → self.errors
 - `hew-types/src/check/calls.rs :: reject_if_wasm_incompatible_call` (link/monitor/supervisor/`random_bytes`/`Node::*`)
 - `hew-types/src/check/registration.rs` (supervisor actor declarations)
 - `hew-types/src/check/methods.rs :: check_method_call` (stream.* / `http_client.*` / `smtp.*` / http.* / net.* / process.* / tls.* / quic.* / dns.* / os.* / `crypto.random_bytes` module calls)
-- `hew-types/src/check/methods.rs` Receiver match arm (`recv` → `BlockingChannelRecv`)
 - `hew-types/src/check/methods.rs` semaphore handle gate (`acquire` / `acquire_timeout` → `BlockingSemaphoreAcquire`)
 - `hew-types/src/check/methods.rs` Stream / http.Server / http.Request / net.Listener / net.Connection / process.Child / tls.TlsStream / quic.QUIC* handle match arms
 - `hew-types/src/check/methods.rs` RemotePid match arm (`send` / `ask` → `Distributed`)
@@ -323,7 +313,7 @@ These gaps are explicitly deferred and tracked here:
 
 | Gap | Blocker | Tracking label |
 |-----|---------|----------------|
-| Blocking channel recv / full-queue backpressure parity | Cooperative-scheduler recv yield/resume + send backpressure beyond the bounded fail-closed slice in `channel_wasm.rs` | `WASM-TODO(channels):` |
+| Pipe parity | A cooperative wasm32 port of the pipe core (`channel_core.rs`): suspending recv/send with backpressure, clone and finish | `WASM-TODO(suspending-receive):` |
 | Actor-local panic/trap containment and restart on production WASI | The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI | `WASM-TODO(actor-crash-containment):` |
 | Main-context panic cleanup on production WASI | Same root cause as actor-crash-containment (panic=abort sysroot, no portable WASM EH on the shipped target): `hew_panic` exits the module directly instead of unwinding through the MIR-authored landing pads that run `#[resource]` closes and drop obligations on native (hew-lang/hew#3074) | `WASM-TODO(main-context-panic-cleanup):` |
 | Blocking semaphore acquire parity | Cooperative permit wait / timeout semantics for `Semaphore::acquire*` on wasm32 | `WASM-TODO(semaphore):` |
@@ -351,14 +341,13 @@ These gaps are explicitly deferred and tracked here:
 | AES-256-GCM encryption parity | A wasm32-compatible authenticated-encryption implementation and ecosystem-FFI link path | `WASM-TODO(crypto-encrypt):` |
 | Ed25519 signing parity | A wasm32-compatible key generation, signing, and verification implementation | `WASM-TODO(crypto-sign):` |
 | Imported-module diagnostic source loading without native filesystem access | A host-provided source map for WASM and no-filesystem diagnostic rendering | `WASM-TODO(diagnostic-source-map):` |
-| Duplex channel parity | A cooperative WASM implementation of the native dual-queue Duplex runtime | `WASM-TODO(duplex):` |
 | Outbound HTTP client parity | A browser/WASI request bridge for the native-only HTTP client wrapper | `WASM-TODO(http-client):` |
 | Lambda-actor construction parity | A cooperative WASM implementation of the native lambda-actor runtime | `WASM-TODO(lambda-actors):` |
 | Runtime profiler parity | A WASM sampling and dashboard design without native OS threads or an embedded HTTP server | `WASM-TODO(profiler):` |
 | Structured classification for newly encountered native-only runtime symbols | An explicit capability-family mapping before a new excluded symbol can use the generic diagnostic branch | `WASM-TODO(runtime-substrate-classification):` |
 | WASM actor-trap reporting parity | Per-kind trap reporting and actor-crash recovery without native POSIX or SEH signal recovery | `WASM-TODO(runtime-traps):` |
 | SMTP client parity | A wasm32 transport bridge for the native-only SMTP wrapper | `WASM-TODO(smtp):` |
-| Shared suspending receive carrier parity | WASM continuation routing for for-await over channel and stream receive operations | `WASM-TODO(suspending-receive):` |
+| Shared suspending receive carrier parity | WASM continuation routing for `for` and `recv` over pipe streams | `WASM-TODO(suspending-receive):` |
 | Execution-context select suspension parity | A WASM readiness waitset and non-recursive resume path for suspending select | `WASM-TODO(suspending-select):` |
 | Shared suspension-deadline runtime parity | A WASM deadline scheduler for select, sleep, and scope continuations | `WASM-TODO(suspension-deadline):` |
 | Mid-handler timer suspension parity | A WASM timer continuation that resumes within a handler instead of parking only at the message boundary | `WASM-TODO(timer-suspension):` |

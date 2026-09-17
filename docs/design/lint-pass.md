@@ -5,10 +5,10 @@ maintainers · Companion to the ast-grep rule set
 
 M1 + M2 have landed: the lint infrastructure (`LintId` / `LintLevel` /
 `LintLevels`), the checker `run_lints` sweep, the CLI `--allow` / `--warn` /
-`--deny` flags, and in-source `// hew:allow(...)` suppression — plus nine
+`--deny` flags, and in-source `// hew:allow(...)` suppression — plus eight
 checker lints (`needless_range_loop`, `redundant_else_after_return`,
 `needless_match_to_if_let`, `len_zero_comparison`, `needless_bool`,
-`must_use`, `sleep_loop_blocks_mailbox`,
+`sleep_loop_blocks_mailbox`,
 `text_direction_codepoint_in_comment`, `invisible_codepoint_in_comment`) and the
 two ad-hoc warnings (`clone_on_copy`, `dead_code`) migrated onto the registry so
 they are now re-levelable and suppressible. `var_param_mutation_lost` joined
@@ -223,15 +223,6 @@ the precise subset that is actually convertible.
     `!c`. *Guards:* each branch must be exactly one boolean literal (no other statements); the two
     branches must be opposite polarities (a matching pair is a constant, not this lint); `else if`
     chains never collapse the outer `if`. Position-agnostic (the rewrite is valid anywhere).
-  - **`must_use`** — a discarded value carrying a write error that must not be ignored:
-    `WriteError`, bare or as the error arm of a `Result<_, E>`, plus a discarded machine step
-    report. *Guards:* statement position only (a trailing block value, a `let`/`var` binding, a
-    `match`/`if let` scrutinee, and `expr?` are all "used" and never flagged); the resolved type
-    must be exactly the stdlib `WriteError` or a `Result` over it, matched by canonical name.
-    Discarding one fails open — a dropped backpressure/disconnect signal. Opt out with
-    `let _ = …` or `// hew:allow(must_use)`. Send and ask outcomes are **not** a lint tier:
-    discarding one is `E_SEND_RESULT_DROPPED`, a compile error raised by the statement checker
-    (HEW-SPEC-2026 §2.1.1, §5.6).
   - **`sleep_loop_blocks_mailbox`** — an actor `receive fn` contains a `loop`, `while true`,
     `while flag`, or `while !flag` whose body directly reaches `sleep` or `sleep_until`, has no
     reachable `break` for that loop, and does not assign the bare guard name inside the loop body.

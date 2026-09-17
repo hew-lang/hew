@@ -288,7 +288,6 @@ stable = [
   "hew_deque_pop_front",
   "hew_deque_push_back",
   "hew_deque_push_front",
-  "hew_duplex_close",
   "hew_env_get",
   "hew_env_has",
   "hew_env_remove",

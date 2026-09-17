@@ -75,12 +75,12 @@ pub const SPAN_SEND: i32 = 5;
 pub const SPAN_IO_ACCEPT: i32 = 6;
 /// I/O recv event: a decoded envelope was received and is being delivered to an actor.
 pub const SPAN_IO_RECV: i32 = 7;
-/// Duplex pair was created (`hew_duplex_pair`). `actor_id` holds the pointer address of handle A.
+/// Retired with the duplex user surface; the id stays reserved so the
+/// taxonomy numbering is stable.
 pub const SPAN_DUPLEX_CREATED: i32 = 8;
-/// Duplex was split into a half-handle (`hew_duplex_send_half` / `hew_duplex_recv_half`).
-/// `actor_id` holds the pointer address of the originating unified handle.
+/// Retired with the duplex user surface; the id stays reserved.
 pub const SPAN_DUPLEX_HALF_SPLIT: i32 = 9;
-/// Duplex unified handle was closed (`hew_duplex_close`). `actor_id` holds the pointer address.
+/// Retired with the duplex user surface; the id stays reserved.
 pub const SPAN_DUPLEX_CLOSED: i32 = 10;
 /// Sink handle was closed (`hew_sink_close`). `actor_id` holds the pointer address.
 pub const SPAN_SINK_CLOSED: i32 = 11;

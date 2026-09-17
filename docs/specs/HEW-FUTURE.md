@@ -26,17 +26,16 @@ more sections in this document into normative status. Within edition
 
 ## 1. Concurrency surfaces
 
-### 1.1 Channels (`std::channel`)
+### 1.1 Channels
 
-**[Landed in v0.5; not deferred]**
+**[Folded into `std.stream`; not deferred]**
 
-The v0.5 stdlib ships `std::channel.new(capacity)` returning a
-typed `(Sender<T>, Receiver<T>)` pair. `rx.recv()` is a plain suspending
-call that parks its execution context worker-free and returns `Option<T>`;
-`rx.try_recv()` is non-suspending. A channel receive can also participate
-in `select` as `pat from rx.recv()`. Future channel work may still add new
-topology forms, but the bounded MPSC surface itself is no longer a future
-item.
+The v0.5 `std.channel` module is gone. `stream.pipe(capacity)` returns a
+typed `(Sink<T>, Stream<T>)` pair with the bounded, suspending contract
+the channel had (`recv()` -> `Option<T>`, `try_recv()`, `send()` ->
+`Result<(), SendError>`, `try_send()`, `Sink.clone()`), and the same two
+types name files and split sockets (HEW-SPEC-2026 §6.4). Future work may
+add topology forms; the bounded MPSC pipe itself is not a future item.
 
 ### 1.2 Cancellation tokens
 
@@ -67,32 +66,14 @@ wait for handler completion; that does not promise durability or certainty
 after a transport failure. Track
 under #1236.
 
-### 1.4 Deferred `select{}` arm: stream-next
+### 1.4 `select{}` arm: stream-next
 
-**[Target: returns with its substrate]**
+**[Landed in v0.6; not deferred]**
 
-Edition 2026's `select{}` is a **four-form** sealed construct: actor
-call (`<id> from <actor>.<method>(...)`), channel receive
-(`<id> from <rx>.recv()`), forked task (`<id> from <task>`), and timer
-(`after <duration>`) — see HEW-SPEC-2026 §4.11.1. One arm form from
-earlier drafts is deferred, blocked on a missing first-class substrate
-rather than on the `select` machinery (the select winner/loser-cleanup
-codegen seam is already live for the shipped arms):
-
-- **Stream-next arm** (`<id> from <stream>.recv()` over `Stream<T>`,
-  binding `Option<T>`). Deferred because no usable `Stream<T>` handle can
-  be obtained today: every acquisition path (`stream.pipe()` tuple
-  extraction, `stream.from_file(...)?` Result extraction) trips the
-  owned-handle aggregate-extraction fail-closed (`OwnedHandleAggregate*`),
-  and a bare `Stream<T>.recv()` is not yet ABI-wired in codegen. Returns
-  once stream-handle binding lands.
-
-The form is rejected at **check** time today (the type checker restricts
-the arm set; codegen is not involved), so re-introducing it is purely
-additive.
-
-First-completion-wins is `race { ... }`, a construct of its own
-(HEW-SPEC-2026 §4.11.2), not a `select` arm.
+`<id> from <stream>.recv()` over a pipe `Stream<T>` binds `Option<T>`
+and is one of the four sealed `select` forms (HEW-SPEC-2026 §4.11.1).
+What remains open is readiness for a file or socket stream as a select
+source; those still read through ordinary calls and `for`.
 
 ### 1.5 Supervision extras beyond ask / restart / escalation
 

@@ -303,11 +303,12 @@ language contracts:
 - `close(sup)`, `fork close(sup)` and `closed(sup)` are decided supervisor
   forms, but native supervisor lowering has not adopted them. The current
   internal stop entry point is not the public language spelling (§5.6).
-- Native `select` realizes task, timer and channel-receive sources. Actor-call
-  registration remains pending (§4.11.1). Stream-next selection is not in the
-  current classified source set.
-- Stream codec adapters remain incomplete on the final path; ordinary
-  Stream values and iteration are separate from that gap (§6.5).
+- Native `select` realizes task, timer and pipe-stream receive sources.
+  Actor-call registration remains pending (§4.11.1). A file or socket
+  stream is not a select source yet (§6.4.5).
+- Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
+  trait, `lines()` and the shipped codecs are separate from that gap
+  (§6.4.6).
 - Native coalescing and ReplaceLatest realization require a checked key
   projection and remain pending (§6.3).
 - Native supervision supports declared children and pools of them; a literal
@@ -448,7 +449,7 @@ selects completion admission. There is no lambda-specific `.send()` operation.
 A lambda actor lowers to an ordinary actor declaration: captures become state
 fields and its body becomes one receive handler. Its handle supports
 `close(handle)` and `closed(handle)`. A handle can be stored in a record or
-collection and called through that place; it cannot be split into channel
+collection and called through that place; it cannot be split into pipe
 halves. Copies retain the same actor identity rather than duplicating its state.
 
 A lambda that names the binding holding its own handle is refused. Use a named
@@ -665,7 +666,7 @@ to use `type`.
 - **Owned heap types**: `string`, `bytes`, `Vec<T>`, `HashMap<K,V>`, user-defined types.
 - **Shared immutable types**: `Frozen` values are the conceptual shared-immutable category. The runtime has internal `Arc`/ABI support, but no user-facing `Arc<T>` type is exposed (HEW-FUTURE §2.3).
 - **Actor references**: an actor handle is sendable.
-- **I/O stream types**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only, `Send`, first-class sequential I/O handles (§6.5).
+- **Pipe halves**: `Stream<T>` (readable) and `Sink<T>` (writable) — move-only handles, `Send` when `T` is (§6.4).
 
 #### Variant spelling (normative)
 
@@ -1009,7 +1010,7 @@ value closes.
 | linear value | a type marked `#[linear]` | transfers ownership | transfers ownership when sendable | must be explicitly consumed |
 | pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `close` to request actor termination |
 | counted handle | `Rc`, `Weak`, `actor(M) -> R` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
-| opaque/resource handle | channel endpoints, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
+| opaque/resource handle | pipe halves, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
 | callable | closure | copies independent state or transfers affine captures, according to its capabilities | subject to callable boundary restrictions | releases captures |
 | task/generator | `Task<T>`, `Generator<Y, R>` | transfers ownership | not an actor message payload | structured completion or cooperative close |
 
@@ -1285,7 +1286,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 | `std.fs`           | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                     |
 | `std.io`           | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                   |
 | `std.os`           | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                          |
-| `std.net`          | `net.listen`, `net.accept`, `net.connect`, `net.connect_timeout`, `net.parse_endpoint`, `net.read`, `net.write`, `net.close`                                 |
+| `std.net`          | `net.listen`, `net.connect`, `net.connect_timeout`, `net.parse_endpoint`; `Connection.recv/send/finish/split/close` (§6.4.7)                               |
 | `std.text.regex`   | `regex.new`, `regex.is_match`, `regex.find`, `regex.replace`                                                                                                |
 | `std.net.mime`     | `mime.from_path`, `mime.from_ext`, `mime.is_text`                                                                                                           |
 | `std.process`      | `process.run`, `process.run_argv`, `process.start`, `process.start_argv`                                                                                     |
@@ -3431,7 +3432,7 @@ the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each
 selected element. An index or endpoint outside the value reports
 `IndexOutOfBounds` and releases the live owners on the way out. Because a Vec
 slice copies its elements, a vector whose element type has no clone — a
-`#[resource]` or `#[linear]` type, an opaque handle, a channel half, a
+`#[resource]` or `#[linear]` type, an opaque handle, a pipe half, a
 generator — cannot be range-sliced; an owning removal moves those elements out
 instead. `for c in s` walks a string's codepoints and `for b in raw` walks a
 bytes value's bytes, in each case yielding the same element `s[i]` would.
@@ -3483,7 +3484,7 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.read()` → `Result<bytes, net.NetError>`, `.read_string()` → `Result<string, net.NetError>`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.write(data)` → `Result<(), net.NetError>`, `.write_string(data)` → `Result<(), net.NetError>`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.close()` |
 | `process.Child`  | `process.start(cmd) -> Result<Child, ProcessError>`, `process.start_argv(cmd, argv) -> Result<Child, ProcessError>` | `.wait()`, `.kill()`                     |
 
 Handle types are opaque — their internal representation is not accessible.
@@ -4091,7 +4092,7 @@ Parameters, return types, fields and explicitly annotated bindings carry these
 contracts. A function calling a `fn[suspends]` parameter itself suspends; it
 does not become effect-polymorphic.
 
-Waiting for actor completion, task results, channel or stream input, timers
+Waiting for actor completion, task results, pipe input, timers
 and suspending I/O uses the caller's execution context. For example,
 `sleep(1s)`, `fs.read(path)` and `rx.recv()` are plain calls. The compiler
 rejects suspension in a context that cannot support it, including a deferred
@@ -4382,7 +4383,7 @@ user-implementable `Awaitable` trait — the four forms are exhaustive.
 ```hew
 select {
     reply   from worker.call(x)        => use(reply),     // actor call
-    item    from inbox.recv()          => use(item),      // channel receive
+    item    from inbox.recv()          => use(item),      // stream receive
     value   from job                   => use(value),     // forked task
     after 5s                           => abort(),        // timer
 }
@@ -4394,7 +4395,7 @@ consumes that classification:
 - `<actor-expr>.<method>(<args>)` — a method-call expression on an actor
   expression. The receiver and handler identify a completion call; no `ask`
   marker is used.
-- `<receiver-expr>.recv()` — a std/channel receive on a `Receiver<T>`.
+- `<stream-expr>.recv()` — a receive on a pipe `Stream<T>` (§6.4.5).
 - `<task-expr>` — an expression of type `Task<T>`, the handle `fork`
   produces (§4.4).
 - `after <duration-expr>` — the timer arm; carries no binding.
@@ -4403,10 +4404,8 @@ An arm source never writes `await`: the `select` is what waits (§4.0). The
 spelling is refused at check time with a fix-it that deletes it, and a
 `select` with no arms at all is refused the same way.
 
-A stream-next arm over `Stream<T>` is not in this sealed set. Streams remain
-usable through ordinary calls and `for`; the absence of a select arm does not
-make the Stream value itself unavailable. Current native realization of the
-four specified forms is listed in §2.1.1.
+Current native realization of the four specified forms is listed in
+§2.1.1.
 
 **The four forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
@@ -4419,7 +4418,7 @@ cleanup columns; the difference is which side initiates the teardown.
 | Form                       | Winning bind / type             | Winning error or trap at the source                                                                                                                                                                                       | Loser cleanup (a different arm won)                                                                                                                                                                       | Outer-cancellation cleanup (enclosing scope cancelled, `select` still pending)                                                                              |
 | -------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `<id> from <actor>.<method>(<args>)` | `id: Result<R, ActorError<E>>` for a reply type `R` | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
-| `<id> from <rx>.recv()`    | `id: Option<T>` for `Receiver<T>` | `None` is a normal winning value indicating that the channel is closed; `Some(value)` carries the received item. Channel receive has no separate error surface in edition 2026.                              | Pending receive is withdrawn from the channel core; the receiver binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, receiver binding remains usable for the cancellation handler.                                             |
+| `<id> from <rx>.recv()`    | `id: Option<T>` for `Stream<T>` | `None` is a normal winning value indicating end of data; `Some(value)` carries the received item. A faulted pipe traps the winner exactly as a plain `recv` would (§6.4.4).                              | Pending receive is withdrawn from the pipe core; the stream binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, stream binding remains usable for the cancellation handler.                                             |
 | `<id> from <task>`         | `id: T` for `Task<T>`             | The task's own outcome, exactly as `await` would deliver it.                                                                                                                                                | The handle is not consumed: the losing task keeps running and its handle stays owned by the enclosing scope, which must still join it. Its registration is disarmed, never cancelled.                     | The registration is disarmed; the task takes the enclosing scope's ordinary cancellation.                                                                  |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | Timer expiry selects this arm; evaluating its duration follows ordinary expression rules.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
 
@@ -4450,7 +4449,7 @@ cleanup columns; the difference is which side initiates the teardown.
 ```
 select {
     p1 from act.call(x)      => r1,         where p1: Result<B, ActorError<E>>, r1: T
-    p2 from rx.recv()        => r2,         where rx: Receiver<D>, r2: T
+    p2 from rx.recv()        => r2,         where rx: Stream<D>, r2: T
     p3 from job              => r3,         where job: Task<C>, p3: C, r3: T
     after d                  => r4,         where d: Duration, r4: T
 } : T
@@ -4460,9 +4459,9 @@ The bound identifiers are in scope only inside their own `=>`
 expression. Their static types follow the table above: `p1:
 Result<B, ActorError<E>>` for the actor-call arm, because an actor call
 completes with a `Result` whatever else happens; `p2: Option<D>` for the
-channel receive arm (so `None` is a legitimate winning value indicating
-the channel observed EOF on that call); `p3: C` for the task arm; and no
-binding for `after`.
+stream receive arm (so `None` is a legitimate winning value indicating
+the pipe observed end of data on that call); `p3: C` for the task arm;
+and no binding for `after`.
 
 **Why sealed?**
 
@@ -4474,7 +4473,7 @@ surface may land in a future edition once trait lowering and generator
 cancellation are proven; see HEW-FUTURE.md.
 
 The source forms and cleanup table are the intended contract. The current
-native actor-call and stream-selection gaps are recorded in §2.1.1.
+native actor-call gap is recorded in §2.1.1.
 
 #### 4.11.2 `race` Expression
 
@@ -4511,7 +4510,7 @@ All operands share one type and the expression has that type. There is no
 **Loser cleanup.** A losing operand is cancelled by the same discipline the
 `select` table gives its form (§4.11.1): an in-flight ask is withdrawn from
 the target mailbox or its reply sink is tombstoned, a pending receive is
-withdrawn from the channel core, and a running child unwinds through its
+withdrawn from the pipe core, and a running child unwinds through its
 `defer` blocks. The `race` expression does not return until every loser has
 been drained. This does not retract work already dispatched to another actor
 or undo an external effect; cancelling a caller is not a transaction rollback.
@@ -5043,134 +5042,140 @@ Current native coalescing requires a checked key-projection contract and is
 not yet realized. See the implementation limitations in §2.1.1; this section
 specifies its intended queue behaviour, not a passing execution claim.
 
-### 6.4 Channels
+### 6.4 Pipes: `Stream<T>` and `Sink<T>`
 
-Channels have explicit bounded capacity and separately owned sender and
-receiver endpoints. `tx.send(value)` and `rx.recv()` are ordinary calls;
-full send and empty receive can suspend. Receive returns `Option<T>`: `None`
-means the sender side has closed and buffered values have drained. Empty
-strings or bytes remain data.
+One pipe family carries data between actors, sockets and files.
+`Stream<T>` is the read half and `Sink<T>` the write half; the same two
+types name an in-memory pipe, an open file, a split socket and the output
+of a `receive gen fn`. There is no separate channel type.
 
-Endpoints are affine. Transferring or closing one consumes its owner, and
-scope cleanup releases a live endpoint. A failed transfer or cancellation must
-not duplicate or lose the element's cleanup obligation. A receiver may be
-used as a select source under §4.11.1's intended contract; current native
-select registration remains a limitation (§2.1.1).
+**Pipes carry data, actors carry handles (normative).** An item is a
+primitive, a `string`, `bytes`, or a value record, enum or tuple whose
+members are items. Containers and handles are not items: `Sink<Vec<T>>`
+and `Stream<Sink<T>>` are refused at check time. A half is itself a
+handle. It moves between actors as a message payload or a state field,
+and it is `Send` exactly when `T` is `Send`. `Sink<T>` is `Clone`; a
+`Stream<T>` has one consumer.
 
-### 6.5 First-Class Streams (`Stream<T>` and `Sink<T>`)
-
-Hew provides two generic, move-only types for sequential I/O that can be passed between functions and stored in actor fields:
+#### 6.4.1 Constructors (`std.stream`)
 
 ```
-Stream<T>   // readable sequential source
-Sink<T>     // writable sequential destination with backpressure
+stream.pipe<T>(capacity: i64) -> Result<(Sink<T>, Stream<T>), string>
+stream.open(path: string)     -> Result<Stream<bytes>, string>
+stream.forward<T>(consume from: Stream<T>, consume to: Sink<T>)
+conn.split()                  -> (Stream<bytes>, Sink<bytes>)   // std.net
 ```
 
-The stream contract is intentionally small:
+The element type of `pipe` comes from use or from the binding's
+annotation. `open` reads a file as chunks of bytes. `forward` drains
+`from` into `to` and finishes `to` at EOF. `split` consumes a
+`Connection` and gives its two directions separate owners.
 
-- `Stream<bytes>` / `Sink<bytes>` are the canonical first-class streaming foundation.
-- `Stream<string>` / `Sink<string>` are convenience text ABI wrappers over the same bounded channel contract.
-- Core `.recv()` / `.write()` calls wait for their operation and respect backpressure; they carry no `await`.
-- EOF means **end-of-stream only**. Zero-length `bytes` values and empty `string` values are valid data items.
-- `sink.close()` or dropping a sink produces graceful EOF after buffered items drain.
-- `stream.close()` or dropping a stream is local cancel/discard of unread items.
-- Each operation retains its declared error type. Current post-open error
-  reporting still varies by wrapper and is not a uniform transport-error API.
+#### 6.4.2 Operations
 
-Codec adapters remain a current implementation limitation (§2.1.1). No codec
-method is presented here as an available streaming operation.
+| Half        | Operation                              | Meaning                                                            |
+| ----------- | -------------------------------------- | ------------------------------------------------------------------ |
+| `Stream<T>` | `recv() -> Option<T>`                  | waits for an item; `None` is end of data                           |
+|             | `try_recv() -> Option<T>`              | never waits                                                        |
+|             | `for item in input { }`                | drains to end of data                                              |
+|             | `lines(consume) -> Stream<string>`     | on `Stream<bytes>`: newline-delimited text frames                  |
+|             | `chunks(consume, n) -> Stream<bytes>`  | on `Stream<bytes>`: frames of `n` bytes                            |
+|             | `take(consume, n) -> Stream<T>`        | ends after `n` items                                               |
+|             | `close(consume)`                       | discards unread items and releases the half                        |
+| `Sink<T>`   | `send(item) -> Result<(), SendError>`  | waits for capacity; `Err(SendError.Closed)` once the reader is gone |
+|             | `try_send(item) -> Result<(), SendError>` | never waits; adds `Err(SendError.Full)`                         |
+|             | `clone() -> Sink<T>`                   | another producer on the same pipe                                  |
+|             | `finish()`                             | publishes end of data and keeps the handle; FIN on a socket        |
+|             | `close(consume)`                       | finishes and releases the half                                     |
 
-Both handle types are `Send` (safe to pass to other actors), opaque (backed by a vtable), and not `Clone`.
-
-#### 6.5.1 `std.stream` surface
+`send` and `recv` are ordinary suspending calls (§4.0); they carry no
+`await`. A `send` result is a delivery outcome: a discarded one is
+`E_SEND_RESULT_DROPPED`, the same rule as a discarded actor delivery.
 
 ```hew
 import std.stream;
-import std.fs;
 
-fn main() -> Result<(), fs.IoError> {
-    // Canonical in-memory bounded bytes pipe
-    let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
-
-    // Convenience text pipe
-    let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
-
-    // Current file helpers remain text-only in this slice
-    let file_in  = stream.from_file("notes.txt")?;  // Result<Stream<string>, fs.IoError>
-    let file_out = stream.to_file("out.txt")?;      // Result<Sink<string>, fs.IoError>
-    Ok(())
+type Order {
+    id: i64,
+    note: string,
 }
-```
-
-`from_file()` and `to_file()` currently return text endpoints. Their open
-errors are `fs.IoError`; this does not promise a bytes-file adapter.
-
-#### 6.5.2 Current operations
-
-```hew
-import std.stream;
 
 fn main() {
-    let (bytes_sink, bytes_stream) = match stream.bytes_pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
-    let (text_sink, text_stream) = match stream.pipe(16) { .Ok(pair) => pair, .Err(error) => panic(error), };
-
-    // Empty items are valid data, not EOF
-    text_sink.write("");
-    bytes_sink.write(b"");
-
-    // Pull items
-    match bytes_stream.recv() {
-        .Some(chunk) => { println(f"{chunk.len()} bytes"); },
-        .None => { /* EOF only */ },
+    let (orders, input): (stream.Sink<Order>, stream.Stream<Order>) =
+        match stream.pipe(4) { .Ok(pair) => pair, .Err(error) => panic(error), };
+    let more = orders.clone();
+    orders.send(Order { id: 1, note: "first" }).expect("send");
+    more.send(Order { id: 2, note: "second" }).expect("send");
+    orders.finish();
+    more.close();
+    for order in input {
+        println(f"{order.id} {order.note}");
     }
-
-    // Close semantics
-    bytes_sink.close();   // graceful EOF for the paired reader
-    bytes_stream.close(); // local cancel / discard unread items
-    text_sink.close();
-    text_stream.close();
 }
 ```
 
-`for` is the usual way to drain a stream. The text `lines()` adapter returns
-a `Stream<string>`; it does not define an implicit bytes-to-text decoder.
+#### 6.4.3 Lifecycle
 
-#### 6.5.3 Lifecycle Rules
-
-- Closing or dropping a `Sink` signals graceful EOF to the paired `Stream`.
-- Closing or dropping a `Stream` discards unread local data and releases the underlying handle.
-- Streams and sinks have affine release contracts and auto-close on scope exit.
-  Explicit `.close()` consumes the endpoint for early release; there is no
-  user `Resource` or `Drop` implementation to write.
+- A pipe reaches end of data when its last sink finishes or is released.
+  A clone keeps the pipe open until it finishes too.
+- Scope exit releases a live half the same way `close` does; there is no
+  user `Resource` or `Drop` implementation to write. `close` consumes the
+  half.
+- Zero-length `bytes` and empty `string` values are items, never end of
+  data.
 - Resource users finish or are cancelled and drained before their owning
-  endpoint is released (§3.7.8).
+  half is released (§3.7.8).
 
-#### 6.5.4 Bidirectional connections
+#### 6.4.4 Failure disclosure (normative)
 
-A bidirectional network connection (such as a TCP socket from `std.net`)
-splits into a `(Stream<bytes>, Sink<bytes>)` pair via `.into_stream_sink()`:
+`recv` returns `Option<T>` and `None` means end of data only. A transport
+failure, such as a socket reset or a read error after `open`, traps the
+reading actor with a typed I/O fault; no error value flows through the
+loop. A sink released because its owning actor crashed marks the pipe
+faulted: the consumer's next `recv` traps instead of reading a clean end.
+A sink released by a normal return, a stop or `close` publishes a clean
+end of data. A `send` never traps for a missing reader; it reports
+`SendError.Closed`.
 
-<!-- doctest: skip -->
-```hew
-import std.net;
+#### 6.4.5 Selection
 
-let conn = net.connect("127.0.0.1:8080")?;
-let (rx, tx) = conn.into_stream_sink();
-// rx: Stream<bytes>  — inbound data
-// tx: Sink<bytes>    — outbound data
+`Stream<T>` is a select source. `item from input.recv() => ...` binds
+`Option<T>` and `None` is a normal winning value (§4.11.1). A file or
+socket stream is not a select source in edition 2026 (§2.1.1).
+
+#### 6.4.6 Codecs
+
+`trait Codec<T>` frames bytes into items and back:
+
+```
+trait Codec<T> {
+    fn decode(self, var buf: bytes) -> Result<Option<T>, CodecError>;
+    fn encode(self, item: T, var out: bytes);
+}
 ```
 
-Accepted connections from a `TcpListener` expose the same method. The
-`Stream<bytes>` and `Sink<bytes>` halves are independently move-able and
-may be passed to separate actors. See `std/net/net.hew` for the full API.
+`decode` removes one frame from the front of `buf` and returns it, or
+`None` when more bytes are needed; `encode` appends one item's frame to
+`out`. `std.stream` ships `Lines` (`Codec<string>`) and
+`LengthPrefixed { width }` (`Codec<bytes>`); `lines()` is the `Lines`
+case as a method. Generic `frames(codec)` / `framed(codec)` adapters over
+a user codec are decided but not lowered in edition 2026 (§2.1.1).
 
-#### 6.5.5 Relation to Actor Streams
+#### 6.4.7 Sockets
+
+`std.net.Connection` speaks the same contract: `recv() -> Option<bytes>`,
+`send(bytes) -> Result<(), SendError>`, `finish()`, `close()` and
+`split()`. A transport failure on `recv` traps; a peer that has gone away
+is `SendError.Closed` on `send`. See `std/net/net.hew` for the full API.
+
+#### 6.4.8 Actor streams
 
 `receive gen fn` produces a `Stream<Y>` through the actor's producer turn.
-That stream is an owned value with the same move-only read/close contract as
-other Stream values. Plain `for` waits per item. The producer's actor remains
-a separate failure domain, and closing the stream does not promise rollback
-of work the producer has already performed.
+That stream is an owned value with the same read and close contract as
+every other `Stream`. Plain `for` waits per item. The producer's actor
+remains a separate failure domain: its crash faults the stream (§6.4.4),
+and closing the stream does not promise rollback of work the producer has
+already performed.
 
 ---
 
@@ -6604,10 +6609,9 @@ current compiler stages and their responsibilities are described in §8.1.
   `#[linear]` types must be consumed via a declared consuming method and have
   no implicit drop.
 - **Sealed `select{}`.** `select{}` widens from actor-receive-only to a
-  three-form sealed construct over actor request-reply, channel receive
-  (`pat from rx.recv()`), and timer (`after`) (§4.11). The earlier-drafted
-  stream-`next` and task-`await` arms are deferred with their substrate
-  (see HEW-FUTURE). Not user-extensible in this edition.
+  four-form sealed construct over actor request-reply, pipe receive
+  (`pat from rx.recv()`), forked task and timer (`after`) (§4.11). Not
+  user-extensible in this edition.
 - **`scope{}` / `fork` split.** The `scope |s| { s.launch / s.spawn / s.cancel }`
   surface is removed entirely. `scope { }` is the structured-concurrency
   block (the scope boundary). `fork expr` is the only child-start form,
@@ -6627,6 +6631,6 @@ current compiler stages and their responsibilities are described in §8.1.
   generic `HashMap<K, V>` over owned-aggregate/float keys, cancellation
   tokens, actor await + read-after-send barrier, and the self-hosting
   roadmap. See HEW-FUTURE.md for the surface and version targets.
-  Channels (`std.channel`) and the rest of the `Iterator`/`IntoIterator`
+  Pipes (`std.stream`, §6.4) and the rest of the `Iterator`/`IntoIterator`
   trait hierarchy shipped in this edition (§2.4, §2.5). Cross-node actor
   communication is shipped and normative — see §11 and HEW-DIST-SPEC.md.

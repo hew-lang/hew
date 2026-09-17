@@ -543,10 +543,9 @@ a second prose contract that cannot validate their results.
   (duplicate lang items, panic-strategy mismatch) have no clean repo-side fix
   as of 2026-04. Keep and review the nightly signal; re-evaluate when upstream
   resolves.
-- **WASM capability gaps**: The bounded nonblocking channel slice
-  (`channel.new`, sender `send`/clone/close, receiver `try_recv`/close) is
-  supported on wasm32-wasi. Blocking receive and unsupported I/O paths remain
-  compile-time refusals. Timers (`sleep`/`sleep_until`) have cooperative
+- **WASM capability gaps**: Pipes (`stream.pipe`, `Stream<T>`, `Sink<T>`)
+  and the other suspending I/O paths remain compile-time refusals on
+  wasm32-wasi. Timers (`sleep`/`sleep_until`) have cooperative
   semantics on WASM (actor parks at message boundary) and emit a warning rather
   than an error. See
   [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full

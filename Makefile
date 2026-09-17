@@ -76,7 +76,7 @@
 # ============================================================================
 
 .PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
-.PHONY: test test-strict test-release-workspace ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness core-acceptance test-core-acceptance-runner
+.PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall verify-ffi test-verify-ffi test-cabi-surface cabi-surface cabi-surface-check
@@ -236,9 +236,8 @@ TEST_RUN_ENV := HEW_TEST_NO_BUILD=1
 
 # Ordinary development and pull-request runs keep executing known failing tests
 # while rejecting every unrecorded failure, changed outcome, missing test,
-# process signal, setup error, or malformed report. Release gates require an
-# all-pass exit except for the explicitly scoped native v0.6.0-rc3 candidate.
-# `test-release-workspace` owns that version-specific selection.
+# process signal, setup error, or malformed report. Release gates use the same
+# nextest invocation through `test-strict`, but require an all-pass exit.
 NEXTEST_WORKSPACE_FILTER ?=
 NEXTEST_WORKSPACE_SELECTION_ARGS := --workspace --exclude hew-cabi --profile ci
 NEXTEST_WORKSPACE_ARGS := $(NEXTEST_WORKSPACE_SELECTION_ARGS) --no-fail-fast
@@ -1025,23 +1024,6 @@ test-strict: test-artifacts ## Test: run the Rust workspace test suite with no k
 	@rm -f "$(NEXTEST_JUNIT)" "$(NEXTEST_RATCHET_JUNIT)" "$(NEXTEST_FULL_INVENTORY)" "$(NEXTEST_SELECTED_INVENTORY)"
 	$(TEST_RUN_ENV) cargo nextest run $(NEXTEST_WORKSPACE_ARGS)
 
-# Keep the candidate exception tied to the source version, including manual
-# workflow dispatches. The existing ratchet still executes its selected tests
-# and rejects unrecorded failures. Native acceptance and sanitizers stay separate
-# required release jobs. Publish the report for the policy that actually ran.
-test-release-workspace: ## Release: validate Rust tests against the candidate's published scope
-	@version="$$($(PYTHON) scripts/workspace-version.py)" || exit $$?; \
-	case "$$version" in \
-		0.6.0-rc3) target=test; report="$(NEXTEST_RATCHET_JUNIT)" ;; \
-		*) target=test-strict; report="$(NEXTEST_JUNIT)" ;; \
-	esac; \
-	rm -f "$(NEXTEST_STORE)/ci/release.xml" "$$report"; \
-	echo "Release workspace policy: $$version -> $$target"; \
-	status=0; \
-	$(MAKE) "$$target" || status=$$?; \
-	cp "$$report" "$(NEXTEST_STORE)/ci/release.xml" || exit $$?; \
-	exit $$status
-
 # Scheduled ledger authority. Each family runs independently so a red first
 # family cannot suppress reports from the later ledgers.
 ratchet-accounting: ## Check: strict expected-failure ledger accounting
@@ -1120,17 +1102,11 @@ test-compiler-lifecycle: test-opaque-resource-lifecycle-matrix
 # tree-sitter-cli and ast-grep and then runs a full authority scan, which is
 # minutes of work that has no place inside a test target invoked from several
 # other targets. Locally, any `make lint` provisions the same tree.
-# The v0.6.0-rc3 native candidate has no compiler WASM emission, so the
-# wasm32-wasi arm of this matrix has nothing to execute. Defer that arm for
-# exactly that version, as `test-release-workspace` does for the Rust ratchet,
-# and keep the native audit, counterfactuals and runtime anchors required.
-LIFECYCLE_CANDIDATE_ARGS = $$(case "$$($(PYTHON) scripts/workspace-version.py)" in 0.6.0-rc3) echo --defer-wasm-evidence ;; esac)
-
 test-opaque-resource-lifecycle-matrix: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py $(LIFECYCLE_CANDIDATE_ARGS)
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py
 
 test-opaque-resource-lifecycle-matrix-external: wasm-runtime hew-native
-	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network $(LIFECYCLE_CANDIDATE_ARGS)
+	HEW_BIN="$(DEBUG_DIR)/hew" $(PYTHON) scripts/tests/test_opaque_resource_lifecycle_matrix.py --runtime-profile external-network
 
 # End-to-end Hew compiler oracle: real .hew fixtures through check/compile/run.
 # Build libhew first so native fixture links use the current product.

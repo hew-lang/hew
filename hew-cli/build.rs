@@ -199,23 +199,23 @@ mod tests {
 
     #[test]
     fn normalizes_release_tag_prefix() {
-        assert_eq!(normalize_tag("v0.6.0-rc3"), "0.6.0-rc3");
-        assert_eq!(normalize_tag("0.6.0-rc3"), "0.6.0-rc3");
+        assert_eq!(normalize_tag("v0.6.0-rc4"), "0.6.0-rc4");
+        assert_eq!(normalize_tag("0.6.0-rc4"), "0.6.0-rc4");
     }
 
     #[test]
     fn renders_shallow_clone_identity() {
         assert_eq!(
-            dev_version("0.6.0-rc3", 1, "abcdef0", false),
-            "0.6.0-rc3-dev.1+abcdef0"
+            dev_version("0.6.0-rc4", 1, "abcdef0", false),
+            "0.6.0-rc4-dev.1+abcdef0"
         );
     }
 
     #[test]
     fn renders_dirty_dev_identity() {
         assert_eq!(
-            dev_version("0.6.0-rc3", 1, "abcdef0", true),
-            "0.6.0-rc3-dev.1+abcdef0.dirty"
+            dev_version("0.6.0-rc4", 1, "abcdef0", true),
+            "0.6.0-rc4-dev.1+abcdef0.dirty"
         );
     }
 }

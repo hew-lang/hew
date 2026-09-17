@@ -52,3 +52,14 @@ scripts/cabi-surface.json
 # WHEN: remove once a real generator writes this file and emits
 # prettier-shaped output.
 docs/syntax-data.json
+
+# Generated sandbox VM fixtures with their own writer (`cargo run -p xtask --
+# sandbox-fixtures`) and a hand-authored trace format. `xtask` emits
+# `bytecode.json` via `serde_json::to_string_pretty`; the interpreter emits
+# `expected.trace.json` as one compact line. Prettier collapsing short
+# arrays and expanding compact traces turns any staged regeneration (e.g. a
+# version bump) into a whole-fixture-set reflow that buries the real change.
+#
+# WHY: xtask and the trace writer disagree with prettier about JSON shape.
+# WHEN: remove once both writers emit prettier-shaped output themselves.
+hew-sandbox-vm/fixtures/

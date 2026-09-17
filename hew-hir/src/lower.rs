@@ -11327,20 +11327,6 @@ impl LowerCtx {
                 span,
             ),
             ResolvedTy::Named {
-                builtin: Some(BuiltinType::Instant),
-                ..
-            } => {
-                // A typed `instant` (`let t: instant`, parameter-typed, etc.)
-                // reaches HIR as `Named { builtin: Some(Instant) }` because
-                // annotation-lowering preserves the named form. It canonicalises
-                // to i64 and renders as raw nanoseconds via the i64 catalog
-                // overload, mirroring the checker's own `Named{Instant}` -> i64
-                // satisfaction path. Handled before the general `Named` arm,
-                // which would otherwise route to a non-existent `instant::fmt`
-                // impl symbol and fail closed.
-                self.lower_scalar_display(value, &ResolvedTy::I64, span)
-            }
-            ResolvedTy::Named {
                 builtin: Some(BuiltinType::NodeId),
                 ..
             } => self.build_catalog_call("hew_node_id_display", vec![value], span),
@@ -23195,6 +23181,14 @@ impl LowerCtx {
                     "char" => ResolvedTy::Char,
                     "string" => ResolvedTy::String,
                     "duration" => ResolvedTy::Duration,
+                    // `instant` is a monotonic i64-nanosecond timestamp with no
+                    // representation of its own. The checker keeps `Ty::Named
+                    // { instant }` to route `impl instant` method dispatch;
+                    // below the checker it is an `i64`, exactly as
+                    // `ResolvedTy::from_ty` resolves it. Annotations resolve the
+                    // same way, so an annotated binding and an inferred one are
+                    // one type at every stage after HIR.
+                    "instant" => ResolvedTy::I64,
                     "bytes" => ResolvedTy::Bytes,
                     "CancellationToken" => self
                         .resolve_early_source_type_ref(name, args)

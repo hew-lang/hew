@@ -1754,7 +1754,6 @@ pub enum RuntimeCallFamily {
     StringIsAlphanumeric,
     StructuralFormat,
     StringFind,
-    StringGet,
     StringIndex,
     StringLen,
     /// `s.repeat(n)` - a fresh string of `n` concatenated copies.
@@ -2149,8 +2148,8 @@ const HANDWRITTEN_STD_IO_EXTERN_SIGNATURES: &[CanonicalStdlibExternSignature] = 
     CanonicalStdlibExternSignature {
         module: "std.string",
         signature_key: "string::get",
-        symbol: "hew_string_get",
-        family: Some(RuntimeCallFamily::StringGet),
+        symbol: "hew_string_char_at",
+        family: Some(RuntimeCallFamily::StringCharAt),
         params: I64,
         result: CanonicalExternTy::OptionChar,
     },
@@ -8386,14 +8385,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::StringGet => RuntimeOpRow {
-                symbol: "hew_string_get",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::StringIndex => RuntimeOpRow {
                 symbol: "hew_string_index",
                 contract: Some(RuntimeSemanticContract {
@@ -11246,7 +11237,6 @@ impl RuntimeCallFamily {
                 | Self::RegexFreeCapture
                 | Self::RegexHandle
                 | Self::RegexMatch
-                | Self::StringGet
         )
     }
 
@@ -11865,7 +11855,6 @@ impl RuntimeCallFamily {
             | F::StringIsAlphanumeric
             | F::StructuralFormat
             | F::StringFind
-            | F::StringGet
             | F::StringIndex
             | F::StringLen
             | F::StringSlice

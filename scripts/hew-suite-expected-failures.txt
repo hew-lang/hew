@@ -79,9 +79,9 @@
 # runtime: wrong result from uuid_test
 # runtime: wrong result from xml_test
 # runtime: wrong result from xml_try_parse_test
-tests/hew/actor_state_vec_into_iter_test.hew::test_push_into_drained_dyn_state_field_lands_in_valid_vec compile
-tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec compile
-tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_string_state_drain_terminates runtime
+tests/hew/actor_state_vec_into_iter_test.hew::test_push_into_drained_dyn_state_field_lands_in_valid_vec compile  # 3463 a state-field transform copies the seat
+tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_dyn_state_drain_sees_valid_empty_vec compile  # 3463 a state-field transform copies the seat
+tests/hew/actor_state_vec_into_iter_test.hew::test_second_dispatch_after_string_state_drain_terminates runtime  # 3463 consuming into_iter drains the staged copy, not the seat
 tests/hew/bytes_mutation_proving_test.hew::test_append_cow_leaves_slice_intact compile
 tests/hew/bytes_mutation_proving_test.hew::test_clear_on_owner_leaves_slice_alive compile
 tests/hew/bytes_mutation_proving_test.hew::test_pop_cow_leaves_slice_intact compile
@@ -98,7 +98,7 @@ tests/hew/dyn_trait_return_test.hew::test_returned_dyn_transfers_to_caller compi
 tests/hew/hashmap_generic_mono_test.hew::test_generic_hashmap_methods_honor_key_bounds runtime
 tests/hew/http_response_body_non_2xx_test.hew::test_non_2xx_response_body_round_trips runtime
 tests/hew/http_server_client_roundtrip_test.hew::test_server_client_roundtrip_returns_200_and_echoes_path runtime
-tests/hew/imported_same_file_supervisor_test.hew::imported_supervisor_runs_its_same_file_actor compile
+tests/hew/imported_same_file_supervisor_test.hew::imported_supervisor_runs_its_same_file_actor compile  # 3461 a module supervisor registers under its bare leaf
 tests/hew/metrics_test.hew::test_counter_ok_for_valid_name runtime
 tests/hew/msgpack_test.hew::test_unicode_string_field_round_trip runtime
 tests/hew/net_scalar_failclosed_test.hew::test_http_client_set_timeout_panics_at_legacy_boundary runtime

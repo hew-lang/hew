@@ -197,11 +197,8 @@ macro_rules! registration {
 }
 
 const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
-    registration!(Duplex, BuiltinTypeShape::Opaque),
     registration!(Sink, BuiltinTypeShape::Opaque),
     registration!(Stream, BuiltinTypeShape::Opaque),
-    registration!(Sender, BuiltinTypeShape::Opaque),
-    registration!(Receiver, BuiltinTypeShape::Opaque),
     registration!(Vec, BuiltinTypeShape::Opaque),
     registration!(HashMap, BuiltinTypeShape::Opaque),
     registration!(HashSet, BuiltinTypeShape::Opaque),
@@ -212,15 +209,10 @@ const BUILTIN_TYPE_REGISTRATIONS: &[BuiltinTypeRegistration] = &[
     registration!(Location, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(RemotePid, BuiltinTypeShape::Struct(LOCATION_FIELDS)),
     registration!(HewActor, BuiltinTypeShape::Opaque),
-    registration!(HewDuplex, BuiltinTypeShape::Opaque),
-    registration!(HewSendHalf, BuiltinTypeShape::Opaque),
-    registration!(HewRecvHalf, BuiltinTypeShape::Opaque),
     registration!(BoxedActor, BuiltinTypeShape::Opaque),
     registration!(ActorState, BuiltinTypeShape::Opaque),
     registration!(MachineState, BuiltinTypeShape::Opaque),
     registration!(ActorFn, BuiltinTypeShape::Opaque),
-    registration!(SendHalf, BuiltinTypeShape::Opaque),
-    registration!(RecvHalf, BuiltinTypeShape::Opaque),
     registration!(CrashInfo, BuiltinTypeShape::Struct(CRASH_INFO_FIELDS)),
     registration!(CrashAction, BuiltinTypeShape::Enum(CRASH_ACTION_VARIANTS)),
     registration!(MonitorRef, BuiltinTypeShape::Struct(MONITOR_REF_FIELDS)),
@@ -294,39 +286,22 @@ pub fn crash_info_type_registration() -> &'static BuiltinTypeRegistration {
 /// compiler-known records carry their marker and shape here so downstream
 /// lowering can query the registry instead of matching user-visible names.
 ///
-/// WHY: `Duplex<S,R>` is constructed via the `duplex_pair` / `duplex` builtin
-/// functions registered in `hew-types/src/check/registration.rs`.  Those
-/// builtins return `Ty::Duplex { .. }` which crosses the checker boundary as
-/// `ResolvedTy::Named { name: "Duplex", .. }`.  `Sink<T>` and `Stream<T>` have
-/// no builtin constructors (the `channel()` builtin was retired in favour of
-/// `std.channel.new`, which yields `(Sender<T>, Receiver<T>)`) but are
-/// still registered here so that `ValueClass::of_ty` resolves them correctly for
+/// WHY: `Sink<T>` and `Stream<T>` have no source `#[resource]` declaration
+/// (`std.stream.pipe` yields them through the pair intrinsics), so they are
+/// registered here so that `ValueClass::of_ty` resolves them correctly for
 /// drop elaboration when they appear as values from std / runtime surfaces.
 /// Without this seeding, `ValueClass::of_ty` returns `Unknown` for every
-/// `Named { "Duplex", .. }` / `Named { "Sink", .. }` etc. binding, and drop
+/// `Named { "Sink", .. }` / `Named { "Stream", .. }` binding, and drop
 /// elaboration never fires.
 ///
 /// WHEN-OBSOLETE: when user-level `@resource` type declarations become the
-/// canonical authority for all substrate types (i.e. when `std/duplex.hew`
+/// canonical authority for all substrate types (i.e. when `std/stream.hew`
 /// ships its own `TypeDecl` with the `#[resource]` attribute).
 ///
 /// WHAT-REAL-SOLUTION: move this seeding into a stdlib module loaded at
 /// program-start so user programs never need to see the compiler-internal table.
 pub fn seed_builtin_type_classes(type_classes: &mut TypeClassTable) {
     for registration in builtin_type_registrations() {
-        // Channel endpoints are admitted through `ResolvedTy::Named.builtin`,
-        // never through an unqualified table row.  Keeping a bare `Sender` or
-        // `Receiver` resource row here would make a same-named user record
-        // acquire the endpoint close/drop plan before declaration metadata is
-        // available.  The typed lookup in `lookup_type_marker_for_ty` reads
-        // this registration directly, including for `channel.Sender` and
-        // `channel.Receiver` spellings.
-        if matches!(
-            registration.builtin,
-            BuiltinType::Sender | BuiltinType::Receiver
-        ) {
-            continue;
-        }
         debug_assert!(
             registration.marker != ResourceMarker::BitCopy || registration.close_method.is_none(),
             "BitCopy builtin types must not register close methods"
@@ -377,24 +352,12 @@ mod tests {
     }
 
     #[test]
-    fn channel_endpoints_use_typed_registration_not_bare_seed_rows() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        for endpoint in ["Sender", "Receiver"] {
-            assert!(
-                !table.contains_key(endpoint),
-                "{endpoint} must not make a same-named user declaration into a builtin resource"
-            );
-        }
-    }
-
-    #[test]
-    fn channel_endpoint_named_tys_resolve_to_affine_resources() {
+    fn pipe_half_named_tys_resolve_to_affine_resources() {
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
         for (name, builtin) in [
-            ("channel.Sender", BuiltinType::Sender),
-            ("channel.Receiver", BuiltinType::Receiver),
+            ("stream.Sink", BuiltinType::Sink),
+            ("stream.Stream", BuiltinType::Stream),
         ] {
             let ty = ResolvedTy::named_builtin(name, builtin, vec![ResolvedTy::String]);
             assert_eq!(
@@ -406,16 +369,16 @@ mod tests {
     }
 
     #[test]
-    fn channel_endpoint_names_without_builtin_identity_are_not_resources() {
+    fn pipe_half_names_without_builtin_identity_are_not_resources() {
         let mut table = TypeClassTable::default();
         seed_builtin_type_classes(&mut table);
 
-        for name in ["Sender", "Receiver", "channel.Sender", "channel.Receiver"] {
+        for name in ["foo.Sink", "foo.Stream"] {
             let ty = ResolvedTy::named_user(name, vec![ResolvedTy::String]);
             assert_ne!(
                 ValueClass::of_ty(&ty, &table),
                 ValueClass::AffineResource,
-                "user `{name}` without builtin identity must not receive channel endpoint teardown"
+                "user `{name}` without builtin identity must not receive pipe teardown"
             );
         }
     }
@@ -448,18 +411,6 @@ mod tests {
             table.get("RecvHalf"),
             Some(&(ResourceMarker::Resource, Some("close".to_string())))
         );
-    }
-
-    #[test]
-    fn duplex_named_ty_resolves_to_affine_resource() {
-        let mut table = TypeClassTable::default();
-        seed_builtin_type_classes(&mut table);
-        let ty = ResolvedTy::named_builtin(
-            "Duplex",
-            hew_types::BuiltinType::Duplex,
-            vec![ResolvedTy::I64, ResolvedTy::I64],
-        );
-        assert_eq!(ValueClass::of_ty(&ty, &table), ValueClass::AffineResource);
     }
 
     #[test]
@@ -608,33 +559,6 @@ mod tests {
                 Some("close"),
                 BuiltinTypeShape::Opaque,
                 Some(BuiltinHandleFamily::ActorRuntime),
-                0,
-                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
-            ),
-            (
-                BuiltinType::HewDuplex,
-                ResourceMarker::Resource,
-                Some("close"),
-                BuiltinTypeShape::Opaque,
-                Some(BuiltinHandleFamily::Duplex),
-                2,
-                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
-            ),
-            (
-                BuiltinType::HewSendHalf,
-                ResourceMarker::Resource,
-                Some("close"),
-                BuiltinTypeShape::Opaque,
-                Some(BuiltinHandleFamily::DuplexHalf),
-                0,
-                &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
-            ),
-            (
-                BuiltinType::HewRecvHalf,
-                ResourceMarker::Resource,
-                Some("close"),
-                BuiltinTypeShape::Opaque,
-                Some(BuiltinHandleFamily::DuplexHalf),
                 0,
                 &[BuiltinRegistrationRole::WasmNativeOnlyHandle][..],
             ),

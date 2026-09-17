@@ -82,10 +82,10 @@ pub use self::types::{
 };
 use self::types::{
     ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
-    DeferredChannelMethodRewrite, DeferredHashMapAdmission, DeferredHashSetAdmission,
-    DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry,
-    ImplAliasScope, ImportKey, IndexContext, IntegerTypeInfo, PendingLoweringFact,
-    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
+    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
+    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, ImportKey,
+    IndexContext, IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration,
+    TraitAssociatedTypeInfo, TraitInfo, TypeParamScope,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -153,26 +153,6 @@ pub fn builtin_function_names() -> &'static HashSet<String> {
                     BuiltinMethodRuntime::Fixed(symbol) => {
                         if !symbol.contains('.') && !symbol.contains("::") {
                             names.insert(symbol.to_string());
-                        }
-                    }
-                    BuiltinMethodRuntime::IntegerOverload {
-                        default_symbol,
-                        integer_symbol,
-                    } => {
-                        for symbol in [default_symbol, integer_symbol] {
-                            if !symbol.contains('.') && !symbol.contains("::") {
-                                names.insert(symbol.to_string());
-                            }
-                        }
-                    }
-                    BuiltinMethodRuntime::ElementOverload {
-                        string_symbol,
-                        bytes_symbol,
-                    } => {
-                        for symbol in [string_symbol, bytes_symbol] {
-                            if !symbol.contains('.') && !symbol.contains("::") {
-                                names.insert(symbol.to_string());
-                            }
                         }
                     }
                 }
@@ -410,8 +390,7 @@ pub(crate) fn resolve_member_ty(
                     .then(|| crate::lookup_source_owned_lifecycle_type(&name))
                     .flatten()
             });
-            let is_opaque = !builtin.is_some_and(crate::BuiltinType::is_channel_handle)
-                && (is_opaque || is_opaque_type(&name));
+            let is_opaque = is_opaque || is_opaque_type(&name);
             ResolvedTy::Named {
                 name,
                 args,
@@ -1750,10 +1729,8 @@ impl Checker {
         self.extern_table = crate::extern_table::ExternTable::new();
         // Record concrete stdlib source provenance once, before registration
         // manufactures any compiler-recognised carrier signatures. Module
-        // spelling is not authority: a user package may imitate the legacy
-        // repeated-basename channel path, but only the source selected by the
-        // stdlib search-path resolver may receive Sender/Receiver runtime
-        // identity.
+        // spelling is not authority: only the source selected by the stdlib
+        // search-path resolver may receive Stream/Sink runtime identity.
         self.canonical_std_module_sources.clear();
         self.canonical_std_root_sources.clear();
         self.module_source_paths.clear();
@@ -2321,7 +2298,6 @@ impl Checker {
         self.finalize_hashmap_admission();
         self.finalize_hashset_admission();
         self.finalize_vec_admission();
-        self.finalize_channel_rewrites();
         self.finalize_eq_requirements();
 
         self.report_unresolved_inference_holes(program);
@@ -2844,7 +2820,6 @@ impl Checker {
         out: &mut Vec<TypeError>,
     ) {
         let ctx = lints::LintCtx {
-            checker: self,
             subst: &self.subst,
             expr_types: &self.expr_types,
             module_idx,
@@ -2865,7 +2840,6 @@ impl Checker {
         out: &mut Vec<TypeError>,
     ) {
         let ctx = lints::LintCtx {
-            checker: self,
             subst: &self.subst,
             expr_types: &self.expr_types,
             module_idx,

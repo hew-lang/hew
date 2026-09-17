@@ -66,8 +66,8 @@ impl Checker {
     /// owner has already been selected. Qualified spellings are presentation
     /// aliases unless either the module binding points at a canonical shipped
     /// stdlib source or no source declaration exists (catalog-only carriers).
-    /// This prevents `import user::channel as channel` and user modules named
-    /// `std.channel` from minting Sender/Receiver executable authority.
+    /// This prevents `import user::stream as stream` and user modules named
+    /// `std.stream` from minting Stream/Sink executable authority.
     pub(super) fn resolved_builtin_type(&self, name: &str) -> Option<BuiltinType> {
         if let Some((owner, leaf)) = name.rsplit_once('.') {
             if let Some(builtin) = BuiltinType::from_encoding_value_source(owner, leaf) {
@@ -78,8 +78,6 @@ impl Checker {
             }
         }
         let candidate = match name {
-            "std.channel.Sender" => Some(BuiltinType::Sender),
-            "std.channel.Receiver" => Some(BuiltinType::Receiver),
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
             "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
             "std.builtins.ChildRef" => Some(BuiltinType::ChildRef),
@@ -3768,9 +3766,7 @@ impl Checker {
                     )
                     || (resolved_name.contains('.')
                         && builtin.is_some_and(|kind| {
-                            kind.is_collection()
-                                || kind.is_substrate_handle()
-                                || kind.is_channel_handle()
+                            kind.is_collection() || kind.is_substrate_handle()
                         }));
                 // Preserve the lexical declaration decision made above. A
                 // local source type may be owner-qualified before this point,
@@ -3836,13 +3832,7 @@ impl Checker {
                                 crate::lookup_builtin_type(declaration.name) == Some(builtin)
                             })
                             .map_or_else(
-                                || {
-                                    if builtin.is_channel_handle() {
-                                        builtin.canonical_name().to_string()
-                                    } else {
-                                        resolved_name.clone()
-                                    }
-                                },
+                                || resolved_name.clone(),
                                 |declaration| declaration.canonical_name.to_string(),
                             );
                     Ty::Named {

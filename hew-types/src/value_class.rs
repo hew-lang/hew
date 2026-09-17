@@ -749,10 +749,8 @@ fn classify(
             | BuiltinType::SendError
             | BuiltinType::NodeError
             | BuiltinType::LookupError
-            | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorError
-            | BuiltinType::CloseError
             // §1.1 decision, overrides `marker() = Resource`: a pid never owns
             // the actor, so its drop frees nothing.
             | BuiltinType::ActorHandle
@@ -792,16 +790,8 @@ fn classify(
             BuiltinType::Generator
             | BuiltinType::StreamPair
             | BuiltinType::BoxedActor
-            | BuiltinType::Duplex
             | BuiltinType::Sink
             | BuiltinType::Stream
-            | BuiltinType::Sender
-            | BuiltinType::Receiver
-            | BuiltinType::HewDuplex
-            | BuiltinType::HewSendHalf
-            | BuiltinType::HewRecvHalf
-            | BuiltinType::SendHalf
-            | BuiltinType::RecvHalf
             | BuiltinType::MonitorRef
             | BuiltinType::CancellationToken | BuiltinType::Task | BuiltinType::ActorCall => affine_none,
             // Never the type of a value: `Iterator` is the std trait name, and

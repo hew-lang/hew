@@ -591,9 +591,6 @@ fn walk_expr(
         HirExprKind::ListenerAwaitAccept { listener, .. } => {
             walk_expr(listener, subst, residual_domain, disc);
         }
-        HirExprKind::ChannelRecvAwait { receiver, .. } => {
-            walk_expr(receiver, subst, residual_domain, disc);
-        }
         HirExprKind::StreamRecvAwait { stream, .. } => {
             walk_expr(stream, subst, residual_domain, disc);
         }
@@ -758,9 +755,6 @@ fn walk_expr(
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         walk_expr(task, subst, residual_domain, disc);
-                    }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        walk_expr(receiver, subst, residual_domain, disc);
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
                         walk_expr(duration, subst, residual_domain, disc);

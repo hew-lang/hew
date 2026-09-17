@@ -1366,10 +1366,8 @@ mod tests {
                 | BuiltinType::SendError
                 | BuiltinType::NodeError
                 | BuiltinType::LookupError
-                | BuiltinType::RecvError
                 | BuiltinType::LinkError
                 | BuiltinType::MonitorError
-                | BuiltinType::CloseError
                 | BuiltinType::ActorHandle
                 // A lambda actor's handle is a pid under another spelling.
                 | BuiltinType::ActorFn
@@ -1393,16 +1391,8 @@ mod tests {
                 BuiltinType::Generator
                 | BuiltinType::StreamPair
                 | BuiltinType::BoxedActor
-                | BuiltinType::Duplex
                 | BuiltinType::Sink
                 | BuiltinType::Stream
-                | BuiltinType::Sender
-                | BuiltinType::Receiver
-                | BuiltinType::HewDuplex
-                | BuiltinType::HewSendHalf
-                | BuiltinType::HewRecvHalf
-                | BuiltinType::SendHalf
-                | BuiltinType::RecvHalf
                 | BuiltinType::MonitorRef
                 | BuiltinType::CancellationToken => {
                     Some((ValueClass::AffineResource, CloneKind::None))

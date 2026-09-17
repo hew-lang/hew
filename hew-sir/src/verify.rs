@@ -2704,8 +2704,6 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
             .is_some_and(|row| row.class == hew_types::ValueClass::BitCopy))
         || crate::stream_element(ty).is_some()
         || crate::sink_element(ty).is_some()
-        || ty.is_builtin(hew_types::BuiltinType::Sender)
-        || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || ty.is_builtin(hew_types::BuiltinType::ActorCall)
         || module.actors.iter().any(|actor| actor.admits_target(ty))
         || module
@@ -5296,34 +5294,8 @@ fn verify_terminator_shape(
                                 if value.ty == ResolvedTy::named_builtin("Option", hew_types::BuiltinType::Option, vec![element.clone()])
                                     && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))))
                 }
-                crate::SuspendKind::ChannelRecv { .. } => {
-                    // The receiver may be spelled bare inside `std.channel`,
-                    // in which case it imposes no element; the result's
-                    // `Option<T>` is the message-type authority either way.
-                    resumes.len() == 1
-                        && matches!(inputs.as_slice(), [input]
-                        if input.decision == crate::BoundaryDecision::BorrowMut
-                        && matches!(result, crate::CallResult::Value(value)
-                            if matches!(&value.ty, ResolvedTy::Named { builtin: Some(hew_types::BuiltinType::Option), args, .. }
-                                if args.len() == 1
-                                    && types.get(&input.operand.value)
-                                        .and_then(crate::receiver_element)
-                                        .is_none_or(|element| *element == args[0]))
-                                && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own)))
-                }
-                crate::SuspendKind::ChannelSend => {
-                    // The queue deep-copies, so the element is read, not moved.
-                    resumes.len() == 1
-                        && matches!(result, crate::CallResult::Unit)
-                        && matches!(inputs.as_slice(), [channel, value]
-                            if channel.decision == crate::BoundaryDecision::BorrowMut
-                            && value.decision == crate::BoundaryDecision::Borrow
-                            && types.get(&channel.operand.value)
-                                .and_then(crate::sender_element)
-                                .is_some_and(|element| types.get(&value.operand.value) == Some(element)))
-                }
-                crate::SuspendKind::StreamSend => {
-                    resumes.len() == 2
+                crate::SuspendKind::StreamSend { park } => {
+                    resumes.len() == if *park { 2 } else { 3 }
                         && matches!(result, crate::CallResult::Unit)
                         && matches!(inputs.as_slice(), [sink, value]
                             if sink.decision == crate::BoundaryDecision::Borrow
@@ -5394,12 +5366,12 @@ fn verify_terminator_shape(
                             (*has_timeout || !tasks.is_empty())
                                 && tasks.iter().all(|input| {
                                     // A source is borrowed and is either a
-                                    // checked task or a channel read half; the
+                                    // checked task or a pipe read half; the
                                     // selection observes, never consumes.
                                     input.decision == crate::BoundaryDecision::Borrow
                                         && types.get(&input.operand.value).is_some_and(|ty| {
                                             matches!(ty, ResolvedTy::Task(_))
-                                                || ty.is_builtin(hew_types::BuiltinType::Receiver)
+                                                || crate::stream_element(ty).is_some()
                                                 || ty.is_builtin(hew_types::BuiltinType::ActorCall)
                                         })
                                 })

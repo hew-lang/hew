@@ -575,14 +575,6 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 enum ForIterNextCall {
     BuiltinVecIter,
     VarSelf(HirVarSelfMethodTarget),
-    /// `for x in rx` over `Receiver<T>` — each iteration borrows the
-    /// loop's receiver binding and emits the layout-witness runtime recv
-    /// call (`hew_channel_recv_layout`, one symbol for every describable
-    /// element type). MIR's existing `lower_direct_call` suspend flip turns
-    /// this into `Terminator::SuspendingChannelRecv` for execution-context
-    /// callers, deriving the element type from the call's `Option<T>`
-    /// return type.
-    ChannelRecv,
     /// `for x in stream` over `Stream<T>` — each iteration borrows the
     /// stream binding and emits the layout-witness runtime recv call
     /// (`hew_stream_next_layout`), reusing MIR's existing
@@ -724,9 +716,8 @@ pub(crate) fn hashmap_iter_field_shape(
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /
 /// `monitor(target)` builtins. These have no AST `fn` item, so
 /// `seed_stdlib_fn_registry` mints them in the `u32::MAX / 2` band — the same
-/// band as `supervisor_stop` (`u32::MAX / 2`) and the `hew_duplex_*` family
-/// (`u32::MAX / 2 - 1 - offset`, offsets 0..=7). `link`/`monitor` sit just
-/// below the duplex slots. The ids are registry placeholders only: their
+/// band as `supervisor_stop` (`u32::MAX / 2`). The ids are registry
+/// placeholders only: their
 /// `FnEntry` rows carry `builtin_family`, so `lower_identifier` resolves
 /// the names to `ResolvedRef::Builtin(family)` and MIR reads the C symbol
 /// off the catalog bijection.
@@ -754,32 +745,15 @@ const SYNTHETIC_LINK_REMOTE_ITEM: ItemId = ItemId(u32::MAX / 2 - 20);
 /// (`InstantNow`) makes `lower_identifier` resolve the callee to
 /// `ResolvedRef::Builtin(InstantNow)`, so MIR's `runtime_symbol_for_call_expr`
 /// reads `hew_instant_now` off the catalog bijection — mirroring `link` /
-/// `monitor` / `duplex_pair`. `instant` is i64-backed, so `return_ty` is `I64`.
+/// `monitor`. `instant` is i64-backed, so `return_ty` is `I64`.
 const SYNTHETIC_INSTANT_NOW_ITEM: ItemId = ItemId(u32::MAX / 2 - 19);
 
-/// Synthetic-builtin sentinel `ItemId` for the user-facing `duplex_pair`
-/// constructor. The checker (`Checker::register_builtins`) registers it as a
-/// builtin function with no AST `fn` item, so — like `link`/`monitor`/
-/// `supervisor_stop` — it carries `builtin_family` and resolves to
-/// `ResolvedRef::Builtin(DuplexPair)`. The id is a registry placeholder in
-/// the same `u32::MAX / 2` band, just below `monitor`.
+/// Synthetic-builtin sentinel `ItemId`s for the pipe layout-witness
+/// recv/send symbols (`hew_stream_next_layout`, `hew_stream_try_next_layout`,
+/// `hew_stream_send_layout`, `hew_stream_try_send_layout`).
 ///
-/// The sibling checker builtin `duplex` (detached) is deliberately NOT seeded
-/// here: `duplex` has no runtime constructor (`hew_duplex_new`). Registering it
-/// would pass `verify_hir` but fail
-/// closed at the MIR boundary — pretend-support rather than a real lowering
-/// path. The runnable Stream/Sink constructor surface is `std::stream`'s
-/// `pipe`/`bytes_pipe` (real `fn` items).
-const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
-
-/// Synthetic-builtin sentinel `ItemId`s for the channel/stream layout-witness
-/// recv/send symbols (`hew_channel_recv_layout`, `hew_channel_try_recv_layout`,
-/// `hew_channel_send_layout`, `hew_stream_next_layout`,
-/// `hew_stream_try_next_layout`, `hew_stream_send_layout`).
-///
-/// These symbols are registered by the checker
-/// (`registration.rs::register_channel_recv_builtins` for the channel module)
-/// but are NOT extern-declared in `.hew` source (their real ABI carries an
+/// These symbols are checker-owned method rewrites and are NOT
+/// extern-declared in `.hew` source (their real ABI carries an
 /// out-parameter and/or an element-layout witness pointer that cannot be
 /// expressed as a plain `extern "C"` declaration). Without a synthetic
 /// `fn_registry` entry the HIR import filter (`collect_all_bare_call_names`)
@@ -803,12 +777,10 @@ const SYNTHETIC_DUPLEX_PAIR_ITEM: ItemId = ItemId(u32::MAX / 2 - 11);
 ///      layout-witness ABI (`i32 sym(handle, out, witness)` for recv;
 ///      `void sym(handle, data_ptr, witness)` for send), deriving the element
 ///      type from the dest/value local's checker-resolved type.
-const SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 12);
-const SYNTHETIC_CHANNEL_TRY_RECV_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 13);
-const SYNTHETIC_CHANNEL_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 14);
 const SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 15);
 const SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 16);
 const SYNTHETIC_STREAM_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 17);
+const SYNTHETIC_STREAM_TRY_SEND_LAYOUT_ITEM: ItemId = ItemId(u32::MAX / 2 - 14);
 
 // NB the synthetic-builtin sentinel band (`u32::MAX / 2 - N`) is
 // documentation/segregation only. Item-resolved builtin names carry their
@@ -1073,8 +1045,6 @@ impl LowerOutput {
     ///
     /// - [`HirDiagnosticKind::TargetCoroutineUnsupported`] — the program uses
     ///   actors/tasks/coroutines on a target that does not support them.
-    /// - [`HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm`] — the
-    ///   program calls blocking channel recv on wasm32.
     /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — dead
     ///   code; `sup.nested` field access on a nested supervisor now lowers
     ///   via `hew_supervisor_nested_get` and never constructs this variant.
@@ -1122,7 +1092,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::ImportedBodyMissingPrivateHelper { .. }
                     | crate::HirDiagnosticKind::ImportedFreeFnBodyUnresolvedBareCall { .. }
                     | crate::HirDiagnosticKind::TargetCoroutineUnsupported { .. }
-                    | crate::HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm { .. }
                     | crate::HirDiagnosticKind::TaskSpawnSignatureUnsupported { .. }
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
@@ -1159,8 +1128,8 @@ struct FnEntry {
     /// requires a monomorphisation-registry entry.
     type_params: Vec<String>,
     /// `Some(family)` for checker-registered runtime builtins with no
-    /// AST `fn` item (`supervisor_stop`, `link`, `monitor`, `unlink`,
-    /// `duplex_pair`). `lower_identifier` resolves these to
+    /// AST `fn` item (`supervisor_stop`, `link`, `monitor`, `unlink`).
+    /// `lower_identifier` resolves these to
     /// [`ResolvedRef::Builtin`] carrying the typed family instead of a
     /// synthetic-sentinel `Item` id, so MIR never reverse-maps the
     /// user-visible name through a string bridge. `None` for every real
@@ -3541,14 +3510,6 @@ pub fn lower_program_with_mono_cap(
     ctx.diagnostics.clear();
     ctx.diagnostics.extend(builtin_impl_diagnostics);
 
-    // P0.3 + P0.4: wasm32 blocking channel recv gate. Dispatched HERE (after
-    // the diagnostics.clear above) so the gate's BlockingChannelRecvUnsupportedOnWasm
-    // diagnostics survive into the final LowerOutput. See check_target_gates
-    // for why the coroutine gate is dispatched separately via inline arms.
-    if ctx.target_arch == TargetArch::Wasm32 {
-        check_wasm_blocking_recv_gate(&mut ctx, program);
-    }
-
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
     // final LowerOutput. Unconditional across all targets — these gates
@@ -4856,8 +4817,7 @@ pub fn lower_program_with_mono_cap(
                                 //    fn-typed parameter, nor the source builtin
                                 //    overload set — catches codegen-intercepted
                                 //    builtins that are not extern-declared, e.g.
-                                //    `std::channel`'s `recv` →
-                                //    `hew_channel_recv_layout`; OR
+                                //    `Stream.recv` → `hew_stream_next_layout`; OR
                                 //  - its signature names a user type that would
                                 //    not resolve at the MIR boundary — a
                                 //    cross-module dotted type (`fs.IoError`) or a
@@ -5795,7 +5755,7 @@ fn admit_opaque_resource_lifecycles(
 /// teardown.
 ///
 /// This is declaration-keyed throughout.  In particular, a user `MonitorRef`
-/// or `Receiver` can never inherit the standard-library lifecycle merely from
+/// or `Stream` can never inherit the standard-library lifecycle merely from
 /// its leaf spelling.
 #[expect(
     clippy::too_many_lines,
@@ -6666,8 +6626,7 @@ fn collect_call_sites_in_expr(
                 collect_call_sites_in_expr(value, out, trait_out);
             }
         }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
@@ -6696,9 +6655,6 @@ fn collect_call_sites_in_expr(
                     }
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_call_sites_in_expr(task, out, trait_out);
-                    }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        collect_call_sites_in_expr(receiver, out, trait_out);
                     }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_call_sites_in_expr(duration, out, trait_out);
@@ -6900,7 +6856,7 @@ struct LowerCtx {
     /// Per-named-type marker + close-method registry. Pre-populated from
     /// every `Item::TypeDecl` before function bodies lower so that
     /// `ValueClass::of_ty` can resolve `Named` types as the body is walked.
-    /// Also seeded with M2 substrate types (Duplex, Sink, Stream, etc.) via
+    /// Also seeded with the substrate types (Sink, Stream, etc.) via
     /// `builtin_type_classes::seed_builtin_type_classes` before the `TypeDecl` loop.
     type_classes: crate::value_class::TypeClassTable,
     /// Checker-derived closeable-opaque candidates awaiting resolved HIR
@@ -7031,7 +6987,7 @@ struct LowerCtx {
     /// Consulted at `Expr::Call` sites to determine the call-result type from
     /// checker authority rather than re-deriving from the callee's HIR type.
     /// This is the canonical source of truth for builtin callee result types
-    /// (e.g. `duplex_pair`) that have no AST `fn` entry and therefore no
+    /// (e.g. `link`) that have no AST `fn` entry and therefore no
     /// `fn_registry` hit.
     expr_types: HashMap<SpanKey, Ty>,
     /// Checker-authoritative closed ownership classification for each concrete
@@ -7524,8 +7480,8 @@ struct LowerCtx {
     /// Per-module keying prevents a same-named alias from a different imported
     /// module from hijacking the lookup (last-write-wins flat map defect).
     /// Type references consult the source binding before the builtin catalog,
-    /// so an explicitly imported user `Receiver` cannot become the channel
-    /// endpoint. Local-shadow filtering remains checker-authoritative.
+    /// so an explicitly imported user `Stream` cannot become the pipe
+    /// half. Local-shadow filtering remains checker-authoritative.
     import_type_name_aliases: HashMap<(Option<String>, u32, String), String>,
     /// Exact owner identities for lexical module qualifiers. Both whole and
     /// selective module-path imports carry this fact: after
@@ -7557,7 +7513,7 @@ struct LowerCtx {
 /// drift), or a user `#[resource]` / `#[linear]` declaration.
 ///
 /// The nominal arm dispatches on `type_classes`, never on the bare source
-/// name, and only for `builtin: None` types — a user `record Sender` keeps
+/// name, and only for `builtin: None` types — a user `record Sink` keeps
 /// ordinary copy treatment while the real builtin handle transfers.
 ///
 /// Actor references (`ActorHandle`, `BoxedActor`, `ActorFn`, `MonitorRef`)
@@ -7667,7 +7623,7 @@ impl LowerCtx {
     fn new(tc_output: &TypeCheckOutput, mono_cap: usize, target_arch: TargetArch) -> Self {
         let mut type_classes = crate::value_class::TypeClassTable::default();
         // Seed compiler-known M2 substrate types before source-order TypeDecls.
-        // This ensures `ValueClass::of_ty` resolves Duplex/Sink/Stream as
+        // This ensures `ValueClass::of_ty` resolves Sink/Stream as
         // AffineResource even though they are not user-declared TypeDecl items.
         seed_builtin_type_classes(&mut type_classes);
         Self {
@@ -7994,7 +7950,7 @@ impl LowerCtx {
     /// ## Why user resources only — the FFI-borrow exclusion
     ///
     /// `ValueClass::AffineResource` also covers the builtin runtime handles
-    /// (`Duplex` / `Sender` / `Receiver` / `Sink` / `Stream` / `Generator` /
+    /// (`Sink` / `Stream` / `Generator` /
     /// `CancellationToken`), which are seeded with `ResourceMarker::Resource`.
     /// But those handles are routinely passed BY VALUE into borrowing FFI
     /// intrinsics — `hew_sink_is_valid(s)`, `hew_stream_last_error()`, the
@@ -8148,13 +8104,13 @@ impl LowerCtx {
             .collect()
     }
 
-    /// True when the checker typed the expression at `span` as a channel
-    /// handle (`Sender<T>` / `Receiver<T>`). Resolves through
+    /// True when the checker typed the expression at `span` as a pipe
+    /// half (`Sink<T>` / `Stream<T>`). Resolves through
     /// `ResolvedTy::from_ty` so the decision rides the typed builtin
     /// discriminant, never the (possibly module-qualified) name string.
     /// Absent or unconvertible entries answer `false` — the conservative
     /// no-ownership-transfer default.
-    fn checked_span_is_channel_handle(&self, span: &Span) -> bool {
+    fn checked_span_is_pipe_handle(&self, span: &Span) -> bool {
         self.expr_types
             .get(&self.mk_key(span))
             .and_then(|ty| ResolvedTy::from_ty(ty).ok())
@@ -8163,7 +8119,7 @@ impl LowerCtx {
                     resolved,
                     ResolvedTy::Named {
                         builtin: Some(
-                            hew_types::BuiltinType::Sender | hew_types::BuiltinType::Receiver
+                            hew_types::BuiltinType::Sink | hew_types::BuiltinType::Stream
                         ),
                         ..
                     }
@@ -8763,7 +8719,7 @@ impl LowerCtx {
         // discover inner monomorphisations.
         self.call_site_type_args
             .insert(call_site, type_args.clone());
-        // A generic synthetic builtin (`duplex_pair<S, R>`, `link_remote<T>`)
+        // A generic synthetic builtin (`link_remote<T>`)
         // has a `fn_registry` entry for arity + type-param resolution but no
         // AST `fn` body. MIR lowers it through the runtime-call path
         // (`runtime_symbol_for_call_expr` reads the C symbol off the
@@ -9027,9 +8983,9 @@ fn collect_bare_fn_call_refs(body: &Block, candidate_fns: &HashSet<String>) -> V
 /// that calls a bare name resolvable in neither `fn_registry`, the same-module
 /// rewrite map, a lexically-bound fn-typed parameter, the source builtin
 /// overload set, nor the runtime/stdlib catalog cannot be lowered cross-module
-/// (e.g. `std::channel`'s `recv` calls the codegen-intercepted
-/// `hew_channel_recv_layout`, which is not extern-declared in the module and
-/// never reaches the imported `fn_registry`). Such methods are skipped,
+/// (a checker-owned builtin method rewrite such as `hew_stream_next_layout`
+/// is not extern-declared in the module and never reaches the imported
+/// `fn_registry`). Such methods are skipped,
 /// matching the prior behaviour where every imported impl method was dropped.
 fn collect_all_bare_call_names(body: &Block) -> Vec<String> {
     let mut found = CallNames::default();
@@ -9815,8 +9771,7 @@ impl LowerCtx {
 
     /// Seeds the checker-registered runtime builtins that have no
     /// `stdlib_catalog` entry and no AST `fn` item (`supervisor_stop`,
-    /// `link`, `monitor`, `unlink`, `link_remote`, `duplex_pair`, the
-    /// `hew_duplex_*` rewrite targets). See the per-entry comments for the
+    /// `link`, `monitor`, `unlink`, `link_remote`). See the per-entry comments for the
     /// resolution contracts.
     fn seed_typed_builtin_fn_registry(&mut self) {
         use hew_types::runtime_call::RuntimeCallFamily;
@@ -9894,25 +9849,6 @@ impl LowerCtx {
             );
         }
         self.seed_link_remote_fn_registry();
-        // `duplex_pair<S, R>(capacity: i64) -> (Duplex<S, R>, Duplex<R, S>)`.
-        // The checker (`Checker::register_builtins`) registers it as a builtin
-        // with no AST `fn` item, so — like `link`/`monitor`/`supervisor_stop`
-        // — it carries `builtin_family` and resolves to
-        // `ResolvedRef::Builtin(DuplexPair)`. The call-result type is read
-        // from the checker's `expr_types` at the call site, so the entry's
-        // `return_ty` is only a placeholder; the param carries the `i64`
-        // capacity arity.
-        self.fn_registry.insert(
-            "duplex_pair".to_string(),
-            FnEntry {
-                id: SYNTHETIC_DUPLEX_PAIR_ITEM,
-                return_ty: ResolvedTy::Unit,
-                param_tys: vec![ResolvedTy::I64],
-                linkage: None,
-                type_params: vec!["S".to_string(), "R".to_string()],
-                builtin_family: Some(RuntimeCallFamily::DuplexPair),
-            },
-        );
         // `instant::now() -> instant`. The static (no-receiver) call resolves
         // by the joined callee name `"instant::now"`; `builtin_family` makes
         // `lower_identifier` produce `ResolvedRef::Builtin(InstantNow)` so MIR
@@ -9930,74 +9866,29 @@ impl LowerCtx {
                 builtin_family: Some(RuntimeCallFamily::InstantNow),
             },
         );
-        // Duplex method-call rewrites: `check_duplex_method` records
-        // `RewriteToFunction { c_symbol: "hew_duplex_*" }` for the Duplex
-        // built-in methods.  The `RewriteToFunction` HIR path resolves the
-        // c_symbol against `fn_registry`; a missing entry produces a
-        // `ResolvedRef::Unresolved` callee which the HIR verifier rejects as
-        // `UnresolvedSymbol`.  These synthetic entries exist solely to satisfy
-        // the verifier — the actual call signature is constructed by the
-        // `RewriteToFunction` arm and the return type is read from
-        // `expr_types`.  IDs live just below `supervisor_stop`'s slot.
-        for (idx, name) in [
-            "hew_duplex_send",
-            "hew_duplex_try_send",
-            "hew_duplex_recv",
-            "hew_duplex_try_recv",
-            "hew_duplex_send_half",
-            "hew_duplex_recv_half",
-            "hew_duplex_close",
-            "hew_duplex_close_half",
-        ]
-        .iter()
-        .enumerate()
-        {
-            let id_offset = u32::try_from(idx).expect("duplex symbol index is small");
-            self.fn_registry.insert(
-                (*name).to_string(),
-                FnEntry {
-                    id: ItemId(u32::MAX / 2 - 1 - id_offset),
-                    return_ty: ResolvedTy::Unit,
-                    param_tys: Vec::new(),
-                    linkage: None,
-                    type_params: Vec::new(),
-                    builtin_family: None,
-                },
-            );
-        }
     }
 
-    /// Seeds `fn_registry` entries for the channel/stream layout-witness
-    /// recv/send symbols (`hew_channel_recv_layout`,
-    /// `hew_channel_try_recv_layout`, `hew_channel_send_layout`,
-    /// `hew_stream_next_layout`, `hew_stream_try_next_layout`,
-    /// `hew_stream_send_layout`).
+    /// Seeds `fn_registry` entries for the pipe layout-witness recv/send
+    /// symbols (`hew_stream_next_layout`, `hew_stream_try_next_layout`,
+    /// `hew_stream_send_layout`, `hew_stream_try_send_layout`).
     ///
     /// These carry an out-parameter and/or element-layout-witness ABI and are
     /// not extern-declarable in `.hew` source. Return types are placeholders
     /// (MIR reads the actual `Option<T>` type from `expr_types` at the call
     /// site); param types carry only arity. See
-    /// `SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM` for the full rationale.
+    /// `SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM` for the full rationale.
     fn seed_channel_recv_fn_registry(&mut self) {
         for (name, id) in [
-            (
-                "hew_channel_recv_layout",
-                SYNTHETIC_CHANNEL_RECV_LAYOUT_ITEM,
-            ),
-            (
-                "hew_channel_try_recv_layout",
-                SYNTHETIC_CHANNEL_TRY_RECV_LAYOUT_ITEM,
-            ),
-            (
-                "hew_channel_send_layout",
-                SYNTHETIC_CHANNEL_SEND_LAYOUT_ITEM,
-            ),
             ("hew_stream_next_layout", SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM),
             (
                 "hew_stream_try_next_layout",
                 SYNTHETIC_STREAM_TRY_NEXT_LAYOUT_ITEM,
             ),
             ("hew_stream_send_layout", SYNTHETIC_STREAM_SEND_LAYOUT_ITEM),
+            (
+                "hew_stream_try_send_layout",
+                SYNTHETIC_STREAM_TRY_SEND_LAYOUT_ITEM,
+            ),
         ] {
             // The registry name IS the catalog `c_symbol`, so the bijection
             // lift cannot fail. Carrying the family here covers the stdlib
@@ -10494,12 +10385,6 @@ impl LowerCtx {
             HirExprKind::ListenerAwaitAccept { listener, .. } => {
                 self.wrap_var_self_explicit_expr_returns(listener, receiver, abi_return_ty);
             }
-            HirExprKind::ChannelRecvAwait {
-                receiver: recv_expr,
-                ..
-            } => {
-                self.wrap_var_self_explicit_expr_returns(recv_expr, receiver, abi_return_ty);
-            }
             HirExprKind::StreamRecvAwait { stream, .. } => {
                 self.wrap_var_self_explicit_expr_returns(stream, receiver, abi_return_ty);
             }
@@ -10553,9 +10438,6 @@ impl LowerCtx {
                         }
                         HirSelectArmKind::TaskAwait { task } => {
                             self.wrap_var_self_explicit_expr_returns(task, receiver, abi_return_ty);
-                        }
-                        HirSelectArmKind::ChannelRecv { receiver: rx, .. } => {
-                            self.wrap_var_self_explicit_expr_returns(rx, receiver, abi_return_ty);
                         }
                         HirSelectArmKind::AfterTimer { duration } => {
                             self.wrap_var_self_explicit_expr_returns(
@@ -13164,10 +13046,14 @@ impl LowerCtx {
                         .map(String::as_str)
                         .eq(family.source_intrinsic_type_params().iter().copied())
                         && !func.is_generator
-                        && !func
-                            .params
-                            .iter()
-                            .any(|param| param.is_consume || param.is_mutable)
+                        // A parameter is consumed exactly when the contract moves it.
+                        && func.params.len() == contract.arguments.len()
+                        && func.params.iter().zip(contract.arguments).all(|(param, argument)| {
+                            !param.is_mutable
+                                && param.is_consume
+                                    == (argument.effect
+                                        == hew_types::runtime_call::RuntimeArgumentEffect::Move)
+                        })
                         && family
                             .source_intrinsic_declaration()
                             .is_none_or(|expected| expected == source_key)
@@ -15338,23 +15224,6 @@ impl LowerCtx {
         )
     }
 
-    /// True when the `await`'s inner expression is a suspending `std::channel`
-    /// `recv()` over a `Receiver<T>` — i.e. the checker-resolved descriptor's
-    /// family classifies as `AsyncSuspendKind::ChannelRecv` (the layout-witness
-    /// `hew_channel_recv_layout` entry).
-    /// `await rx.recv()` is a bindable, value-producing await (NEW-4):
-    /// it lowers to the inner recv call whose `Option<T>` result the MIR
-    /// `SuspendingChannelRecv` resume edge binds (or the blocking call for a
-    /// context-free caller). `try_recv` never suspends and is not awaitable here.
-    fn is_channel_recv_await(&self, inner_key: &SpanKey) -> bool {
-        matches!(
-            self.method_call_rewrites.get(inner_key),
-            Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
-                if d.is_async_suspending()
-                    == Some(hew_types::runtime_call::AsyncSuspendKind::ChannelRecv)
-        )
-    }
-
     /// True when the `await`'s inner expression is a suspending typed-stream
     /// `send()` over any describable `Sink<T>` — i.e. the checker-resolved
     /// descriptor's family classifies as [`AsyncSuspendKind::SinkSend`]
@@ -15437,8 +15306,8 @@ impl LowerCtx {
                 // The pre-bind fires for both untyped and typed lets. The
                 // binding type follows the annotation when present (the
                 // type-checker layer reconciles the annotation against the
-                // lambda's synthesised Duplex shape) and falls back to the
-                // synthetic `Duplex<Msg, Reply>` derived from the lambda's
+                // lambda's synthesised handle shape) and falls back to the
+                // synthetic `actor(Msg) -> Reply` derived from the lambda's
                 // parameter / return annotations otherwise.
                 if let (
                     Pattern::Identifier(name),
@@ -17903,38 +17772,12 @@ impl LowerCtx {
                     let source = self.lower_expr(inner, intent);
                     return self.subsumed_value(site, &span, intent, source);
                 }
-                // NEW-4: `await rx.recv()` over a `std::channel` `Receiver<T>` —
-                // the checker wired the inner method call to the layout-witness
-                // `hew_channel_recv_layout` entry. Strip the `await` and
-                // lower the inner recv directly; its `Option<T>` result is bound
-                // on the resume edge of the MIR `SuspendingChannelRecv` (the
-                // suspendable-caller flip in `lower_direct_call`), or the blocking
-                // call for a context-free caller. Mirrors the stream-recv /
-                // conn-read bindable-await paths.
-                if self.is_channel_recv_await(&self.mk_key(&inner.1)) {
-                    let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(site, &span, intent, source);
-                }
                 // NEW-7: `await sink.send(x)` over a `Sink<bytes>` — the checker
                 // wired the inner method call to `hew_sink_write_bytes`. Strip the
                 // `await` and lower the inner send directly (unit); the MIR
                 // `SuspendingStreamSend` suspends on a full ring. Statement
                 // position only (unit value), like `actor.close()`.
                 if self.is_stream_send_await(&self.mk_key(&inner.1)) {
-                    let source = self.lower_expr(inner, intent);
-                    return self.subsumed_value(site, &span, intent, source);
-                }
-                // `actor.close()` — lambda-actor (Duplex) close is admitted in
-                // statement position at any scope depth.  The checker-resolved
-                // descriptor's family classifies as `AsyncSuspendKind::DuplexClose`
-                // (`hew_duplex_close`); the `await` is stripped and the inner close
-                // call is lowered directly.
-                if matches!(
-                    self.method_call_rewrites.get(&self.mk_key(&inner.1)),
-                    Some(MethodCallRewrite::RewriteToFunction { descriptor: Some(d), .. })
-                        if d.is_async_suspending()
-                            == Some(hew_types::runtime_call::AsyncSuspendKind::DuplexClose)
-                ) {
                     let source = self.lower_expr(inner, intent);
                     return self.subsumed_value(site, &span, intent, source);
                 }
@@ -18861,42 +18704,13 @@ impl LowerCtx {
     ) -> Option<ResolvedTy> {
         match kind {
             HirSelectArmKind::ActorAsk { call } => Some(call.ty.clone()),
-            HirSelectArmKind::ChannelRecv { receiver } => {
-                // The binding receives `Option<T>` — the same shape the awaited
-                // `rx.recv()` produces. `None` is the channel-closed signal.
-                // The element type comes from the checker-resolved
-                // `Receiver<T>` handle type. The builtin discriminator is the
-                // sole authority: a user `Receiver<T>` (including one in a
-                // module named `channel`) must never acquire channel receive
-                // semantics from its leaf spelling.
-                match &receiver.ty {
-                    ResolvedTy::Named {
-                        args,
-                        builtin: Some(BuiltinType::Receiver),
-                        ..
-                    } if args.len() == 1 => Some(Self::resolved_option_ty(args[0].clone())),
-                    _ => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "select channel receive".to_string(),
-                                reason: format!(
-                                    "expected builtin Receiver<T>, found {}",
-                                    receiver.ty
-                                ),
-                            },
-                            source_span.clone(),
-                            "channel receive binding types require the builtin Receiver discriminator",
-                        ));
-                        None
-                    }
-                }
-            }
+            // A stream arm wins with the receive result: `None` is EOF.
             HirSelectArmKind::StreamNext { stream } => match &stream.ty {
                 ResolvedTy::Named {
                     args,
                     builtin: Some(BuiltinType::Stream),
                     ..
-                } if args.len() == 1 => Some(args[0].clone()),
+                } if args.len() == 1 => Some(LowerCtx::resolved_option_ty(args[0].clone())),
                 _ => {
                     self.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::CheckerBoundaryViolation {
@@ -19977,10 +19791,10 @@ impl LowerCtx {
                     call: Box::new(self.lower_expr(operand, IntentKind::Read)),
                 };
             }
-            Some(CheckedSelectSource::ChannelReceive { call }) if call == &key => {
+            Some(CheckedSelectSource::StreamReceive { call }) if call == &key => {
                 if let Expr::MethodCall { receiver, .. } = &operand.0 {
-                    return HirSelectArmKind::ChannelRecv {
-                        receiver: Box::new(self.lower_expr(receiver, IntentKind::Read)),
+                    return HirSelectArmKind::StreamNext {
+                        stream: Box::new(self.lower_expr(receiver, IntentKind::Read)),
                     };
                 }
             }
@@ -20245,8 +20059,8 @@ impl LowerCtx {
     /// the element-layout queue witness; `None` for every describable class.
     ///
     /// This is defence-in-depth behind the checker's `queue_elem_admissible`
-    /// gate (which covers the `Receiver<T>`/`Stream<T>` method-call and
-    /// deferred-rewrite paths): the for-await desugar can reach a `Receiver<T>`
+    /// gate (which covers the `Stream<T>` method-call path): the for-await
+    /// desugar can reach a `Stream<T>`
     /// whose element no method call ever validated. The HIR layer rejects only
     /// the classes the witness can NEVER describe — builtin container/handle
     /// nominals, opaque handles, function values, and unit/never — and admits
@@ -20323,7 +20137,7 @@ impl LowerCtx {
         // Lower each element expression. The checker has already validated
         // each element type matches the corresponding tuple slot.
         //
-        // Channel handles (`Sender<T>` / `Receiver<T>`) are single-owner on
+        // Pipe halves (`Sink<T>` / `Stream<T>`) are single-owner on
         // the ownership axis even though they are `BitCopy` on the
         // representation axis. A handle placed into a tuple is MOVED — the
         // tuple takes exclusive ownership. Lower such elements with
@@ -20336,7 +20150,7 @@ impl LowerCtx {
         let hir_elements: Vec<HirExpr> = elems
             .iter()
             .map(|elem| {
-                let intent = if self.checked_span_is_channel_handle(&elem.1) {
+                let intent = if self.checked_span_is_pipe_handle(&elem.1) {
                     IntentKind::Consume
                 } else {
                     IntentKind::Read
@@ -22151,7 +21965,7 @@ impl LowerCtx {
 
         // Qualified inputs are resolved by exact identity only. The known std
         // spellings live in `lookup_builtin_type`; an arbitrary
-        // `foo.Receiver` must never inherit the bare `Receiver` registration.
+        // `foo.Stream` must never inherit the bare `Stream` registration.
         if let Some(registration) = crate::builtin_type_classes::builtin_type_registration(name) {
             // A builtin classified by its own std declaration only has facts
             // under its canonical source identity. The prelude publishes the
@@ -22812,8 +22626,6 @@ impl LowerCtx {
             .and(match name {
                 "stream.Stream" => Some(("std.stream.Stream", BuiltinType::Stream)),
                 "stream.Sink" => Some(("std.stream.Sink", BuiltinType::Sink)),
-                "channel.Sender" => Some(("std.channel.Sender", BuiltinType::Sender)),
-                "channel.Receiver" => Some(("std.channel.Receiver", BuiltinType::Receiver)),
                 _ => None,
             });
         if let Some((canonical, builtin)) = canonical_compat {
@@ -22836,9 +22648,9 @@ impl LowerCtx {
         let canonical_std_owner =
             current_std_owner || self.canonical_std_source_type_identities.contains(name);
 
-        // The catalog still contains legacy leaf aliases such as
-        // `channel.Sender`.  They describe ABI, not source ownership: a user
-        // module named `channel` is not thereby the shipped std module.  A
+        // The catalog still contains leaf aliases such as `stream.Sink`.
+        // They describe ABI, not source ownership: a user module named
+        // `stream` is not thereby the shipped std module.  A
         // qualified source spelling becomes a builtin only after an exact
         // canonical-stdlib provenance check; do not retry by its final path
         // segment or by a catalog alias.
@@ -25099,37 +24911,6 @@ impl LowerCtx {
             }
             ResolvedTy::Named {
                 args,
-                builtin: Some(BuiltinType::Receiver),
-                ..
-            } if !args.is_empty() => {
-                let elem_ty = args[0].clone();
-                if let Some(reason) = Self::queue_elem_witness_unsupported(&elem_ty) {
-                    self.unsupported(
-                        iterable.1.clone(),
-                        format!("for over Receiver<{elem_ty}>: {reason}"),
-                        "for-receiver-runtime-dispatch",
-                    );
-                    self.push_scope();
-                    let _ = self.bind(var_name.clone(), elem_ty.clone(), false, pattern.1.clone());
-                    let _ = self.lower_block(body, &ResolvedTy::Unit);
-                    self.pop_scope();
-                    return HirExprKind::Unsupported(
-                        "for over unsupported Receiver<T> element type".into(),
-                    );
-                }
-                // Receiver is an affine resource: `for x in rx` drains and
-                // implicitly closes the channel; the source binding is consumed.
-                lowered_iterable.intent = IntentKind::Consume;
-                let iter_ty = lowered_iterable.ty.clone();
-                (
-                    lowered_iterable,
-                    iter_ty,
-                    elem_ty,
-                    ForIterNextCall::ChannelRecv,
-                )
-            }
-            ResolvedTy::Named {
-                args,
                 builtin: Some(BuiltinType::Stream),
                 ..
             } if !args.is_empty() => {
@@ -25330,30 +25111,6 @@ impl LowerCtx {
 
                     next
                 }
-            }
-            ForIterNextCall::ChannelRecv => {
-                // Borrow the receiver binding (Read) so the loop binding remains
-                // the single owner and its scope-exit drop closes the handle once.
-                // This is a direct runtime-call HIR shape: no synthesized AST
-                // `await rx.recv()` exists, so checker method side-tables are not
-                // required for this post-check desugar. The layout-witness
-                // entry carries every describable element type; MIR derives
-                // the element from the call's `Option<T>` return type.
-                let receiver = self.make_binding_ref(
-                    iter_binding.name.clone(),
-                    iter_binding.id,
-                    iter_binding.ty.clone(),
-                    IntentKind::Read,
-                    iterable.1.clone(),
-                );
-                let option_ty = Self::resolved_option_ty(elem_ty.clone());
-                self.register_option_layout(&elem_ty, &iterable.1, "Receiver::recv (for loop)");
-                self.make_direct_method_call(
-                    "hew_channel_recv_layout".to_string(),
-                    receiver,
-                    &option_ty,
-                    iterable.1.clone(),
-                )
             }
             ForIterNextCall::StreamRecv => {
                 // Borrow the stream binding (Read) and emit the layout-witness
@@ -25880,7 +25637,7 @@ impl LowerCtx {
                     //
                     // The predicate is RECURSIVE: a direct handle/resource arg
                     // AND any arg whose type transitively carries one (e.g. a
-                    // tuple `(Receiver<T>, string)`) both transfer the owned
+                    // tuple `(Stream<T>, string)`) both transfer the owned
                     // pointer. Without the recursive check a nested-handle arg
                     // is lowered as `Read` (CowShare in MIR), the caller
                     // binding stays live, and a subsequent close silently
@@ -26598,11 +26355,6 @@ impl LowerCtx {
                     let intent = self.arg_move_intent(&arg.expr().1);
                     lowered_args.push(self.lower_expr(arg.expr(), intent));
                 }
-                let callee_ty = ResolvedTy::Function {
-                    capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                    params: Vec::new(),
-                    ret: Box::new(ret_ty.clone()),
-                };
                 // Closed-set builtin rewrites carry the checker-resolved
                 // descriptor: resolve the callee to the typed family so MIR
                 // dispatches on the resolution, not the name string. Rewrites
@@ -26622,11 +26374,28 @@ impl LowerCtx {
                     },
                     |d| ResolvedRef::Builtin(d.family()),
                 );
+                // `Sink.send` / `Sink.try_send` answer with a runtime status
+                // (0 accepted, 1 closed, 2 full) that this site folds into the
+                // checked `Result<(), SendError>`; the call itself is typed as
+                // that status.
+                let send_status = matches!(
+                    c_symbol.as_str(),
+                    "hew_stream_send_layout" | "hew_stream_try_send_layout"
+                );
+                let call_ty = if send_status {
+                    ResolvedTy::I32
+                } else {
+                    ret_ty.clone()
+                };
                 let callee = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
                     value_class: ValueClass::PersistentShare,
-                    ty: callee_ty,
+                    ty: ResolvedTy::Function {
+                        capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
+                        params: Vec::new(),
+                        ret: Box::new(call_ty.clone()),
+                    },
                     intent: IntentKind::Read,
                     kind: HirExprKind::BindingRef {
                         name: c_symbol,
@@ -26634,14 +26403,16 @@ impl LowerCtx {
                     },
                     span: span.clone(),
                 };
-                (
-                    HirExprKind::Call {
-                        target,
-                        callee: Box::new(callee),
-                        args: lowered_args,
-                    },
-                    ret_ty,
-                )
+                let call = HirExprKind::Call {
+                    target,
+                    callee: Box::new(callee),
+                    args: lowered_args,
+                };
+                if send_status {
+                    let call = self.make_expr(call, call_ty, IntentKind::Read, span.clone());
+                    return self.lower_send_status_result(call, ret_ty, &span);
+                }
+                (call, ret_ty)
             }
             Some(MethodCallRewrite::GenericMathIntrinsic { op }) => {
                 let lowered_args: Vec<HirExpr> = self.lower_call_args(args);
@@ -28446,6 +28217,172 @@ impl LowerCtx {
         self.lower_runtime_status_result(call, &error, result_ty, span)
     }
 
+    /// Fold a pipe send status into `Result<(), SendError>`: `0` is `Ok(())`,
+    /// `1` is `Err(SendError.Closed)` (the reader is gone or the sink
+    /// finished) and `2` is `Err(SendError.Full)` (`try_send` on a pipe at
+    /// capacity).
+    fn lower_send_status_result(
+        &mut self,
+        status: HirExpr,
+        result_ty: ResolvedTy,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let ResolvedTy::Named { args, .. } = &result_ty else {
+            return (
+                HirExprKind::Unsupported("pipe send result is not a Result".to_string()),
+                result_ty,
+            );
+        };
+        let Some(error_ty) = args.get(1).cloned() else {
+            return (
+                HirExprKind::Unsupported("pipe send result has no error arm".to_string()),
+                result_ty,
+            );
+        };
+        // `SendError` is a monomorphic builtin enum registered under its
+        // canonical `std.builtins` owner, the same identity `Err(SendError.X)`
+        // match arms resolve through.
+        let error_name = hew_types::builtin_enums::monomorphic_builtin_enum(
+            BuiltinType::SendError.canonical_name(),
+        )
+        .map(|declaration| declaration.canonical_name.to_string());
+        let variant_index = |this: &Self, variant: &str| {
+            let error_name = error_name.as_ref()?;
+            this.machine_ctor_registry
+                .get(&format!("{error_name}::{variant}"))
+                .map(|(_, index)| *index)
+        };
+        let constructors = variant_index(self, "Closed")
+            .zip(variant_index(self, "Full"))
+            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Ok", span))
+            .zip(self.builtin_variant_predicate(BuiltinType::Result, "Err", span));
+        let Some((((closed_index, full_index), ok), err)) = constructors else {
+            return (
+                HirExprKind::Unsupported("pipe send result constructors".to_string()),
+                result_ty,
+            );
+        };
+        let (ok_index, err_index) = (ok.1, err.1);
+        let error_name = error_name.unwrap_or_else(|| "SendError".to_string());
+        let unit = self.make_expr(
+            HirExprKind::Literal(HirLiteral::Unit),
+            ResolvedTy::Unit,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let accepted = self.synthetic_variant_ctor(
+            "Result",
+            ok_index,
+            Some(vec![("0".to_string(), unit)]),
+            result_ty.clone(),
+            span,
+        );
+        let closed =
+            self.synthetic_variant_ctor(&error_name, closed_index, None, error_ty.clone(), span);
+        let closed = self.synthetic_variant_ctor(
+            "Result",
+            err_index,
+            Some(vec![("0".to_string(), closed)]),
+            result_ty.clone(),
+            span,
+        );
+        let full = self.synthetic_variant_ctor(&error_name, full_index, None, error_ty, span);
+        let full = self.synthetic_variant_ctor(
+            "Result",
+            err_index,
+            Some(vec![("0".to_string(), full)]),
+            result_ty.clone(),
+            span,
+        );
+        let literal = |this: &mut Self, value: i128| {
+            this.make_expr(
+                HirExprKind::Literal(HirLiteral::Integer(value)),
+                ResolvedTy::I32,
+                IntentKind::Read,
+                span.clone(),
+            )
+        };
+        // The status is consulted twice, so it is bound once: a cloned call
+        // node would reuse its node and site ids.
+        let status_binding = self.ids.binding();
+        let status_name = "__send_status";
+        let status_ref = |this: &mut Self| {
+            this.synthetic_binding_ref(status_name, status_binding, ResolvedTy::I32, span)
+        };
+        let is_closed = {
+            let one = literal(self, 1);
+            let status = status_ref(self);
+            self.make_expr(
+                HirExprKind::Binary {
+                    op: hew_parser::ast::BinaryOp::Equal,
+                    left: Box::new(status),
+                    right: Box::new(one),
+                },
+                ResolvedTy::Bool,
+                IntentKind::Read,
+                span.clone(),
+            )
+        };
+        let closed_or_full = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(is_closed),
+                then_expr: Box::new(closed),
+                else_expr: Some(Box::new(full)),
+            },
+            result_ty.clone(),
+            IntentKind::Consume,
+            span.clone(),
+        );
+        let zero = literal(self, 0);
+        let status_read = status_ref(self);
+        let is_accepted = self.make_expr(
+            HirExprKind::Binary {
+                op: hew_parser::ast::BinaryOp::Equal,
+                left: Box::new(status_read),
+                right: Box::new(zero),
+            },
+            ResolvedTy::Bool,
+            IntentKind::Read,
+            span.clone(),
+        );
+        let folded = self.make_expr(
+            HirExprKind::If {
+                condition: Box::new(is_accepted),
+                then_expr: Box::new(accepted),
+                else_expr: Some(Box::new(closed_or_full)),
+            },
+            result_ty.clone(),
+            IntentKind::Consume,
+            span.clone(),
+        );
+        let bind_status = HirStmt {
+            node: self.ids.node(),
+            kind: HirStmtKind::Let(
+                HirBinding {
+                    id: status_binding,
+                    name: status_name.to_string(),
+                    ty: ResolvedTy::I32,
+                    mutable: false,
+                    span: span.clone(),
+                    is_consume: false,
+                },
+                Some(status),
+            ),
+            span: span.clone(),
+        };
+        (
+            HirExprKind::Block(HirBlock {
+                node: self.ids.node(),
+                scope: self.ids.scope(),
+                statements: vec![bind_status],
+                tail: Some(Box::new(folded)),
+                ty: result_ty.clone(),
+                span: span.clone(),
+            }),
+            result_ty,
+        )
+    }
+
     /// Map the raw runtime status to the source-selected Result constructors.
     fn lower_runtime_status_result(
         &mut self,
@@ -29871,9 +29808,6 @@ fn collect_captures_walk(
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_captures_walk(task, param_ids, seen, captures, self_id);
                     }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-                    }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_captures_walk(duration, param_ids, seen, captures, self_id);
                     }
@@ -29902,8 +29836,7 @@ fn collect_captures_walk(
                 collect_captures_walk(e, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
@@ -30133,14 +30066,6 @@ fn collect_general_closure_captures_walk(
                     HirSelectArmKind::TaskAwait { task } => {
                         collect_general_closure_captures_walk(task, outer_bindings, seen, captures);
                     }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        collect_general_closure_captures_walk(
-                            receiver,
-                            outer_bindings,
-                            seen,
-                            captures,
-                        );
-                    }
                     HirSelectArmKind::AfterTimer { duration } => {
                         collect_general_closure_captures_walk(
                             duration,
@@ -30174,8 +30099,7 @@ fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(e, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
@@ -30447,344 +30371,6 @@ fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     // - `fork` statements (when they exist in surface AST)
     // - `await` expressions (when they appear outside of existing actor/scope)
     // For now, actors and supervisors are the only coroutine entry points.
-}
-
-/// Check for blocking channel recv usage on wasm32 (P0.3 + P0.4).
-///
-/// `hew_channel_recv_layout` in `hew-runtime/src/lib.rs` is an
-/// `unreachable!()` stub on wasm32 — the underlying coroutine
-/// suspension primitives aren't available. Detect `.recv()` method calls at
-/// HIR-lower time and emit `BlockingChannelRecvUnsupportedOnWasm` so the
-/// program fails to compile instead of trapping at runtime.
-///
-/// `.try_recv()` is allowed because it never suspends.
-fn check_wasm_blocking_recv_gate(ctx: &mut LowerCtx, program: &Program) {
-    for (item, _span) in &program.items {
-        match item {
-            Item::Function(fn_decl) => {
-                scan_block_for_blocking_recv(&fn_decl.body, &mut ctx.diagnostics);
-            }
-            Item::Actor(actor_decl) => {
-                if let Some(init) = &actor_decl.init {
-                    scan_block_for_blocking_recv(&init.body, &mut ctx.diagnostics);
-                }
-                for recv_fn in &actor_decl.receive_fns {
-                    scan_block_for_blocking_recv(&recv_fn.body, &mut ctx.diagnostics);
-                }
-                for method in &actor_decl.methods {
-                    scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
-                }
-            }
-            Item::Impl(impl_decl) => {
-                for method in &impl_decl.methods {
-                    scan_block_for_blocking_recv(&method.body, &mut ctx.diagnostics);
-                }
-            }
-            // Machine bodies never reach here: normalization rewrites a
-            // machine into ordinary declarations before checking, and a
-            // machine it refuses fails type check before HIR. The expanded
-            // bodies are walked through `Item::Impl` like any other method.
-            // Const, Trait, Supervisor, Struct, Enum, Use, Module, etc.
-            // do not carry user expression bodies that can call `.recv()`.
-            _ => {}
-        }
-    }
-}
-
-fn scan_block_for_blocking_recv(
-    block: &hew_parser::ast::Block,
-    diagnostics: &mut Vec<HirDiagnostic>,
-) {
-    for (stmt, _) in &block.stmts {
-        scan_stmt_for_blocking_recv(stmt, diagnostics);
-    }
-    if let Some(trailing) = &block.trailing_expr {
-        scan_expr_for_blocking_recv(&trailing.0, diagnostics);
-    }
-}
-
-#[allow(
-    clippy::match_same_arms,
-    reason = "explicit per-Stmt-variant arms read more clearly than collapsed or-patterns for this walker"
-)]
-fn scan_stmt_for_blocking_recv(stmt: &hew_parser::ast::Stmt, diagnostics: &mut Vec<HirDiagnostic>) {
-    match stmt {
-        Stmt::Let { value: Some(v), .. } | Stmt::Var { value: Some(v), .. } => {
-            scan_expr_for_blocking_recv(&v.0, diagnostics);
-        }
-        Stmt::Assign { target, value, .. } => {
-            scan_expr_for_blocking_recv(&target.0, diagnostics);
-            scan_expr_for_blocking_recv(&value.0, diagnostics);
-        }
-        Stmt::Expression(e) => {
-            scan_expr_for_blocking_recv(&e.0, diagnostics);
-        }
-        Stmt::Return(Some(e)) => {
-            scan_expr_for_blocking_recv(&e.0, diagnostics);
-        }
-        Stmt::Defer(e) => {
-            scan_expr_for_blocking_recv(&e.0, diagnostics);
-        }
-        Stmt::Break { value: Some(v), .. } => {
-            scan_expr_for_blocking_recv(&v.0, diagnostics);
-        }
-        Stmt::WhileLet {
-            conditions, body, ..
-        } => {
-            for expr in condition_exprs(conditions) {
-                scan_expr_for_blocking_recv(&expr.0, diagnostics);
-            }
-            scan_block_for_blocking_recv(body, diagnostics);
-        }
-        Stmt::If {
-            condition,
-            then_block,
-            else_block,
-        } => {
-            scan_expr_for_blocking_recv(&condition.0, diagnostics);
-            scan_block_for_blocking_recv(then_block, diagnostics);
-            if let Some(eb) = else_block {
-                scan_else_block_for_blocking_recv(eb, diagnostics);
-            }
-        }
-        Stmt::IfLet {
-            conditions,
-            body,
-            else_body,
-        } => {
-            for expr in condition_exprs(conditions) {
-                scan_expr_for_blocking_recv(&expr.0, diagnostics);
-            }
-            scan_block_for_blocking_recv(body, diagnostics);
-            if let Some(eb) = else_body {
-                scan_expr_for_blocking_recv(&eb.0, diagnostics);
-            }
-        }
-        Stmt::Match { scrutinee, arms } => {
-            scan_expr_for_blocking_recv(&scrutinee.0, diagnostics);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_expr_for_blocking_recv(&g.0, diagnostics);
-                }
-                scan_expr_for_blocking_recv(&arm.body.0, diagnostics);
-            }
-        }
-        Stmt::Loop { body, .. } => scan_block_for_blocking_recv(body, diagnostics),
-        Stmt::For { iterable, body, .. } => {
-            scan_expr_for_blocking_recv(&iterable.0, diagnostics);
-            scan_block_for_blocking_recv(body, diagnostics);
-        }
-        Stmt::While {
-            condition, body, ..
-        } => {
-            scan_expr_for_blocking_recv(&condition.0, diagnostics);
-            scan_block_for_blocking_recv(body, diagnostics);
-        }
-        // Stmt::Break, Stmt::Continue, Stmt::Return(None), and any other leaf
-        // statements carry no sub-expression to scan.
-        _ => {}
-    }
-}
-
-fn scan_else_block_for_blocking_recv(
-    eb: &hew_parser::ast::ElseBlock,
-    diagnostics: &mut Vec<HirDiagnostic>,
-) {
-    if let Some(stmt) = &eb.if_stmt {
-        scan_stmt_for_blocking_recv(&stmt.0, diagnostics);
-    }
-    if let Some(b) = &eb.block {
-        scan_block_for_blocking_recv(b, diagnostics);
-    }
-}
-
-/// Recursively walk an expression tree looking for `.recv()` method calls.
-/// Mirrors the shape of `scan_expr_for_private_refs`.
-#[allow(
-    clippy::too_many_lines,
-    reason = "exhaustive Expr-variant walker mirrors scan_expr_for_private_refs above"
-)]
-fn scan_expr_for_blocking_recv(expr: &Expr, diagnostics: &mut Vec<HirDiagnostic>) {
-    match expr {
-        Expr::MethodCall {
-            receiver,
-            method,
-            args,
-        } => {
-            scan_expr_for_blocking_recv(&receiver.0, diagnostics);
-            for arg in args {
-                scan_expr_for_blocking_recv(&arg.expr().0, diagnostics);
-            }
-            // `.recv()` is the blocking form; `.try_recv()` is allowed because
-            // it does not suspend. Note: at HIR-lower time we don't yet know
-            // the receiver's resolved type, so syntactic-match on the method
-            // name is what we have. False positives would require a user
-            // method literally named `recv` on a non-channel type — flagged as
-            // a known limitation; resolved-type narrowing can be added in a
-            // followup if it materially matters.
-            if method == "recv" {
-                diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::BlockingChannelRecvUnsupportedOnWasm {
-                        construct: ".recv()".to_string(),
-                    },
-                    0..0,
-                    "blocking channel `.recv()` is not supported on wasm32: \
-                     coroutine suspension primitives are unavailable on this \
-                     target. Use `.try_recv()` for the non-blocking variant."
-                        .to_string(),
-                ));
-            }
-        }
-        Expr::Call { function, args, .. } => {
-            scan_expr_for_blocking_recv(&function.0, diagnostics);
-            for arg in args {
-                scan_expr_for_blocking_recv(&arg.expr().0, diagnostics);
-            }
-        }
-        Expr::Binary { left, right, .. }
-        | Expr::Coalesce { left, right }
-        | Expr::Handle {
-            operand: left,
-            body: right,
-            ..
-        } => {
-            scan_expr_for_blocking_recv(&left.0, diagnostics);
-            scan_expr_for_blocking_recv(&right.0, diagnostics);
-        }
-        Expr::Unary { operand, .. } => scan_expr_for_blocking_recv(&operand.0, diagnostics),
-        Expr::Tuple(es) | Expr::Race(es) => {
-            for e in es {
-                scan_expr_for_blocking_recv(&e.0, diagnostics);
-            }
-        }
-        Expr::Array(elements) => {
-            for element in elements {
-                scan_expr_for_blocking_recv(&element.expr().0, diagnostics);
-            }
-        }
-        Expr::ArrayRepeat { value, count } => {
-            scan_expr_for_blocking_recv(&value.0, diagnostics);
-            scan_expr_for_blocking_recv(&count.0, diagnostics);
-        }
-        Expr::Block(b)
-        | Expr::Scope { body: b }
-        | Expr::ForkBlock { body: b }
-        | Expr::GenBlock { body: b } => {
-            scan_block_for_blocking_recv(b, diagnostics);
-        }
-        Expr::If {
-            condition,
-            then_block,
-            else_block,
-            ..
-        } => {
-            scan_expr_for_blocking_recv(&condition.0, diagnostics);
-            scan_expr_for_blocking_recv(&then_block.0, diagnostics);
-            if let Some(e) = else_block {
-                scan_expr_for_blocking_recv(&e.0, diagnostics);
-            }
-        }
-        Expr::IfLet {
-            conditions,
-            body,
-            else_body,
-        } => {
-            for expr in condition_exprs(conditions) {
-                scan_expr_for_blocking_recv(&expr.0, diagnostics);
-            }
-            scan_block_for_blocking_recv(body, diagnostics);
-            if let Some(b) = else_body {
-                scan_expr_for_blocking_recv(&b.0, diagnostics);
-            }
-        }
-        Expr::Match { scrutinee, arms } => {
-            scan_expr_for_blocking_recv(&scrutinee.0, diagnostics);
-            for arm in arms {
-                if let Some(g) = &arm.guard {
-                    scan_expr_for_blocking_recv(&g.0, diagnostics);
-                }
-                scan_expr_for_blocking_recv(&arm.body.0, diagnostics);
-            }
-        }
-        Expr::Lambda { body, .. } | Expr::SpawnLambdaActor { body, .. } => {
-            scan_expr_for_blocking_recv(&body.0, diagnostics);
-        }
-        Expr::Spawn { target, args, .. } => {
-            scan_expr_for_blocking_recv(&target.0, diagnostics);
-            for (_, v) in args {
-                scan_expr_for_blocking_recv(&v.0, diagnostics);
-            }
-        }
-        Expr::ScopeDeadline { duration, body } => {
-            scan_expr_for_blocking_recv(&duration.0, diagnostics);
-            scan_block_for_blocking_recv(body, diagnostics);
-        }
-        Expr::ForkChild { expr, .. } | Expr::Cast { expr, .. } => {
-            scan_expr_for_blocking_recv(&expr.0, diagnostics);
-        }
-        Expr::StructInit { fields, base, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_blocking_recv(&v.0, diagnostics);
-            }
-            if let Some(b) = base {
-                scan_expr_for_blocking_recv(&b.0, diagnostics);
-            }
-        }
-        Expr::MapLiteral { entries } => {
-            for (k, v) in entries {
-                scan_expr_for_blocking_recv(&k.0, diagnostics);
-                scan_expr_for_blocking_recv(&v.0, diagnostics);
-            }
-        }
-        Expr::InterpolatedString(parts) => {
-            for part in parts {
-                if let hew_parser::ast::StringPart::Expr(e)
-                | hew_parser::ast::StringPart::StructuralExpr(e) = part
-                {
-                    scan_expr_for_blocking_recv(&e.0, diagnostics);
-                }
-            }
-        }
-        Expr::Select { arms, timeout } => {
-            for arm in arms {
-                scan_expr_for_blocking_recv(&arm.source.0, diagnostics);
-                scan_expr_for_blocking_recv(&arm.body.0, diagnostics);
-            }
-            if let Some(t) = timeout {
-                scan_expr_for_blocking_recv(&t.duration.0, diagnostics);
-                scan_expr_for_blocking_recv(&t.body.0, diagnostics);
-            }
-        }
-        Expr::UnsafeBlock(b) => scan_block_for_blocking_recv(b, diagnostics),
-        Expr::FieldAccess { object, .. } | Expr::PostfixTry(object) | Expr::Await(object) => {
-            scan_expr_for_blocking_recv(&object.0, diagnostics);
-        }
-        Expr::Index { object, index } => {
-            scan_expr_for_blocking_recv(&object.0, diagnostics);
-            scan_expr_for_blocking_recv(&index.0, diagnostics);
-        }
-        Expr::Is { lhs, rhs } => {
-            scan_expr_for_blocking_recv(&lhs.0, diagnostics);
-            scan_expr_for_blocking_recv(&rhs.0, diagnostics);
-        }
-        Expr::Range { start, end, .. } => {
-            if let Some(s) = start {
-                scan_expr_for_blocking_recv(&s.0, diagnostics);
-            }
-            if let Some(e) = end {
-                scan_expr_for_blocking_recv(&e.0, diagnostics);
-            }
-        }
-        Expr::Yield(Some(e)) => scan_expr_for_blocking_recv(&e.0, diagnostics),
-        Expr::MachineEmit { fields, .. } => {
-            for (_, v) in fields {
-                scan_expr_for_blocking_recv(&v.0, diagnostics);
-            }
-        }
-        // Leaf nodes (Identifier, literals, etc.) and any other Expr variant
-        // without sub-expressions: nothing to scan.
-        _ => {}
-    }
 }
 
 // ── FC-P1-A3: Supervisor spawn args gate ─────────────────────────────────────
@@ -31548,9 +31134,8 @@ struct CallShapeTargets {
 ///    direct call to a generic user function.
 /// 3. Every `HirItem::ExternFn` name.
 /// 4. Every monomorphisation's mangled name.
-/// 5. The hard-coded runtime-ABI bridges `supervisor_stop` and the
-///    `hew_duplex_*` family that `seed_stdlib_fn_registry` adds to
-///    `fn_registry` for the same reason.
+/// 5. The hard-coded runtime-ABI bridge `supervisor_stop` that
+///    `seed_stdlib_fn_registry` adds to `fn_registry` for the same reason.
 fn build_callable_set(
     items: &[HirItem],
     monomorphisations: &[crate::monomorph::MonomorphizedFn],
@@ -31620,7 +31205,6 @@ fn build_callable_set(
     set.insert("link".to_string());
     set.insert("monitor".to_string());
     set.insert("unlink".to_string());
-    set.insert("duplex_pair".to_string());
     // Static-pool accessor symbols: the HIR pool-method intercept lowers
     // `sup.pool.get(i)` / `.len()` to a `Call` naming these runtime symbols so
     // the call-shape gate accepts them; MIR routes by site (`pool_accessor_sites`)
@@ -31628,30 +31212,13 @@ fn build_callable_set(
     // this gate.
     set.insert("hew_supervisor_pool_child_get".to_string());
     set.insert("hew_supervisor_pool_len".to_string());
+    // Pipe layout-witness recv/send symbols — seeded into `fn_registry` by
+    // `seed_stdlib_fn_registry` and lowered as suspensions by SIR.
     for name in [
-        "hew_duplex_send",
-        "hew_duplex_try_send",
-        "hew_duplex_recv",
-        "hew_duplex_try_recv",
-        "hew_duplex_send_half",
-        "hew_duplex_recv_half",
-        "hew_duplex_close",
-        "hew_duplex_close_half",
-    ] {
-        set.insert(name.to_string());
-    }
-    // Channel/stream layout-witness recv/send symbols — seeded into
-    // `fn_registry` by `seed_stdlib_fn_registry` and lowered as
-    // `Terminator::Call` by MIR (not `CallRuntimeAbi`; they are not in the
-    // runtime-symbol allowlist). Codegen intercepts the `Terminator::Call`
-    // by name and emits the element-layout-witness ABI.
-    for name in [
-        "hew_channel_recv_layout",
-        "hew_channel_try_recv_layout",
-        "hew_channel_send_layout",
         "hew_stream_next_layout",
         "hew_stream_try_next_layout",
         "hew_stream_send_layout",
+        "hew_stream_try_send_layout",
     ] {
         set.insert(name.to_string());
     }
@@ -32009,9 +31576,6 @@ fn scan_expr_for_call_shape(
                     HirSelectArmKind::TaskAwait { task } => {
                         scan_expr_for_call_shape(task, callable, diagnostics);
                     }
-                    HirSelectArmKind::ChannelRecv { receiver, .. } => {
-                        scan_expr_for_call_shape(receiver, callable, diagnostics);
-                    }
                     HirSelectArmKind::AfterTimer { duration } => {
                         scan_expr_for_call_shape(duration, callable, diagnostics);
                     }
@@ -32059,8 +31623,7 @@ fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(a, callable, diagnostics);
             }
         }
-        HirExprKind::ChannelRecvAwait { receiver, .. }
-        | HirExprKind::CancellationTokenIsCancelled { receiver }
+        HirExprKind::CancellationTokenIsCancelled { receiver }
         | HirExprKind::GeneratorNext { receiver, .. }
         | HirExprKind::RecordCloneCall { src: receiver, .. }
         | HirExprKind::SubsumedValue {
@@ -35334,7 +34897,7 @@ impl Widget {
                 },
                 &(0..0),
             ),
-            Some(ResolvedTy::String),
+            Some(LowerCtx::resolved_option_ty(ResolvedTy::String)),
             "a renamed builtin Stream<T> retains stream-next binding shape"
         );
         let user_stream = select_ctx.make_expr(

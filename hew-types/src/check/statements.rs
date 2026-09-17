@@ -4,7 +4,6 @@ use super::branch_join::BranchArmExit;
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
-use crate::builtin_names::BuiltinNamedType;
 use crate::BuiltinType;
 
 impl Checker {
@@ -385,10 +384,10 @@ impl Checker {
         else {
             return None;
         };
-        let receiver_ty = {
-            let ty = self.synthesize(&receiver.0, &receiver.1);
-            self.subst.resolve(&ty)
-        };
+        // The iterable was synthesized already; a second pass over the
+        // receiver would read a handle the call just consumed.
+        let key = super::SpanKey::in_module(&receiver.1, self.current_module_idx);
+        let receiver_ty = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty))?;
         let actor_ty = match receiver_ty.as_local_actor_ref() {
             Some(actor_ty) => self.subst.resolve(actor_ty),
             None => return None,
@@ -1846,12 +1845,12 @@ impl Checker {
                         );
                     }
                 }
-                // A stream or channel loop waits per item, exactly like a
-                // generator loop, so it suspends the enclosing body too.
+                // A stream loop waits per item, exactly like a generator
+                // loop, so it suspends the enclosing body too.
                 if matches!(
                     resolved_iter_ty,
                     Ty::Named {
-                        builtin: Some(BuiltinType::Stream | BuiltinType::Receiver),
+                        builtin: Some(BuiltinType::Stream),
                         ..
                     }
                 ) {
@@ -1864,18 +1863,6 @@ impl Checker {
                         );
                         return;
                     }
-                }
-                // Draining a channel consumes its read half: the loop closes
-                // the receiver when it ends, so a later `rx.close()` is a use
-                // after move here rather than an unbalanced close in SIR.
-                if matches!(
-                    resolved_iter_ty,
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Receiver),
-                        ..
-                    }
-                ) {
-                    self.mark_expr_moved(&iterable.0, &iterable.1);
                 }
                 // Infer the element type from the iterable.
                 let elem_ty = match &iter_ty {
@@ -1936,42 +1923,29 @@ impl Checker {
                                 Ty::Error
                             }
                         } else {
-                            match self.validate_stream_sink_element_type(
-                                args,
-                                BuiltinNamedType::Stream.canonical_name(),
-                                "next",
-                                &iterable.1,
-                            ) {
-                                Some(validated_inner) => {
-                                    // Stream runtime is native-only. Method-call
-                                    // `.recv()` already rejects on wasm; the loop
-                                    // must mirror that checker gate before HIR
-                                    // desugars it.
-                                    // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
-                                    self.reject_wasm_feature(
-                                        &iterable.1,
-                                        WasmUnsupportedFeature::Streams,
-                                    );
-                                    let resolved = self.subst.resolve(&validated_inner);
-                                    if !matches!(resolved, Ty::Var(_))
-                                        && !self.queue_elem_admissible(&resolved)
-                                    {
-                                        let reason = self.queue_elem_rejection_reason(&resolved);
-                                        self.report_error(
-                                            TypeErrorKind::InvalidOperation,
-                                            &iterable.1,
-                                            format!(
-                                                "`Stream<{}>` is not supported in a \
-                                                 `for` loop: {reason}",
-                                                validated_inner.user_facing()
-                                            ),
-                                        );
-                                        Ty::Error
-                                    } else {
-                                        validated_inner
-                                    }
-                                }
-                                None => Ty::Error,
+                            let inner = Self::stream_element_type(args);
+                            // Stream runtime is native-only. Method-call
+                            // `.recv()` already rejects on wasm; the loop
+                            // must mirror that checker gate before HIR
+                            // desugars it.
+                            // WASM-TODO(suspending-receive): port the pipe suspend carrier.
+                            self.reject_wasm_feature(&iterable.1, WasmUnsupportedFeature::Streams);
+                            let resolved = self.subst.resolve(&inner);
+                            if !matches!(resolved, Ty::Var(_))
+                                && !self.queue_elem_admissible(&resolved)
+                            {
+                                let reason = self.queue_elem_rejection_reason(&resolved);
+                                self.report_error(
+                                    TypeErrorKind::InvalidOperation,
+                                    &iterable.1,
+                                    format!(
+                                        "`Stream<{}>` is not supported in a `for` loop: {reason}",
+                                        inner.user_facing()
+                                    ),
+                                );
+                                Ty::Error
+                            } else {
+                                inner
                             }
                         }
                     }
@@ -2112,22 +2086,6 @@ impl Checker {
                         } else {
                             Ty::Error
                         }
-                    }
-                    Ty::Named {
-                        builtin: Some(BuiltinType::Receiver),
-                        args,
-                        ..
-                    } if !args.is_empty() => {
-                        let inner = args[0].clone();
-                        // The suspending channel receive is native-only; the loop
-                        // mirrors `.recv()`'s gate before HIR desugars it.
-                        // WASM-TODO(suspending-receive): port the shared stream/channel suspend carrier.
-                        self.reject_wasm_feature(
-                            &iterable.1,
-                            WasmUnsupportedFeature::BlockingChannelRecv,
-                        );
-                        self.check_queue_receive_element_type(&inner, &iterable.1);
-                        inner
                     }
                     // Propagate already-errored or divergent iterable expressions
                     // without adding a redundant "type is not iterable" diagnostic.

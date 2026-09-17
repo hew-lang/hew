@@ -215,15 +215,15 @@ pub fn classify_element_with(
                 ),
             ..
         } => VecElementToken::Layout,
-        // Channel endpoints are pointer-sized but use descriptor-backed Vec
-        // storage. Sender has a clone/drop pair; Receiver is deliberately
+        // Pipe halves are pointer-sized but use descriptor-backed Vec
+        // storage. Sink has a clone/drop pair; Stream is deliberately
         // drop-only (its descriptor carries a null clone thunk). Keeping both
         // off the plain pointer lane lets Vec teardown own the slot close.
         Ty::Named {
             builtin:
                 Some(
-                    crate::builtin_type::BuiltinType::Sender
-                    | crate::builtin_type::BuiltinType::Receiver,
+                    crate::builtin_type::BuiltinType::Sink
+                    | crate::builtin_type::BuiltinType::Stream,
                 ),
             ..
         } => VecElementToken::Layout,

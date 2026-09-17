@@ -29,11 +29,8 @@ pub enum BuiltinType {
     Range,
     Rc,
     Weak,
-    Sender,
-    Receiver,
     Stream,
     Sink,
-    Duplex,
     /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
     /// supervisor `S`. Runtime representation is `{ actor handle, i64 pool_key }`.
     SupervisorPool,
@@ -51,19 +48,13 @@ pub enum BuiltinType {
     Location,
     RemotePid,
     HewActor,
-    HewDuplex,
-    HewSendHalf,
-    HewRecvHalf,
     BoxedActor,
     ActorState,
     MachineState,
-    SendHalf,
-    RecvHalf,
     /// The handle of an anonymous actor, written `actor(M) -> R` and produced by
     /// `actor |m: M| -> R { .. }`. It mirrors an `fn` type: message in, reply out.
-    /// `handle_family = ActorPid` (not `Duplex`) so the channel-only surface
-    /// (`.recv()`, `.send_half()`, `.recv_half()`) is never exposed on an actor
-    /// handle. Lowers to `*mut HewLambdaActorHandle`; a call on it reaches the
+    /// `handle_family = ActorPid`, so no pipe surface (`.recv()`, `.finish()`)
+    /// is ever exposed on an actor handle. Lowers to `*mut HewLambdaActorHandle`; a call on it reaches the
     /// anonymous actor's one handler through the ordinary actor ask path.
     ActorFn,
     CrashInfo,
@@ -85,11 +76,9 @@ pub enum BuiltinType {
     SendError,
     NodeError,
     LookupError,
-    RecvError,
     LinkError,
     MonitorError,
     MonitorRef,
-    CloseError,
     Iterator,
     Unit,
     Duration,
@@ -168,8 +157,6 @@ pub enum BuiltinTypeMarker {
 pub enum BuiltinHandleFamily {
     ActorPid,
     ActorRuntime,
-    Duplex,
-    DuplexHalf,
     ActorState,
     MachineState,
 }
@@ -229,11 +216,8 @@ builtin_types! {
     Range => "Range",
     Rc => "Rc",
     Weak => "Weak",
-    Sender => "Sender",
-    Receiver => "Receiver",
     Stream => "Stream",
     Sink => "Sink",
-    Duplex => "Duplex",
     SupervisorPool => "SupervisorPool",
     ChildRef => "ChildRef",
     ActorHandle => "ActorHandle",
@@ -241,14 +225,9 @@ builtin_types! {
     Location => "Location",
     RemotePid => "RemotePid",
     HewActor => "HewActor",
-    HewDuplex => "HewDuplex",
-    HewSendHalf => "HewSendHalf",
-    HewRecvHalf => "HewRecvHalf",
     BoxedActor => "BoxedActor",
     ActorState => "ActorState",
     MachineState => "MachineState",
-    SendHalf => "SendHalf",
-    RecvHalf => "RecvHalf",
     ActorFn => "ActorFn",
     CrashInfo => "CrashInfo",
     CrashAction => "CrashAction",
@@ -261,11 +240,9 @@ builtin_types! {
     SendError => "SendError",
     NodeError => "NodeError",
     LookupError => "LookupError",
-    RecvError => "RecvError",
     LinkError => "LinkError",
     MonitorError => "MonitorError",
     MonitorRef => "MonitorRef",
-    CloseError => "CloseError",
     Iterator => "Iterator",
     Unit => "Unit",
     Duration => "duration",
@@ -323,9 +300,9 @@ impl BuiltinType {
     ///
     /// This is the shared checker/MIR authority for the affine-marker walk.
     /// Actor references are bit-copied, `Rc`/`Weak` retain their shared
-    /// allocation, and `Sender` clones its refcounted endpoint handle; none
-    /// recursively clones a resource-bearing type argument. `Receiver` is
-    /// deliberately absent: the single-consumer endpoint has no clone helper.
+    /// allocation, and `Sink` clones its producer handle on the shared pipe;
+    /// none recursively clones a resource-bearing type argument. `Stream` is
+    /// deliberately absent: the single-consumer half has no clone helper.
     #[must_use]
     pub const fn is_affine_clone_terminal(self) -> bool {
         matches!(
@@ -337,13 +314,13 @@ impl BuiltinType {
                 | Self::HewActor
                 | Self::Rc
                 | Self::Weak
-                | Self::Sender
+                | Self::Sink
         )
     }
 
     /// Whether a value of this builtin type transfers SOLE ownership when it
     /// crosses an actor message boundary (ask argument, tell argument, spawn
-    /// argument, `Duplex::send` payload).
+    /// argument, `Sink::send` payload).
     ///
     /// The mailbox hand-off moves the value out of the caller frame and mints
     /// the delivered copy a scope-exit owner in the handler, so a transferring
@@ -378,16 +355,8 @@ impl BuiltinType {
     pub const fn transfers_ownership_across_actor_boundary(self) -> bool {
         matches!(
             self,
-            Self::Sender
-                | Self::Receiver
-                | Self::Stream
+            Self::Stream
                 | Self::Sink
-                | Self::Duplex
-                | Self::SendHalf
-                | Self::RecvHalf
-                | Self::HewDuplex
-                | Self::HewSendHalf
-                | Self::HewRecvHalf
                 | Self::Generator
                 | Self::CancellationToken
                 | Self::ActorFn
@@ -400,18 +369,10 @@ impl BuiltinType {
     pub const fn marker(self) -> BuiltinTypeMarker {
         match self {
             Self::ActorCall
-            | Self::Duplex
             | Self::Sink
             | Self::Stream
-            | Self::Sender
-            | Self::Receiver
             | Self::HewActor
-            | Self::HewDuplex
-            | Self::HewSendHalf
-            | Self::HewRecvHalf
             | Self::BoxedActor
-            | Self::SendHalf
-            | Self::RecvHalf
             | Self::ActorFn
             | Self::CancellationToken
             | Self::MonitorRef
@@ -449,10 +410,8 @@ impl BuiltinType {
             | Self::SendError
             | Self::NodeError
             | Self::LookupError
-            | Self::RecvError
             | Self::LinkError
-            | Self::MonitorError
-            | Self::CloseError => BuiltinTypeMarker::BitCopy,
+            | Self::MonitorError => BuiltinTypeMarker::BitCopy,
             Self::ActorState | Self::MachineState => BuiltinTypeMarker::Linear,
             // `CrashInfo` carries an owned `message: string` (M-5), so it is no
             // longer a `BitCopy` aggregate. `None` lets the owned-aggregate
@@ -466,18 +425,10 @@ impl BuiltinType {
     #[must_use]
     pub const fn close_method(self) -> Option<&'static str> {
         match self {
-            Self::Duplex
-            | Self::Sink
+            Self::Sink
             | Self::Stream
-            | Self::Sender
-            | Self::Receiver
             | Self::HewActor
-            | Self::HewDuplex
-            | Self::HewSendHalf
-            | Self::HewRecvHalf
             | Self::BoxedActor
-            | Self::SendHalf
-            | Self::RecvHalf
             | Self::ActorFn
             | Self::MonitorRef => Some("close"),
             Self::CancellationToken => Some("release"),
@@ -524,10 +475,6 @@ impl BuiltinType {
                 Some(BuiltinHandleFamily::ActorPid)
             }
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
-            Self::Duplex | Self::HewDuplex => Some(BuiltinHandleFamily::Duplex),
-            Self::SendHalf | Self::RecvHalf | Self::HewSendHalf | Self::HewRecvHalf => {
-                Some(BuiltinHandleFamily::DuplexHalf)
-            }
             Self::ActorState => Some(BuiltinHandleFamily::ActorState),
             Self::MachineState => Some(BuiltinHandleFamily::MachineState),
             _ => None,
@@ -547,29 +494,21 @@ impl BuiltinType {
             | Self::Range
             | Self::Rc
             | Self::Weak
-            | Self::Sender
-            | Self::Receiver
             | Self::Stream
             | Self::Sink
             | Self::RemotePid
             | Self::ChildRef
             | Self::ActorState
-            | Self::MachineState
-            | Self::SendHalf
-            | Self::RecvHalf => 1,
+            | Self::MachineState => 1,
             Self::Result
             | Self::HashMap
             | Self::HashMapIter
             | Self::StreamPair
-            | Self::Duplex
             | Self::SupervisorPool
-            | Self::HewDuplex
             | Self::ActorFn => 2,
             Self::JsonValue
             | Self::YamlValue
             | Self::HewActor
-            | Self::HewSendHalf
-            | Self::HewRecvHalf
             | Self::BoxedActor
             | Self::NodeId
             | Self::Location
@@ -584,11 +523,9 @@ impl BuiltinType {
             | Self::SendError
             | Self::NodeError
             | Self::LookupError
-            | Self::RecvError
             | Self::LinkError
             | Self::MonitorError
             | Self::MonitorRef
-            | Self::CloseError
             | Self::Iterator
             | Self::Unit
             | Self::Duration
@@ -611,11 +548,7 @@ impl BuiltinType {
                 BuiltinTypeRole::SupervisorHandle,
             ],
             Self::RemotePid => &[BuiltinTypeRole::ActorDispatchRemote],
-            Self::HewActor
-            | Self::HewDuplex
-            | Self::HewSendHalf
-            | Self::HewRecvHalf
-            | Self::BoxedActor => &[BuiltinTypeRole::WasmNativeOnlyHandle],
+            Self::HewActor | Self::BoxedActor => &[BuiltinTypeRole::WasmNativeOnlyHandle],
             Self::ActorState => &[BuiltinTypeRole::ActorStatePayload],
             Self::MachineState => &[BuiltinTypeRole::MachineStatePayload],
             Self::CrashInfo => &[BuiltinTypeRole::CrashInfoPayload],
@@ -628,21 +561,16 @@ impl BuiltinType {
         self.roles().contains(&role)
     }
 
-    #[must_use]
-    pub const fn is_channel_handle(self) -> bool {
-        matches!(self, Self::Sender | Self::Receiver)
-    }
-
     /// The module whose source declares this builtin, where the catalog renders
     /// it under a bare spelling a user declaration may also claim.
     ///
-    /// The channel endpoints are the case: `canonical_name` presents them as
-    /// `Sender` / `Receiver`, so a diagnostic that must tell the substrate
-    /// handle apart from a same-named user type names this owner.
+    /// The pipe halves are the case: `canonical_name` presents them as
+    /// `Stream` / `Sink`, so a diagnostic that must tell the substrate handle
+    /// apart from a same-named user type names this owner.
     #[must_use]
     pub const fn source_declaration_path(self) -> Option<&'static str> {
         match self {
-            Self::Sender | Self::Receiver => Some("std.channel"),
+            Self::Stream | Self::Sink => Some("std.stream"),
             _ => None,
         }
     }
@@ -654,10 +582,7 @@ impl BuiltinType {
 
     #[must_use]
     pub const fn is_substrate_handle(self) -> bool {
-        matches!(
-            self,
-            Self::Duplex | Self::Sink | Self::Stream | Self::SendHalf | Self::RecvHalf
-        )
+        matches!(self, Self::Sink | Self::Stream)
     }
 
     /// True for the local actor-handle builtin that lowers to a single
@@ -674,7 +599,7 @@ impl BuiltinType {
     ///
     /// `RemotePid<T>` is intentionally excluded: it lowers to an inline
     /// aggregate, not a pointer, so it takes a different element ABI.
-    /// Substrate handles (`Duplex`/`Stream`/`Sink`/channel halves) are affine
+    /// Substrate handles (`Stream`/`Sink`) are affine
     /// move-only resources and are not admitted as Vec elements here.
     #[must_use]
     pub const fn lowers_as_pointer_vec_element(self) -> bool {
@@ -698,13 +623,8 @@ impl BuiltinType {
                 | Self::HashSet
                 | Self::Rc
                 | Self::Weak
-                | Self::Sender
-                | Self::Receiver
-                | Self::Duplex
                 | Self::Stream
                 | Self::Sink
-                | Self::SendHalf
-                | Self::RecvHalf
                 | Self::ActorHandle
                 | Self::ActorFn
                 | Self::Generator
@@ -720,15 +640,8 @@ pub const fn builtin_types() -> &'static [BuiltinTypeInfo] {
 #[must_use]
 pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
     match name {
-        "channel.Sender" | "std.channel.Sender" => {
-            return Some(BuiltinType::Sender);
-        }
-        "channel.Receiver" | "std.channel.Receiver" => {
-            return Some(BuiltinType::Receiver);
-        }
         "stream.Stream" | "std.stream.Stream" => return Some(BuiltinType::Stream),
         "stream.Sink" | "std.stream.Sink" => return Some(BuiltinType::Sink),
-        "duplex.Duplex" => return Some(BuiltinType::Duplex),
         "link_monitor.MonitorRef" | "std.link_monitor.MonitorRef" => {
             return Some(BuiltinType::MonitorRef);
         }
@@ -989,19 +902,17 @@ mod tests {
     }
 
     #[test]
-    fn lookup_accepts_exact_channel_owners_without_leaf_fallback() {
+    fn lookup_accepts_exact_stream_owners_without_leaf_fallback() {
         assert_eq!(
-            lookup_builtin_type("std.channel.Sender"),
-            Some(BuiltinType::Sender)
+            lookup_builtin_type("std.stream.Sink"),
+            Some(BuiltinType::Sink)
         );
         assert_eq!(
-            lookup_builtin_type("std.channel.Receiver"),
-            Some(BuiltinType::Receiver)
+            lookup_builtin_type("std.stream.Stream"),
+            Some(BuiltinType::Stream)
         );
-        assert_eq!(lookup_builtin_type("std.channel.channel.Sender"), None);
-        assert_eq!(lookup_builtin_type("std.channel.channel.Receiver"), None);
-        assert_eq!(lookup_builtin_type("acme.channel.Sender"), None);
-        assert_eq!(lookup_builtin_type("acme.channel.Receiver"), None);
+        assert_eq!(lookup_builtin_type("std.stream.stream.Sink"), None);
+        assert_eq!(lookup_builtin_type("acme.stream.Stream"), None);
     }
 
     #[test]
@@ -1012,13 +923,8 @@ mod tests {
             BuiltinType::HashSet,
             BuiltinType::Rc,
             BuiltinType::Weak,
-            BuiltinType::Sender,
-            BuiltinType::Receiver,
-            BuiltinType::Duplex,
             BuiltinType::Stream,
             BuiltinType::Sink,
-            BuiltinType::SendHalf,
-            BuiltinType::RecvHalf,
             BuiltinType::ActorHandle,
             BuiltinType::ActorFn,
             BuiltinType::Generator,
@@ -1077,50 +983,10 @@ mod tests {
                 &[BuiltinTypeRole::ActorDispatchLocal][..],
             ),
             (
-                BuiltinType::Sender,
-                BuiltinTypeMarker::Resource,
-                Some("close"),
-                None,
-                1,
-                &[][..],
-            ),
-            (
-                BuiltinType::Receiver,
-                BuiltinTypeMarker::Resource,
-                Some("close"),
-                None,
-                1,
-                &[][..],
-            ),
-            (
                 BuiltinType::HewActor,
                 BuiltinTypeMarker::Resource,
                 Some("close"),
                 Some(BuiltinHandleFamily::ActorRuntime),
-                0,
-                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
-            ),
-            (
-                BuiltinType::HewDuplex,
-                BuiltinTypeMarker::Resource,
-                Some("close"),
-                Some(BuiltinHandleFamily::Duplex),
-                2,
-                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
-            ),
-            (
-                BuiltinType::HewSendHalf,
-                BuiltinTypeMarker::Resource,
-                Some("close"),
-                Some(BuiltinHandleFamily::DuplexHalf),
-                0,
-                &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
-            ),
-            (
-                BuiltinType::HewRecvHalf,
-                BuiltinTypeMarker::Resource,
-                Some("close"),
-                Some(BuiltinHandleFamily::DuplexHalf),
                 0,
                 &[BuiltinTypeRole::WasmNativeOnlyHandle][..],
             ),

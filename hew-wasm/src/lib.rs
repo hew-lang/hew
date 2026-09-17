@@ -728,7 +728,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::ImportedBodyMissingPrivateHelper { .. } => "ImportedBodyMissingPrivateHelper",
         K::ImportedFreeFnBodyUnresolvedBareCall { .. } => "ImportedFreeFnBodyUnresolvedBareCall",
         K::TargetCoroutineUnsupported { .. } => "TargetCoroutineUnsupported",
-        K::BlockingChannelRecvUnsupportedOnWasm { .. } => "BlockingChannelRecvUnsupportedOnWasm",
         K::TaskSpawnSignatureUnsupported { .. } => "TaskSpawnSignatureUnsupported",
         K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
         K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",

@@ -613,139 +613,6 @@ impl Checker {
         self.errors.extend(new_errors);
     }
 
-    /// Drain `deferred_channel_rewrites`, resolve each inner type through the
-    /// current substitution, and record the correct type-specific C symbol.
-    ///
-    /// This must be called from `check_program` **after** all inference has
-    /// settled (i.e. after `check_item` for every item in the program, and
-    /// after all other inference-driving passes like `apply_deferred_range_bound_types`).
-    ///
-    /// * Fully resolved concrete type (`String` or integer) → select symbol and
-    ///   record [`MethodCallRewrite::RewriteToFunction`].
-    /// * `Ty::Error` → skip silently; a diagnostic was already emitted upstream.
-    /// * `Ty::Var` (still unresolved) → emit [`TypeErrorKind::InferenceFailed`];
-    ///   leave the span absent from `method_call_rewrites` so codegen fails
-    ///   closed rather than silently using the wrong ABI.
-    /// * Unsupported concrete type → emit [`TypeErrorKind::InvalidOperation`];
-    ///   the inline validation pass may have already emitted a diagnostic, but
-    ///   deferred entries bypass that guard, so we re-check here.
-    pub(super) fn finalize_channel_rewrites(&mut self) {
-        let deferred = std::mem::take(&mut self.deferred_channel_rewrites);
-        let mut new_errors: Vec<crate::error::TypeError> = Vec::new();
-
-        for (span_key, entry) in deferred {
-            let resolved = self
-                .subst
-                .resolve(&entry.inner_ty)
-                .materialize_literal_defaults();
-
-            // Already-errored upstream: fail closed, no duplicate diagnostic.
-            if resolved.contains_error() {
-                continue;
-            }
-
-            // Still unresolved: inference did not converge on a concrete type.
-            if let Ty::Var(_) = &resolved {
-                let mut err = crate::error::TypeError::new(
-                    TypeErrorKind::InferenceFailed,
-                    span_key.start..span_key.end,
-                    format!(
-                        "cannot resolve channel method `{}`: inner type of \
-                         {}<T> is still unknown after inference — \
-                         add an explicit type annotation, e.g. \
-                         `Sender<int>` or `Receiver<string>`",
-                        entry.method, entry.handle_kind,
-                    ),
-                );
-                if let Some(module) = &entry.source_module {
-                    err = err.with_source_module(module.clone());
-                }
-                new_errors.push(err);
-                // Span intentionally absent from method_call_rewrites → codegen fails closed.
-                continue;
-            }
-
-            // Reject element types the layout witness cannot describe (guard
-            // against deferred entries that escaped the inline validation
-            // because T was Var at visit time but resolved to something the
-            // queue cannot clone or drop, e.g. a Vec element).
-            if !self.queue_elem_admissible(&resolved) {
-                let reason = self.queue_elem_rejection_reason(&resolved);
-                let mut err = crate::error::TypeError::new(
-                    TypeErrorKind::InvalidOperation,
-                    span_key.start..span_key.end,
-                    format!("`Channel<{resolved}>` is not supported: {reason}"),
-                );
-                if let Some(module) = &entry.source_module {
-                    err = err.with_source_module(module.clone());
-                }
-                new_errors.push(err);
-                continue;
-            }
-
-            // Concrete, supported type: select the correct C symbol.
-            if let Some(c_symbol) = crate::stdlib::resolve_channel_method(
-                &entry.handle_kind,
-                &entry.method,
-                Some(&resolved),
-            ) {
-                // Deferred channel-method resolution bypasses
-                // `record_runtime_method_call_rewrite`, so derive the same
-                // consume verdict from the resolved symbol here (channel
-                // `Sender`/`Receiver` `close` are consuming releases).
-                let consumes_receiver =
-                    crate::builtin_names::runtime_symbol_consumes_receiver(c_symbol);
-                // Lift the resolved symbol into the typed runtime-call
-                // descriptor when the substrate enumerates it (closed set:
-                // channel close peers in this branch). User-defined open-set
-                // FFI strings cannot reach this site; from_c_symbol asserts
-                // None below would only fire if the channel registry grew
-                // a symbol the substrate doesn't know about.
-                let descriptor = crate::runtime_call::RuntimeCallFamily::from_c_symbol(c_symbol)
-                    .map(|family| {
-                        crate::runtime_call::RuntimeCallDescriptor::new(family, None)
-                            .expect("channel close family rejects elem; substrate invariant")
-                    });
-                self.method_call_rewrites.insert(
-                    span_key.clone(),
-                    MethodCallRewrite::RewriteToFunction {
-                        target: descriptor.as_ref().map_or_else(
-                            || CallTarget::Unsupported {
-                                reason: format!(
-                                    "channel runtime method `{c_symbol}` has no registered family"
-                                ),
-                            },
-                            |descriptor| CallTarget::Runtime(descriptor.family()),
-                        ),
-                        c_symbol: c_symbol.to_string(),
-                        descriptor,
-                        extern_identity: None,
-                        elem_ty: None,
-                        consumes_receiver,
-                        requires_mutable_receiver: false,
-                        receiver_update: crate::ReceiverUpdate::Replace,
-                        returns_receiver_identity: false,
-                    },
-                );
-            } else {
-                let mut err = crate::error::TypeError::new(
-                    TypeErrorKind::InvalidOperation,
-                    span_key.start..span_key.end,
-                    format!(
-                        "internal compiler error: builtin {}.{} is missing runtime rewrite metadata",
-                        entry.handle_kind, entry.method
-                    ),
-                );
-                if let Some(module) = &entry.source_module {
-                    err = err.with_source_module(module.clone());
-                }
-                new_errors.push(err);
-            }
-        }
-
-        self.errors.extend(new_errors);
-    }
-
     pub(super) fn record_method_call_receiver_kind(
         &mut self,
         span: &Span,
@@ -1789,30 +1656,6 @@ impl Checker {
         }
     }
 
-    /// Record a channel method rewrite to be resolved after inference settles.
-    ///
-    /// Called instead of `record_runtime_method_call_rewrite` when the inner
-    /// type `T` of `Sender<T>` / `Receiver<T>` is still a `Ty::Var` at the
-    /// call site.  The deferred entry is drained by `finalize_channel_rewrites`
-    /// in `check_program`.
-    fn record_deferred_channel_method_rewrite(
-        &mut self,
-        span: &Span,
-        handle_kind: &str,
-        method: &str,
-        inner_ty: Ty,
-    ) {
-        self.deferred_channel_rewrites.insert(
-            SpanKey::in_module(span, self.current_module_idx),
-            DeferredChannelMethodRewrite {
-                handle_kind: handle_kind.to_string(),
-                method: method.to_string(),
-                inner_ty,
-                source_module: self.current_module.clone(),
-            },
-        );
-    }
-
     fn record_handle_method_call_rewrite_if_any(
         &mut self,
         receiver_ty: &Ty,
@@ -2199,14 +2042,6 @@ impl Checker {
         }
         if matches!(method, "acquire" | "acquire_timeout") {
             self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingSemaphoreAcquire);
-        }
-    }
-
-    pub(super) fn runtime_stream_element_name(ty: &Ty) -> Option<&'static str> {
-        match ty {
-            Ty::String => Some("string"),
-            Ty::Bytes => Some("bytes"),
-            _ => None,
         }
     }
 
@@ -3619,7 +3454,7 @@ impl Checker {
         if matches!(
             resolved,
             Ty::Named {
-                builtin: Some(BuiltinType::Receiver),
+                builtin: Some(BuiltinType::Stream),
                 ..
             }
         ) {
@@ -4000,8 +3835,8 @@ impl Checker {
                     && matches!(
                         builtin,
                         Some(
-                            crate::BuiltinType::Sender
-                                | crate::BuiltinType::Receiver
+                            crate::BuiltinType::Sink
+                                | crate::BuiltinType::Stream
                                 | crate::BuiltinType::ActorHandle
                                 | crate::BuiltinType::RemotePid
                         )
@@ -4068,22 +3903,7 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let Some(inner) = self.validate_stream_sink_element_type(
-            type_args,
-            BuiltinNamedType::Stream.canonical_name(),
-            method,
-            span,
-        ) else {
-            return Ty::Error;
-        };
-        if method == "decode" {
-            return self.report_unlowerable_stream_codec_boundary(
-                BuiltinNamedType::Stream.canonical_name(),
-                &inner,
-                method,
-                span,
-            );
-        }
+        let inner = Self::stream_element_type(type_args);
         // Gate 2: lowering-capability check. The element-layout witness
         // carries every describable element type through the layout recv
         // entries; only elements the witness provably cannot describe
@@ -4119,50 +3939,17 @@ impl Checker {
         };
         let resolved_inner = self.subst.resolve(&inner);
         match method {
-            // Channel-family naming: .recv() replaced .next() as the fundamental
-            // recv surface (routes to the layout-witness `hew_stream_next_layout`
-            // entry for every describable element type).
-            // .try_recv() routes to hew_stream_try_next_layout (non-blocking).
-            // .lines() is an iterator-style op removed from the fundamental
-            // surface; it will land via trait impls in stdlib work.
-            // .collect() drains a Stream<string> into a string via
-            // hew_stream_collect_string; the element-type gate above ensures
-            // only string elements reach this arm.
+            // `recv` parks until an item, EOF or a fault is ready; `try_recv`
+            // never parks. Both ride the layout-witness entries for every
+            // describable element type. `collect` drains a `Stream<string>`.
             "recv" | "try_recv" | "close" | "collect" => {
-                let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                    span,
-                    BuiltinNamedType::Stream.canonical_name(),
-                    method,
-                    crate::stdlib::resolve_stream_method(
-                        BuiltinNamedType::Stream.canonical_name(),
-                        method,
-                        Self::runtime_stream_element_name(&resolved_inner),
-                    ),
-                ) else {
-                    return Ty::Error;
-                };
-                self.record_runtime_method_call_rewrite(span, c_symbol);
-                sig.return_type
-            }
-            // The lazy adaptors: each consumes its source stream and returns a
-            // fresh one. The runtime adaptors work on the type-erased envelope,
-            // so only the content witnesses (`string`, `bytes`) reach them;
-            // `chunks` counts bytes on both.
-            "lines" | "chunks" | "take" => {
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    if let Some(param_ty) = sig.params.first() {
-                        self.check_against(expr, sp, param_ty);
-                    }
-                }
-                if Self::runtime_stream_element_name(&resolved_inner).is_none() {
+                if method == "collect" && resolved_inner != Ty::String {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
                         format!(
-                            "`Stream<{}>.{method}` is not supported: the stream \
-                             adaptors read the content witness, so they need a \
-                             `string` or `bytes` element",
+                            "`Stream<{}>.collect` is not supported: `collect` drains a \
+                             `Stream<string>`",
                             inner.user_facing()
                         ),
                     );
@@ -4175,7 +3962,6 @@ impl Checker {
                     crate::stdlib::resolve_stream_method(
                         BuiltinNamedType::Stream.canonical_name(),
                         method,
-                        None,
                     ),
                 ) else {
                     return Ty::Error;
@@ -4183,36 +3969,42 @@ impl Checker {
                 self.record_runtime_method_call_rewrite(span, c_symbol);
                 sig.return_type
             }
-            "map" | "filter" => {
-                // `map`/`filter` carry a user callback, so they have no
-                // type-erased runtime row the way `lines`/`chunks`/`take` do
-                // (`builtin_names` gives them `BuiltinMethodRuntime::None`).
-                // Fail closed here with one honest capability-boundary
-                // diagnostic pointing at the supported alternative. Still check
-                // the argument so an ill-typed adapter arg is not masked.
+            // The lazy adaptors: each consumes its source stream and returns a
+            // fresh one. `lines` frames a `Stream<bytes>` into text, one line
+            // per item; `chunks` re-frames bytes by size; `take` bounds any
+            // stream.
+            "lines" | "chunks" | "take" => {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
                         self.check_against(expr, sp, param_ty);
                     }
                 }
-                self.report_error(
-                    TypeErrorKind::StreamAdapterNotSupported {
-                        method: method.to_string(),
-                        element_ty: inner.user_facing().to_string(),
-                    },
+                if method != "take" && resolved_inner != Ty::Bytes {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        format!(
+                            "`Stream<{}>.{method}` is not supported: `{method}` frames a \
+                             `Stream<bytes>`",
+                            inner.user_facing()
+                        ),
+                    );
+                    return Ty::Error;
+                }
+                let Some(c_symbol) = self.require_builtin_runtime_symbol(
                     span,
-                    format!(
-                        "`Stream<{}>.{method}` is not yet supported: the \
-                         callback adapters (`map`/`filter`) have no lowering \
-                         yet; consume the stream directly with `for x in \
-                         s {{ ... }}` (applying the `map`/`filter` logic in \
-                         the loop body), or `.recv()` in a loop \
-                         [E_STREAM_ADAPTER_UNSUPPORTED]",
-                        inner.user_facing()
+                    BuiltinNamedType::Stream.canonical_name(),
+                    method,
+                    crate::stdlib::resolve_stream_method(
+                        BuiltinNamedType::Stream.canonical_name(),
+                        method,
                     ),
-                );
-                Ty::Error
+                ) else {
+                    return Ty::Error;
+                };
+                self.record_runtime_method_call_rewrite(span, c_symbol);
+                sig.return_type
             }
             _ => {
                 for arg in args {
@@ -4253,173 +4045,6 @@ impl Checker {
         reason = "mirrors check_stream_method arity; all params are load-bearing; \
                   the match arms each encode a distinct method contract"
     )]
-    pub(super) fn check_duplex_method(
-        &mut self,
-        type_args: &[Ty],
-        receiver_ty: &Ty,
-        receiver: &Spanned<Expr>,
-        method: &str,
-        args: &[CallArg],
-        span: &Span,
-    ) -> Ty {
-        // Extract S and R from Duplex<S, R>; fabricate fresh vars if malformed.
-        let (s_ty, r_ty) = if let [s, r] = type_args {
-            (s.clone(), r.clone())
-        } else {
-            for arg in args {
-                let (expr, sp) = arg.expr();
-                self.synthesize(expr, sp);
-            }
-            self.report_error(
-                TypeErrorKind::InvalidOperation,
-                span,
-                "internal error: Duplex type has wrong arity".to_string(),
-            );
-            return Ty::Error;
-        };
-
-        match method {
-            "send" => {
-                // Check the argument against S.
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let ty = self.check_against(expr, sp, &s_ty);
-                    // Enforce Send bound: the payload must cross thread boundaries.
-                    let resolved = self.subst.resolve(&ty);
-                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                } else {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        "Duplex.send expects one argument (the message)".to_string(),
-                    );
-                }
-                // Synthesize extra args for recovery diagnostics.
-                for arg in args.iter().skip(1) {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_send");
-                // Return type depends on reply direction, mirroring call-syntax dispatch:
-                //   tell-shaped (R = ())  → Result<(), SendError>
-                //   ask-shaped  (R = R)   → Result<R, ActorError>
-                let resolved_r = self.subst.resolve(&r_ty);
-                if matches!(resolved_r, Ty::Unit) {
-                    Ty::result(Ty::Unit, Ty::send_error())
-                } else {
-                    Ty::result(resolved_r, Ty::actor_error(Ty::never_type()))
-                }
-            }
-            "try_send" => {
-                // Non-blocking send: same argument and Send-bound check as
-                // `.send()`, but routes to hew_duplex_try_send which returns
-                // SendError::Full instead of blocking when at capacity.
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let ty = self.check_against(expr, sp, &s_ty);
-                    let resolved = self.subst.resolve(&ty);
-                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                } else {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        "Duplex.try_send expects one argument (the message)".to_string(),
-                    );
-                }
-                for arg in args.iter().skip(1) {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_try_send");
-                Ty::result(Ty::Unit, Ty::send_error())
-            }
-            "recv" => {
-                // No arguments expected.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_recv");
-                let resolved_r = self.subst.resolve(&r_ty);
-                Ty::result(resolved_r, Ty::recv_error())
-            }
-            "try_recv" => {
-                // Non-blocking recv: returns RecvError::Empty instead of
-                // blocking when no message is waiting.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_try_recv");
-                let resolved_r = self.subst.resolve(&r_ty);
-                Ty::result(resolved_r, Ty::recv_error())
-            }
-            "send_half" => {
-                // No arguments expected.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_send_half");
-                // Consuming: the Duplex<S, R> binding is moved.
-                self.method_call_consumes_receiver
-                    .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_recv = self.subst.resolve(receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                let resolved_s = self.subst.resolve(&s_ty);
-                Ty::send_half(resolved_s)
-            }
-            "recv_half" => {
-                // No arguments expected.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_recv_half");
-                // Consuming: the Duplex<S, R> binding is moved.
-                self.method_call_consumes_receiver
-                    .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_recv = self.subst.resolve(receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                let resolved_r = self.subst.resolve(&r_ty);
-                Ty::recv_half(resolved_r)
-            }
-            "close" => {
-                // No arguments expected.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_close");
-                // Consuming: the Duplex<S, R> binding is moved.
-                self.method_call_consumes_receiver
-                    .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_recv = self.subst.resolve(receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                Ty::result(Ty::Unit, Ty::duplex_close_error())
-            }
-            _ => {
-                // Synthesize args for error recovery.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!(
-                        "no method `{method}` on `{}`; \
-                         supported methods: \
-                         send / try_send / recv / try_recv / \
-                         send_half / recv_half / close",
-                        receiver_ty.user_facing()
-                    ),
-                );
-                Ty::Error
-            }
-        }
-    }
-
     /// Type-check a method call on `actor(M) -> R` — the lambda-actor handle.
     ///
     /// Wired methods (the actor surface, NOT the channel surface):
@@ -4547,182 +4172,6 @@ impl Checker {
                         "no method `{method}` on `{}`; \
                          a lambda actor is not a channel — supported methods: \
                          send / close (the canonical call surface is `handle(msg)`)",
-                        receiver_ty.user_facing()
-                    ),
-                );
-                Ty::Error
-            }
-        }
-    }
-
-    /// Type-check a method call on `SendHalf<S>`.
-    ///
-    /// Wired methods:
-    ///   - `.send(msg: S)` → `Result<(), SendError>`  — verifies `S: @send`.
-    ///   - `.try_send(msg: S)` → `Result<(), SendError>` — non-blocking variant;
-    ///     returns `SendError::Full` if at capacity.
-    ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
-    ///
-    /// `.recv()` / `.try_recv()` are rejected with targeted `UndefinedMethod` diagnostics.
-    pub(super) fn check_send_half_method(
-        &mut self,
-        type_args: &[Ty],
-        receiver: &Spanned<Expr>,
-        method: &str,
-        args: &[CallArg],
-        span: &Span,
-    ) -> Ty {
-        let s_ty = type_args
-            .first()
-            .cloned()
-            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
-
-        let receiver_ty = Ty::send_half(self.subst.resolve(&s_ty));
-
-        match method {
-            "send" => {
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let ty = self.check_against(expr, sp, &s_ty);
-                    let resolved = self.subst.resolve(&ty);
-                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                } else {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        "SendHalf::send expects one argument (the message)".to_string(),
-                    );
-                }
-                for arg in args.iter().skip(1) {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_send_half_send");
-                Ty::result(Ty::Unit, Ty::send_error())
-            }
-            "try_send" => {
-                // Non-blocking: same Send bound as .send(); routes to
-                // hew_send_half_try_send which returns SendError::Full at capacity.
-                if let Some(arg) = args.first() {
-                    let (expr, sp) = arg.expr();
-                    let ty = self.check_against(expr, sp, &s_ty);
-                    let resolved = self.subst.resolve(&ty);
-                    self.enforce_actor_boundary_send(expr, sp, span, &resolved);
-                } else {
-                    self.report_error(
-                        TypeErrorKind::ArityMismatch,
-                        span,
-                        "SendHalf::try_send expects one argument (the message)".to_string(),
-                    );
-                }
-                for arg in args.iter().skip(1) {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_send_half_try_send");
-                Ty::result(Ty::Unit, Ty::send_error())
-            }
-            "close" => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_close_half");
-                // Consuming: the SendHalf<S> binding is moved.
-                self.method_call_consumes_receiver
-                    .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_recv = self.subst.resolve(&receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                Ty::result(Ty::Unit, Ty::duplex_close_error())
-            }
-            _ => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!(
-                        "no method `{method}` on `{}`; \
-                         `SendHalf` only supports `.send()`, `.try_send()`, and `.close()`",
-                        receiver_ty.user_facing()
-                    ),
-                );
-                Ty::Error
-            }
-        }
-    }
-
-    /// Type-check a method call on `RecvHalf<R>`.
-    ///
-    /// Wired methods:
-    ///   - `.recv()` → `Result<R, RecvError>`.
-    ///   - `.try_recv()` → `Result<R, RecvError>` — non-blocking; returns
-    ///     `RecvError::Empty` if no message is waiting.
-    ///   - `.close()` → `Result<(), CloseError>`  — consuming; moves the receiver.
-    ///
-    /// `.send()` / `.try_send()` are rejected with targeted `UndefinedMethod` diagnostics.
-    pub(super) fn check_recv_half_method(
-        &mut self,
-        type_args: &[Ty],
-        receiver: &Spanned<Expr>,
-        method: &str,
-        args: &[CallArg],
-        span: &Span,
-    ) -> Ty {
-        let r_ty = type_args
-            .first()
-            .cloned()
-            .unwrap_or_else(|| Ty::Var(TypeVar::fresh()));
-
-        let receiver_ty = Ty::recv_half(self.subst.resolve(&r_ty));
-
-        match method {
-            "recv" => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_recv_half_recv");
-                let resolved_r = self.subst.resolve(&r_ty);
-                Ty::result(resolved_r, Ty::recv_error())
-            }
-            "try_recv" => {
-                // Non-blocking: returns RecvError::Empty instead of blocking
-                // when no message is waiting.
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_recv_half_try_recv");
-                let resolved_r = self.subst.resolve(&r_ty);
-                Ty::result(resolved_r, Ty::recv_error())
-            }
-            "close" => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.record_runtime_method_call_rewrite(span, "hew_duplex_close_half");
-                // Consuming: the RecvHalf<R> binding is moved.
-                self.method_call_consumes_receiver
-                    .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_recv = self.subst.resolve(&receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_recv);
-                Ty::result(Ty::Unit, Ty::duplex_close_error())
-            }
-            _ => {
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
-                    span,
-                    format!(
-                        "no method `{method}` on `{}`; \
-                         `RecvHalf` only supports `.recv()`, `.try_recv()`, and `.close()`",
                         receiver_ty.user_facing()
                     ),
                 );
@@ -8712,19 +8161,6 @@ impl Checker {
                 );
                 Ty::Error
             }
-            // Duplex<S, R>: bidirectional channel handle (raw channel substrate
-            // from `duplex` / `duplex_pair`).
-            //
-            // Methods: .send(msg) / .recv() / .try_send() / .try_recv() /
-            //          .send_half() / .recv_half() / .close()
-            (
-                Ty::Named {
-                    builtin: Some(BuiltinType::Duplex),
-                    args: type_args,
-                    ..
-                },
-                _,
-            ) => self.check_duplex_method(type_args, &receiver_ty, receiver, method, args, span),
             // actor(M) -> R: lambda-actor handle.
             //
             // Methods: .send(msg) / .close()
@@ -8746,30 +8182,6 @@ impl Checker {
             ) => {
                 self.check_lambda_pid_method(type_args, &receiver_ty, receiver, method, args, span)
             }
-            // SendHalf<S>: send-direction half of a split Duplex<S, R>.
-            //
-            // Methods: .send(msg) / .close()
-            // Produced by `Duplex<S, R>::send_half()`.
-            (
-                Ty::Named {
-                    builtin: Some(BuiltinType::SendHalf),
-                    args: type_args,
-                    ..
-                },
-                _,
-            ) => self.check_send_half_method(type_args, receiver, method, args, span),
-            // RecvHalf<R>: receive-direction half of a split Duplex<S, R>.
-            //
-            // Methods: .recv() / .close()
-            // Produced by `Duplex<S, R>::recv_half()`.
-            (
-                Ty::Named {
-                    builtin: Some(BuiltinType::RecvHalf),
-                    args: type_args,
-                    ..
-                },
-                _,
-            ) => self.check_recv_half_method(type_args, receiver, method, args, span),
             // String methods are declared in `std/string.hew` with
             // monomorphic `#[extern_symbol]` annotations.
             (Ty::String, _) => self.dispatch_string_method(method, args, span),
@@ -8840,22 +8252,7 @@ impl Checker {
                 },
                 _,
             ) => {
-                let Some(inner) = self.validate_stream_sink_element_type(
-                    type_args,
-                    BuiltinNamedType::Sink.canonical_name(),
-                    method,
-                    span,
-                ) else {
-                    return Ty::Error;
-                };
-                if method == "encode" {
-                    return self.report_unlowerable_stream_codec_boundary(
-                        BuiltinNamedType::Sink.canonical_name(),
-                        &inner,
-                        method,
-                        span,
-                    );
-                }
+                let inner = Self::stream_element_type(type_args);
                 // Gate 2: lowering-capability check.  Only string and bytes have
                 // runtime symbols; other Wire-capable types pass gate 1 but cannot
                 // be lowered yet.  Emit a user-facing diagnostic rather than the
@@ -8875,21 +8272,12 @@ impl Checker {
                 }
                 let receiver_ty = Ty::sink(inner.clone());
                 match method {
-                    // Channel-family naming: .send() is the fundamental send
-                    // surface. string/bytes elements keep the platform byte-sink
-                    // writes (`hew_sink_write_*` — the bytes form carries the
-                    // suspendable backpressure ramp); every other describable
-                    // element rides the typed-serialise layout entry
-                    // `hew_stream_send_layout`, which the runtime accepts on
-                    // in-memory channel sinks (fail-closed on byte sinks for
-                    // owned elements). .try_send() keeps the non-blocking
-                    // string/bytes writes; a non-blocking typed send entry does
-                    // not exist yet, so widened-element try_send fails closed
-                    // with a specific diagnostic.
-                    // .write() is an I/O-flavoured alias for .send(), routing to
-                    // the same hew_sink_write_* symbols; it is accepted as a
-                    // secondary surface on file/socket sinks.
-                    "send" | "try_send" | "write" => {
+                    // `send` parks on a full pipe and reports `SendError.Closed`
+                    // once the reader is gone; `try_send` never parks and adds
+                    // `SendError.Full`. Both carry every describable element
+                    // through the layout witness; the element identity rides
+                    // the checked value type, never the symbol.
+                    "send" | "try_send" => {
                         let Some(sig) = self.require_builtin_method_sig(
                             span,
                             &receiver_ty,
@@ -8904,41 +8292,6 @@ impl Checker {
                                 self.check_against(expr, sp, param_ty);
                             }
                         }
-                        let resolved_inner = self.subst.resolve(&inner);
-                        let element_name = Self::runtime_stream_element_name(&resolved_inner);
-                        let c_symbol = if element_name.is_some() {
-                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                                span,
-                                BuiltinNamedType::Sink.canonical_name(),
-                                method,
-                                crate::stdlib::resolve_stream_method(
-                                    BuiltinNamedType::Sink.canonical_name(),
-                                    method,
-                                    element_name,
-                                ),
-                            ) else {
-                                return Ty::Error;
-                            };
-                            c_symbol
-                        } else if matches!(method, "send" | "write") {
-                            "hew_stream_send_layout"
-                        } else {
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!(
-                                    "`try_send` is not available on `Sink<{}>` yet: the \
-                                     typed element path has no non-blocking send runtime \
-                                     entry — use `send` (blocking, backpressure-aware)",
-                                    inner.user_facing()
-                                ),
-                            );
-                            return Ty::Error;
-                        };
-                        self.record_runtime_method_call_rewrite(span, c_symbol);
-                        sig.return_type
-                    }
-                    "close" => {
                         let Some(c_symbol) = self.require_builtin_runtime_symbol(
                             span,
                             BuiltinNamedType::Sink.canonical_name(),
@@ -8946,7 +8299,24 @@ impl Checker {
                             crate::stdlib::resolve_stream_method(
                                 BuiltinNamedType::Sink.canonical_name(),
                                 method,
-                                None,
+                            ),
+                        ) else {
+                            return Ty::Error;
+                        };
+                        self.record_runtime_method_call_rewrite(span, c_symbol);
+                        sig.return_type
+                    }
+                    // `clone` adds a producer handle on the same pipe; `finish`
+                    // publishes EOF and keeps the handle; `close` finishes and
+                    // releases it.
+                    "clone" | "finish" | "close" => {
+                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
+                            span,
+                            BuiltinNamedType::Sink.canonical_name(),
+                            method,
+                            crate::stdlib::resolve_stream_method(
+                                BuiltinNamedType::Sink.canonical_name(),
+                                method,
                             ),
                         ) else {
                             return Ty::Error;
@@ -8975,242 +8345,6 @@ impl Checker {
                         );
                         Ty::Error
                     }
-                }
-            }
-            // Sender<T> methods
-            (
-                Ty::Named {
-                    builtin: Some(BuiltinType::Sender),
-                    args: type_args,
-                    ..
-                },
-                _,
-            ) => {
-                let inner = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let receiver_ty = Ty::sender(inner.clone());
-                let resolved_inner = self.subst.resolve(&inner);
-                match method {
-                    "send" => {
-                        let Some(sig) = self.require_builtin_method_sig(
-                            span,
-                            &receiver_ty,
-                            BuiltinNamedType::Sender.canonical_name(),
-                            method,
-                        ) else {
-                            return Ty::Error;
-                        };
-                        if let Some(arg) = args.first() {
-                            let (expr, sp) = arg.expr();
-                            if let Some(param_ty) = sig.params.first() {
-                                self.check_against(expr, sp, param_ty);
-                            }
-                        }
-                        // Validate after unification so the concrete type is known.
-                        let resolved_inner = self.subst.resolve(&inner);
-                        if !matches!(resolved_inner, Ty::Var(_))
-                            && !self.queue_elem_admissible(&resolved_inner)
-                        {
-                            let reason = self.queue_elem_rejection_reason(&resolved_inner);
-                            self.report_error(
-                                TypeErrorKind::InvalidOperation,
-                                span,
-                                format!("Channel<{resolved_inner}> is not supported: {reason}"),
-                            );
-                            return Ty::Error;
-                        }
-                        if matches!(resolved_inner, Ty::Var(_)) {
-                            // Inner type is still unresolved after argument
-                            // unification — the constraint may arrive from the
-                            // call-site's surrounding context (e.g.
-                            // `let _: () = tx.send(v)` where `v: int` is
-                            // declared elsewhere).  Defer the symbol selection
-                            // until post-inference drain.
-                            self.record_deferred_channel_method_rewrite(
-                                span,
-                                BuiltinNamedType::Sender.canonical_name(),
-                                method,
-                                inner.clone(),
-                            );
-                        } else {
-                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                                span,
-                                BuiltinNamedType::Sender.canonical_name(),
-                                method,
-                                crate::stdlib::resolve_channel_method(
-                                    BuiltinNamedType::Sender.canonical_name(),
-                                    method,
-                                    Some(&resolved_inner),
-                                ),
-                            ) else {
-                                return Ty::Error;
-                            };
-                            self.record_runtime_method_call_rewrite(span, c_symbol);
-                        }
-                        sig.return_type
-                    }
-                    "clone" | "close" => {
-                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                            span,
-                            BuiltinNamedType::Sender.canonical_name(),
-                            method,
-                            crate::stdlib::resolve_channel_method(
-                                BuiltinNamedType::Sender.canonical_name(),
-                                method,
-                                Some(&resolved_inner),
-                            ),
-                        ) else {
-                            return Ty::Error;
-                        };
-                        self.record_runtime_method_call_rewrite(span, c_symbol);
-                        let Some(sig) = self.require_builtin_method_sig(
-                            span,
-                            &receiver_ty,
-                            BuiltinNamedType::Sender.canonical_name(),
-                            method,
-                        ) else {
-                            return Ty::Error;
-                        };
-                        sig.return_type
-                    }
-                    _ => {
-                        self.check_named_method_fallback(&resolved, method, args, span, "Sender<T>")
-                    }
-                }
-            }
-            // Receiver<T> methods
-            (
-                Ty::Named {
-                    builtin: Some(BuiltinType::Receiver),
-                    args: type_args,
-                    ..
-                },
-                _,
-            ) => {
-                let inner = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
-                let receiver_ty = Ty::receiver(inner.clone());
-                let resolved_inner = self.subst.resolve(&inner);
-                if !matches!(resolved_inner, Ty::Var(_))
-                    && !self.queue_elem_admissible(&resolved_inner)
-                {
-                    let reason = self.queue_elem_rejection_reason(&resolved_inner);
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!("Channel<{resolved_inner}> is not supported: {reason}"),
-                    );
-                    return Ty::Error;
-                }
-                match method {
-                    "recv" => {
-                        self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingChannelRecv);
-                        let Some(sig) = self.require_builtin_method_sig(
-                            span,
-                            &receiver_ty,
-                            BuiltinNamedType::Receiver.canonical_name(),
-                            method,
-                        ) else {
-                            return Ty::Error;
-                        };
-                        if matches!(resolved_inner, Ty::Var(_)) {
-                            // No argument to unify against — the return-type
-                            // constraint (e.g. `let v: int = rx.recv()`) is
-                            // applied by the caller *after* this arm returns.
-                            // Defer the C-symbol selection until
-                            // post-inference drain.
-                            self.record_deferred_channel_method_rewrite(
-                                span,
-                                BuiltinNamedType::Receiver.canonical_name(),
-                                method,
-                                inner.clone(),
-                            );
-                        } else {
-                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                                span,
-                                BuiltinNamedType::Receiver.canonical_name(),
-                                method,
-                                crate::stdlib::resolve_channel_method(
-                                    BuiltinNamedType::Receiver.canonical_name(),
-                                    method,
-                                    Some(&resolved_inner),
-                                ),
-                            ) else {
-                                return Ty::Error;
-                            };
-                            self.record_runtime_method_call_rewrite(span, c_symbol);
-                        }
-                        sig.return_type
-                    }
-                    "try_recv" => {
-                        if matches!(resolved_inner, Ty::Var(_)) {
-                            self.record_deferred_channel_method_rewrite(
-                                span,
-                                BuiltinNamedType::Receiver.canonical_name(),
-                                method,
-                                inner.clone(),
-                            );
-                        } else {
-                            let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                                span,
-                                BuiltinNamedType::Receiver.canonical_name(),
-                                method,
-                                crate::stdlib::resolve_channel_method(
-                                    BuiltinNamedType::Receiver.canonical_name(),
-                                    method,
-                                    Some(&resolved_inner),
-                                ),
-                            ) else {
-                                return Ty::Error;
-                            };
-                            self.record_runtime_method_call_rewrite(span, c_symbol);
-                        }
-                        let Some(sig) = self.require_builtin_method_sig(
-                            span,
-                            &receiver_ty,
-                            BuiltinNamedType::Receiver.canonical_name(),
-                            method,
-                        ) else {
-                            return Ty::Error;
-                        };
-                        sig.return_type
-                    }
-                    "close" => {
-                        // `close` maps to a single type-independent symbol.
-                        let Some(c_symbol) = self.require_builtin_runtime_symbol(
-                            span,
-                            BuiltinNamedType::Receiver.canonical_name(),
-                            method,
-                            crate::stdlib::resolve_channel_method(
-                                BuiltinNamedType::Receiver.canonical_name(),
-                                method,
-                                Some(&resolved_inner),
-                            ),
-                        ) else {
-                            return Ty::Error;
-                        };
-                        self.record_runtime_method_call_rewrite(span, c_symbol);
-                        let Some(sig) = self.require_builtin_method_sig(
-                            span,
-                            &receiver_ty,
-                            BuiltinNamedType::Receiver.canonical_name(),
-                            method,
-                        ) else {
-                            return Ty::Error;
-                        };
-                        sig.return_type
-                    }
-                    _ => self.check_named_method_fallback(
-                        &resolved,
-                        method,
-                        args,
-                        span,
-                        "Receiver<T>",
-                    ),
                 }
             }
             // Range<T> iterator adapters: `.rev()` (descending iteration) and
@@ -11002,44 +10136,6 @@ mod tests {
             checker.qualify_method_return_to_receiver_owner("Listener", &bare_connection,),
             bare_connection,
             "a root-local receiver has no module owner to project onto its result",
-        );
-    }
-
-    /// A pending lowering fact whose element type resolves to `Ty::Error` must be
-    /// dropped silently by `finalize_lowering_facts` without emitting a new error.
-    ///
-    /// Background: `validate_hashset_element_type` allows `Ty::Error` through
-    /// (correct — avoids cascading diagnostics), which means
-    /// `record_hashset_lowering_fact` can be called with `Ty::Error` as the
-    /// element type.  Before this fix, `from_hashset_element_type(Ty::Error)`
-    /// returned `Err(UnresolvedHashSetElementType)` and the handler emitted a
-    /// spurious "element type is unresolved" diagnostic even though the real error
-    /// had already been reported upstream.
-    #[test]
-    fn runtime_stream_element_name_stays_canonical() {
-        assert_eq!(
-            Checker::runtime_stream_element_name(&Ty::String),
-            Some("string")
-        );
-        assert_eq!(
-            Checker::runtime_stream_element_name(&Ty::Bytes),
-            Some("bytes")
-        );
-        assert_eq!(
-            Checker::runtime_stream_element_name(&Ty::Named {
-                builtin: None,
-                name: "string".into(),
-                args: vec![],
-            }),
-            None
-        );
-        assert_eq!(
-            Checker::runtime_stream_element_name(&Ty::Named {
-                builtin: None,
-                name: "str".into(),
-                args: vec![],
-            }),
-            None
         );
     }
 

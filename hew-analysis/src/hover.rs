@@ -1008,13 +1008,7 @@ fn iterable_element_type(iterable_ty: &Ty) -> Option<Ty> {
             ..
         } if args.len() == 1 => args.first().cloned(),
         Ty::Named {
-            builtin:
-                Some(
-                    BuiltinType::Stream
-                    | BuiltinType::Receiver
-                    | BuiltinType::Generator
-                    | BuiltinType::Vec,
-                ),
+            builtin: Some(BuiltinType::Stream | BuiltinType::Generator | BuiltinType::Vec),
             args,
             ..
         } => args.first().cloned(),

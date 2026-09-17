@@ -31,8 +31,6 @@ mod coro;
 mod generators;
 #[path = "physical_io.rs"]
 mod io;
-#[path = "physical_channel.rs"]
-mod physical_channel;
 #[path = "physical_select.rs"]
 mod select;
 #[path = "physical_stream.rs"]
@@ -1961,7 +1959,6 @@ fn build_module_with_host<'ctx>(
     emitter.emit_task_descriptors()?;
     emitter.emit_generator_descriptors()?;
     emitter.emit_stream_descriptors()?;
-    emitter.emit_channel_descriptors()?;
     emitter.emit_environment_descriptors()?;
     emitter.emit_vtables()?;
     emitter.emit_callable_descriptors()?;
@@ -3519,8 +3516,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 unwind,
             } => self.emit_generator_next(generator, *result, normal, cancel, unwind),
             PhysicalTerminator::StreamNext { .. } => self.emit_stream_next(block),
-            PhysicalTerminator::ChannelRecv { .. } => self.emit_channel_recv(block),
-            PhysicalTerminator::ChannelSend { .. } => self.emit_channel_send(block),
             PhysicalTerminator::StreamSend { .. } => self.emit_stream_send(block),
             PhysicalTerminator::ValueClose {
                 index,
@@ -4383,30 +4378,37 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     result,
                 )?;
             }
-            RuntimeCallFamily::ChannelSenderClose => {
+            RuntimeCallFamily::SinkClone => {
                 self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelSenderClose,
+                    hew_types::RuntimeCallFamily::SinkClone,
                     transfers,
                     result,
                 )?;
             }
-            RuntimeCallFamily::ChannelReceiverClose => {
+            RuntimeCallFamily::SinkFinish => {
                 self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelReceiverClose,
+                    hew_types::RuntimeCallFamily::SinkFinish,
                     transfers,
                     result,
                 )?;
             }
-            RuntimeCallFamily::ChannelPairNew => {
+            RuntimeCallFamily::StreamForward => {
                 self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairNew,
+                    hew_types::RuntimeCallFamily::StreamForward,
                     transfers,
                     result,
                 )?;
             }
-            RuntimeCallFamily::ChannelPairFree => {
+            RuntimeCallFamily::StreamPairSink => {
                 self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairFree,
+                    hew_types::RuntimeCallFamily::StreamPairSink,
+                    transfers,
+                    result,
+                )?;
+            }
+            RuntimeCallFamily::StreamPairStream => {
+                self.emit_direct_runtime_call(
+                    hew_types::RuntimeCallFamily::StreamPairStream,
                     transfers,
                     result,
                 )?;
@@ -4428,34 +4430,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::ActorRequestTake => {
                 self.emit_direct_runtime_call(
                     hew_types::RuntimeCallFamily::ActorRequestTake,
-                    transfers,
-                    result,
-                )?;
-            }
-            RuntimeCallFamily::ChannelPairIsValid => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairIsValid,
-                    transfers,
-                    result,
-                )?;
-            }
-            RuntimeCallFamily::ChannelSenderClone => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelSenderClone,
-                    transfers,
-                    result,
-                )?;
-            }
-            RuntimeCallFamily::ChannelPairSender => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairSender,
-                    transfers,
-                    result,
-                )?;
-            }
-            RuntimeCallFamily::ChannelPairReceiver => {
-                self.emit_direct_runtime_call(
-                    hew_types::RuntimeCallFamily::ChannelPairReceiver,
                     transfers,
                     result,
                 )?;

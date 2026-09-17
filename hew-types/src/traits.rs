@@ -759,56 +759,6 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
-            // A channel transfers its element between threads. The sender can
-            // be shared; the single consumer moves to one receiving thread.
-            Ty::Named {
-                builtin: Some(kind @ (BuiltinType::Sender | BuiltinType::Receiver)),
-                args,
-                ..
-            } if args.len() == 1 => match marker {
-                MarkerTrait::Send => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
-                }
-                MarkerTrait::Sync if *kind == BuiltinType::Sender => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
-                }
-                MarkerTrait::Clone => *kind == BuiltinType::Sender,
-                MarkerTrait::Resource | MarkerTrait::Debug => true,
-                _ => false,
-            },
-
-            // Stream<T> and Sink<T>: Send/Sync iff T: Send; NOT Clone, Copy, or Frozen (move-only)
-            Ty::Named {
-                builtin: Some(BuiltinType::Stream | BuiltinType::Sink),
-                args,
-                ..
-            } if args.len() == 1 => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
-                }
-                _ => false,
-            },
-
-            // Duplex<S, R>: bidirectional lambda-actor handle.
-            // Send/Sync iff BOTH S: Send AND R: Send.
-            // NOT Copy (move-only resource — drop closes both directions).
-            // NOT Clone (split via send_half/recv_half in slice 4, not by cloning).
-            // NOT Frozen (mutable internal queue state).
-            // Resource: yes — dropping the last Duplex handle closes both I/O directions
-            //   (@resource design contract D3; consumed by drop-elaboration in slice 3).
-            Ty::Named {
-                builtin: Some(BuiltinType::Duplex),
-                args,
-                ..
-            } if args.len() == 2 => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => {
-                    self.implements_marker_guarded(&args[0], MarkerTrait::Send, visiting)
-                        && self.implements_marker_guarded(&args[1], MarkerTrait::Send, visiting)
-                }
-                MarkerTrait::Resource => true,
-                _ => false,
-            },
-
             // actor(M) -> R: the user-visible lambda-actor handle.
             // Send/Sync iff BOTH M: Send AND R: Send (message and reply cross
             // the actor boundary).
@@ -827,22 +777,6 @@ impl TraitRegistry {
                 MarkerTrait::Resource => true,
                 _ => false,
             },
-
-            // SendHalf<T> / RecvHalf<T>: exclusive ownership of one end of a
-            // duplex channel. They are OS/runtime resources (have a `close()`
-            // contract), so `Resource` and `Drop` are true.  They are NOT
-            // `Send` or `Sync` — a channel half is an exclusive handle that
-            // must not cross an actor boundary.  This arm must come before
-            // the fallthrough `Ty::Named` arm so it fires for the builtin
-            // variants rather than going through the unknown-type path.
-            //
-            // Not-Send propagation: any user type that holds a SendHalf or
-            // RecvHalf (e.g. `type W { h: RecvHalf<i64> }`) will visit this
-            // arm during its field check and correctly derive not-Send.
-            Ty::Named {
-                builtin: Some(BuiltinType::SendHalf | BuiltinType::RecvHalf),
-                ..
-            } => matches!(marker, MarkerTrait::Resource | MarkerTrait::Drop),
 
             // Tuple: marker holds if ALL elements have it
             Ty::Tuple(elems) => elems

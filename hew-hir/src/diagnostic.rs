@@ -553,16 +553,6 @@ pub enum HirDiagnosticKind {
         /// User-visible construct name (e.g. `"actor decl"`, `"task spawn"`).
         construct: String,
     },
-    /// Blocking channel recv is not supported on wasm32. The program calls
-    /// `.recv()` on a channel (or the builtin `hew_channel_recv_layout`) with target
-    /// `wasm32`, which would reach `unreachable!` at
-    /// `hew-runtime/src/lib.rs:378` or `:391`. Fail-closed per slepp A222:
-    /// compile-time diagnostic instead of runtime panic. Non-blocking
-    /// `.try_recv()` is allowed on wasm32.
-    BlockingChannelRecvUnsupportedOnWasm {
-        /// User-visible construct name (e.g. `".recv()"`).
-        construct: String,
-    },
     /// Spawned task/fork callee has non-unit signature. The spawned
     /// function must have zero args and unit return type because task result
     /// propagation is not yet wired. Fail-closed per FC-P1-A1 audit.
@@ -630,7 +620,7 @@ pub enum HirDiagnosticKind {
     /// is not in the module's callable set
     /// (stdlib catalog + monomorphic + generic user functions + extern fns +
     /// monomorphisation mangled names + recognised runtime-ABI bridges
-    /// such as `supervisor_stop` and `hew_duplex_*`). In practice this is
+    /// such as `supervisor_stop`). In practice this is
     /// defense-in-depth: the upstream fn-registry seeding usually keeps
     /// `Item`-resolved callees inside that set. A surface program that
     /// reaches this gate is one where the producer-bridge between checker

@@ -98,7 +98,7 @@ pub use runtime_call::{
     RuntimeCallDescriptor, RuntimeCallFamily, RuntimeDropDescriptor, RuntimeInstantiatedContract,
     RuntimeLogicalFailure, RuntimeOpRow, RuntimePhysicalForm, RuntimeResultEffect,
     RuntimeSemanticContract, RuntimeStaging, RuntimeValueKind, RuntimeVariantResultKind,
-    StreamElementKind, VecGetElem, VecSliceElem, VecValueOp,
+    VecGetElem, VecSliceElem, VecValueOp,
 };
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{

@@ -18,10 +18,10 @@ enum SelectSource {
         ty: ResolvedTy,
         output: ResolvedTy,
     },
-    /// A borrowed channel receiver the winning arm receives from. `output` is
+    /// A borrowed pipe stream the winning arm receives from. `output` is
     /// the `Option<T>` the arm binds.
-    Channel {
-        receiver: Operand,
+    Stream {
+        stream: Operand,
         loans: Vec<ValueId>,
         output: ResolvedTy,
     },
@@ -93,15 +93,15 @@ impl Builder<'_, '_> {
                         },
                     ));
                 }
-                HirSelectArmKind::ChannelRecv { receiver } => {
+                HirSelectArmKind::StreamNext { stream } => {
                     // The selection observes readiness only: the winning arm
                     // performs the ordinary receive on its own borrow.
-                    let ty = self.ty(&receiver.ty);
-                    let element = crate::receiver_element(&ty)
-                        .ok_or("channel selection operand lacks its element type")?
+                    let ty = self.ty(&stream.ty);
+                    let element = crate::stream_element(&ty)
+                        .ok_or("stream selection operand lacks its element type")?
                         .clone();
                     let source_loan_depth = loans.len();
-                    let operand = self.lower_borrowed_read(receiver, &mut loans)?;
+                    let operand = self.lower_borrowed_read(stream, &mut loans)?;
                     let source_loans = loans[source_loan_depth..].to_vec();
                     self.argument_receiver_loans
                         .extend(source_loans.iter().copied());
@@ -111,8 +111,8 @@ impl Builder<'_, '_> {
                     });
                     sources.push((
                         arm_index,
-                        SelectSource::Channel {
-                            receiver: operand,
+                        SelectSource::Stream {
+                            stream: operand,
                             loans: source_loans,
                             output: ResolvedTy::named_builtin(
                                 "Option",
@@ -140,10 +140,6 @@ impl Builder<'_, '_> {
                     }
                     timer = Some(self.lower_read_operand(duration, "selection timer")?);
                 }
-                HirSelectArmKind::StreamNext { .. } => return Err(
-                    "native selection arm requires a task, actor call, channel receive or timer"
-                        .into(),
-                ),
             }
         }
         if sources.is_empty() && timer.is_none() {
@@ -233,7 +229,7 @@ impl Builder<'_, '_> {
             // The selected receiver keeps exactly its prepared borrow through
             // take. End every other observation loan before the branch runs.
             let selected_loans = match source {
-                Some((_, (_, SelectSource::Channel { loans, .. }))) => loans.as_slice(),
+                Some((_, (_, SelectSource::Stream { loans, .. }))) => loans.as_slice(),
                 _ => &[],
             };
             let ending: Vec<_> = loans
@@ -243,7 +239,7 @@ impl Builder<'_, '_> {
                 .collect();
             self.end_call_loans(&ending)?;
             // Release every losing invocation before entering the selected arm.
-            // Task and channel inputs remain borrowed; only these ephemeral
+            // Task and stream inputs remain borrowed; only these ephemeral
             // operations own work that the selection is abandoning.
             for (other_index, other) in &sources {
                 if *other_index != arm_index {
@@ -275,15 +271,15 @@ impl Builder<'_, '_> {
                         };
                         (self.lower_task_await_value(value, output)?, output.clone())
                     }
-                    SelectSource::Channel {
-                        receiver,
+                    SelectSource::Stream {
+                        stream,
                         output,
                         loans,
                     } => {
                         // Readiness was observed, nothing taken: the winner
-                        // receives, and a closed channel resolves to `None`.
-                        let value = self.lower_channel_recv_prepared(
-                            receiver.clone(),
+                        // receives, and a finished pipe resolves to `None`.
+                        let value = self.lower_stream_next_prepared(
+                            stream.clone(),
                             output.clone(),
                             true,
                             loans,

@@ -1223,7 +1223,7 @@ impl Checker {
         // An array repeat copies the element into every slot, so it admits
         // exactly the element types the value class gives a copy path — the
         // same answer `xs[i]`, a range slice and cloning iteration get. A
-        // trait object and a `Receiver` are drop-only in the class table
+        // trait object and a `Stream` are drop-only in the class table
         // (`CloneKind::None`), so they refuse here without a second rule.
         if let Some(blocker) = self.element_clone_blocker(&elem_ty) {
             let resolved_elem = self.subst.resolve(&elem_ty);
@@ -3305,7 +3305,7 @@ impl Checker {
                 //
                 // WHEN-OBSOLETE: slice 3 adds MIR-level self-ref weak capture that covers
                 // the runtime dimension of self-escape; this is the static type-level gate.
-                if body_ret.as_actor_fn().is_some() || body_ret.as_duplex().is_some() {
+                if body_ret.as_actor_fn().is_some() {
                     self.report_error(
                         TypeErrorKind::InvalidOperation,
                         span,
@@ -4379,10 +4379,10 @@ impl Checker {
 
             // Struct init coercion: propagate expected type args into field checking.
             //
-            // A channel endpoint is excluded by its builtin discriminator, not
-            // by its spelling: the resolver renders `std.channel.Sender` under
-            // the catalog's bare `Sender`, so a user `type Sender<T>` matches it
-            // by name here. No struct literal constructs a substrate handle, so
+            // A pipe half is excluded by its builtin discriminator, not by its
+            // spelling: the resolver renders `std.stream.Sink` under the
+            // catalog's bare `Sink`, so a user `type Sink<T>` matches it by
+            // name here. No struct literal constructs a substrate handle, so
             // the pair falls through to ordinary coercion and is refused there.
             (
                 Expr::StructInit {
@@ -4397,7 +4397,7 @@ impl Checker {
                     builtin: expected_builtin,
                 },
             ) if name == expected_name
-                && !expected_builtin.is_some_and(crate::BuiltinType::is_channel_handle) =>
+                && !expected_builtin.is_some_and(crate::BuiltinType::is_substrate_handle) =>
             {
                 // If the literal carries explicit type args, validate that they agree
                 // with the expected args coming from the binding site.  Conflicting

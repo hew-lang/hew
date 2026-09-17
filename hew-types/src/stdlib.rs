@@ -5,7 +5,7 @@
 
 use crate::builtin_names::{builtin_named_type, resolve_builtin_method_symbol, BuiltinNamedType};
 #[cfg(test)]
-use crate::builtin_names::{RECEIVER, SENDER, SINK, STREAM};
+use crate::builtin_names::{SINK, STREAM};
 
 /// Canonical source identities for the TCP substrate handles.
 ///
@@ -16,46 +16,17 @@ pub const STD_NET_CONNECTION: &str = "std.net.Connection";
 pub const STD_NET_ERROR: &str = "std.net.NetError";
 pub const STD_NET_WRITE_ERROR: &str = "std.net.WriteError";
 
-/// Resolves a method call on a `Sender<T>` or `Receiver<T>` to its C symbol.
-///
-/// String channels use the existing `hew_channel_*` functions.
-/// Integer channels use the `hew_channel_*_int` variants.
-/// Falls back to String symbols when the inner type is unknown.
-#[must_use]
-pub fn resolve_channel_method(
-    handle_kind: &str,
-    method: &str,
-    inner_ty: Option<&crate::Ty>,
-) -> Option<&'static str> {
-    let kind = builtin_named_type(handle_kind)?;
-    if !kind.is_channel_handle() {
-        return None;
-    }
-    resolve_builtin_method_symbol(kind, method, inner_ty, None)
-}
-
 /// Resolves a method call on a first-class `Stream<T>` or `Sink<T>` to its C symbol.
 ///
-/// The `element_type` parameter carries the resolved inner type name (e.g.
-/// `"bytes"` or `"string"`). Element-type-sensitive methods now fail closed:
-/// when the inner type is missing or not one of the lowerable runtime ABIs,
-/// the resolver returns `None` instead of silently falling back to the string
-/// entry point.
-///
-/// These types are not opaque handle types (`Ty::Named`) — they are `Ty::Stream` /
-/// `Ty::Sink` variants. This resolver is called separately from
-/// `resolve_handle_method` and covers both the read and write sides.
+/// Every pipe operation has one symbol for every describable element type:
+/// the element identity travels on the checked type, never on the symbol.
 #[must_use]
-pub fn resolve_stream_method(
-    stream_kind: &str,
-    method: &str,
-    element_type: Option<&str>,
-) -> Option<&'static str> {
+pub fn resolve_stream_method(stream_kind: &str, method: &str) -> Option<&'static str> {
     let kind = builtin_named_type(stream_kind)?;
     if !matches!(kind, BuiltinNamedType::Stream | BuiltinNamedType::Sink) {
         return None;
     }
-    resolve_builtin_method_symbol(kind, method, None, element_type)
+    resolve_builtin_method_symbol(kind, method)
 }
 
 /// Returns the codegen representation for a handle type.
@@ -79,130 +50,62 @@ mod tests {
     use super::*;
 
     #[test]
-    fn channel_sender_methods_resolve() {
-        assert_eq!(
-            resolve_channel_method(SENDER, "send", None),
-            Some("hew_channel_send_layout")
-        );
-        assert_eq!(
-            resolve_channel_method(SENDER, "clone", None),
-            Some("hew_channel_sender_clone")
-        );
-        assert_eq!(
-            resolve_channel_method(SENDER, "close", None),
-            Some("hew_channel_sender_close")
-        );
-    }
-
-    #[test]
-    fn channel_receiver_methods_resolve() {
-        assert_eq!(
-            resolve_channel_method(RECEIVER, "recv", None),
-            Some("hew_channel_recv_layout")
-        );
-        assert_eq!(
-            resolve_channel_method(RECEIVER, "try_recv", None),
-            Some("hew_channel_try_recv_layout")
-        );
-        assert_eq!(
-            resolve_channel_method(RECEIVER, "close", None),
-            Some("hew_channel_receiver_close")
-        );
-    }
-
-    #[test]
-    fn channel_unknown_method_returns_none() {
-        assert_eq!(resolve_channel_method(SENDER, "nonexistent", None), None);
-        assert_eq!(resolve_channel_method("Unknown", "send", None), None);
-    }
-
-    #[test]
     fn stream_methods_resolve() {
         assert_eq!(
-            resolve_stream_method(STREAM, "recv", Some("string")),
+            resolve_stream_method(STREAM, "recv"),
             Some("hew_stream_next_layout")
         );
         assert_eq!(
-            resolve_stream_method(STREAM, "recv", Some("bytes")),
-            Some("hew_stream_next_layout")
-        );
-        assert_eq!(
-            resolve_stream_method(STREAM, "try_recv", None),
+            resolve_stream_method(STREAM, "try_recv"),
             Some("hew_stream_try_next_layout")
         );
         assert_eq!(
-            resolve_stream_method(STREAM, "close", None),
+            resolve_stream_method(STREAM, "close"),
             Some("hew_stream_close")
         );
-        assert_eq!(resolve_stream_method(STREAM, "next", Some("string")), None);
         assert_eq!(
-            resolve_stream_method(STREAM, "collect", None),
-            Some("hew_stream_collect_string")
-        );
-        assert_eq!(
-            resolve_stream_method(STREAM, "lines", None),
+            resolve_stream_method(STREAM, "lines"),
             Some("hew_stream_lines")
         );
         assert_eq!(
-            resolve_stream_method(STREAM, "chunks", None),
+            resolve_stream_method(STREAM, "chunks"),
             Some("hew_stream_chunks")
         );
         assert_eq!(
-            resolve_stream_method(STREAM, "take", None),
+            resolve_stream_method(STREAM, "take"),
             Some("hew_stream_take")
         );
+        assert_eq!(
+            resolve_stream_method(STREAM, "collect"),
+            Some("hew_stream_collect_string")
+        );
+        assert_eq!(resolve_stream_method(STREAM, "next"), None);
     }
 
     #[test]
     fn sink_methods_resolve() {
         assert_eq!(
-            resolve_stream_method(SINK, "send", Some("string")),
-            Some("hew_sink_write_string")
+            resolve_stream_method(SINK, "send"),
+            Some("hew_stream_send_layout")
         );
         assert_eq!(
-            resolve_stream_method(SINK, "send", Some("bytes")),
-            Some("hew_sink_write_bytes")
+            resolve_stream_method(SINK, "try_send"),
+            Some("hew_stream_try_send_layout")
         );
+        assert_eq!(resolve_stream_method(SINK, "clone"), Some("hew_sink_clone"));
         assert_eq!(
-            resolve_stream_method(SINK, "write", Some("string")),
-            Some("hew_sink_write_string")
+            resolve_stream_method(SINK, "finish"),
+            Some("hew_sink_finish")
         );
-        assert_eq!(resolve_stream_method(SINK, "flush", None), None);
-        assert_eq!(
-            resolve_stream_method(SINK, "close", None),
-            Some("hew_sink_close")
-        );
+        assert_eq!(resolve_stream_method(SINK, "close"), Some("hew_sink_close"));
+        assert_eq!(resolve_stream_method(SINK, "write"), None);
+        assert_eq!(resolve_stream_method(SINK, "flush"), None);
     }
 
     #[test]
-    fn stream_unknown_method_returns_none() {
-        assert_eq!(resolve_stream_method(STREAM, "nonexistent", None), None);
-        assert_eq!(resolve_stream_method("Unknown", "recv", None), None);
-    }
-
-    #[test]
-    fn stream_element_sensitive_methods_require_lowerable_metadata() {
-        assert_eq!(
-            resolve_stream_method(STREAM, "recv", None),
-            Some("hew_stream_next_layout")
-        );
-        assert_eq!(
-            resolve_stream_method(STREAM, "recv", Some("Row")),
-            Some("hew_stream_next_layout")
-        );
-        assert_eq!(resolve_stream_method(SINK, "send", None), None);
-        assert_eq!(resolve_stream_method(SINK, "send", Some("Row")), None);
-        assert_eq!(
-            resolve_stream_method(SINK, "send", Some("string")),
-            Some("hew_sink_write_string")
-        );
-        assert_eq!(resolve_stream_method(SINK, "send", Some("str")), None);
-    }
-
-    #[test]
-    fn builtin_name_constants_have_expected_values() {
-        assert_eq!(SENDER, "Sender");
-        assert_eq!(RECEIVER, "Receiver");
+    fn unknown_kind_or_method_returns_none() {
+        assert_eq!(resolve_stream_method(STREAM, "nonexistent"), None);
+        assert_eq!(resolve_stream_method("Unknown", "recv"), None);
         assert_eq!(STREAM, "Stream");
         assert_eq!(SINK, "Sink");
     }

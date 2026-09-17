@@ -113,7 +113,9 @@ impl Builder<'_, '_> {
                 return Err("yield differs from its stream producer's element type".into());
             }
             let value = self.lower_yield_value(expression, value)?;
-            return self.lower_stream_send(sink, value, &[], true);
+            return self
+                .lower_stream_send(sink, value, &[], true, true)
+                .map(|_| ());
         }
         let CallableInstance::Closure(closure) = self.callable.instance else {
             return Err("yield requires a checked generator body".into());
@@ -174,14 +176,21 @@ impl Builder<'_, '_> {
         Ok(value)
     }
 
-    /// A stream producer parks on the consumer's capacity. A consumer that
-    /// closed its half ends this turn normally: the sink and every local
-    /// release through the ordinary return path.
+    /// `Sink.send` / `Sink.try_send`: transfer one element into the sink and
+    /// answer with the runtime status HIR folds into `Result<(), SendError>`:
+    /// `0` accepted, `1` closed (the reader left or the sink finished), `2`
+    /// full (`try_send` only). `send` parks on a full pipe.
     pub(super) fn lower_sink_write(
         &mut self,
+        expression: &HirExpr,
         sink: &HirExpr,
         value: &HirExpr,
-    ) -> Result<(), String> {
+        park: bool,
+    ) -> Result<ValueId, String> {
+        let status_ty = self.ty(&expression.ty);
+        if status_ty != ResolvedTy::I32 {
+            return Err("a pipe send answers with its i32 runtime status".into());
+        }
         let mut loans = Vec::new();
         let sink = self.lower_borrowed_read(sink, &mut loans)?;
         let loan_depth = self.argument_receiver_loans.len();
@@ -196,30 +205,39 @@ impl Builder<'_, '_> {
         )?;
         self.argument_receiver_loans.truncate(loan_depth);
         if !self.is_open() {
-            return Ok(());
+            return Ok(self.fresh_value());
         }
-        self.lower_stream_send(sink.value, value, &loans, false)
+        let status = self
+            .lower_stream_send(sink.value, value, &loans, false, park)?
+            .ok_or("a pipe send answers with its status")?;
+        Ok(status)
     }
 
+    /// Emit one stream send suspension. A producer turn (`receive gen fn`
+    /// pump) ends on the `closed` edge through the ordinary return path and
+    /// yields no status; a user send joins every resume on one `i32` status
+    /// value (`0` accepted, `1` closed, `2` full) that the caller folds.
     fn lower_stream_send(
         &mut self,
         sink: ValueId,
         value: ValueId,
         loans: &[ValueId],
         producer: bool,
-    ) -> Result<(), String> {
+        park: bool,
+    ) -> Result<Option<ValueId>, String> {
         self.owned_live.remove(&value);
         let live = self.owned_live.clone();
         let normal = self.new_block(Vec::new());
-        let closed = if producer {
-            self.new_block(Vec::new())
-        } else {
-            normal
-        };
+        let closed = self.new_block(Vec::new());
+        let full = (!park).then(|| self.new_block(Vec::new()));
         let cancel = self.new_block(Vec::new());
         let unwind = self.new_block(Vec::new());
+        let mut resumes = vec![edge(normal), edge(closed)];
+        if let Some(full) = full {
+            resumes.push(edge(full));
+        }
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::StreamSend,
+            kind: SuspendKind::StreamSend { park },
             inputs: vec![
                 BoundaryOperand {
                     operand: Operand { value: sink },
@@ -231,7 +249,7 @@ impl Builder<'_, '_> {
                 },
             ],
             result: CallResult::Unit,
-            resumes: vec![edge(normal), edge(closed)],
+            resumes,
             cancel: edge(cancel),
             unwind: edge(unwind),
         })?;
@@ -246,10 +264,37 @@ impl Builder<'_, '_> {
             self.owned_live = live.clone();
             self.end_call_loans(loans)?;
             self.finish_return_value(None)?;
+            self.current = normal;
+            self.owned_live = live;
+            self.end_call_loans(loans)?;
+            return Ok(None);
         }
-        self.current = normal;
+        let status = self.fresh_value();
+        let join = self.new_block(vec![BlockArg {
+            value: status,
+            ty: ResolvedTy::I32,
+            own: OwnKind::None,
+        }]);
+        for (block, code) in [(normal, 0), (closed, 1)]
+            .into_iter()
+            .chain(full.map(|full| (full, 2)))
+        {
+            self.current = block;
+            self.owned_live = live.clone();
+            self.end_call_loans(loans)?;
+            let literal = self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::I32,
+                SemOpKind::ConstInteger(code),
+            )?;
+            self.set_terminator(SemTerminator::Goto(Edge {
+                target: join,
+                args: vec![Operand { value: literal }],
+            }))?;
+        }
+        self.current = join;
         self.owned_live = live;
-        self.end_call_loans(loans)
+        Ok(Some(status))
     }
 
     /// A stream consumer takes the next element. `park` is `recv()`: an
@@ -264,6 +309,19 @@ impl Builder<'_, '_> {
         let mut loans = Vec::new();
         let stream = self.lower_borrowed_read(receiver, &mut loans)?;
         let output = self.ty(&expression.ty);
+        self.lower_stream_next_prepared(stream, output, park, &loans)
+    }
+
+    /// Receive from a stream already evaluated and borrowed by a selection.
+    /// A `select` winner knows the `Option<T>` from the stream's own element,
+    /// not from a call expression.
+    pub(super) fn lower_stream_next_prepared(
+        &mut self,
+        stream: Operand,
+        output: ResolvedTy,
+        park: bool,
+        loans: &[ValueId],
+    ) -> Result<ValueId, String> {
         self.service.require_type_facts(&output)?;
         self.service.require_variant_shape(&output)?;
         let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
@@ -298,89 +356,6 @@ impl Builder<'_, '_> {
         for cleanup in [cancel, unwind] {
             self.current = cleanup;
             self.owned_live = live.clone();
-            self.end_call_loans(&loans)?;
-            self.finish_fault_exit()?;
-        }
-        self.current = resumed;
-        self.owned_live = live;
-        self.end_call_loans(&loans)?;
-        if own == OwnKind::Owned {
-            self.owned_live.insert(value, output);
-        }
-        Ok(value)
-    }
-
-    /// A channel consumer takes the next element. `recv()` parks on an empty
-    /// queue with live senders; `try_recv()` (`park: false`) resumes with
-    /// `None` instead. The element arrives decoded into the resume value
-    /// exactly as a stream item does; the message type comes from the call's
-    /// `Option<T>` result, never from the symbol.
-    pub(super) fn lower_channel_recv(
-        &mut self,
-        expression: &HirExpr,
-        receiver: &HirExpr,
-        park: bool,
-    ) -> Result<ValueId, String> {
-        let output = self.ty(&expression.ty);
-        self.lower_channel_recv_into(receiver, output, park)
-    }
-
-    /// The receive itself, with the `Option<T>` result named by the caller.
-    /// A `select` winner knows the result type from the receiver's own
-    /// element, not from a call expression.
-    pub(super) fn lower_channel_recv_into(
-        &mut self,
-        receiver: &HirExpr,
-        output: ResolvedTy,
-        park: bool,
-    ) -> Result<ValueId, String> {
-        let mut loans = Vec::new();
-        let channel = self.lower_borrowed_read(receiver, &mut loans)?;
-        self.lower_channel_recv_prepared(channel, output, park, &loans)
-    }
-
-    /// Receive from the source already evaluated and borrowed by a selection.
-    pub(super) fn lower_channel_recv_prepared(
-        &mut self,
-        channel: Operand,
-        output: ResolvedTy,
-        park: bool,
-        loans: &[ValueId],
-    ) -> Result<ValueId, String> {
-        self.service.require_type_facts(&output)?;
-        self.service.require_variant_shape(&output)?;
-        let own = OwnKind::of_ty(&output, self.service.checked_facts.rows())?;
-        let raw = self.fresh_value();
-        let value = self.fresh_value();
-        let resumed = self.new_block(vec![BlockArg {
-            value,
-            ty: output.clone(),
-            own,
-        }]);
-        let cancel = self.new_block(Vec::new());
-        let unwind = self.new_block(Vec::new());
-        let live = self.owned_live.clone();
-        self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::ChannelRecv { park },
-            inputs: vec![BoundaryOperand {
-                operand: channel,
-                decision: BoundaryDecision::BorrowMut,
-            }],
-            result: CallResult::Value(ValueDef {
-                id: raw,
-                ty: output.clone(),
-                own,
-            }),
-            resumes: vec![Edge {
-                target: resumed,
-                args: vec![Operand { value: raw }],
-            }],
-            cancel: edge(cancel),
-            unwind: edge(unwind),
-        })?;
-        for cleanup in [cancel, unwind] {
-            self.current = cleanup;
-            self.owned_live = live.clone();
             self.end_call_loans(loans)?;
             self.finish_fault_exit()?;
         }
@@ -391,59 +366,6 @@ impl Builder<'_, '_> {
             self.owned_live.insert(value, output);
         }
         Ok(value)
-    }
-
-    /// A channel producer parks on a bounded channel's capacity. The queue
-    /// takes an independent deep copy, so the producer's element is borrowed
-    /// and stays its own; a closed channel resumes normally.
-    pub(super) fn lower_channel_send(
-        &mut self,
-        sender: &HirExpr,
-        value: &HirExpr,
-    ) -> Result<(), String> {
-        let mut loans = Vec::new();
-        let channel = self.lower_borrowed_read(sender, &mut loans)?;
-        // The sender loan is open while the element is evaluated, so a fault
-        // edge opened in there (an interpolated element calls `string::fmt`)
-        // must end it too.
-        let loan_depth = self.argument_receiver_loans.len();
-        self.argument_receiver_loans.extend(loans.iter().copied());
-        let element = self.lower_borrowed_read(value, &mut loans);
-        self.argument_receiver_loans.truncate(loan_depth);
-        let element = element?;
-        if !self.is_open() {
-            return Ok(());
-        }
-        let live = self.owned_live.clone();
-        let normal = self.new_block(Vec::new());
-        let cancel = self.new_block(Vec::new());
-        let unwind = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::ChannelSend,
-            inputs: vec![
-                BoundaryOperand {
-                    operand: channel,
-                    decision: BoundaryDecision::BorrowMut,
-                },
-                BoundaryOperand {
-                    operand: element,
-                    decision: BoundaryDecision::Borrow,
-                },
-            ],
-            result: CallResult::Unit,
-            resumes: vec![edge(normal)],
-            cancel: edge(cancel),
-            unwind: edge(unwind),
-        })?;
-        for cleanup in [cancel, unwind] {
-            self.current = cleanup;
-            self.owned_live = live.clone();
-            self.end_call_loans(&loans)?;
-            self.finish_fault_exit()?;
-        }
-        self.current = normal;
-        self.owned_live = live;
-        self.end_call_loans(&loans)
     }
 
     pub(super) fn lower_generator_next(

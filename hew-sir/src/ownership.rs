@@ -503,16 +503,6 @@ pub enum SuspendKind {
     RemoteAsk,
     Read,
     Accept,
-    /// A channel consumer takes the next element. `park` is the `recv()`
-    /// contract: an empty channel with live senders parks the coroutine.
-    /// `try_recv()` is the same take with `park: false` — an empty channel
-    /// resumes immediately with `None`.
-    ChannelRecv {
-        park: bool,
-    },
-    /// A channel producer parks on a bounded channel's capacity. The element
-    /// is deep-copied into the queue, so the producer keeps its value.
-    ChannelSend,
     /// A stream consumer takes the next element. `park` is the `recv()`
     /// contract: an exhausted stream with a live producer parks the
     /// coroutine. `try_recv()` is the same take with `park: false` — an empty
@@ -520,7 +510,13 @@ pub enum SuspendKind {
     StreamNext {
         park: bool,
     },
-    StreamSend,
+    /// A stream producer transfers one element into the sink. `park` is the
+    /// `send()` contract: a full pipe parks the coroutine. `try_send()` is
+    /// the same transfer with `park: false` — a full pipe resumes at once on
+    /// its third, `full` edge.
+    StreamSend {
+        park: bool,
+    },
     CallClosure,
     /// Borrowed task observations, followed by an optional copied duration.
     Select {
@@ -655,32 +651,6 @@ pub fn sink_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
     match ty {
         ResolvedTy::Named {
             builtin: Some(hew_types::BuiltinType::Sink),
-            args,
-            ..
-        } if args.len() == 1 => args.first(),
-        _ => None,
-    }
-}
-
-/// The element type of an exact `Sender<T>`.
-#[must_use]
-pub fn sender_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Sender),
-            args,
-            ..
-        } if args.len() == 1 => args.first(),
-        _ => None,
-    }
-}
-
-/// The element type of an exact `Receiver<T>`.
-#[must_use]
-pub fn receiver_element(ty: &ResolvedTy) -> Option<&ResolvedTy> {
-    match ty {
-        ResolvedTy::Named {
-            builtin: Some(hew_types::BuiltinType::Receiver),
             args,
             ..
         } if args.len() == 1 => args.first(),

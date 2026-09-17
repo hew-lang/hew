@@ -1516,26 +1516,9 @@ pub enum HirExprKind {
         /// `NetError::TimedOut` on the deadline arm — parallel to `ConnAwaitRead`.
         deadline_ns: Option<i64>,
     },
-    /// `await rx.recv() | after d` — a suspending channel recv with a deadline
-    /// (NEW-6b).  Produced by [`super::lower::lower_await_deadline`] when the
-    /// inner expression is a `Receiver<T>::recv()` call.  A suspendable caller
-    /// lowers this to `Terminator::SuspendingChannelRecv` with a live
-    /// `deadline_result_dest`; a `Default` caller fails closed at MIR time.
-    ///
-    /// `HirExpr::ty` is `Result<Option<T>, TimeoutError>` (set by the
-    /// deadline lowering path).
-    ChannelRecvAwait {
-        /// The channel receiver expression (`rx`).
-        receiver: Box<HirExpr>,
-        /// Deadline in nanoseconds (always `Some` when this kind is produced;
-        /// present as `Option<i64>` to share the same lowering interface as the
-        /// other deadline kinds).
-        deadline_ns: Option<i64>,
-    },
     /// `await stream.recv() | after d` — a suspending stream recv with a
     /// deadline (NEW-6b).  Produced by [`super::lower::lower_await_deadline`]
-    /// when the inner expression is a `Stream<T>::recv()` call.  Symmetric
-    /// with [`HirExprKind::ChannelRecvAwait`].
+    /// when the inner expression is a `Stream<T>::recv()` call.
     ///
     /// `HirExpr::ty` is `Result<Option<T>, TimeoutError>`.
     StreamRecvAwait {
@@ -2481,16 +2464,18 @@ pub struct HirSelectArm {
     pub body: HirExpr,
 }
 
-/// The four sealed arm forms recognised by HIR lowering. The variants
+/// The sealed arm forms recognised by HIR lowering. The variants
 /// are intentionally minimal — they carry the discriminator plus the
 /// expression slots a future MIR / codegen pass needs to know about.
 /// The full runtime contracts for each form are documented at the
 /// codegen fail-closed match arms (semantic-invariant TODO markers).
 #[derive(Debug, Clone, PartialEq)]
 pub enum HirSelectArmKind {
-    /// `pat from next(<stream-expr>) => body`. The arm waits for a
-    /// pending item on `stream`; the binding receives `Option<T>` where
-    /// `None` is the EOF-wins signal.
+    /// `pat from <stream>.recv() => body`. The arm waits for a queued item
+    /// on a pipe `Stream<T>`; the binding receives `Option<T>` (`None`
+    /// once every sink finished). The element type is carried by the
+    /// checker-resolved `Stream<T>` type; the winner edge materialises it
+    /// through the element-layout witness.
     StreamNext { stream: Box<HirExpr> },
     /// `pat from <actor-expr>.<method>(<args>) => body`. The arm
     /// dispatches an ask to `actor.method(args)` and waits for the
@@ -2505,12 +2490,6 @@ pub enum HirSelectArmKind {
     /// Cancellation and trap outcomes propagate through the `select`
     /// site per HEW-SPEC-2026 §4.11.1.
     TaskAwait { task: Box<HirExpr> },
-    /// `pat from <rx>.recv() => body`. The arm waits for a queued item
-    /// on a std/channel `Receiver<T>` (NEW-4); the binding receives
-    /// `Option<T>` (`None` on channel close). The element type is carried
-    /// by the checker-resolved `Receiver<T>` receiver type; the winner
-    /// edge materialises it through the element-layout witness.
-    ChannelRecv { receiver: Box<HirExpr> },
     /// `after <duration-expr> => body`. The arm fires when the
     /// deadline elapses; the body runs with no binding.
     AfterTimer { duration: Box<HirExpr> },

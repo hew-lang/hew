@@ -110,14 +110,14 @@ pub enum RuntimeValueKind {
     /// A file-read owner, with exact source or builtin identity supplied by the signature.
     FileReadHandle(FileReadHandleKind),
     IoHandle(IoHandleKind),
-    /// One generic channel half, resolved to the receiver's checked type.
-    ChannelHalf(ChannelHalfKind),
-    /// A freshly extracted channel half named by the operation, not by the
-    /// receiver: `hew_channel_pair_sender` borrows a pair and returns a half.
-    ChannelHalfResult(ChannelHalfKind),
-    /// The paired channel allocation `channel.new` splits. Its nominal
-    /// identity comes from the generated `hew_channel_new` ownership row.
-    ChannelPair,
+    /// One generic pipe half, resolved to the receiver's checked type.
+    PipeHalf(PipeHalfKind),
+    /// A freshly extracted pipe half named by the operation, not by the
+    /// receiver: `hew_stream_pair_sink` borrows a pair and returns a half.
+    PipeHalfResult(PipeHalfKind),
+    /// The paired pipe allocation `stream.pipe` splits. Its nominal identity
+    /// comes from the generated `hew_stream_channel` ownership row.
+    StreamPair,
     ActorRequestOwner,
     ActorRequestAdmission,
     /// A concrete actor identity, preserved through semantic lowering.
@@ -222,15 +222,15 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::ChannelHalf(kind) => {
+            Self::PipeHalf(kind) => {
                 let receiver = receiver?;
                 if !kind.matches(receiver) {
                     return None;
                 }
                 receiver.clone()
             }
-            Self::ChannelHalfResult(_) | Self::NodeLookupResult => return None,
-            Self::ChannelPair => channel_pair_ty()?,
+            Self::PipeHalfResult(_) | Self::NodeLookupResult => return None,
+            Self::StreamPair => stream_pair_ty()?,
             Self::ActorRequestOwner => actor_request_owner_ty(),
             Self::ActorHandle => {
                 let actor = receiver?;
@@ -555,7 +555,7 @@ impl RuntimeSemanticContract {
                         || matches!(ty, ResolvedTy::Array(_, _))
                         || FileReadHandleKind::of_ty(ty).is_some()
                         || IoHandleKind::of_ty(ty).is_some()
-                        || ChannelHalfKind::of_ty(ty).is_some()
+                        || PipeHalfKind::of_ty(ty).is_some()
                 })
             })
             .or_else(|| {
@@ -574,7 +574,11 @@ impl RuntimeSemanticContract {
             .iter()
             .zip(params)
             .map(|(expected, actual)| {
-                let binding = if expected.ty == RuntimeValueKind::ActorHandle {
+                // An actor handle and a pipe half bind to their own argument:
+                // `stream.forward(from, to)` names both halves in one contract.
+                let binding = if expected.ty == RuntimeValueKind::ActorHandle
+                    || matches!(expected.ty, RuntimeValueKind::PipeHalf(_))
+                {
                     Some(actual)
                 } else {
                     receiver
@@ -596,7 +600,7 @@ impl RuntimeSemanticContract {
                 let resolved = if (matches!(kind, RuntimeValueKind::NodeLookupResult)
                     && is_node_lookup_result(result_hint))
                     || matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
-                    || matches!(kind, RuntimeValueKind::ChannelHalfResult(half) if half.matches(result_hint))
+                    || matches!(kind, RuntimeValueKind::PipeHalfResult(half) if half.matches(result_hint))
                 {
                     Some(result_hint.clone())
                 } else {
@@ -686,39 +690,40 @@ fn is_node_lookup_result(ty: &ResolvedTy) -> bool {
                 && error.is_builtin(BuiltinType::LookupError)))
 }
 
-/// Which half of a channel a runtime contract's receiver is.
+/// Which half of a pipe a runtime contract's receiver is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ChannelHalfKind {
-    Sender,
-    Receiver,
+pub enum PipeHalfKind {
+    Sink,
+    Stream,
 }
 
-impl ChannelHalfKind {
-    /// Match a checked generic endpoint with exactly one message type.
+impl PipeHalfKind {
+    /// Match a checked generic endpoint with exactly one element type.
     #[must_use]
     pub fn matches(self, ty: &ResolvedTy) -> bool {
         let expected = match self {
-            Self::Sender => BuiltinType::Sender,
-            Self::Receiver => BuiltinType::Receiver,
+            Self::Sink => BuiltinType::Sink,
+            Self::Stream => BuiltinType::Stream,
         };
         matches!(ty, ResolvedTy::Named { builtin: Some(builtin), args, .. }
             if *builtin == expected && args.len() == 1)
     }
 
-    /// The channel half one checked type is, if it is one.
+    /// The pipe half one checked type is, if it is one.
     #[must_use]
     pub fn of_ty(ty: &ResolvedTy) -> Option<Self> {
-        [Self::Sender, Self::Receiver]
+        [Self::Sink, Self::Stream]
             .into_iter()
             .find(|kind| kind.matches(ty))
     }
 }
 
-/// The nominal the generated `hew_channel_new` row names as its owned result.
-/// Reading the row rather than the spelling keeps one ownership authority.
+/// The nominal the generated `hew_stream_channel` row names as its owned
+/// result. Reading the row rather than the spelling keeps one ownership
+/// authority.
 #[must_use]
-pub fn channel_pair_ty() -> Option<ResolvedTy> {
-    let contract = crate::ffi_contracts::extern_owned_resource_result("hew_channel_new")?;
+pub fn stream_pair_ty() -> Option<ResolvedTy> {
+    let contract = crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?;
     Some(ResolvedTy::named_opaque(contract.resource_type, Vec::new()))
 }
 
@@ -728,10 +733,10 @@ pub fn actor_request_owner_ty() -> ResolvedTy {
     ResolvedTy::named_opaque("std.builtins.ActorRequestOwner", Vec::new())
 }
 
-/// Whether one checked type is the paired channel allocation.
+/// Whether one checked type is the paired pipe allocation.
 #[must_use]
-pub fn is_channel_pair_ty(ty: &ResolvedTy) -> bool {
-    channel_pair_ty().is_some_and(|pair| pair == *ty)
+pub fn is_stream_pair_ty(ty: &ResolvedTy) -> bool {
+    stream_pair_ty().is_some_and(|pair| pair == *ty)
 }
 
 /// Recognize supported canonical collection instances and their exact arity.
@@ -1206,18 +1211,6 @@ pub enum VecSliceElem {
     Str,
 }
 
-/// Element-kind discriminator for the Sink write families
-/// (`hew_sink_write_bytes` vs `hew_sink_write_string`). Stream/channel
-/// recv retired their per-element symbols in favour of the
-/// element-layout-witness `*_layout` entries, which bypass
-/// `RuntimeCallFamily` entirely (codegen `Terminator::Call` intercept).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
-pub enum StreamElementKind {
-    #[default]
-    Bytes,
-    String,
-}
-
 /// Math-intrinsic family discriminator. HIR resolves the user-visible
 /// identifiers (`"sqrt"`, `"sin"`, …) onto
 /// `RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the
@@ -1465,42 +1458,9 @@ pub enum RuntimeCallFamily {
     CancelTokenRelease,
     CancelTokenRetain,
 
-    // --- Channel<T> (std::channel) ------------------------------------------
-    // recv/try_recv/send ride the element-layout-witness `*_layout`
-    // entries (one symbol per operation for every describable element
-    // type; the elem identity travels on the checker-resolved
-    // `Option<T>` / value type, never on the symbol). They are
-    // pre-staged: codegen intercepts the `Terminator::Call` by callee
-    // identity, so they are not in `known_runtime_symbols`.
-    ChannelRecvLayout,
-    ChannelSendLayout,
-    ChannelTryRecvLayout,
-    ChannelSenderClone,
-    ChannelSenderClose,
-    ChannelReceiverClose,
-    // The paired allocation `channel.new` splits into its two halves. It never
-    // escapes that function: `new` extracts both halves and frees the pair.
-    ChannelPairNew,
-    ChannelPairFree,
     ActorRequestRelease,
     ActorCallFree,
     ActorRequestTake,
-    ChannelPairIsValid,
-    ChannelPairSender,
-    ChannelPairReceiver,
-
-    // --- Duplex<S, R> dual-queue substrate ----------------------------------
-    DuplexClone,
-    DuplexClose,
-    DuplexCloseHalf,
-    DuplexPair,
-    DuplexPayloadFree,
-    DuplexRecv,
-    DuplexRecvHalf,
-    DuplexSend,
-    DuplexSendHalf,
-    DuplexTryRecv,
-    DuplexTrySend,
 
     // --- Duration accessors (monomorphic time canaries) ---------------------
     DurationAbs,
@@ -1646,10 +1606,6 @@ pub enum RuntimeCallFamily {
     WeakDropRc,
     WeakUpgradeRc,
 
-    // --- RecvHalf<T> --------------------------------------------------------
-    RecvHalfRecv,
-    RecvHalfTryRecv,
-
     // --- Regex runtime ABI --------------------------------------------------
     RegexCapture,
     RegexCompile,
@@ -1698,19 +1654,12 @@ pub enum RuntimeCallFamily {
     // --- Select winner-picker ----------------------------------------------
     SelectFirst,
 
-    // --- SendHalf<T> -------------------------------------------------------
-    SendHalfSend,
-    SendHalfTrySend,
-
     // --- Sink<T> -----------------------------------------------------------
-    // Pre-staged consumers: today the bytes path is producer-emitted via
-    // `Terminator::Call` intercept; symbols flow through the codegen
-    // callee-name match, not `Instr::CallRuntimeAbi`. Both element kinds
-    // exist in the runtime (`hew-runtime/src/sink.rs`) and in the checker
-    // `BuiltinMethodRuntime::ElementOverload` table at
-    // `hew-types/src/builtin_names.rs:253-265`. `SinkTryWrite` mirrors
-    // `Sink::try_send` from the same table.
+    // `send` rides the element-layout-witness `StreamSendLayout` entry (see
+    // the Stream note below); `try_send` is its non-parking peer.
+    SinkClone,
     SinkClose,
+    SinkFinish,
     /// `hew_sink_peer_closed(sink) -> i32` — a `receive gen fn` pump's
     /// per-iteration peer-closed check (decision 6): 1 once the
     /// consumer stream has closed/detached, so the pump breaks its loop
@@ -1719,23 +1668,33 @@ pub enum RuntimeCallFamily {
     /// Emitted only by `build_stream_producer_pump`; pre-staged like
     /// `SinkClose`.
     SinkPeerClosed,
-    SinkWrite(StreamElementKind),
-    SinkTryWrite(StreamElementKind),
 
     // --- Stream<T> ---------------------------------------------------------
-    // recv/try_recv/send ride the element-layout-witness `*_layout`
-    // entries (see the Channel note above). `consumes_receiver()` is
+    // recv/try_recv/send/try_send ride the element-layout-witness `*_layout`
+    // entries (one symbol per operation for every describable element type;
+    // the element identity travels on the checker-resolved `Option<T>` /
+    // value type, never on the symbol). They are pre-staged: codegen
+    // intercepts the `Terminator::Call` by callee identity, so they are not
+    // in `known_runtime_symbols`. `consumes_receiver()` is
     // `true` for `StreamClose`/`SinkClose` to mirror
     // `runtime_symbol_consumes_receiver`.
     StreamClose,
     /// The three lazy adaptors. Each consumes its source stream and returns a
     /// fresh one that closes the source cooperatively when the consumer stops.
     StreamChunks,
+    /// `stream.forward(from, to)`: drain `from` into `to`, finishing `to` at
+    /// EOF. Both halves are consumed.
+    StreamForward,
     StreamLines,
     StreamNextLayout,
+    /// The two halves of one `stream.pipe` allocation, extracted by the
+    /// source intrinsics `std.stream.pair_sink` / `pair_stream`.
+    StreamPairSink,
+    StreamPairStream,
     StreamSendLayout,
     StreamTake,
     StreamTryNextLayout,
+    StreamTrySendLayout,
 
     // --- String runtime helpers --------------------------------------------
     StringCharAt,
@@ -2402,8 +2361,9 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn source_intrinsic_declaration(self) -> Option<&'static str> {
         match self {
-            Self::ChannelPairSender => Some("std.channel.pair_sender"),
-            Self::ChannelPairReceiver => Some("std.channel.pair_receiver"),
+            Self::StreamPairSink => Some("std.stream.pair_sink"),
+            Self::StreamPairStream => Some("std.stream.pair_stream"),
+            Self::StreamForward => Some("std.stream.forward"),
             Self::BytesDecodeUtf8 => Some("std.encoding.utf8.decode"),
             Self::BytesDecodeUtf8Lossy => Some("std.encoding.utf8.decode_lossy"),
             _ => None,
@@ -2414,7 +2374,7 @@ impl RuntimeCallFamily {
     #[must_use]
     pub const fn source_intrinsic_type_params(self) -> &'static [&'static str] {
         match self {
-            Self::ChannelPairSender | Self::ChannelPairReceiver => &["T"],
+            Self::StreamPairSink | Self::StreamPairStream | Self::StreamForward => &["T"],
             _ => &[],
         }
     }
@@ -2425,8 +2385,9 @@ impl RuntimeCallFamily {
     #[must_use]
     pub fn from_catalog_endpoint(endpoint: &str) -> Option<Self> {
         match endpoint {
-            "channel.pair_sender" => Some(Self::ChannelPairSender),
-            "channel.pair_receiver" => Some(Self::ChannelPairReceiver),
+            "stream.pair_sink" => Some(Self::StreamPairSink),
+            "stream.pair_stream" => Some(Self::StreamPairStream),
+            "stream.forward" => Some(Self::StreamForward),
             "println_i32" => Some(Self::Print {
                 kind: PrintKind::I32,
                 newline: true,
@@ -2975,105 +2936,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::ChannelRecvLayout => RuntimeOpRow {
-                symbol: "hew_channel_recv_layout",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelSendLayout => RuntimeOpRow {
-                symbol: "hew_channel_send_layout",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelTryRecvLayout => RuntimeOpRow {
-                symbol: "hew_channel_try_recv_layout",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelSenderClone => RuntimeOpRow {
-                symbol: "hew_channel_sender_clone",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelHalf(ChannelHalfKind::Sender),
-                        effect: E::Borrow,
-                    }],
-                    result: R::FreshOwned(K::ChannelHalf(ChannelHalfKind::Sender)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelSenderClose => RuntimeOpRow {
-                symbol: "hew_channel_sender_close",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelHalf(ChannelHalfKind::Sender),
-                        effect: E::Move,
-                    }],
-                    result: R::Unit,
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelReceiverClose => RuntimeOpRow {
-                symbol: "hew_channel_receiver_close",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelHalf(ChannelHalfKind::Receiver),
-                        effect: E::Move,
-                    }],
-                    result: R::Unit,
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelPairNew => RuntimeOpRow {
-                symbol: "hew_channel_new",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::I64,
-                        effect: E::Copy,
-                    }],
-                    result: R::FreshOwned(K::ChannelPair),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelPairFree => RuntimeOpRow {
-                symbol: "hew_channel_pair_free",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelPair,
-                        effect: E::Move,
-                    }],
-                    result: R::Unit,
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::ActorRequestRelease => RuntimeOpRow {
                 symbol: "hew_msg_envelope_release",
                 contract: Some(RuntimeSemanticContract {
@@ -3117,139 +2979,6 @@ impl RuntimeCallFamily {
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
                 physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelPairIsValid => RuntimeOpRow {
-                symbol: "hew_channel_pair_is_valid",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelPair,
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::Bool),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelPairSender => RuntimeOpRow {
-                symbol: "hew_channel_pair_sender",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelPair,
-                        effect: E::Borrow,
-                    }],
-                    result: R::FreshOwned(K::ChannelHalfResult(ChannelHalfKind::Sender)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::ChannelPairReceiver => RuntimeOpRow {
-                symbol: "hew_channel_pair_receiver",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::ChannelPair,
-                        effect: E::Borrow,
-                    }],
-                    result: R::FreshOwned(K::ChannelHalfResult(ChannelHalfKind::Receiver)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexClone => RuntimeOpRow {
-                symbol: "hew_duplex_clone",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexClose => RuntimeOpRow {
-                symbol: "hew_duplex_close",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexCloseHalf => RuntimeOpRow {
-                symbol: "hew_duplex_close_half",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexPair => RuntimeOpRow {
-                symbol: "hew_duplex_pair",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexPayloadFree => RuntimeOpRow {
-                symbol: "hew_duplex_payload_free",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexRecv => RuntimeOpRow {
-                symbol: "hew_duplex_recv",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexRecvHalf => RuntimeOpRow {
-                symbol: "hew_duplex_recv_half",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexSend => RuntimeOpRow {
-                symbol: "hew_duplex_send",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexSendHalf => RuntimeOpRow {
-                symbol: "hew_duplex_send_half",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexTryRecv => RuntimeOpRow {
-                symbol: "hew_duplex_try_recv",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::DuplexTrySend => RuntimeOpRow {
-                symbol: "hew_duplex_try_send",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::DurationAbs => declared::DURATIONABS.row,
@@ -7806,22 +7535,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::RecvHalfRecv => RuntimeOpRow {
-                symbol: "hew_recv_half_recv",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::RecvHalfTryRecv => RuntimeOpRow {
-                symbol: "hew_recv_half_try_recv",
-                contract: None,
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::RegexCapture => RuntimeOpRow {
                 symbol: "hew_regex_capture",
                 contract: None,
@@ -7938,20 +7651,34 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::SendHalfSend => RuntimeOpRow {
-                symbol: "hew_send_half_send",
-                contract: None,
-                staging: RuntimeStaging::Declared,
+            Self::SinkClone => RuntimeOpRow {
+                symbol: "hew_sink_clone",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::PipeHalf(PipeHalfKind::Sink),
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::PipeHalf(PipeHalfKind::Sink)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::SendHalfTrySend => RuntimeOpRow {
-                symbol: "hew_send_half_try_send",
-                contract: None,
-                staging: RuntimeStaging::Declared,
+            Self::SinkFinish => RuntimeOpRow {
+                symbol: "hew_sink_finish",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::PipeHalf(PipeHalfKind::Sink),
+                        effect: E::Borrow,
+                    }],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
+                physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
             Self::SinkClose => RuntimeOpRow {
@@ -7971,38 +7698,6 @@ impl RuntimeCallFamily {
             },
             Self::SinkPeerClosed => RuntimeOpRow {
                 symbol: "hew_sink_peer_closed",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::SinkWrite(StreamElementKind::Bytes) => RuntimeOpRow {
-                symbol: "hew_sink_write_bytes",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::SinkWrite(StreamElementKind::String) => RuntimeOpRow {
-                symbol: "hew_sink_write_string",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::SinkTryWrite(StreamElementKind::Bytes) => RuntimeOpRow {
-                symbol: "hew_sink_try_write_bytes",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::SinkTryWrite(StreamElementKind::String) => RuntimeOpRow {
-                symbol: "hew_sink_try_write_string",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -8045,6 +7740,57 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::StreamForward => RuntimeOpRow {
+                symbol: "hew_stream_pipe",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::PipeHalf(PipeHalfKind::Stream),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::PipeHalf(PipeHalfKind::Sink),
+                            effect: E::Move,
+                        },
+                    ],
+                    result: R::Unit,
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StreamPairSink => RuntimeOpRow {
+                symbol: "hew_stream_pair_sink",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::StreamPair,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::PipeHalfResult(PipeHalfKind::Sink)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StreamPairStream => RuntimeOpRow {
+                symbol: "hew_stream_pair_stream",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[A {
+                        ty: K::StreamPair,
+                        effect: E::Borrow,
+                    }],
+                    result: R::FreshOwned(K::PipeHalfResult(PipeHalfKind::Stream)),
+                    failures: &[],
+                }),
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Direct,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::StreamLines => RuntimeOpRow {
                 symbol: "hew_stream_lines",
                 contract: Some(RuntimeSemanticContract {
@@ -8052,7 +7798,9 @@ impl RuntimeCallFamily {
                         ty: K::Receiver(BuiltinType::Stream),
                         effect: E::Move,
                     }],
-                    result: R::FreshOwned(K::Receiver(BuiltinType::Stream)),
+                    // `Stream<bytes>` in, `Stream<string>` out: the result
+                    // takes its element from the checked expression type.
+                    result: R::FreshOwned(K::PipeHalfResult(PipeHalfKind::Stream)),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::PreStaged,
@@ -8099,6 +7847,14 @@ impl RuntimeCallFamily {
             },
             Self::StreamTryNextLayout => RuntimeOpRow {
                 symbol: "hew_stream_try_next_layout",
+                contract: None,
+                staging: RuntimeStaging::PreStaged,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::NotAnAction,
+                c_return: RuntimeCReturn::Storage,
+            },
+            Self::StreamTrySendLayout => RuntimeOpRow {
+                symbol: "hew_stream_try_send_layout",
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::Other,
@@ -11319,20 +11075,9 @@ impl RuntimeCallFamily {
             self,
             Self::StreamClose
                 | Self::SinkClose
-                | Self::ChannelSenderClose
-                | Self::ChannelReceiverClose
-                | Self::ChannelPairFree
+                | Self::StreamForward
                 | Self::ActorRequestRelease
                 | Self::ActorCallFree
-                | Self::DuplexClose
-                | Self::DuplexCloseHalf
-                // The half-extract methods move the unified `Duplex` handle out:
-                // after `.send_half()` / `.recv_half()` the source `Duplex`
-                // binding is dead and only the extracted half drops. Without the
-                // consume mark the parent `Duplex` stays in the scope-exit drop
-                // set and closes a direction the half now owns — a double-close.
-                | Self::DuplexSendHalf
-                | Self::DuplexRecvHalf
         )
     }
 
@@ -11483,9 +11228,9 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ArrayElement
                     | RuntimeValueKind::PoolView
                     | RuntimeValueKind::PoolMember
-                    | RuntimeValueKind::ChannelHalf(_)
-                    | RuntimeValueKind::ChannelHalfResult(_)
-                    | RuntimeValueKind::ChannelPair
+                    | RuntimeValueKind::PipeHalf(_)
+                    | RuntimeValueKind::PipeHalfResult(_)
+                    | RuntimeValueKind::StreamPair
                     | RuntimeValueKind::ActorRequestOwner
                     | RuntimeValueKind::ActorRequestAdmission
                     | RuntimeValueKind::ActorHandle
@@ -11648,16 +11393,10 @@ impl RuntimeCallFamily {
         match self {
             F::AsyncIo(op) => Some(AsyncSuspendKind::NativeIo(op)),
             // The suspending symbols (HIR await-classifier source of truth).
-            // Every describable sink-send element suspends: the byte and
-            // string sink writes and the layout-witness stream send all
-            // share the backpressure-aware `SuspendKind::StreamSend` ramp.
-            // Codegen discriminates the runtime entry on the value's
-            // `ResolvedTy` (bytes → native `hew_stream_await_send`, else
-            // layout `hew_stream_await_send_layout`), so one kind suffices.
-            F::SinkWrite(StreamElementKind::Bytes | StreamElementKind::String)
-            | F::StreamSendLayout => Some(AsyncSuspendKind::SinkSend),
-            F::DuplexClose => Some(AsyncSuspendKind::DuplexClose),
-            F::ChannelRecvLayout => Some(AsyncSuspendKind::ChannelRecv),
+            // Every describable sink-send element rides the layout-witness
+            // stream send on the backpressure-aware `SuspendKind::StreamSend`
+            // ramp.
+            F::StreamSendLayout => Some(AsyncSuspendKind::SinkSend),
             F::StreamNextLayout => Some(AsyncSuspendKind::StreamRecv),
 
             // Everything else: NOT suspending today. Exhaustively listed
@@ -11678,34 +11417,19 @@ impl RuntimeCallFamily {
             | F::StreamLines
             | F::StreamTake
             | F::StreamTryNextLayout
-            | F::SinkTryWrite(_)
+            | F::StreamTrySendLayout
+            | F::StreamForward
+            | F::StreamPairSink
+            | F::StreamPairStream
+            | F::SinkClone
+            | F::SinkFinish
             | F::SinkClose
             | F::SinkPeerClosed
             | F::ActorGenSinkComplete
             | F::ActorGenSinkRegister
-            | F::ChannelSendLayout
-            | F::ChannelTryRecvLayout
-            | F::ChannelSenderClone
-            | F::ChannelSenderClose
-            | F::ChannelReceiverClose
-            | F::ChannelPairNew
-            | F::ChannelPairFree
             | F::ActorRequestRelease
             | F::ActorCallFree
             | F::ActorRequestTake
-            | F::ChannelPairIsValid
-            | F::ChannelPairSender
-            | F::ChannelPairReceiver
-            | F::DuplexClone
-            | F::DuplexCloseHalf
-            | F::DuplexPair
-            | F::DuplexPayloadFree
-            | F::DuplexRecv
-            | F::DuplexRecvHalf
-            | F::DuplexSend
-            | F::DuplexSendHalf
-            | F::DuplexTryRecv
-            | F::DuplexTrySend
             | F::ActorAsk
             | F::ActorAskWithChannel
             | F::ActorCooperate
@@ -11820,8 +11544,6 @@ impl RuntimeCallFamily {
             | F::WeakCloneRc
             | F::WeakDropRc
             | F::WeakUpgradeRc
-            | F::RecvHalfRecv
-            | F::RecvHalfTryRecv
             | F::RegexCapture
             | F::RegexCompile
             | F::RegexFreeCapture
@@ -11834,8 +11556,6 @@ impl RuntimeCallFamily {
             | F::ReplyPayloadFree
             | F::ReplyWait
             | F::SelectFirst
-            | F::SendHalfSend
-            | F::SendHalfTrySend
             | F::StringCharAt
             | F::StringCharAtUtf8
             | F::StringCharCount
@@ -12076,21 +11796,11 @@ pub enum RuntimeCallAbiShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncSuspendKind {
     NativeIo(AsyncIoOp),
-    /// `await sink.send(x)` over any describable `Sink<T>` element —
-    /// `hew_sink_write_bytes`, `hew_sink_write_string`, or the
-    /// layout-witness `hew_stream_send_layout`. All three share the
-    /// backpressure-aware suspend ramp; codegen picks the concrete
-    /// runtime entry from the value's `ResolvedTy`.
+    /// `sink.send(x)` over any describable `Sink<T>` element: the
+    /// layout-witness `hew_stream_send_layout` on the backpressure-aware
+    /// suspend ramp.
     SinkSend,
-    /// `actor.close()` over a lambda-actor `Duplex` →
-    /// `hew_duplex_close`.
-    DuplexClose,
-    /// `await rx.recv()` over a `std::channel` `Receiver<T>` →
-    /// `hew_channel_recv_layout`. Suspends only in execution-context
-    /// callers; a context-free caller keeps the blocking call.
-    ChannelRecv,
-    /// `await stream.recv()` over a `Stream<T>` →
-    /// `hew_stream_next_layout`. Same context gating as `ChannelRecv`.
+    /// `stream.recv()` over a `Stream<T>` → `hew_stream_next_layout`.
     StreamRecv,
 }
 
@@ -12223,39 +11933,20 @@ impl std::error::Error for DescriptorError {}
 // =============================================================================
 
 /// Closed-set descriptor for compiler-known runtime drop entries. Mirrors
-/// the `runtime_drop_symbol` table in `hew-codegen-rs/src/llvm.rs:18352`
-/// (today: `Duplex::close`, `Stream::close`, `Sink::close`,
-/// `Sender::close`, `Receiver::close`,
-/// `SendHalf::close | RecvHalf::close`, `CancellationToken::release`).
+/// the `runtime_drop_symbol` table in `hew-codegen-rs/src/llvm.rs`
+/// (today: `Stream::close`, `Sink::close`, `CancellationToken::release`,
+/// `MonitorRef::close`).
 ///
 /// `non_exhaustive` is INTENTIONALLY OMITTED — same exhaustiveness
-/// argument as [`RuntimeCallFamily`]. The codegen-internal "literal
-/// C-ABI symbol pass-through" arms in `runtime_drop_symbol` (for hand-
-/// built test MIR that pre-dates elaborated-drop-plan consumption)
-/// are NOT mirrored here; a follow-up migrates the test MIR sites to typed
-/// variants and the pass-through dies with the string field.
+/// argument as [`RuntimeCallFamily`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeDropDescriptor {
-    /// `Duplex::close` → `hew_duplex_close`. Two-way close.
-    DuplexClose,
     /// `Stream::close` → `hew_stream_close`. Element-type-independent
     /// at the ABI level; the type checker's builtin-method table emits
     /// the same `drop_fn` regardless of element type.
     StreamClose,
     /// `Sink::close` → `hew_sink_close`.
     SinkClose,
-    /// `Sender::close` → `hew_channel_sender_close`.
-    SenderClose,
-    /// `Receiver::close` → `hew_channel_receiver_close`.
-    ReceiverClose,
-    /// `SendHalf::close` → `hew_duplex_close_half`. Direction
-    /// discriminant materialised at the call site from the Place
-    /// variant (`SendHalf` vs `RecvHalf`), not encoded in the symbol.
-    SendHalfClose,
-    /// `RecvHalf::close` → `hew_duplex_close_half`. Shares C-symbol with
-    /// `SendHalfClose`; the two descriptor variants exist to preserve
-    /// the typed direction information cross-layer.
-    RecvHalfClose,
     /// `CancellationToken::release` → `hew_cancel_token_release`.
     CancellationTokenRelease,
     /// `MonitorRef::close` → `hew_actor_demonitor`. Extracts `ref_id: i64`
@@ -12265,53 +11956,25 @@ pub enum RuntimeDropDescriptor {
 
 /// The exact operand shape consumed by a runtime resource-close descriptor.
 ///
-/// This stays coupled to [`RuntimeDropDescriptor`], rather than inferred from
-/// its C symbol: two descriptors may share a symbol while carrying different
-/// typed operands (`SendHalf` versus `RecvHalf`), and `MonitorRef` owns an
-/// inline record slot rather than a pointer handle.
+/// This stays coupled to [`RuntimeDropDescriptor`] rather than inferred from
+/// its C symbol: `MonitorRef` owns an inline record slot rather than a
+/// pointer handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeDropOperandShape {
     /// One opaque heap-handle pointer.
     HandlePtr,
-    /// One opaque half-handle pointer plus the typed duplex direction.
-    DuplexHalf { direction: DuplexHalfDropDirection },
     /// The `ref_id: i64` field in an inline `MonitorRef` record.
     MonitorRefId,
 }
 
-/// Direction materialised for the shared `hew_duplex_close_half` ABI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DuplexHalfDropDirection {
-    Send,
-    Recv,
-}
-
-impl DuplexHalfDropDirection {
-    /// Runtime ABI discriminant for `hew_duplex_close_half`.
-    #[must_use]
-    pub const fn runtime_discriminant(self) -> u64 {
-        match self {
-            Self::Send => 0,
-            Self::Recv => 1,
-        }
-    }
-}
-
 impl RuntimeDropDescriptor {
     /// The typed builtin identity whose scope-exit close this descriptor
-    /// represents. Internal ABI aliases share their public handle family's
-    /// descriptor, so snapshot/drop planning never has to recover lifecycle
-    /// from a presentation name.
+    /// represents.
     #[must_use]
     pub const fn for_builtin(builtin: BuiltinType) -> Option<Self> {
         match builtin {
-            BuiltinType::Duplex | BuiltinType::HewDuplex => Some(Self::DuplexClose),
             BuiltinType::Stream => Some(Self::StreamClose),
             BuiltinType::Sink => Some(Self::SinkClose),
-            BuiltinType::Sender => Some(Self::SenderClose),
-            BuiltinType::Receiver => Some(Self::ReceiverClose),
-            BuiltinType::SendHalf | BuiltinType::HewSendHalf => Some(Self::SendHalfClose),
-            BuiltinType::RecvHalf | BuiltinType::HewRecvHalf => Some(Self::RecvHalfClose),
             BuiltinType::CancellationToken => Some(Self::CancellationTokenRelease),
             BuiltinType::MonitorRef => Some(Self::MonitorRefClose),
             _ => None,
@@ -12322,56 +11985,32 @@ impl RuntimeDropDescriptor {
     #[must_use]
     pub const fn operand_shape(self) -> RuntimeDropOperandShape {
         match self {
-            Self::SendHalfClose => RuntimeDropOperandShape::DuplexHalf {
-                direction: DuplexHalfDropDirection::Send,
-            },
-            Self::RecvHalfClose => RuntimeDropOperandShape::DuplexHalf {
-                direction: DuplexHalfDropDirection::Recv,
-            },
             Self::MonitorRefClose => RuntimeDropOperandShape::MonitorRefId,
-            Self::DuplexClose
-            | Self::StreamClose
-            | Self::SinkClose
-            | Self::SenderClose
-            | Self::ReceiverClose
-            | Self::CancellationTokenRelease => RuntimeDropOperandShape::HandlePtr,
+            Self::StreamClose | Self::SinkClose | Self::CancellationTokenRelease => {
+                RuntimeDropOperandShape::HandlePtr
+            }
         }
     }
 
-    /// The C-ABI runtime symbol the drop lowers to. NB
-    /// [`RuntimeDropDescriptor::SendHalfClose`] and
-    /// [`RuntimeDropDescriptor::RecvHalfClose`] share
-    /// `hew_duplex_close_half`; this is intentional — the bijection is
-    /// over (drop descriptor → symbol), not (symbol → descriptor).
+    /// The C-ABI runtime symbol the drop lowers to.
     #[must_use]
     pub fn c_symbol(self) -> &'static str {
         match self {
-            Self::DuplexClose => "hew_duplex_close",
             Self::StreamClose => "hew_stream_close",
             Self::SinkClose => "hew_sink_close",
-            Self::SenderClose => "hew_channel_sender_close",
-            Self::ReceiverClose => "hew_channel_receiver_close",
-            Self::SendHalfClose | Self::RecvHalfClose => "hew_duplex_close_half",
             Self::CancellationTokenRelease => "hew_cancel_token_release",
             Self::MonitorRefClose => "hew_actor_demonitor",
         }
     }
 
     /// The producer-side method-name spelling (`<Type>::<method>`), the
-    /// round-trip key of the descriptor: unlike `c_symbol()` (where the
-    /// two half-close variants share a symbol), every variant has a
-    /// unique name, so [`RuntimeDropDescriptor::from_drop_fn_name`] is a
-    /// true inverse.
+    /// round-trip key of the descriptor: every variant has a unique name, so
+    /// [`RuntimeDropDescriptor::from_drop_fn_name`] is a true inverse.
     #[must_use]
     pub fn drop_fn_name(self) -> &'static str {
         match self {
-            Self::DuplexClose => "Duplex::close",
             Self::StreamClose => "Stream::close",
             Self::SinkClose => "Sink::close",
-            Self::SenderClose => "Sender::close",
-            Self::ReceiverClose => "Receiver::close",
-            Self::SendHalfClose => "SendHalf::close",
-            Self::RecvHalfClose => "RecvHalf::close",
             Self::CancellationTokenRelease => "CancellationToken::release",
             Self::MonitorRefClose => "MonitorRef::close",
         }
@@ -12387,13 +12026,8 @@ impl RuntimeDropDescriptor {
     #[must_use]
     pub fn from_drop_fn_name(name: &str) -> Option<Self> {
         match name {
-            "Duplex::close" => Some(Self::DuplexClose),
             "Stream::close" => Some(Self::StreamClose),
             "Sink::close" => Some(Self::SinkClose),
-            "Sender::close" => Some(Self::SenderClose),
-            "Receiver::close" => Some(Self::ReceiverClose),
-            "SendHalf::close" => Some(Self::SendHalfClose),
-            "RecvHalf::close" => Some(Self::RecvHalfClose),
             "CancellationToken::release" => Some(Self::CancellationTokenRelease),
             "MonitorRef::close" => Some(Self::MonitorRefClose),
             _ => None,
@@ -12461,8 +12095,6 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
                 IntMethodWidth::iter().map(move |width| F::IntArith(kind, width))
             })),
             F::FloatMethod(_) => out.extend(FloatMethodOp::iter().map(F::FloatMethod)),
-            F::SinkWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkWrite)),
-            F::SinkTryWrite(_) => out.extend(StreamElementKind::iter().map(F::SinkTryWrite)),
             F::VecContainsScalar(_) => out.extend(all_vec_contains_scalar_families()),
             F::VecGet(_) => out.extend(VecGetElem::iter().map(F::VecGet)),
             F::VecScalar { .. } => out.extend(all_vec_scalar_families()),
@@ -12502,15 +12134,10 @@ pub fn all_vec_contains_scalar_families() -> Vec<RuntimeCallFamily> {
 /// See the bijection / parity tests; same coverage discipline as
 /// [`all_runtime_call_families`].
 #[must_use]
-pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 9] {
+pub fn all_runtime_drop_descriptors() -> [RuntimeDropDescriptor; 4] {
     [
-        RuntimeDropDescriptor::DuplexClose,
         RuntimeDropDescriptor::StreamClose,
         RuntimeDropDescriptor::SinkClose,
-        RuntimeDropDescriptor::SenderClose,
-        RuntimeDropDescriptor::ReceiverClose,
-        RuntimeDropDescriptor::SendHalfClose,
-        RuntimeDropDescriptor::RecvHalfClose,
         RuntimeDropDescriptor::CancellationTokenRelease,
         RuntimeDropDescriptor::MonitorRefClose,
     ]
@@ -12882,14 +12509,8 @@ mod tests {
         // Positive: exactly these (family, expected kind) tuples. All
         // three sink-send families share the single `SinkSend` kind.
         let positives: &[(RuntimeCallFamily, AsyncSuspendKind)] = &[
-            (
-                F::SinkWrite(StreamElementKind::Bytes),
-                AsyncSuspendKind::SinkSend,
-            ),
-            (
-                F::SinkWrite(StreamElementKind::String),
-                AsyncSuspendKind::SinkSend,
-            ),
+            (AsyncSuspendKind::SinkSend,),
+            (AsyncSuspendKind::SinkSend,),
             (F::StreamSendLayout, AsyncSuspendKind::SinkSend),
             (F::DuplexClose, AsyncSuspendKind::DuplexClose),
             (F::ChannelRecvLayout, AsyncSuspendKind::ChannelRecv),
@@ -12907,20 +12528,8 @@ mod tests {
         // send, the recv/send try_* peers, and the close families the
         // classifier never touches. `SinkWrite(String)` and
         // `StreamSendLayout` are NO LONGER here — they suspend now.
-        let must_not_suspend: &[RuntimeCallFamily] = &[
-            F::ChannelTryRecvLayout,
-            F::ChannelSendLayout,
-            F::StreamTryNextLayout,
-            F::DuplexRecv,
-            F::DuplexSend,
-            F::DuplexTryRecv,
-            F::DuplexTrySend,
-            F::SinkTryWrite(StreamElementKind::Bytes),
-            F::SinkTryWrite(StreamElementKind::String),
-            F::StreamClose,
-            F::SinkClose,
-            F::DuplexCloseHalf,
-        ];
+        let must_not_suspend: &[RuntimeCallFamily] =
+            &[F::StreamTryNextLayout, F::StreamClose, F::SinkClose];
         for family in must_not_suspend {
             assert_eq!(
                 family.is_async_suspending(),

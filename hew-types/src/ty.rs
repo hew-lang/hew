@@ -19,11 +19,8 @@ static NEXT_TYPE_VAR: AtomicU32 = AtomicU32::new(0);
 
 fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<BuiltinNamedType> {
     match builtin {
-        Some(BuiltinType::Sender) => Some(BuiltinNamedType::Sender),
-        Some(BuiltinType::Receiver) => Some(BuiltinNamedType::Receiver),
         Some(BuiltinType::Stream) => Some(BuiltinNamedType::Stream),
         Some(BuiltinType::Sink) => Some(BuiltinNamedType::Sink),
-        Some(BuiltinType::Duplex) => Some(BuiltinNamedType::Duplex),
         Some(BuiltinType::CancellationToken) => Some(BuiltinNamedType::CancellationToken),
         Some(BuiltinType::RemotePid) => Some(BuiltinNamedType::RemotePid),
         Some(
@@ -46,14 +43,9 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::NodeId
             | BuiltinType::Location
             | BuiltinType::HewActor
-            | BuiltinType::HewDuplex
-            | BuiltinType::HewSendHalf
-            | BuiltinType::HewRecvHalf
             | BuiltinType::BoxedActor
             | BuiltinType::ActorState
             | BuiltinType::MachineState
-            | BuiltinType::SendHalf
-            | BuiltinType::RecvHalf
             | BuiltinType::ActorHandle
             | BuiltinType::ActorFn
             | BuiltinType::CrashInfo
@@ -67,11 +59,9 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::SendError
             | BuiltinType::NodeError
             | BuiltinType::LookupError
-            | BuiltinType::RecvError
             | BuiltinType::LinkError
             | BuiltinType::MonitorError
             | BuiltinType::MonitorRef
-            | BuiltinType::CloseError
             | BuiltinType::Iterator
             | BuiltinType::Unit
             | BuiltinType::Duration
@@ -987,18 +977,6 @@ impl Ty {
         Self::builtin_named(BuiltinType::RemotePid, vec![inner])
     }
 
-    /// Construct `Sender<inner>`.
-    #[must_use]
-    pub fn sender(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::Sender, vec![inner])
-    }
-
-    /// Construct `Receiver<inner>`.
-    #[must_use]
-    pub fn receiver(inner: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::Receiver, vec![inner])
-    }
-
     /// Construct `Stream<inner>`.
     #[must_use]
     pub fn stream(inner: Ty) -> Ty {
@@ -1009,28 +987,6 @@ impl Ty {
     #[must_use]
     pub fn sink(inner: Ty) -> Ty {
         Self::builtin_named(BuiltinType::Sink, vec![inner])
-    }
-
-    /// Construct `Duplex<S, R>` — bidirectional lambda-actor handle.
-    ///
-    /// `S` is the send direction (message type); `R` is the receive direction
-    /// (reply type, or `()` for tell-shaped actors).  Send iff both S and R are Send.
-    #[must_use]
-    pub fn duplex(send: Ty, reply: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::Duplex, vec![send, reply])
-    }
-
-    /// Extract `(S, R)` from `Duplex<S, R>`, or `None` if not a Duplex.
-    #[must_use]
-    pub fn as_duplex(&self) -> Option<(&Ty, &Ty)> {
-        match self {
-            Ty::Named {
-                builtin: Some(BuiltinType::Duplex),
-                args,
-                ..
-            } if args.len() == 2 => Some((&args[0], &args[1])),
-            _ => None,
-        }
     }
 
     /// Extract `(S, T)` from `SupervisorPool<S, T>`.
@@ -1052,7 +1008,7 @@ impl Ty {
     /// `Unit` for a zero-arg actor); `R` is the reply type (`Unit` for a
     /// tell-shaped actor, or the declared `-> R` reply for an ask-shaped one).
     /// Send iff both `M` and `R` are Send (the message and reply cross the
-    /// actor boundary). A PID-like handle, distinct from the `Duplex` channel
+    /// actor boundary). A PID-like handle, distinct from the pipe
     /// substrate: it has no `.recv()` / `.send_half()` / `.recv_half()` surface.
     #[must_use]
     pub fn actor_fn(msg: Ty, reply: Ty) -> Ty {
@@ -1122,17 +1078,11 @@ impl Ty {
             .expect("generated builtin enum catalog must contain TimeoutError")
     }
 
-    /// Construct `RecvError` — error type for `Duplex::recv` / half-recv calls.
-    #[must_use]
-    pub fn recv_error() -> Ty {
-        Self::builtin_named(BuiltinType::RecvError, vec![])
-    }
-
     /// Construct `LinkError` — error type for `link(handle)` calls.
     ///
     /// The concrete enum (`AlreadyLinked`, `TargetDead`) is declared in
     /// `std/builtins.hew` and wired in codegen slice B3. At the checker
-    /// layer this is a named-type marker, consistent with `SendError`/`RecvError`.
+    /// layer this is a named-type marker, consistent with `SendError`.
     ///
     /// # Panics
     ///
@@ -1185,31 +1135,6 @@ impl Ty {
             // isize/usize and non-integer types have no fixed width.
             _ => None,
         }
-    }
-
-    /// Construct `CloseError` — error type for `Duplex::close` / half-close calls.
-    ///
-    /// This names the duplex close-failure (double-close / already-closed) at
-    /// the type-checker surface.
-    #[must_use]
-    pub fn duplex_close_error() -> Ty {
-        Self::builtin_named(BuiltinType::CloseError, vec![])
-    }
-
-    /// Construct `SendHalf<S>` — send-direction half of a split `Duplex<S, R>`.
-    ///
-    /// Returned by `Duplex<S, R>::send_half()`; consumes the source handle.
-    #[must_use]
-    pub fn send_half(s: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::SendHalf, vec![s])
-    }
-
-    /// Construct `RecvHalf<R>` — receive-direction half of a split `Duplex<S, R>`.
-    ///
-    /// Returned by `Duplex<S, R>::recv_half()`; consumes the source handle.
-    #[must_use]
-    pub fn recv_half(r: Ty) -> Ty {
-        Self::builtin_named(BuiltinType::RecvHalf, vec![r])
     }
 
     /// Construct `Generator<yields, returns>`.

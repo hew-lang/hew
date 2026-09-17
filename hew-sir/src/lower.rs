@@ -2750,8 +2750,6 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || crate::generator_parts(ty).is_some()
         || crate::stream_element(ty).is_some()
         || crate::sink_element(ty).is_some()
-        || ty.is_builtin(hew_types::BuiltinType::Sender)
-        || ty.is_builtin(hew_types::BuiltinType::Receiver)
         || ty.is_builtin(hew_types::BuiltinType::ActorCall)
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::ActorHandle)
@@ -8282,14 +8280,14 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         }
         if matches!(
             family,
-            hew_types::RuntimeCallFamily::SinkWrite(_)
-                | hew_types::RuntimeCallFamily::StreamSendLayout
+            hew_types::RuntimeCallFamily::StreamSendLayout
+                | hew_types::RuntimeCallFamily::StreamTrySendLayout
         ) {
             let [sink, value] = args else {
                 return Err("stream write takes one sink and one element".into());
             };
-            self.lower_sink_write(sink, value)?;
-            return Ok(None);
+            let park = family == hew_types::RuntimeCallFamily::StreamSendLayout;
+            return self.lower_sink_write(expr, sink, value, park).map(Some);
         }
         if matches!(
             family,
@@ -8302,25 +8300,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             let park = family == hew_types::RuntimeCallFamily::StreamNextLayout;
             return self.lower_stream_next(expr, stream, park).map(Some);
         }
-        if matches!(
-            family,
-            hew_types::RuntimeCallFamily::ChannelRecvLayout
-                | hew_types::RuntimeCallFamily::ChannelTryRecvLayout
-        ) {
-            let [channel] = args else {
-                return Err("channel receive takes exactly one receiver".into());
-            };
-            let park = family == hew_types::RuntimeCallFamily::ChannelRecvLayout;
-            return self.lower_channel_recv(expr, channel, park).map(Some);
-        }
-        if family == hew_types::RuntimeCallFamily::ChannelSendLayout {
-            let [channel, value] = args else {
-                return Err("channel send takes exactly one sender and one element".into());
-            };
-            self.lower_channel_send(channel, value)?;
-            return Ok(None);
-        }
-
         let contract = family.semantic_contract().ok_or_else(|| {
             format!("runtime family `{family:?}` has no ownership-SIR semantic contract")
         })?;

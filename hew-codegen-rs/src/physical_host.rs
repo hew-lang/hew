@@ -77,8 +77,6 @@ impl<'a> HostExport<'a> {
                     | PhysicalTerminator::GeneratorNext { .. }
                     | PhysicalTerminator::StreamNext { .. }
                     | PhysicalTerminator::StreamSend { .. }
-                    | PhysicalTerminator::ChannelRecv { .. }
-                    | PhysicalTerminator::ChannelSend { .. }
                     | PhysicalTerminator::ValueClose { .. }
                     | PhysicalTerminator::IndirectCall { .. }
                     | PhysicalTerminator::DynCall { .. }

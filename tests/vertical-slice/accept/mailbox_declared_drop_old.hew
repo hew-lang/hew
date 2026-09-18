@@ -1,0 +1,47 @@
+// `mailbox N overflow drop_old` admits the arriving submission over the queued
+// one it evicts, so both submissions are accepted and only the newer is
+// delivered. The sender is itself an actor handler: with one worker, that
+// handler occupies the only thread that could activate Latest, so the
+// capacity-one queue cannot drain between the submissions.
+actor Latest {
+    mailbox 1 overflow drop_old,
+    receive fn work(value: i64) {
+        println(value);
+    }
+}
+
+actor Driver {
+    receive fn run(worker: Latest) {
+        let inbox = mailbox(worker);
+        match inbox.work(1) {
+            .Ok(Delivery.Accepted) => {},
+            .Ok(Delivery.Discarded) => {
+                println("FIRST_DISCARDED");
+                exit(41);
+            },
+            .Err(_) => {
+                println("FIRST_SEND_FAILED");
+                exit(42);
+            },
+        }
+        match inbox.work(2) {
+            .Ok(Delivery.Accepted) => println("accepted"),
+            .Ok(Delivery.Discarded) => {
+                println("SECOND_DISCARDED");
+                exit(43);
+            },
+            .Err(_) => {
+                println("SECOND_SEND_FAILED");
+                exit(44);
+            },
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn Latest;
+    let driver = spawn Driver;
+    let _ = driver.run(worker);
+    close(driver);
+    close(worker);
+}

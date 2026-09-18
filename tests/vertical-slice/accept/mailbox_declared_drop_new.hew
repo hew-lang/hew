@@ -1,0 +1,51 @@
+// `mailbox N overflow drop_new` is the authority on a full queue: the
+// destination discards the arriving submission itself, so a bare `mailbox(..)`
+// view reports `Delivery.Discarded` and never parks. The sender is itself an
+// actor handler: with one worker, that handler occupies the only thread that
+// could activate LossyWorker, so the capacity-one queue cannot drain between
+// the two submissions.
+actor LossyWorker {
+    mailbox 1 overflow drop_new,
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("DROPPED_WORK_DELIVERED");
+        }
+    }
+}
+
+actor Driver {
+    receive fn run(worker: LossyWorker) {
+        let inbox = mailbox(worker);
+        match inbox.work(1) {
+            .Ok(Delivery.Accepted) => {},
+            .Ok(Delivery.Discarded) => {
+                println("FIRST_DISCARDED");
+                exit(41);
+            },
+            .Err(_) => {
+                println("FIRST_SEND_FAILED");
+                exit(42);
+            },
+        }
+        match inbox.work(2) {
+            .Ok(Delivery.Discarded) => {
+                println("DECLARED_DROP_NEW");
+                exit(43);
+            },
+            .Ok(Delivery.Accepted) => {
+                println("LOSS_HIDDEN");
+                exit(44);
+            },
+            .Err(_) => {
+                println("UNEXPECTED_SEND_ERROR");
+                exit(45);
+            },
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn LossyWorker;
+    let driver = spawn Driver;
+    let _ = driver.run(worker);
+}

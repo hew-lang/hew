@@ -193,11 +193,20 @@ distinctly. Coalescing requires the actor's own mailbox support for its key
 policy (§6.3). Capacity and queue-wide eviction belong to the actor and its
 supervisor, never to a sender view.
 
-A declared discarding policy — `drop_new`, `drop_old`, `coalesce(k)` — governs
-one-way submission only. A completion call parks for admission whether or not
-it returns a value, because superseding or discarding it would leave its
-caller waiting for a reply no handler will send. An actor may not declare a
-coalesce key on a value-returning handler.
+The destination's declaration is the authority on a full queue: it answers
+before the sender's `on_full` is consulted, and the sender's view only decides
+what happens when the declaration did not resolve the submission. A declared
+discarding policy — `drop_new`, `drop_old`, `coalesce(k)` — governs one-way
+submission only. A completion call parks for admission whether or not it
+returns a value, because superseding or discarding it would leave its caller
+waiting for a reply no handler will send; `drop_old` therefore never evicts a
+queued completion call, and refuses when it has nothing else to discard. An
+actor may not declare a coalesce key on a value-returning handler.
+
+A submission the declaration discarded is gone: it reports
+`Ok(Delivery.Discarded)` and carries no message back, so it is not retryable.
+Only a refusal — `fail`, or `block` with a `.Reject` sender — returns the
+unaccepted request.
 
 No token marks an actor call site: an unmarked call on a handle waits for
 completion, and the receiver type — handle or mailbox view — decides whether
@@ -5032,7 +5041,8 @@ queue's permitted behaviour; public delivery outcomes follow §2.1.1.
 | `mailbox(actor)`, `policy(actor)` | the destination's declared admission: `overflow fail` refuses, every other declaration waits | as for the derived policy |
 
 Completion views admit only Wait and Reject: a caller cannot wait for the
-completion of a request the policy intentionally discards. A sender cannot
+completion of a request the policy intentionally discards, and no declared
+discarding policy applies to one. A sender cannot
 unilaterally evict other senders' work. ReplaceLatest requires actor-declared
 coalescing support. Write `on_full` to override the destination's declared
 admission; omit it to take that declaration.
@@ -5055,8 +5065,9 @@ a reply, so it is never superseded or discarded and the key could never take
 effect.
 
 Matching work is replaced in its queue position and the old payload is
-released. With no match, the declared fallback governs admission; the default
-fallback is `drop_new`. `drop_old` and `fail` are explicit alternatives.
+released. With no match, the declared fallback governs admission exactly as a
+declared policy of its own kind does; the default fallback is `drop_new`.
+`drop_old` and `fail` are explicit alternatives.
 Replacement or discard must be represented as a policy disposition, not
 misreported as handler completion. Submission and completion retain the
 result envelopes defined in §2.1.1.

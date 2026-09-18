@@ -1496,8 +1496,14 @@ declaring `mailbox N overflow fail` gives its senders `.Reject`, and every
 other declaration — including no `mailbox` clause at all — gives them `.Wait`.
 Write `on_full:` only to override that, as `mailbox(target, on_full:
 .DropNewest)` does to discard this sender's own submission at a full mailbox.
-`Delivery.Discarded` reports either loss; a discarded submission is gone and
-is not retryable.
+
+The declaration decides first. An actor declaring `drop_new` discards the
+arriving submission itself; one declaring `drop_old` admits it over the queued
+message it evicts; one declaring `coalesce(k)` replaces the message its key
+supersedes. `Delivery.Discarded` reports any of those losses, and a discarded
+submission is gone — it carries no message back and is not retryable. A
+declaration only ever discards a one-way submission: a call that waits for a
+reply parks for a slot, and `drop_old` never evicts one.
 
 `policy(target)` is the other view: its calls still complete — the handler result wrapped in `Result<R, ActorError<E, Req>>`, with `Req` inferred for rejected requests — and the policy chooses only what happens when the destination mailbox is full. `.Wait` is what a bare handle does. `.Reject` refuses instead of parking and reports `ActorError.Rejected(failure)`. Read `failure.reason` for the refusal reason. The owned request remains in `failure.message`: `.retry()` consumes it and resubmits to the original actor; `.to(other)` consumes it and resubmits to a compatible handler. Both wait for completion. Dropping the request releases its payload. Only a rejection is safely retryable. `policy` completes, `mailbox` submits.
 

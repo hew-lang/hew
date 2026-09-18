@@ -1,6 +1,8 @@
-// A `.DropNewest` mailbox view reports the discard to its sender as the
-// submission's own outcome: the policy chose to lose the message, so it is a
-// described delivery, not a failure. The sender is itself
+// A discarded submission reports the loss to its sender as the submission's own
+// outcome: a policy chose to lose the message, so it is a described delivery,
+// not a failure. Here the actor's declared `drop_new` answers the full queue
+// first and the sender's `.DropNewest` agrees with it; `mailbox_declared_drop_new`
+// covers the same actor without the sender-side spelling. The sender is itself
 // an actor handler: with one worker, that handler occupies the only thread that
 // could activate LossyWorker, so the first message is still queued when the
 // second send observes the full mailbox. `main` runs on the process main

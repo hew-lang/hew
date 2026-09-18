@@ -1,0 +1,12 @@
+[[case]]
+id = "gen_fn_borrowed_fn_param"
+intent = "Reject: a generator cannot capture a borrowed `fn(..)` parameter, which has no copy operation."
+source = "../vertical-slice/reject/gen_fn_borrowed_fn_param.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 13
+column = 15

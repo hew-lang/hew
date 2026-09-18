@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1603u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1601u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1601] = {
     {"hew_actor_ask",
      "{\"native\": \"fn hew_actor_ask( *mut HewActor, i32, *mut c_void, usize, "
      ") -> *mut c_void\"}",
@@ -342,11 +342,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
      "{\"native\": \"fn hew_actor_send( *mut HewActor, i32, *mut c_void, "
      "usize, )\"}",
      "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_send_aliased",
-     "{\"native\": \"fn hew_actor_send_aliased( *mut HewActor, i32, *mut "
-     "HewMsgEnvelope, )\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_send_by_id",
      "{\"native\": \"fn hew_actor_send_by_id( u64, *const c_void, i32, *mut "
@@ -3772,11 +3767,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
      "{\"native\": \"fn hew_mailbox_send( *mut HewMailbox, i32, *mut c_void, "
      "usize, ) -> i32\"}",
      "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_mailbox_send_aliased",
-     "{\"native\": \"fn hew_mailbox_send_aliased( *mut HewMailbox, i32, *mut "
-     "HewMsgEnvelope, ) -> i32\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_mailbox_send_sys",
      "{\"native\": \"fn hew_mailbox_send_sys( *mut HewMailbox, i32, *mut "

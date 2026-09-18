@@ -1974,7 +1974,7 @@ fixpoint (llvm.rs:22270-22740). Copy mode **double-closes a kept resource**:
 Some(c) }` then `await h.show()`) prints `kept`, `close 7`, `fd 7`, `close 7`.
 Asks are copy-mode only: `hew_actor_ask_with_channel` (actor.rs:6351-6365)
 calls `actor_send_result_internal_reply(actor, msg_type, data, size, ch)`;
-the aliased send (`hew_mailbox_send_aliased(mb, msg_type, envelope)`,
+the aliased send (`admit_native_request(mb, msg_type, envelope, reply)`,
 mailbox.rs:2652-2656) takes no reply channel and allocates its node with
 `reply_channel = null` (mailbox.rs:2408). An envelope send never
 key-coalesces: `HewOverflowPolicy::Coalesce` on the aliased path applies the
@@ -2059,7 +2059,7 @@ abort in `hew_msg_envelope_take_payload`. The bit stays as the wire-visible
 record of the contract, which is what makes an aliasing attempt legible in a
 dump; it is not a check and the doc must not be read as promising one.
 
-`mailbox coalesce` keeps replacement-by-key: [P4] `send_aliased_with_overflow`
+`mailbox coalesce` keeps replacement-by-key: [P4] `admit_native_request`
 runs `coalesce_message_key` over the envelope payload (the function already
 reads `envelope` when `data` is null) and replaces a queued node by
 `hew_msg_envelope_release(old); node.envelope = new` — no byte buffer, no

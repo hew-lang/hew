@@ -902,19 +902,6 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_send_aliased( *mut HewActor, i32, *mut HewMsgEnvelope, )"
-      },
-      "symbol": "hew_actor_send_aliased"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",
@@ -10122,19 +10109,6 @@
         "native": "fn hew_mailbox_send( *mut HewMailbox, i32, *mut c_void, usize, ) -> i32"
       },
       "symbol": "hew_mailbox_send"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_mailbox_send_aliased( *mut HewMailbox, i32, *mut HewMsgEnvelope, ) -> i32"
-      },
-      "symbol": "hew_mailbox_send_aliased"
     },
     {
       "availability": [

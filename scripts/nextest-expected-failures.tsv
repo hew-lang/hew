@@ -105,7 +105,6 @@ linux,macos,windows,freebsd	failure	hew-cli::supervisor_init_args_e2e	supervisor
 linux,macos,windows,freebsd	failure	hew-cli::unicode_punctuation_wasi_e2e	hew_wasi_unicode_is_punct_matches_all_unicode_17_punctuation_scalars	#3368 implements sandbox emission on the physical path
 macos	failure	hew-cli::vec_index_assign_temp_leak_oracle	vec_index_assign_borrowed_capture_stays_copy_in	#3448 selects the copy-in vector store for a borrowed capture
 macos	failure	hew-cli::vec_iter_closure_unwind_leak_oracle	temporary_vec_iter_closure_trap_invokes_guarded_cleanup_without_leak	#3449 emits a closure call in a guarded region as an invoke
-macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	arena_insert_remove_param_embed_has_flat_leak_slope	#3090 transfers Arena payloads without invalid frees
 linux,freebsd,macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	enum_text_borrows_balance_on_native_and_wasm	#3368 sandbox emission is not implemented; native borrowed-copy balance passes
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	resource_projection_direct_consume_has_flat_leak_slope	#3438 decides whether a borrowed parameter's field can be consumed
 macos	failure	hew-cli::vec_param_embed_copy_in_temp_leak_oracle	resource_projection_direct_consume_preserves_the_poisoned_caller	#3438 decides whether a borrowed parameter's field can be consumed

@@ -426,6 +426,11 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
             "run",
             "-o",
             "frame variable before",
+            // Resuming re-enters the body at the await line, so the suspend
+            // breakpoint would take the continue. Disabling it lands the next
+            // stop on the statement after the await.
+            "-o",
+            "breakpoint disable 1",
             "-o",
             "continue",
             "-o",
@@ -447,6 +452,10 @@ fn debugger_hits_await_body_before_and_after_suspend_with_live_local() {
             "run",
             "-ex",
             "print before",
+            // See the lldb branch: the suspend breakpoint would take the
+            // continue when the coroutine resumes at the await line.
+            "-ex",
+            "disable 1",
             "-ex",
             "continue",
             "-ex",

@@ -41,7 +41,6 @@ linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	remote_
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	repeated_cross_node_monitor_close_keeps_tables_empty	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 linux,macos,windows,freebsd	failure	hew-cli::distributed_two_process_e2e	wire_cbor_cross_process_round_trip	feat/remote-pid-final-path gives hew_node_id_display a verified ownership-SIR operation contract
 freebsd	failure	hew-cli::divergent_selection_arm_ownership_oracle	source_read_after_selection_does_not_over_release	#3079 makes selected-arm ownership path-sensitive
-linux,macos,freebsd	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_hits_await_body_before_and_after_suspend_with_live_local	#3369 a resumed coroutine re-enters at the await line, so the second stop is not the next statement
 linux,macos,freebsd	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_never_reads_reassigned_reference_local_as_interior_null	#3369 the debugger reads a string handle, not the byte pointer this assertion renders
 linux,macos,freebsd	failure	hew-cli::dwarf_debugger_locals_e2e	debugger_renders_only_active_enum_variant_payload	#3369 DW_TAG_variant_part has no LLVM-C entry point, so an enum renders every variant
 macos	failure	hew-cli::enum_resource_variant_leak_oracle	resource_record_enum_payload_closes_exactly_once	#3070 closes composite resource fields exactly once

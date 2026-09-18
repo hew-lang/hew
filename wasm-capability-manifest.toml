@@ -142,7 +142,7 @@ tracking_label = "#1820"
 
 [[feature]]
 id = "actor-ask-reply"
-label = "Actor ask/reply (`reply_channel_wasm`)"
+label = "Actor ask/reply"
 checker = "pass"
 runtime = "implemented"
 runtime_status = "Implemented"

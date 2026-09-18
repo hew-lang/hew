@@ -176,10 +176,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_exit_unhandled",
-     "{\"native\": \"fn hew_actor_exit_unhandled( i32)\", \"wasm32-wasip1\": "
-     "\"fn hew_actor_exit_unhandled( i32)\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_actor_exit_unhandled( i32)\"}", "native", "stable",
+     "not-applicable", "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_free",
      "{\"native\": \"fn hew_actor_free( *mut HewActor) -> c_int\"}", "native",
      "non-declarable", "not-applicable", "no-in-signature-extent",
@@ -392,11 +390,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1603] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_set_message_drop",
      "{\"native\": \"fn hew_actor_set_message_drop( *mut HewActor, unsafe "
-     "extern \\\"C\\\" fn(i32, *mut c_void, usize), )\", \"wasm32-wasip1\": "
-     "\"fn hew_actor_set_message_drop( *mut HewActor, unsafe extern \\\"C\\\" "
-     "fn(i32, *mut c_void, usize), )\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+     "extern \\\"C\\\" fn(i32, *mut c_void, usize), )\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_set_priority",
      "{\"native\": \"fn hew_actor_set_priority( *mut HewActor, c_int)\", "
      "\"wasm32-wasip1\": \"fn hew_actor_set_priority( *mut HewActor, c_int)\"}",

@@ -634,7 +634,7 @@ fn native_hashmap_hashset_ownership_matches_wasi_output() {
 //  Cooperative-timer probes (#1964)
 //
 //  WASM timers are cooperative: sleep parks at the message boundary and time
-//  advances through `hew_wasm_timer_tick` (hew-runtime/src/scheduler_wasm.rs).
+//  advances through the wasm32 process driver's timer wheel.
 //  Nothing in the suite exercised that path, so both a working case and a
 //  divergent one could change silently. These two probes pin the observed
 //  behaviour of the cooperative timer against the native runtime.
@@ -644,7 +644,7 @@ fn native_hashmap_hashset_ownership_matches_wasi_output() {
 //
 //  Probe (b) — actor periodic timer (`#[every]`): the timer DOES fire under
 //  wasm, but the program never terminates, because with no host driving
-//  `hew_wasm_timer_tick` the periodic queue keeps the scheduler permanently
+//  a timer tick the periodic queue keeps the scheduler permanently
 //  non-quiescent. Native runs the same program to completion. That is a real
 //  native↔wasm divergence, not a passing parity case, so probe (b) pins the
 //  divergence explicitly (bounded by `--timeout`) rather than asserting a

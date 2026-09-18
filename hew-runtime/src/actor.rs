@@ -2178,7 +2178,7 @@ pub(crate) unsafe fn cleanup_all_actors() {
         unsafe { prepare_quiescent_actor_for_cleanup(actor) };
 
         // Remove any pending WASM sleep timer entry for this actor before
-        // freeing it. This prevents a use-after-free if hew_wasm_timer_tick
+        // freeing it. This prevents a use-after-free if a timer tick
         // is called after cleanup but before the timer fires naturally.
         // SAFETY: scheduler is shut down; no concurrent timer-wheel access.
 

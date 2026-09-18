@@ -91,7 +91,7 @@ The **Checker disposition** column documents what the type checker emits when
 | `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented | — |
 | `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented | — |
 | `layout-hashmap-hashset` | Layout-backed `HashMap` / `HashSet` | Layout-backed `HashMap` / `HashSet` | Pass | — | Supported on Tier 2; descriptor ABI uses target-width layout fields and descriptor hook pointers are value-correct under wasmtime | #1820 |
-| `actor-ask-reply` | Actor ask/reply (`reply_channel_wasm`) | Actor ask/reply (`reply_channel_wasm`) | Pass | — | Implemented | — |
+| `actor-ask-reply` | Actor ask/reply | Actor ask/reply | Pass | — | Implemented | — |
 | `wasi-sockets` | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | Raw WASI socket capability (host-provided, no stable Hew stdlib surface yet) | WASM-TODO (not checker-gated) | — | Host-/runtime-dependent; Hew does not yet expose a supported cross-target socket layer | WASM-TODO(wasi-sockets): |
 | `select` | `select {}` (any timeout expression, any arm count) | `select {}` (any timeout expression, any arm count) | Pass | — | Implemented | — |
 | `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | Educational sandbox subset implements deterministic restart trees; native runtime parity remains gated | WASM-TODO(supervision): |
@@ -132,13 +132,11 @@ runtime implementation.
 These exist as warnings (not errors) to allow gradual migration: a program can
 be partially WASM-compatible and still get useful analysis feedback.
 
-This group includes `sleep`/`sleep_until` and `#[every(duration)]`, which now
-have cooperative semantics on WASM: `sleep` parks the actor at the
-**message boundary** (not mid-handler), while periodic handlers are delivered
-when the host advances the timer queue.  The warning reminds callers that code
-after `sleep` in the same receive handler still executes before the actor
-parks, and that periodic dispatch depends on `hew_wasm_timer_tick` /
-`hew_wasm_sched_tick` driving the queue.
+This group includes `sleep`/`sleep_until` and `#[every(duration)]`. A sleeping
+coroutine arms the shared timer wheel and parks; the wasm32 process driver
+ticks that wheel against the WASI clock while the root waits, so a sleep
+resumes without a host tick.  Periodic actor delivery reaches the driver with
+the actor core.
 
 ### 🚫 Error (compile-time reject)
 
@@ -177,14 +175,11 @@ would otherwise end in a trap or linker failure:
   the non-blocking semaphore subset (`new`, `try_acquire`, `release`, `count`,
   `free`).
 
-- **Timers** (`sleep`, `sleep_until`, `#[every(duration)]`): The runtime now
-  parks sleeping actors at the message boundary, re-enqueues them once the
-  deadline passes, and delivers periodic handler messages through the same
-  host-driven timer loop.  The checker emits a **warning** (not an error) to
-  inform callers of the cooperative semantics difference.  Code after
-  `sleep` in the same receive handler still executes before the park, and
-  periodic dispatch depends on `hew_wasm_timer_tick(now_ms)` /
-  `hew_wasm_sched_tick(...)` advancing the timer queue.
+- **Timers** (`sleep`, `sleep_until`, `#[every(duration)]`): A sleeping
+  coroutine arms the shared timer wheel and parks. The wasm32 process driver
+  ticks the wheel against the WASI clock while the root coroutine waits, so the
+  sleep resumes on the deadline with no host tick. Periodic actor delivery
+  reaches the driver with the actor core.
 
 - **Streams**: The `stream` runtime module is entirely gated out on wasm32
   (`#[cfg(not(target_arch = "wasm32"))]` in `hew-runtime/src/lib.rs`).  Any

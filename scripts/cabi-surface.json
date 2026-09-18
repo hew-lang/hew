@@ -412,16 +412,14 @@
     },
     {
       "availability": [
-        "native",
-        "wasm32-wasip1"
+        "native"
       ],
       "classification": "stable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_exit_unhandled( i32)",
-        "wasm32-wasip1": "fn hew_actor_exit_unhandled( i32)"
+        "native": "fn hew_actor_exit_unhandled( i32)"
       },
       "symbol": "hew_actor_exit_unhandled"
     },
@@ -1016,16 +1014,14 @@
     },
     {
       "availability": [
-        "native",
-        "wasm32-wasip1"
+        "native"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_set_message_drop( *mut HewActor, unsafe extern \"C\" fn(i32, *mut c_void, usize), )",
-        "wasm32-wasip1": "fn hew_actor_set_message_drop( *mut HewActor, unsafe extern \"C\" fn(i32, *mut c_void, usize), )"
+        "native": "fn hew_actor_set_message_drop( *mut HewActor, unsafe extern \"C\" fn(i32, *mut c_void, usize), )"
       },
       "symbol": "hew_actor_set_message_drop"
     },

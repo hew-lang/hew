@@ -359,6 +359,16 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
+        id: "Result constructor (`Result.Ok` / `Result.Err`)",
+        probe: "fn ok() -> Result<i64, string> {\n    Result.Ok(1)\n}\nfn main() {\n    match ok() {\n        .Ok(v) => println(v),\n        .Err(e) => println(e),\n    }\n}\n",
+        coverage: Coverage::Parity("result_constructors"),
+    },
+    Construct {
+        id: "map read (`get` / `contains_key`)",
+        probe: "fn main() {\n    var m: HashMap<string, i64> = HashMap.new();\n    m.insert(\"a\", 1);\n    println(m.contains_key(\"a\"));\n}\n",
+        coverage: Coverage::Parity("map_reads"),
+    },
+    Construct {
         id: "`std.math` intrinsic call",
         probe: "import std.math;\nfn main() {\n    println(math.sqrt(16.0));\n}\n",
         coverage: Coverage::Parity("math_intrinsics"),
@@ -629,12 +639,8 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "closure / lambda value",
-        // A valid private mutable capture reaches the sandbox's structural
-        // lambda rejection instead of failing native capture checking first.
-        probe: "fn main() {\n    let total = 0;\n    var acc = capture(var total) |n: i64| { total = total + n; total };\n    println(acc(2));\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "reserved_runtime_feature",
-        },
+        probe: "fn main() {\n    let double = |n: i64| n * 2;\n    println(double(21));\n}\n",
+        coverage: Coverage::Parity("closure_values"),
     },
     Construct {
         id: "`clone` prefix",
@@ -657,10 +663,8 @@ const CONSTRUCTS: &[Construct] = &[
     },
     Construct {
         id: "defer statement",
-        probe: "fn main() {\n    defer println(\"bye\");\n    println(\"hi\");\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "defer_rejected",
-        },
+        probe: "fn main() {\n    defer println(\"second\");\n    println(\"first\");\n}\n",
+        coverage: Coverage::Parity("defer_order"),
     },
     Construct {
         id: "unsafe block",

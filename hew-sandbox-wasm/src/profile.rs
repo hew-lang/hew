@@ -94,6 +94,10 @@ fn module_function_is_admitted(module: &str, function: &str) -> bool {
         ("regex", "new" | "is_match" | "find" | "replace")
             | ("io", "read_line")
             | ("random", "seed" | "randint")
+            // Constructors of the prelude's own enums: a `variant.make`, not
+            // a host call.
+            | ("Result", "Ok" | "Err")
+            | ("Option", "Some" | "None")
             | (
                 "math",
                 "pi" | "e"
@@ -465,7 +469,11 @@ impl<'a> ProfileChecker<'a> {
                     self.check_expr(expr);
                 }
             }
-            Stmt::Assign { target, op: _, value } => {
+            Stmt::Assign {
+                target,
+                op: _,
+                value,
+            } => {
                 // Compound assignment (`x += v`, `x -= v`, …): the arithmetic
                 // forms (+, -, *, /, %) are now lowered type-correctly by the
                 // emitter (reading the current binding, applying the type-directed
@@ -520,7 +528,12 @@ impl<'a> ProfileChecker<'a> {
                 }
                 self.check_block(body);
             }
-            Stmt::For { iterable, body, label, .. } => {
+            Stmt::For {
+                iterable,
+                body,
+                label,
+                ..
+            } => {
                 if label.is_some() {
                     self.reject(
                         span.clone(),
@@ -531,7 +544,11 @@ impl<'a> ProfileChecker<'a> {
                 self.check_range_operand(iterable);
                 self.check_block(body);
             }
-            Stmt::While { condition, body, label } => {
+            Stmt::While {
+                condition,
+                body,
+                label,
+            } => {
                 if label.is_some() {
                     self.reject(
                         span.clone(),
@@ -598,11 +615,10 @@ impl<'a> ProfileChecker<'a> {
                     self.check_expr(else_expr);
                 }
             }
-            Stmt::Defer(_) => self.reject(
-                span.clone(),
-                "defer_rejected",
-                "defer needs runtime drop scheduling and is not admitted to sandbox bytecode export yet",
-            ),
+            // A deferred statement is scheduled by the package's own defer
+            // ops, which the VM runs on its frame; nothing here asks the host
+            // for drop scheduling.
+            Stmt::Defer(deferred) => self.check_expr(deferred),
         }
     }
 
@@ -998,7 +1014,16 @@ impl<'a> ProfileChecker<'a> {
                 );
                 self.check_block(block);
             }
-            Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) | Expr::Lambda { .. } => self.reject(
+            // A lambda is an ordinary callable value: the package carries it
+            // as a closure environment with a body of its own, and a call on
+            // it goes through `indirect.call`.
+            Expr::Lambda {
+                return_type, body, ..
+            } => {
+                self.check_return_clause(return_type.as_ref());
+                self.check_expr(body);
+            }
+            Expr::ByteStringLiteral(_) | Expr::ByteArrayLiteral(_) => self.reject(
                 span.clone(),
                 "reserved_runtime_feature",
                 "this value form is not admitted to sandbox bytecode export yet",
@@ -1079,6 +1104,16 @@ impl<'a> ProfileChecker<'a> {
                             | "Err"
                             | "Vec::new"
                     )
+                {
+                    return;
+                }
+                // A binding that holds a callable is called by its own name.
+                // The checker resolved it to a function or closure type, and
+                // the package lowers the call through `indirect.call`, so the
+                // name is the program's own rather than a host symbol.
+                if self
+                    .ty_for_expr(function)
+                    .is_some_and(|ty| matches!(ty, Ty::Function { .. } | Ty::Closure { .. }))
                 {
                     return;
                 }
@@ -1228,7 +1263,9 @@ impl<'a> ProfileChecker<'a> {
         }
         if method == "new" {
             match &receiver.0 {
-                Expr::Identifier(module) if module == "regex" || module == "Vec" => {
+                Expr::Identifier(module)
+                    if matches!(module.as_str(), "regex" | "Vec" | "Map" | "HashMap") =>
+                {
                     return true;
                 }
                 Expr::GenericApplySuffix { target, .. } if matches!(&target.0, Expr::Identifier(module) if module == "Vec") =>
@@ -1293,11 +1330,8 @@ impl<'a> ProfileChecker<'a> {
                     "len" | "push" | "get" | "contains" | "to_string" | "clone"
                 )
             }
-            // A map's size is the operation the VM carries a shim for. Reads
-            // and removals join as their shims land, so a lesson that reaches
-            // one is refused rather than answered approximately.
             Ty::Named { name, .. } if name == "Map" || name == "HashMap" => {
-                matches!(method, "len")
+                matches!(method, "len" | "insert" | "get" | "contains_key")
             }
             Ty::Named { name, .. }
                 if matches!(name.as_str(), "regex.Pattern" | "std.text.regex.Pattern") =>

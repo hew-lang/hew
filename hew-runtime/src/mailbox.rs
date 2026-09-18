@@ -783,7 +783,7 @@ unsafe fn msg_node_alloc_aliased(
     node
 }
 
-unsafe fn retire_orphaned_ask_sender_ref(reply_channel: *mut c_void) {
+pub(crate) unsafe fn retire_orphaned_ask_sender_ref(reply_channel: *mut c_void) {
     if reply_channel.is_null() {
         return;
     }
@@ -1843,11 +1843,10 @@ unsafe fn replace_node_payload(
         (*node).data = new_buf;
         (*node).msg_type = msg_type;
         (*node).data_size = data_size;
-        if (*node).reply_channel != reply_channel {
-            // Keep the queued node's reply channel stable, but retire the
-            // superseded incoming waiter so ask callers never hang.
-            retire_orphaned_ask_sender_ref(reply_channel);
-        }
+        debug_assert!(
+            (*node).reply_channel.is_null() && reply_channel.is_null(),
+            "a completion call is never superseded and never supersedes"
+        );
     }
     true
 }
@@ -1992,7 +1991,9 @@ unsafe fn send_with_overflow(
     if mb.capacity > 0 && !mb.use_slow_path {
         if !try_reserve_fast_path_capacity(mb) {
             // An arriving completion call is never the one discarded: its
-            // caller is waiting for a reply no replacement would send.
+            // caller is waiting for a reply no replacement would send. The fast
+            // path carries no wait - only the mutex-backed policies do - so it
+            // reports the full queue and lets that caller decide.
             let admission = declared_admission(mb.overflow);
             let admission =
                 if reply_channel.is_null() || admission != DeclaredAdmission::DiscardIncoming {
@@ -2036,13 +2037,12 @@ unsafe fn send_with_overflow(
         let len = i64::try_from(q.user_queue.len()).unwrap_or(i64::MAX);
         if len >= mb.capacity {
             // A coalescing mailbox first looks for the message this one
-            // supersedes; only a miss reaches its declared fallback. Unlike the
-            // envelope path, this one may supersede a queued completion call:
-            // `replace_node_payload` keeps the queued reply channel and retires
-            // the arriving waiter (see
-            // `coalesce_preserves_original_reply_channel_and_retires_incoming_waiter`).
+            // supersedes; only a miss reaches its declared fallback. A
+            // completion call takes no part in that: an arriving one never
+            // supersedes, and a queued one is never superseded, because either
+            // would leave a caller waiting for a reply no handler will send.
             let declared = mb.overflow;
-            let admission = if declared == HewOverflowPolicy::Coalesce {
+            let admission = if declared == HewOverflowPolicy::Coalesce && reply_channel.is_null() {
                 // SAFETY: `data` validity guaranteed by caller.
                 let incoming_key = unsafe {
                     coalesce_message_key(
@@ -2060,6 +2060,8 @@ unsafe fn send_with_overflow(
                         // SAFETY: all nodes in the queue were allocated by msg_node_alloc.
                         unsafe {
                             (*n).msg_type == msg_type
+                                // A queued completion call owes its caller a reply.
+                                && (*n).reply_channel.is_null()
                                 && coalesce_message_key(
                                     mb.coalesce_key_fn,
                                     (*n).msg_type,
@@ -2093,13 +2095,13 @@ unsafe fn send_with_overflow(
             };
             // An arriving completion call is never the one discarded: its
             // caller is waiting for a reply no replacement would send, so it
-            // reports the full queue and parks instead. `EvictOldest` still
-            // admits it, because the eviction never takes a queued ask.
+            // parks for a slot instead. `EvictOldest` still admits it, because
+            // the eviction never takes a queued ask.
             let admission =
                 if reply_channel.is_null() || admission != DeclaredAdmission::DiscardIncoming {
                     admission
                 } else {
-                    DeclaredAdmission::Refuse
+                    DeclaredAdmission::AwaitCapacity
                 };
             match admission {
                 DeclaredAdmission::DiscardIncoming => {
@@ -4633,8 +4635,12 @@ mod tests {
         }
     }
 
+    /// D510: a queued completion call is never superseded, and an arriving one
+    /// never supersedes. Either would leave a caller waiting for a reply no
+    /// handler will send, so the arriving ask reports the full queue instead
+    /// and the queued one keeps its payload and its waiter.
     #[test]
-    fn coalesce_retires_superseded_ask_without_stealing_existing_waiter() {
+    fn a_queued_ask_is_never_superseded_by_a_coalescing_send() {
         use crate::reply_channel::{
             hew_reply_channel_free, hew_reply_channel_is_ready_for_test, hew_reply_channel_new,
             hew_reply_channel_retain, hew_reply_wait_timeout,
@@ -4672,6 +4678,9 @@ mod tests {
                 ),
                 HewError::Ok as i32
             );
+            // The queue is full and holds an ask, so the coalescing policy has
+            // nothing it may supersede and its `drop_old` fallback nothing it
+            // may evict. The arriving ask is refused, not lost.
             assert_eq!(
                 hew_mailbox_send_with_reply(
                     mb,
@@ -4680,57 +4689,37 @@ mod tests {
                     size_of::<PriceUpdate>(),
                     incoming.cast(),
                 ),
-                HewError::Ok as i32
+                HewError::ErrMailboxFull as i32
             );
-            assert_eq!(
-                hew_mailbox_len(mb),
-                1,
-                "coalesce must keep queue length stable"
-            );
-
-            let incoming_reply = hew_reply_wait_timeout(incoming, 1_000);
+            assert_eq!(hew_mailbox_len(mb), 1, "the queued ask is still queued");
             assert!(
-                incoming_reply.is_null(),
-                "superseded ask should observe an empty reply"
+                !hew_reply_channel_is_ready_for_test(incoming),
+                "a refused ask keeps its waiter: its caller may retry or park"
             );
-            assert!(
-                hew_reply_channel_is_ready_for_test(incoming),
-                "superseded ask waiter must be retired promptly"
-            );
+            hew_reply_channel_free(incoming);
             hew_reply_channel_free(incoming);
 
             let node = hew_mailbox_try_recv(mb);
             assert!(!node.is_null());
-            assert_eq!(
-                (*node).msg_type,
-                1,
-                "coalesced node should retain the matched message type"
-            );
+            assert_eq!((*node).msg_type, 1);
             let got = *((*node).data.cast::<PriceUpdate>());
-            assert_eq!(
-                got.price, 99,
-                "coalesced node should carry the updated payload"
-            );
+            assert_eq!(got.price, 10, "the queued ask keeps its own payload");
             assert_eq!(
                 (*node).reply_channel as usize,
                 existing as usize,
-                "coalesced node must keep the original queued ask waiter"
+                "the queued ask keeps its own waiter"
             );
             assert!(
                 !hew_reply_channel_is_ready_for_test(existing),
-                "original waiter must remain pending until the queued node retires"
+                "the queued waiter stays pending until its node retires"
             );
 
             hew_msg_node_free(node);
 
-            let existing_reply = hew_reply_wait_timeout(existing, 1_000);
-            assert!(
-                existing_reply.is_null(),
-                "retiring the queued node should unblock the original waiter with an empty reply"
-            );
+            assert!(hew_reply_wait_timeout(existing, 1_000).is_null());
             assert!(
                 hew_reply_channel_is_ready_for_test(existing),
-                "original waiter must observe queued-node retirement"
+                "retiring the queued node unblocks its own waiter"
             );
             hew_reply_channel_free(existing);
 

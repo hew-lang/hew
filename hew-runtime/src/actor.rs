@@ -3471,6 +3471,17 @@ unsafe fn submit_native_request(
         if actor_send_is_terminal(a) {
             return mailbox::SendOutcome::Closed;
         }
+        // EXIT(drop-fault-injection): the deterministic harness asks us to lose
+        // this message. The receiver never consumes it, so this path releases
+        // the envelope itself, and the loss reports as a loss rather than as
+        // delivery - the same seam the copy-mode send carries.
+        if crate::deterministic::check_drop_fault(a.id) {
+            // SAFETY: the caller transferred one refcount on `envelope`.
+            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
+            // SAFETY: an unadmitted ask still owns one sender-side reference.
+            unsafe { crate::mailbox::retire_orphaned_ask_sender_ref(reply) };
+            return mailbox::SendOutcome::Dropped;
+        }
         // SAFETY: the pinned mailbox consumes only an admitted envelope.
         let outcome = unsafe {
             if terminal {
@@ -12436,6 +12447,70 @@ mod tests {
     /// buffer, and the node free is the one release of that refcount. The
     /// actor starts `Running` so the wake CAS is a no-op and no scheduler is
     /// needed.
+    /// An injected drop fault loses a native envelope submission exactly as it
+    /// loses a copy-mode one: nothing is enqueued, the message is released once
+    /// rather than leaked, and the caller is told it was lost rather than
+    /// delivered.
+    #[test]
+    fn an_injected_drop_fault_loses_a_native_submission_and_says_so() {
+        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+        unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
+            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
+        }
+
+        let _rt = crate::runtime_test_guard();
+        DROP_COUNT.store(0, Ordering::SeqCst);
+        crate::deterministic::hew_deterministic_reset();
+
+        let (actor, mailbox, token) = track_native_submit_actor(HewActorState::Running);
+        // SAFETY: actor/mailbox are valid for the test; each envelope carries
+        // one refcount that transfers on admission.
+        unsafe {
+            let fresh = || {
+                let size = 4usize;
+                let payload = crate::mem::buf_try_alloc(size);
+                assert!(!payload.is_null());
+                libc::memcpy(payload, b"lost".as_ptr().cast(), size);
+                crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue))
+            };
+
+            crate::deterministic::hew_fault_inject_drop((*actor).id, 1);
+
+            assert!(
+                matches!(
+                    try_submit_native_envelope(token, 4, fresh()),
+                    mailbox::SendOutcome::Dropped
+                ),
+                "a dropped submission is a loss, not an acceptance"
+            );
+            assert_eq!(
+                mailbox::hew_mailbox_has_messages(mailbox),
+                0,
+                "a dropped submission never reaches the queue"
+            );
+            assert_eq!(
+                DROP_COUNT.load(Ordering::SeqCst),
+                1,
+                "the lost message is released exactly once"
+            );
+
+            // The injection was for one message; the next submission lands.
+            assert!(matches!(
+                try_submit_native_envelope(token, 4, fresh()),
+                mailbox::SendOutcome::Enqueued
+            ));
+            assert_eq!(mailbox::hew_mailbox_has_messages(mailbox), 1);
+            let node = mailbox::hew_mailbox_try_recv(mailbox);
+            assert!(!node.is_null());
+            mailbox::hew_msg_node_free(node);
+            assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 2);
+        }
+
+        crate::deterministic::hew_deterministic_reset();
+        retire_native_submit_actor(actor);
+    }
+
     #[test]
     fn native_submission_delivers_by_reference_and_releases_once() {
         static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

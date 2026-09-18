@@ -79,6 +79,9 @@ fn main() {
 ";
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+/// The handler parks on an explicit `sleep` before the breakpoint line: an
+/// actor ask can complete inside the first activation, and then the stop is
+/// reached through `dispatch` with no resume frame to name.
 const HANDLER_SRC: &str = "\
 actor Source {
     receive fn value() -> i64 {
@@ -92,6 +95,7 @@ actor Handler {
     receive fn run() -> i64 {
         let before: i64 = 7;
         let reply = source.value();
+        sleep(10ms);
         let after = before + 1;
         println(after);
         match reply {
@@ -908,7 +912,7 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         command.args([
             "-b",
             "-o",
-            &format!("breakpoint set -H --file {src} --line 13"),
+            &format!("breakpoint set -H --file {src} --line 14"),
             "-o",
             "run",
             "-o",
@@ -923,7 +927,7 @@ fn debugger_names_suspended_actor_handler_frame_at_runtime_boundary() {
         command.args([
             "--batch",
             "-ex",
-            &format!("break {src}:13"),
+            &format!("break {src}:14"),
             "-ex",
             "run",
             "-ex",

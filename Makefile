@@ -1038,6 +1038,12 @@ ratchet-accounting: ## Check: strict expected-failure ledger accounting
 ratchet-accounting-nextest: ## Check: strict nextest expected-failure accounting
 	RATCHET_STRICT_RECOVERIES=1 $(MAKE) test
 
+# Informational: needs `gh` (authenticated) and network, so it runs in the
+# nightly ratchet-accounting workflow, not PR CI. Read-only — reports rows
+# citing a closed issue, never edits a ledger.
+ledger-issues: ## Check: report expected-failure ledger rows citing a closed issue
+	$(PYTHON) scripts/ledger-issue-check.py
+
 test-ratchet-accounting-runner: ## Test: accounting runner executes all families after failures
 	TMPDIR="$${TMPDIR:-/tmp}" scripts/tests/test_ratchet_accounting_runner.sh
 
@@ -1582,6 +1588,7 @@ test-tooling: test-build-harness test-verify-ffi test-cabi-surface test-sys-lane
 test-build-harness:
 	$(PYTHON) scripts/tests/test_ci_local_linux.py
 	$(PYTHON) scripts/tests/test_hew_suite_runner.py
+	$(PYTHON) scripts/tests/test_expected_failures_sort.py
 	$(PYTHON) scripts/tests/test_makefile_interfaces.py
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py

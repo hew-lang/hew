@@ -232,11 +232,17 @@ EXPECTED_FAILURE_KIND=""
 # `<name> <compile|runtime|timeout|launch>`; the check-only corpora retain
 # `<name> [E_DIAGNOSTIC_CODE]`. Reject every unsupported trailing field.
 read_expected_failures() {
-    local line entry name metadata trailing
+    local LC_COLLATE=C
+    local line entry name metadata trailing last_id=""
     EXPECTED_STR=""
     EXPECTED_DIAGNOSTICS_STR=""
     EXPECTED_FAILURE_KINDS_STR=""
     while IFS= read -r line; do
+        # A "# ── ... ──" section header resets sort order: rows are sorted
+        # by id within their own section, not across the whole file.
+        case "$line" in
+        "# ──"*) last_id="" ;;
+        esac
         entry="${line%%#*}"
         entry="${entry#"${entry%%[![:space:]]*}"}" # ltrim
         entry="${entry%"${entry##*[![:space:]]}"}" # rtrim
@@ -246,6 +252,12 @@ read_expected_failures() {
         trailing=""
         read -r name metadata trailing <<<"$entry"
         [[ -z "$name" ]] && continue
+
+        if [[ -n "$last_id" && "$name" < "$last_id" ]]; then
+            echo "error: $EXPECTED_FAILURES_FILE is not sorted by id: '$name' follows '$last_id'" >&2
+            exit 1
+        fi
+        last_id="$name"
 
         if line_set_contains "$EXPECTED_STR" "$name"; then
             echo "error: expected-failures file contains duplicate identity: $name" >&2

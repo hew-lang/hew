@@ -620,8 +620,14 @@ fn parse_ledger(text: &str, platform: &str) -> Result<BTreeMap<Identity, Expecte
     }
     let mut selected = BTreeMap::new();
     let mut seen = BTreeSet::new();
+    // A "# ── ... ──" section header resets sort order: rows are sorted by
+    // id within their own section, not across the whole file.
+    let mut last_identity: Option<Identity> = None;
     for (index, line) in text.lines().enumerate() {
         let line = line.trim();
+        if line.starts_with("# ──") {
+            last_identity = None;
+        }
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -653,6 +659,17 @@ fn parse_ledger(text: &str, platform: &str) -> Result<BTreeMap<Identity, Expecte
             }
         };
         let identity = Identity(fields[2].into(), fields[3].into());
+        if let Some(previous) = &last_identity {
+            if identity < *previous {
+                return Err(format!(
+                    "ledger line {} is not sorted by id: {} follows {}",
+                    index + 1,
+                    identity.label(),
+                    previous.label()
+                ));
+            }
+        }
+        last_identity = Some(identity.clone());
         for candidate in PLATFORMS {
             if (platforms.contains(&"*") || platforms.contains(&candidate))
                 && !seen.insert((candidate, identity.clone()))
@@ -1122,5 +1139,25 @@ mod tests {
         fs::remove_file(path).unwrap();
         assert_eq!(report.counts.tests, 2);
         assert_eq!(report.counts.skipped, 1);
+    }
+
+    #[test]
+    fn ledger_refuses_an_out_of_order_row() {
+        let ledger = "linux\tfailure\thew-cli::suite_b\ttest_a\t#1 reason\n\
+                       linux\tfailure\thew-cli::suite_a\ttest_a\t#2 reason\n";
+        let error = parse_ledger(ledger, "linux").unwrap_err();
+        assert!(
+            error.contains("not sorted by id"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn ledger_sort_order_resets_at_a_section_header() {
+        let ledger = "# ── suite_b ──\n\
+                       linux\tfailure\thew-cli::suite_b\ttest_a\t#1 reason\n\
+                       # ── suite_a ──\n\
+                       linux\tfailure\thew-cli::suite_a\ttest_a\t#2 reason\n";
+        assert!(parse_ledger(ledger, "linux").is_ok());
     }
 }

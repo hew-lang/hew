@@ -385,7 +385,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-15 for the same reason as ci.yml's macOS job: macos-14's
+          # lldb predates `DW_TAG_variant_part` support.
+          - os: macos-15
             arch: aarch64
           - os: macos-15-intel
             arch: x86_64

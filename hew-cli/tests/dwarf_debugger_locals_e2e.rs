@@ -294,6 +294,33 @@ fn require_debugger() -> &'static str {
     })
 }
 
+/// Which debugger actually ran, for a failure message.
+///
+/// A rendering assertion that fails on one machine and passes on another is
+/// usually the debugger's version rather than the DWARF. lldb only learned to
+/// read `DW_TAG_variant_part` in lldb 18; before that it renders an enum as an
+/// empty struct, rustc's enums included. Naming the binary and its version in
+/// the panic turns that into a one-line diagnosis.
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
+fn debugger_identity(debugger: &str) -> String {
+    let first_line = |output: std::process::Output| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let version = Command::new(debugger)
+        .arg("--version")
+        .output()
+        .map_or_else(|error| error.to_string(), first_line);
+    let path = Command::new("which")
+        .arg(debugger)
+        .output()
+        .map_or_else(|error| error.to_string(), first_line);
+    format!("{path} [{version}]")
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "freebsd"))]
 fn debugger_quote(path: &str) -> String {
     let mut quoted = String::with_capacity(path.len() + 2);
@@ -973,15 +1000,18 @@ fn debugger_renders_only_active_enum_variant_payload() {
             &format!("breakpoint set --file {src} --line 12"),
             "-o",
             "run",
-            // Older lldb releases (e.g. the Xcode 15.x toolchain on GitHub's
-            // macos-14 runner) default `target.max-children-depth` shallower
-            // than newer ones (Xcode 16.3's lldb-2100 defaults to 5): without
-            // an explicit --depth, the nested Payload record inside the
-            // active variant renders as an elided `{...}` instead of
-            // `(code = 7)`, and this assertion goes looking for text that was
-            // never printed. Forcing a depth deep enough for this fixture's
+            // lldb's default `target.max-children-depth` varies by release,
+            // and without an explicit --depth the nested Payload record inside
+            // the active variant renders as an elided `{...}` instead of
+            // `(code = 7)`. Forcing a depth deep enough for this fixture's
             // nesting (Status -> $variants$ -> $variant$N -> value -> field)
             // makes the rendering version-stable.
+            //
+            // Depth is not the whole version story: lldb before 18 cannot read
+            // `DW_TAG_variant_part` at all and prints `(Status) status = {}`,
+            // rustc's own enums included. That is why the macOS CI job runs on
+            // an image whose lldb is new enough; `debugger_identity` names the
+            // binary in the panic when it is not.
             "-o",
             "frame variable status --depth 10",
             "-o",
@@ -1018,12 +1048,13 @@ fn debugger_renders_only_active_enum_variant_payload() {
         "{dbg} failed while rendering enum:\n{text}\n{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    let identity = debugger_identity(dbg);
     assert!(
         text.contains("Packet") && text.contains("code = 7"),
-        "debugger must render the active Packet payload:\n{text}"
+        "debugger must render the active Packet payload (ran {identity}):\n{text}"
     );
     assert!(
         !text.contains("Idle =") && !text.contains("Idle {"),
-        "debugger must not render the inactive Idle variant:\n{text}"
+        "debugger must not render the inactive Idle variant (ran {identity}):\n{text}"
     );
 }

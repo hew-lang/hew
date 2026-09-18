@@ -703,7 +703,11 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-and-test-macos:
     name: Build & test (macOS arm64)
-    runs-on: macos-14
+    # macos-15, not macos-14: the live-debugger suite renders an enum local,
+    # and lldb only learned to read `DW_TAG_variant_part` in lldb 18. The
+    # Xcode 15.x lldb on macos-14 prints the enum as an empty struct - it does
+    # the same to rustc's own enums, so the DWARF is not what is at fault.
+    runs-on: macos-15
     timeout-minutes: 60
     # Advisory on every ci.yml event (D505): macOS is not a branch-protection
     # required check on pull requests, so a hard failure here on push read as

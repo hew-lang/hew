@@ -503,6 +503,10 @@ pub struct BuildArgs {
     /// remains the PE/COFF GNU-target path with embedded DWARF, which no
     /// debugger check currently proves (the live-debugger suite is excluded
     /// on Windows and the PDB check covers only `windows-msvc`).
+    ///
+    /// Rendering an enum local needs lldb 18 or newer, which is where lldb
+    /// learned to read `DW_TAG_variant_part`; an older lldb prints the enum as
+    /// an empty struct. gdb reads it at every version this project tests.
     #[arg(long, short = 'g')]
     pub debug: bool,
     /// LLVM middle-end optimization level: `0` (default, no optimization) or

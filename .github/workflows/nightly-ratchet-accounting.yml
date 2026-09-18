@@ -87,7 +87,9 @@ jobs:
   # requires a scheduled strict job for that platform.
   account-macos-nextest:
     name: Strict nextest accounting (macOS arm64)
-    runs-on: macos-14
+    # macos-15 for the same reason as ci.yml's macOS job: macos-14's lldb
+    # predates `DW_TAG_variant_part` support.
+    runs-on: macos-15
     # This intentionally includes the oracle binaries excluded from ordinary
     # hosted macOS CI; full native ledger authority needs their outcomes.
     timeout-minutes: 180

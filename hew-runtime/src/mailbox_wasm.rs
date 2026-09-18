@@ -754,7 +754,7 @@ unsafe fn send_user_message(
 
 /// Policy-aware fire-and-forget send used by the actor layer. Unlike the FFI
 /// status mapping, this preserves whether a successful admission discarded or
-/// replaced work so checked language sends can report `MessageLost`.
+/// replaced work, so the caller can report the loss rather than acceptance.
 pub(crate) unsafe fn hew_mailbox_send_fire_and_forget(
     mb: &mut HewMailboxWasm,
     msg_type: i32,

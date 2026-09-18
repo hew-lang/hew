@@ -2430,7 +2430,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_select(
                 spent,
-                self.ctx.i8_type().const_int(11, false),
+                self.ctx.i8_type().const_int(10, false),
                 reason.into_int_value(),
                 "submission.reason.role",
             )

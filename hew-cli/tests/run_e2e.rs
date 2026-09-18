@@ -5485,12 +5485,7 @@ fn tree_sum(tree: Tree) -> i64 {
 
 actor Worker {
     receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
-    receive fn boom() {
-        // Keep the crash beyond the 250 ms contextless-await grace so the
-        // restart barrier parks rather than resolving on the pre-park check.
-        sleep(500ms);
-        panic("restart");
-    }
+    receive fn boom() { panic("restart"); }
 }
 
 supervisor App {
@@ -5502,6 +5497,9 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
+    // `boom` is a completion call, so its `Err` proves the crash opened its
+    // fault record. `await_restart` then waits for that record to settle,
+    // which is the observable restart this test joins on.
     let _ = worker.boom();
     let _ = await_restart sup.worker;
     let (a, b) = await fork (

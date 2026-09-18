@@ -1504,8 +1504,7 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
 // lib.rs gates `pub mod supervisor` behind
 // `#[cfg(not(target_arch = "wasm32"))]` while `pub mod actor` is ungated — the
 // same asymmetry already annotated elsewhere in this file. The bit it writes,
-// `HewActor::state_drop_borrowed`, is READ on both targets and is ABI
-// layout-asserted for wasm parity in scheduler_wasm.rs.
+// `HewActor::state_drop_borrowed`, is READ on both targets.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
     if actor.is_null() {
@@ -1550,7 +1549,7 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
         .swap(std::ptr::null_mut(), Ordering::AcqRel);
     if !token.is_null() {
         // `task_scope` is native-only, and so is the suspend edge that stashes
-        // a token: `scheduler_wasm` never writes this slot. The wasm build
+        // a token, so nothing on wasm32 writes this slot. The wasm build
         // therefore cannot reach a non-null token, and asserts that rather than
         // silently dropping a retained reference if that ever changes.
         // SAFETY: the actor slot owns a retained task-scope cancellation token.

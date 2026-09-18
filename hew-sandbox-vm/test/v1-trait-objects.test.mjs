@@ -18,11 +18,11 @@ const PRINT_LN = { id: 0, family: "Print", detail: { kind: "Str", newline: true 
 const CONCAT = { id: 1, family: "StringConcat" };
 
 /// `vtables` carries one entry per trait implementation. `slot` is the
-/// checker's own index for the method, and `callee` the function that
-/// implements it.
+/// checker's own index for the method, `callee` the function that implements
+/// it, and `receiver` how the wrapped value reaches that function's `self`.
 function traitPackage(options = {}) {
   const vtables = options.vtables ?? [
-    { id: 0, slots: [{ slot: 3, method: "greet", callee: 1 }] }
+    { id: 0, slots: [{ slot: 3, method: "greet", callee: 1, receiver: options.receiver ?? "borrow" }] }
   ];
   const callSlot = options.callSlot ?? 3;
 
@@ -185,8 +185,8 @@ test("the slot number is matched, not used as a position in the slot array", () 
         {
           id: 0,
           slots: [
-            { slot: 7, method: "other", callee: 0 },
-            { slot: 3, method: "greet", callee: 1 }
+            { slot: 7, method: "other", callee: 0, receiver: "borrow" },
+            { slot: 3, method: "greet", callee: 1, receiver: "borrow" }
           ]
         }
       ]
@@ -253,4 +253,86 @@ test("a trait object copies with the value it wraps", () => {
   const after = run(aliased);
   assert.equal(after.result, "ok", JSON.stringify(after.final_state.runtime_failures));
   assert.equal(after.final_state.stdout.join(""), "hello Grace\n");
+});
+
+test("the slot's receiver decision is what reaches self", () => {
+  // Two `dyn.call`s on the same trait object in one activation. Under a
+  // `borrow` receiver the object survives the first call; under `move` the
+  // first call consumes it, so the second read fails rather than quietly
+  // seeing a spent value.
+  const twice = (receiver) => {
+    const pkg = traitPackage({ receiver });
+    pkg.functions[0].blocks = [
+      {
+        id: 0,
+        params: [],
+        ops: [
+          { op: "const.str", dst: 0, str: 0, span: null },
+          { op: "aggregate.make", dst: 1, shape: 0, fields: [0], span: null },
+          { op: "dyn.make", dst: 2, vtable: 0, value: 1, span: null }
+        ],
+        term: {
+          op: "dyn.call",
+          receiver: { value: 2, decision: "borrow" },
+          slot: 3,
+          args: [],
+          result: { value: 3, own: "owned" },
+          normal: { to: 1, args: [] },
+          unwind: null,
+          span: null
+        }
+      },
+      {
+        id: 1,
+        params: [],
+        ops: [],
+        term: {
+          op: "dyn.call",
+          receiver: { value: 2, decision: "borrow" },
+          slot: 3,
+          args: [],
+          result: { value: 4, own: "owned" },
+          normal: { to: 2, args: [] },
+          unwind: null,
+          span: null
+        }
+      },
+      {
+        id: 2,
+        params: [],
+        ops: [],
+        term: {
+          op: "runtime.call",
+          family: 0,
+          args: [{ value: 4, decision: "borrow" }],
+          result: null,
+          result_shape: null,
+          normal: { to: 3, args: [] },
+          unwind: null,
+          span: null
+        }
+      },
+      { id: 3, params: [], ops: [], term: { op: "return", value: null, span: null } }
+    ];
+    return run(pkg);
+  };
+
+  // `borrow` is what the emitter records for these methods today.
+  const borrowed = twice("borrow");
+  assert.equal(borrowed.result, "ok", JSON.stringify(borrowed.final_state.runtime_failures));
+  assert.equal(borrowed.final_state.stdout.join(""), "hello Ada\n");
+
+  // A `copy` receiver also leaves the object usable: the callee got a clone.
+  const copied = twice("copy");
+  assert.equal(copied.result, "ok", JSON.stringify(copied.final_state.runtime_failures));
+  assert.equal(copied.final_state.stdout.join(""), "hello Ada\n");
+
+  // A `move` receiver consumes the trait object, so the second call has
+  // nothing left to read.
+  const moved = twice("move");
+  assert.equal(moved.result, "runtime_failure");
+  assert.match(
+    moved.final_state.runtime_failures[0].message,
+    /ownership was already transferred or released/
+  );
 });

@@ -4,15 +4,24 @@ trait Greeter {
     fn greet(self) -> string;
 }
 
-type English { name: string }
-type Latin { name: string }
+type English {
+    name: string,
+}
+
+type Latin {
+    name: string,
+}
 
 impl Greeter for English {
-    fn greet(self) -> string { f"hello {self.name}" }
+    fn greet(self) -> string {
+        f"hello {self.name}"
+    }
 }
 
 impl Greeter for Latin {
-    fn greet(self) -> string { f"salve {self.name}" }
+    fn greet(self) -> string {
+        f"salve {self.name}"
+    }
 }
 
 fn speak(g: dyn Greeter) -> string {

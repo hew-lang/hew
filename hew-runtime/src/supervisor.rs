@@ -9635,7 +9635,8 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
     0
 }
 
-/// Return the child supervisor pointer at `index`, or null if out of range.
+/// Return the child supervisor pointer at `index`, or null when the slot is out
+/// of range, empty, or holds an occupant its stable token no longer pins.
 ///
 /// # Safety
 ///
@@ -9650,15 +9651,29 @@ pub unsafe extern "C" fn hew_supervisor_get_child_supervisor(
     }
     #[expect(clippy::cast_sign_loss, reason = "guarded by index >= 0 check above")]
     let i = index as usize;
-    // SAFETY: caller keeps `sup` live through this nested-roster read.
-    let guard = unsafe { &(*sup).roster }.lock_or_recover();
-    // SAFETY: the guard protects this scoped parallel-roster access.
-    let s = &*guard;
-    debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
-    if i >= s.child_supervisors.len() {
+    let entry = {
+        // SAFETY: caller keeps `sup` live through this nested-roster read.
+        let guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard protects this scoped parallel-roster access.
+        let s = &*guard;
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
+        s.child_supervisors
+            .get(i)
+            .copied()
+            .zip(s.child_supervisor_tokens.get(i).copied())
+    };
+    let Some((child_sup, token)) = entry else {
         return ptr::null_mut();
+    };
+    // The token, not the cached pointer, decides whether the slot still holds a
+    // live nested supervisor.
+    if crate::lifetime::local_handles::pin_current_supervisor(token)
+        .is_some_and(|pin| pin.supervisor() == child_sup)
+    {
+        child_sup
+    } else {
+        ptr::null_mut()
     }
-    s.child_supervisors[i]
 }
 
 /// Return the child actor pointer at `index`, or null if out of range.
@@ -10443,6 +10458,11 @@ pub extern "C" fn hew_supervisor_role_ask(
 /// (child supervisor being restarted) returns `Transient(Restarting)`;
 /// an out-of-range `key` returns `Dead(UnknownSlot)`.
 ///
+/// The roster's pointer is a cached address; the slot's stable token is the one
+/// authority for that allocation's lifetime. A slot whose token no longer pins
+/// holds a retired occupant, which reads exactly like an empty slot: the ruling
+/// that replaces it is in flight.
+///
 /// # Safety
 ///
 /// `sup` must be a valid pointer returned by [`hew_supervisor_new`] (or by a
@@ -10463,20 +10483,31 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
     }
 
     let i = key as usize;
-    // SAFETY: caller keeps `sup` live through this nested-roster lookup.
-    let guard = unsafe { &(*sup).roster }.lock_or_recover();
-    // SAFETY: the guard protects this scoped parallel-roster access.
-    let s = &*guard;
-    debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
-    if i >= s.child_supervisors.len() {
-        return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
-    }
+    // The pointer, its stable token and the spec are one parallel-roster entry
+    // protected by `roster`; restart, nested stop, and public lookup cannot
+    // observe different generations of the triple. The roster is released
+    // before the token is pinned, so no roster/handle-registry nesting.
+    let entry = {
+        // SAFETY: caller keeps `sup` live through this nested-roster lookup.
+        let guard = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: the guard protects this scoped parallel-roster access.
+        let s = &*guard;
+        debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
+        if i >= s.child_supervisors.len() {
+            return ChildLookupResult::dead(ChildSlotReason::UnknownSlot);
+        }
+        let spent = s
+            .child_supervisor_specs
+            .get(i)
+            .and_then(Option::as_ref)
+            .is_some_and(|spec| spec.spent);
+        (s.child_supervisors[i], s.child_supervisor_tokens[i], spent)
+    };
+    let (child_sup, token, spent) = entry;
 
-    // The pointer and its stable token are one parallel-roster entry protected
-    // by `roster`; restart, nested stop, and public lookup cannot observe
-    // different generations of the pair.
-    let child_sup = s.child_supervisors[i];
-    if !child_sup.is_null() {
+    if crate::lifetime::local_handles::pin_current_supervisor(token)
+        .is_some_and(|pin| pin.supervisor() == child_sup)
+    {
         // Reinterpret the supervisor pointer as HewActor* for the shared
         // result struct. Codegen reconstructs the *mut HewSupervisor at the
         // typed call site. The cast is a bit-pattern reinterpretation only;
@@ -10487,14 +10518,11 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
         return ChildLookupResult::live(child_sup.cast::<HewActor>());
     }
 
-    if s.child_supervisor_specs
-        .get(i)
-        .and_then(Option::as_ref)
-        .is_some_and(|spec| spec.spent)
-    {
+    if spent {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
-    // Null slot — child supervisor is being restarted or was never started.
+    // Empty or retired slot — the child supervisor is being restarted, was
+    // never started, or its occupant is already retired.
     ChildLookupResult::transient(ChildSlotReason::Restarting)
 }
 

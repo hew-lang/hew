@@ -1,0 +1,12 @@
+[[case]]
+id = "gen_block_borrowed_resource_capture"
+intent = "Reject: a `gen { }` block cannot capture its enclosing function's borrowed `#[resource]` parameter."
+source = "../vertical-slice/reject/gen_block_borrowed_resource_capture.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_OWN_CONSUME_BORROWED"
+line = 15
+column = 17

@@ -1,0 +1,48 @@
+// Accept + run: the `consume` remedy the generator capture diagnostic names.
+// Declaring the parameter `consume` transfers the value into the generator
+// frame, which then owns and releases it — so both a capturing closure behind a
+// bare `fn(..)` type and a `#[resource]` handle become admissible captures.
+// Negative control: reject/gen_fn_borrowed_fn_param.hew and
+// reject/gen_block_borrowed_resource_capture.hew are the same bodies without it.
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {}
+}
+
+gen fn mapped(n: i64, consume f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+gen fn ids(consume t: Token, n: i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield t.id;
+        i = i + 1;
+    }
+    t.close();
+}
+
+fn main() {
+    var total = 0;
+    let k = 2;
+    for v in mapped(3, |x: i64| x * k) {
+        total = total + v;
+    }
+    // 0*2 + 1*2 + 2*2
+    println(total);
+
+    var ids_total = 0;
+    for v in ids(Token { id: 7 }, 3) {
+        ids_total = ids_total + v;
+    }
+    // 7 + 7 + 7
+    println(ids_total);
+}

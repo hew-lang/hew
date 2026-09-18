@@ -1,6 +1,5 @@
 # platform<TAB>outcome<TAB>suite<TAB>test<TAB>reason
 linux,macos,windows,freebsd	failure	hew-cli::actor_fault_isolation_e2e	crash_in_the_supervisor_itself_fails_the_process_without_cascading	#3381 reports a fault raised inside an on(crash) hook
-linux,macos,freebsd	failure	hew-cli::affine_resource_carrier_boundaries	channel_handle_clone_terminals_match_runtime_semantics	#3377 fix/collections-final-path: gives Vec<Sender<T>> a copy operation or refuses it in source
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	nested_returned_string_scope_exit_is_discharged_exactly_once	#3118 releases branch-local siblings on normal edges
 windows,freebsd	failure	hew-cli::branch_divergent_return_drop_ir	returned_result_branch_releases_only_the_nonreturned_string_sibling	#3118 releases branch-local siblings on normal edges
 linux,freebsd,macos	failure	hew-cli::closure_env_drop_leak_oracle	generator_transitive_capture_outliving_its_generator_is_not_a_use_after_free	#3370 feat/generators-adaptors: coerces a Generator value at a callee boundary
@@ -84,10 +83,6 @@ macos	failure	hew-cli::quic_string_result_retention_leak_oracle	shipped_quic_obs
 linux,freebsd,macos	failure	hew-cli::rc_aggregate_ingress_ownership_oracle	machine_state_payload_does_not_over_release	#3379 evaluates const parameters and generic fallbacks in a pure machine
 macos	failure	hew-cli::recv_loop_leak_oracle	parked_for_await_receiver_handoff_has_flat_leak_slope_and_no_double_free	#3451 makes the shipped-transport probes complete their work
 linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_actor_state_closure_field_fails_closed	#3366 carries capture metadata for a match-arm binding into HIR
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_closure_borrowed_element_store_fails_closed	#3377 fix/collections-final-path: renders a borrowed Vec-element closure store's ownership refusal as a source diagnostic
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_cross_module_generic_fn_value_ambiguous_rejected	#3377 fix/collections-final-path: gives a generic callee's guaranteed input an owned copy
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_arg_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
-linux,macos,windows,freebsd	failure	hew-cli::run_e2e	check_gen_fn_capturing_closure_rebind_fails_closed	#3377 fix/collections-final-path: treats a function value as a first-class value
 linux,macos,freebsd	failure	hew-cli::shutdown_drain_e2e	tcp_handler_finishing_inside_budget_delivers_response_and_exits_zero	#3397 delivers an in-budget handler's response before the drained socket closes
 linux,macos,windows,freebsd	failure	hew-cli::sort_complexity_e2e	sort_merge_authority_runs_under_wasmtime	#3368 implements sandbox emission on the physical path
 macos	failure	hew-cli::structural_rendering_ownership_oracle	structural_rendering_has_zero_ownership_effect	#3441 gives StructuralFormat an ownership-SIR contract

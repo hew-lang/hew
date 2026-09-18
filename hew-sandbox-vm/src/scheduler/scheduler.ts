@@ -1414,5 +1414,7 @@ function heapUnits(value: VmValue): number {
       );
     case "function":
       return 1;
+    case "closure":
+      return 1 + heapUnits(value.environment);
   }
 }

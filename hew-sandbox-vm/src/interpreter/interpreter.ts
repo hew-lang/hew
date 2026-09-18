@@ -3421,6 +3421,8 @@ function renderComparable(value: VmValue): JsonValue {
       return renderComparable(value.value);
     case "function":
       return value.id;
+    case "closure":
+      return { kind: "closure", body: value.body };
   }
 }
 

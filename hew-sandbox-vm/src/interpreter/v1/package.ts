@@ -278,7 +278,7 @@ export type OpV1 =
     })
   | (OpBase & { op: "str.eq"; dst: number; lhs: Operand; rhs: Operand })
   | (OpBase & { op: "bytes.eq"; dst: number; lhs: Operand; rhs: Operand })
-  // Callables, defer and concurrency — no producer in a sequential package
+  // Callables and defer; concurrency has no producer in a sequential package
   | (OpBase & { op: "function.make"; dst: number; callable: number })
   | (OpBase & {
       op: "closure.make";

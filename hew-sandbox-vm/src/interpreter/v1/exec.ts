@@ -21,6 +21,7 @@ import type {
   BoundaryDecision,
   BoundaryOperand,
   CallResult,
+  ClosureShape,
   Edge,
   FunctionV1,
   OpV1,
@@ -67,6 +68,10 @@ interface Activation {
   env: Map<number, Ref>;
   places: Map<number, Cell>;
   fault: Fault | null;
+  /// Faults parked by the `enter_defer` boundaries this activation is inside,
+  /// innermost last. A deferred body runs with its own fault state; its
+  /// `finish_defer` restores the fault the boundary was entered with.
+  parked: Array<Fault | null>;
   caller: Activation | null;
   /// Where the caller binds this activation's return value.
   result: CallResult;
@@ -247,6 +252,7 @@ class ExecutorV1 {
       env,
       places,
       fault: null,
+      parked: [],
       caller,
       result,
       normal,
@@ -355,6 +361,14 @@ class ExecutorV1 {
             "place" in decl.base
               ? this.placeRef(act, decl.base.place)
               : this.refOf(act, decl.base.value),
+          index: decl.field,
+        };
+      case "capture":
+        // `environment` is the value id the body holds its environment under,
+        // and the place is one field of it.
+        return {
+          kind: "field",
+          parent: this.refOf(act, decl.environment),
           index: decl.field,
         };
       default:
@@ -585,7 +599,25 @@ class ExecutorV1 {
       case "function.make":
         this.define(act, op.dst, { kind: "function", id: String(op.callable) });
         return;
+      case "closure.make": {
+        // The captures become one environment, in the order the closure shape
+        // declares; a `capture` place in the body reaches its field.
+        const shape = this.closureAt(op.closure);
+        this.define(act, op.dst, {
+          kind: "closure",
+          body: shape.body,
+          environment: {
+            kind: "record",
+            typeId: "",
+            fields: op.fields.map((id) => this.read(act, id)),
+          },
+        });
+        return;
+      }
       case "callable.coerce":
+        // A coercion only weakens the callable's proved capabilities; SIR
+        // refuses one that changes an argument, a result or a capture shape,
+        // so the value itself is unchanged.
         this.define(act, op.dst, this.read(act, op.source));
         return;
       case "dyn.make":
@@ -594,6 +626,11 @@ class ExecutorV1 {
           vtable: op.vtable,
           value: this.read(act, op.value),
         });
+        return;
+
+      // The registration reserves the free places the body reaches; the drain
+      // order is already the CFG's, so there is nothing to record here.
+      case "register_defer":
         return;
 
       default:
@@ -623,6 +660,16 @@ class ExecutorV1 {
 
   private variantName(shape: number): string {
     return this.pkg.variants[shape]?.name ?? "";
+  }
+
+  private closureAt(id: number): ClosureShape {
+    const shape =
+      this.pkg.closures[id] ??
+      this.pkg.closures.find((candidate) => candidate.id === id);
+    if (!shape) {
+      throw new Error(`closure ${id} is not in the package`);
+    }
+    return shape;
   }
 
   // ── terminators ──────────────────────────────────────────────────────────
@@ -729,16 +776,27 @@ class ExecutorV1 {
         );
         return;
       }
-      case "call":
-      case "indirect.call": {
-        const callee =
-          term.op === "call"
-            ? term.callee
-            : functionId(this.boundary(act, term.callee));
+      case "call": {
         const args = term.args.map((operand) => this.boundary(act, operand));
         this.current = this.activate(
-          this.functionAt(callee),
+          this.functionAt(term.callee),
           args,
+          act,
+          term.result,
+          term.normal,
+          term.unwind,
+        );
+        return;
+      }
+      case "indirect.call": {
+        // A closure's environment reaches its body's first parameter, ahead of
+        // the call's own arguments, the way a trait object's value reaches
+        // `self`. A plain function value carries none.
+        const callee = this.boundary(act, term.callee);
+        const args = term.args.map((operand) => this.boundary(act, operand));
+        this.current = this.activate(
+          this.functionAt(calleeFunction(callee)),
+          callee.kind === "closure" ? [callee.environment, ...args] : args,
           act,
           term.result,
           term.normal,
@@ -810,6 +868,24 @@ class ExecutorV1 {
       case "cleanup.dispatch":
         this.takeEdge(act, act.fault ? term.fault : term.normal);
         return;
+      case "enter_defer":
+        // The deferred body runs on its own fault state: a body reached while
+        // unwinding must not read the fault it is cleaning up after.
+        act.parked.push(act.fault);
+        act.fault = null;
+        this.takeEdge(act, term.body);
+        return;
+      case "finish_defer": {
+        // Combine the parked fault with whatever the body left, keeping the
+        // first: a join must never forget the fault the boundary carried in.
+        const parked = act.parked.pop();
+        if (parked === undefined) {
+          throw new Error(`${act.fn.name}: finish_defer has no active body`);
+        }
+        act.fault = parked ?? act.fault;
+        this.takeEdge(act, term.next);
+        return;
+      }
       case "resume_unwind":
         this.resumeUnwind(act);
         return;
@@ -1093,13 +1169,17 @@ function tagOf(value: VmValue): number {
   return value.tag;
 }
 
-function functionId(value: VmValue): number {
-  if (value.kind !== "function") {
-    throw new TypeError(
-      `indirect.call expected a function value, got ${value.kind}`,
-    );
+function calleeFunction(value: VmValue): number {
+  switch (value.kind) {
+    case "function":
+      return Number(value.id);
+    case "closure":
+      return value.body;
+    default:
+      throw new TypeError(
+        `indirect.call expected a callable value, got ${value.kind}`,
+      );
   }
-  return Number(value.id);
 }
 
 function truth(value: VmValue): boolean {

@@ -6,7 +6,7 @@
 mod bytecode;
 mod emit;
 mod profile;
-mod sir_emit;
+pub mod sir_emit;
 
 /// The shipped standard-library sources, as `("std/<relative path>", source)`.
 mod std_sources {

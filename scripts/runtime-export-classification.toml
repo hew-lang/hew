@@ -1694,6 +1694,11 @@ non-declarable = [
   "hew_fault_new_unhandled_failure",
   "hew_fault_report",
   "hew_fault_trap",
+  # The release-fault bracket: generated code arms a sink around a release the
+  # runtime performs for it, so a failing `close` reaches that frame's fault
+  # record instead of the trap path (D516). Emitted code only, never declared.
+  "hew_release_fault_begin",
+  "hew_release_fault_end",
   # Private physical operations initialize owned output storage.
   "hew_bytes_decode_utf8",
   "hew_bytes_decode_utf8_lossy",

@@ -1,0 +1,26 @@
+// An actor's terminal sequence releases its owned state fields in reverse
+// declaration order. A `close` that fails partway through does not strand the
+// fields behind it: every remaining field is still released, the first failure
+// names the actor's failure and the later one joins it as a secondary line.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        panic(f"close {self.fd} failed");
+    }
+}
+
+actor Pool {
+    var first: Conn = Conn { fd: 1 },
+    var second: Conn = Conn { fd: 2 },
+
+    receive fn ping() {}
+}
+
+fn main() {
+    let pool = spawn Pool;
+    let _ = pool.ping();
+    close(pool);
+}

@@ -539,6 +539,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one hand-built module: the indirect call, its cleanup dispatch and both exits"
+    )]
     fn indirect_counter_module() -> SemModule {
         use crate::{
             BlockArg, BlockId, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, Edge,

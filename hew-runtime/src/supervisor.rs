@@ -3498,21 +3498,32 @@ unsafe fn restart_children_for_strategy(
                 }
             }
             RestartChildRole::Supervisor { index, identity } => {
-                // SAFETY: the caller keeps the parent alive and the roster owns its child.
-                let roster = unsafe { &(*sup).roster }.lock_or_recover();
-                if roster
-                    .child_supervisor_specs
-                    .get(index)
-                    .and_then(Option::as_ref)
-                    .is_some_and(|spec| spec.identity == identity)
-                {
-                    if let Some(child) = roster
-                        .child_supervisors
+                // The roster's nested pointer is a cached address, not a
+                // lifetime: the stable token is. Copy the pair, release the
+                // parent roster, then shut the child down through its pin.
+                let entry = {
+                    // SAFETY: the caller keeps the parent alive for this lookup.
+                    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+                    roster
+                        .child_supervisor_specs
                         .get(index)
-                        .copied()
-                        .filter(|child| !child.is_null())
+                        .and_then(Option::as_ref)
+                        .is_some_and(|spec| spec.identity == identity)
+                        .then(|| {
+                            roster
+                                .child_supervisors
+                                .get(index)
+                                .copied()
+                                .zip(roster.child_supervisor_tokens.get(index).copied())
+                        })
+                        .flatten()
+                };
+                if let Some((child, token)) = entry {
+                    if let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token)
                     {
-                        request_supervisor_shutdown(child);
+                        if pin.supervisor() == child {
+                            request_supervisor_shutdown(child);
+                        }
                     }
                 }
             }
@@ -11548,25 +11559,42 @@ pub unsafe extern "C" fn hew_supervisor_restart_await_blocking(sup: *mut HewSupe
 /// thing I just stopped" is exactly what it has to wait out, and a
 /// `close(role)` opens no fault record to say so.
 ///
-/// The slot is read under `roster`, which owns the pointer: a ruling takes the
-/// occupant out of the slot under the same lock before freeing it.
+/// An actor slot is read under `roster`, which owns the pointer: a ruling takes
+/// the occupant out of the slot under the same lock before freeing it. A nested
+/// supervisor slot is NOT that: a nested supervisor is reclaimed through its own
+/// token teardown, and the parent's slot is only cleared later, when the parent
+/// dispatches `ChildSupervisorStopped`. Its stable token, resolved through the
+/// local-handle registry, is the one authority for that allocation's lifetime,
+/// so the barrier pins the token rather than dereferencing the cached pointer.
 fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: bool) -> bool {
     let index = key as usize;
-    // SAFETY: the caller keeps `sup` live for this lookup.
-    let roster = unsafe { &(*sup).roster }.lock_or_recover();
     if nested {
-        let Some(child) = roster.child_supervisors.get(index).copied() else {
+        let entry = {
+            // SAFETY: the caller keeps `sup` live for this lookup.
+            let roster = unsafe { &(*sup).roster }.lock_or_recover();
+            roster
+                .child_supervisors
+                .get(index)
+                .copied()
+                .zip(roster.child_supervisor_tokens.get(index).copied())
+        };
+        let Some((child, token)) = entry else {
             return false;
         };
-        if child.is_null() {
+        let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+            return false;
+        };
+        if pin.supervisor() != child {
             return false;
         }
-        // SAFETY: the roster guard owns this nested supervisor pointer.
+        // SAFETY: the pin holds this nested supervisor's allocation live.
         unsafe {
             !(*child).cancelled.load(Ordering::Acquire)
                 && (*child).running.load(Ordering::Acquire) != 0
         }
     } else {
+        // SAFETY: the caller keeps `sup` live for this lookup.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
         let Some(child) = roster.children.get(index).copied() else {
             return false;
         };

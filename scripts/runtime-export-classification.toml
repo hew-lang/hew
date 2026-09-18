@@ -1628,7 +1628,6 @@ non-declarable = [
   # it.
   "hew_actor_trap",
   "hew_actor_register_type",
-  "hew_actor_send_aliased",
   "hew_machine_emit_step_exit",
   "hew_deterministic_get_seed",
   "hew_deterministic_reset",
@@ -1760,7 +1759,6 @@ non-declarable = [
   "hew_mailbox_new_bounded",
   "hew_mailbox_new_coalesce",
   "hew_mailbox_new_with_policy",
-  "hew_mailbox_send_aliased",
   "hew_mailbox_send_sys",
   "hew_mailbox_sys_len",
   "hew_mailbox_try_recv",

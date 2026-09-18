@@ -3564,115 +3564,6 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
-/// Send an envelope-aliased message to an actor.
-///
-/// The caller transfers exactly one refcount on `envelope`. This is the
-/// runtime entry for the codegen `SendAliasMode::Alias` lowering: the
-/// sender's already-owned payload is wrapped in a refcounted
-/// [`HewMsgEnvelope`] and delivered by reference instead of being
-/// deep-copied, with the move-checker invalidating the sender's binding
-/// so no observable alias survives.
-///
-/// # Single-release contract
-///
-/// The envelope refcount is consumed **exactly once** on every exit:
-///
-/// - **Null actor** — release the refcount directly and return (an
-///   absent/dead actor is a normal outcome, not a fault, so we do not
-///   panic).
-/// - **Drop-fault injection** (deterministic test harness) — the message
-///   is silently discarded and the receiver never consumes the payload,
-///   so we release the refcount directly.
-/// - **Otherwise** — delegate to [`crate::mailbox::hew_mailbox_send_aliased`],
-///   which consumes the refcount on every outcome (enqueued node → freed
-///   on dispatch/drain; rejected → released immediately). After that call
-///   the envelope must not be touched again.
-///
-/// On a successful enqueue the destination actor is woken via
-/// [`schedule_actor_after_enqueue`], mirroring the copy-mode path.
-///
-/// # Safety
-///
-/// - `actor` may be null; if non-null it must be a valid actor pointer
-///   under the same liveness contract as [`hew_actor_send`].
-/// - `envelope` must carry exactly one caller-transferred refcount (from
-///   [`crate::mailbox::hew_msg_envelope_new`] /
-///   [`crate::mailbox::hew_msg_envelope_clone_alias`]), or be null.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_aliased(
-    actor: *mut HewActor,
-    msg_type: i32,
-    envelope: *mut crate::mailbox::HewMsgEnvelope,
-) {
-    if actor.is_null() {
-        // EXIT(null-actor): no destination. Release the
-        // caller-transferred refcount exactly once so the buffer does
-        // not leak, then return cleanly (a dead/absent actor is normal —
-        // do not panic).
-        if !envelope.is_null() {
-            // SAFETY: caller transferred one refcount on `envelope`.
-            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        }
-        return;
-    }
-
-    // SAFETY: caller guarantees `actor` is valid (same liveness contract
-    // as `hew_actor_send`).
-    let a = unsafe { &*actor };
-
-    // EXIT(cross-runtime): the actor belongs to a different runtime than the
-    // caller. Fail closed without routing the foreign pointer, releasing the
-    // caller-transferred refcount exactly once so the buffer does not leak.
-    // Never fires single-runtime.
-    if !actor_runtime_matches(a) {
-        if !envelope.is_null() {
-            // SAFETY: caller transferred one refcount on `envelope`.
-            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        }
-        return;
-    }
-
-    // EXIT(terminal): the actor is terminal (Crashed/Stopped). Reject before
-    // touching the mailbox — see `actor_send_is_terminal`. The trap takes the
-    // terminal CAS before closing the mailbox, so without this gate an alias
-    // send racing that window would consume the caller's refcount into an
-    // undeliverable enqueued node and report success. Release the single
-    // caller-transferred refcount exactly once (same outcome as a send to a
-    // closed mailbox) and return.
-    if actor_send_is_terminal(a) {
-        if !envelope.is_null() {
-            // SAFETY: caller transferred one refcount on `envelope`.
-            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        }
-        return;
-    }
-
-    // EXIT(drop-fault-injection): the deterministic harness asks us to
-    // silently discard this message. The receiver never consumes the
-    // payload, so the alias path must release the envelope here — the
-    // copy path has no buffer to free, but we own one refcount.
-    if crate::deterministic::check_drop_fault(a.id) {
-        if !envelope.is_null() {
-            // SAFETY: caller transferred one refcount on `envelope`.
-            unsafe { crate::mailbox::hew_msg_envelope_release(envelope) };
-        }
-        return;
-    }
-
-    let mb = a.mailbox.cast::<crate::mailbox::HewMailbox>();
-    // Delegate to the mailbox alias-enqueue, which consumes the single
-    // envelope refcount on every outcome. We must NOT touch `envelope`
-    // after this call.
-    // SAFETY: `mb` is valid for the actor's lifetime; `envelope` carries
-    // the single caller-transferred refcount.
-    let result = unsafe { crate::mailbox::hew_mailbox_send_aliased(mb, msg_type, envelope) };
-    if result == HewError::Ok as i32 {
-        // SAFETY: `actor`/`a` valid; delivery succeeded so the actor may run.
-        unsafe { schedule_actor_after_enqueue(actor, a, msg_type) };
-    }
-}
-
 /// Send a wire-encoded message to an actor.
 ///
 /// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them
@@ -12501,36 +12392,64 @@ mod tests {
         }
     }
 
-    /// Live actor-level alias delivery: drive an envelope through
-    /// `hew_actor_send_aliased` to a real (non-null) actor, drain its
-    /// mailbox, and assert the payload is delivered by reference and the
-    /// envelope is released **exactly once**. The actor starts `Running`
-    /// so the wake CAS (`Idle → Runnable`) is a no-op and no scheduler is
-    /// needed. Pins the success exit of the actor-level single-release
-    /// contract.
-    /// Shared serialisation lock for the actor-level alias-send tests:
-    /// the live-delivery test (id 1) and the drop-fault test (its own
-    /// dedicated id) both run `hew_actor_send_aliased` with a process-wide
-    /// drop counter, so they take this lock to keep the counter readings
-    /// unambiguous. The drop-fault test additionally pins a *unique* actor
-    /// id so its armed fault can never be consumed by an unrelated id-1
-    /// sender elsewhere in the suite.
-    static ALIAS_SEND_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Ids for the native-submission tests, kept apart from the fixed ids the
+    /// rest of the suite uses so a registered route is never shared.
+    static NATIVE_SUBMIT_NEXT_ID: AtomicU64 = AtomicU64::new(0x00A1_1A5E_0000_0000);
 
+    /// Publish a test actor as a routable destination so the native submission
+    /// path can resolve a token to it. Requires an installed runtime, so the
+    /// caller holds `runtime_test_guard()`.
+    fn track_native_submit_actor(
+        initial_state: HewActorState,
+    ) -> (
+        *mut HewActor,
+        *mut HewMailbox,
+        crate::lifetime::local_handles::HewLocalPidId,
+    ) {
+        let id = NATIVE_SUBMIT_NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let (actor, mailbox) = make_stop_test_actor_with_id(id, initial_state);
+        let runtime =
+            crate::runtime::rt_current_opt().expect("the runtime test guard installs a runtime");
+        let token = runtime
+            .local_handles
+            .register_actor(crate::runtime_id::RuntimeId::DEFAULT, id)
+            .expect("a fresh id registers one direct route");
+        // SAFETY: the helper returned a fully initialized actor this test owns;
+        // tracking publishes it without taking an allocation reference. The
+        // owner stamp is what `untrack_actor` retires the route through.
+        unsafe {
+            (*actor).runtime = std::ptr::from_ref(runtime);
+            (*actor).local_pid_id = token;
+            assert!(live_actors::track_actor(actor));
+        }
+        (actor, mailbox, token)
+    }
+
+    /// Untracking retires the direct route through the actor's owner stamp, so
+    /// this is the whole teardown of `track_native_submit_actor`.
+    fn retire_native_submit_actor(actor: *mut HewActor) {
+        assert!(live_actors::untrack_actor(actor));
+    }
+
+    /// An admitted native submission delivers its payload by reference: the
+    /// queued node aliases the sender's envelope rather than copying its
+    /// buffer, and the node free is the one release of that refcount. The
+    /// actor starts `Running` so the wake CAS is a no-op and no scheduler is
+    /// needed.
     #[test]
-    fn actor_send_aliased_delivers_to_live_actor_and_releases_once() {
+    fn native_submission_delivers_by_reference_and_releases_once() {
         static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
         unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
-        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+        let _rt = crate::runtime_test_guard();
         DROP_COUNT.store(0, Ordering::SeqCst);
 
-        let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
-        // SAFETY: actor/mailbox are valid for the test; envelope carries
-        // one refcount that transfers into the alias send.
+        let (actor, mailbox, token) = track_native_submit_actor(HewActorState::Running);
+        // SAFETY: actor/mailbox are valid for the test; the envelope carries
+        // one refcount that transfers on admission.
         unsafe {
             let size = 5usize;
             let payload = crate::mem::buf_try_alloc(size);
@@ -12539,7 +12458,10 @@ mod tests {
             let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
             assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
 
-            hew_actor_send_aliased(actor, 4, env);
+            assert!(matches!(
+                try_submit_native_envelope(token, 4, env),
+                mailbox::SendOutcome::Enqueued
+            ));
             // Enqueued, not yet consumed.
             assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 0);
             assert_eq!(mailbox::hew_mailbox_has_messages(mailbox), 1);
@@ -12557,68 +12479,10 @@ mod tests {
             assert_eq!(
                 DROP_COUNT.load(Ordering::SeqCst),
                 1,
-                "live-actor alias send must release the envelope exactly once"
+                "an admitted submission must release the envelope exactly once"
             );
 
-            mailbox::hew_mailbox_free(mailbox);
-            drop(Box::from_raw(actor));
-        }
-    }
-
-    /// EXIT(drop-fault-injection): when the deterministic harness asks the
-    /// runtime to silently discard a message, `hew_actor_send_aliased`
-    /// never enqueues the node — the receiver will never consume the
-    /// payload — so it must release the caller-transferred envelope
-    /// refcount directly, exactly once. Pins the drop-fault exit of the
-    /// actor-level single-release contract.
-    #[test]
-    fn actor_send_aliased_drop_fault_releases_once() {
-        static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-        unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
-            DROP_COUNT.fetch_add(1, Ordering::SeqCst);
-        }
-
-        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
-        DROP_COUNT.store(0, Ordering::SeqCst);
-
-        // Use a unique, suite-private actor id so the armed drop fault can
-        // never be consumed by an unrelated id-1 sender running in
-        // parallel (both send paths consult the process-global fault
-        // table, keyed by actor id).
-        let fault_actor_id: u64 = 0x0A11_A5ED_DEAD_0001;
-        let (actor, mailbox) = make_stop_test_actor_with_id(fault_actor_id, HewActorState::Running);
-        // SAFETY: actor/mailbox are valid for the test; envelope carries
-        // one refcount that transfers into the alias send.
-        unsafe {
-            // Arm a single-shot drop fault for this actor. Clear
-            // first/last so the process-global fault table cannot leak
-            // across tests.
-            crate::deterministic::hew_fault_clear(fault_actor_id);
-            crate::deterministic::hew_fault_inject_drop(fault_actor_id, 1);
-
-            let size = 4usize;
-            let payload = crate::mem::buf_try_alloc(size);
-            assert!(!payload.is_null());
-            libc::memcpy(payload, b"drop".as_ptr().cast(), size);
-            let env = crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
-            assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
-
-            hew_actor_send_aliased(actor, 9, env);
-
-            // Message discarded: nothing enqueued, envelope released once.
-            assert_eq!(
-                mailbox::hew_mailbox_has_messages(mailbox),
-                0,
-                "drop-fault must not enqueue the alias node"
-            );
-            assert_eq!(
-                DROP_COUNT.load(Ordering::SeqCst),
-                1,
-                "drop-fault exit must release the envelope exactly once"
-            );
-
-            crate::deterministic::hew_fault_clear(fault_actor_id);
+            retire_native_submit_actor(actor);
             mailbox::hew_mailbox_free(mailbox);
             drop(Box::from_raw(actor));
         }
@@ -12692,28 +12556,25 @@ mod tests {
         }
     }
 
-    /// Terminal-state send gate, alias path. An alias send transfers exactly
-    /// one envelope refcount; on rejection that refcount must be released
-    /// exactly once (no leak, no false success consuming it into an
-    /// undeliverable enqueued node) — the same single-release outcome as a send
-    /// to a closed mailbox. The drop-glue counter is the deterministic oracle
-    /// for exactly-once; the mailbox-empty assertion proves no undeliverable
-    /// node was enqueued. Both terminal states, mailbox left OPEN to model the
-    /// trap's terminal-CAS-before-close window.
+    /// Terminal-state send gate, native submission path. The gate rejects
+    /// before the mailbox sees the message, so nothing undeliverable is
+    /// enqueued and the sender keeps its one envelope refcount to release or
+    /// readdress. Both terminal states, mailbox left OPEN to model the trap's
+    /// terminal-CAS-before-close window.
     #[test]
-    fn terminal_actor_alias_send_releases_envelope_once_without_enqueue() {
+    fn terminal_actor_native_submission_refuses_without_enqueue() {
         static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
         unsafe extern "C" fn count_drop_glue(_payload: *mut c_void) {
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
 
-        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
+        let _rt = crate::runtime_test_guard();
 
         for terminal in [HewActorState::Crashed, HewActorState::Stopped] {
             DROP_COUNT.store(0, Ordering::SeqCst);
 
-            let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
+            let (actor, mailbox, token) = track_native_submit_actor(HewActorState::Running);
             // SAFETY: the test exclusively owns `actor`; publish terminal state
             // with a release store as the trap's CAS does, mailbox left OPEN.
             unsafe {
@@ -12733,39 +12594,47 @@ mod tests {
                     crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
                 assert_eq!((*env).refcount.load(Ordering::SeqCst), 1);
 
-                hew_actor_send_aliased(actor, 4, env);
+                assert!(
+                    matches!(
+                        try_submit_native_envelope(token, 4, env),
+                        mailbox::SendOutcome::Closed
+                    ),
+                    "the terminal gate must refuse a {terminal:?} destination"
+                );
 
-                // Rejected: nothing enqueued, envelope released exactly once.
+                // Refused: nothing enqueued, and the message is still the
+                // sender's to release.
                 assert_eq!(
                     mailbox::hew_mailbox_has_messages(mailbox),
                     0,
-                    "terminal-gate alias rejection must not enqueue an undeliverable node \
-                     ({terminal:?})"
+                    "a refusal must not enqueue an undeliverable node ({terminal:?})"
                 );
                 assert_eq!(
                     DROP_COUNT.load(Ordering::SeqCst),
-                    1,
-                    "terminal-gate alias rejection must release the envelope exactly once \
-                     ({terminal:?})"
+                    0,
+                    "a refusal preserves the message for its sender ({terminal:?})"
                 );
+                crate::mailbox::hew_msg_envelope_release(env);
+                assert_eq!(DROP_COUNT.load(Ordering::SeqCst), 1);
 
+                retire_native_submit_actor(actor);
                 mailbox::hew_mailbox_free(mailbox);
                 drop(Box::from_raw(actor));
             }
         }
     }
 
-    /// Concurrent racing-sender window. A real alias send is issued from a
-    /// second thread CONCURRENTLY with `hew_actor_trap`'s terminal transition,
-    /// looped so the send lands across the whole pre-CAS / in-window /
+    /// Concurrent racing-sender window. A real native submission is issued
+    /// from a second thread CONCURRENTLY with `hew_actor_trap`'s terminal
+    /// transition, looped so it lands across the whole pre-CAS / in-window /
     /// post-close spectrum. The invariants the gate must hold on EVERY
     /// interleaving: (1) the envelope refcount is released exactly once per
-    /// send — the per-iteration drop counter must equal the send count (no
-    /// leak, no double-free); (2) the crash notify is never lost — the actor
-    /// reaches the `Crashed` terminal state. Run under ASan/LSan this also
-    /// proves the rejected send's alias is freed exactly once.
+    /// submission — admitted, the drain releases it; refused, the sender does
+    /// (no leak, no double-free); (2) the crash notify is never lost — the
+    /// actor reaches the `Crashed` terminal state. Run under ASan/LSan this
+    /// also proves the refused message's buffer is freed exactly once.
     #[test]
-    fn racing_alias_sender_during_trap_releases_once_and_crash_notifies() {
+    fn racing_native_submission_during_trap_releases_once_and_crash_notifies() {
         const ITERS: usize = 2_000;
 
         static DROP_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -12782,23 +12651,20 @@ mod tests {
             crate::scheduler::SchedTestLock::is_held(),
             "trap/monitor tests must hold the shared runtime test lock"
         );
-        let _alias_guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
 
         for _ in 0..ITERS {
             DROP_COUNT.store(0, Ordering::SeqCst);
 
             // `Running` so the sender's success path would not also enqueue on a
             // scheduler; the trap drives this actor terminal under the sender.
-            let (actor, mailbox) = make_stop_test_actor(HewActorState::Running);
-            let actor_addr = actor as usize;
+            let (actor, mailbox, token) = track_native_submit_actor(HewActorState::Running);
 
             let start = std::sync::Arc::new(std::sync::Barrier::new(2));
             let sender_start = start.clone();
 
             let sender = std::thread::spawn(move || {
-                let actor = actor_addr as *mut HewActor;
-                // SAFETY: the actor outlives both threads (freed after join);
-                // the envelope carries one refcount transferred into the send.
+                // SAFETY: the envelope carries one refcount that transfers only
+                // on admission; a refusal leaves it with this thread.
                 unsafe {
                     let size = 5usize;
                     let payload = crate::mem::buf_try_alloc(size);
@@ -12807,7 +12673,13 @@ mod tests {
                     let env =
                         crate::mailbox::hew_msg_envelope_new(payload, size, Some(count_drop_glue));
                     sender_start.wait();
-                    hew_actor_send_aliased(actor, 4, env);
+                    match try_submit_native_envelope(token, 4, env) {
+                        mailbox::SendOutcome::Enqueued => {}
+                        mailbox::SendOutcome::Closed => {
+                            crate::mailbox::hew_msg_envelope_release(env);
+                        }
+                        _ => panic!("an unbounded destination either admits or reports closed"),
+                    }
                 }
             });
 
@@ -12845,15 +12717,16 @@ mod tests {
                     "at most one node can land in the pre-close window, drained {drained}"
                 );
 
+                retire_native_submit_actor(actor);
                 mailbox::hew_mailbox_free(mailbox);
 
-                // Exactly-once release of the single send's envelope across
-                // EVERY interleaving: rejected-by-gate, rejected-by-close, or
-                // enqueued-then-drained — each releases the refcount once.
+                // Exactly-once release of the single submission's envelope
+                // across EVERY interleaving: refused-by-gate, refused-by-close,
+                // or admitted-then-drained — each releases the refcount once.
                 assert_eq!(
                     DROP_COUNT.load(Ordering::SeqCst),
                     1,
-                    "the racing send's envelope must be released exactly once"
+                    "the racing submission's envelope must be released exactly once"
                 );
 
                 drop(Box::from_raw(actor));
@@ -12895,8 +12768,6 @@ mod tests {
             unsafe { crate::string::hew_string_drop(handle) };
             DROP_COUNT.fetch_add(1, Ordering::SeqCst);
         }
-
-        let _guard = ALIAS_SEND_TEST_LOCK.lock().unwrap();
 
         for _ in 0..20 {
             // ---- BORROW arm: borrow_mode != 0, retain-on-escape ----

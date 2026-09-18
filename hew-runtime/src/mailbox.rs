@@ -19,7 +19,6 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-#[cfg(not(target_arch = "wasm32"))]
 #[path = "mailbox_native.rs"]
 pub(crate) mod native;
 
@@ -794,11 +793,6 @@ pub(crate) unsafe fn retire_orphaned_ask_sender_ref(reply_channel: *mut c_void) 
         crate::reply_channel::hew_reply_channel_retire_orphaned_ask_sender_ref(
             reply_channel.cast(),
         );
-    }
-    #[cfg(target_arch = "wasm32")]
-    // SAFETY: WASM keeps the existing empty-reply teardown behaviour for parity.
-    unsafe {
-        let _ = crate::reply_channel_wasm::hew_reply(reply_channel.cast(), ptr::null_mut(), 0);
     }
 }
 

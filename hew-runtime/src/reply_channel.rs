@@ -24,7 +24,6 @@ use std::sync::atomic::{
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(not(target_arch = "wasm32"))]
 #[path = "reply_channel_native.rs"]
 pub mod native;
 

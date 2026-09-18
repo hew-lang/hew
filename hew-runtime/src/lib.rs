@@ -649,13 +649,11 @@ pub mod stdio;
 
 /// Target-neutral COW mailbox payload envelope lifecycle.
 pub mod cow_envelope;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;
 pub mod fault;
 pub mod host_api;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod mailbox;
 /// Mailbox envelope payload classification and cross-node send guards.
 pub mod mailbox_envelope;
@@ -693,26 +691,20 @@ pub mod signal;
 
 pub mod actor;
 pub mod actor_balance;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_call_native;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_group;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_native;
 pub mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;
 pub mod execution_context;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod read_slot;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod reply_channel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod async_io;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod await_cancel;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod blocking_pool;
@@ -771,7 +763,6 @@ pub mod observe;
 pub mod peer_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod phi_accrual;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod pid;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod pool;

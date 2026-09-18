@@ -398,8 +398,14 @@ fn load_expected_failures(
         manifest.cases.iter().map(|case| case.id.as_str()).collect();
     let mut rows = BTreeMap::new();
     let mut seen: std::collections::BTreeSet<(&str, String)> = std::collections::BTreeSet::new();
+    // A "# ── ... ──" section header resets sort order: rows are sorted by
+    // id within their own section, not across the whole file.
+    let mut last_id: Option<&str> = None;
     for (number, line) in contents.lines().enumerate() {
         let line = line.trim();
+        if line.starts_with("# ──") {
+            last_id = None;
+        }
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
@@ -445,6 +451,16 @@ fn load_expected_failures(
                 number + 1
             ));
         }
+        if let Some(previous) = last_id {
+            if id < previous {
+                return Err(format!(
+                    "{}:{}: not sorted by id: {id:?} follows {previous:?}",
+                    path.display(),
+                    number + 1
+                ));
+            }
+        }
+        last_id = Some(id);
         for &candidate in &PLATFORMS {
             if platforms.contains(&candidate) && !seen.insert((candidate, id.to_string())) {
                 return Err(format!(
@@ -2216,6 +2232,30 @@ mod tests {
         let error = load_expected_failures(directory.path(), &manifest(), "freebsd")
             .expect_err("overlapping platform selection for one case must be refused");
         assert!(error.contains("already selected for freebsd"), "{error}");
+    }
+
+    #[test]
+    fn an_out_of_order_row_is_refused() {
+        let directory = ledger_root(
+            "linux,macos,windows,freebsd\tsafety-case  # issue #1\n\
+             linux,macos,windows,freebsd\tacceptance-case  # issue #2\n",
+        );
+        let error = load_expected_failures(directory.path(), &manifest(), "linux")
+            .expect_err("a row out of id order must be refused");
+        assert!(error.contains("not sorted by id"), "{error}");
+    }
+
+    #[test]
+    fn sort_order_resets_at_a_section_header() {
+        let directory = ledger_root(
+            "# ── safety ──────────────────\n\
+             linux,macos,windows,freebsd\tsafety-case  # issue #1\n\
+             # ── acceptance ──────────────\n\
+             linux,macos,windows,freebsd\tacceptance-case  # issue #2\n",
+        );
+        let rows = load_expected_failures(directory.path(), &manifest(), "linux").unwrap();
+        assert_eq!(rows["safety-case"], "issue #1");
+        assert_eq!(rows["acceptance-case"], "issue #2");
     }
 
     #[test]

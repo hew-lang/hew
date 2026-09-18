@@ -153,6 +153,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder,
             value: function,
+            fault_sink: None,
         };
         let inspect = self.ctx.append_basic_block(function, "reply.oneway");
         let raise = self.ctx.append_basic_block(function, "reply.unhandled");
@@ -651,6 +652,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 llvm: &self.llvm,
                 builder: &builder,
                 value: drop,
+                fault_sink: None,
             }
             .destroy_loaded_value(loaded, layout, action)?;
         }
@@ -677,6 +679,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 llvm: &self.llvm,
                 builder: &builder,
                 value: clone,
+                fault_sink: None,
             }
             .clone_loaded_value(loaded, layout, action)?;
             let allocation = allocate(self.module, self.ctx, &self.llvm, &builder, layout.size)?;
@@ -755,6 +758,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     llvm: &self.llvm,
                     builder: &builder,
                     value: function,
+                    fault_sink: None,
                 }
                 .destroy_loaded_value(loaded, layout, action)?;
             }
@@ -2014,9 +2018,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             drop.as_global_value().as_pointer_value().into(),
         ];
         let status = self.emit_actor_send_wait(&request, *payload, unwind)?;
-        let accepted = self
+        let taken = self
             .ctx
-            .append_basic_block(self.value, "stream.start.accepted");
+            .append_basic_block(self.value, "stream.start.taken");
+        let failed = self
+            .ctx
+            .append_basic_block(self.value, "stream.start.failed");
         let admitted = self
             .builder
             .build_int_compare(
@@ -2026,28 +2033,48 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 "stream.start.admitted",
             )
             .llvm_ctx("check request admission")?;
+        // A destination whose declared mailbox policy discarded the request
+        // consumed it: the stream never starts, but this frame owns nothing to
+        // release.
+        let discarded = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_int(4, false),
+                "stream.start.discarded",
+            )
+            .llvm_ctx("check a declared-policy discard")?;
+        let transferred = self
+            .builder
+            .build_or(admitted, discarded, "stream.start.transferred")
+            .llvm_ctx("combine the statuses that take the request")?;
         self.builder
-            .build_conditional_branch(admitted, accepted, refused)
+            .build_conditional_branch(transferred, taken, refused)
             .llvm_ctx("select request admission")?;
-        self.builder.position_at_end(accepted);
+        self.builder.position_at_end(taken);
         self.clear_owned(*payload)?;
         self.builder
-            .build_unconditional_branch(done)
-            .llvm_ctx("finish accepted stream start")?;
+            .build_conditional_branch(admitted, done, failed)
+            .llvm_ctx("separate a started stream from a discarded request")?;
         self.builder.position_at_end(refused);
         self.discard_pending_message(*payload)?;
+        self.builder
+            .build_unconditional_branch(failed)
+            .llvm_ctx("finish refused stream start")?;
+        self.builder.position_at_end(failed);
         self.initialize_active_fault(HEW_TRAP_ACTOR_SEND_FAILED)?;
         self.builder
             .build_unconditional_branch(done)
-            .llvm_ctx("finish refused stream start")?;
+            .llvm_ctx("finish failed stream start")?;
         self.builder.position_at_end(done);
         let outcome = self
             .builder
             .build_phi(self.ctx.i32_type(), "stream.start.status")
             .llvm_ctx("join stream start outcome")?;
         outcome.add_incoming(&[
-            (&self.ctx.i32_type().const_zero(), accepted),
-            (&self.ctx.i32_type().const_int(1, false), refused),
+            (&self.ctx.i32_type().const_zero(), taken),
+            (&self.ctx.i32_type().const_int(1, false), failed),
         ]);
         Ok(outcome.as_basic_value().into_int_value())
     }

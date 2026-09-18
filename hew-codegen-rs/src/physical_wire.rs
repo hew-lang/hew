@@ -129,6 +129,7 @@ fn emit_callback<'ctx>(
         llvm,
         builder: &builder,
         value: function,
+        fault_sink: None,
     };
     let cursor = function
         .get_nth_param(0)

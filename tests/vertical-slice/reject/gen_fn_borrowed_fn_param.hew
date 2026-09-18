@@ -1,0 +1,28 @@
+// Reject: a generator OWNS what its body reads from the enclosing frame. The
+// capture record is heap-copied into the coro env and the generator outlives
+// the call that built it, so a captured value whose type has no copy operation
+// has to be moved in — and a borrowed parameter has nothing to move.
+//
+// A bare `fn(..)` carries no copy operation: the compiler cannot tell a null-env
+// function reference from a closure holding a heap env box. The remedies the
+// diagnostic names are `consume f` (move the value into the generator) or the
+// cloneable `fn[clone](..)` spelling (see accept/gen_fn_null_env_fn_values.hew).
+gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+    var i = 0;
+    while i < n {
+        yield f(i);
+        i = i + 1;
+    }
+}
+
+fn run_once(k: i64) -> i64 {
+    var total = 0;
+    for v in mapped(3, |x: i64| x * k) {
+        total = total + v;
+    }
+    total
+}
+
+fn main() {
+    println(run_once(2));
+}

@@ -1,0 +1,58 @@
+id: unwinding-call-in-plain-c-export
+language: rust
+severity: error
+message: >-
+  This `#[no_mangle]` export is declared `extern "C"` but calls a function that
+  can unwind into it. `hew_panic`, `hew_panic_msg`, `hew_fault_trap`,
+  `hew_trap_with_code` and the `*_walk` release walkers are `extern "C-unwind"`
+  because a user `close`/`drop` under them can panic; an unwind crossing a plain
+  `"C"` frame is undefined behaviour and aborts instead of reporting the fault.
+  Declare this export `extern "C-unwind"`.
+files:
+  - "hew-runtime/src/**/*.rs"
+  - "hew-std/src/**/*.rs"
+  - "hew-cabi/src/**/*.rs"
+rule:
+  kind: function_item
+  all:
+    # A plain `"C"` ABI. `extern "C-unwind"` is the correct declaration and is
+    # not matched; a Rust-ABI fn has no `function_modifiers` extern clause.
+    - has:
+        kind: function_modifiers
+        regex: 'extern "C"$'
+    # Exported through the C ABI: generated code calls it by symbol name.
+    - follows:
+        kind: attribute_item
+        regex: "no_mangle"
+        stopBy: neighbor
+    # The body reaches user code that may panic.
+    - has:
+        any:
+          # The panic and trap funnels.
+          - pattern: hew_panic($$$ARGS)
+          - pattern: hew_panic_msg($$$ARGS)
+          - pattern: hew_fault_trap($$$ARGS)
+          - pattern: hew_trap_with_code($$$ARGS)
+          - pattern: crate::fault::hew_fault_trap($$$ARGS)
+          - pattern: crate::trap::hew_trap_with_code($$$ARGS)
+          # The release walkers, which run element drop thunks.
+          - pattern: hew_vec_free_owned_walk($$$ARGS)
+          - pattern: hew_array_free_walk($$$ARGS)
+          - pattern: hew_hashmap_free_layout_walk($$$ARGS)
+          - pattern: hew_hashset_free_layout_walk($$$ARGS)
+          # A `HewValueDropThunk` reached through a layout's `drop_fn` is the
+          # same hazard, but it is not matched here: the runtime binds it to a
+          # local whose name it shares with plain `"C"` callbacks
+          # (`config_drop_fn`, `result_drop_fn`), so a name-keyed arm mixes
+          # true and false positives. Distinguishing them needs the field's
+          # type, which this matcher does not have.
+        stopBy: end
+    # Test doubles are their own ABI island: they are not the exported surface
+    # generated code links against.
+    - not:
+        inside:
+          kind: mod_item
+          stopBy: end
+          has:
+            field: name
+            regex: "^(tests|.*_tests|test_support)$"

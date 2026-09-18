@@ -863,6 +863,11 @@ struct ValueEmitter<'a, 'ctx> {
     llvm: &'a Module<'ctx>,
     builder: &'a Builder<'ctx>,
     value: FunctionValue<'ctx>,
+    /// The enclosing frame's fault record: its optional owner and the status
+    /// that owner was raised with. A release emitted into a frame reports a
+    /// failing `close` here and keeps releasing (D516). Release glue has no
+    /// frame, so it carries `None` and raises through the trap path instead.
+    fault_sink: Option<(PointerValue<'ctx>, PointerValue<'ctx>)>,
 }
 
 impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
@@ -1094,6 +1099,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             llvm: self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         body(&emitter, function)?;
         Ok(function)
@@ -1116,11 +1122,17 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
     /// Release a `#[resource]` record by calling the program's own `close`.
     ///
     /// `close` is an ordinary private callable, so it uses the private ABI:
-    /// its arguments, then the caller's fault slot, returning a status. Drop
-    /// glue has no unwind successor to carry a failure into, so a failing
-    /// release hands its fault to `hew_fault_trap`: the runtime reports the
-    /// fault's own line and crashes the actor, or ends the run, because no
-    /// owner here can observe it. A release already in progress finishes
+    /// its arguments, then the caller's fault slot, returning a status.
+    ///
+    /// A release emitted into a frame is that frame's fault edge (D516): a
+    /// failing `close` fills the frame's fault record - keeping the first
+    /// fault as the primary and appending any later one as a secondary - and
+    /// the release continues, so every remaining owner is still released
+    /// before the frame's cleanup dispatch carries the outcome out.
+    ///
+    /// Release glue has no frame to report into, so it hands the fault to
+    /// `hew_fault_trap`: the runtime reports the fault's own line and crashes
+    /// the actor, or ends the run. A release already in progress finishes
     /// releasing what it owns first, so the raise returns here and the glue
     /// completes; `close` consumed the value either way.
     /// Release one owner by calling the exact `close` MIR named for it.
@@ -1189,41 +1201,107 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             .build_conditional_branch(ok, released, failed)
             .llvm_ctx("branch on record release status")?;
         self.builder.position_at_end(failed);
-        let raise = get_or_declare_external(
-            self.llvm,
-            "hew_fault_trap",
-            self.ctx.void_type().fn_type(
-                &[
-                    self.ctx.i32_type().into(),
-                    self.ctx.ptr_type(AddressSpace::default()).into(),
-                ],
-                false,
-            ),
-        )?;
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
         let raised = self
             .builder
-            .build_load(
-                self.ctx.ptr_type(AddressSpace::default()),
-                fault,
-                "resource.close.raised",
-            )
+            .build_load(pointer, fault, "resource.close.raised")
             .llvm_ctx("load failing record release fault")?;
-        self.builder
-            .build_call(
-                raise,
-                &[status.into(), raised.into()],
-                "resource.close.trap",
-            )
-            .llvm_ctx("raise failing record release fault")?;
+        match self.fault_sink {
+            Some((active_fault, active_status)) => {
+                self.record_release_fault(active_fault, active_status, raised, status)?;
+            }
+            None => {
+                let raise = get_or_declare_external(
+                    self.llvm,
+                    "hew_fault_trap",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[self.ctx.i32_type().into(), pointer.into()], false),
+                )?;
+                self.builder
+                    .build_call(
+                        raise,
+                        &[status.into(), raised.into()],
+                        "resource.close.trap",
+                    )
+                    .llvm_ctx("raise failing record release fault")?;
+            }
+        }
         self.builder
             .build_unconditional_branch(released)
-            .llvm_ctx("terminate failing record release")?;
+            .llvm_ctx("continue the frame's release after a failing close")?;
         self.builder.position_at_end(released);
         // D442: `close` consumes the record (`fn close(consume self)` is the
         // checker-enforced contract), so `close`'s own body already destroys
         // every member it does not move out. Also releasing the members here
         // double-frees them — this call site owns nothing further once the
         // callee returns successfully.
+        Ok(())
+    }
+
+    /// Fold a failing release's fault into the frame's own fault record.
+    ///
+    /// The frame keeps the first fault it owns: a `close` that fails while the
+    /// frame is already faulting joins that record as a secondary diagnostic,
+    /// and a `close` that fails on an otherwise-normal exit installs its own
+    /// fault as the frame's. `hew_fault_combine` is the one rule for both, so
+    /// only the status has to choose, and it chooses the primary's.
+    fn record_release_fault(
+        &self,
+        active_fault: PointerValue<'ctx>,
+        active_status: PointerValue<'ctx>,
+        raised: BasicValueEnum<'ctx>,
+        status: IntValue<'ctx>,
+    ) -> CodegenResult<()> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let primary = self
+            .builder
+            .build_load(pointer, active_fault, "resource.close.primary")
+            .llvm_ctx("load the frame's active fault")?
+            .into_pointer_value();
+        let primary_status = self
+            .builder
+            .build_load(
+                self.ctx.i32_type(),
+                active_status,
+                "resource.close.primary.status",
+            )
+            .llvm_ctx("load the frame's active status")?;
+        let present = self
+            .builder
+            .build_is_not_null(primary, "resource.close.primary.present")
+            .llvm_ctx("test the frame's active fault")?;
+        let combined_status = self
+            .builder
+            .build_select(
+                present,
+                primary_status,
+                BasicValueEnum::from(status),
+                "resource.close.combined.status",
+            )
+            .llvm_ctx("preserve the first fault's status")?;
+        let combine = get_or_declare_external(
+            self.llvm,
+            "hew_fault_combine",
+            pointer.fn_type(&[pointer.into(), pointer.into()], false),
+        )?;
+        let combined = self
+            .builder
+            .build_call(
+                combine,
+                &[primary.into(), raised.into()],
+                "resource.close.combined",
+            )
+            .llvm_ctx("combine a failing release into the frame's fault")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("fault combine returned void".into()))?;
+        self.builder
+            .build_store(active_fault, combined)
+            .llvm_ctx("install the frame's combined fault")?;
+        self.builder
+            .build_store(active_status, combined_status)
+            .llvm_ctx("install the frame's combined status")?;
         Ok(())
     }
 
@@ -1555,7 +1633,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 // joins a release already in progress instead of nesting one
                 // native frame per level; anything that can reach a resource
                 // drains synchronously so its `close` keeps today's order.
-                let walk = self.module.pure_releases.action_is_pure(action);
+                let walk = !self.module.releases.runs_user_code(action);
                 let symbol = match action {
                     DestroyAction::Array(id) => {
                         self.vector_glue(id)?;
@@ -2278,6 +2356,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         let source = function
             .get_nth_param(0)
@@ -2347,6 +2426,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             llvm: &self.llvm,
             builder: &builder,
             value: function,
+            fault_sink: None,
         };
         let source = function
             .get_nth_param(0)
@@ -2534,6 +2614,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             llvm: self.llvm,
             builder: &self.builder,
             value: self.value,
+            fault_sink: Some((self.active_fault, self.active_status)),
         }
     }
 

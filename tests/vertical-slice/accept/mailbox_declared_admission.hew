@@ -1,0 +1,50 @@
+// `mailbox(worker)` with no `on_full:` takes the destination's declared
+// admission: `overflow fail` refuses a full queue, so the view refuses too and
+// reports `SendError.Full`. The sender is itself an actor handler: with one
+// worker, that handler occupies the only thread that could activate
+// RejectingWorker, so the capacity-one queue cannot drain between the two
+// submissions. `main` runs on the process main thread, not on a scheduler
+// worker, so submitting from `main` would race the worker's wake.
+actor RejectingWorker {
+    mailbox 1 overflow fail,
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("REJECTED_WORK_DELIVERED");
+        }
+    }
+}
+
+actor Driver {
+    receive fn run(worker: RejectingWorker) {
+        let inbox = mailbox(worker);
+        match inbox.work(1) {
+            .Ok(_) => {},
+            .Err(_) => {
+                println("FIRST_SEND_FAILED");
+                exit(41);
+            },
+        }
+        match inbox.work(2) {
+            .Err(failure) => match failure.reason {
+                SendError.Full => {
+                    println("DERIVED_REJECT");
+                    exit(43);
+                },
+                _ => {
+                    println("UNEXPECTED_SEND_ERROR");
+                    exit(44);
+                },
+            },
+            .Ok(_) => {
+                println("DERIVED_WAIT");
+                exit(45);
+            },
+        }
+    }
+}
+
+fn main() {
+    let worker = spawn RejectingWorker;
+    let driver = spawn Driver;
+    let _ = driver.run(worker);
+}

@@ -1,0 +1,58 @@
+// A coalescing mailbox resolves a full queue under its own declaration: a
+// same-key submission supersedes the queued one, and a submission whose key
+// matches nothing meets the `drop_new` fallback. Neither loss was the sender's
+// choice, and neither is retryable, so both report `Delivery.Discarded` rather
+// than acceptance. The sender is itself an actor handler: with one worker, that
+// handler occupies the only thread that could activate Cache, so the
+// capacity-one queue stays full across all three submissions.
+actor Cache {
+    mailbox 1 overflow coalesce(channel) fallback drop_new,
+    receive fn update(channel: i64, reading: i64) {}
+}
+
+actor Driver {
+    receive fn run(cache: Cache) {
+        let intake = mailbox(cache);
+        match intake.update(1, 10) {
+            .Ok(Delivery.Accepted) => println("accepted"),
+            .Ok(Delivery.Discarded) => {
+                println("FIRST_DISCARDED");
+                exit(41);
+            },
+            .Err(_) => {
+                println("FIRST_REFUSED");
+                exit(42);
+            },
+        }
+        match intake.update(1, 11) {
+            .Ok(Delivery.Discarded) => println("superseded"),
+            .Ok(Delivery.Accepted) => {
+                println("SUPERSEDED_HIDDEN");
+                exit(43);
+            },
+            .Err(_) => {
+                println("SUPERSEDED_REFUSED");
+                exit(44);
+            },
+        }
+        match intake.update(2, 20) {
+            .Ok(Delivery.Discarded) => println("dropped"),
+            .Ok(Delivery.Accepted) => {
+                println("FALLBACK_HIDDEN");
+                exit(45);
+            },
+            .Err(_) => {
+                println("FALLBACK_REFUSED");
+                exit(46);
+            },
+        }
+    }
+}
+
+fn main() {
+    let cache = spawn Cache;
+    let driver = spawn Driver;
+    let _ = driver.run(cache);
+    close(driver);
+    close(cache);
+}

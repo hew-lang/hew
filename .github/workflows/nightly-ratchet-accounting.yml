@@ -72,6 +72,13 @@ jobs:
       - name: Account for global expected-failure ledgers
         run: make ratchet-accounting
 
+      - name: Report ledger rows citing a closed issue
+        if: always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: make ledger-issues
+
       - name: Upload ratchet JUnit reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1

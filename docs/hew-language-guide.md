@@ -75,7 +75,7 @@ for the documented resolver precedence.
 - Commas separate record fields and enum variants in declarations and values. Semicolons terminate executable statements and bodyless function declarations.
 - Declare records with `type Name { field: T, }` and enums with `enum Choice { First, Second, }`.
 - Inside an actor body, `self` as a value is its handle, of type `Self`, which is the actor itself; `self.field` accesses state, and bare field names also work. `this` is not a keyword.
-- Every actor call waits for completion, including a void handler. Use `mailbox(target, on_full: ...)` for submission-only delivery; handle its outcome.
+- Every actor call waits for completion, including a void handler. Use `mailbox(target)` for submission-only delivery; handle its outcome.
 - Ask (request-reply) is `ref.method(arg)` and returns `Result<R, ActorError>` — match `Ok`/`Err`. The call waits; `fork` runs it concurrently.
 - Sending a value into an actor delivers a logical snapshot; the sender's binding stays valid afterward — no `clone` needed to keep using it. Types that cannot be sent are rejected at compile time.
 - Ordinary data has value semantics. Mutating one value does not silently mutate another; borrowing and consuming uses are checked, including collection-element loans.
@@ -975,6 +975,13 @@ An ordinary borrowed argument stays usable after the call. A parameter marked
 ingress and borrow on read; do not generalize that rule into requiring a manual
 clone for every string insertion. Follow the operation's declared contract.
 
+A borrowed parameter has no owner to give away. Storing one in a record field,
+capturing it in an escaping closure or a generator, or returning it would hand
+a second owner to storage that outlives the call, so each is refused unless the
+parameter is declared `consume`. For a callable there is a second answer: a
+`fn[clone](i64) -> i64` carries a copy operation, so the closure or generator
+frame copies it instead of moving it.
+
 ### .clone() produces an independent copy
 
 ```hew
@@ -1472,18 +1479,27 @@ actor Logger {
 }
 fn main() {
     let lg = spawn Logger(n: 0);
-    let inbox = mailbox(lg, on_full: .Reject);
+    let inbox = mailbox(lg);
     let _ = inbox.log(7);    // accepted, not processed
 }
 ```
 
-`mailbox(target, on_full: ...)` is a one-way view: its calls return a delivery
-outcome after submission, without waiting for the handler to finish. A
-value-returning handler is refused on this view; use `fork target.m(..)` for a
-concurrent completion call. If a submitted `fails` handler returns an error,
-the actor faults with that error's Display text and its supervisor decides.
+`mailbox(target)` is a one-way view: its calls return a delivery outcome after
+submission, without waiting for the handler to finish. Bind it once and call
+through the binding, as above. A value-returning handler is refused on this
+view; use `fork target.m(..)` for a concurrent completion call. If a submitted
+`fails` handler returns an error, the actor faults with that error's Display
+text and its supervisor decides.
 
-`policy(target, on_full: ...)` is the other view: its calls still complete — the handler result wrapped in `Result<R, ActorError<E, Req>>`, with `Req` inferred for rejected requests — and the policy chooses only what happens when the destination mailbox is full. `.Wait` is what a bare handle does. `.Reject` refuses instead of parking and reports `ActorError.Rejected(failure)`. Read `failure.reason` for the refusal reason. The owned request remains in `failure.message`: `.retry()` consumes it and resubmits to the original actor; `.to(other)` consumes it and resubmits to a compatible handler. Both wait for completion. Dropping the request releases its payload. Only a rejection is safely retryable. `policy` completes, `mailbox` submits.
+A view with no `on_full:` takes the destination's declared admission: an actor
+declaring `mailbox N overflow fail` gives its senders `.Reject`, and every
+other declaration — including no `mailbox` clause at all — gives them `.Wait`.
+Write `on_full:` only to override that, as `mailbox(target, on_full:
+.DropNewest)` does to discard this sender's own submission at a full mailbox.
+`Delivery.Discarded` reports either loss; a discarded submission is gone and
+is not retryable.
+
+`policy(target)` is the other view: its calls still complete — the handler result wrapped in `Result<R, ActorError<E, Req>>`, with `Req` inferred for rejected requests — and the policy chooses only what happens when the destination mailbox is full. `.Wait` is what a bare handle does. `.Reject` refuses instead of parking and reports `ActorError.Rejected(failure)`. Read `failure.reason` for the refusal reason. The owned request remains in `failure.message`: `.retry()` consumes it and resubmits to the original actor; `.to(other)` consumes it and resubmits to a compatible handler. Both wait for completion. Dropping the request releases its payload. Only a rejection is safely retryable. `policy` completes, `mailbox` submits.
 
 Use a mailbox view when submission must not wait for handler completion.
 Admission may still wait under `.Wait`. A callback into an actor whose handler
@@ -1735,18 +1751,19 @@ borrowed, and the call addresses the actor through the borrow without taking
 it. `close(handle)` stops the actor and waits for its terminal cleanup, and
 `closed(handle)` observes a stop someone else requested.
 
-Both delivery views apply to a lambda handle. `mailbox(handle, on_full: ..)`
-submits one way, so it accepts only a lambda that owes its caller nothing; a
-lambda that returns a value is refused there, and the handle itself is how you
-wait for the reply. `policy(handle, on_full: ..)` completes like the handle and
-chooses only how a full mailbox is answered.
+Both delivery views apply to a lambda handle. `mailbox(handle)` submits one
+way, so it accepts only a lambda that owes its caller nothing; a lambda that
+returns a value is refused there, and the handle itself is how you wait for
+the reply. `policy(handle)` completes like the handle and chooses only how a
+full mailbox is answered. A lambda actor declares no mailbox, so both views
+default to `.Wait`.
 
 ```hew
 fn main() {
     let log = actor |line: string| {
         println(line);
     };
-    let inbox = mailbox(log, on_full: .Reject);
+    let inbox = mailbox(log);
     let _ = inbox("queued");
     close(log);
 }

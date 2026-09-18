@@ -89,6 +89,8 @@ pub(super) struct DebugEmitter<'ctx> {
     builder: DebugInfoBuilder<'ctx>,
     file: DIFile<'ctx>,
     lines: LineIndex,
+    /// Whether this target's debug records are CodeView rather than DWARF.
+    codeview: bool,
     /// Root-unit lexical blocks, in HIR scope order.
     scopes: Vec<SemDebugScope>,
     /// Source field names of each concrete record, in declaration order.
@@ -160,8 +162,9 @@ impl<'ctx> DebugEmitter<'ctx> {
         );
         // MSVC-environment targets need this flag for the backend to write
         // CodeView records (`.debug$S`/`.debug$T`) that the linker turns into a
-        // PDB. The DIE graph itself is format-neutral.
-        if triple.contains("windows-msvc") || triple.ends_with("-msvc") {
+        // PDB.
+        let codeview = triple.contains("windows-msvc") || triple.ends_with("-msvc");
+        if codeview {
             llvm.add_basic_value_flag(
                 "CodeView",
                 FlagBehavior::Warning,
@@ -174,6 +177,7 @@ impl<'ctx> DebugEmitter<'ctx> {
             builder,
             file,
             lines: LineIndex::new(source.text),
+            codeview,
             scopes: debug.scopes.clone(),
             records: debug.records.clone().into_iter().collect(),
             enums: debug.enums.clone().into_iter().collect(),
@@ -437,9 +441,17 @@ impl<'ctx> DebugEmitter<'ctx> {
         // it that way hands a debugger every variant's bytes at once. The
         // variant part names the tag as the selector so only the active case
         // renders. An indirect enum's local is a pointer and falls through.
-        if let Some(variants) = self.enums.get(ty) {
-            if let Some(described) = self.build_enum(ty, layout, variants, target) {
-                return Some(described);
+        //
+        // CodeView has no variant-part record. LLVM lowers the part to an
+        // unnamed `LF_NESTTYPE` it cannot resolve, so a `.debug$T` consumer
+        // sees `Status` with no members at all - strictly less than the tag
+        // and payload it can read from the carrier. Describe the carrier on
+        // those targets and leave the variant part to DWARF.
+        if !self.codeview {
+            if let Some(variants) = self.enums.get(ty) {
+                if let Some(described) = self.build_enum(ty, layout, variants, target) {
+                    return Some(described);
+                }
             }
         }
         match &layout.repr {

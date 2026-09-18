@@ -4207,12 +4207,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     fn emit_destroy(&mut self, value: ValueId) -> Result<(), String> {
-        if self
-            .value_ty(value)
-            .as_ref()
-            .is_some_and(|ty| self.value_needs_close(ty))
-        {
-            self.close_value(None, Some(value))?;
+        if let Some(ty) = self.value_ty(value) {
+            if self.value_needs_close(&ty) {
+                self.close_value(None, Some(value))?;
+            }
+            self.note_release_may_fault(&ty);
         }
         let id = OpId(self.ops);
         self.current_block_mut().append_op(SemOp {

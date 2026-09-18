@@ -62,6 +62,7 @@ pub fn canonicalize_module_constant_cfg(
     let facts = candidate.type_facts.clone();
     let aggregate_shapes = candidate.aggregate_shapes.clone();
     let variant_shapes = candidate.variant_shapes.clone();
+    let resources = candidate.resources.clone();
     // The callables are not touched by a CFG rewrite, so one index over them
     // serves every body. `verify_module` above already validated the table.
     let callables = candidate.callables.clone();
@@ -80,6 +81,7 @@ pub fn canonicalize_module_constant_cfg(
             &facts,
             &aggregate_shapes,
             &variant_shapes,
+            &resources,
         )
         .map_err(SirOptimizationError::InvalidOutput)?;
         reports.push((function.callable, report));
@@ -99,6 +101,7 @@ fn canonicalize_verified_function(
     facts: &TypeFactTable,
     aggregate_shapes: &[crate::SemAggregateShape],
     variant_shapes: &[crate::SemVariantShape],
+    resources: &std::collections::BTreeMap<hew_types::ResolvedTy, crate::ResourceRelease>,
 ) -> Result<CfgCanonicalizationReport, Vec<SirDiagnostic>> {
     let before_folding = function.clone();
     let constants = direct_bool_constants(function);
@@ -163,6 +166,7 @@ fn canonicalize_verified_function(
         facts,
         aggregate_shapes,
         variant_shapes,
+        resources,
     );
     if !diagnostics.is_empty() {
         return Err(diagnostics);
@@ -184,6 +188,7 @@ fn canonicalize_verified_function(
         facts,
         aggregate_shapes,
         variant_shapes,
+        resources,
     );
     if !diagnostics.is_empty() {
         return Err(diagnostics);

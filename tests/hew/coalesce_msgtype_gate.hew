@@ -40,11 +40,12 @@ actor KindCoalescer {
 #[test]
 fn coalesce_same_key_different_message_types_do_not_merge() {
     let worker = spawn KindCoalescer(alpha_count: 0, beta_count: 0, alpha_latest: -1);
+    let intake = mailbox(worker);
     for id in 0 .. 64 {
-        let _ = mailbox(worker, on_full: .Wait).beta(id, id);
+        let _ = intake.beta(id, id);
     }
     for id in 0 .. 64 {
-        let _ = mailbox(worker, on_full: .Wait).alpha(id, id + 1000);
+        let _ = intake.alpha(id, id + 1000);
     }
     sleep(2s);
     var alpha_count: i64 = -1;

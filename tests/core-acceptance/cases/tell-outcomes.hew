@@ -12,7 +12,7 @@ actor Worker {
 }
 
 fn drive(w: Worker) -> Result<(), SendError> {
-    let inbox = mailbox(w, on_full: .Reject);
+    let inbox = mailbox(w);
     match inbox.process("a") {
         .Ok(Delivery.Accepted) => println("accepted"),
         .Ok(Delivery.Discarded) => println("discarded"),

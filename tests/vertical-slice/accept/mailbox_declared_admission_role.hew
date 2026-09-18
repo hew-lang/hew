@@ -1,0 +1,54 @@
+// A supervised role derives the same admission as a directly spawned handle:
+// `mailbox(rack.slow)` reads `Slow`'s own `overflow fail` declaration through
+// the role. The sender is itself an actor handler: with one worker, that
+// handler occupies the only thread that could activate Slow, so the
+// capacity-one queue cannot drain between the two submissions.
+actor Slow {
+    mailbox 1 overflow fail,
+    receive fn work(value: i64) {
+        if value == 2 {
+            println("REJECTED_WORK_DELIVERED");
+        }
+    }
+}
+
+supervisor Rack {
+    strategy: one_for_one,
+    intensity: 3 within 60s,
+    child slow: Slow,
+}
+
+actor Driver {
+    receive fn run(rack: Rack) {
+        let inbox = mailbox(rack.slow);
+        match inbox.work(1) {
+            .Ok(_) => {},
+            .Err(_) => {
+                println("FIRST_SEND_FAILED");
+                exit(41);
+            },
+        }
+        match inbox.work(2) {
+            .Err(failure) => match failure.reason {
+                SendError.Full => {
+                    println("ROLE_DERIVED_REJECT");
+                    exit(43);
+                },
+                _ => {
+                    println("UNEXPECTED_SEND_ERROR");
+                    exit(44);
+                },
+            },
+            .Ok(_) => {
+                println("ROLE_DERIVED_WAIT");
+                exit(45);
+            },
+        }
+    }
+}
+
+fn main() {
+    let rack = spawn Rack;
+    let driver = spawn Driver;
+    let _ = driver.run(rack);
+}

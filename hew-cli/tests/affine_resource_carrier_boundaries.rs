@@ -467,9 +467,9 @@ fn channel_handle_clone_terminals_match_runtime_semantics() {
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(
         !output.status.success()
-            && stderr.contains("cannot be cloned")
-            && stderr.contains("affine close contract and no semantic clone"),
-        "Stream has no dup helper and must be rejected by the affine resource clone contract:\n{stderr}"
+            && stderr.contains("`Vec<Stream<Token>>.clone()` is not supported")
+            && stderr.contains("a `Stream` has one consumer"),
+        "Stream has no dup helper and must be rejected in source by the pipe-half clone contract:\n{stderr}"
     );
 }
 

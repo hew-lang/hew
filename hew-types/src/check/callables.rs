@@ -233,11 +233,25 @@ impl Checker {
             } else if !self.capture_is_cloneable(&fact.ty)
                 && !matches!(fact.ty, Ty::Error | Ty::Var(_))
             {
-                self.report_error(
+                // `move` transfers an owner into the closure, so a borrowed
+                // parameter needs one first. Name both steps rather than
+                // sending the programmer back for a second diagnostic.
+                let mut suggestions = vec![format!(
+                    "write `move ||` to transfer `{}` into the closure",
+                    fact.name
+                )];
+                if self.env.place_borrows_parameter(&fact.name, &[]) {
+                    suggestions.push(format!(
+                        "`{}` is a borrowed parameter with no owner to move; declare it `consume {}: {}`",
+                        fact.name, fact.name, fact.ty.user_facing()
+                    ));
+                }
+                self.report_error_with_suggestions(
                     TypeErrorKind::ClosureExplicitMoveRequired {
                         name: fact.name.clone(), ty: fact.ty.user_facing().to_string(),
                     }, &fact.use_span,
                     format!("capture `{}` has no independent snapshot operation; use `move` to transfer it into the closure", fact.name),
+                    suggestions,
                 );
             }
             captures.push(fact);
@@ -309,6 +323,87 @@ impl Checker {
             span,
             format!("cannot mutate through borrowed parameter `{root}`: its type has no independent clone"),
             vec![format!("add `consume` to parameter `{root}` to transfer ownership")],
+        );
+    }
+
+    /// A generator frame OWNS what its body reads from the enclosing frame:
+    /// the capture record is heap-copied into the coro env and the generator
+    /// outlives the call that built it, so a captured value with no copy
+    /// operation has to be moved in. A borrowed parameter has nothing to move.
+    ///
+    /// Decide it here, where parameter ownership is decided, so the programmer
+    /// reads a span and a remedy instead of a SIR verification failure. The
+    /// remedy is `consume`, or - for a callable - the cloneable `fn[clone]`
+    /// spelling, both of which already lower.
+    ///
+    /// An unresolved generic type does not prove absence of a copy operation,
+    /// so `parameter_clone_kind` answers `None` and this rule stands aside.
+    /// A generic generator instantiated with a non-copyable argument still
+    /// reaches the SIR verifier; that instance-level refusal is #3377's
+    /// remaining half and needs the `T: Clone` decision (spec §3.8.1).
+    pub(super) fn reject_borrowed_generator_capture(&mut self, root: &str, span: &Span) {
+        if self.is_current_closure_capture(root) {
+            return;
+        }
+        let Some(binding) = self.env.lookup_ref(root) else {
+            return;
+        };
+        let element_loan = binding.collection_borrow.clone();
+        let ty = self
+            .subst
+            .resolve(&binding.ty)
+            .materialize_literal_defaults();
+        if element_loan.is_none() && !self.env.place_borrows_parameter(root, &[]) {
+            return;
+        }
+        if self.parameter_clone_kind(&ty) != Some(crate::type_facts::CloneKind::None) {
+            return;
+        }
+        let rendered = ty.user_facing();
+        if let Some(origin) = element_loan {
+            self.report_error_with_note(
+                TypeErrorKind::OwnConsumeBorrowed,
+                span,
+                format!(
+                    "E_OWN_CONSUME_BORROWED: a generator owns its captures, so it cannot capture \
+                     borrowed collection element `{root}` of type `{rendered}`, which has no copy \
+                     operation"
+                ),
+                &origin,
+                "the collection retains this value's owner".to_string(),
+            );
+            return;
+        }
+        let mut suggestions = vec![format!(
+            "declare the parameter `consume {root}: {rendered}` to move it into the generator"
+        )];
+        if let Ty::Function {
+            capabilities,
+            params,
+            ret,
+        } = &ty
+        {
+            let cloneable = Ty::Function {
+                capabilities: CallableCapabilities {
+                    clone: true,
+                    ..*capabilities
+                },
+                params: params.clone(),
+                ret: ret.clone(),
+            };
+            suggestions.push(format!(
+                "or declare it `{root}: {}` so the generator can copy it",
+                cloneable.user_facing()
+            ));
+        }
+        self.report_error_with_suggestions(
+            TypeErrorKind::OwnConsumeBorrowed,
+            span,
+            format!(
+                "E_OWN_CONSUME_BORROWED: a generator owns its captures, so it cannot capture \
+                 borrowed parameter `{root}` of type `{rendered}`, which has no copy operation"
+            ),
+            suggestions,
         );
     }
 

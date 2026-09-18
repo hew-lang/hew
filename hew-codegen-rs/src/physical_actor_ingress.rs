@@ -166,8 +166,22 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     "ingress.accepted",
                 )
                 .llvm_ctx("classify ingress admission")?;
+            // A destination that discarded the message under its declared
+            // mailbox policy still consumed the typed fields, so only a
+            // refusal leaves this frame an owner to release.
+            let discarded = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    i32_ty.const_int(4, false),
+                    "ingress.discarded",
+                )
+                .llvm_ctx("classify a declared-policy discard")?;
+            let transferred = builder
+                .build_or(accepted, discarded, "ingress.transferred")
+                .llvm_ctx("combine the statuses that take the payload")?;
             builder
-                .build_conditional_branch(accepted, done, rejected)
+                .build_conditional_branch(transferred, done, rejected)
                 .llvm_ctx("release only refused ingress owner")?;
             builder.position_at_end(rejected);
             let action = self
@@ -184,6 +198,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 llvm: &self.llvm,
                 builder: &builder,
                 value: function,
+                fault_sink: None,
             }
             .destroy_loaded_value(value, layout, action)?;
             builder

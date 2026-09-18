@@ -184,15 +184,15 @@ fn newArena<T>() -> Arena<T> {
 }
 
 impl<T> Arena<T> {
-    fn insert(self, value: T) -> Key<T> {
+    fn insert(var self, value: T) -> Key<T> {
         let index = self.slots.len();
         self.slots.push(Slot { value: Some(value) });
         Key { index: index }
     }
 
-    fn remove(self, key: Key<T>) -> T {
+    fn remove(var self, key: Key<T>) -> T {
         let slot = self.slots.remove(key.index);
-        slot.value.unwrap()
+        slot.value.expect("arena slot must hold its inserted value")
     }
 
     fn len(self) -> i64 {
@@ -365,21 +365,33 @@ type Holder { token: Token, keep: string }
 
 fn consumeToken(consume token: Token) {}
 
-fn maybeConsume(h: Holder, take: bool) {
+// Consuming a field needs an owning aggregate, so `maybeConsume` takes the
+// Holder by move. Reading `h.token` back in the caller after the consume is
+// what this shape used to do, and it is a use-after-free: the caller reads
+// what it still has BEFORE handing the Holder on, and the `take = false` leg
+// proves the untaken branch still releases the Token exactly once.
+fn maybeConsume(consume h: Holder, take: bool) -> i64 {
+    let keep_len = h.keep.len();
     if take {
         consumeToken(h.token);
     }
+    keep_len
 }
 
 fn main() -> i64 {
     for i in 0..$FRAMES {
-        let h = Holder {
+        let taken = Holder {
             token: Token { payload: f"payload-{i}" },
             keep: f"keep-{i}",
         };
-        maybeConsume(h, true);
-        if h.token.payload.len() < 9 { return 111; }
-        if h.keep.len() < 6 { return 112; }
+        if taken.token.payload.len() < 9 { return 111; }
+        if maybeConsume(taken, true) < 6 { return 112; }
+
+        let untaken = Holder {
+            token: Token { payload: f"payload-{i}" },
+            keep: f"keep-{i}",
+        };
+        if maybeConsume(untaken, false) < 6 { return 113; }
     }
     0
 }

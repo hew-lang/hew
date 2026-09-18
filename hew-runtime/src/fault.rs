@@ -364,13 +364,15 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 
 /// Raise a fault that generated drop glue has no owner to carry.
 ///
-/// Destruction runs where the language has no fault edge: a record's `close`
-/// is called from drop glue and from collection element release, neither of
-/// which can hand a failure back to the value's owner. This is the trap path
-/// for that case. It reports the fault's own typed line — so a `panic` inside
-/// `close` keeps its message — then routes into the one trap bridge, which
-/// crashes the actor when a supervisor can rule on the failure and otherwise
-/// ends the run with status 1.
+/// A release a frame emits itself is that frame's fault edge: the failing
+/// `close` fills the frame's fault record and the frame keeps releasing. This
+/// is the trap path for the releases that have no such frame — a descriptor
+/// drop thunk, a collection element release, a shared payload's destructor —
+/// where nothing can hand the failure back to the value's owner. It reports
+/// the fault's own typed line — so a `panic` inside `close` keeps its message
+/// — then routes into the one trap bridge, which crashes the actor when a
+/// supervisor can rule on the failure and otherwise ends the run with
+/// status 1.
 ///
 /// `fault` transfers one optional fault owner; `code` is the status `close`
 /// returned and stands alone when no fault accompanies it.

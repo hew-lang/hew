@@ -1,6 +1,7 @@
 //! Per-iteration leak / double-free oracle for the forwarded-fn-parameter →
-//! struct-field store shape (`fn make_handler(f: fn(i64)->i64) -> Handler {
-//! Handler { action: f } }`).
+//! struct-field store shape (`fn make_handler(consume f: fn(i64)->i64) ->
+//! Handler { Handler { action: f } }`). An owning field needs an owning source,
+//! so the parameter is `consume`; a borrowed one is refused in source.
 //!
 //! ## What this proves
 //!
@@ -59,7 +60,7 @@ fn forward_param_into_field_loop_source(frames: usize) -> String {
     format!(
         "type Handler {{ action: fn(i64) -> i64, }}\n\
          fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
-         fn make_handler(f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
+         fn make_handler(consume f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..frames {{\n\
@@ -89,7 +90,7 @@ fn forward_fresh_call_result_into_field_loop_source(frames: usize) -> String {
         "type Handler {{ action: fn(i64) -> i64, }}\n\
          fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
          fn wrap(n: i64) -> fn(i64) -> i64 {{ make_adder(n) }}\n\
-         fn make_handler(f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
+         fn make_handler(consume f: fn(i64) -> i64) -> Handler {{ Handler {{ action: f }} }}\n\
          fn run_loop(frames: i64) -> i64 {{\n\
          \x20   var total: i64 = 0;\n\
          \x20   for i in 0..frames {{\n\
@@ -115,7 +116,7 @@ fn store_and_drop_struct_loop_source(frames: usize) -> String {
     format!(
         "type Handler {{ action: fn(i64) -> i64, }}\n\
          fn make_adder(n: i64) -> fn(i64) -> i64 {{ |x: i64| x + n }}\n\
-         fn use_then_drop(f: fn(i64) -> i64) -> i64 {{\n\
+         fn use_then_drop(consume f: fn(i64) -> i64) -> i64 {{\n\
          \x20   let h = Handler {{ action: f }};\n\
          \x20   h.action(1)\n\
          }}\n\

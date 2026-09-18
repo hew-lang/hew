@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-frame-owners"
+intent = "A handler faulting while holding two resources whose closes both fail releases both in reverse binding order, keeps the body's panic as the primary failure, reports each close as a secondary line, and the supervisor restarts the child."
+source = "cases/resource-close-fault-frame-owners.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 2\nclose 1\nrestarted\n"
+stderr = "hew: failure: UserPanic (212): handler failed\nhew: secondary failure: UserPanic (212): close 2 failed\nhew: secondary failure: UserPanic (212): close 1 failed\nhew: actor crash in Drain.run (actor 1): UserPanic\n"
+exit = 0

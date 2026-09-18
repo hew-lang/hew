@@ -2136,6 +2136,13 @@ impl Checker {
             if !is_moved && !is_write_target {
                 self.report_place_use_after_move(name, &[], span);
             }
+            // A read inside a generator body captures into the generator frame.
+            // `in_generator` covers `gen fn`, `receive gen fn` and `gen { }`,
+            // and is cleared inside a nested lambda body, whose own capture
+            // rule (`finish_closure_captures`) owns that boundary instead.
+            if self.in_generator && !is_write_target {
+                self.reject_borrowed_generator_capture(name, span);
+            }
             // Track captures: variable from scope below the lambda boundary
             if let Some(capture_depth) = self.lambda_capture_depth {
                 if depth < capture_depth {

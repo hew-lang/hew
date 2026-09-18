@@ -136,7 +136,9 @@ pub type SendFailure<M> {
     message: M,
 }
 
-/// Successful submission describes acceptance or an explicitly chosen discard.
+/// Successful submission describes acceptance or a discard. A discard is a
+/// loss either the destination's declared mailbox policy or the sender's own
+/// `on_full` chose; the message is gone either way and nothing is retryable.
 pub enum Delivery {
     Accepted,
     Discarded,
@@ -146,7 +148,7 @@ impl Display for Delivery {
     fn fmt(outcome: Delivery) -> string {
         match outcome {
             Delivery.Accepted => "accepted",
-            Delivery.Discarded => "discarded by the chosen policy",
+            Delivery.Discarded => "discarded: the destination's mailbox was full",
         }
     }
 }

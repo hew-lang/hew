@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-returned-owner"
+intent = "A resource returned from a function releases in the caller, and the close that fails there is the caller's own primary failure."
+source = "cases/resource-close-fault-returned-owner.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "working\nclose 7\n"
+stderr = "hew: failure: UserPanic (212): close 7 failed\n"
+exit = 1

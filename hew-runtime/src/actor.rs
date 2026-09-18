@@ -4252,7 +4252,9 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
 /// enqueue, but the WASM mailbox routing for the alias path is not yet
 /// wired. Until then this stub releases the caller-transferred envelope
 /// refcount (so the buffer container does not leak) and aborts via
-/// [`hew_panic`] rather than silently dropping or mis-delivering.
+/// [`hew_panic`] rather than silently dropping or mis-delivering. `hew_panic`
+/// is `extern "C-unwind"` and unwinds out of an actor context, so this stub
+/// carries that ABI too.
 ///
 /// # Safety
 ///
@@ -4260,7 +4262,7 @@ pub unsafe extern "C" fn hew_actor_send_aliased(
 ///   caller-transferred refcount that this stub releases before aborting.
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_aliased(
+pub unsafe extern "C-unwind" fn hew_actor_send_aliased(
     _actor: *mut HewActor,
     _msg_type: i32,
     envelope: *mut crate::mailbox_wasm::HewMsgEnvelope,

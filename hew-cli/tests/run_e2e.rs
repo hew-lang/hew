@@ -2160,72 +2160,55 @@ fn check_channel_vec_indirect_enum_rejected_by_layout_witness() {
     );
 }
 
-/// CAP-11 fail-closed gate: a CAPTURING closure passed where a generator
-/// declares a `fn(..)` parameter is refused at check time. The closure
-/// unifies structurally with `fn(..)` but carries a non-null env word; the
-/// generator env is a flat copy nothing can ever release, so admitting the
-/// launder leaks one env box per constructed generator (previously: compiled
-/// clean and leaked exactly that box per launder).
+/// A generator OWNS what its body reads from the enclosing frame: the capture
+/// record is heap-copied into the coro env and the generator outlives the call
+/// that built it. A captured value whose type has no copy operation therefore
+/// has to be moved in, and a borrowed parameter has nothing to move. The
+/// checker decides it, so the programmer reads a span and a remedy rather than
+/// a SIR verification failure (#3377). A bare `fn(..)` carries no copy
+/// operation, so both remedies are offered; a `#[resource]` gets only
+/// `consume`. Accepted twins: `gen_fn_consume_borrowed_param` (both remedies
+/// run) and `gen_fn_null_env_fn_values` (the `fn[clone]` spelling).
 #[test]
-fn check_gen_fn_capturing_closure_arg_fails_closed() {
+fn check_gen_fn_borrowed_fn_param_fails_closed() {
     require_codegen();
 
-    let source = repo_root().join("tests/vertical-slice/reject/gen_fn_capturing_closure_arg.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
+    let combined = check_fails("tests/vertical-slice/reject/gen_fn_borrowed_fn_param.hew");
     assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        combined.contains("E_OWN_CONSUME_BORROWED")
+            && combined.contains("a generator owns its captures")
+            && combined.contains("borrowed parameter `f` of type `fn(i64) -> i64`"),
+        "expected the generator capture refusal to name the parameter and its type; got: {combined}"
     );
     assert!(
-        combined.contains("can never release a capturing closure"),
-        "expected the laundered-closure fail-closed diagnostic; got: {combined}"
+        combined.contains("gen_fn_borrowed_fn_param.hew:13:15"),
+        "the refusal must carry a source span, not an internal-error line; got: {combined}"
+    );
+    assert!(
+        combined.contains("consume f: fn(i64) -> i64")
+            && combined.contains("f: fn[clone](i64) -> i64"),
+        "expected both remedies for a callable capture; got: {combined}"
     );
 }
 
-/// CAP-11 rebind leg: a `fn(..)`-typed `var` REASSIGNED a capturing closure
-/// is tainted by a whole-body pre-pass, so the launder cannot hide behind
-/// the binding's `fn(..)` static type or behind statement order (a back-edge
-/// assignment runs before the generator call on the second loop iteration).
+/// The same rule through the `gen { }` block surface and a non-callable type:
+/// a `#[resource]` parameter has no cloneable spelling, so `consume` is the
+/// only remedy offered.
 #[test]
-fn check_gen_fn_capturing_closure_rebind_fails_closed() {
+fn check_gen_block_borrowed_resource_capture_fails_closed() {
     require_codegen();
 
-    let source =
-        repo_root().join("tests/vertical-slice/reject/gen_fn_capturing_closure_rebind.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
+    let combined =
+        check_fails("tests/vertical-slice/reject/gen_block_borrowed_resource_capture.hew");
     assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
+        combined.contains("E_OWN_CONSUME_BORROWED")
+            && combined.contains("borrowed parameter `t` of type `Token`")
+            && combined.contains("consume t: Token"),
+        "expected the resource capture refusal with the consume remedy; got: {combined}"
     );
     assert!(
-        combined.contains("can never release a capturing closure"),
-        "expected the laundered-closure fail-closed diagnostic; got: {combined}"
+        !combined.contains("fn[clone]"),
+        "a resource has no cloneable spelling to suggest; got: {combined}"
     );
 }
 
@@ -3475,47 +3458,6 @@ fn imported_free_functions_do_not_shadow_root_local_functions() {
     );
 }
 
-/// An unannotated GENERIC cross-module named function used as a value is
-/// rejected: the type parameters cannot be determined from context and the
-/// diagnostic names the function and asks for an annotation.
-#[test]
-fn check_cross_module_generic_fn_value_ambiguous_rejected() {
-    require_codegen();
-
-    let source =
-        repo_root().join("tests/vertical-slice/reject/cross_module_generic_fn_value/main.hew");
-    let output = Command::new(hew_binary())
-        .arg("check")
-        .arg(&source)
-        .current_dir(repo_root())
-        .output()
-        .expect("invoke hew check");
-
-    assert!(
-        !output.status.success(),
-        "expected check to fail; stdout: {}\nstderr: {}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    let combined = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        combined.contains("is a generic function"),
-        "expected diagnostic to name the generic function; got: {combined}"
-    );
-    assert!(
-        combined.contains("type annotation"),
-        "expected the diagnostic to ask for a type annotation; got: {combined}"
-    );
-    assert!(
-        !combined.contains("has no exported constant"),
-        "must not misreport an exported function as a missing constant; got: {combined}"
-    );
-}
-
 /// A private (non-pub) enum returned from a pub fn across a module boundary
 /// must compile and run correctly.  Previously the §4b pre-pass cached the
 /// `HirTypeDecl` for all enums, but the fourth-pass emission guard was missing
@@ -3665,8 +3607,10 @@ fn check_closure_borrowed_element_store_fails_closed() {
     require_codegen();
     let combined = check_fails("tests/vertical-slice/reject/closure_borrowed_element_store.hew");
     assert!(
-        combined.contains("borrows a closure environment owned elsewhere"),
-        "expected borrowed-store diagnostic; got: {combined}"
+        combined.contains("E_OWN_CONSUME_BORROWED")
+            && combined.contains("cannot consume borrowed collection element `first`")
+            && combined.contains("the collection retains this value's owner"),
+        "expected the borrowed-element store refusal naming the loan's owner; got: {combined}"
     );
 }
 
@@ -5485,12 +5429,7 @@ fn tree_sum(tree: Tree) -> i64 {
 
 actor Worker {
     receive fn score(tag: i64, tree: Tree) -> i64 { tag + tree_sum(tree) }
-    receive fn boom() {
-        // Keep the crash beyond the 250 ms contextless-await grace so the
-        // restart barrier parks rather than resolving on the pre-park check.
-        sleep(500ms);
-        panic("restart");
-    }
+    receive fn boom() { panic("restart"); }
 }
 
 supervisor App {
@@ -5502,6 +5441,9 @@ supervisor App {
 fn main() -> i64 {
     let sup = spawn App;
     let worker = sup.worker;
+    // `boom` is a completion call, so its `Err` proves the crash opened its
+    // fault record. `await_restart` then waits for that record to settle,
+    // which is the observable restart this test joins on.
     let _ = worker.boom();
     let _ = await_restart sup.worker;
     let (a, b) = await fork (

@@ -82,6 +82,27 @@ impl Checker {
                 continue;
             };
             declared = true;
+            // A completion call owes its caller a reply, so the mailbox never
+            // supersedes or discards one. A key on a value-returning handler
+            // is a declaration that can never take effect.
+            let returns_value = rf
+                .return_type
+                .as_ref()
+                .is_some_and(|ret| !matches!(self.resolve_type_expr(ret), Ty::Unit | Ty::Error));
+            if returns_value {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    format!(
+                        "coalesce key `{key_field}` is declared on `receive fn {}`, which \
+                         returns a value; a call that waits for a reply is never superseded \
+                         or discarded, so the key can never take effect. Remove the parameter \
+                         from this handler or coalesce on a one-way handler",
+                        rf.name
+                    ),
+                );
+                continue;
+            }
             let ty = self.resolve_type_expr(&param.ty);
             if !matches!(
                 ty,

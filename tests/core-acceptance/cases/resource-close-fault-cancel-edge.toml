@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-fault-cancel-edge"
+intent = "A close that fails on a cancellation edge releases the cancelled frame's owner and is recorded against the cancellation; the race consumes its own cancellation marker, so the close fault is the surviving failure rather than being discarded."
+source = "cases/resource-close-fault-cancel-edge.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "close 9\n"
+stderr = "hew: failure: UserPanic (212): close 9 failed\n"
+exit = 1

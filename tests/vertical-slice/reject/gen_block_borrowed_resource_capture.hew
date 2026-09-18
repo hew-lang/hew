@@ -1,0 +1,24 @@
+// Reject: the same generator capture rule through the `gen { }` block surface
+// and a non-callable type. `hold` borrows its `#[resource]` parameter, so the
+// block's capture of `t` has no owner to move into the generator frame. Only
+// `consume` is offered here — a resource has no cloneable spelling.
+#[resource]
+type Token {
+    id: i64,
+}
+
+impl Token {
+    fn close(consume self) {}
+}
+
+fn hold(t: Token) -> Generator<i64, ()> {
+    gen { yield t.id; }
+}
+
+fn main() {
+    let t = Token { id: 7 };
+    for v in hold(t) {
+        println(v);
+    }
+    t.close();
+}

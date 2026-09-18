@@ -14,7 +14,7 @@ macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_fr
 macos	failure	hew-cli::closure_in_struct_leak_oracle	forward_param_into_field_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 macos	failure	hew-cli::closure_in_struct_leak_oracle	store_and_drop_struct_leak_slope_below_tolerance	#3438 borrowed fn-parameter values cannot be captured or stored without consume
 macos	failure	hew-cli::collection_borrowed_cow_ingress_leak_oracle	reassigned_param_ingress_reads_back_exact_values	#3438 borrowed fn-parameter values cannot be captured or stored without consume
-linux,windows,freebsd	failure	hew-cli::compile_wasm_parity	arith_program_emits_wasm	#3368 implements sandbox emission on the physical path
+linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	arith_program_emits_wasm	#3368 implements sandbox emission on the physical path
 linux,macos,windows,freebsd	failure	hew-cli::compile_wasm_parity	wasm_unsupported_substrate_diagnostics_preserve_symbol_category	#3368 implements sandbox emission on the physical path
 linux	failure	hew-cli::coro_thread_fence_e2e	fork_children_create_no_os_threads	#3385 runs fork children as coroutines, not OS threads
 linux,macos,windows,freebsd	failure	hew-cli::cross_target_e2e	serializable_actor_emits_target_walked_ctor_section	#3382 emits the target-walked constructor section

@@ -13578,9 +13578,10 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "not-applicable",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13595,7 +13596,7 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "unclassified-stdlib",
+      "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
@@ -13607,8 +13608,7 @@
     },
     {
       "availability": [
-        "native",
-        "wasm32-wasip1"
+        "native"
       ],
       "classification": "stable",
       "extent": "length-or-count",

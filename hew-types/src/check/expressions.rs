@@ -9108,14 +9108,15 @@ impl Checker {
             Expr::FieldAccess { object, field } => {
                 if let Expr::Identifier(module) = &object.0 {
                     if self.module_binding_in_current_file(module) {
-                        // Verify the qualifier resolves to an ACTOR that is a
-                        // public export of `module` before stripping it to the
-                        // bare name. `module_type_exports` membership alone is
-                        // insufficient: that set also holds public NON-actor
-                        // types, so it is true even when `secret.Account` is a
-                        // `pub type`/struct/enum (and a private actor is absent
-                        // from it entirely). Resolve the qualified definition and
-                        // require `TypeDefKind::Actor`; otherwise
+                        // Verify the qualifier resolves to something spawnable
+                        // that is a public export of `module` before stripping
+                        // it to the bare name. `module_type_exports` membership
+                        // alone is insufficient: that set also holds public
+                        // non-spawnable types, so it is true even when
+                        // `secret.Account` is a `pub type`/struct/enum (and a
+                        // private actor is absent from it entirely). Resolve the
+                        // qualified definition and require an actor or a
+                        // supervisor, which spawn the same way; otherwise
                         // `spawn secret.Account()` would lower to bare `Account`
                         // and silently route to a same-named root/pub actor -- a
                         // capability-boundary hole. `resolve_module_type` already
@@ -9125,7 +9126,9 @@ impl Checker {
                         // Fail closed before HIR/MIR rather than misroute.
                         let actor_identity = self
                             .resolve_module_type(module, field)
-                            .filter(|td| td.kind == TypeDefKind::Actor)
+                            .filter(|td| {
+                                matches!(td.kind, TypeDefKind::Actor | TypeDefKind::Supervisor)
+                            })
                             .map(|td| td.name);
                         let Some(actor_identity) = actor_identity else {
                             let similar = self
@@ -9140,7 +9143,10 @@ impl Checker {
                             self.report_error_with_suggestions(
                                 TypeErrorKind::UndefinedType,
                                 span,
-                                format!("module `{module}` has no exported actor `{field}`"),
+                                format!(
+                                    "module `{module}` has no exported actor or supervisor \
+                                     `{field}`"
+                                ),
                                 similar,
                             );
                             // The caller types the spawn as bare `Ty::Error`

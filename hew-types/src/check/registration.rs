@@ -2554,68 +2554,12 @@ impl Checker {
                     if !self.register_type_namespace_name(None, &sd.name, span) {
                         continue;
                     }
-                    let type_params: Vec<_> =
-                        sd.type_params.iter().map(|p| p.name.clone()).collect();
-                    let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
-                    let fields = sd
-                        .params
-                        .iter()
-                        .map(|param| (param.name.clone(), self.resolve_type_expr(&param.ty)))
-                        .collect();
-                    let mut bounds = self.collect_type_param_bounds(Some(&sd.type_params), None);
-                    for parameter in &type_params {
-                        let bounds = bounds.entry(parameter.clone()).or_default();
-                        if !bounds.iter().any(|bound| bound == "Send") {
-                            bounds.push("Send".into());
-                        }
-                    }
-                    self.type_defs.insert(
-                        sd.name.clone(),
-                        TypeDef {
-                            kind: TypeDefKind::Supervisor,
-                            name: sd.name.clone(),
-                            type_params,
-                            bounds,
-                            fields,
-                            field_order: sd.params.iter().map(|param| param.name.clone()).collect(),
-                            variants: HashMap::new(),
-                            methods: HashMap::new(),
-                            doc_comment: None,
-                            is_indirect: false,
-                        },
-                    );
-                    // Partition children by kind in source order. Slot index for each
-                    // child is its 0-based position within its own partition, matching
-                    // the runtime layout (children[] for static, pool_slots[] for pool).
-                    let mut statics = Vec::new();
-                    let mut pools = Vec::new();
-                    for c in &sd.children {
-                        let type_args = c
-                            .type_args
-                            .iter()
-                            .map(|arg| self.resolve_type_expr(arg))
-                            .collect();
-                        let entry = (
-                            c.name.clone(),
-                            Ty::Named {
-                                builtin: None,
-                                name: self.canonical_supervisor_child_type(&c.actor_type),
-                                args: type_args,
-                            },
-                        );
-                        if c.is_pool {
-                            pools.push(entry);
-                        } else {
-                            statics.push(entry);
-                        }
-                    }
-                    self.supervisor_children.insert(
-                        sd.name.clone(),
-                        crate::check::types::SupervisorChildren { statics, pools },
-                    );
-                    self.exit_primary_sig_scope(scope);
-                    self.local_type_defs.insert(sd.name.clone());
-                    self.source_type_defs.insert(sd.name.clone());
+                    // Root items: `current_module` is cleared above, so the
+                    // declaration identity is the bare name.
+                    let identity = self.declaration_identity(&sd.name);
+                    self.register_supervisor_decl_as(sd, &identity);
+                    self.local_type_defs.insert(identity.clone());
+                    self.source_type_defs.insert(identity);
                 }
                 Item::Record(rd) => {
                     if !self.register_type_namespace_name(None, &rd.name, span) {
@@ -4788,6 +4732,77 @@ impl Checker {
             }
         }
         false
+    }
+
+    /// Register a supervisor declaration under an explicit identity key.
+    ///
+    /// `identity` is the bare name for a root or flat-file supervisor and the
+    /// dotted `{module}.{name}` form for one declared inside a module, matching
+    /// what the resolver mints for the same declaration and what
+    /// [`Self::register_actor_decl_as`] does for an actor. `type_defs` and
+    /// `supervisor_children` are keyed by it, so two modules may each declare a
+    /// supervisor of the same name without one clobbering the other.
+    pub(super) fn register_supervisor_decl_as(&mut self, sd: &SupervisorDecl, identity: &str) {
+        let type_params: Vec<_> = sd.type_params.iter().map(|p| p.name.clone()).collect();
+        let scope = self.enter_primary_sig_scope(&[(Some(&sd.type_params), None)]);
+        let fields = sd
+            .params
+            .iter()
+            .map(|param| (param.name.clone(), self.resolve_type_expr(&param.ty)))
+            .collect();
+        let mut bounds = self.collect_type_param_bounds(Some(&sd.type_params), None);
+        for parameter in &type_params {
+            let bounds = bounds.entry(parameter.clone()).or_default();
+            if !bounds.iter().any(|bound| bound == "Send") {
+                bounds.push("Send".into());
+            }
+        }
+        self.type_defs.insert(
+            identity.to_string(),
+            TypeDef {
+                kind: TypeDefKind::Supervisor,
+                name: identity.to_string(),
+                type_params,
+                bounds,
+                fields,
+                field_order: sd.params.iter().map(|param| param.name.clone()).collect(),
+                variants: HashMap::new(),
+                methods: HashMap::new(),
+                doc_comment: None,
+                is_indirect: false,
+            },
+        );
+        // Partition children by kind in source order. Slot index for each
+        // child is its 0-based position within its own partition, matching
+        // the runtime layout (children[] for static, pool_slots[] for pool).
+        let mut statics = Vec::new();
+        let mut pools = Vec::new();
+        for c in &sd.children {
+            let type_args = c
+                .type_args
+                .iter()
+                .map(|arg| self.resolve_type_expr(arg))
+                .collect();
+            let entry = (
+                c.name.clone(),
+                Ty::Named {
+                    builtin: None,
+                    name: self.canonical_supervisor_child_type(&c.actor_type),
+                    args: type_args,
+                },
+            );
+            if c.is_pool {
+                pools.push(entry);
+            } else {
+                statics.push(entry);
+            }
+        }
+        self.supervisor_children.insert(
+            identity.to_string(),
+            crate::check::types::SupervisorChildren { statics, pools },
+        );
+        self.exit_primary_sig_scope(scope);
+        self.known_types.insert(identity.to_string());
     }
 
     pub(super) fn register_actor_decl(&mut self, ad: &ActorDecl) {
@@ -11961,6 +11976,35 @@ impl Checker {
                     self.register_actor_base(ad, Some(owner).filter(|owner| !owner.is_empty()));
                     self.publish_file_import_type_name(owner, &ad.name);
                 }
+                Item::Supervisor(sd) => {
+                    if !sd.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.register_flat_file_import_type_name(
+                        &mut current_import_pub_spans,
+                        &sd.name,
+                        span,
+                    ) {
+                        continue;
+                    }
+                    // Same rule as an actor above: the declaring file owns the
+                    // identity and the bare spelling is only the binding this
+                    // importer sees, so `spawn Inner` reaches the declaration
+                    // SIR matches rather than a bare row of its own.
+                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
+                    let identity = if owner.is_empty() {
+                        sd.name.clone()
+                    } else {
+                        format!("{owner}.{}", sd.name)
+                    };
+                    let saved_importer_module = self.current_module.take();
+                    if !owner.is_empty() {
+                        self.current_module = Some(owner.to_string());
+                    }
+                    self.register_supervisor_decl_as(sd, &identity);
+                    self.current_module = saved_importer_module;
+                    self.publish_file_import_type_name(owner, &sd.name);
+                }
                 Item::Impl(id) => {
                     if let TypeExpr::Named {
                         name: type_name,
@@ -13063,6 +13107,61 @@ impl Checker {
                         );
                     }
                 }
+                Item::Supervisor(sd) => {
+                    // A module supervisor registers under the same dotted
+                    // identity the resolver mints for it, exactly as a module
+                    // actor does. Without this the declaration reached no
+                    // checker table at all and `spawn Inner` fell through to a
+                    // bare echo that SIR could not match to its declaration.
+                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
+                    let qualified = format!("{module_full_path}.{}", sd.name);
+                    self.type_visibility
+                        .entry(qualified.clone())
+                        .or_insert((sd.visibility, Some(module_full_path.to_string())));
+                    self.type_def_spans
+                        .entry(qualified.clone())
+                        .or_insert_with(|| span.clone());
+                    if !sd.visibility.is_pub() {
+                        continue;
+                    }
+                    if !self.type_defs.contains_key(&qualified)
+                        && !self.register_type_namespace_name(
+                            Some(module_full_path),
+                            &sd.name,
+                            span,
+                        )
+                    {
+                        continue;
+                    }
+                    let saved_importer_module =
+                        self.current_module.replace(module_full_path.to_string());
+                    self.current_module_idx = declaring_file_idx;
+                    self.register_supervisor_decl_as(sd, &qualified);
+                    self.current_module = saved_importer_module;
+                    self.current_module_idx = importer_file_idx;
+                    self.record_module_type_export(module_full_path, &sd.name);
+                    if Self::should_import_name(&sd.name, spec) {
+                        let binding_name = Self::resolve_import_name(spec, &sd.name)
+                            .unwrap_or_else(|| sd.name.clone());
+                        self.record_published_bare_type(&binding_name, &qualified);
+                        self.import_type_name_aliases.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name.clone(),
+                            ),
+                            qualified.clone(),
+                        );
+                        self.unqualified_to_module.insert(
+                            (
+                                self.current_module.clone(),
+                                self.current_module_idx,
+                                binding_name,
+                            ),
+                            module_full_path.to_string(),
+                        );
+                    }
+                }
                 Item::ExternBlock(eb) => {
                     // Resolved-item imports are not guaranteed to have a
                     // module-graph collection pass. Register their extern
@@ -13083,7 +13182,7 @@ impl Checker {
                         self.current_module_idx = importer_file_idx;
                     }
                 }
-                _ => {}
+                Item::Import(_) => {}
             }
         }
         self.current_item_source = importer_item_source;

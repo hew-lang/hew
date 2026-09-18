@@ -175,10 +175,6 @@ fn load_cases() -> Vec<IosCase> {
             .map(|fixture| {
                 let expectation = match fixture.id.as_str() {
                     "higher-order-functions" => Expectation::FailClosedProfile("unknown_symbol"),
-                    // The snippet imports `std.io` and `std.math`. `std.io` is
-                    // the page's own standard streams and is admitted; the
-                    // refusal is `std.math`, which is not in the allowlist.
-                    "import" => Expectation::FailClosedProfile("unknown_stdlib_symbol"),
                     _ => Expectation::Parity,
                 };
                 IosCase {

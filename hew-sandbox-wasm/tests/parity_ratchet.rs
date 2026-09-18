@@ -359,6 +359,21 @@ const CONSTRUCTS: &[Construct] = &[
         coverage: Coverage::Parity("trap_residual"),
     },
     Construct {
+        id: "`std.math` intrinsic call",
+        probe: "import std.math;\nfn main() {\n    println(math.sqrt(16.0));\n}\n",
+        coverage: Coverage::Parity("math_intrinsics"),
+    },
+    Construct {
+        id: "`sleep` on the virtual clock",
+        probe: "fn main() {\n    sleep(25ms);\n    println(\"awake\");\n}\n",
+        coverage: Coverage::Parity("virtual_sleep"),
+    },
+    Construct {
+        id: "`std.random` seeded generator",
+        probe: "import std.random;\nfn main() {\n    random.seed(1);\n    println(random.randint(0, 9));\n}\n",
+        coverage: Coverage::Parity("seeded_random"),
+    },
+    Construct {
         id: "map literal (`{\"k\": v}`)",
         probe: "fn main() {\n    let m = {\"a\": 1, \"b\": 2};\n    println(\"made map\");\n}\n",
         coverage: Coverage::Parity("map_literal"),
@@ -685,9 +700,7 @@ const CONSTRUCTS: &[Construct] = &[
     Construct {
         id: "trait / impl declaration",
         probe: "trait Greet { fn hello(self) -> string; }\nfn main() {\n    println(\"x\");\n}\n",
-        coverage: Coverage::RejectedByProfile {
-            diagnostic_kind: "reserved_runtime_feature",
-        },
+        coverage: Coverage::Parity("trait_objects"),
     },
     Construct {
         id: "`#[resource]` type (implicit drop contract)",

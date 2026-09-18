@@ -1327,6 +1327,18 @@ where
         }
     }
 
+    // Try Homebrew paths. Both the `lld` and `llvm` formulae ship `wasm-ld`
+    // and both are keg-only, so neither reaches `PATH` on a default install.
+    for prefix in &["/opt/homebrew/opt", "/usr/local/opt"] {
+        for formula in &["lld", "llvm", "llvm@22", "llvm@21", "llvm@20", "llvm@19"] {
+            let path = format!("{prefix}/{formula}/bin/wasm-ld");
+            tried.push(path.clone());
+            if path_exists(&path) {
+                return Ok(path);
+            }
+        }
+    }
+
     // Try Windows LLVM installation
     #[cfg(target_os = "windows")]
     {

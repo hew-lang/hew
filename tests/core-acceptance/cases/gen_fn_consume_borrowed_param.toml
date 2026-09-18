@@ -2,7 +2,7 @@
 id = "gen_fn_consume_borrowed_param"
 intent = "A `consume` generator parameter moves a capturing closure and a resource handle into the generator frame."
 source = "../vertical-slice/accept/gen_fn_consume_borrowed_param.hew"
-suites = ["acceptance"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.env]

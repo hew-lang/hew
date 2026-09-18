@@ -1,6 +1,9 @@
-// Reject (CAP-11): forwarding a fn-typed parameter into a generator
-// constructor cannot prove that the function value has a null environment.
-gen fn mapped(n: i64, f: fn(i64) -> i64) -> i64 {
+// Reject: `consume` on the generator's parameter moves the value into the
+// generator frame, so the forwarding function has to own what it hands on.
+// `forward` borrows its own `f`, so the forward is a consume of a borrow and
+// the refusal names `forward`, not the generator. Declaring `consume f` on
+// `forward` too is the fix, and carries the transfer all the way down.
+gen fn mapped(n: i64, consume f: fn(i64) -> i64) -> i64 {
     var i = 0;
     while i < n {
         yield f(i);

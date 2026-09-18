@@ -159,7 +159,7 @@ fn fault_releases(
                 SemOpKind::DestroyValue { value } => types.get(&value.value),
                 _ => None,
             };
-            if ty.is_some_and(|ty| release_may_fault(ty)) {
+            if ty.is_some_and(release_may_fault) {
                 releases.insert(op.id);
             }
         }

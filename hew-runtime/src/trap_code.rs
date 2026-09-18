@@ -192,6 +192,36 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
     }
 }
 
+/// The trap bridge a raised fault routes through, per target.
+///
+/// `reported` says the caller already wrote the typed diagnostic line, which
+/// [`crate::fault::hew_fault_trap`] does so its fault's message survives.
+///
+/// # Safety
+/// May be called in or out of actor dispatch; the installed execution context,
+/// if any, is scheduler-owned and valid for the call.
+pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: forwarded caller contract.
+    unsafe {
+        crate::supervisor::trap_with_code(code, reported);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        if !reported {
+            crate::fault::report_trap_code(code);
+        }
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let _ = std::io::Write::flush(&mut std::io::stderr());
+        // SAFETY: the wasm bridge stamps actor context or exits a canonical
+        // trap; it returns only for a code with no canonical status.
+        unsafe { hew_trap_with_code(code) };
+        // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8).
+        // JUSTIFIED: no recovery authority exists; the host reclaims the module.
+        std::process::exit(1);
+    }
+}
+
 /// WASM trap-code bridge used by codegen before `llvm.trap`.
 ///
 /// Native implements the exported symbol in `supervisor.rs` because it routes

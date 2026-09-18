@@ -383,7 +383,7 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) {
     if fault.is_null() {
         // SAFETY: the bridge accepts any context; nothing was reported yet.
-        unsafe { crate::supervisor::trap_with_code(code, false) };
+        unsafe { crate::trap_code::fault_trap_bridge(code, false) };
         return;
     }
     // A collection release in progress finishes releasing what it owns before
@@ -399,7 +399,7 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
     let _ = write_report(&fault, &mut io::stderr().lock());
     drop(fault);
     // SAFETY: the bridge accepts any context; the typed line is already out.
-    unsafe { crate::supervisor::trap_with_code(code, true) };
+    unsafe { crate::trap_code::fault_trap_bridge(code, true) };
 }
 
 /// Write one fault's typed line to stderr for a code with no fault owner.
@@ -408,7 +408,6 @@ pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) 
 /// else; the checked path reaches the same diagnostic through
 /// [`hew_fault_report`]. Both print the one line HEW-SPEC-2026 5.8 promises,
 /// from this one formatter, so the text does not depend on which path failed.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn report_trap_code(code: i32) {
     let fault = HewFault {
         code,

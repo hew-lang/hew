@@ -18,11 +18,10 @@ use crate::actor::HewActor;
 pub use crate::arena::ActorArena as HewArena;
 use crate::tracing::HewTraceContext;
 
+pub use crate::cancel_token::HewCancellationToken as HewCancelToken;
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::task_scope::{HewCancellationToken as HewCancelToken, HewTaskScope};
+pub use crate::task_scope::HewTaskScope;
 
-#[cfg(target_arch = "wasm32")]
-pub type HewCancelToken = c_void;
 #[cfg(target_arch = "wasm32")]
 pub type HewTaskScope = c_void;
 

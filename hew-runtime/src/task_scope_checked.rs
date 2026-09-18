@@ -491,7 +491,7 @@ pub unsafe extern "C" fn hew_checked_scope_cancel(scope: *mut HewTaskScope) {
     // SAFETY: scope owns the cancellation token and tasks retain its ancestry.
     unsafe {
         let token = (*scope).cancel_token;
-        let reason = super::cancel_token_reason(token);
+        let reason = crate::cancel_token::cancel_token_reason(token);
         hew_cancel_token_cancel(token, if reason == 0 { 1 } else { reason });
     }
 }
@@ -508,7 +508,7 @@ pub unsafe extern "C" fn hew_checked_scope_wait_cancel_losers(wait: *mut HewChec
         let wait = &mut *wait;
         wait.cancellation = ScopeCancellation::RaceLosers;
         let token = (*wait.scope).cancel_token;
-        let reason = super::cancel_token_reason(token);
+        let reason = crate::cancel_token::cancel_token_reason(token);
         let reason = if reason == 0 {
             crate::fault::HEW_FAULT_RACE_LOST
         } else {

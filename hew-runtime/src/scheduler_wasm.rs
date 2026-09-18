@@ -331,13 +331,13 @@ unsafe fn hew_msg_node_free(node: *mut HewMsgNode) {
 
 /// Return current time in milliseconds (monotonic, simtime-aware in tests).
 ///
-/// On native targets this calls `io_time::hew_now_ms` which honours the
+/// On native targets this calls `clock::hew_now_ms` which honours the
 /// deterministic simulation clock.  On wasm32 it resolves to the
 /// `wasm_stubs::hew_now_ms` symbol.
 #[cfg(not(target_arch = "wasm32"))]
 unsafe fn hew_now_ms() -> u64 {
     // SAFETY: hew_now_ms from io_time.rs has no preconditions.
-    unsafe { crate::io_time::hew_now_ms() }
+    unsafe { crate::clock::hew_now_ms() }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -2621,7 +2621,7 @@ pub extern "C" fn hew_actor_cooperate() -> c_int {
     {
         if !cancel_token.is_null() {
             // SAFETY: cancel_token is owned by the installed task scope.
-            if unsafe { crate::task_scope::hew_cancel_token_is_requested(cancel_token) } != 0 {
+            if unsafe { crate::cancel_token::hew_cancel_token_is_requested(cancel_token) } != 0 {
                 return 2;
             }
         }
@@ -2973,7 +2973,7 @@ mod tests {
     /// wasm32-only module) and only the wasm `hew_now_ms` consults it. The wasm
     /// cooperative harness is single-threaded, so the seam needs no locking.
     /// Native runs these tests multi-threaded (num-cpus) but reads a different
-    /// clock (`io_time::hew_now_ms`). Absolute timer scheduling preserves the
+    /// clock (`clock::hew_now_ms`). Absolute timer scheduling preserves the
     /// requested boundary there, so the guard is inert and the real clock is
     /// left untouched.
     struct VirtualClock;
@@ -4286,7 +4286,7 @@ mod tests {
         a.suspended_reply_channel
             .store(reply.cast(), Ordering::Release);
         // SAFETY: null creates an owned root cancellation token.
-        let token = unsafe { crate::task_scope::hew_cancel_token_new_child(ptr::null_mut()) };
+        let token = unsafe { crate::cancel_token::hew_cancel_token_new_child(ptr::null_mut()) };
         a.suspended_cancel_token
             .store(token.cast(), Ordering::Release);
         // Register a real native generator sink so refusal must preserve this

@@ -71,8 +71,8 @@ static mut WASM_PERIODIC_COUNT: usize = 0;
 #[cfg(not(target_arch = "wasm32"))]
 #[inline]
 fn hew_now_ms_periodic() -> u64 {
-    // SAFETY: `io_time::hew_now_ms` has no preconditions.
-    unsafe { crate::io_time::hew_now_ms() }
+    // SAFETY: `clock::hew_now_ms` has no preconditions.
+    unsafe { crate::clock::hew_now_ms() }
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -5,10 +5,10 @@
 //! address. Result and fault out-pointers remain owned by the invocation's
 //! caller; publishing a terminal status follows initialization of those slots.
 
-use crate::task_scope::{
-    hew_cancel_observe, hew_cancel_token_cancel, hew_cancel_token_is_requested,
-    hew_cancel_token_new_child, hew_cancel_token_release, hew_cancel_token_retain,
-    hew_cancel_unobserve, HewCancelObserver, HewCancellationToken,
+use crate::cancel_token::{
+    cancel_token_reason, hew_cancel_observe, hew_cancel_token_cancel,
+    hew_cancel_token_is_requested, hew_cancel_token_new_child, hew_cancel_token_release,
+    hew_cancel_token_retain, hew_cancel_unobserve, HewCancelObserver, HewCancellationToken,
 };
 use crate::wake::{HewWaker, OwnedWaker};
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -230,7 +230,7 @@ pub unsafe extern "C" fn hew_coro_state_is_cancelled(state: *const HewCoroState)
 #[no_mangle]
 pub unsafe extern "C" fn hew_coro_state_cancel_code(state: *const HewCoroState) -> i32 {
     // SAFETY: the live state's retained token owns its complete ancestry.
-    let reason = unsafe { crate::task_scope::cancel_token_reason((*state).token) };
+    let reason = unsafe { cancel_token_reason((*state).token) };
     match reason {
         crate::fault::HEW_FAULT_DEADLINE | crate::fault::HEW_FAULT_RACE_LOST => reason,
         _ => crate::fault::HEW_FAULT_CANCELLED,

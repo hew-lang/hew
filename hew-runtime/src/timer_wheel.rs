@@ -25,13 +25,13 @@ use std::sync::{Mutex, OnceLock};
 // deterministic simulation clock).  On wasm32 (and in native tests of the
 // cooperative scheduler) the symbol is provided by the host as `extern "C"`
 // — on wasm32 this resolves to `wasm_stubs::hew_now_ms`, in native builds to
-// `io_time::hew_now_ms` which is already `#[no_mangle]`.
+// `clock::hew_now_ms` which is already `#[no_mangle]`.
 // ---------------------------------------------------------------------------
 
 #[cfg(not(target_arch = "wasm32"))]
 fn now_ms_for_wheel() -> u64 {
     // SAFETY: hew_now_ms has no preconditions on native targets.
-    unsafe { crate::io_time::hew_now_ms() }
+    unsafe { crate::clock::hew_now_ms() }
 }
 
 #[cfg(target_arch = "wasm32")]

@@ -1,6 +1,7 @@
 //! Drive a process root task using the shared continuation and wake substrate.
 //! Scheduler startup, actor draining and shutdown belong to the process entry.
 
+use crate::cancel_token::{hew_cancel_token_new_child, hew_cancel_token_release};
 use crate::cont::{hew_cont_destroy, hew_cont_done, hew_cont_resume};
 use crate::coro_state::{
     hew_coro_state_free, hew_coro_state_new, hew_coro_state_private_status, hew_coro_state_status,
@@ -8,7 +9,6 @@ use crate::coro_state::{
 };
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::HewFault;
-use crate::task_scope::{hew_cancel_token_new_child, hew_cancel_token_release};
 use crate::wake::blocking::Readiness;
 use std::ffi::c_void;
 

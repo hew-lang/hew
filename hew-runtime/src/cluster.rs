@@ -978,7 +978,7 @@ impl HewCluster {
             // Initialise to the current monotonic time so the first tick does
             // not immediately mark a brand-new member as suspect.
             // SAFETY: hew_now_ms has no preconditions.
-            last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+            last_seen_ms: unsafe { crate::clock::hew_now_ms() },
         };
         let len = addr.len().min(127);
         member.addr[..len].copy_from_slice(&addr[..len]);
@@ -1450,7 +1450,7 @@ impl HewCluster {
                         false
                     } else if member.state == MEMBER_ALIVE {
                         // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                         true
                     } else {
                         let next_incarnation = member.incarnation.saturating_add(1);
@@ -1475,7 +1475,7 @@ impl HewCluster {
                         member.state = MEMBER_ALIVE;
                         member.incarnation = 1;
                         // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                         should_drain = self.queue_member_transition(MemberTransition {
                             node_id,
                             state: MEMBER_ALIVE,
@@ -1491,7 +1491,7 @@ impl HewCluster {
                             incarnation: 1,
                             addr: [0; 128],
                             // SAFETY: hew_now_ms has no preconditions.
-                            last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+                            last_seen_ms: unsafe { crate::clock::hew_now_ms() },
                         };
                         member.addr[0] = 0;
                         members.push(member);
@@ -1544,7 +1544,7 @@ impl HewCluster {
                 incarnation,
                 addr: [0u8; 128],
                 // SAFETY: hew_now_ms has no preconditions.
-                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+                last_seen_ms: unsafe { crate::clock::hew_now_ms() },
             });
         }
     }
@@ -1699,7 +1699,7 @@ impl HewCluster {
     /// is measured correctly.
     fn update_last_seen(&self, node_id: u16) {
         // SAFETY: hew_now_ms has no preconditions.
-        let now = unsafe { crate::io_time::hew_now_ms() };
+        let now = unsafe { crate::clock::hew_now_ms() };
         let was_suspect = {
             let mut members = self.members.lock_or_recover();
             if let Some(m) = members.iter_mut().find(|m| m.node_id == node_id) {
@@ -1973,7 +1973,7 @@ impl HewCluster {
                 if state == MEMBER_ALIVE {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                         // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                     }
                 } else {
                     // Locally-synthesized bump on reconnect: raises a SUSPECT peer
@@ -1991,7 +1991,7 @@ impl HewCluster {
                     ) {
                         if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                             // SAFETY: hew_now_ms has no preconditions.
-                            member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                            member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                         }
                         should_drain = self.queue_member_transition(transition);
                     }
@@ -2026,7 +2026,7 @@ impl HewCluster {
                 if state == MEMBER_ALIVE {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                         // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                     }
                     tokens.visible.insert(node_id, publication_token);
                 } else {
@@ -2043,7 +2043,7 @@ impl HewCluster {
                     ) {
                         if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                             // SAFETY: hew_now_ms has no preconditions.
-                            member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                            member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                         }
                         should_drain = self.queue_member_transition(transition.with_publication(
                             PublicationTransition::TokenEstablished(publication_token),
@@ -2257,7 +2257,7 @@ impl HewCluster {
                             member.state = state;
                             member.incarnation = incarnation;
                             // SAFETY: hew_now_ms has no preconditions.
-                            member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                            member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                         } else {
                             members.push(ClusterMember {
                                 node_id,
@@ -2265,7 +2265,7 @@ impl HewCluster {
                                 incarnation,
                                 addr: [0; 128],
                                 // SAFETY: hew_now_ms has no preconditions.
-                                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+                                last_seen_ms: unsafe { crate::clock::hew_now_ms() },
                             });
                         }
                         should_drain = self.queue_member_transition(MemberTransition {
@@ -2474,7 +2474,7 @@ pub unsafe extern "C" fn hew_cluster_tick(cluster: *mut HewCluster) -> u16 {
         return 0;
     }
     // SAFETY: hew_now_ms has no preconditions.
-    let now = unsafe { crate::io_time::hew_now_ms() };
+    let now = unsafe { crate::clock::hew_now_ms() };
     // SAFETY: caller guarantees `cluster` is valid. `tick` / `next_ping_target`
     // take `&self`, so a shared reference is sound even when the connection
     // reader thread concurrently drives `process_message` (also `&self`).
@@ -2841,7 +2841,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 members[index].state = MEMBER_ALIVE;
                 members[index].incarnation = 1;
                 // SAFETY: hew_now_ms has no preconditions.
-                members[index].last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                members[index].last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                 should_drain = cluster.queue_member_transition(
                     MemberTransition {
                         node_id,
@@ -2862,7 +2862,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
             } else if state == MEMBER_ALIVE {
                 if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                     // SAFETY: hew_now_ms has no preconditions.
-                    member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                    member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                 }
                 tokens.visible.insert(node_id, publication_token);
             } else {
@@ -2881,7 +2881,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 ) {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
                         // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
                     }
                     should_drain = cluster.queue_member_transition(transition.with_publication(
                         PublicationTransition::GuardedTokenEstablished {
@@ -2905,7 +2905,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 incarnation: 1,
                 addr: [0; 128],
                 // SAFETY: hew_now_ms has no preconditions.
-                last_seen_ms: unsafe { crate::io_time::hew_now_ms() },
+                last_seen_ms: unsafe { crate::clock::hew_now_ms() },
             });
             should_drain = cluster.queue_member_transition(
                 MemberTransition {
@@ -3054,7 +3054,7 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
     use std::fmt::Write as _;
 
     // SAFETY: hew_now_ms has no preconditions.
-    let now_ms = unsafe { crate::io_time::hew_now_ms() };
+    let now_ms = unsafe { crate::clock::hew_now_ms() };
 
     let members = cluster.members.lock_or_recover();
 
@@ -3117,7 +3117,7 @@ mod tests {
     fn snapshot_members_json_escapes_addr_field() {
         let cluster = HewCluster::new(make_config(1));
         // SAFETY: hew_now_ms has no preconditions.
-        let before_snapshot_ms = unsafe { crate::io_time::hew_now_ms() };
+        let before_snapshot_ms = unsafe { crate::clock::hew_now_ms() };
         let fixture_last_seen_ms = before_snapshot_ms.saturating_sub(25);
         let mut member = ClusterMember {
             node_id: 7,
@@ -3132,7 +3132,7 @@ mod tests {
 
         let json = snapshot_members_json(&cluster);
         // SAFETY: hew_now_ms has no preconditions.
-        let after_snapshot_ms = unsafe { crate::io_time::hew_now_ms() };
+        let after_snapshot_ms = unsafe { crate::clock::hew_now_ms() };
         let prefix = r#"[{"node_id":7,"state":"alive","incarnation":42,"addr":"node\"\\\\name\n:9000","last_seen_ms":"#;
         assert!(
             json.starts_with(prefix),
@@ -3814,7 +3814,7 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_secs(1))
                 .expect("lost path should reach the membership callback");
 
-            while crate::io_time::hew_now_ms() < 2 {
+            while crate::clock::hew_now_ms() < 2 {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
 
@@ -4132,7 +4132,7 @@ mod tests {
             .expect("suspect member should stage a guarded ALIVE transition");
             if let Some(member) = members.iter_mut().find(|m| m.node_id == 2) {
                 // SAFETY: hew_now_ms has no preconditions.
-                member.last_seen_ms = unsafe { crate::io_time::hew_now_ms() };
+                member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
             }
             transition.with_publication(PublicationTransition::GuardedTokenEstablished {
                 publication_token: 2,

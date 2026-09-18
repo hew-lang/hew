@@ -184,18 +184,8 @@ pub extern "C" fn hew_exit(code: i64) {
 }
 
 /// Apply the process exit-status rule to a requested exit code.
-///
-/// wasm32 has no exit-status authority (backlog id `actor-exit-status`; see the
-/// `exit_status` module docs), so the requested code passes through unchanged
-/// there.
-#[cfg(not(target_arch = "wasm32"))]
 fn resolve_exit_code(code: i64) -> i64 {
     crate::exit_status::final_exit_code(code)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn resolve_exit_code(code: i64) -> i64 {
-    code
 }
 
 fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
@@ -213,7 +203,6 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         eprintln!("hew_exit: exit code {code} is outside the supported i32 range");
         std::process::abort();
     };
-    #[cfg(not(target_arch = "wasm32"))]
     let code = crate::exit_status::to_process_exit_byte(i64::from(code));
 
     if let Err(error) = std::io::stdout().flush() {
@@ -224,9 +213,6 @@ fn hew_exit_impl(code: i64, terminate: impl FnOnce(i32)) {
         eprintln!("hew_exit: failed to flush stderr before exit: {error}");
         std::process::abort();
     }
-
-    #[cfg(target_arch = "wasm32")]
-    crate::scheduler_wasm::hew_wasm_runtime_exit();
 
     terminate(code);
 }
@@ -590,6 +576,11 @@ pub use auto_mutex::{
 };
 pub mod cabi;
 pub mod callable;
+/// Cancellation tokens: the parent-child cancellation authority every target
+/// shares. Holds no thread or scheduler state.
+pub mod cancel_token;
+/// Monotonic clock, blocking sleep and duration arithmetic on every target.
+pub mod clock;
 /// Stackless continuation substrate: `HewCont` heap-frame + C ABI (W6.007).
 /// The runtime side of the unified suspension representation — the coro frame
 /// allocator and the resume/done/poll/destroy verbs the poll/resume executor
@@ -601,15 +592,11 @@ pub mod cont;
 /// `cont` ABI, holds no scheduler queue state.
 pub mod coro_exec;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod coro_state;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod coro_sleep;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod coro_root;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod generator_checked;
 pub mod hashmap;
 pub mod hashset;
@@ -793,7 +780,6 @@ pub mod io_time;
 pub mod iter;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod path;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod stdio;
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -804,7 +790,6 @@ pub mod cow_envelope;
 pub mod crash;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod deque;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod fault;
 pub mod host_api;
 #[cfg(not(target_arch = "wasm32"))]
@@ -840,7 +825,6 @@ pub mod scheduler_wasm;
 pub mod shutdown;
 // One authority for "what exit status must this program report": read on every
 // native shutdown path, not just the implicit actor-drain one.
-#[cfg(not(target_arch = "wasm32"))]
 pub mod exit_status;
 // `signal` owns native signal recovery and the target-neutral state-field
 // finalizer depth guard used by continuation cleanup on every target. The
@@ -890,8 +874,11 @@ pub mod task_scope;
 pub mod timer_periodic;
 #[cfg(any(target_arch = "wasm32", test))]
 pub mod timer_periodic_wasm;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod wake;
+/// The single-threaded wasm32 process driver: the timer wheel and the root
+/// readiness latch the WASI process runs inline while it waits.
+#[cfg(target_arch = "wasm32")]
+pub mod wasm_driver;
 // timer_wheel compiles on every target: native uses it with the background
 // ticker thread (timer_periodic); WASM uses it with a host-driven tick
 // (scheduler_wasm + timer_periodic_wasm).
@@ -921,7 +908,6 @@ pub mod channel_core;
 pub mod cluster;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connection;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod deterministic;
 /// Distributed messaging is native-only; mailbox monitor delivery shares the
 /// process-local `monitor` authority.
@@ -1170,5 +1156,4 @@ mod exit_code_resolution_tests {
 #[cfg(test)]
 mod test_string;
 
-#[cfg(not(target_arch = "wasm32"))]
 pub mod value_close;

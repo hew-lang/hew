@@ -3527,7 +3527,7 @@ fn reader_loop(
 
         // Update heartbeat.
         // SAFETY: hew_now_ms has no preconditions.
-        let now = unsafe { crate::io_time::hew_now_ms() };
+        let now = unsafe { crate::clock::hew_now_ms() };
         last_activity.store(now, Ordering::Release);
 
         // Decode CBOR wire frame and route.
@@ -4463,7 +4463,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
 
     // SAFETY: hew_now_ms has no preconditions.
-    let now = unsafe { crate::io_time::hew_now_ms() };
+    let now = unsafe { crate::clock::hew_now_ms() };
     actor.last_activity_ms.store(now, Ordering::Release);
 
     // I/O span: record accept span and stash context for reader_loop.

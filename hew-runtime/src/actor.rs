@@ -1726,7 +1726,7 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
         // SAFETY: the actor slot owns a retained task-scope cancellation token.
         #[cfg(not(target_arch = "wasm32"))]
         unsafe {
-            crate::task_scope::hew_cancel_token_release(token.cast());
+            crate::cancel_token::hew_cancel_token_release(token.cast());
         }
     }
 }

@@ -17,11 +17,11 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::actor::{self, HewActor, HewActorOpts};
+use crate::clock::hew_now_ms;
 use crate::exit_status::{FaultRecord, FaultRuling, RoleKey};
 use crate::internal::types::{
     HewActorState, HewDispatchFn, HewLifecycleFn, HewOnCrashFn, HewSysDispatchFn,
 };
-use crate::io_time::hew_now_ms;
 use crate::lifetime::live_actors::ActorIncarnation;
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;

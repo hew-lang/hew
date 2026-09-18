@@ -56,8 +56,11 @@ decide them, and it does not skip one because a value "looks" scalar.
 
 ## Places
 
-A place is a mutable cell with no layout. The VM holds one slot per place per
-activation.
+A place is a mutable storage location with no layout. A `local` place is a cell
+of its own; every other origin resolves through its base, as
+[`package-v1.md`](package-v1.md) describes. `alloc_place` and `end_lifetime`
+appear only for `local` places, so a load or store of a projected place must
+reach its base rather than expect a cell.
 
 | Opcode         | `dst`           | Fields           |
 | -------------- | --------------- | ---------------- |

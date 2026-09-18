@@ -1000,7 +1000,15 @@ impl<'a> ProfileChecker<'a> {
                     || self.enum_variants.contains(name)
                     || matches!(
                         name.as_str(),
-                        "print" | "println" | "panic" | "Some" | "None" | "Ok" | "Err" | "Vec::new"
+                        "print"
+                            | "println"
+                            | "panic"
+                            | "sleep"
+                            | "Some"
+                            | "None"
+                            | "Ok"
+                            | "Err"
+                            | "Vec::new"
                     )
                 {
                     return;

@@ -180,10 +180,24 @@ normal edge.
 proved: `"owned"` (exactly one consuming use per path), `"guaranteed"` (a loan
 that must not outlive its borrow scope) or `"none"`.
 
-`places` are the semantic storage locations this body addresses. A place is a
-mutable cell: `alloc_place` creates it, `store.init` and `store.assign` write
-it, `load.copy`, `load.take` and `load.borrow` read it, `end_lifetime` ends it.
-A place has no layout; the VM holds one slot per place per activation.
+`places` are the semantic storage locations this body addresses. Each carries
+its `origin`, which says where its storage comes from:
+
+| `origin`      | Storage                                                                 | Fields                                                                                                           |
+| ------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `local`       | A cell of its own, created by `alloc_place` and ended by `end_lifetime` | -                                                                                                                |
+| `aggregate`   | One field of its base, in place                                         | `base` (`{"place": id}` or `{"value": id}`), `shape` (a `variants`-style record id, absent for a tuple), `field` |
+| `capture`     | One field of this closure body's receiver                               | `environment`, `field`                                                                                           |
+| `runtime`     | Storage the runtime owns                                                | -                                                                                                                |
+| `actor_state` | One seat of the actor's state, held by the enclosing turn               | `field`                                                                                                          |
+
+Only a `local` place is allocated. Every other origin resolves through
+something the body already holds, so a load or store of it reaches that storage
+directly and no `alloc_place` names it. A nested field read chains: a place
+whose base is another `aggregate` place resolves through it to the root.
+
+A place has no layout; the VM holds one slot per `local` place per activation
+and reaches the rest through their bases.
 
 ### Operands
 

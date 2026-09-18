@@ -3,21 +3,44 @@ import type {
   ReplayConfig,
   RuntimeFailure,
   RuntimeStatus,
-  SandboxBytecodePackage,
+  SandboxRejection,
   SandboxTrace,
+  SourcePosition,
   TraceEvent,
   TraceSpan,
-  UnsupportedDiagnostic
+  UnsupportedDiagnostic,
 } from "./types.js";
 import { canonicalJson } from "./values.js";
+
+/// The package facts a trace reports. A v0 package carries a source map and
+/// resolves span references through it; a v1 package carries byte spans with no
+/// source table, so its trace records `span: null`.
+interface TracedPackage {
+  profile: string;
+  hew_version: string;
+  source_map?: {
+    sources: Array<{ id: string; path: string }>;
+    spans: Array<{
+      id: string;
+      source_id: string;
+      start: SourcePosition;
+      end: SourcePosition;
+    }>;
+  };
+}
 
 export class TraceBuilder {
   readonly stdout: string[] = [];
   readonly stderr: string[] = [];
   readonly runtimeFailures: RuntimeFailure[] = [];
+  readonly sandboxRejections: SandboxRejection[] = [];
   status: RuntimeStatus = "ok";
   stepCount = 0;
   exitCode = 0;
+  /// A failing run normally reports no exit code. The v1 executor publishes the
+  /// trap's process status instead, because that is what native execution and
+  /// the parity runner compare against.
+  publishExitCode = false;
 
   private readonly events: TraceEvent[] = [];
   private readonly spanById = new Map<string, TraceSpan>();
@@ -26,31 +49,39 @@ export class TraceBuilder {
     channels: [] as string[],
     tasks: [] as string[],
     supervisors: [] as string[],
-    machines: [] as string[]
+    machines: [] as string[],
   };
   private readonly virtualClock: ReplayConfig["virtual_clock"];
 
   constructor(
-    private readonly bytecode: SandboxBytecodePackage,
+    private readonly bytecode: TracedPackage,
     private readonly fixtureId: string,
     private readonly traceId: string,
     readonly replay: ReplayConfig,
-    private readonly sandboxVersion: string
+    private readonly sandboxVersion: string,
   ) {
     this.virtualClock = { ...replay.virtual_clock };
-    const sourceById = new Map(bytecode.source_map.sources.map((source) => [source.id, source]));
-    for (const span of bytecode.source_map.spans) {
+    const sourceMap = bytecode.source_map ?? { sources: [], spans: [] };
+    const sourceById = new Map(
+      sourceMap.sources.map((source) => [source.id, source]),
+    );
+    for (const span of sourceMap.spans) {
       const source = sourceById.get(span.source_id);
       if (source) {
         this.spanById.set(span.id, {
           source_id: span.source_id,
           path: source.path,
           start: span.start,
-          end: span.end
+          end: span.end,
         });
       }
     }
-    this.push({ type: "trace.started", phase: "run", span: null, message: "fixture start" });
+    this.push({
+      type: "trace.started",
+      phase: "run",
+      span: null,
+      message: "fixture start",
+    });
   }
 
   get budgetRemaining(): number {
@@ -66,7 +97,7 @@ export class TraceBuilder {
   }
 
   span(spanRef: string | null | undefined): TraceSpan | null {
-    return spanRef ? this.spanById.get(spanRef) ?? null : null;
+    return spanRef ? (this.spanById.get(spanRef) ?? null) : null;
   }
 
   push(event: Omit<TraceEvent, "seq">): void {
@@ -83,7 +114,11 @@ export class TraceBuilder {
     this.push({ type: "io.stderr", phase: "run", span, text });
   }
 
-  allocateId(kind: "actor" | "channel" | "task" | "supervisor" | "machine", id: string, parentId: string | null): void {
+  allocateId(
+    kind: "actor" | "channel" | "task" | "supervisor" | "machine",
+    id: string,
+    parentId: string | null,
+  ): void {
     const bucket = this.ids[`${kind}s` as keyof typeof this.ids];
     if (!bucket.includes(id)) {
       bucket.push(id);
@@ -94,21 +129,28 @@ export class TraceBuilder {
       span: null,
       id_kind: kind,
       id,
-      parent_id: parentId
+      parent_id: parentId,
     });
   }
 
-  snapshot(message: string, payload: JsonValue, span: TraceSpan | null = null): void {
+  snapshot(
+    message: string,
+    payload: JsonValue,
+    span: TraceSpan | null = null,
+  ): void {
     this.push({
       type: "state.snapshot",
       phase: "run",
       span,
       message,
-      text: canonicalJson(payload)
+      text: canonicalJson(payload),
     });
   }
 
-  recordReplayInput(input: { kind: string; data: JsonValue }, persist = true): void {
+  recordReplayInput(
+    input: { kind: string; data: JsonValue },
+    persist = true,
+  ): void {
     if (persist) {
       this.replay.inputs.push(input);
     }
@@ -116,7 +158,7 @@ export class TraceBuilder {
       type: "replay.input",
       phase: "replay",
       span: null,
-      replay_input: input
+      replay_input: input,
     });
   }
 
@@ -127,7 +169,7 @@ export class TraceBuilder {
       phase: "run",
       span,
       amount_ms: amountMs,
-      clock: { ...this.virtualClock }
+      clock: { ...this.virtualClock },
     });
   }
 
@@ -136,7 +178,24 @@ export class TraceBuilder {
     this.snapshot("sandbox-exit", { exit_code: code }, span);
   }
 
-  fail(status: RuntimeStatus, eventType: "runtime.failure" | "budget.exhausted", failure: RuntimeFailure): void {
+  /// Refuse the package before it runs. Admission is a load-time decision, so
+  /// no instruction has executed when this is called.
+  reject(rejection: SandboxRejection): void {
+    this.status = "sandbox_rejected";
+    this.sandboxRejections.push(rejection);
+    this.push({
+      type: "sandbox.rejected",
+      phase: "profile",
+      span: null,
+      rejection,
+    });
+  }
+
+  fail(
+    status: RuntimeStatus,
+    eventType: "runtime.failure" | "budget.exhausted",
+    failure: RuntimeFailure,
+  ): void {
     this.status = status;
     this.runtimeFailures.push(failure);
     this.push({
@@ -146,7 +205,7 @@ export class TraceBuilder {
       ...(eventType === "budget.exhausted"
         ? { step_count: this.stepCount, budget_remaining: this.budgetRemaining }
         : {}),
-      failure
+      failure,
     });
   }
 
@@ -158,12 +217,17 @@ export class TraceBuilder {
       ...(message ? { message } : {}),
       ...(id ? { id_kind: "actor" as const, id } : {}),
       step_count: this.stepCount,
-      budget_remaining: this.budgetRemaining
+      budget_remaining: this.budgetRemaining,
     });
   }
 
   finish(): SandboxTrace {
-    this.push({ type: "trace.ended", phase: "run", span: null, message: this.status });
+    this.push({
+      type: "trace.ended",
+      phase: "run",
+      span: null,
+      message: this.status,
+    });
     return {
       schema_version: "hew.sandbox.trace.v0",
       trace_id: this.traceId,
@@ -176,7 +240,8 @@ export class TraceBuilder {
       events: this.events,
       final_state: {
         status: this.status,
-        exit_code: this.status === "ok" ? this.exitCode : null,
+        exit_code:
+          this.status === "ok" || this.publishExitCode ? this.exitCode : null,
         step_count: this.stepCount,
         budget_remaining: this.budgetRemaining,
         virtual_clock: this.virtualClock,
@@ -187,13 +252,13 @@ export class TraceBuilder {
           channels: this.ids.channels,
           tasks: this.ids.tasks,
           supervisors: this.ids.supervisors,
-          machines: this.ids.machines
+          machines: this.ids.machines,
         },
         diagnostics: [],
-        sandbox_rejections: [],
+        sandbox_rejections: this.sandboxRejections,
         runtime_failures: this.runtimeFailures,
-        globals: []
-      }
+        globals: [],
+      },
     };
   }
 }
@@ -203,7 +268,9 @@ export function runtimeFailure(
   message: string,
   trapKind: RuntimeFailure["trap_kind"],
   span: TraceSpan | null,
-  unsupported?: UnsupportedDiagnostic
+  unsupported?: UnsupportedDiagnostic,
 ): RuntimeFailure {
-  return unsupported ? { kind, message, span, trap_kind: trapKind, unsupported } : { kind, message, span, trap_kind: trapKind };
+  return unsupported
+    ? { kind, message, span, trap_kind: trapKind, unsupported }
+    : { kind, message, span, trap_kind: trapKind };
 }

@@ -156,9 +156,29 @@ pub struct Function {
     pub blocks: Vec<Block>,
 }
 
+/// One semantic storage location and where its storage comes from.
+///
+/// A `local` place is a cell of its own, created by `alloc_place`. Every other
+/// origin resolves through something the body already holds: an `aggregate`
+/// place is one field of its base, so it is never allocated and a load of it
+/// reads that field in place. Dropping the origin would leave a load with no
+/// cell to read.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Place {
     pub id: u32,
+    pub origin: String,
+    /// `aggregate`: the place or value this field belongs to.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<serde_json::Value>,
+    /// `aggregate`: the record shape, or absent for a tuple.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shape: Option<u32>,
+    /// `aggregate`, `capture` and `actor_state`: the field index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<u32>,
+    /// `capture`: the closure environment receiver.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -612,11 +632,7 @@ impl<'m> Walker<'m> {
             name: function.name.clone(),
             params: function.params.iter().map(block_arg).collect(),
             entry: function.entry.0,
-            places: function
-                .places
-                .iter()
-                .map(|place| Place { id: place.id.0 })
-                .collect(),
+            places: function.places.iter().map(place_decl).collect(),
             blocks: function
                 .blocks
                 .iter()
@@ -639,7 +655,12 @@ impl<'m> Walker<'m> {
     }
 
     fn op(&mut self, op: &SemOp) -> Result<serde_json::Value, EmitError> {
-        let dst = op.results.first().map(|result| result.id.0);
+        // An operation that defines several values carries them all in
+        // `results`; every other operation has the one `dst`.
+        let dst = match op.kind {
+            SemOpKind::Destructure { .. } | SemOpKind::VariantDestructure { .. } => None,
+            _ => op.results.first().map(|result| result.id.0),
+        };
         let span = self.span(&op.provenance);
         let mut encoded = match &op.kind {
             SemOpKind::ConstInteger(value) => serde_json::json!({
@@ -1182,6 +1203,48 @@ impl<'m> Walker<'m> {
             None => serde_json::Value::Null,
         }
     }
+}
+
+/// Carry a place's semantic origin into the package.
+///
+/// `Runtime` storage the runtime owns and `ActorState` seats belong to the
+/// concurrency path, which never reaches this walker; they are named here so
+/// the projection is closed against `PlaceOrigin`.
+fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
+    let mut encoded = Place {
+        id: place.id.0,
+        origin: String::new(),
+        base: None,
+        shape: None,
+        field: None,
+        environment: None,
+    };
+    match &place.origin {
+        hew_sir::PlaceOrigin::Local => encoded.origin = "local".to_string(),
+        hew_sir::PlaceOrigin::Runtime => encoded.origin = "runtime".to_string(),
+        hew_sir::PlaceOrigin::Aggregate { base, shape, field } => {
+            encoded.origin = "aggregate".to_string();
+            encoded.base = Some(match base {
+                hew_sir::PlaceBase::Value(value) => serde_json::json!({ "value": value.0 }),
+                hew_sir::PlaceBase::Place(place) => serde_json::json!({ "place": place.0 }),
+            });
+            encoded.shape = match shape {
+                AggregateShapeRef::Tuple => None,
+                AggregateShapeRef::Record(id) => Some(id.0),
+            };
+            encoded.field = Some(*field);
+        }
+        hew_sir::PlaceOrigin::Capture { environment, field } => {
+            encoded.origin = "capture".to_string();
+            encoded.environment = Some(environment.0);
+            encoded.field = Some(*field);
+        }
+        hew_sir::PlaceOrigin::ActorState { field, .. } => {
+            encoded.origin = "actor_state".to_string();
+            encoded.field = Some(*field);
+        }
+    }
+    encoded
 }
 
 fn block_arg(arg: &hew_sir::BlockArg) -> Value {

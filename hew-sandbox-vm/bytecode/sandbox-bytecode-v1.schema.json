@@ -377,9 +377,31 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["id"],
+            "required": ["id", "origin"],
             "properties": {
               "id": {
+                "$ref": "#/$defs/id"
+              },
+              "origin": {
+                "enum": [
+                  "local",
+                  "aggregate",
+                  "capture",
+                  "runtime",
+                  "actor_state"
+                ]
+              },
+              "base": {
+                "type": "object"
+              },
+              "shape": {
+                "$ref": "#/$defs/id"
+              },
+              "field": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "environment": {
                 "$ref": "#/$defs/id"
               }
             }

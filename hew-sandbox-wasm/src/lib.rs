@@ -231,6 +231,17 @@ pub enum SandboxPackage {
     V0(Box<SandboxBytecodePackage>),
 }
 
+impl SandboxPackage {
+    /// The compiler that produced this package, for fixture provenance.
+    #[must_use]
+    pub fn compiler_version(&self) -> &str {
+        match self {
+            Self::V1(package) => &package.compiler_version,
+            Self::V0(package) => &package.compiler_version,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompileOutput {
     pub diagnostics: Vec<Diagnostic>,

@@ -45,6 +45,7 @@
 #   make wasm-capability-check     — verify manifest-owned generated outputs
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
 #   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
+#   make sandbox-fixtures-record   — regenerate fixture bytecode and golden traces
 #   make sandbox-vm-deps           — install hew-sandbox-vm npm deps (hash-stamped, idempotent)
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
 #   make playground-check          — manifest freshness + full hew-wasm test suite + build hew-wasm
@@ -75,7 +76,7 @@
 #   make clean        — remove generated build and test artifacts
 # ============================================================================
 
-.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
+.PHONY: all build bootstrap install-hooks help shell-script-lint test-install-version-resolution actionlint hew hew-debug hew-profile-check hew-native shared-host-debug hew-lsp observe observe-functional-test mqtt-broker-e2e libhew-link-race-test runtime stdlib wasm-runtime wasm wasm-capability wasm-capability-check playground-manifest playground-manifest-check sandbox-fixtures sandbox-fixtures-check sandbox-fixtures-record sandbox-vm-deps sandbox-parity playground-check playground-wasi-check playground-verify preflight ci-preflight ci-preflight-smoke ci-local-linux wasm-dist release licenses licenses-check dependency-policy release-checks baselines baselines-check
 .PHONY: test test-strict ratchet-accounting ratchet-accounting-nextest test-ratchet-accounting-runner macos-leak-oracle test-leak-oracle-selftest test-cabi test-compiler-pipeline test-compiler-lifecycle test-opaque-resource-lifecycle-matrix test-opaque-resource-lifecycle-matrix-external test-pkg-import test-package-install test-runtime-unit test-hew-ratchet test-o2-differential o2-differential-selftest test-stdlib-ratchet test-ux-examples ux-examples-expect test-surface-examples surface-examples-expect test-example-expectations-selftest test-release-binary test-release-lib-link asan asan-fixtures test-asan-fixture-selftest tsan miri lint lint-rust structural-lint structural-lint-bootstrap structural-lint-bootstrap-install test-ast-grep-contract stdlib-lint stdlib-errno-gate legacy-path-syntax-lint hew-fmt-check test-migrate-corpus verify-sys-lane-closure test-sys-lane-closure hew-fmt-property test-build-harness core-acceptance test-core-acceptance-runner
 .PHONY: test-ownership-balance-corpus test-ownership-balance-runner-selftest
 .PHONY: stdlib-user-build-clean
@@ -595,6 +596,13 @@ sandbox-fixtures:
 
 sandbox-fixtures-check:
 	cargo run -p xtask -- sandbox-fixtures --check
+
+# Regenerate fixture bytecode and its golden trace by running the VM. Goldens
+# are never hand-edited; a review reads the trace family sequence and the final
+# state. Needs the built VM package, unlike the node-free check above.
+sandbox-fixtures-record: sandbox-vm-deps
+	npm --prefix hew-sandbox-vm run build
+	cargo run -p xtask -- sandbox-fixtures --record
 
 # Release dependency tools: cargo-deny 0.19.6 and cargo-about 0.9.0.
 # Duplicate crate versions are not a release defect. Enforce only actionable

@@ -1,4 +1,6 @@
 import { validateBytecodePackage } from "./schema-validator.js";
+import { runPackageV1 } from "./v1/exec.js";
+import { isPackageV1 } from "./v1/package.js";
 import { TraceBuilder, runtimeFailure } from "./trace.js";
 import {
   ActorScheduler,
@@ -211,6 +213,11 @@ export function runBytecode(
   input: unknown,
   options: RunOptions = {},
 ): SandboxTrace {
+  // A v1 package is a projection of verified ownership SIR and runs on its own
+  // executor; v0 is the AST lowering this file interprets.
+  if (isPackageV1(input)) {
+    return runPackageV1(input, options);
+  }
   const bytecode = validateBytecodePackage(input);
   const fixtureId = options.fixtureId ?? fixtureIdFromPackage(bytecode);
   const replay: ReplayConfig = {
@@ -3405,6 +3412,11 @@ function renderComparable(value: VmValue): JsonValue {
       };
     case "vector":
       return value.items.map(renderComparable);
+    case "map":
+      return [...value.entries.values()].map((entry) => [
+        renderComparable(entry.key),
+        renderComparable(entry.value),
+      ]);
     case "function":
       return value.id;
   }

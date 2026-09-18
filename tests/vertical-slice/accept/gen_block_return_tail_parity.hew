@@ -1,0 +1,34 @@
+// Accept + run: a `gen { }` block whose every path ends in `return` produces the
+// same generator as one ending in a tail expression. The return seals the
+// producer's own return, so the body needs no tail value and none is invented;
+// refusing it made `{ ...; return v; }` and `{ ...; v }` different programs.
+fn ret_form() -> i64 {
+    let g = gen {
+        yield 1;
+        yield 2;
+        return 9;
+    };
+    var acc: i64 = 0;
+    for n in g {
+        acc = acc + n;
+    }
+    acc
+}
+
+fn tail_form() -> i64 {
+    let g = gen {
+        yield 1;
+        yield 2;
+        9
+    };
+    var acc: i64 = 0;
+    for n in g {
+        acc = acc + n;
+    }
+    acc
+}
+
+fn main() {
+    println(ret_form());
+    println(tail_form());
+}

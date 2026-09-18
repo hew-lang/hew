@@ -53,7 +53,6 @@ macos	failure	hew-cli::match_bound_payload_drop_leak_oracle	nested_enum_payload_
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_guard_fallthrough_runs_safely	#2523 keeps borrow-only payload guards live across fallthrough
 freebsd	failure	hew-cli::match_payload_reassign_uaf_oracle	borrow_only_projection_keeps_scrutinee_live	#2523 keeps borrow-only payload projections attached to the scrutinee
 macos	failure	hew-cli::match_resource_result_handoff_leak_oracle	resource_result_match_handoffs_drop_every_payload_exactly_once	#3426 releases a resource's own raw-handle field from its close
-macos	failure	hew-cli::nested_projection_chain_leak_oracle	handle_transfer_control_no_double_free_under_malloc_scribble	#3440 lowers a block that diverges on one edge
 macos	failure	hew-cli::on_crash_message_leak_oracle	supervisor_exit_paths_are_leak_free_under_guard_malloc	#3450 fixes the observable result of a recovery edge
 macos	failure	hew-cli::on_start_suspension_leak_oracle	suspending_on_start_no_per_actor_coro_frame_leak	#3443 implements native actor init and lifecycle suspension
 macos	failure	hew-cli::owned_project_literal_predicate_drop_leak_oracle	owned_project_predicate_borrow_leak_slope_is_flat	#3427 stops a wildcard-only arm reading as a consume

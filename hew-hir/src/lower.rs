@@ -4972,6 +4972,32 @@ pub fn lower_program_with_mono_cap(
                                 items.push(HirItem::Actor(lowered));
                             }
                         }
+                        // A supervisor declared in a module needs its
+                        // `HirItem` for the same reason an actor does: SIR
+                        // matches a spawned handle to the declaration this
+                        // emits, and without it `spawn module.Rack` reaches
+                        // lowering with a handle no declaration answers. The
+                        // root arm gates the target the same way.
+                        Item::Supervisor(supervisor) => {
+                            if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64)
+                            {
+                                ctx.diagnostics.push(HirDiagnostic::new(
+                                    HirDiagnosticKind::TargetCoroutineUnsupported {
+                                        target_arch: format!("{:?}", ctx.target_arch),
+                                        construct: "supervisor decl".to_string(),
+                                    },
+                                    span.clone(),
+                                    format!(
+                                        "supervisor '{}' requires supervisor restart machinery \
+                                         (x86_64/aarch64 only; wasm32 support tracked in #1475)",
+                                        supervisor.name
+                                    ),
+                                ));
+                            }
+                            if let Some(lowered) = ctx.lower_supervisor(supervisor, span.clone()) {
+                                items.push(HirItem::Supervisor(lowered));
+                            }
+                        }
                         // RAII-2 (#1295): a PACKAGE-imported trait is just as
                         // much an invisible-body boundary as a root or
                         // file-flattened one. Its bodyless method signatures are
@@ -5012,8 +5038,7 @@ pub fn lower_program_with_mono_cap(
                         | Item::Function(_)
                         | Item::TypeDecl(_)
                         | Item::TypeAlias(_)
-                        | Item::Machine(_)
-                        | Item::Supervisor(_) => {}
+                        | Item::Machine(_) => {}
                     }
                 }
                 // Restore the const scope after lowering this module's bodies.

@@ -1913,27 +1913,42 @@ fn eval_wasm_inline_runtime_failure_exits_with_child_exit_code() {
     );
 }
 
-// Follow-on eval work owns unignoring the broader WASI eval/stdout suite. This ignored
-// ratchet pins the narrower attributed-trap contract added before that cutover:
-// codegen still emits `hew_trap_with_code` followed by `llvm.trap`, and the
-// wasm32 runtime maps canonical non-actor trap code 201 to the child exit code.
+/// An unrecovered trap reports the same typed line and the same process status
+/// on both targets. HEW-SPEC-2026 5.8: the trap code in `hew: failure: ...` is
+/// the runtime's internal fault tag and is never the process exit status, so an
+/// integer overflow exits 1 wherever it is raised.
 #[test]
-fn eval_wasm_integer_overflow_exits_with_trap_code_201() {
+fn integer_overflow_traps_identically_on_native_and_wasi() {
     require_codegen();
     support::require_wasi_runner();
 
-    let output = Command::new(hew_binary())
-        .args(["eval", "--target", "wasm32-wasi", "9223372036854775807 + 1"])
+    let expression = "9223372036854775807 + 1";
+    let native = Command::new(hew_binary())
+        .args(["eval", expression])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+    let wasi = Command::new(hew_binary())
+        .args(["eval", "--target", "wasm32-wasi", expression])
         .current_dir(repo_root())
         .output()
         .unwrap();
 
-    assert!(!output.status.success());
+    let native_stderr = String::from_utf8_lossy(&native.stderr).replace("\r\n", "\n");
+    let wasi_stderr = String::from_utf8_lossy(&wasi.stderr).replace("\r\n", "\n");
+    assert!(
+        native_stderr.contains("hew: failure: IntegerOverflow (201)"),
+        "native trap line missing: {native_stderr:?}"
+    );
     assert_eq!(
-        output.status.code(),
-        Some(201),
-        "expected child exit code 201 (Hew integer overflow via WASM), got {:?}",
-        output.status.code()
+        wasi_stderr, native_stderr,
+        "WASI trap diagnostic must match native"
+    );
+    assert_eq!(native.status.code(), Some(1), "native exit status");
+    assert_eq!(
+        wasi.status.code(),
+        native.status.code(),
+        "WASI exit status must match native"
     );
 }
 
@@ -2154,19 +2169,22 @@ fn eval_wasm_json_ok_inline_expression() {
     assert_eq!(v["diagnostics"], "", "diagnostics must be empty on ok: {v}");
 }
 
+/// `--json` keeps a WASI runtime failure inside the JSON contract: the module's
+/// stderr is captured, never leaked to the parent, and the exit status is the
+/// one native reports for the same program.
 #[test]
 fn eval_wasm_json_runtime_failure_captures_stderr_without_leaking() {
     require_codegen();
     support::require_wasi_runner();
 
+    let expression = r#"panic("deliberate wasm failure")"#;
+    let native = Command::new(hew_binary())
+        .args(["eval", expression])
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
     let output = Command::new(hew_binary())
-        .args([
-            "eval",
-            "--json",
-            "--target",
-            "wasm32-wasi",
-            r#"if true { panic("deliberate wasm failure") } else { 0 }"#,
-        ])
+        .args(["eval", "--json", "--target", "wasm32-wasi", expression])
         .current_dir(repo_root())
         .output()
         .unwrap();
@@ -2186,7 +2204,11 @@ fn eval_wasm_json_runtime_failure_captures_stderr_without_leaking() {
         .unwrap_or_else(|e| panic!("stdout is not valid JSON: {e}\nstdout: {stdout}"));
 
     assert_eq!(v["status"], "runtime_failure", "unexpected status: {v}");
-    assert_eq!(v["exit_code"], 101, "expected child exit code 101: {v}");
+    assert_eq!(
+        v["exit_code"],
+        native.status.code().expect("native exit status"),
+        "WASI exit status must match native: {v}"
+    );
     assert!(
         v["stderr"]
             .as_str()

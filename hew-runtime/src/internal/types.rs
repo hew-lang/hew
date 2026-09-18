@@ -736,33 +736,6 @@ pub const fn reply_fail_kind_name(kind: i32) -> &'static str {
     }
 }
 
-/// Convert a canonical Hew trap discriminator into the WASI process exit code
-/// used when a trap escapes outside actor dispatch.
-///
-/// This is an untrusted wasm-to-host boundary: only Hew-owned trap
-/// discriminators may become process exit statuses. Unknown values must return
-/// `None` so the generated trailing `llvm.trap` remains the fail-closed sink.
-#[must_use]
-pub fn canonical_trap_wasi_exit_code(code: i32) -> Option<i32> {
-    match code {
-        HEW_TRAP_HEAP_EXCEEDED
-        | HEW_TRAP_INTEGER_OVERFLOW
-        | HEW_TRAP_DIVIDE_BY_ZERO
-        | HEW_TRAP_SIGNED_MIN_DIV_NEG_ONE
-        | HEW_TRAP_SHIFT_OUT_OF_RANGE
-        | HEW_TRAP_INDEX_OUT_OF_BOUNDS
-        | HEW_TRAP_ACTOR_SEND_FAILED
-        | HEW_TRAP_MACHINE_DISPATCH_UNREACHABLE
-        | HEW_TRAP_EXHAUSTIVENESS_FALLTHROUGH
-        | HEW_TRAP_MODULE_INIT_REGEX_FAILED
-        | HEW_TRAP_WIRE_DECODE_FAILED
-        | HEW_TRAP_JOIN_BRANCH_FAILED
-        | HEW_TRAP_USER_PANIC
-        | HEW_TRAP_ACTOR_UNHANDLED_FAILURE => Some(code),
-        _ => None,
-    }
-}
-
 /// Named exit reason for a crashed actor.
 ///
 /// Interprets the i32 `error_code` stored on a `HewActor` after a crash.

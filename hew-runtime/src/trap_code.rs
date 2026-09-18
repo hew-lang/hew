@@ -185,9 +185,9 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
 
     #[cfg(target_arch = "wasm32")]
     {
-        // SAFETY: the wasm bridge records actor context or exits known
-        // non-actor canonical traps. Unknown codes must still fail closed.
-        unsafe { hew_trap_with_code(code) };
+        // SAFETY: the shared bridge reports and ends the run; it never returns
+        // for a non-actor trap.
+        unsafe { fault_trap_bridge(code, false) };
         std::process::abort();
     }
 }
@@ -213,47 +213,10 @@ pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
         }
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let _ = std::io::Write::flush(&mut std::io::stderr());
-        // SAFETY: the wasm bridge stamps actor context or exits a canonical
-        // trap; it returns only for a code with no canonical status.
-        unsafe { hew_trap_with_code(code) };
-        // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8).
+        // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8);
+        // the trap code in the reported line is the runtime's internal tag and
+        // is never the process exit status.
         // JUSTIFIED: no recovery authority exists; the host reclaims the module.
-        std::process::exit(1);
-    }
-}
-
-/// WASM trap-code bridge used by codegen before `llvm.trap`.
-///
-/// Native implements the exported symbol in `supervisor.rs` because it routes
-/// through the language-unwind recovery seam. wasm32 has no portable EH seam, so the bridge
-/// stamps the current actor's `error_code` and panics. The production
-/// wasm32-wasip1 sysroot is `panic=abort`, making this a module-fatal trap; it
-/// is not a contained actor crash. Host-side parity builds may unwind only to
-/// test bookkeeping that production reaches through non-panic failure edges.
-///
-/// Outside an actor context, canonical Hew trap codes become WASI process exit
-/// statuses. Unknown codes return so the caller's following `llvm.trap` remains
-/// the fail-closed non-actor fallback, matching native's unknown-code sink.
-///
-/// # Safety
-///
-/// May be called from generated code in or out of actor dispatch. The current
-/// execution context, if present, is scheduler-installed and valid for the
-/// duration of the call.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub unsafe extern "C-unwind" fn hew_trap_with_code(code: c_int) {
-    crate::cont::abort_if_crash_cleanup_finalizer_trap("WASM cooperative trap");
-    if stamp_current_actor_error_code(code) {
-        panic!("hew_trap_with_code: trap code {code}");
-    }
-    if let Some(exit_code) = crate::internal::types::canonical_trap_wasi_exit_code(code) {
-        eprintln!("__hew_wasi_trap_exit_code={exit_code}");
-        // JUSTIFIED: wasm32 non-actor traps terminate the process immediately,
-        // so bypassing Rust Drop is deliberate and the WASI host reclaims
-        // process resources. Wasmtime rejects WASI proc_exit statuses above
-        // 126, so the Hew CLI captures the sentinel above and maps this
-        // transport status back to the canonical trap code.
         std::process::exit(1);
     }
 }

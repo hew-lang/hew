@@ -32,7 +32,9 @@ impl PhysicalTarget {
     ///
     /// System V x64 merges fields into integer/SSE eightbytes; Win64 returns
     /// only 1/2/4/8-byte records directly; AAPCS64 additionally recognizes
-    /// homogeneous floating aggregates. Larger ordinary aggregates use `sret`.
+    /// homogeneous floating aggregates. The WebAssembly C ABI returns a
+    /// single-element aggregate as that element and everything else through
+    /// `sret`. Larger ordinary aggregates use `sret`.
     /// Bytes is the ordinary `{ptr, u32, u32}` aggregate under the same rules.
     ///
     /// # Errors
@@ -93,6 +95,14 @@ impl PhysicalTarget {
                 };
                 Ok(PhysicalExternResultAbi::Coerce(repr))
             }
+            // The WebAssembly C ABI (clang's `WebAssemblyABIInfo`, matched by
+            // rustc's wasm call convention): an aggregate whose only non-empty
+            // member is a scalar returns as that scalar; every other aggregate
+            // returns through `sret`.
+            "wasm32" | "wasm64" => single_element(layout)
+                .map_or(Ok(PhysicalExternResultAbi::Indirect), |element| {
+                    Ok(PhysicalExternResultAbi::Coerce(element.repr.clone()))
+                }),
             _ => Err(PhysicalError::new(format!(
                 "C aggregate result ABI is not realized for target `{}`",
                 self.triple
@@ -230,6 +240,30 @@ fn classify_eightbytes(
 }
 
 /// AAPCS64 homogeneous aggregates contain one to four identical floating leaves.
+/// The one scalar an aggregate wraps, or `None` when it wraps none or several.
+///
+/// Padding disqualifies the aggregate: the wrapper and the scalar must occupy
+/// the same bytes, or returning the scalar would drop some of them.
+fn single_element(layout: &PhysicalLayout) -> Option<&PhysicalLayout> {
+    match &layout.repr {
+        PhysicalRepr::Integer { .. } | PhysicalRepr::Float { .. } | PhysicalRepr::Pointer => {
+            Some(layout)
+        }
+        PhysicalRepr::Array { element, len: 1 } => {
+            (element.size == layout.size).then(|| single_element(element))?
+        }
+        PhysicalRepr::Struct(fields) => {
+            let mut occupied = fields.iter().filter(|field| field.size != 0);
+            let only = occupied.next()?;
+            if occupied.next().is_some() || only.size != layout.size {
+                return None;
+            }
+            single_element(only)
+        }
+        _ => None,
+    }
+}
+
 fn homogeneous_float(layout: &PhysicalLayout) -> Option<(u16, u32)> {
     match &layout.repr {
         PhysicalRepr::Float {

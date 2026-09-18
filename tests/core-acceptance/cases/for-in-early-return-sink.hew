@@ -1,0 +1,70 @@
+// An element moved out of a `for x in v` cursor into a sink on an early-return
+// edge stays owned by the sink. The exit-edge cleanup releases the abandoned
+// snapshot, never the slot the body already transferred out, so the caller
+// reads the stored elements intact.
+
+fn outer_rows() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("outer" + "-alpha");
+    v.push("outer" + "-beta");
+    return v;
+}
+
+fn inner_rows() -> Vec<string> {
+    var v: Vec<string> = Vec.new();
+    v.push("inner" + "-alpha");
+    v.push("inner" + "-beta");
+    return v;
+}
+
+// Nested cursors, both abandoned by the same `return`, both yields moved into a
+// non-copy-in sink that leaves the frame on that edge.
+fn nested_return_sink() -> HashMap<i64, string> {
+    var sink: HashMap<i64, string> = HashMap.new();
+    for a in outer_rows() {
+        for b in inner_rows() {
+            sink.insert(0, a);
+            sink.insert(1, b);
+            return sink;
+        }
+    }
+    return sink;
+}
+
+// Negative control: the same sink reached over a `break` of the cursor's own
+// loop, where the fall-through close is the single release.
+fn own_break_sink() -> HashMap<i64, string> {
+    var sink: HashMap<i64, string> = HashMap.new();
+    for a in outer_rows() {
+        sink.insert(0, a);
+        break;
+    }
+    return sink;
+}
+
+// Negative control: an early return that abandons a nested cursor with nothing
+// transferred out, so both snapshots are the exit edge's to release.
+fn nested_return_no_sink() -> i64 {
+    var seen: i64 = 0;
+    for a in outer_rows() {
+        for b in inner_rows() {
+            seen = seen + a.len() + b.len();
+            return seen;
+        }
+    }
+    return seen;
+}
+
+fn main() {
+    let nested = nested_return_sink();
+    println(nested.len());
+    println(nested.get(0).unwrap_or("missing"));
+    println(nested.get(1).unwrap_or("missing"));
+
+    let broke = own_break_sink();
+    println(broke.len());
+    println(broke.get(0).unwrap_or("missing"));
+
+    println(nested_return_no_sink());
+    println("OK");
+}

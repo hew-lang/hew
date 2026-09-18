@@ -824,7 +824,12 @@ fn labelled_continue_source() -> String {
 /// `Vec::push` would byte-copy it in and structurally cannot expose the bug).
 /// The `hew_vec_get_clone` yield is a `+1` retain, so the map's owner and the
 /// snapshot slot's are independent and the exit-edge `hew_vec_free` collides
-/// with nothing. Prints `1` (map length) then `1OK`.
+/// with nothing.
+///
+/// The sink leaves the frame on the same early-return edge that abandons the
+/// cursor, and `main` reads the stored element back: a release that walked the
+/// transferred slot scribbles `ret-alpha` to `0x55` before it is printed.
+/// Prints `1` (map length), the element, then `OK`.
 const ADMITTED_RETURN_SINK_SOURCE: &str = "\
 fn mk() -> Vec<string> {\n\
 \x20   var v: Vec<string> = Vec.new();\n\
@@ -834,18 +839,19 @@ fn mk() -> Vec<string> {\n\
 \x20   return v;\n\
 }\n\
 \n\
-fn frame(var sink: HashMap<i64, string>) -> i64 {\n\
+fn frame() -> HashMap<i64, string> {\n\
+\x20   var sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   for w in mk() {\n\
 \x20       sink.insert(1, w);\n\
-\x20       return 1;\n\
+\x20       return sink;\n\
 \x20   }\n\
-\x20   return 0;\n\
+\x20   return sink;\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   var sink: HashMap<i64, string> = HashMap.new();\n\
-\x20   print(frame(sink));\n\
+\x20   let sink = frame();\n\
 \x20   print(sink.len());\n\
+\x20   print(sink.get(1).unwrap_or(\"missing\"));\n\
 \x20   print(\"OK\");\n\
 }\n";
 
@@ -1007,7 +1013,12 @@ fn nested_cursors_return_source() -> String {
 /// cursors. Each yield is a `hew_vec_get_clone` `+1` retain, so the map's two
 /// owners are independent of the two snapshots the exit edge frees. A second
 /// release of either snapshot — or a release that walked a slot the map now owns
-/// — aborts here under the poisoned allocator. Prints `2OK`.
+/// — aborts here under the poisoned allocator.
+///
+/// The sink leaves the frame on the early-return edge that abandons both
+/// cursors, and `main` reads both stored elements back, so a release that
+/// walked either transferred slot scribbles the printed text. Prints `2` (map
+/// length), both elements, then `OK`.
 const NESTED_CURSORS_RETURN_SINK_SOURCE: &str = "\
 fn mk_a() -> Vec<string> {\n\
 \x20   var v: Vec<string> = Vec.new();\n\
@@ -1023,21 +1034,23 @@ fn mk_b() -> Vec<string> {\n\
 \x20   return v;\n\
 }\n\
 \n\
-fn frame(var sink: HashMap<i64, string>) -> i64 {\n\
+fn frame() -> HashMap<i64, string> {\n\
+\x20   var sink: HashMap<i64, string> = HashMap.new();\n\
 \x20   for a in mk_a() {\n\
 \x20       for b in mk_b() {\n\
 \x20           sink.insert(0, a);\n\
 \x20           sink.insert(1, b);\n\
-\x20           return 1;\n\
+\x20           return sink;\n\
 \x20       }\n\
 \x20   }\n\
-\x20   return 0;\n\
+\x20   return sink;\n\
 }\n\
 \n\
 fn main() {\n\
-\x20   var sink: HashMap<i64, string> = HashMap.new();\n\
-\x20   let n = frame(sink);\n\
+\x20   let sink = frame();\n\
 \x20   print(sink.len());\n\
+\x20   print(sink.get(0).unwrap_or(\"missing\"));\n\
+\x20   print(sink.get(1).unwrap_or(\"missing\"));\n\
 \x20   print(\"OK\");\n\
 }\n";
 
@@ -1704,7 +1717,8 @@ fn for_in_nested_cursors_return_leaks_nothing() {
 
 /// The no-double-free twin of fixture (e): both yields moved into a non-copy-in
 /// sink before the `return` abandons both cursors. A doubled release of either
-/// snapshot aborts under the poisoned allocator. Prints `2OK`.
+/// snapshot aborts under the poisoned allocator, and a release that walked
+/// either transferred slot corrupts the elements `main` reads back.
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
@@ -1714,7 +1728,7 @@ fn for_in_nested_cursors_return_sink_runs_clean_under_malloc_scribble() {
     assert_runs_clean(
         "nested_cursors_return_sink",
         NESTED_CURSORS_RETURN_SINK_SOURCE,
-        "2OK",
+        "2na-alphanb-alphaOK",
     );
 }
 
@@ -1739,15 +1753,21 @@ fn for_in_return_yielded_value_runs_clean_under_malloc_scribble() {
 /// No-double-free pin for the exit edge: an ADMITTED (`string`) cursor
 /// abandoned by an early `return` whose element was moved into a NON-COPY-IN
 /// sink (`HashMap::insert`). The retain-yield gives the map its own `+1`, so the
-/// exit-edge `hew_vec_free` is the snapshot's only owner. Prints `11OK`
-/// (`frame` result, map length, `OK`).
+/// exit-edge `hew_vec_free` is the snapshot's only owner. The sink leaves the
+/// frame on that same edge and `main` reads the element back, so an over-release
+/// of the transferred slot shows as a scribbled string. Prints `1ret-alphaOK`
+/// (map length, the element, `OK`).
 #[cfg_attr(
     not(target_os = "macos"),
     ignore = "leak oracle needs macOS `leaks(1)` / the Darwin poisoned allocator; a host that cannot run it must record a SKIP, never a silent pass"
 )]
 #[test]
 fn for_in_early_return_sink_runs_clean_under_malloc_scribble() {
-    assert_runs_clean("admitted_return_sink", ADMITTED_RETURN_SINK_SOURCE, "11OK");
+    assert_runs_clean(
+        "admitted_return_sink",
+        ADMITTED_RETURN_SINK_SOURCE,
+        "1ret-alphaOK",
+    );
 }
 
 /// The labelled-escape twin of the no-double-free pin. Prints `1OK`.

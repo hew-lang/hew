@@ -61,8 +61,6 @@ macos	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_has_no_drop_or_leak_slop
 linux,macos,freebsd	failure	hew-cli::ffi_link_e2e	ffi_borrow_boundary_links_and_prints_exact_values	#3370 gives every type the checker admits a SIR value contract
 macos	failure	hew-cli::ffi_link_e2e	ffi_link_duplicate_runtime_symbol_fails_closed_with_hint	#3452 fails the link closed on a duplicate runtime symbol
 macos	failure	hew-cli::ffi_link_e2e	link_line_carries_single_runtime_archive	#3452 restores the linker shim's argv capture
-macos	failure	hew-cli::for_in_vec_iter_leak_oracle	for_in_early_return_sink_runs_clean_under_malloc_scribble	#3444 keeps an element moved into a sink owned by the sink
-macos	failure	hew-cli::for_in_vec_iter_leak_oracle	for_in_nested_cursors_return_sink_runs_clean_under_malloc_scribble	#3444 keeps an element moved into a sink owned by the sink
 linux,macos,windows,freebsd	failure	hew-cli::generic_hashmap_affine_clone_reject	generic_hashmap_affine_clone_out_stops_before_codegen	#3377 fix/collections-final-path: refuses a HashMap affine clone in source, not in the verifier
 macos	failure	hew-cli::generic_spawn_owned_arg_leak_oracle	generic_fork_owned_str_leak_slope_is_flat	#3439 lets a scope result retain a scoped task handle
 macos	failure	hew-cli::generic_spawn_owned_arg_leak_oracle	generic_fork_owned_str_no_double_free	#3439 lets a scope result retain a scoped task handle

@@ -2233,6 +2233,12 @@ fallible operation locally, but a result that must reach the caller belongs in
 an explicit completion operation before cleanup. A secondary cleanup fault
 must not replace the primary fault.
 
+A `close` that fails on a cancellation edge is not discarded. Cancellation
+marks a frame's fault rather than being a failure of its own, so the first real
+failure raised while unwinding a cancelled frame becomes that frame's outcome
+and the cancellation marker is dropped. A program cancelled partway through a
+release therefore reports the failing `close`.
+
 Explicit `exit(code)` and process abort are not graceful cleanup paths. They
 do not promise deferred actions, consuming methods or actor stop hooks (§5.8).
 
@@ -2276,6 +2282,31 @@ to dispatch.
 Ownership SIR records the release obligation and cleanup edges. Physical MIR
 and codegen realize that checked contract. A consuming close body releases any
 members it has not transferred; its caller must not release those members again.
+
+**Release is a fallible edge (normative).** `close` returns unit, but it can
+fail: a panic or an unrecovered fault inside a `close` body is a failure of the
+release, not of the value's owner. A release that fails fills the frame's fault
+slot and the frame goes on releasing every remaining owner in the order below;
+the fault leaves the frame only once it owns nothing further. On a normal exit
+the first failing `close` is the frame's fault and terminates it, and a later
+`close` failure in the same frame is reported as a `hew: secondary failure:`
+line without replacing it. Under a frame that is already faulting, every
+`close` failure is a secondary line and the primary is untouched. Supervision
+rules on the resulting trap code exactly as it does for any other crash
+(§9.2).
+
+**Release order (normative).** Within one frame, owners are released in this
+order:
+
+1. deferred actions, innermost block first and LIFO within a block, before
+   that scope's owned releases;
+2. locals, innermost scope first and in reverse binding order within a scope;
+3. a collection's elements in index order, then the collection's own storage;
+4. a record's or an enum payload's fields in reverse declaration order.
+
+An actor's terminal sequence is §9 item 9. This order is observable, because a
+`close` body may run user code, and a failing `close` does not stop the
+releases behind it.
 
 ---
 
@@ -5884,6 +5915,9 @@ reserved (HEW-FUTURE).
    - (b) the `#[on(stop)]` hook runs with field access live, if present;
    - (c) cleanup follows the ownership plan, whose linear obligations were checked at compile time;
    - (d) `#[resource]` field `close()` methods run in reverse declaration order.
+     A `close` that fails does not stop the fields behind it: every remaining
+     field is still released, the first failure becomes the actor's failure and
+     the later ones are secondary diagnostics (§3.7.8.5).
    Hooks therefore run BEFORE `#[resource]` `close()`, so user logic in a hook can still use resources for goodbye flushes.
 10. A panic in `#[on(start)]` aborts actor startup. The supervisor is notified; `#[on(stop)]` does NOT run, because the actor never reached the *started* state.
 11. A supervisor shutdown deadline belongs to its child specification (§5.1), not an invented hook argument. Current deadline limitations are listed in §2.1.1.

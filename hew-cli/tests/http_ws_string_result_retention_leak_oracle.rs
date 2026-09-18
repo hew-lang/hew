@@ -172,6 +172,13 @@ actor Client {{
     }}
 }}
 
+fn drive_client(client: Client) -> i64 {{
+    match client.send_frames(0) {{
+        .Ok(_) => 0,
+        .Err(_) => panic("WebSocket retention client failed"),
+    }}
+}}
+
 fn main() {{
     match websocket.listen("127.0.0.1:0") {{
         .Ok(server) => {{
@@ -180,12 +187,17 @@ fn main() {{
                 frames: {frames},
                 complete: 0,
             );
-            let _ = client.send_frames(0);
+            // The client's turn sends every frame and fills the socket buffer
+            // long before it returns, so it runs alongside the reads below.
+            // Calling it inline would leave nobody to accept or drain.
+            scope {{
+                let _driver = fork drive_client(client);
             let connection = server.accept();
             for _ in 0..{frames} {{
                 let message = connection.recv();
                 println(message.text().len());
                 message.close();
+            }}
             }}
             match client.finished() {{
                 .Ok(done) => {{

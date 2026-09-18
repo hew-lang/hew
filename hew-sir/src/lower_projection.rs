@@ -169,6 +169,25 @@ impl Builder<'_, '_> {
         self.store_projected(leaf, replacement, provenance)
     }
 
+    /// Re-publish a seat this body took: the take emptied it, so there is no
+    /// previous value to release and the store is an initialization.
+    pub(super) fn restore_taken_place(
+        &mut self,
+        place: PlaceId,
+        value: ValueId,
+        provenance: Provenance,
+    ) -> Result<(), String> {
+        self.emit_place_operation(
+            SemOpKind::StoreInit {
+                place,
+                value: Operand { value },
+            },
+            provenance,
+        )?;
+        self.owned_live.remove(&value);
+        Ok(())
+    }
+
     pub(super) fn store_projected(
         &mut self,
         place: PlaceId,

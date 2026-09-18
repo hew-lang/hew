@@ -4515,6 +4515,8 @@ fn failure_cfg_matches_exit(
         let Some(block) = blocks.get(&block_id) else {
             return false;
         };
+        // Releases, and the re-publication of a state seat the call took and
+        // handed back on this edge. Nothing else runs on a failure edge.
         if block.ops.iter().any(|op| {
             !matches!(
                 op.kind,
@@ -4522,6 +4524,7 @@ fn failure_cfg_matches_exit(
                     | SemOpKind::TaskScopeClose { .. }
                     | SemOpKind::DestroyValue { .. }
                     | SemOpKind::EndLifetime { .. }
+                    | SemOpKind::StoreInit { .. }
             )
         }) {
             return false;

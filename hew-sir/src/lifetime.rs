@@ -397,6 +397,9 @@ struct Flow<'a> {
     /// entry, live at every normal return and dead again at every unwind,
     /// because init releases what it initialized before the fault leaves.
     deferred_places: BTreeSet<crate::PlaceId>,
+    /// Every actor state seat. A seat a handler took is re-published with
+    /// `StoreInit`; a capture is never taken and keeps the live-store rule.
+    state_places: BTreeSet<crate::PlaceId>,
     projections: &'a crate::PlacePlan,
     place_indices: BTreeMap<crate::PlaceId, usize>,
 }
@@ -592,6 +595,12 @@ impl<'a> Flow<'a> {
             })
             .map(|place| place.id)
             .collect();
+        let state_places = function
+            .places
+            .iter()
+            .filter(|place| matches!(place.origin, crate::PlaceOrigin::ActorState { .. }))
+            .map(|place| place.id)
+            .collect();
         Self {
             defers: crate::defer::plan(function).unwrap_or_default(),
             terminal_receiver: function.terminal_receiver,
@@ -628,6 +637,7 @@ impl<'a> Flow<'a> {
             ),
             places,
             deferred_places,
+            state_places,
             place_indices,
             projections,
         }
@@ -1259,6 +1269,20 @@ impl<'a> Flow<'a> {
                     });
                 }
             }
+            // A seat a body took is re-published before the body leaves, on the
+            // fault edge as much as on the ordinary one: the actor's teardown
+            // releases every field it still owns.
+            for place in self.state_places.difference(&self.deferred_places) {
+                if state.places[self.place_indices[place]] != LIVE {
+                    emit(Violation {
+                        linear_obligation: false,
+                        block: id,
+                        value: None,
+                        place: Some(*place),
+                        reason: "actor state field is not re-published at this exit",
+                    });
+                }
+            }
         }
         for (index, &value) in self.values.iter().enumerate() {
             if state.values[index] & LIVE != 0 {
@@ -1749,7 +1773,7 @@ impl<'a> Flow<'a> {
         // A deferred actor seat's first store needs a dead seat; every other
         // access needs a live one (D447).
         let initializing =
-            matches!(kind, SemOpKind::StoreInit { .. }) && self.deferred_places.contains(&place);
+            matches!(kind, SemOpKind::StoreInit { .. }) && self.state_places.contains(&place);
         let expected = if initializing { DEAD } else { LIVE };
         if state.places[index] != expected {
             emit(Violation {

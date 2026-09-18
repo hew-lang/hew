@@ -7432,8 +7432,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Err("E_OWN_PARTIAL_CONSUME: a live aggregate field cannot be consumed; destructure the aggregate into owning bindings before calling the once field".into())
     }
 
-    /// The state seat keeps every field for the actor's lifetime, so a field
-    /// consumed by value leaves as a copy. A field without a copy cannot leave.
+    /// A state field the body cannot publish back leaves as a copy, so the seat
+    /// keeps its value for the actor's lifetime. A field without a copy cannot
+    /// leave that way.
     fn state_field_leaves_as_copy(
         &mut self,
         place: PlaceId,
@@ -8568,6 +8569,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             .collect();
         let mut transformed_projection = None;
         let mut transformed_root = None;
+        let mut seat_taken = false;
+        let mut taken_seat = None;
         let mut indexed_writeback = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
@@ -8592,14 +8595,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 }
             }
             transformed_projection = Some(projected);
-            // Actor state remains initialized while a runtime operation runs.
-            // Stage an independent value and publish it with StoreAssign only
-            // after success, preserving the original field on a fault edge.
-            let receiver_kind = if self.state_field_leaves_as_copy(projected, args[0])? {
-                SemOpKind::LoadCopy { place: projected }
-            } else {
-                SemOpKind::LoadTake { place: projected }
-            };
             let receiver_ty = self.ty(&args[0].ty);
             let source = if let Some(path) = indexed_path.take() {
                 let (source, writeback) =
@@ -8608,6 +8603,22 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 source
             } else {
                 transformed_root = staged_root;
+                // A state seat leaves by take, and the call publishes the
+                // updated receiver back into it on every edge the call owns.
+                // That needs the contract to return the receiver on its failure
+                // edge as well; where it does not, the seat keeps its value and
+                // the call runs on a copy.
+                seat_taken = matches!(
+                    self.places[projected.0 as usize].origin,
+                    crate::PlaceOrigin::ActorState { .. }
+                ) && (contract.failures.is_empty()
+                    || contract.preserves_inputs_on_failure());
+                let receiver_kind =
+                    if !seat_taken && self.state_field_leaves_as_copy(projected, args[0])? {
+                        SemOpKind::LoadCopy { place: projected }
+                    } else {
+                        SemOpKind::LoadTake { place: projected }
+                    };
                 self.emit_typed(provenance.clone(), &receiver_ty, receiver_kind)?
             };
             if matches!(
@@ -8642,6 +8653,9 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 },
             )?;
             self.owned_live.remove(&moved);
+            if seat_taken {
+                taken_seat = Some((projected, moved));
+            }
             lowered_args.insert(
                 0,
                 crate::BoundaryOperand {
@@ -8794,6 +8808,12 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         if let (Some(failure), Some(block)) = (failure, failure_block) {
             self.current = block;
             self.owned_live = live_on_failure;
+            // The call kept the receiver on this edge, so the seat is
+            // re-published here too: a handler never leaves its state
+            // uninitialized, and the actor's teardown releases the field once.
+            if let Some((place, value)) = taken_seat {
+                self.restore_taken_place(place, value, Provenance::Site(expr.site))?;
+            }
             self.end_call_loans(&loans)?;
             if contract.propagates_fault() {
                 self.finish_fault_exit()?;
@@ -8854,6 +8874,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         transformed_projection.ok_or("runtime transform has no source place")?,
                         results[0].id,
                         transformed_root,
+                        seat_taken,
                         &Provenance::Site(expr.site),
                     )?;
                 }
@@ -8871,6 +8892,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                         projected,
                         continuation,
                         transformed_root,
+                        seat_taken,
                         &Provenance::Site(expr.site),
                     )?;
                 } else {

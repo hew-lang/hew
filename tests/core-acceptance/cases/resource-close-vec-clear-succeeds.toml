@@ -1,0 +1,10 @@
+[[case]]
+id = "resource-close-vec-clear-succeeds"
+intent = "Negative control: a succeeding close over the same Vec.clear shape runs once per element, empties the vector and continues, with a later element released at scope end."
+source = "cases/resource-close-vec-clear-succeeds.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 2\nclose 3\nremaining 0\ndone\nclose 4\n"
+exit = 0

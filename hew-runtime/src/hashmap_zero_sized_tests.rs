@@ -27,7 +27,7 @@ unsafe extern "C" fn clone_unit(source: *const c_void, destination: *mut c_void)
     0
 }
 
-unsafe extern "C" fn drop_unit(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_unit(slot: *mut c_void) {
     check_slot(slot);
     DROPS.set(DROPS.get() + 1);
     assert!(DROPS.get() <= CLONES.get());

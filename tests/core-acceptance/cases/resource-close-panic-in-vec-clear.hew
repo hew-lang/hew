@@ -1,0 +1,22 @@
+// A `close` that panics while a Vec is releasing its elements reports the
+// panic through the normal trap path. The release finishes first, so the
+// elements the failing one left behind are still closed exactly once, and the
+// statement after the clear never runs.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+        if self.fd == 2 { panic("close failed"); }
+    }
+}
+
+fn main() {
+    var conns: Vec<Conn> = Vec.new();
+    conns.push(Conn { fd: 1 });
+    conns.push(Conn { fd: 2 });
+    conns.push(Conn { fd: 3 });
+    conns.clear();
+    println("done");
+}

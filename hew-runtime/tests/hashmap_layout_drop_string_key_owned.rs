@@ -49,7 +49,7 @@ static STRING_FREE_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// Drop thunk for a `String`-ownership K layout: the blob is the address of
 /// a `*mut c_char` pointer (slot stores a pointer, not the chars themselves).
 /// We `CString::from_raw` the pointed-to char* to reclaim and free it.
-extern "C" fn string_key_drop(blob: *mut c_void) {
+extern "C-unwind" fn string_key_drop(blob: *mut c_void) {
     // SAFETY: the slot is `*mut c_char` (size = pointer size); the kernel
     // hands us the slot address. Reading it gives the heap-owned char* the
     // caller transferred at insert-time.

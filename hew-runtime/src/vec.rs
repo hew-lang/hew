@@ -626,7 +626,7 @@ unsafe extern "C" fn vec_string_clone_inplace(src: *const c_void, dst: *mut c_vo
     0
 }
 
-unsafe extern "C" fn vec_string_drop_inplace(slot: *mut c_void) {
+unsafe extern "C-unwind" fn vec_string_drop_inplace(slot: *mut c_void) {
     // SAFETY: descriptor callers provide a valid pointer-sized string slot.
     unsafe {
         let value = *slot.cast::<*mut HewString>();
@@ -1649,7 +1649,7 @@ unsafe fn release_element_range(v: *mut HewVec, start: usize, end: usize) {
 ///
 /// `v` must be a valid `HewVec` pointer.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
+pub unsafe extern "C-unwind" fn hew_vec_clear(v: *mut HewVec) {
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
         release_element_range(v, 0, (*v).len);
@@ -1664,7 +1664,7 @@ pub unsafe extern "C" fn hew_vec_clear(v: *mut HewVec) {
 /// `v` must be a valid `HewVec` pointer (or null). After this call, `v` is
 /// invalid.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
+pub unsafe extern "C-unwind" fn hew_vec_free(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_vector(v, false, false) }
 }
@@ -1674,7 +1674,7 @@ pub unsafe extern "C" fn hew_vec_free(v: *mut HewVec) {
 /// # Safety
 /// `value` must be null or an independently owned descriptor-backed array allocation.
 #[no_mangle]
-pub unsafe extern "C" fn hew_array_free(value: *mut HewVec) {
+pub unsafe extern "C-unwind" fn hew_array_free(value: *mut HewVec) {
     // SAFETY: the array shares the vector allocation and element descriptor protocol.
     unsafe { release_vector(value, true, false) }
 }
@@ -1684,7 +1684,7 @@ pub unsafe extern "C" fn hew_array_free(value: *mut HewVec) {
 /// # Safety
 /// `value` must be null or an independently owned descriptor-backed array allocation.
 #[no_mangle]
-pub unsafe extern "C" fn hew_array_free_walk(value: *mut HewVec) {
+pub unsafe extern "C-unwind" fn hew_array_free_walk(value: *mut HewVec) {
     // SAFETY: the array shares the vector allocation and element descriptor protocol.
     unsafe { release_vector(value, true, true) }
 }
@@ -1694,7 +1694,7 @@ pub unsafe extern "C" fn hew_array_free_walk(value: *mut HewVec) {
 /// # Safety
 /// `value` must be null or a readable array allocation with a cloneable element descriptor.
 #[no_mangle]
-pub unsafe extern "C" fn hew_array_clone(value: *const HewVec) -> *mut HewVec {
+pub unsafe extern "C-unwind" fn hew_array_clone(value: *const HewVec) -> *mut HewVec {
     // SAFETY: the array shares the vector allocation and element descriptor protocol.
     unsafe { clone_vec_descriptor(value, true) }
 }
@@ -1880,7 +1880,7 @@ unsafe fn clone_vec_descriptor(v: *const HewVec, reverse_cleanup: bool) -> *mut 
 ///
 /// `v` must be a valid `HewVec` pointer (or null, which returns null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
+pub unsafe extern "C-unwind" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
     // SAFETY: forwarded allocation contract.
     unsafe { clone_vec_descriptor(v, false) }
 }
@@ -1900,7 +1900,7 @@ pub unsafe extern "C" fn hew_vec_clone(v: *const HewVec) -> *mut HewVec {
 ///   and `ownership_kind` match the layout stored in `v`.
 /// - The returned pointer must eventually be freed via [`hew_vec_free`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_clone_layout(
+pub unsafe extern "C-unwind" fn hew_vec_clone_layout(
     v: *const HewVec,
     layout: *const HewTypeLayout,
 ) -> *mut HewVec {
@@ -2382,7 +2382,7 @@ pub unsafe extern "C-unwind" fn hew_vec_swap(v: *mut HewVec, i: i64, j: i64) {
 ///
 /// `v` must be a valid `HewVec` pointer (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
+pub unsafe extern "C-unwind" fn hew_vec_truncate(v: *mut HewVec, new_len: i64) {
     cabi_guard!(v.is_null());
     // SAFETY: caller guarantees `v` is valid.
     unsafe {
@@ -3164,7 +3164,7 @@ pub unsafe extern "C" fn hew_vec_pop_owned(v: *mut HewVec, out: *mut core::ffi::
 /// `v` must have been returned by [`hew_vec_new_with_elem_layout`] /
 /// [`hew_vec_clone_owned`] (or be null). After this call `v` is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
+pub unsafe extern "C-unwind" fn hew_vec_free_owned(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_vector(v, false, false) }
 }
@@ -3180,7 +3180,7 @@ pub unsafe extern "C" fn hew_vec_free_owned(v: *mut HewVec) {
 /// `v` must have been returned by [`hew_vec_new_with_elem_layout`] /
 /// [`hew_vec_clone_owned`] (or be null). After this call `v` is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_free_owned_walk(v: *mut HewVec) {
+pub unsafe extern "C-unwind" fn hew_vec_free_owned_walk(v: *mut HewVec) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_vector(v, false, true) }
 }
@@ -3193,7 +3193,7 @@ pub unsafe extern "C" fn hew_vec_free_owned_walk(v: *mut HewVec) {
 /// `v` must be an owned-element `HewVec` (or null, which returns null). The
 /// result must eventually be freed with [`hew_vec_free_owned`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
+pub unsafe extern "C-unwind" fn hew_vec_clone_owned(v: *const HewVec) -> *mut HewVec {
     // SAFETY: forwarded allocation contract.
     unsafe { clone_vec_descriptor(v, false) }
 }
@@ -5395,7 +5395,7 @@ mod vec_owned_tests {
 
     /// Drop thunk: release the element's owned heap exactly once. Does NOT free
     /// the slot bytes (the Vec owns the buffer).
-    unsafe extern "C" fn drop_thunk(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_thunk(slot: *mut c_void) {
         DROP_CALLS.fetch_add(1, Ordering::SeqCst);
         // SAFETY: slot points to a live OwnedElem with a heap payload.
         unsafe {
@@ -5407,7 +5407,7 @@ mod vec_owned_tests {
 
     /// Drop-only aggregate callback used for moved-from slots. A null payload
     /// is the descriptor-level moved state, matching the trait-object callback.
-    unsafe extern "C" fn drop_thunk_if_live(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_thunk_if_live(slot: *mut c_void) {
         // SAFETY: the descriptor supplies an OwnedElem-sized slot.
         let elem = unsafe { &*slot.cast::<OwnedElem>() };
         if elem.payload.is_null() {

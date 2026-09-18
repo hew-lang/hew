@@ -1,0 +1,22 @@
+// Negative control for the panicking twins: the same clear with a `close` that
+// succeeds runs each element's close exactly once, leaves the vector empty and
+// lets the program continue.
+#[resource]
+type Conn { fd: i64, }
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close {self.fd}");
+    }
+}
+
+fn main() {
+    var conns: Vec<Conn> = Vec.new();
+    conns.push(Conn { fd: 1 });
+    conns.push(Conn { fd: 2 });
+    conns.push(Conn { fd: 3 });
+    conns.clear();
+    println(f"remaining {conns.len()}");
+    conns.push(Conn { fd: 4 });
+    println("done");
+}

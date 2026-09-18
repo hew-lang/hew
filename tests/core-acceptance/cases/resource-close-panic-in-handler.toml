@@ -1,0 +1,11 @@
+[[case]]
+id = "resource-close-panic-in-handler"
+intent = "A panic inside a resource's close during Vec.clear in an actor handler crashes that actor with the panic's code and message while main continues."
+source = "cases/resource-close-panic-in-handler.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 2\nmain continues\n"
+stderr = "hew: failure: UserPanic (212): close failed\nhew: actor crash in Pool.drain (actor 1): UserPanic\n"
+exit = 1

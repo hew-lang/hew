@@ -260,7 +260,7 @@ unsafe extern "C" fn hew_layout_key_bytes_eq(
 // `Bytes` drops the inner triple's `ptr` via `hew_bytes_drop` (which decrements
 // the refcount and frees the buffer when the count hits zero).
 
-extern "C" fn hew_layout_string_drop(blob: *mut c_void) {
+extern "C-unwind" fn hew_layout_string_drop(blob: *mut c_void) {
     // SAFETY: blob is non-null and points to a managed-string handle slot owned by
     // the kernel. Reading the pointer-by-value is a fixed-size load; passing
     // it to `hew_string_drop` is correct per that fn's null-safe contract.
@@ -300,7 +300,7 @@ unsafe extern "C" fn hew_layout_bytes_clone(src: *const c_void, dst: *mut c_void
     0
 }
 
-extern "C" fn hew_layout_bytes_drop(blob: *mut c_void) {
+extern "C-unwind" fn hew_layout_bytes_drop(blob: *mut c_void) {
     // SAFETY: blob is non-null and points to a `BytesTriple` slot owned by
     // the kernel. Reload + drop the inner buffer via the bytes runtime.
     unsafe {

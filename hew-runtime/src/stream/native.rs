@@ -383,7 +383,7 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn drop_owned(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_owned(slot: *mut c_void) {
         // SAFETY: the descriptor describes one owned Box of a shared counter.
         let pointer = unsafe { *slot.cast::<*mut Arc<AtomicUsize>>() };
         // SAFETY: the envelope is this Box's sole owner.
@@ -476,7 +476,7 @@ mod tests {
         }
     }
 
-    unsafe extern "C" fn drop_string(slot: *mut c_void) {
+    unsafe extern "C-unwind" fn drop_string(slot: *mut c_void) {
         // SAFETY: this descriptor's slot contains one managed string owner.
         unsafe { hew_cabi::string::string_release(*slot.cast()) };
     }

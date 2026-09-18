@@ -53,11 +53,11 @@ unsafe extern "C" fn clone_i64(_src: *const c_void, _dst: *mut c_void) -> i32 {
     0
 }
 
-unsafe extern "C" fn drop_i64(_slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_i64(_slot: *mut c_void) {
     INNER_ELEMENT_DROPS.fetch_add(1, Ordering::SeqCst);
 }
 
-extern "C" fn drop_vec_value(slot: *mut c_void) {
+extern "C-unwind" fn drop_vec_value(slot: *mut c_void) {
     MAP_VALUE_DROPS.fetch_add(1, Ordering::SeqCst);
     // SAFETY: the map value blob stores one owned HewVec pointer.
     unsafe {

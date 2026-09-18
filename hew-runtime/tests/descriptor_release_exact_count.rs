@@ -55,7 +55,7 @@ fn count_or_abort(counter: &AtomicUsize, expected: &AtomicUsize) {
     }
 }
 
-unsafe extern "C" fn drop_record(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_record(slot: *mut c_void) {
     count_or_abort(&RECORD_DROPS, &RECORD_EXPECTED);
     // SAFETY: the descriptor is used only with `RecordOwningHeap` slots.
     let value = unsafe { &mut *slot.cast::<RecordOwningHeap>() };
@@ -64,7 +64,7 @@ unsafe extern "C" fn drop_record(slot: *mut c_void) {
     value.heap = core::ptr::null_mut();
 }
 
-unsafe extern "C" fn drop_enum(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_enum(slot: *mut c_void) {
     count_or_abort(&ENUM_DROPS, &ENUM_EXPECTED);
     // SAFETY: the descriptor is used only with `EnumOwningHeap` slots.
     let value = unsafe { &mut *slot.cast::<EnumOwningHeap>() };
@@ -75,7 +75,7 @@ unsafe extern "C" fn drop_enum(slot: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn drop_tuple(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_tuple(slot: *mut c_void) {
     count_or_abort(&TUPLE_DROPS, &TUPLE_EXPECTED);
     // SAFETY: the descriptor is used only with `TupleCarryingRecord` slots.
     let value = unsafe { &mut *slot.cast::<TupleCarryingRecord>() };
@@ -84,7 +84,7 @@ unsafe extern "C" fn drop_tuple(slot: *mut c_void) {
     value.record.heap = core::ptr::null_mut();
 }
 
-extern "C" fn drop_map_vec_value(slot: *mut c_void) {
+extern "C-unwind" fn drop_map_vec_value(slot: *mut c_void) {
     count_or_abort(&MAP_VALUE_DROPS, &MAP_VALUE_EXPECTED);
     // SAFETY: the map value blob stores one owned HewVec pointer.
     unsafe {
@@ -93,7 +93,7 @@ extern "C" fn drop_map_vec_value(slot: *mut c_void) {
     }
 }
 
-unsafe extern "C" fn drop_map_inner_record(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_map_inner_record(slot: *mut c_void) {
     count_or_abort(&MAP_INNER_DROPS, &MAP_INNER_EXPECTED);
     // SAFETY: the descriptor is used only with `RecordOwningHeap` slots.
     let value = unsafe { &mut *slot.cast::<RecordOwningHeap>() };
@@ -137,7 +137,7 @@ unsafe extern "C" fn eq_i64(
     0
 }
 
-fn layout<T>(drop_fn: unsafe extern "C" fn(*mut c_void)) -> HewValueLayout {
+fn layout<T>(drop_fn: unsafe extern "C-unwind" fn(*mut c_void)) -> HewValueLayout {
     HewValueLayout {
         visit_close: None,
         size: size_of::<T>(),

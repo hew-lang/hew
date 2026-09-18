@@ -11,13 +11,13 @@ struct Counts {
     closes: AtomicUsize,
 }
 
-unsafe extern "C" fn drop_capture(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_capture(slot: *mut c_void) {
     // SAFETY: the test retains the counters beyond this owning pointer slot.
     let counts = unsafe { &**slot.cast::<*const Counts>() };
     counts.captures.fetch_add(1, Ordering::SeqCst);
 }
 
-unsafe extern "C" fn drop_return(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_return(slot: *mut c_void) {
     // SAFETY: the invocation writes one pointer with the exact return layout.
     let counts = unsafe { &**slot.cast::<*const Counts>() };
     counts.returns.fetch_add(1, Ordering::SeqCst);

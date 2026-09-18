@@ -362,6 +362,44 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     i32::from(write_report(fault, &mut io::stderr().lock()).is_err())
 }
 
+/// Raise a fault that generated drop glue has no owner to carry.
+///
+/// Destruction runs where the language has no fault edge: a record's `close`
+/// is called from drop glue and from collection element release, neither of
+/// which can hand a failure back to the value's owner. This is the trap path
+/// for that case. It reports the fault's own typed line — so a `panic` inside
+/// `close` keeps its message — then routes into the one trap bridge, which
+/// crashes the actor when a supervisor can rule on the failure and otherwise
+/// ends the run with status 1.
+///
+/// `fault` transfers one optional fault owner; `code` is the status `close`
+/// returned and stands alone when no fault accompanies it.
+///
+/// # Safety
+/// A non-null `fault` must be a live, unique owner without borrowers.
+#[no_mangle]
+pub unsafe extern "C-unwind" fn hew_fault_trap(code: i32, fault: *mut HewFault) {
+    if fault.is_null() {
+        // SAFETY: the bridge accepts any context; nothing was reported yet.
+        unsafe { crate::supervisor::trap_with_code(code, false) };
+        return;
+    }
+    // A collection release in progress finishes releasing what it owns before
+    // this fault leaves the runtime, so the failing element does not strand
+    // its siblings. That walk raises it again once it is done.
+    // SAFETY: the caller transfers one live, unique fault owner.
+    if unsafe { crate::release_walker::held_fault(code, fault) } {
+        return;
+    }
+    // SAFETY: the caller transfers one live, unique fault owner.
+    let fault = unsafe { Box::from_raw(fault) };
+    let code = fault.code;
+    let _ = write_report(&fault, &mut io::stderr().lock());
+    drop(fault);
+    // SAFETY: the bridge accepts any context; the typed line is already out.
+    unsafe { crate::supervisor::trap_with_code(code, true) };
+}
+
 /// Write one fault's typed line to stderr for a code with no fault owner.
 ///
 /// The main-context trap bridge reaches a fatal trap with a code and nothing

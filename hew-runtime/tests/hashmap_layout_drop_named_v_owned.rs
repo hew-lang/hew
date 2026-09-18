@@ -49,7 +49,7 @@ static V_FIELD_DROP_COUNT: AtomicUsize = AtomicUsize::new(0);
 /// `count` is `Plain` and needs no per-field drop. This compresses the
 /// record's drop plan into a single `extern "C" fn`, matching the
 /// `LayoutManaged` ownership contract.
-extern "C" fn named_v_drop(blob: *mut c_void) {
+extern "C-unwind" fn named_v_drop(blob: *mut c_void) {
     unsafe {
         let rec = blob.cast::<NamedV>();
         let name_ptr = (*rec).name;

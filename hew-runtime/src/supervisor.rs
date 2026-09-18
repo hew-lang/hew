@@ -516,6 +516,18 @@ pub use crate::internal::types::{
 /// reaches Rust's process panic boundary; actor dispatch catches it.
 #[no_mangle]
 pub unsafe extern "C-unwind" fn hew_trap_with_code(code: i32) {
+    // SAFETY: forwarded caller contract; this bridge reports the code itself.
+    unsafe { trap_with_code(code, false) }
+}
+
+/// The one native trap bridge. `reported` says the caller already wrote the
+/// typed diagnostic line, which [`crate::fault::hew_fault_trap`] does so its
+/// fault's message survives; this entry then reports nothing further.
+///
+/// # Safety
+///
+/// Same contract as [`hew_trap_with_code`].
+pub(crate) unsafe fn trap_with_code(code: i32, reported: bool) {
     crate::cont::abort_if_crash_cleanup_finalizer_trap(trap_kind_name(code));
     let actor_stamped = crate::trap_code::stamp_current_actor_error_code(code);
     if actor_stamped && crate::execution_context::current_context_can_unwind() {
@@ -527,7 +539,9 @@ pub unsafe extern "C-unwind" fn hew_trap_with_code(code: i32) {
         // after its typed line. Terminating here rather than returning to the
         // generated `llvm.trap` is what keeps the private trap code out of the
         // process status. Buffered output is flushed first, as `exit()` does.
-        crate::fault::report_trap_code(code);
+        if !reported {
+            crate::fault::report_trap_code(code);
+        }
         let _ = std::io::Write::flush(&mut std::io::stdout());
         let _ = std::io::Write::flush(&mut std::io::stderr());
         // JUSTIFIED: a trap with no recovery authority ends the run; the OS

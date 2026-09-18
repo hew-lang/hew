@@ -27,9 +27,11 @@
 //! always drives it to empty.
 //!
 //! A release never suspends, so the worklist is thread-local: descriptor drop
-//! thunks are plain `extern "C"` functions with no coroutine lowering, and a
-//! resource `close` whose body suspends is driven to completion by
-//! `hew_coro_run_root` on the calling thread before the drop glue returns.
+//! thunks have no coroutine lowering, and a resource `close` whose body
+//! suspends is driven to completion by `hew_coro_run_root` on the calling
+//! thread before the drop glue returns. A `close` that fails instead hands its
+//! fault to [`held_fault`], and the outermost drain raises it once the walk has
+//! released everything it owns.
 
 use std::cell::{Cell, RefCell};
 
@@ -72,6 +74,11 @@ thread_local! {
     /// How many drains are running on this thread. Non-zero means a deferred
     /// release can join the walk instead of nesting.
     static DRAINS: Cell<usize> = const { Cell::new(0) };
+    /// The fault a `close` raised during the walk in progress, with the status
+    /// it returned. Held so the walk finishes releasing what it owns before
+    /// the fault leaves the runtime.
+    #[cfg(not(target_arch = "wasm32"))]
+    static HELD: Cell<Option<(i32, *mut crate::fault::HewFault)>> = const { Cell::new(None) };
 }
 
 /// How many collection elements one worklist step releases. A step stays
@@ -110,19 +117,83 @@ fn walking() -> bool {
 ///
 /// `item` must name a structure this call exclusively owns.
 unsafe fn drain(item: ReleaseItem) {
-    let base = PENDING.with(|pending| {
-        let mut pending = pending.borrow_mut();
-        pending.push(item);
-        pending.len() - 1
-    });
-    DRAINS.with(|drains| drains.set(drains.get() + 1));
-    while let Some(step) = take_above(base) {
-        // SAFETY: every queued step names storage the walk owns; the release
-        // boundary is `extern "C"`, so a panic in a drop thunk aborts rather
-        // than unwinding through the worklist.
-        unsafe { run(step) };
+    {
+        let walk = Walk::enter(item);
+        while let Some(step) = take_above(walk.base) {
+            // SAFETY: every queued step names storage the walk owns. A drop
+            // thunk whose `close` fails hands its fault to `held_fault`
+            // instead of raising here, so no step unwinds through the
+            // worklist and every remaining element is still released.
+            unsafe { run(step) };
+        }
     }
-    DRAINS.with(|drains| drains.set(drains.get() - 1));
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if walking() {
+            return;
+        }
+        // The walk is complete and every element is released exactly once, so
+        // the fault a `close` raised during it can now leave the runtime.
+        // Nothing here owns it either: `hew_fault_trap` crashes the actor or
+        // ends the run.
+        if let Some((code, fault)) = HELD.with(Cell::take) {
+            // SAFETY: `held_fault` transferred one unique fault owner.
+            unsafe { crate::fault::hew_fault_trap(code, fault) };
+        }
+    }
+}
+
+/// The walk in progress, restoring the worklist even if a step unwinds.
+struct Walk {
+    base: usize,
+}
+
+impl Walk {
+    fn enter(item: ReleaseItem) -> Self {
+        let base = PENDING.with(|pending| {
+            let mut pending = pending.borrow_mut();
+            pending.push(item);
+            pending.len() - 1
+        });
+        DRAINS.with(|drains| drains.set(drains.get() + 1));
+        Self { base }
+    }
+}
+
+impl Drop for Walk {
+    fn drop(&mut self) {
+        PENDING.with(|pending| pending.borrow_mut().truncate(self.base));
+        DRAINS.with(|drains| drains.set(drains.get() - 1));
+    }
+}
+
+/// Hold a failing `close`'s fault until the walk in progress finishes.
+///
+/// Returns `false` outside a walk, where the caller raises the fault itself.
+/// Inside one, the fault is taken and raised by the outermost [`drain`], so a
+/// `close` that fails partway through a collection does not strand the
+/// elements and storage the walk still owns.
+///
+/// # Safety
+///
+/// `fault` must transfer one live, unique, non-null fault owner.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn held_fault(code: i32, fault: *mut crate::fault::HewFault) -> bool {
+    if !walking() {
+        return false;
+    }
+    HELD.with(|held| match held.take() {
+        // The first failing `close` names the crash; a later one during the
+        // same walk joins it as a secondary diagnostic.
+        Some((first, primary)) => {
+            // SAFETY: both owners are unique and distinct.
+            held.set(Some((first, unsafe {
+                crate::fault::hew_fault_combine(primary, fault)
+            })));
+        }
+        None => held.set(Some((code, fault))),
+    });
+    true
 }
 
 /// Release `item` synchronously, before returning to the caller.

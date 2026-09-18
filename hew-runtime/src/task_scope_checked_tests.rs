@@ -20,7 +20,7 @@ struct Environment {
     value: ResultValue,
 }
 
-unsafe extern "C" fn drop_environment(raw: *mut c_void) {
+unsafe extern "C-unwind" fn drop_environment(raw: *mut c_void) {
     // SAFETY: descriptor gives this callback one initialized Environment.
     unsafe {
         let env = &*raw.cast::<Environment>();
@@ -97,7 +97,7 @@ static RESULT: HewValueLayout = HewValueLayout {
     clone_fn: None,
     drop_fn: None,
 };
-unsafe extern "C" fn drop_result(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_result(slot: *mut c_void) {
     // SAFETY: the owned-result descriptor supplies one Box<Arc<AtomicUsize>> pointer.
     unsafe {
         let pointer = *slot.cast::<*mut Arc<std::sync::atomic::AtomicUsize>>();
@@ -155,7 +155,7 @@ unsafe extern "C" fn poll_result(
     }
 }
 
-unsafe extern "C" fn drop_closed_result(slot: *mut c_void) {
+unsafe extern "C-unwind" fn drop_closed_result(slot: *mut c_void) {
     // SAFETY: the matching layout transfers one box only after close completes.
     let owner = unsafe { Box::from_raw(*slot.cast::<*mut CloseResult>()) };
     assert_eq!(owner.polls, 2, "result dropped before cooperative close");

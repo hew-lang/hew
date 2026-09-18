@@ -243,7 +243,7 @@ pub unsafe fn validate_set_op_elem(set: *const HewLayoutHashSet, elem: *const c_
 /// `elem_layout` must be a valid, non-null pointer to a `HewMapKeyLayout`
 /// satisfying the C-1b validator invariants.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_new_with_layout(
+pub unsafe extern "C-unwind" fn hew_hashset_new_with_layout(
     elem_layout: *const HewMapKeyLayout,
 ) -> *mut HewLayoutHashSet {
     if elem_layout.is_null() {
@@ -358,7 +358,7 @@ pub unsafe extern "C" fn hew_hashset_insert_layout(
 /// matching the element descriptor; the caller must not release it after a
 /// zero status.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_insert_take_layout(
+pub unsafe extern "C-unwind" fn hew_hashset_insert_take_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
     present_out: *mut bool,
@@ -402,7 +402,7 @@ pub unsafe extern "C" fn hew_hashset_insert_take_layout(
 ///
 /// `set` must be live and `elem` must borrow a slot matching its element descriptor.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_insert_clone_layout(
+pub unsafe extern "C-unwind" fn hew_hashset_insert_clone_layout(
     set: *mut HewLayoutHashSet,
     elem: *const c_void,
     present_out: *mut bool,
@@ -583,7 +583,7 @@ pub unsafe extern "C" fn hew_hashset_to_vec_layout(set: *const HewLayoutHashSet)
 /// null, which returns null). The returned pointer must eventually be freed
 /// with [`hew_hashset_free_layout`].
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_clone_layout(
+pub unsafe extern "C-unwind" fn hew_hashset_clone_layout(
     set: *const HewLayoutHashSet,
 ) -> *mut HewLayoutHashSet {
     if set.is_null() {
@@ -626,7 +626,7 @@ pub unsafe extern "C" fn hew_hashset_clone_layout(
 /// `set` must have been returned by [`hew_hashset_new_with_layout`] (or be
 /// null). After this call, `set` is invalid and must not be used.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_free_layout(set: *mut HewLayoutHashSet) {
+pub unsafe extern "C-unwind" fn hew_hashset_free_layout(set: *mut HewLayoutHashSet) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_set(set, false) }
 }
@@ -642,7 +642,7 @@ pub unsafe extern "C" fn hew_hashset_free_layout(set: *mut HewLayoutHashSet) {
 /// `set` must have been returned by [`hew_hashset_new_with_layout`] (or be
 /// null). After this call, `set` is invalid.
 #[no_mangle]
-pub unsafe extern "C" fn hew_hashset_free_layout_walk(set: *mut HewLayoutHashSet) {
+pub unsafe extern "C-unwind" fn hew_hashset_free_layout_walk(set: *mut HewLayoutHashSet) {
     // SAFETY: forwarded allocation contract.
     unsafe { release_set(set, true) }
 }

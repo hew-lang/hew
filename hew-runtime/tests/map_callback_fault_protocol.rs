@@ -80,7 +80,7 @@ unsafe extern "C" fn clone_owned(source: *const c_void, destination: *mut c_void
     0
 }
 
-unsafe extern "C" fn drop_owned(value: *mut c_void) {
+unsafe extern "C-unwind" fn drop_owned(value: *mut c_void) {
     // SAFETY: this callback receives one unique owner of a live Box allocation.
     unsafe { drop(Box::from_raw((*value.cast::<Owned>()).number)) };
     COUNTS.with(|cell| {
